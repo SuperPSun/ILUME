@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ilume-pretrain"
+version = "0.1.0"
+description = "Shared multimodal masked pretraining for ionic-liquid molecular entities"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "atomInSmiles==1.0.2",
+    "numpy>=1.26",
+    "PyYAML>=6.0",
+    "rdkit>=2024.3",
+    "torch>=2.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+ilume-prepare = "ilume_pretrain.cli.prepare:main"
+ilume-smoke = "ilume_pretrain.cli.smoke:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

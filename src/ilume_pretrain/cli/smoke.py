@@ -1,0 +1,126 @@
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+import torch
+from torch.utils.data import DataLoader
+
+from ..config import PretrainConfig, load_config
+from ..data import PreparedCorpusDataset
+from ..masking import MultimodalCollator
+from ..model import MultimodalPretrainModel
+from ..sampler import RoleBalancedSampler
+from ..tokenizer import AISVocabulary
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run a minimal multimodal pretraining forward/backward smoke test."
+    )
+    parser.add_argument("--config", required=True, help="Path to a YAML config file")
+    return parser
+
+
+def _resolve_device(config: PretrainConfig) -> torch.device:
+    requested = config.smoke.device
+    if requested == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(requested)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("A CUDA device was requested, but CUDA is unavailable")
+    return device
+
+
+def build_dataloader(
+    config: PretrainConfig,
+    dataset: PreparedCorpusDataset,
+    vocabulary: AISVocabulary,
+) -> DataLoader:
+    role_ids = [sample["role_id"] for sample in dataset.samples]
+    sampler = RoleBalancedSampler(
+        role_ids=role_ids,
+        num_samples=config.smoke.steps * config.smoke.batch_size,
+        seed=config.data.seed,
+    )
+    collator = MultimodalCollator(
+        vocabulary=vocabulary,
+        config=config.masking,
+        seed=config.data.seed,
+    )
+    return DataLoader(
+        dataset,
+        batch_size=config.smoke.batch_size,
+        sampler=sampler,
+        num_workers=config.smoke.num_workers,
+        collate_fn=collator,
+        drop_last=True,
+    )
+
+
+def run_smoke(config: PretrainConfig) -> list[dict[str, float | int | str]]:
+    torch.manual_seed(config.data.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(config.data.seed)
+
+    artifact_dir = Path(config.data.artifacts_dir)
+    dataset = PreparedCorpusDataset(artifact_dir / "corpus.pt", split="train")
+    vocabulary = AISVocabulary.load(artifact_dir / "tokenizer.json")
+    loader = build_dataloader(config, dataset, vocabulary)
+    device = _resolve_device(config)
+    model = MultimodalPretrainModel(config, vocabulary).to(device)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=config.smoke.learning_rate,
+        weight_decay=config.smoke.weight_decay,
+    )
+    amp_enabled = config.smoke.amp and device.type == "cuda"
+    scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
+
+    results: list[dict[str, float | int | str]] = []
+    model.train()
+    for step, batch in enumerate(loader, start=1):
+        if step > config.smoke.steps:
+            break
+        batch = batch.to(device)
+        optimizer.zero_grad(set_to_none=True)
+        with torch.autocast(
+            device_type=device.type,
+            dtype=torch.float16 if device.type == "cuda" else torch.bfloat16,
+            enabled=amp_enabled,
+        ):
+            output = model(batch)
+        if not torch.isfinite(output.loss):
+            raise RuntimeError(f"Non-finite total loss at smoke step {step}")
+        scaler.scale(output.loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+
+        result: dict[str, float | int | str] = {
+            "step": step,
+            "device": str(device),
+            "loss": float(output.loss.detach().cpu()),
+        }
+        result.update(
+            {
+                f"loss_{name}": float(value.detach().cpu())
+                for name, value in output.losses.items()
+            }
+        )
+        print(json.dumps(result, sort_keys=True))
+        results.append(result)
+    if len(results) != config.smoke.steps:
+        raise RuntimeError(
+            f"Smoke loader produced {len(results)} steps; expected {config.smoke.steps}"
+        )
+    return results
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    run_smoke(load_config(args.config))
+
+
+if __name__ == "__main__":
+    main()
