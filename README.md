@@ -1,48 +1,153 @@
 # ILUME multimodal pretraining
 
-本项目为 cation、anion 和 neutral molecule 提供完全共享参数的三模态掩码预训练基线。输入为 Atom-in-SMILES、RDKit molecular graph 和固定顺序的 217 维 RDKit descriptors，融合后分别重构被遮蔽的 SMILES token、atom features、bond features 和 descriptor dimensions。
+ILUME 面向 cation、anion 和 molecule 三类单分子实体，提供参数完全共享的四模态掩码预训练实现。role 只参与覆盖采样、共享 role embedding 和分组指标，不创建 role 专属 encoder 或 reconstruction head。
+
+```text
+SMILES ── tokenizer + Transformer ─────────────┐
+Graph ─── shared D-MPNN ──────────────────────┤
+Descriptor ── selection + grouped MLP tokens ─┼─ Fusion Transformer ─ reconstruction
+Fingerprint ── Morgan/MACCS chunk tokens ─────┘
+```
+
+Fusion 序列固定为 `[MM_CLS] + SMILES + atoms + bonds + descriptor groups + fingerprint chunks`。只有 SMILES encoder 使用普通序列位置编码；graph 不使用绝对位置，descriptor 和 fingerprint 分别使用 group identity 与 family/chunk identity。
 
 ## 安装
+
+只使用 AIS 时：
 
 ```bash
 python -m pip install -e ".[dev]"
 ```
 
-SMILES 使用官方 [`atomInSmiles==1.0.2`](https://pypi.org/project/atominsmiles/)。PyPI metadata 将该版本标为 CC BY-NC 4.0，但同页长描述又包含 CC BY-SA 4.0 标记；上游许可口径不一致，将本项目用于商业或分发场景前必须向上游确认适用许可。
+需要 APE、BPE 或 SPE 对照实验时：
 
-## 最小运行
+```bash
+python -m pip install -e ".[dev,tokenizers]"
+```
+
+AIS 使用官方 [`atomInSmiles==1.0.2`](https://pypi.org/project/atominsmiles/1.0.2/)。PyPI metadata 将该版本标为 CC BY-NC 4.0，但页面长描述还出现 CC BY-SA 4.0；商业使用或再分发前应向上游确认适用许可。APE 固定到 commit `ff1b3cc00476a8d017d7d54e925681a04475d47f`，SPE 固定为 `SmilesPE==0.0.3`。
+
+## 数据约定
+
+原始数据只读取：
+
+- `data/stage1/cation.csv`
+- `data/stage1/anion.csv`
+- `data/stage1/molecule.csv`
+
+扩增数据只读取 `data/stage1/augmentation/{cation,anion,molecule}.csv`。`simulation_mol.csv`、`solute.csv`、`solvent.csv` 和 `IL.csv` 均不进入当前准备流程。
+
+原始实体按 role 做 95%/5% train/valid 划分；valid 只含原始实体。准备程序通过扩增表的 `seed_smiles_list` 排除 valid 原始实体的扩增后代。`data.augmentation` 可为每个 role 指定非负倍率或 `all`：`0` 禁用扩增，`1` 最多选取原始训练集等量扩增样本，`4` 最多选四倍，`all` 使用隔离后的全部候选。
+
+```yaml
+data:
+  augmentation: {cation: 1, anion: 1, neutral: 1}
+```
+
+## 准备工件
+
+```bash
+ilume-prepare --config configs/smoke.yaml
+```
+
+artifact format v2 不再生成单个 `corpus.pt`，而是产生：
+
+- `shards/{split}_{role}_*.pt`：按 split/role 写入，默认约 8192 个样本一个 shard；
+- `corpus_index.json`：sample 到 shard/local position 的索引；
+- `manifest.csv`：role、split、canonical SMILES、来源与扩增谱系；
+- `tokenizer.json`：只由入选训练集拟合的 tokenizer；
+- `descriptor_schema.json`：描述符筛选、删除原因、相关簇和 group 映射；
+- `descriptor_scaler.json`：只由入选训练集拟合的有限值均值与标准差；
+- `metadata.json`：格式版本、源文件哈希、数据谱系、版本和统计信息。
+
+`PreparedCorpusDataset` 用小型 LRU cache 延迟加载 shard。旧 `corpus.pt` 会被明确拒绝，需重新执行 `ilume-prepare`。
+
+准备过程先用磁盘 memmap 分块拟合 descriptor schema/scaler，再按 split/role shard 逐块构图和计算指纹，不把全语料 graph 同时留在内存。`preparation_state.json` 和 preparation signature 支持中断后复用描述符第一遍及已原子写完的 shard；完整成功后临时 memmap 会删除。每个 shard 的 SHA-256 在首次加载时校验。
+
+## 描述符与指纹
+
+`descriptor.mode` 支持：
+
+- `full`：保留 RDKit 固定顺序的 217 维；
+- `clean`：删除全无效、有限值零方差和完全重复维度；
+- `pruned`：在 clean 基础上，对共同有限训练行的 `|r| > 0.98` 相关图按连通分量保留代表维度。
+
+筛选只使用当前配置选中的训练集。`descriptor.token_count` 只允许 `1`、`8` 或 `12`；每个语义组独立编码和重建，空组使用可学习 token 但不产生 loss。自然非有限值保持 unavailable，不作为 masked reconstruction target。
+
+`fingerprint.kind` 支持 `none | morgan | maccs | both`。Morgan 默认 2048 bit、radius 2，形成 16 个 128-bit chunk；MACCS 的 167 个有效 bit 补齐为两个 chunk，padding bit 不参与 mask 和 loss。两种 family 的 masked-only BCE 先各自归一化，再等权平均。
+
+## tokenizer 对照
+
+统一 `SmilesTokenizer` 接口支持 `ais | ape | bpe | spe`，都只在相同训练 SMILES 上拟合，并共享特殊 token、词表预算和最大长度规则。默认预算为 2048、最低频率为 2、最大长度为 384；超过上限会报错，不做静默截断。metadata 记录长度分布、UNK 数、预算/实际词表和后端版本。
+
+## masking 与模型
+
+`MultimodalPacker` 只做确定性组批；`MultimodalMasker.apply(batch, global_step, max_steps)` 执行动态 masking、asymmetric masking 和 modality dropout。curriculum 默认行为为：
+
+- 0%–10% 训练进度：dropout 率为 0；
+- 10%–60%：线性升至配置概率的一半；
+- 60%–100%：线性升至配置概率。
+
+四个顶层模态独立 dropout，但每个样本至少保留一个模态。普通 atom masking 不遮蔽单原子分子；graph modality dropout 仍会整体遮蔽单原子并监督重建。
+
+模型包含 SMILES MLM、atom、bond、descriptor 和 fingerprint 五项重建 loss。graph head 支持 `linear | mlp`；MLP 版本使用共享 residual trunk 后接字段独立分类器。可选共享 role embedding 会加到 CLS 和所有非 padding fusion token 上，不进入各模态 encoder。
+
+## 45/45/10 覆盖采样
+
+正式配置固定全训练运行的全局抽样比例：cation 45%、anion 45%、molecule 10%。比例不要求每个 mini-batch 精确满足。role 内先无放回遍历全部样本，再重洗牌进入下一轮；sampler 状态可随 checkpoint 恢复。
+
+给定 `max_steps` 时：
+
+```text
+total_draws = max_steps * batch_size * gradient_accumulation_steps
+minimum_draws = max(ceil(N_cation/0.45), ceil(N_anion/0.45), ceil(N_molecule/0.10))
+```
+
+若最大余数法得到的任一 role 配额小于该 role 训练池，训练在启动时失败，并给出满足覆盖保证所需的最小 `max_steps`。
+
+## 运行入口
+
+最小 forward/backward：
 
 ```bash
 ilume-prepare --config configs/smoke.yaml
 ilume-smoke --config configs/smoke.yaml
-pytest -q
 ```
 
-默认 smoke 配置从每个 role 取 20 个实体并执行两个 optimizer step。将 `data.max_samples_per_role` 改为 `null` 可准备当前 Stage 1 的全部语料。
+正式单卡训练：
 
-数据来源规则固定如下：
+```bash
+ilume-prepare --config configs/pretrain_base.yaml
+ilume-train --config configs/pretrain_base.yaml
+```
 
-- cation：`data/stage1/cation.csv`
-- anion：`data/stage1/anion.csv`
-- neutral：合并 `molecule.csv`、`solute.csv`、`solvent.csv`
-- `IL.csv` 明确不参与单分子预训练语料
+训练器支持 AdamW、BF16/FP16 AMP、梯度累积、梯度裁剪、warmup+cosine、固定频率验证、checkpoint/resume、RNG/sampler 状态、stdout 和 JSONL 指标。验证使用固定 mask seed，关闭 modality dropout 与 asymmetric masking，并按验证集自然 role 分布报告总体及 role 分组指标。
 
-准备命令在 `data.artifacts_dir` 生成：
+checkpoint 保存 model、optimizer、scheduler、AMP scaler、optimizer/micro step、Python/NumPy/PyTorch/CUDA RNG、sampler 进度、config 与 artifact 哈希。恢复时在配置中设置：
 
-- `corpus.pt`：token、graph、标准化 descriptor 和 split
-- `manifest.csv`：sample、role、canonical SMILES、split 和来源
-- `tokenizer.json`：仅用训练集拟合的 AIS vocabulary
-- `descriptor_scaler.json`：仅用训练集拟合的均值、scale、有效计数和固定名称顺序
-- `metadata.json`：工件格式、RDKit/AIS 版本和数据来源规则
+```yaml
+training:
+  resume_from: artifacts/training/base/checkpoint_step_00001000.pt
+```
 
-## 模型与 masking
+## 配置与消融
 
-融合序列为 `[MM_CLS] + SMILES + atoms + bonds + descriptor`。SMILES Encoder 内部加入普通 sequence position embedding；graph atom/bond token 在 D-MPNN 和 Fusion 中都不加入绝对位置编码。`FusionLayout` 显式保存各 token 的位置映射。
+- `configs/smoke.yaml`：两步最小验证；
+- `configs/train_test.yaml`：覆盖 prepare 后的训练、验证和 checkpoint 链路；
+- `configs/pretrain_base.yaml`：正式参考配置；
+- `configs/pretrain_large.yaml`：更大模型并启用 gradient checkpointing；
+- `configs/legacy.yaml`：Full/1-token/AIS/无指纹/无 role embedding/linear head；
+- `configs/ablations/`：可执行参考模板和逐轴字段说明。
 
-默认动态 mask ratio 均为 0.15。SMILES 使用 BERT 80/10/10 替换；atom 和 bond 使用可学习的整特征 mask vector；descriptor 输入为 masked value 与 indicator 的拼接。自然产生的非有限 descriptor 值置零并标记 unavailable，不进入重构 loss。
+关键架构决定记录在 [`docs/adr/`](docs/adr/README.md)。
 
-三种 modality dropout 默认均为 0.1，并保证每个样本至少保留一个模态。被丢弃模态保留重构槽位，全部可用内容都作为重构目标。可通过配置启用 asymmetric masking。
+## 验证
 
-## 当前边界
+```bash
+pytest -q
+ilume-prepare --config configs/smoke.yaml
+ilume-smoke --config configs/smoke.yaml
+ilume-train --config configs/train_test.yaml
+```
 
-当前 runner 用于可重复的最小 forward/backward 验证，不包含完整 epoch 调度、checkpoint/resume、TensorBoard 或 DDP。模型、batch、sampler 和工件接口彼此独立，可在不改变 `MultimodalPretrainModel.forward(batch)` 的情况下扩展正式训练器。
+当前正式训练器是单卡实现；不包含 DDP、TensorBoard 或自动实验矩阵调度。
