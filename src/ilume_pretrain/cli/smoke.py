@@ -9,10 +9,10 @@ from torch.utils.data import DataLoader
 
 from ..config import PretrainConfig, load_config
 from ..data import PreparedCorpusDataset
-from ..masking import MultimodalCollator
+from ..masking import MultimodalMasker, MultimodalPacker
 from ..model import MultimodalPretrainModel
 from ..sampler import RoleBalancedSampler
-from ..tokenizer import AISVocabulary
+from ..tokenizer import SmilesTokenizer
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -36,25 +36,21 @@ def _resolve_device(config: PretrainConfig) -> torch.device:
 def build_dataloader(
     config: PretrainConfig,
     dataset: PreparedCorpusDataset,
-    vocabulary: AISVocabulary,
+    vocabulary: SmilesTokenizer,
 ) -> DataLoader:
-    role_ids = [sample["role_id"] for sample in dataset.samples]
     sampler = RoleBalancedSampler(
-        role_ids=role_ids,
+        role_ids=dataset.role_ids,
         num_samples=config.smoke.steps * config.smoke.batch_size,
+        role_probabilities=config.sampling.role_probabilities,
         seed=config.data.seed,
-    )
-    collator = MultimodalCollator(
-        vocabulary=vocabulary,
-        config=config.masking,
-        seed=config.data.seed,
+        shard_ids=[entry["shard"] for entry in dataset.entries],
     )
     return DataLoader(
         dataset,
         batch_size=config.smoke.batch_size,
         sampler=sampler,
         num_workers=config.smoke.num_workers,
-        collate_fn=collator,
+        collate_fn=MultimodalPacker(vocabulary),
         drop_last=True,
     )
 
@@ -65,11 +61,18 @@ def run_smoke(config: PretrainConfig) -> list[dict[str, float | int | str]]:
         torch.cuda.manual_seed_all(config.data.seed)
 
     artifact_dir = Path(config.data.artifacts_dir)
-    dataset = PreparedCorpusDataset(artifact_dir / "corpus.pt", split="train")
-    vocabulary = AISVocabulary.load(artifact_dir / "tokenizer.json")
+    dataset = PreparedCorpusDataset(
+        artifact_dir,
+        split="train",
+        shard_cache_size=config.data.shard_cache_size,
+    )
+    vocabulary = SmilesTokenizer.load(artifact_dir / "tokenizer.json")
     loader = build_dataloader(config, dataset, vocabulary)
     device = _resolve_device(config)
-    model = MultimodalPretrainModel(config, vocabulary).to(device)
+    model = MultimodalPretrainModel(
+        config, vocabulary, dataset.descriptor_schema
+    ).to(device)
+    masker = MultimodalMasker(vocabulary, config.masking, config.data.seed)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=config.smoke.learning_rate,
@@ -80,10 +83,14 @@ def run_smoke(config: PretrainConfig) -> list[dict[str, float | int | str]]:
 
     results: list[dict[str, float | int | str]] = []
     model.train()
-    for step, batch in enumerate(loader, start=1):
+    for step, packed_batch in enumerate(loader, start=1):
         if step > config.smoke.steps:
             break
-        batch = batch.to(device)
+        batch = masker.apply(
+            packed_batch,
+            global_step=step - 1,
+            max_steps=config.smoke.steps,
+        ).to(device)
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast(
             device_type=device.type,

@@ -1,33 +1,39 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import importlib.metadata
 import json
+import math
 import random
+import re
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import numpy as np
 import torch
 from rdkit import Chem, rdBase
 from torch.utils.data import Dataset
 
-from .config import DataConfig
+from .config import DataConfig, PretrainConfig
 from .descriptors import (
+    DescriptorSchema,
     DescriptorStandardizer,
     calculate_descriptors,
     rdkit_descriptor_names,
 )
+from .fingerprints import FingerprintBatch, calculate_fingerprints
 from .graph import GraphRecord, PackedGraph, featurize_mol
-from .tokenizer import AISVocabulary
+from .tokenizer import SmilesTokenizer, tokenizer_backend_version
 
 
 ROLE_TO_ID = {"cation": 0, "anion": 1, "neutral": 2}
 ROLE_SOURCE_FILES = {
-    "cation": ("cation.csv",),
-    "anion": ("anion.csv",),
-    "neutral": ("molecule.csv", "solute.csv", "solvent.csv"),
+    "cation": "cation.csv",
+    "anion": "anion.csv",
+    "neutral": "molecule.csv",
 }
 
 
@@ -38,6 +44,8 @@ class MaskPlan:
     bond_mask: torch.Tensor
     descriptor_indicator: torch.Tensor
     descriptor_loss_mask: torch.Tensor
+    fingerprint_indicator: dict[str, torch.Tensor]
+    fingerprint_loss_mask: dict[str, torch.Tensor]
     modality_dropped: torch.Tensor
 
     def to(self, device: torch.device | str) -> "MaskPlan":
@@ -47,6 +55,12 @@ class MaskPlan:
             bond_mask=self.bond_mask.to(device),
             descriptor_indicator=self.descriptor_indicator.to(device),
             descriptor_loss_mask=self.descriptor_loss_mask.to(device),
+            fingerprint_indicator={
+                name: value.to(device) for name, value in self.fingerprint_indicator.items()
+            },
+            fingerprint_loss_mask={
+                name: value.to(device) for name, value in self.fingerprint_loss_mask.items()
+            },
             modality_dropped=self.modality_dropped.to(device),
         )
 
@@ -58,9 +72,10 @@ class MultimodalBatch:
     graphs: PackedGraph
     descriptors: torch.Tensor
     descriptor_valid: torch.Tensor
+    fingerprints: FingerprintBatch
     roles: torch.Tensor
     sample_ids: tuple[str, ...]
-    masks: MaskPlan
+    masks: MaskPlan | None = None
 
     def to(self, device: torch.device | str) -> "MultimodalBatch":
         return MultimodalBatch(
@@ -69,33 +84,37 @@ class MultimodalBatch:
             graphs=self.graphs.to(device),
             descriptors=self.descriptors.to(device),
             descriptor_valid=self.descriptor_valid.to(device),
+            fingerprints=self.fingerprints.to(device),
             roles=self.roles.to(device),
             sample_ids=self.sample_ids,
-            masks=self.masks.to(device),
+            masks=None if self.masks is None else self.masks.to(device),
         )
 
 
-def _load_role_smiles(stage1_dir: Path) -> dict[str, dict[str, set[str]]]:
+def _canonicalize(smiles: str, context: str) -> str:
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise ValueError(f"Invalid SMILES in {context}: {smiles}")
+    return Chem.MolToSmiles(mol, canonical=True)
+
+
+def _load_original_smiles(stage1_dir: Path) -> dict[str, dict[str, set[str]]]:
     by_role: dict[str, dict[str, set[str]]] = {}
-    for role, filenames in ROLE_SOURCE_FILES.items():
+    for role, filename in ROLE_SOURCE_FILES.items():
+        path = stage1_dir / filename
+        if not path.is_file():
+            raise FileNotFoundError(f"Missing Stage 1 source: {path}")
         canonical_to_sources: dict[str, set[str]] = {}
-        for filename in filenames:
-            path = stage1_dir / filename
-            if not path.is_file():
-                raise FileNotFoundError(f"Missing Stage 1 source: {path}")
-            with path.open(newline="", encoding="utf-8") as handle:
-                for row_number, row in enumerate(csv.DictReader(handle), start=2):
-                    smiles = (row.get("SMILES") or "").strip()
-                    mol = Chem.MolFromSmiles(smiles)
-                    if mol is None:
-                        raise ValueError(f"Invalid SMILES in {path}:{row_number}: {smiles}")
-                    canonical = Chem.MolToSmiles(mol, canonical=True)
-                    canonical_to_sources.setdefault(canonical, set()).add(path.stem)
+        with path.open(newline="", encoding="utf-8") as handle:
+            for row_number, row in enumerate(csv.DictReader(handle), start=2):
+                smiles = (row.get("SMILES") or "").strip()
+                canonical = _canonicalize(smiles, f"{path}:{row_number}")
+                canonical_to_sources.setdefault(canonical, set()).add(path.stem)
         by_role[role] = canonical_to_sources
     return by_role
 
 
-def _split_records(
+def _split_original_records(
     by_role: dict[str, dict[str, set[str]]],
     config: DataConfig,
 ) -> list[dict[str, Any]]:
@@ -106,7 +125,10 @@ def _split_records(
         rng.shuffle(items)
         if config.max_samples_per_role is not None:
             items = items[: config.max_samples_per_role]
+        if len(items) < 2:
+            raise ValueError(f"Role {role} needs at least two original entities")
         valid_count = max(1, round(len(items) * config.valid_fraction))
+        valid_count = min(valid_count, len(items) - 1)
         for index, (smiles, sources) in enumerate(items):
             records.append(
                 {
@@ -115,95 +137,483 @@ def _split_records(
                     "canonical_smiles": smiles,
                     "sources": tuple(sorted(sources)),
                     "split": "valid" if index < valid_count else "train",
+                    "is_augmented": False,
+                    "seed_smiles": (),
                 }
             )
-    records.sort(key=lambda item: (item["role_id"], item["canonical_smiles"]))
+    return records
+
+
+def _seed_values(raw: str) -> tuple[str, ...]:
+    return tuple(value.strip() for value in re.split(r"[;|]", raw) if value.strip())
+
+
+def _augmentation_limit(value: float | str, original_train_count: int, pool_size: int) -> int:
+    if value == "all":
+        return pool_size
+    return min(pool_size, math.floor(float(value) * original_train_count))
+
+
+def _load_augmentation_records(
+    original_records: list[dict[str, Any]],
+    config: DataConfig,
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    augmentation_dir = config.stage1_dir / "augmentation"
+    selected: list[dict[str, Any]] = []
+    audit: dict[str, dict[str, Any]] = {}
+    for role_index, role in enumerate(("cation", "anion", "neutral")):
+        requested = config.augmentation.get(role, 0.0)
+        original_for_role = [record for record in original_records if record["role"] == role]
+        original_all = {record["canonical_smiles"] for record in original_for_role}
+        original_train = [record for record in original_for_role if record["split"] == "train"]
+        valid_smiles = {
+            record["canonical_smiles"] for record in original_for_role if record["split"] == "valid"
+        }
+        stats: dict[str, Any] = {
+            "requested_multiplier": requested,
+            "available": 0,
+            "excluded_valid_seed": 0,
+            "excluded_overlap": 0,
+            "excluded_duplicate": 0,
+            "eligible": 0,
+            "selected": 0,
+            "actual_multiplier": 0.0,
+        }
+        if requested == 0 or requested == 0.0:
+            audit[role] = stats
+            continue
+        filename = ROLE_SOURCE_FILES[role]
+        path = augmentation_dir / filename
+        if not path.is_file():
+            raise FileNotFoundError(f"Missing augmentation source: {path}")
+        candidates: dict[str, dict[str, Any]] = {}
+        with path.open(newline="", encoding="utf-8") as handle:
+            for row_number, row in enumerate(csv.DictReader(handle), start=2):
+                smiles = (row.get("SMILES") or "").strip()
+                canonical = _canonicalize(smiles, f"{path}:{row_number}")
+                stats["available"] += 1
+                seeds: list[str] = []
+                for seed in _seed_values((row.get("seed_smiles_list") or "").strip()):
+                    try:
+                        seeds.append(_canonicalize(seed, f"{path}:{row_number} seed"))
+                    except ValueError:
+                        seeds.append(seed)
+                if any(seed in valid_smiles for seed in seeds):
+                    stats["excluded_valid_seed"] += 1
+                    continue
+                if canonical in original_all:
+                    stats["excluded_overlap"] += 1
+                    continue
+                if canonical in candidates:
+                    stats["excluded_duplicate"] += 1
+                    continue
+                candidates[canonical] = {
+                    "role": role,
+                    "role_id": ROLE_TO_ID[role],
+                    "canonical_smiles": canonical,
+                    "sources": (f"augmentation/{path.stem}",),
+                    "split": "train",
+                    "is_augmented": True,
+                    "seed_smiles": tuple(sorted(set(seeds))),
+                }
+        pool = list(candidates.values())
+        stats["eligible"] = len(pool)
+        rng = random.Random(config.seed + 100 + role_index)
+        rng.shuffle(pool)
+        limit = _augmentation_limit(requested, len(original_train), len(pool))
+        selected.extend(pool[:limit])
+        stats["selected"] = limit
+        stats["actual_multiplier"] = limit / len(original_train)
+        audit[role] = stats
+    return selected, audit
+
+
+def _assign_sample_ids(records: list[dict[str, Any]]) -> None:
+    records.sort(
+        key=lambda item: (
+            item["role_id"],
+            item["split"] != "valid",
+            item["is_augmented"],
+            item["canonical_smiles"],
+        )
+    )
     counters = {role: 0 for role in ROLE_TO_ID}
     for record in records:
         role = record["role"]
         counters[role] += 1
-        record["sample_id"] = f"{role}_{counters[role]:07d}"
-    return records
+        record["sample_id"] = f"{role}_{counters[role]:08d}"
 
 
-def prepare_corpus(config: DataConfig) -> dict[str, int]:
-    descriptor_names = rdkit_descriptor_names()
-    if len(descriptor_names) != config.descriptor_dim:
-        raise ValueError(
-            f"Configured descriptor_dim={config.descriptor_dim}, but this RDKit "
-            f"provides {len(descriptor_names)} descriptors"
-        )
-    by_role = _load_role_smiles(config.stage1_dir)
-    records = _split_records(by_role, config)
-    train_smiles = [
-        record["canonical_smiles"] for record in records if record["split"] == "train"
-    ]
-    vocabulary = AISVocabulary.fit(train_smiles)
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
-    raw_descriptors: list[np.ndarray] = []
-    graphs: list[GraphRecord] = []
-    token_ids: list[list[int]] = []
-    for record in records:
-        mol = Chem.MolFromSmiles(record["canonical_smiles"])
-        if mol is None:
-            raise RuntimeError("Canonical SMILES unexpectedly failed RDKit parsing")
-        token_ids.append(
-            vocabulary.encode(record["canonical_smiles"], config.max_smiles_tokens)
-        )
-        raw_descriptors.append(calculate_descriptors(mol, descriptor_names))
-        graphs.append(featurize_mol(mol))
 
-    raw_matrix = np.stack(raw_descriptors)
-    train_indices = [
-        index for index, record in enumerate(records) if record["split"] == "train"
-    ]
-    standardizer = DescriptorStandardizer.fit(
-        raw_matrix[train_indices], descriptor_names
+def _atomic_json(path: Path, payload: Any) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    standardized, descriptor_valid = standardizer.transform(raw_matrix)
+    temporary.replace(path)
 
-    samples: list[dict[str, Any]] = []
+
+def _build_sample(
+    record: dict[str, Any],
+    raw_descriptors: np.ndarray,
+    schema: DescriptorSchema,
+    standardizer: DescriptorStandardizer,
+    tokenizer: SmilesTokenizer,
+    config: PretrainConfig,
+) -> dict[str, Any]:
+    mol = Chem.MolFromSmiles(record["canonical_smiles"])
+    if mol is None:
+        raise RuntimeError("Canonical SMILES unexpectedly failed RDKit parsing")
+    encoded = tokenizer.encode(
+        record["canonical_smiles"], config.data.max_smiles_tokens
+    )
+    selected = schema.select(raw_descriptors[None, :])
+    standardized, descriptor_valid = standardizer.transform(selected)
+    graph = featurize_mol(mol)
+    return {
+        **record,
+        "token_ids": torch.tensor(encoded, dtype=torch.long),
+        "atom_categorical": graph.atom_categorical,
+        "atom_continuous": graph.atom_continuous,
+        "bond_categorical": graph.bond_categorical,
+        "bond_index": graph.bond_index,
+        "descriptors": torch.from_numpy(standardized[0]),
+        "descriptor_valid": torch.from_numpy(descriptor_valid[0]),
+        "fingerprints": {
+            name: torch.from_numpy(value).float()
+            for name, value in calculate_fingerprints(
+                mol, config.fingerprint
+            ).items()
+        },
+    }
+
+
+def _write_shards(
+    records: list[dict[str, Any]],
+    raw_matrix: np.ndarray,
+    schema: DescriptorSchema,
+    standardizer: DescriptorStandardizer,
+    tokenizer: SmilesTokenizer,
+    config: PretrainConfig,
+    output_dir: Path,
+    shard_size: int,
+    preparation_signature: str,
+) -> tuple[list[dict[str, Any]], list[int], int]:
+    shard_dir = output_dir / "shards"
+    shard_dir.mkdir(parents=True, exist_ok=True)
+    entries: list[dict[str, Any]] = []
+    lengths: list[int] = []
+    unk_count = 0
+    active_paths: set[Path] = set()
+    grouped: dict[tuple[str, str], list[tuple[int, dict[str, Any]]]] = {}
     for index, record in enumerate(records):
-        graph = graphs[index]
-        samples.append(
-            {
-                **record,
-                "token_ids": torch.tensor(token_ids[index], dtype=torch.long),
-                "atom_categorical": graph.atom_categorical,
-                "atom_continuous": graph.atom_continuous,
-                "bond_categorical": graph.bond_categorical,
-                "bond_index": graph.bond_index,
-                "descriptors": torch.from_numpy(standardized[index]),
-                "descriptor_valid": torch.from_numpy(descriptor_valid[index]),
-            }
+        grouped.setdefault((record["split"], record["role"]), []).append(
+            (index, record)
+        )
+    for (split, role), group in sorted(grouped.items()):
+        for shard_number, start in enumerate(range(0, len(group), shard_size)):
+            chunk = group[start : start + shard_size]
+            filename = f"{split}_{role}_{shard_number:05d}.pt"
+            path = shard_dir / filename
+            active_paths.add(path)
+            expected_ids = [record["sample_id"] for _, record in chunk]
+            samples: list[dict[str, Any]] | None = None
+            if path.is_file():
+                existing = torch.load(path, map_location="cpu", weights_only=False)
+                existing_ids = [
+                    sample["sample_id"] for sample in existing.get("samples", [])
+                ]
+                if (
+                    existing.get("format_version") == 2
+                    and existing.get("preparation_signature")
+                    == preparation_signature
+                    and existing_ids == expected_ids
+                ):
+                    samples = existing["samples"]
+            reused = samples is not None
+            if samples is None:
+                samples = [
+                    _build_sample(
+                        record,
+                        raw_matrix[index],
+                        schema,
+                        standardizer,
+                        tokenizer,
+                        config,
+                    )
+                    for index, record in chunk
+                ]
+                temporary = path.with_suffix(".pt.tmp")
+                torch.save(
+                    {
+                        "format_version": 2,
+                        "preparation_signature": preparation_signature,
+                        "samples": samples,
+                    },
+                    temporary,
+                )
+                temporary.replace(path)
+            print(
+                json.dumps(
+                    {
+                        "event": "prepare_shard",
+                        "shard": filename,
+                        "samples": len(samples),
+                        "reused": reused,
+                    },
+                    sort_keys=True,
+                )
+            )
+            lengths.extend(sample["token_ids"].numel() for sample in samples)
+            unk_count += sum(
+                int((sample["token_ids"] == tokenizer.unk_id).sum().item())
+                for sample in samples
+            )
+            for offset, sample in enumerate(chunk):
+                record = sample[1]
+                entries.append(
+                    {
+                        "sample_id": record["sample_id"],
+                        "role_id": record["role_id"],
+                        "role": record["role"],
+                        "split": record["split"],
+                        "shard": f"shards/{filename}",
+                        "offset": offset,
+                    }
+                )
+    for stale in shard_dir.glob("*.pt"):
+        if stale not in active_paths:
+            stale.unlink()
+    return entries, lengths, unk_count
+
+
+def _preparation_signature(
+    config: PretrainConfig,
+    source_hashes: dict[str, str],
+) -> str:
+    config_payload = config.to_dict()
+    payload = {
+        "signature_version": 2,
+        "artifact_format_version": 2,
+        "rdkit_version": rdBase.rdkitVersion,
+        "data": config_payload["data"],
+        "tokenizer": config_payload["tokenizer"],
+        "descriptor": config_payload["descriptor"],
+        "fingerprint": config_payload["fingerprint"],
+        "source_hashes": source_hashes,
+    }
+    payload["data"].pop("artifacts_dir", None)
+    payload["data"].pop("shard_cache_size", None)
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode()).hexdigest()
+
+
+def prepare_corpus(config: PretrainConfig | DataConfig) -> dict[str, int]:
+    if isinstance(config, DataConfig):
+        config = PretrainConfig(data=config)
+    config.validate()
+    data_config = config.data
+    output_dir = data_config.artifacts_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+    raw_names = rdkit_descriptor_names()
+    if len(raw_names) != data_config.descriptor_dim:
+        raise ValueError(
+            f"Configured descriptor_dim={data_config.descriptor_dim}, but this RDKit "
+            f"provides {len(raw_names)} descriptors"
         )
 
-    output_dir = config.artifacts_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
-    vocabulary.save(output_dir / "tokenizer.json")
-    standardizer.save(output_dir / "descriptor_scaler.json")
+    originals = _split_original_records(
+        _load_original_smiles(data_config.stage1_dir), data_config
+    )
+    augmented, augmentation_audit = _load_augmentation_records(originals, data_config)
+    records = [*originals, *augmented]
+    _assign_sample_ids(records)
+    source_paths = [
+        data_config.stage1_dir / filename for filename in ROLE_SOURCE_FILES.values()
+    ]
+    for role, filename in ROLE_SOURCE_FILES.items():
+        if data_config.augmentation.get(role, 0.0) not in {0, 0.0}:
+            source_paths.append(data_config.stage1_dir / "augmentation" / filename)
+    source_hashes = {str(path): _sha256(path) for path in source_paths}
+    preparation_signature = _preparation_signature(config, source_hashes)
+    metadata_path = output_dir / "metadata.json"
+    if metadata_path.is_file():
+        existing_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if existing_metadata.get("preparation_signature") == preparation_signature:
+            PreparedCorpusDataset(output_dir, "train", data_config.shard_cache_size)
+            PreparedCorpusDataset(output_dir, "valid", data_config.shard_cache_size)
+            return {key: int(value) for key, value in existing_metadata["summary"].items()}
 
+    train_smiles = [record["canonical_smiles"] for record in records if record["split"] == "train"]
+    tokenizer = SmilesTokenizer.fit(
+        train_smiles,
+        backend=config.tokenizer.backend,
+        vocab_size=config.tokenizer.vocab_size,
+        min_frequency=config.tokenizer.min_frequency,
+    )
+
+    state_path = output_dir / "preparation_state.json"
+    raw_cache_path = output_dir / ".raw_descriptors.npy"
+    state = (
+        json.loads(state_path.read_text(encoding="utf-8"))
+        if state_path.is_file()
+        else {}
+    )
+    reuse_raw = (
+        state.get("preparation_signature") == preparation_signature
+        and state.get("phase") in {"descriptors", "shards"}
+        and raw_cache_path.is_file()
+    )
+    if reuse_raw:
+        raw_matrix = np.load(raw_cache_path, mmap_mode="r+")
+        if raw_matrix.shape != (len(records), len(raw_names)):
+            reuse_raw = False
+    if not reuse_raw:
+        raw_matrix = np.lib.format.open_memmap(
+            raw_cache_path,
+            mode="w+",
+            dtype=np.float64,
+            shape=(len(records), len(raw_names)),
+        )
+        for index, record in enumerate(records):
+            mol = Chem.MolFromSmiles(record["canonical_smiles"])
+            if mol is None:
+                raise RuntimeError("Canonical SMILES unexpectedly failed RDKit parsing")
+            raw_matrix[index] = calculate_descriptors(mol, raw_names)
+            if (index + 1) % 10000 == 0 or index + 1 == len(records):
+                print(
+                    json.dumps(
+                        {
+                            "event": "prepare_descriptors",
+                            "completed": index + 1,
+                            "total": len(records),
+                        },
+                        sort_keys=True,
+                    )
+                )
+        raw_matrix.flush()
+        _atomic_json(
+            state_path,
+            {
+                "format_version": 1,
+                "preparation_signature": preparation_signature,
+                "phase": "descriptors",
+            },
+        )
+    train_indices = np.asarray(
+        [index for index, record in enumerate(records) if record["split"] == "train"],
+        dtype=np.int64,
+    )
+    training_cache_path = output_dir / ".train_descriptors.npy"
+    training_matrix = np.lib.format.open_memmap(
+        training_cache_path,
+        mode="w+",
+        dtype=np.float64,
+        shape=(len(train_indices), len(raw_names)),
+    )
+    for start in range(0, len(train_indices), 65536):
+        selected_rows = train_indices[start : start + 65536]
+        training_matrix[start : start + len(selected_rows)] = raw_matrix[selected_rows]
+    training_matrix.flush()
+    schema = DescriptorSchema.fit(
+        training_matrix,
+        raw_names,
+        mode=config.descriptor.mode,
+        token_count=config.descriptor.token_count,
+        correlation_threshold=config.descriptor.correlation_threshold,
+    )
+    standardizer = DescriptorStandardizer.fit_columns(
+        training_matrix,
+        schema.retained_indices,
+        schema.selected_names,
+    )
+    tokenizer.save(output_dir / "tokenizer.json")
+    schema.save(output_dir / "descriptor_schema.json")
+    standardizer.save(output_dir / "descriptor_scaler.json")
+    _atomic_json(
+        state_path,
+        {
+            "format_version": 1,
+            "preparation_signature": preparation_signature,
+            "phase": "shards",
+        },
+    )
+    entries, lengths, unk_count = _write_shards(
+        records,
+        raw_matrix,
+        schema,
+        standardizer,
+        tokenizer,
+        config,
+        output_dir,
+        data_config.shard_size,
+        preparation_signature,
+    )
+    summary = {
+        "total": len(records),
+        "train": sum(record["split"] == "train" for record in records),
+        "valid": sum(record["split"] == "valid" for record in records),
+        **{
+            role: sum(record["role"] == role for record in records)
+            for role in ROLE_TO_ID
+        },
+        "augmented": len(augmented),
+        "descriptor_dim": schema.selected_dim,
+    }
     metadata = {
-        "format_version": 1,
+        "format_version": 2,
+        "preparation_signature": preparation_signature,
         "rdkit_version": rdBase.rdkitVersion,
         "atom_in_smiles_version": importlib.metadata.version("atomInSmiles"),
-        "descriptor_names": list(descriptor_names),
-        "descriptor_dim": len(descriptor_names),
-        "max_smiles_tokens": config.max_smiles_tokens,
-        "role_source_files": {
-            role: list(files) for role, files in ROLE_SOURCE_FILES.items()
+        "descriptor_raw_names": list(raw_names),
+        "descriptor_names": list(schema.selected_names),
+        "descriptor_dim": schema.selected_dim,
+        "descriptor_mode": schema.mode,
+        "descriptor_token_count": schema.token_count,
+        "tokenizer_backend": tokenizer.backend,
+        "tokenizer_backend_version": tokenizer.backend_version,
+        "tokenizer_budget": config.tokenizer.vocab_size,
+        "tokenizer_actual_size": len(tokenizer.tokens),
+        "max_smiles_tokens": data_config.max_smiles_tokens,
+        "tokenizer_statistics": {
+            "min_length": min(lengths),
+            "max_length": max(lengths),
+            "mean_length": float(np.mean(lengths)),
+            "p50_length": float(np.percentile(lengths, 50)),
+            "p90_length": float(np.percentile(lengths, 90)),
+            "p95_length": float(np.percentile(lengths, 95)),
+            "p99_length": float(np.percentile(lengths, 99)),
+            "unk_count": unk_count,
         },
-        "ignored_stage1_files": ["IL.csv"],
-        "seed": config.seed,
-        "valid_fraction": config.valid_fraction,
+        "fingerprint_kind": config.fingerprint.kind,
+        "role_source_files": ROLE_SOURCE_FILES,
+        "ignored_stage1_files": ["simulation_mol.csv", "solute.csv", "solvent.csv", "IL.csv"],
+        "augmentation": data_config.augmentation,
+        "augmentation_audit": augmentation_audit,
+        "source_hashes": source_hashes,
+        "seed": data_config.seed,
+        "valid_fraction": data_config.valid_fraction,
+        "shard_hashes": {
+            shard: _sha256(output_dir / shard)
+            for shard in sorted({entry["shard"] for entry in entries})
+        },
+        "summary": summary,
     }
-    (output_dir / "metadata.json").write_text(
-        json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    _atomic_json(
+        output_dir / "corpus_index.json",
+        {"format_version": 2, "entries": entries},
     )
-    torch.save({"metadata": metadata, "samples": samples}, output_dir / "corpus.pt")
 
-    with (output_dir / "manifest.csv").open("w", newline="", encoding="utf-8") as handle:
+    manifest_path = output_dir / "manifest.csv"
+    manifest_temporary = manifest_path.with_suffix(".csv.tmp")
+    with manifest_temporary.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
             handle,
             fieldnames=[
@@ -212,6 +622,8 @@ def prepare_corpus(config: DataConfig) -> dict[str, int]:
                 "canonical_smiles",
                 "split",
                 "sources",
+                "is_augmented",
+                "seed_smiles",
             ],
         )
         writer.writeheader()
@@ -223,45 +635,118 @@ def prepare_corpus(config: DataConfig) -> dict[str, int]:
                     "canonical_smiles": record["canonical_smiles"],
                     "split": record["split"],
                     "sources": ";".join(record["sources"]),
+                    "is_augmented": int(record["is_augmented"]),
+                    "seed_smiles": ";".join(record["seed_smiles"]),
                 }
             )
-
-    summary = {
-        "total": len(records),
-        "train": sum(record["split"] == "train" for record in records),
-        "valid": sum(record["split"] == "valid" for record in records),
-        **{
-            role: sum(record["role"] == role for record in records)
-            for role in ROLE_TO_ID
-        },
+    manifest_temporary.replace(manifest_path)
+    metadata["artifact_hashes"] = {
+        filename: _sha256(output_dir / filename)
+        for filename in (
+            "tokenizer.json",
+            "descriptor_schema.json",
+            "descriptor_scaler.json",
+            "corpus_index.json",
+            "manifest.csv",
+        )
     }
+    _atomic_json(output_dir / "metadata.json", metadata)
+
+    _atomic_json(
+        state_path,
+        {
+            "format_version": 1,
+            "preparation_signature": preparation_signature,
+            "phase": "complete",
+        },
+    )
+    raw_cache_path.unlink(missing_ok=True)
+    training_cache_path.unlink(missing_ok=True)
     return summary
 
 
 class PreparedCorpusDataset(Dataset):
-    def __init__(self, artifact_path: str | Path, split: str = "train") -> None:
+    def __init__(
+        self,
+        artifact_path: str | Path,
+        split: str = "train",
+        shard_cache_size: int = 4,
+    ) -> None:
         if split not in {"train", "valid", "all"}:
             raise ValueError("split must be train, valid, or all")
-        payload = torch.load(Path(artifact_path), map_location="cpu", weights_only=False)
-        self.metadata = payload["metadata"]
+        path = Path(artifact_path)
+        if path.is_file():
+            if path.name == "corpus.pt":
+                raise ValueError(
+                    "Legacy corpus.pt artifacts are unsupported; rerun ilume-prepare"
+                )
+            raise ValueError("PreparedCorpusDataset expects an artifact directory")
+        self.artifact_dir = path
+        self.metadata = json.loads((path / "metadata.json").read_text(encoding="utf-8"))
+        if self.metadata.get("format_version") != 2:
+            raise ValueError("Unsupported corpus artifact format; rerun ilume-prepare")
+        artifact_hashes = self.metadata.get("artifact_hashes")
+        if not isinstance(artifact_hashes, dict) or not artifact_hashes:
+            raise ValueError("Corpus artifact hashes are missing; rerun ilume-prepare")
+        for filename, expected_hash in artifact_hashes.items():
+            if _sha256(path / filename) != expected_hash:
+                raise ValueError(f"Artifact hash mismatch: {filename}")
+        if self.metadata.get("rdkit_version") != rdBase.rdkitVersion:
+            raise ValueError("RDKit version does not match the prepared corpus")
+        expected_tokenizer_version = tokenizer_backend_version(
+            self.metadata["tokenizer_backend"]
+        )
+        if self.metadata.get("tokenizer_backend_version") != expected_tokenizer_version:
+            raise ValueError("Tokenizer backend version does not match the corpus")
         current_names = rdkit_descriptor_names()
-        if tuple(self.metadata["descriptor_names"]) != current_names:
-            raise ValueError(
-                "Current RDKit descriptor names/order do not match the corpus artifact"
-            )
-        scaler_path = Path(artifact_path).parent / "descriptor_scaler.json"
-        DescriptorStandardizer.load(scaler_path, expected_names=current_names)
-        self.samples = [
-            sample
-            for sample in payload["samples"]
-            if split == "all" or sample["split"] == split
+        self.descriptor_schema = DescriptorSchema.load(
+            path / "descriptor_schema.json", expected_raw_names=current_names
+        )
+        DescriptorStandardizer.load(
+            path / "descriptor_scaler.json",
+            expected_names=self.descriptor_schema.selected_names,
+        )
+        payload = json.loads((path / "corpus_index.json").read_text(encoding="utf-8"))
+        if payload.get("format_version") != 2:
+            raise ValueError("Unsupported corpus index format")
+        self.entries = [
+            entry for entry in payload["entries"] if split == "all" or entry["split"] == split
         ]
+        self.role_ids = [int(entry["role_id"]) for entry in self.entries]
+        self.shard_cache_size = shard_cache_size
+        self._cache: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
+        self._verified_shards: set[str] = set()
 
     def __len__(self) -> int:
-        return len(self.samples)
+        return len(self.entries)
+
+    def _load_shard(self, relative_path: str) -> list[dict[str, Any]]:
+        if relative_path in self._cache:
+            samples = self._cache.pop(relative_path)
+            self._cache[relative_path] = samples
+            return samples
+        shard_path = self.artifact_dir / relative_path
+        if relative_path not in self._verified_shards:
+            expected_hash = self.metadata.get("shard_hashes", {}).get(relative_path)
+            if expected_hash is None or _sha256(shard_path) != expected_hash:
+                raise ValueError(f"Shard hash mismatch: {relative_path}")
+            self._verified_shards.add(relative_path)
+        payload = torch.load(
+            shard_path,
+            map_location="cpu",
+            weights_only=False,
+        )
+        if payload.get("format_version") != 2:
+            raise ValueError(f"Unsupported shard format: {relative_path}")
+        samples = payload["samples"]
+        self._cache[relative_path] = samples
+        while len(self._cache) > self.shard_cache_size:
+            self._cache.popitem(last=False)
+        return samples
 
     def __getitem__(self, index: int) -> dict[str, Any]:
-        return self.samples[index]
+        entry = self.entries[index]
+        return self._load_shard(entry["shard"])[int(entry["offset"])]
 
 
 def graph_record_from_sample(sample: dict[str, Any]) -> GraphRecord:

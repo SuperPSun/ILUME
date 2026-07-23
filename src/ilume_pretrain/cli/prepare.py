@@ -18,7 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     config = load_config(args.config)
-    summary = prepare_corpus(config.data)
+    summary = prepare_corpus(config)
     print(json.dumps(summary, sort_keys=True))
 
 

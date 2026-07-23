@@ -6,7 +6,13 @@ import pytest
 import torch
 from rdkit import Chem
 
-from ilume_pretrain.config import MaskingConfig, PretrainConfig
+from ilume_pretrain.config import (
+    DescriptorConfig,
+    FingerprintConfig,
+    MaskingConfig,
+    PretrainConfig,
+)
+from ilume_pretrain.fingerprints import calculate_fingerprints
 from ilume_pretrain.graph import featurize_mol
 from ilume_pretrain.tokenizer import AISVocabulary
 
@@ -21,10 +27,14 @@ def tiny_config() -> PretrainConfig:
             atom_ratio=0.5,
             bond_ratio=0.5,
             descriptor_ratio=0.5,
+            fingerprint_ratio=0.25,
             smiles_dropout=0.0,
             graph_dropout=0.0,
             descriptor_dropout=0.0,
+            fingerprint_dropout=0.0,
         ),
+        fingerprint=FingerprintConfig(kind="both"),
+        descriptor=DescriptorConfig(mode="full", token_count=8),
         model=replace(
             config.model,
             d_model=32,
@@ -66,6 +76,17 @@ def tiny_samples():
                 "bond_index": graph.bond_index,
                 "descriptors": values,
                 "descriptor_valid": valid,
+                "fingerprints": {
+                    name: torch.from_numpy(value)
+                    for name, value in calculate_fingerprints(
+                        Chem.MolFromSmiles(smiles),
+                        tiny_config_fingerprint(),
+                    ).items()
+                },
             }
         )
     return vocabulary, samples
+
+
+def tiny_config_fingerprint() -> FingerprintConfig:
+    return FingerprintConfig(kind="both")

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 
+from .descriptors import DescriptorSchema
+from .fingerprints import FingerprintBatch
 from .graph import ATOM_CARDINALITIES, BOND_CARDINALITIES, PackedGraph
 
 
@@ -19,12 +23,14 @@ class SmilesEncoder(nn.Module):
         num_layers: int,
         feedforward_dim: int,
         dropout: float,
+        gradient_checkpointing: bool = False,
     ) -> None:
         super().__init__()
         self.token_embedding = nn.Embedding(vocab_size, d_model, padding_idx=0)
         self.position_embedding = nn.Embedding(max_length, d_model)
         self.input_norm = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(dropout)
+        self.gradient_checkpointing = gradient_checkpointing
         layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=n_heads,
@@ -51,7 +57,19 @@ class SmilesEncoder(nn.Module):
             None, :, :
         ]
         hidden = self.dropout(self.input_norm(hidden))
-        return self.encoder(hidden, src_key_padding_mask=padding_mask)
+        if not (self.gradient_checkpointing and self.training):
+            return self.encoder(hidden, src_key_padding_mask=padding_mask)
+        for layer in self.encoder.layers:
+            hidden = checkpoint(
+                lambda value, current_layer=layer: current_layer(
+                    value, src_key_padding_mask=padding_mask
+                ),
+                hidden,
+                use_reentrant=False,
+            )
+        if self.encoder.norm is not None:
+            hidden = self.encoder.norm(hidden)
+        return hidden
 
 
 def _categorical_to_one_hot(
@@ -186,10 +204,10 @@ class ResidualMLPBlock(nn.Module):
         return values + self.layers(self.norm(values))
 
 
-class DescriptorEncoder(nn.Module):
+class _DescriptorGroupEncoder(nn.Module):
     def __init__(
         self,
-        descriptor_dim: int,
+        input_dim: int,
         hidden_dim: int,
         blocks: int,
         d_model: int,
@@ -197,7 +215,7 @@ class DescriptorEncoder(nn.Module):
     ) -> None:
         super().__init__()
         self.input_projection = nn.Sequential(
-            nn.Linear(descriptor_dim * 2, hidden_dim),
+            nn.Linear(input_dim * 2, hidden_dim),
             nn.GELU(),
             nn.LayerNorm(hidden_dim),
         )
@@ -219,3 +237,126 @@ class DescriptorEncoder(nn.Module):
         hidden = self.input_projection(inputs)
         hidden = self.residual_blocks(hidden)
         return self.bottleneck(hidden)
+
+
+class DescriptorEncoder(nn.Module):
+    def __init__(
+        self,
+        schema: DescriptorSchema,
+        hidden_dim: int,
+        blocks: int,
+        d_model: int,
+        dropout: float,
+    ) -> None:
+        super().__init__()
+        self.schema = schema
+        self.group_encoders = nn.ModuleList(
+            [
+                _DescriptorGroupEncoder(
+                    input_dim=len(indices),
+                    hidden_dim=hidden_dim,
+                    blocks=blocks,
+                    d_model=d_model,
+                    dropout=dropout,
+                )
+                if indices
+                else nn.Identity()
+                for indices in schema.group_indices
+            ]
+        )
+        self.empty_group_tokens = nn.Parameter(
+            torch.empty(len(schema.group_indices), d_model)
+        )
+        nn.init.normal_(self.empty_group_tokens, std=0.02)
+
+    def forward(
+        self,
+        values: torch.Tensor,
+        mask_indicator: torch.Tensor,
+    ) -> torch.Tensor:
+        tokens: list[torch.Tensor] = []
+        for group_index, (indices, encoder) in enumerate(
+            zip(self.schema.group_indices, self.group_encoders, strict=True)
+        ):
+            if not indices:
+                tokens.append(
+                    self.empty_group_tokens[group_index][None, :].expand(
+                        values.shape[0], -1
+                    )
+                )
+                continue
+            index = torch.tensor(indices, dtype=torch.long, device=values.device)
+            tokens.append(
+                encoder(
+                    values.index_select(1, index),
+                    mask_indicator.index_select(1, index),
+                )
+            )
+        return torch.stack(tokens, dim=1)
+
+
+class FingerprintEncoder(nn.Module):
+    def __init__(
+        self,
+        families: Sequence[str],
+        dimensions: dict[str, int],
+        chunk_size: int,
+        hidden_dim: int,
+        d_model: int,
+        dropout: float,
+    ) -> None:
+        super().__init__()
+        self.families = tuple(families)
+        self.dimensions = dict(dimensions)
+        self.chunk_size = chunk_size
+        self.chunk_encoder = nn.Sequential(
+            nn.Linear(chunk_size * 2, hidden_dim),
+            nn.GELU(),
+            nn.LayerNorm(hidden_dim),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, d_model),
+            nn.LayerNorm(d_model),
+        )
+        self.family_embedding = nn.Embedding(max(1, len(self.families)), d_model)
+        max_chunks = max(
+            (math.ceil(self.dimensions[name] / chunk_size) for name in self.families),
+            default=1,
+        )
+        self.chunk_embedding = nn.Embedding(max_chunks, d_model)
+
+    def forward(
+        self,
+        batch: FingerprintBatch,
+        indicators: dict[str, torch.Tensor],
+        reference: torch.Tensor,
+    ) -> tuple[torch.Tensor, dict[str, slice]]:
+        if not self.families:
+            return reference.new_empty((reference.shape[0], 0, reference.shape[-1])), {}
+        family_tokens: list[torch.Tensor] = []
+        family_slices: dict[str, slice] = {}
+        cursor = 0
+        for family_index, family in enumerate(self.families):
+            values = batch.values[family]
+            indicator = indicators[family]
+            chunk_count = math.ceil(values.shape[1] / self.chunk_size)
+            padded_size = chunk_count * self.chunk_size
+            pad = padded_size - values.shape[1]
+            masked = values.masked_fill(indicator, 0.0)
+            if pad:
+                masked = F.pad(masked, (0, pad))
+                indicator = F.pad(indicator, (0, pad), value=True)
+            chunks = masked.reshape(values.shape[0], chunk_count, self.chunk_size)
+            mask_chunks = indicator.reshape(values.shape[0], chunk_count, self.chunk_size)
+            encoded = self.chunk_encoder(
+                torch.cat([chunks, mask_chunks.float()], dim=-1)
+            )
+            chunk_ids = torch.arange(chunk_count, device=values.device)
+            encoded = (
+                encoded
+                + self.family_embedding.weight[family_index][None, None, :]
+                + self.chunk_embedding(chunk_ids)[None, :, :]
+            )
+            family_tokens.append(encoded)
+            family_slices[family] = slice(cursor, cursor + chunk_count)
+            cursor += chunk_count
+        return torch.cat(family_tokens, dim=1), family_slices
