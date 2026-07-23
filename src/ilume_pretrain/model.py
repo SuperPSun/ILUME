@@ -8,14 +8,18 @@ from torch import nn
 
 from .config import PretrainConfig
 from .data import MultimodalBatch
+from .descriptors import DescriptorSchema
 from .encoders import (
     DescriptorEncoder,
     DirectedMessagePassingEncoder,
+    FingerprintEncoder,
     SmilesEncoder,
 )
+from .fingerprints import fingerprint_families
 from .fusion import (
     FusionTransformer,
     gather_graph_tokens,
+    gather_group_tokens,
     gather_smiles,
 )
 from .graph import (
@@ -24,7 +28,7 @@ from .graph import (
     BOND_CARDINALITIES,
     BOND_FEATURE_NAMES,
 )
-from .tokenizer import AISVocabulary
+from .tokenizer import SmilesTokenizer
 
 
 @dataclass(frozen=True)
@@ -50,6 +54,26 @@ class TiedMLMHead(nn.Module):
         return F.linear(self.transform(hidden), self.embedding.weight, self.bias)
 
 
+class ReconstructionTrunk(nn.Module):
+    def __init__(self, d_model: int, dropout: float, kind: str) -> None:
+        super().__init__()
+        self.kind = kind
+        if kind == "mlp":
+            self.norm = nn.LayerNorm(d_model)
+            self.layers = nn.Sequential(
+                nn.Linear(d_model, d_model * 2),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(d_model * 2, d_model),
+                nn.Dropout(dropout),
+            )
+
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        if self.kind == "linear":
+            return hidden
+        return hidden + self.layers(self.norm(hidden))
+
+
 def _masked_multitask_cross_entropy(
     logits: dict[str, torch.Tensor],
     targets: torch.Tensor,
@@ -70,10 +94,14 @@ class MultimodalPretrainModel(nn.Module):
     def __init__(
         self,
         config: PretrainConfig,
-        vocabulary: AISVocabulary,
+        vocabulary: SmilesTokenizer,
+        descriptor_schema: DescriptorSchema | None = None,
     ) -> None:
         super().__init__()
         self.config = config
+        self.descriptor_schema = descriptor_schema or DescriptorSchema.full(
+            config.data.descriptor_dim, config.descriptor.token_count
+        )
         model_config = config.model
         self.smiles_encoder = SmilesEncoder(
             vocab_size=len(vocabulary.tokens),
@@ -83,6 +111,7 @@ class MultimodalPretrainModel(nn.Module):
             num_layers=model_config.smiles_layers,
             feedforward_dim=model_config.feedforward_dim,
             dropout=model_config.dropout,
+            gradient_checkpointing=model_config.gradient_checkpointing,
         )
         self.graph_encoder = DirectedMessagePassingEncoder(
             d_model=model_config.d_model,
@@ -90,9 +119,22 @@ class MultimodalPretrainModel(nn.Module):
             dropout=model_config.dropout,
         )
         self.descriptor_encoder = DescriptorEncoder(
-            descriptor_dim=config.data.descriptor_dim,
+            schema=self.descriptor_schema,
             hidden_dim=model_config.descriptor_hidden_dim,
             blocks=model_config.descriptor_blocks,
+            d_model=model_config.d_model,
+            dropout=model_config.dropout,
+        )
+        self.fingerprint_families = fingerprint_families(config.fingerprint.kind)
+        fingerprint_dimensions = {
+            "morgan": config.fingerprint.morgan_bits,
+            "maccs": config.fingerprint.maccs_bits,
+        }
+        self.fingerprint_encoder = FingerprintEncoder(
+            families=self.fingerprint_families,
+            dimensions=fingerprint_dimensions,
+            chunk_size=config.fingerprint.chunk_size,
+            hidden_dim=model_config.descriptor_hidden_dim,
             d_model=model_config.d_model,
             dropout=model_config.dropout,
         )
@@ -102,9 +144,17 @@ class MultimodalPretrainModel(nn.Module):
             num_layers=model_config.fusion_layers,
             feedforward_dim=model_config.feedforward_dim,
             dropout=model_config.dropout,
+            role_embedding=model_config.role_embedding,
+            gradient_checkpointing=model_config.gradient_checkpointing,
         )
         self.smiles_head = TiedMLMHead(
             model_config.d_model, self.smiles_encoder.token_embedding
+        )
+        self.atom_trunk = ReconstructionTrunk(
+            model_config.d_model, model_config.dropout, model_config.graph_head
+        )
+        self.bond_trunk = ReconstructionTrunk(
+            model_config.d_model, model_config.dropout, model_config.graph_head
         )
         self.atom_heads = nn.ModuleDict(
             {
@@ -122,14 +172,56 @@ class MultimodalPretrainModel(nn.Module):
                 )
             }
         )
-        self.descriptor_head = nn.Linear(
-            model_config.d_model, config.data.descriptor_dim
+        self.descriptor_heads = nn.ModuleList(
+            [
+                nn.Linear(model_config.d_model, len(indices))
+                if indices
+                else nn.Identity()
+                for indices in self.descriptor_schema.group_indices
+            ]
+        )
+        self.fingerprint_heads = nn.ModuleDict(
+            {
+                family: nn.Linear(model_config.d_model, config.fingerprint.chunk_size)
+                for family in self.fingerprint_families
+            }
         )
 
-    def forward(self, batch: MultimodalBatch) -> PretrainOutput:
-        smiles_tokens = self.smiles_encoder(
-            batch.token_ids, batch.token_padding_mask
+    def _descriptor_logits(self, hidden: torch.Tensor) -> torch.Tensor:
+        result = hidden.new_zeros(
+            (hidden.shape[0], self.descriptor_schema.selected_dim)
         )
+        for group_index, (indices, head) in enumerate(
+            zip(
+                self.descriptor_schema.group_indices,
+                self.descriptor_heads,
+                strict=True,
+            )
+        ):
+            if not indices:
+                continue
+            logits = head(hidden[:, group_index])
+            index = torch.tensor(indices, dtype=torch.long, device=hidden.device)
+            result[:, index] = logits.to(result.dtype)
+        return result
+
+    def _fingerprint_logits(
+        self,
+        hidden: torch.Tensor,
+        family_slices: dict[str, slice],
+    ) -> dict[str, torch.Tensor]:
+        result: dict[str, torch.Tensor] = {}
+        for family in self.fingerprint_families:
+            chunk_hidden = hidden[:, family_slices[family]]
+            chunk_logits = self.fingerprint_heads[family](chunk_hidden)
+            dimension = self.config.fingerprint.morgan_bits if family == "morgan" else self.config.fingerprint.maccs_bits
+            result[family] = chunk_logits.flatten(1)[:, :dimension]
+        return result
+
+    def forward(self, batch: MultimodalBatch) -> PretrainOutput:
+        if batch.masks is None:
+            raise ValueError("MultimodalPretrainModel requires a dynamically masked batch")
+        smiles_tokens = self.smiles_encoder(batch.token_ids, batch.token_padding_mask)
         atom_tokens, bond_tokens = self.graph_encoder(
             batch.graphs,
             batch.masks.atom_mask,
@@ -138,33 +230,47 @@ class MultimodalPretrainModel(nn.Module):
         descriptor_tokens = self.descriptor_encoder(
             batch.descriptors, batch.masks.descriptor_indicator
         )
+        fingerprint_tokens, family_slices = self.fingerprint_encoder(
+            batch.fingerprints,
+            batch.masks.fingerprint_indicator,
+            descriptor_tokens,
+        )
         fused, layout = self.fusion(
             smiles_tokens,
             batch.token_padding_mask,
             atom_tokens,
             bond_tokens,
             descriptor_tokens,
+            fingerprint_tokens,
             batch.graphs,
+            batch.roles,
         )
 
         fused_smiles = gather_smiles(fused, layout)
-        fused_atoms = gather_graph_tokens(
-            fused,
-            layout.atom_indices,
-            batch.graphs.atom_batch,
+        fused_atoms = self.atom_trunk(
+            gather_graph_tokens(
+                fused, layout.atom_indices, batch.graphs.atom_batch
+            )
         )
-        fused_bonds = gather_graph_tokens(
-            fused,
-            layout.bond_indices,
-            batch.graphs.bond_batch,
+        fused_bonds = self.bond_trunk(
+            gather_graph_tokens(
+                fused, layout.bond_indices, batch.graphs.bond_batch
+            )
         )
-        batch_indices = torch.arange(fused.shape[0], device=fused.device)
-        fused_descriptors = fused[batch_indices, layout.descriptor_indices]
+        fused_descriptors = gather_group_tokens(fused, layout.descriptor_indices)
+        fused_fingerprints = gather_group_tokens(fused, layout.fingerprint_indices)
 
         smiles_logits = self.smiles_head(fused_smiles)
-        atom_logits = {name: head(fused_atoms) for name, head in self.atom_heads.items()}
-        bond_logits = {name: head(fused_bonds) for name, head in self.bond_heads.items()}
-        descriptor_logits = self.descriptor_head(fused_descriptors)
+        atom_logits = {
+            name: head(fused_atoms) for name, head in self.atom_heads.items()
+        }
+        bond_logits = {
+            name: head(fused_bonds) for name, head in self.bond_heads.items()
+        }
+        descriptor_logits = self._descriptor_logits(fused_descriptors)
+        fingerprint_logits = self._fingerprint_logits(
+            fused_fingerprints, family_slices
+        )
 
         if bool((batch.masks.smiles_labels != -100).any()):
             smiles_loss = F.cross_entropy(
@@ -196,11 +302,30 @@ class MultimodalPretrainModel(nn.Module):
         else:
             descriptor_loss = descriptor_logits.sum() * 0.0
 
+        fingerprint_losses: list[torch.Tensor] = []
+        for family, logits in fingerprint_logits.items():
+            loss_mask = batch.masks.fingerprint_loss_mask[family]
+            if bool(loss_mask.any()):
+                fingerprint_losses.append(
+                    F.binary_cross_entropy_with_logits(
+                        logits[loss_mask],
+                        batch.fingerprints.values[family][loss_mask],
+                    )
+                )
+            else:
+                fingerprint_losses.append(logits.sum() * 0.0)
+        fingerprint_loss = (
+            torch.stack(fingerprint_losses).mean()
+            if fingerprint_losses
+            else fused.sum() * 0.0
+        )
+
         losses = {
             "smiles": smiles_loss,
             "descriptor": descriptor_loss,
             "atom": atom_loss,
             "bond": bond_loss,
+            "fingerprint": fingerprint_loss,
         }
         weights = self.config.loss
         total = (
@@ -208,6 +333,7 @@ class MultimodalPretrainModel(nn.Module):
             + weights.lambda_descriptor * descriptor_loss
             + weights.lambda_atom * atom_loss
             + weights.lambda_bond * bond_loss
+            + weights.lambda_fingerprint * fingerprint_loss
         )
         return PretrainOutput(
             loss=total,
@@ -217,6 +343,7 @@ class MultimodalPretrainModel(nn.Module):
                 "atom": atom_logits,
                 "bond": bond_logits,
                 "descriptor": descriptor_logits,
+                "fingerprint": fingerprint_logits,
             },
             fused_cls=fused[:, 0],
         )

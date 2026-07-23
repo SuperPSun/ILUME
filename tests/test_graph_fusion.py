@@ -52,7 +52,8 @@ def test_fusion_layout_tracks_variable_smiles_atoms_bonds_and_descriptor():
     )
     atoms = torch.randn(graphs.atom_categorical.shape[0], d_model)
     bonds = torch.randn(graphs.bond_categorical.shape[0], d_model)
-    descriptors = torch.randn(2, d_model)
+    descriptors = torch.randn(2, 8, d_model)
+    fingerprints = torch.randn(2, 18, d_model)
     fusion = FusionTransformer(
         d_model=d_model,
         n_heads=2,
@@ -61,12 +62,22 @@ def test_fusion_layout_tracks_variable_smiles_atoms_bonds_and_descriptor():
         dropout=0.0,
     )
     fused, layout = fusion(
-        smiles, smiles_padding, atoms, bonds, descriptors, graphs
+        smiles,
+        smiles_padding,
+        atoms,
+        bonds,
+        descriptors,
+        fingerprints,
+        graphs,
+        torch.tensor([0, 2]),
     )
 
-    assert layout.sequence_lengths.tolist() == [6, 12]
+    assert layout.sequence_lengths.tolist() == [31, 37]
     assert layout.smiles_indices[0].tolist() == [1, 2, 3, -1, -1]
     assert layout.atom_indices.tolist() == [4, 6, 7, 8]
     assert layout.bond_indices.tolist() == [9, 10]
-    assert layout.descriptor_indices.tolist() == [5, 11]
-    assert fused.shape == (2, 12, d_model)
+    assert layout.descriptor_indices[0].tolist() == list(range(5, 13))
+    assert layout.descriptor_indices[1].tolist() == list(range(11, 19))
+    assert layout.fingerprint_indices[0].tolist() == list(range(13, 31))
+    assert layout.fingerprint_indices[1].tolist() == list(range(19, 37))
+    assert fused.shape == (2, 37, d_model)

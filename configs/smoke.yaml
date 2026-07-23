@@ -6,15 +6,42 @@ data:
   max_smiles_tokens: 384
   descriptor_dim: 217
   max_samples_per_role: 20
+  shard_size: 16
+  shard_cache_size: 4
+  augmentation: {cation: 0, anion: 0, neutral: 0}
+
+tokenizer:
+  backend: ais
+  vocab_size: 2048
+  min_frequency: 2
+
+descriptor:
+  mode: clean
+  token_count: 8
+  correlation_threshold: 0.98
+
+fingerprint:
+  kind: both
+  morgan_radius: 2
+  morgan_bits: 2048
+  maccs_bits: 167
+  chunk_size: 128
+
+sampling:
+  role_probabilities: [0.45, 0.45, 0.10]
+  require_full_coverage: true
 
 masking:
   smiles_ratio: 0.15
   atom_ratio: 0.15
   bond_ratio: 0.15
   descriptor_ratio: 0.15
+  fingerprint_ratio: 0.15
   smiles_dropout: 0.10
   graph_dropout: 0.10
   descriptor_dropout: 0.10
+  fingerprint_dropout: 0.10
+  dropout_schedule: curriculum
   asymmetric_enabled: false
   asymmetric_probability: 0.25
   asymmetric_ratio: 0.50
@@ -29,12 +56,16 @@ model:
   fusion_layers: 2
   feedforward_dim: 512
   dropout: 0.10
+  role_embedding: true
+  graph_head: mlp
+  gradient_checkpointing: false
 
 loss:
   lambda_smiles: 1.0
   lambda_descriptor: 1.0
   lambda_atom: 1.0
   lambda_bond: 1.0
+  lambda_fingerprint: 1.0
 
 smoke:
   batch_size: 10

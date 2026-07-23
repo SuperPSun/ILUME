@@ -4,9 +4,9 @@ import numpy as np
 import pytest
 from rdkit import Chem
 
-from ilume_pretrain.descriptors import DescriptorStandardizer
+from ilume_pretrain.descriptors import DescriptorSchema, DescriptorStandardizer
 from ilume_pretrain.masking import mask_smiles_tokens
-from ilume_pretrain.tokenizer import AISVocabulary, ais_tokenize
+from ilume_pretrain.tokenizer import AISVocabulary, SmilesTokenizer, ais_tokenize
 
 
 def test_ais_round_trip_and_vocabulary_save_load(tmp_path):
@@ -85,3 +85,60 @@ def test_descriptor_standardizer_is_finite_aware_and_round_trips(tmp_path):
     transformed, valid = no_training_value.transform(np.asarray([[2.0, 8.0]]))
     assert transformed[0, 1] == 0.0
     assert not valid[0, 1]
+
+
+def test_descriptor_schema_clean_pruned_groups_and_save_load(tmp_path):
+    values = np.asarray(
+        [
+            [1.0, 2.0, 1.0, np.nan, 4.0, 1.01],
+            [2.0, 3.0, 2.0, np.nan, 4.0, 2.01],
+            [3.0, 4.0, 3.0, np.nan, 4.0, 3.01],
+            [4.0, 5.0, 4.0, np.nan, 4.0, 4.01],
+        ]
+    )
+    names = ("MolWt", "Chi0", "duplicate", "missing", "constant", "Chi1")
+    clean = DescriptorSchema.fit(values, names, "clean", 8)
+    assert clean.selected_names == ("MolWt", "Chi0", "Chi1")
+    assert clean.removal_reasons["missing"] == "all_non_finite"
+    assert clean.removal_reasons["constant"] == "zero_variance"
+    assert clean.removal_reasons["duplicate"] == "duplicate_of:MolWt"
+    assert len(clean.group_indices) == 8
+    assert clean.semantic_mapping_version == "rdkit-217-v1"
+    assert len(clean.raw_semantic_groups) == len(names)
+
+    pruned = DescriptorSchema.fit(values, names, "pruned", 12, 0.98)
+    assert pruned.selected_dim == 1
+    assert len(pruned.correlation_clusters) == 1
+    assert pruned.cluster_representatives == ("MolWt",)
+    path = tmp_path / "schema.json"
+    pruned.save(path)
+    loaded = DescriptorSchema.load(path, expected_raw_names=names)
+    assert loaded == pruned
+    with pytest.raises(ValueError, match="names/order"):
+        DescriptorSchema.load(path, expected_raw_names=names[::-1])
+
+
+@pytest.mark.parametrize("backend", ["bpe", "spe", "ape"])
+def test_data_driven_tokenizers_share_budget_and_round_trip_artifact(
+    backend, tmp_path
+):
+    if backend == "bpe":
+        pytest.importorskip("tokenizers")
+    elif backend == "spe":
+        pytest.importorskip("SmilesPE")
+    else:
+        pytest.importorskip("apetokenizer")
+    corpus = ["CCO", "CCN", "CCC", "C=O"]
+    tokenizer = SmilesTokenizer.fit(
+        corpus, backend=backend, vocab_size=32, min_frequency=2
+    )
+    encoded = tokenizer.encode("CCO", max_length=32)
+    assert encoded[0] == tokenizer.cls_id
+    assert encoded[-1] == tokenizer.sep_id
+    assert len(tokenizer.tokens) <= 32
+    path = tmp_path / f"{backend}.json"
+    tokenizer.save(path)
+    loaded = SmilesTokenizer.load(path)
+    assert loaded.encode("CCO", max_length=32) == encoded
+    assert loaded.backend == backend
+    assert loaded.backend_version == tokenizer.backend_version
