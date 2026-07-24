@@ -44,25 +44,28 @@ data:
   augmentation: {cation: 1, anion: 1, neutral: 1}
 ```
 
+入选实体在任何批量描述符计算前执行统一 QC：含 BCUT2D 不支持键型、Ipc 非有限或平方会超出 float64、以及当前 tokenizer 超过 `max_smiles_tokens` 的实体直接排除。原始和扩增实体使用相同规则；扩增不回填，实际倍率写入 metadata。孤立氢的 RDKit 警告保留，不作为排除条件。
+
 ## 准备工件
 
 ```bash
 ilume-prepare --config configs/smoke.yaml
 ```
 
-artifact format v2 不再生成单个 `corpus.pt`，而是产生：
+artifact format v3 不再生成单个 `corpus.pt`，而是产生：
 
 - `shards/{split}_{role}_*.pt`：按 split/role 写入，默认约 8192 个样本一个 shard；
 - `corpus_index.json`：sample 到 shard/local position 的索引；
 - `manifest.csv`：role、split、canonical SMILES、来源与扩增谱系；
+- `excluded_entities.csv`：排除原因、bond type、Ipc、token 数和来源审计；
 - `tokenizer.json`：只由入选训练集拟合的 tokenizer；
 - `descriptor_schema.json`：描述符筛选、删除原因、相关簇和 group 映射；
 - `descriptor_scaler.json`：只由入选训练集拟合的有限值均值与标准差；
 - `metadata.json`：格式版本、源文件哈希、数据谱系、版本和统计信息。
 
-`PreparedCorpusDataset` 用小型 LRU cache 延迟加载 shard。旧 `corpus.pt` 会被明确拒绝，需重新执行 `ilume-prepare`。
+`PreparedCorpusDataset` 用小型 LRU cache 延迟加载 shard。旧 v2 artifact 和 `corpus.pt` 会被明确拒绝，需重新执行 `ilume-prepare`。
 
-准备过程先用磁盘 memmap 分块拟合 descriptor schema/scaler，再按 split/role shard 逐块构图和计算指纹，不把全语料 graph 同时留在内存。`preparation_state.json` 和 preparation signature 支持中断后复用描述符第一遍及已原子写完的 shard；完整成功后临时 memmap 会删除。每个 shard 的 SHA-256 在首次加载时校验。
+准备过程先完成 QC 并用最终保留训练集拟合 tokenizer，再用磁盘 memmap 分块拟合 descriptor schema/scaler，最后按 split/role shard 逐块构图和计算指纹，不把全语料 graph 同时留在内存。`preparation_state.json` 和 preparation signature 支持中断后复用描述符第一遍及已原子写完的 shard；完整成功后临时 memmap 会删除。每个 shard 的 SHA-256 在首次加载时校验。
 
 ## 描述符与指纹
 
@@ -78,7 +81,7 @@ artifact format v2 不再生成单个 `corpus.pt`，而是产生：
 
 ## tokenizer 对照
 
-统一 `SmilesTokenizer` 接口支持 `ais | ape | bpe | spe`，都只在相同训练 SMILES 上拟合，并共享特殊 token、词表预算和最大长度规则。默认预算为 2048、最低频率为 2、最大长度为 384；超过上限会报错，不做静默截断。metadata 记录长度分布、UNK 数、预算/实际词表和后端版本。
+统一 `SmilesTokenizer` 接口支持 `ais | ape | bpe | spe`。默认预算为 2048、最低频率为 2、最大长度为 256（包含 `[CLS]` 和 `[SEP]`）。准备阶段排除超长实体并重新拟合 tokenizer，直到训练集合稳定；直接调用 `encode()` 时仍会对超限输入报错，绝不静默截断。metadata 记录过滤、长度分布、UNK 数、预算/实际词表和后端版本。
 
 ## masking 与模型
 

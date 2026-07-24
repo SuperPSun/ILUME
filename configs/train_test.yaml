@@ -3,7 +3,7 @@ data:
   artifacts_dir: artifacts/smoke
   valid_fraction: 0.05
   seed: 42
-  max_smiles_tokens: 384
+  max_smiles_tokens: 256
   descriptor_dim: 217
   max_samples_per_role: 20
   shard_size: 16

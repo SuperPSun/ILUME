@@ -68,7 +68,7 @@ def tiny_samples():
                 "sample_id": f"sample_{index}",
                 "role_id": index,
                 "token_ids": torch.tensor(
-                    vocabulary.encode(smiles, max_length=384), dtype=torch.long
+                    vocabulary.encode(smiles, max_length=256), dtype=torch.long
                 ),
                 "atom_categorical": graph.atom_categorical,
                 "atom_continuous": graph.atom_continuous,

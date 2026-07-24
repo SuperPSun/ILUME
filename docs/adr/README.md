@@ -6,3 +6,4 @@
 - [ADR-0002：描述符 schema 与分组 token](0002-descriptor-schema-and-tokens.md)
 - [ADR-0003：SMILES tokenizer 后端](0003-smiles-tokenizers.md)
 - [ADR-0004：指纹、role embedding 与单卡训练器](0004-fourth-modality-and-training.md)
+- [ADR-0005：准备阶段直接排除异常实体](0005-exclude-invalid-pretraining-entities.md)

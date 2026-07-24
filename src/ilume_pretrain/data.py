@@ -7,7 +7,7 @@ import json
 import math
 import random
 import re
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,6 +15,7 @@ from typing import Any
 import numpy as np
 import torch
 from rdkit import Chem, rdBase
+from rdkit.Chem import Descriptors
 from torch.utils.data import Dataset
 
 from .config import DataConfig, PretrainConfig
@@ -35,6 +36,23 @@ ROLE_SOURCE_FILES = {
     "anion": "anion.csv",
     "neutral": "molecule.csv",
 }
+CORPUS_FORMAT_VERSION = 3
+IPC_SQUARE_OVERFLOW_LIMIT = float(np.sqrt(np.finfo(np.float64).max))
+BCUT_SUPPORTED_BOND_TYPES = {
+    Chem.BondType.SINGLE,
+    Chem.BondType.DOUBLE,
+    Chem.BondType.TRIPLE,
+    Chem.BondType.AROMATIC,
+}
+
+
+@dataclass
+class EntityQC:
+    record: dict[str, Any]
+    reasons: list[str]
+    unsupported_bond_types: tuple[str, ...]
+    ipc: float
+    token_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -171,6 +189,7 @@ def _load_augmentation_records(
         }
         stats: dict[str, Any] = {
             "requested_multiplier": requested,
+            "original_train_count": len(original_train),
             "available": 0,
             "excluded_valid_seed": 0,
             "excluded_overlap": 0,
@@ -178,6 +197,9 @@ def _load_augmentation_records(
             "eligible": 0,
             "selected": 0,
             "actual_multiplier": 0.0,
+            "excluded_qc": 0,
+            "selected_after_qc": 0,
+            "actual_multiplier_after_qc": 0.0,
         }
         if requested == 0 or requested == 0.0:
             audit[role] = stats
@@ -244,6 +266,201 @@ def _assign_sample_ids(records: list[dict[str, Any]]) -> None:
         record["sample_id"] = f"{role}_{counters[role]:08d}"
 
 
+def _calculate_ipc(mol: Chem.Mol) -> float:
+    return float(Descriptors.Ipc(mol))
+
+
+def _inspect_entity_qc(record: dict[str, Any]) -> EntityQC:
+    mol = Chem.MolFromSmiles(record["canonical_smiles"])
+    if mol is None:
+        raise RuntimeError("Canonical SMILES unexpectedly failed RDKit parsing")
+    unsupported = tuple(
+        sorted(
+            {
+                str(bond.GetBondType())
+                for bond in mol.GetBonds()
+                if bond.GetBondType() not in BCUT_SUPPORTED_BOND_TYPES
+            }
+        )
+    )
+    reasons: list[str] = []
+    if unsupported:
+        reasons.append("unsupported_bcut_bond_type")
+    try:
+        ipc = _calculate_ipc(mol)
+    except Exception:
+        ipc = float("nan")
+    if not np.isfinite(ipc):
+        reasons.append("ipc_nonfinite")
+    elif abs(ipc) > IPC_SQUARE_OVERFLOW_LIMIT:
+        reasons.append("ipc_square_overflow")
+    return EntityQC(record, reasons, unsupported, ipc)
+
+
+def _validate_qc_role_splits(entities: list[EntityQC]) -> None:
+    missing = [
+        f"{role}/{split}"
+        for role in ROLE_TO_ID
+        for split in ("train", "valid")
+        if not any(
+            not entity.reasons
+            and entity.record["role"] == role
+            and entity.record["split"] == split
+            for entity in entities
+        )
+    ]
+    if missing:
+        raise ValueError(
+            "Quality control removed every entity from: " + ", ".join(missing)
+        )
+
+
+def _fit_tokenizer_and_filter_lengths(
+    entities: list[EntityQC], config: PretrainConfig
+) -> tuple[SmilesTokenizer, list[EntityQC]]:
+    while True:
+        _validate_qc_role_splits(entities)
+        retained = [entity for entity in entities if not entity.reasons]
+        tokenizer = SmilesTokenizer.fit(
+            [
+                entity.record["canonical_smiles"]
+                for entity in retained
+                if entity.record["split"] == "train"
+            ],
+            backend=config.tokenizer.backend,
+            vocab_size=config.tokenizer.vocab_size,
+            min_frequency=config.tokenizer.min_frequency,
+        )
+        newly_excluded = 0
+        for entity in retained:
+            entity.token_count = tokenizer.token_count(
+                entity.record["canonical_smiles"]
+            )
+            if entity.token_count > config.data.max_smiles_tokens:
+                entity.reasons.append("smiles_overlength")
+                newly_excluded += 1
+        if newly_excluded == 0:
+            break
+
+    for entity in entities:
+        entity.token_count = tokenizer.token_count(entity.record["canonical_smiles"])
+        if (
+            entity.token_count > config.data.max_smiles_tokens
+            and "smiles_overlength" not in entity.reasons
+        ):
+            entity.reasons.append("smiles_overlength")
+    _validate_qc_role_splits(entities)
+    return tokenizer, [entity for entity in entities if not entity.reasons]
+
+
+def _axis_counts(
+    values: list[str], denominator: int
+) -> dict[str, dict[str, float | int]]:
+    return {
+        value: {
+            "count": count,
+            "percent_of_pre_filter": 100.0 * count / denominator,
+        }
+        for value, count in sorted(Counter(values).items())
+    }
+
+
+def _quality_control_summary(
+    entities: list[EntityQC], tokenizer: SmilesTokenizer, max_smiles_tokens: int
+) -> dict[str, Any]:
+    excluded = [entity for entity in entities if entity.reasons]
+    return {
+        "pre_filter_total": len(entities),
+        "post_filter_total": len(entities) - len(excluded),
+        "thresholds": {
+            "bcut_supported_bond_types": [
+                "SINGLE",
+                "DOUBLE",
+                "TRIPLE",
+                "AROMATIC",
+            ],
+            "ipc_square_overflow_abs": IPC_SQUARE_OVERFLOW_LIMIT,
+            "tokenizer_backend": tokenizer.backend,
+            "max_smiles_tokens": max_smiles_tokens,
+        },
+        "excluded": {
+            "total": len(excluded),
+            "percent_of_pre_filter": 100.0 * len(excluded) / len(entities),
+            "by_role": _axis_counts(
+                [entity.record["role"] for entity in excluded], len(entities)
+            ),
+            "by_split": _axis_counts(
+                [entity.record["split"] for entity in excluded], len(entities)
+            ),
+            "by_source": _axis_counts(
+                [
+                    source
+                    for entity in excluded
+                    for source in entity.record["sources"]
+                ],
+                len(entities),
+            ),
+            "by_reason": _axis_counts(
+                [
+                    reason
+                    for entity in excluded
+                    for reason in entity.reasons
+                ],
+                len(entities),
+            ),
+        },
+    }
+
+
+def _write_excluded_entities(
+    path: Path,
+    entities: list[EntityQC],
+    tokenizer: SmilesTokenizer,
+    max_smiles_tokens: int,
+) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "canonical_smiles",
+                "role",
+                "split",
+                "is_augmented",
+                "sources",
+                "exclusion_reasons",
+                "unsupported_bond_types",
+                "ipc",
+                "tokenizer_backend",
+                "token_count",
+                "max_smiles_tokens",
+            ],
+        )
+        writer.writeheader()
+        for entity in entities:
+            if not entity.reasons:
+                continue
+            record = entity.record
+            writer.writerow(
+                {
+                    "canonical_smiles": record["canonical_smiles"],
+                    "role": record["role"],
+                    "split": record["split"],
+                    "is_augmented": int(record["is_augmented"]),
+                    "sources": ";".join(record["sources"]),
+                    "exclusion_reasons": ";".join(entity.reasons),
+                    "unsupported_bond_types": ";".join(
+                        entity.unsupported_bond_types
+                    ),
+                    "ipc": format(entity.ipc, ".17g"),
+                    "tokenizer_backend": tokenizer.backend,
+                    "token_count": entity.token_count,
+                    "max_smiles_tokens": max_smiles_tokens,
+                }
+            )
+    temporary.replace(path)
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -276,6 +493,16 @@ def _build_sample(
     )
     selected = schema.select(raw_descriptors[None, :])
     standardized, descriptor_valid = standardizer.transform(selected)
+    invalid = descriptor_valid & ~np.isfinite(standardized)
+    if invalid.any():
+        names = [
+            schema.selected_names[index]
+            for index in np.flatnonzero(invalid[0]).tolist()
+        ]
+        raise ValueError(
+            f"Non-finite standardized descriptors for {record['sample_id']}: "
+            + ", ".join(names)
+        )
     graph = featurize_mol(mol)
     return {
         **record,
@@ -331,7 +558,7 @@ def _write_shards(
                     sample["sample_id"] for sample in existing.get("samples", [])
                 ]
                 if (
-                    existing.get("format_version") == 2
+                    existing.get("format_version") == CORPUS_FORMAT_VERSION
                     and existing.get("preparation_signature")
                     == preparation_signature
                     and existing_ids == expected_ids
@@ -353,7 +580,7 @@ def _write_shards(
                 temporary = path.with_suffix(".pt.tmp")
                 torch.save(
                     {
-                        "format_version": 2,
+                        "format_version": CORPUS_FORMAT_VERSION,
                         "preparation_signature": preparation_signature,
                         "samples": samples,
                     },
@@ -400,8 +627,8 @@ def _preparation_signature(
 ) -> str:
     config_payload = config.to_dict()
     payload = {
-        "signature_version": 2,
-        "artifact_format_version": 2,
+        "signature_version": 3,
+        "artifact_format_version": CORPUS_FORMAT_VERSION,
         "rdkit_version": rdBase.rdkitVersion,
         "data": config_payload["data"],
         "tokenizer": config_payload["tokenizer"],
@@ -433,8 +660,39 @@ def prepare_corpus(config: PretrainConfig | DataConfig) -> dict[str, int]:
         _load_original_smiles(data_config.stage1_dir), data_config
     )
     augmented, augmentation_audit = _load_augmentation_records(originals, data_config)
-    records = [*originals, *augmented]
+    selected_records = [*originals, *augmented]
+    quality_entities = [_inspect_entity_qc(record) for record in selected_records]
+    tokenizer, retained_entities = _fit_tokenizer_and_filter_lengths(
+        quality_entities, config
+    )
+    records = [entity.record for entity in retained_entities]
+    excluded_entities = [entity for entity in quality_entities if entity.reasons]
     _assign_sample_ids(records)
+    quality_control = _quality_control_summary(
+        quality_entities, tokenizer, data_config.max_smiles_tokens
+    )
+    for role, stats in augmentation_audit.items():
+        retained_count = sum(
+            record["role"] == role and record["is_augmented"]
+            for record in records
+        )
+        stats["excluded_qc"] = int(stats["selected"]) - retained_count
+        stats["selected_after_qc"] = retained_count
+        original_train_count = int(stats["original_train_count"])
+        stats["actual_multiplier_after_qc"] = (
+            retained_count / original_train_count
+        )
+    print(
+        json.dumps(
+            {
+                "event": "prepare_quality_control",
+                "selected": len(selected_records),
+                "retained": len(records),
+                "excluded": len(excluded_entities),
+            },
+            sort_keys=True,
+        )
+    )
     source_paths = [
         data_config.stage1_dir / filename for filename in ROLE_SOURCE_FILES.values()
     ]
@@ -451,12 +709,11 @@ def prepare_corpus(config: PretrainConfig | DataConfig) -> dict[str, int]:
             PreparedCorpusDataset(output_dir, "valid", data_config.shard_cache_size)
             return {key: int(value) for key, value in existing_metadata["summary"].items()}
 
-    train_smiles = [record["canonical_smiles"] for record in records if record["split"] == "train"]
-    tokenizer = SmilesTokenizer.fit(
-        train_smiles,
-        backend=config.tokenizer.backend,
-        vocab_size=config.tokenizer.vocab_size,
-        min_frequency=config.tokenizer.min_frequency,
+    _write_excluded_entities(
+        output_dir / "excluded_entities.csv",
+        quality_entities,
+        tokenizer,
+        data_config.max_smiles_tokens,
     )
 
     state_path = output_dir / "preparation_state.json"
@@ -534,6 +791,21 @@ def prepare_corpus(config: PretrainConfig | DataConfig) -> dict[str, int]:
         schema.retained_indices,
         schema.selected_names,
     )
+    fitted = standardizer.finite_counts > 0
+    invalid_statistics = fitted & (
+        ~np.isfinite(standardizer.means)
+        | ~np.isfinite(standardizer.scales)
+        | (standardizer.scales <= 0.0)
+    )
+    if invalid_statistics.any():
+        names = [
+            standardizer.names[index]
+            for index in np.flatnonzero(invalid_statistics).tolist()
+        ]
+        raise ValueError(
+            "Non-finite descriptor standardization statistics: "
+            + ", ".join(names)
+        )
     tokenizer.save(output_dir / "tokenizer.json")
     schema.save(output_dir / "descriptor_schema.json")
     standardizer.save(output_dir / "descriptor_scaler.json")
@@ -564,11 +836,12 @@ def prepare_corpus(config: PretrainConfig | DataConfig) -> dict[str, int]:
             role: sum(record["role"] == role for record in records)
             for role in ROLE_TO_ID
         },
-        "augmented": len(augmented),
+        "augmented": sum(record["is_augmented"] for record in records),
+        "excluded_entities": len(excluded_entities),
         "descriptor_dim": schema.selected_dim,
     }
     metadata = {
-        "format_version": 2,
+        "format_version": CORPUS_FORMAT_VERSION,
         "preparation_signature": preparation_signature,
         "rdkit_version": rdBase.rdkitVersion,
         "atom_in_smiles_version": importlib.metadata.version("atomInSmiles"),
@@ -597,6 +870,7 @@ def prepare_corpus(config: PretrainConfig | DataConfig) -> dict[str, int]:
         "ignored_stage1_files": ["simulation_mol.csv", "solute.csv", "solvent.csv", "IL.csv"],
         "augmentation": data_config.augmentation,
         "augmentation_audit": augmentation_audit,
+        "quality_control": quality_control,
         "source_hashes": source_hashes,
         "seed": data_config.seed,
         "valid_fraction": data_config.valid_fraction,
@@ -608,7 +882,7 @@ def prepare_corpus(config: PretrainConfig | DataConfig) -> dict[str, int]:
     }
     _atomic_json(
         output_dir / "corpus_index.json",
-        {"format_version": 2, "entries": entries},
+        {"format_version": CORPUS_FORMAT_VERSION, "entries": entries},
     )
 
     manifest_path = output_dir / "manifest.csv"
@@ -648,6 +922,7 @@ def prepare_corpus(config: PretrainConfig | DataConfig) -> dict[str, int]:
             "descriptor_scaler.json",
             "corpus_index.json",
             "manifest.csv",
+            "excluded_entities.csv",
         )
     }
     _atomic_json(output_dir / "metadata.json", metadata)
@@ -683,7 +958,7 @@ class PreparedCorpusDataset(Dataset):
             raise ValueError("PreparedCorpusDataset expects an artifact directory")
         self.artifact_dir = path
         self.metadata = json.loads((path / "metadata.json").read_text(encoding="utf-8"))
-        if self.metadata.get("format_version") != 2:
+        if self.metadata.get("format_version") != CORPUS_FORMAT_VERSION:
             raise ValueError("Unsupported corpus artifact format; rerun ilume-prepare")
         artifact_hashes = self.metadata.get("artifact_hashes")
         if not isinstance(artifact_hashes, dict) or not artifact_hashes:
@@ -707,7 +982,7 @@ class PreparedCorpusDataset(Dataset):
             expected_names=self.descriptor_schema.selected_names,
         )
         payload = json.loads((path / "corpus_index.json").read_text(encoding="utf-8"))
-        if payload.get("format_version") != 2:
+        if payload.get("format_version") != CORPUS_FORMAT_VERSION:
             raise ValueError("Unsupported corpus index format")
         self.entries = [
             entry for entry in payload["entries"] if split == "all" or entry["split"] == split
@@ -736,7 +1011,7 @@ class PreparedCorpusDataset(Dataset):
             map_location="cpu",
             weights_only=False,
         )
-        if payload.get("format_version") != 2:
+        if payload.get("format_version") != CORPUS_FORMAT_VERSION:
             raise ValueError(f"Unsupported shard format: {relative_path}")
         samples = payload["samples"]
         self._cache[relative_path] = samples

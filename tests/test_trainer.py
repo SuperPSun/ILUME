@@ -66,7 +66,7 @@ def test_single_device_trainer_validates_checkpoints_and_resumes(tmp_path):
             validation_interval=1,
             validation_batches=1,
             checkpoint_interval=1,
-            keep_last_checkpoints=1,
+            keep_last_checkpoints=2,
             output_dir=output,
         ),
     )
@@ -89,3 +89,12 @@ def test_single_device_trainer_validates_checkpoints_and_resumes(tmp_path):
         training=replace(config.training, resume_from=checkpoint),
     )
     assert run_training(resumed) == []
+
+    resumed_from_step_one = replace(
+        config,
+        training=replace(
+            config.training,
+            resume_from=output / "checkpoint_step_00000001.pt",
+        ),
+    )
+    assert run_training(resumed_from_step_one) == metrics[1:]
