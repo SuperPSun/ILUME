@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import csv
+import json
 from collections import Counter
 
+import numpy as np
 import pytest
+from rdkit import Chem
 
 from ilume_pretrain.config import DataConfig, PretrainConfig
-from ilume_pretrain.data import PreparedCorpusDataset, prepare_corpus
+from ilume_pretrain import data as data_module
+from ilume_pretrain.data import (
+    CORPUS_FORMAT_VERSION,
+    IPC_SQUARE_OVERFLOW_LIMIT,
+    PreparedCorpusDataset,
+    _inspect_entity_qc,
+    prepare_corpus,
+)
 from ilume_pretrain.sampler import (
     RoleBalancedSampler,
     minimum_samples_for_coverage,
@@ -59,19 +69,143 @@ def test_prepare_uses_new_original_sources_and_sharded_artifacts(tmp_path):
     assert summary["train"] == summary["valid"] == 3
     assert summary["cation"] == summary["anion"] == summary["neutral"] == 2
     assert summary["augmented"] == 0
+    assert summary["excluded_entities"] == 0
     assert (artifacts / "corpus_index.json").is_file()
     assert (artifacts / "descriptor_schema.json").is_file()
+    assert (artifacts / "excluded_entities.csv").is_file()
     assert len(list((artifacts / "shards").glob("*.pt"))) == 6
+    metadata_path = artifacts / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["format_version"] == CORPUS_FORMAT_VERSION == 3
+    assert "excluded_entities.csv" in metadata["artifact_hashes"]
     dataset = PreparedCorpusDataset(artifacts, "train")
     assert len(dataset) == 3
     with pytest.raises(ValueError, match="Legacy corpus.pt"):
         legacy = artifacts / "corpus.pt"
         legacy.touch()
         PreparedCorpusDataset(legacy)
+    metadata["format_version"] = 2
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    with pytest.raises(ValueError, match="Unsupported corpus artifact format"):
+        PreparedCorpusDataset(artifacts)
+    metadata["format_version"] = CORPUS_FORMAT_VERSION
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
     shard = artifacts / dataset.entries[0]["shard"]
     shard.write_bytes(shard.read_bytes() + b"corrupt")
     with pytest.raises(ValueError, match="Shard hash mismatch"):
         dataset[0]
+
+
+def test_entity_qc_records_multiple_reasons_and_keeps_isolated_hydrogen(monkeypatch):
+    record = {
+        "canonical_smiles": "CC(C)[CH2][AlH-](<-[CH2](C)C)[S](C)(=O)=O",
+        "role": "anion",
+        "split": "train",
+        "sources": ("augmentation/anion",),
+        "is_augmented": True,
+    }
+    monkeypatch.setattr(
+        data_module,
+        "_calculate_ipc",
+        lambda mol: IPC_SQUARE_OVERFLOW_LIMIT * 2,
+    )
+    inspected = _inspect_entity_qc(record)
+    assert inspected.reasons == [
+        "unsupported_bcut_bond_type",
+        "ipc_square_overflow",
+    ]
+    assert inspected.unsupported_bond_types == ("DATIVE",)
+
+    monkeypatch.setattr(data_module, "_calculate_ipc", lambda mol: float("nan"))
+    nonfinite = _inspect_entity_qc({**record, "canonical_smiles": "CC"})
+    assert nonfinite.reasons == ["ipc_nonfinite"]
+
+    monkeypatch.setattr(data_module, "_calculate_ipc", lambda mol: 0.0)
+    quadruple = _inspect_entity_qc(
+        {**record, "canonical_smiles": "[Cr]$[Cr]"}
+    )
+    assert quadruple.reasons == ["unsupported_bcut_bond_type"]
+    assert quadruple.unsupported_bond_types == ("QUADRUPLE",)
+
+    hydrogen = _inspect_entity_qc({**record, "canonical_smiles": "[HH]"})
+    assert hydrogen.reasons == []
+
+
+def test_prepare_excludes_qc_failures_before_descriptor_calculation(
+    tmp_path, monkeypatch
+):
+    stage1 = tmp_path / "stage1"
+    augmentation = stage1 / "augmentation"
+    artifacts = tmp_path / "artifacts"
+    augmentation.mkdir(parents=True)
+    originals = {
+        "cation": [("[Na+]", 1), ("[K+]", 1), ("C[NH3+]", 1), ("C[NH2+]C", 1)],
+        "anion": [("[Cl-]", -1), ("[Br-]", -1), ("[I-]", -1), ("C(=O)[O-]", -1)],
+        "molecule": [("CCO", 0), ("O", 0), ("N", 0), ("CC", 0)],
+    }
+    for name, rows in originals.items():
+        _write_role_csv(stage1 / f"{name}.csv", rows)
+    _write_role_csv(
+        augmentation / "anion.csv",
+        [("CC(C)[CH2][AlH-](<-[CH2](C)C)[S](C)(=O)=O", -1)],
+    )
+    _write_role_csv(
+        augmentation / "molecule.csv",
+        [("CCCCCCCC", 0), ("P", 0)],
+    )
+
+    real_ipc = data_module._calculate_ipc
+
+    def fake_ipc(mol):
+        if Chem.MolToSmiles(mol, canonical=True) == "P":
+            return IPC_SQUARE_OVERFLOW_LIMIT * 2
+        return real_ipc(mol)
+
+    descriptor_smiles = []
+
+    def fake_descriptors(mol, names):
+        descriptor_smiles.append(Chem.MolToSmiles(mol, canonical=True))
+        return np.arange(len(names), dtype=np.float64)
+
+    monkeypatch.setattr(data_module, "_calculate_ipc", fake_ipc)
+    monkeypatch.setattr(data_module, "calculate_descriptors", fake_descriptors)
+    summary = prepare_corpus(
+        PretrainConfig(
+            data=DataConfig(
+                stage1_dir=stage1,
+                artifacts_dir=artifacts,
+                valid_fraction=0.25,
+                seed=7,
+                max_smiles_tokens=8,
+                augmentation={"cation": 0, "anion": "all", "neutral": "all"},
+                shard_size=4,
+            )
+        )
+    )
+
+    assert summary["total"] == 12
+    assert summary["excluded_entities"] == 3
+    assert "P" not in descriptor_smiles
+    assert "CCCCCCCC" not in descriptor_smiles
+    assert not any("AlH" in smiles for smiles in descriptor_smiles)
+    with (artifacts / "excluded_entities.csv").open(
+        newline="", encoding="utf-8"
+    ) as handle:
+        excluded = list(csv.DictReader(handle))
+    reasons = {
+        row["canonical_smiles"]: set(row["exclusion_reasons"].split(";"))
+        for row in excluded
+    }
+    assert reasons["P"] == {"ipc_square_overflow"}
+    assert reasons["CCCCCCCC"] == {"smiles_overlength"}
+    dative_reasons = next(
+        value for smiles, value in reasons.items() if "AlH" in smiles
+    )
+    assert "unsupported_bcut_bond_type" in dative_reasons
+    metadata = json.loads((artifacts / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["quality_control"]["excluded"]["total"] == 3
+    assert metadata["augmentation_audit"]["anion"]["selected_after_qc"] == 0
+    assert metadata["augmentation_audit"]["neutral"]["selected_after_qc"] == 0
 
 
 def test_augmentation_ratio_and_validation_seed_descendant_isolation(tmp_path):

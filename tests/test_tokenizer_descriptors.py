@@ -31,6 +31,15 @@ def test_ais_round_trip_and_vocabulary_save_load(tmp_path):
         loaded.encode(smiles, max_length=3)
 
 
+def test_token_count_includes_special_tokens_and_matches_encode_boundary():
+    tokenizer = AISVocabulary.fit(["C" * 255])
+    assert tokenizer.token_count("C" * 254) == 256
+    assert len(tokenizer.encode("C" * 254, max_length=256)) == 256
+    assert tokenizer.token_count("C" * 255) == 257
+    with pytest.raises(ValueError, match="257 tokens"):
+        tokenizer.encode("C" * 255, max_length=256)
+
+
 def test_smiles_masking_uses_bert_replacement_distribution():
     vocabulary = AISVocabulary.fit(["CCO", "NCC"])
     token_ids = np.full(10_002, vocabulary.token_to_id[ais_tokenize("CCO")[0]])

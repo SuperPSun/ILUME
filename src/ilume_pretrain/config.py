@@ -16,7 +16,7 @@ class DataConfig:
     artifacts_dir: Path = Path("artifacts/smoke")
     valid_fraction: float = 0.05
     seed: int = 42
-    max_smiles_tokens: int = 384
+    max_smiles_tokens: int = 256
     descriptor_dim: int = 217
     max_samples_per_role: int | None = None
     shard_size: int = 8192

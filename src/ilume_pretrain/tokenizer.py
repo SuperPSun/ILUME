@@ -277,6 +277,9 @@ class SmilesTokenizer:
             )
         return ids
 
+    def token_count(self, smiles: str) -> int:
+        return len(self._tokenize(smiles)) + 2
+
     def save(self, path: str | Path) -> None:
         payload = {
             "format_version": 2,
