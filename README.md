@@ -85,7 +85,7 @@ artifact format v3 不再生成单个 `corpus.pt`，而是产生：
 
 ## masking 与模型
 
-`MultimodalPacker` 只做确定性组批；`MultimodalMasker.apply(batch, global_step, max_steps)` 执行动态 masking、asymmetric masking 和 modality dropout。curriculum 默认行为为：
+`MultimodalPacker` 只做确定性组批；`MultimodalMasker` 使用由 epoch 数推导的内部 global step 执行动态 masking、asymmetric masking 和 modality dropout。curriculum 默认行为为：
 
 - 0%–10% 训练进度：dropout 率为 0；
 - 10%–60%：线性升至配置概率的一半；
@@ -95,18 +95,18 @@ artifact format v3 不再生成单个 `corpus.pt`，而是产生：
 
 模型包含 SMILES MLM、atom、bond、descriptor 和 fingerprint 五项重建 loss。graph head 支持 `linear | mlp`；MLP 版本使用共享 residual trunk 后接字段独立分类器。可选共享 role embedding 会加到 CLS 和所有非 padding fusion token 上，不进入各模态 encoder。
 
-## 45/45/10 覆盖采样
+## 45/45/10 覆盖型 epoch
 
-正式配置固定全训练运行的全局抽样比例：cation 45%、anion 45%、molecule 10%。比例不要求每个 mini-batch 精确满足。role 内先无放回遍历全部样本，再重洗牌进入下一轮；sampler 状态可随 checkpoint 恢复。
-
-给定 `max_steps` 时：
+正式配置在每个 epoch 内固定 cation 45%、anion 45%、molecule 10% 的全局抽样比例，不要求每个 mini-batch 精确满足。role 内先无放回遍历全部样本，耗尽后再重洗牌补足配额。
 
 ```text
-total_draws = max_steps * batch_size * gradient_accumulation_steps
-minimum_draws = max(ceil(N_cation/0.45), ceil(N_anion/0.45), ceil(N_molecule/0.10))
+required_draws = max(ceil(N_cation/0.45), ceil(N_anion/0.45), ceil(N_molecule/0.10))
+effective_batch = batch_size * gradient_accumulation_steps
+steps_per_epoch = ceil(required_draws / effective_batch)
+draws_per_epoch = steps_per_epoch * effective_batch
 ```
 
-若最大余数法得到的任一 role 配额小于该 role 训练池，训练在启动时失败，并给出满足覆盖保证所需的最小 `max_steps`。
+因此一个 epoch 保证三类入选实体都至少出现一次，并补齐到完整 optimizer step。这不是按数据自然比例遍历一次；为了保持离子实体90%的权重，cation 和 anion 在同一 epoch 内会进入后续无放回循环。
 
 ## 运行入口
 
@@ -124,23 +124,37 @@ ilume-prepare --config configs/pretrain_base.yaml
 ilume-train --config configs/pretrain_base.yaml
 ```
 
-训练器支持 AdamW、BF16/FP16 AMP、梯度累积、梯度裁剪、warmup+cosine、固定频率验证、checkpoint/resume、RNG/sampler 状态、stdout 和 JSONL 指标。验证使用固定 mask seed，关闭 modality dropout 与 asymmetric masking，并按验证集自然 role 分布报告总体及 role 分组指标。
+XLarge 只改变模型和训练参数，可直接复用 Base artifact：
 
-checkpoint 保存 model、optimizer、scheduler、AMP scaler、optimizer/micro step、Python/NumPy/PyTorch/CUDA RNG、sampler 进度、config 与 artifact 哈希。恢复时在配置中设置：
+```bash
+CUDA_VISIBLE_DEVICES=0 ilume-train --config configs/pretrain_xlarge.yaml
+```
+
+训练器支持 AdamW、BF16/FP16 AMP、梯度累积、梯度裁剪、warmup+cosine、每 epoch 验证、checkpoint/resume、RNG/sampler 状态、stdout 和 JSONL 指标。验证使用固定 mask seed，关闭 modality dropout 与 asymmetric masking，并按验证集自然 role 分布报告总体及 role 分组指标。
+
+三个 CLI 命令在交互终端中使用 `tqdm`：prepare 分别显示输入加载、实体 QC、tokenizer、descriptor 和 shard 阶段，smoke 显示诊断 step，train 按 `Epoch x/y` 显示当前 epoch 的派生 optimizer step、总 loss、五项模态 loss、学习率和最近 validation loss。输出重定向或运行在非 TTY 作业系统时自动回退为逐步 JSON，其中包含 `epoch`、`epoch_step` 和内部 `global_step`；完整指标始终追加到 `metrics.jsonl`。
+
+checkpoint v3 在 epoch 边界保存 model、optimizer、scheduler、AMP scaler、已完成 epoch、内部 global/micro step、Python/NumPy/PyTorch/CUDA RNG、sampler epoch、config 与 artifact 哈希。恢复时从下一个完整 epoch 开始：
 
 ```yaml
 training:
-  resume_from: artifacts/training/base/checkpoint_step_00001000.pt
+  resume_from: artifacts/training/pretrain_base_bs512/checkpoint_epoch_00001.pt
 ```
+
+旧 step-based 配置和 checkpoint v2 不支持隐式迁移；历史配置仅保存在 `configs/archive/` 供审计。若在 epoch 中途停止，恢复时会重新执行该未完成 epoch。
 
 ## 配置与消融
 
 - `configs/smoke.yaml`：两步最小验证；
 - `configs/train_test.yaml`：覆盖 prepare 后的训练、验证和 checkpoint 链路；
-- `configs/pretrain_base.yaml`：正式参考配置；
-- `configs/pretrain_large.yaml`：更大模型并启用 gradient checkpointing；
+- `configs/pretrain_base.yaml`：5 epoch Base 正式配置，micro-batch 512；
+- `configs/pretrain_large.yaml`：5 epoch Large 配置，micro-batch 256 并启用 gradient checkpointing；
+- `configs/pretrain_xlarge.yaml`：5 epoch XLarge 配置，约218.79M参数、640维、10层，micro-batch 128、梯度累积2并启用 gradient checkpointing；
 - `configs/legacy.yaml`：Full/1-token/AIS/无指纹/无 role embedding/linear head；
-- `configs/ablations/`：可执行参考模板和逐轴字段说明。
+- `configs/ablations/`：Base reference 和九个单因素消融配置；
+- `configs/archive/`：不可由当前 trainer 执行的历史 step 配置。
+
+完整配置索引、artifact 复用规则和 OOM 回退方式见 [`configs/README.md`](configs/README.md)。
 
 关键架构决定记录在 [`docs/adr/`](docs/adr/README.md)。
 

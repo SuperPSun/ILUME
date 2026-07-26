@@ -25,12 +25,12 @@ pytest -q
 ## 目录与约定
 
 - `src/ilume_pretrain/` 是实现真身，`tests/` 是行为验证。
-- `configs/smoke.yaml` 是最小路径；`pretrain_base.yaml`、`pretrain_large.yaml` 是正式 profile；`legacy.yaml` 用于旧架构消融。
+- `configs/smoke.yaml` 是最小路径；`pretrain_base.yaml`、`pretrain_large.yaml`、`pretrain_xlarge.yaml` 是正式 profile；`legacy.yaml` 用于旧架构消融。
 - 原始输入只读取 `data/stage1/{cation,anion,molecule}.csv`，扩增只读取 `data/stage1/augmentation/` 同名三表。不得重新引入 `simulation_mol.csv`、`solute.csv`、`solvent.csv` 或 `IL.csv`。
 - artifact v3 使用 shard 和索引；旧 v2 和单个 `corpus.pt` 均不得静默迁移，必须重新准备。
 - 描述符计算前统一排除 BCUT2D 不支持键型、Ipc 非有限或平方上溢，以及 tokenizer 超过 256 token 的实体，并保留 `excluded_entities.csv` 审计。
 - descriptor schema、scaler 和 tokenizer 只能由当前配置选中的训练集拟合；valid 不含扩增实体，并需隔离 valid seed 的扩增后代。
-- 正式 sampler 的默认全局比例是 45% cation、45% anion、10% molecule，role 内必须先完成一轮无放回覆盖。
+- 正式 sampler 在每个覆盖型 epoch 内使用 45% cation、45% anion、10% molecule，role 内必须先完成一轮无放回覆盖。
 - 保持 `MultimodalPretrainModel.forward(batch)` 接口稳定。
 - `data/`、`artifacts/`、缓存和 `*.egg-info/` 是本地输入或生成物，不提交为源码，也不在无关任务中重建或删除。
 

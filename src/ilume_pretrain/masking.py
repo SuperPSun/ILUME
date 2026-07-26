@@ -196,17 +196,17 @@ class MultimodalMasker:
         self,
         batch: MultimodalBatch,
         global_step: int = 0,
-        max_steps: int = 1,
+        total_steps: int = 1,
         *,
         evaluation: bool = False,
     ) -> MultimodalBatch:
         if batch.masks is not None:
             raise ValueError("MultimodalMasker expects an unmasked packed batch")
-        if max_steps <= 0:
-            raise ValueError("max_steps must be positive")
+        if total_steps <= 0:
+            raise ValueError("total_steps must be positive")
         generator_seed = self.seed + (0 if evaluation else global_step)
         generator = torch.Generator().manual_seed(generator_seed)
-        progress = min(1.0, max(0.0, global_step / max_steps))
+        progress = min(1.0, max(0.0, global_step / total_steps))
         batch_size = batch.token_ids.shape[0]
         fingerprint_active = bool(batch.fingerprints.values)
         if evaluation:
@@ -353,6 +353,6 @@ class MultimodalCollator:
 
     def __call__(self, samples: Sequence[dict[str, Any]]) -> MultimodalBatch:
         packed = self.packer(samples)
-        masked = self.masker.apply(packed, self.call_index, max_steps=1)
+        masked = self.masker.apply(packed, self.call_index, total_steps=1)
         self.call_index += 1
         return masked

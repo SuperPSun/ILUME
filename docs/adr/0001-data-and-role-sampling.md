@@ -1,7 +1,9 @@
 # ADR-0001：数据边界与 45/45/10 覆盖采样
 
-- 状态：Accepted
+- 状态：Partially Superseded
 - 日期：2026-07-23
+
+> 2026-07-26：数据边界和45/45/10比例继续有效；全运行 `max_steps` 预算已由 [ADR-0006](0006-coverage-epochs-and-experiment-configs.md) 的覆盖型 epoch 取代。以下训练预算内容作为历史决定保留。
 
 ## 决定
 

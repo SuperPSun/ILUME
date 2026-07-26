@@ -42,19 +42,19 @@ model:
   gradient_checkpointing: true
 loss: {lambda_smiles: 1, lambda_descriptor: 1, lambda_atom: 1, lambda_bond: 1, lambda_fingerprint: 1}
 training:
-  batch_size: 8
-  max_steps: 10000
-  gradient_accumulation_steps: 16
+  batch_size: 256
+  epochs: 5
+  gradient_accumulation_steps: 1
   learning_rate: 0.0001
   weight_decay: 0.01
   warmup_fraction: 0.05
   max_grad_norm: 1.0
-  num_workers: 0
+  num_workers: 4
   device: auto
   amp_dtype: bf16
-  validation_interval: 1000
+  validation_interval_epochs: 1
   validation_batches: 20
-  checkpoint_interval: 1000
+  checkpoint_interval_epochs: 1
   keep_last_checkpoints: 3
-  output_dir: artifacts/training/large
+  output_dir: artifacts/training/pretrain_large_bs256
   resume_from: null

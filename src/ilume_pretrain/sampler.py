@@ -1,15 +1,25 @@
 from __future__ import annotations
 
+import hashlib
 import math
 import random
-import hashlib
 from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from torch.utils.data import Sampler
 
 
 DEFAULT_ROLE_PROBABILITIES = (0.45, 0.45, 0.10)
+
+
+@dataclass(frozen=True)
+class CoverageEpochPlan:
+    required_draws: int
+    effective_batch_size: int
+    steps_per_epoch: int
+    draws_per_epoch: int
+    role_quotas: tuple[int, int, int]
 
 
 def allocate_role_quotas(
@@ -52,6 +62,35 @@ def minimum_samples_for_coverage(
     ):
         minimum += 1
     return minimum
+
+
+def coverage_epoch_plan(
+    role_counts: Sequence[int],
+    batch_size: int,
+    gradient_accumulation_steps: int,
+    role_probabilities: Sequence[float] = DEFAULT_ROLE_PROBABILITIES,
+) -> CoverageEpochPlan:
+    if batch_size <= 0 or gradient_accumulation_steps <= 0:
+        raise ValueError("batch_size and gradient_accumulation_steps must be positive")
+    required_draws = minimum_samples_for_coverage(
+        role_counts, role_probabilities
+    )
+    effective_batch_size = batch_size * gradient_accumulation_steps
+    steps_per_epoch = math.ceil(required_draws / effective_batch_size)
+    draws_per_epoch = steps_per_epoch * effective_batch_size
+    role_quotas = allocate_role_quotas(draws_per_epoch, role_probabilities)
+    if any(
+        quota < count
+        for quota, count in zip(role_quotas, role_counts, strict=True)
+    ):
+        raise RuntimeError("Coverage epoch rounding produced an invalid role quota")
+    return CoverageEpochPlan(
+        required_draws=required_draws,
+        effective_batch_size=effective_batch_size,
+        steps_per_epoch=steps_per_epoch,
+        draws_per_epoch=draws_per_epoch,
+        role_quotas=role_quotas,
+    )
 
 
 class RoleBalancedSampler(Sampler[int]):
