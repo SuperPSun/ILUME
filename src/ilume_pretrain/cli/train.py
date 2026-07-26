@@ -16,7 +16,8 @@ from ..config import PretrainConfig, load_config
 from ..data import PreparedCorpusDataset
 from ..masking import MultimodalMasker, MultimodalPacker
 from ..model import MultimodalPretrainModel
-from ..sampler import RoleBalancedSampler, minimum_samples_for_coverage
+from ..progress import ProgressReporter, loss_postfix
+from ..sampler import RoleBalancedSampler, coverage_epoch_plan
 from ..tokenizer import SmilesTokenizer
 
 
@@ -52,11 +53,11 @@ def _file_hash(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _lr_lambda(step: int, max_steps: int, warmup_fraction: float) -> float:
-    warmup_steps = max(1, round(max_steps * warmup_fraction))
+def _lr_lambda(step: int, total_steps: int, warmup_fraction: float) -> float:
+    warmup_steps = max(1, round(total_steps * warmup_fraction))
     if step < warmup_steps:
         return (step + 1) / warmup_steps
-    progress = (step - warmup_steps) / max(1, max_steps - warmup_steps)
+    progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
     return 0.5 * (1.0 + math.cos(math.pi * min(1.0, progress)))
 
 
@@ -84,23 +85,29 @@ def _save_checkpoint(
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LRScheduler,
     scaler: torch.amp.GradScaler,
-    optimizer_step: int,
+    completed_epochs: int,
+    global_step: int,
     micro_step: int,
     sampler: RoleBalancedSampler,
+    steps_per_epoch: int,
+    draws_per_epoch: int,
     config: PretrainConfig,
     config_hash: str,
     artifact_hash: str,
     source_hashes: dict[str, str],
 ) -> None:
     payload = {
-        "format_version": 2,
+        "format_version": 3,
         "model": model.state_dict(),
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict(),
         "scaler": scaler.state_dict(),
-        "optimizer_step": optimizer_step,
+        "completed_epochs": completed_epochs,
+        "global_step": global_step,
         "micro_step": micro_step,
-        "sampler": sampler.state_dict(start_offset=micro_step * config.training.batch_size),
+        "steps_per_epoch": steps_per_epoch,
+        "draws_per_epoch": draws_per_epoch,
+        "sampler": sampler.state_dict(start_offset=draws_per_epoch),
         "rng": _rng_state(),
         "config": config.to_dict(),
         "config_hash": config_hash,
@@ -167,6 +174,10 @@ def _validate(
 
 def run_training(config: PretrainConfig) -> list[dict[str, float | int | str]]:
     config.validate()
+    if not config.sampling.require_full_coverage:
+        raise ValueError(
+            "Epoch training requires sampling.require_full_coverage=true"
+        )
     random.seed(config.data.seed)
     np.random.seed(config.data.seed)
     torch.manual_seed(config.data.seed)
@@ -189,32 +200,23 @@ def run_training(config: PretrainConfig) -> list[dict[str, float | int | str]]:
         config, vocabulary, train_dataset.descriptor_schema
     ).to(device)
 
-    total_draws = (
-        config.training.max_steps
-        * config.training.batch_size
-        * config.training.gradient_accumulation_steps
-    )
     role_counts = tuple(train_dataset.role_ids.count(role) for role in range(3))
-    required_draws = minimum_samples_for_coverage(
-        role_counts, config.sampling.role_probabilities
+    epoch_plan = coverage_epoch_plan(
+        role_counts,
+        config.training.batch_size,
+        config.training.gradient_accumulation_steps,
+        config.sampling.role_probabilities,
     )
-    if config.sampling.require_full_coverage and total_draws < required_draws:
-        draws_per_step = (
-            config.training.batch_size
-            * config.training.gradient_accumulation_steps
-        )
-        minimum_steps = math.ceil(required_draws / draws_per_step)
-        raise ValueError(
-            "training.max_steps is insufficient for 45/45/10 full coverage: "
-            f"configured={config.training.max_steps}, minimum={minimum_steps}, "
-            f"role_counts={role_counts}"
-        )
+    total_steps = config.training.epochs * epoch_plan.steps_per_epoch
+    max_micro_steps = (
+        total_steps * config.training.gradient_accumulation_steps
+    )
     sampler = RoleBalancedSampler(
         train_dataset.role_ids,
-        num_samples=total_draws,
+        num_samples=epoch_plan.draws_per_epoch,
         role_probabilities=config.sampling.role_probabilities,
         seed=config.data.seed,
-        require_full_coverage=config.sampling.require_full_coverage,
+        require_full_coverage=True,
         shard_ids=[entry["shard"] for entry in train_dataset.entries],
     )
 
@@ -226,7 +228,7 @@ def run_training(config: PretrainConfig) -> list[dict[str, float | int | str]]:
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
         lambda step: _lr_lambda(
-            step, config.training.max_steps, config.training.warmup_fraction
+            step, total_steps, config.training.warmup_fraction
         ),
     )
     fp16 = config.training.amp_dtype == "fp16" and device.type == "cuda"
@@ -238,7 +240,8 @@ def run_training(config: PretrainConfig) -> list[dict[str, float | int | str]]:
     output_dir.mkdir(parents=True, exist_ok=True)
     current_config_hash = _config_hash(config)
     artifact_hash = _file_hash(artifact_dir / "metadata.json")
-    optimizer_step = 0
+    completed_epochs = 0
+    global_step = 0
     micro_step = 0
     if config.training.resume_from is not None:
         checkpoint_payload = torch.load(
@@ -246,7 +249,13 @@ def run_training(config: PretrainConfig) -> list[dict[str, float | int | str]]:
             map_location="cpu",
             weights_only=False,
         )
-        if checkpoint_payload.get("format_version") != 2:
+        checkpoint_version = checkpoint_payload.get("format_version")
+        if checkpoint_version != 3:
+            if checkpoint_version == 2:
+                raise ValueError(
+                    "Step-based checkpoint format v2 is incompatible with the "
+                    "epoch trainer; start a new run"
+                )
             raise ValueError("Unsupported checkpoint format")
         if checkpoint_payload["config_hash"] != current_config_hash:
             raise ValueError("Checkpoint config hash does not match the current config")
@@ -256,119 +265,188 @@ def run_training(config: PretrainConfig) -> list[dict[str, float | int | str]]:
         optimizer.load_state_dict(checkpoint_payload["optimizer"])
         scheduler.load_state_dict(checkpoint_payload["scheduler"])
         scaler.load_state_dict(checkpoint_payload["scaler"])
-        optimizer_step = int(checkpoint_payload["optimizer_step"])
+        completed_epochs = int(checkpoint_payload["completed_epochs"])
+        global_step = int(checkpoint_payload["global_step"])
         micro_step = int(checkpoint_payload["micro_step"])
+        if int(checkpoint_payload["steps_per_epoch"]) != epoch_plan.steps_per_epoch:
+            raise ValueError("Checkpoint steps_per_epoch does not match the corpus")
+        if int(checkpoint_payload["draws_per_epoch"]) != epoch_plan.draws_per_epoch:
+            raise ValueError("Checkpoint draws_per_epoch does not match the corpus")
+        expected_global_step = completed_epochs * epoch_plan.steps_per_epoch
+        if global_step != expected_global_step:
+            raise ValueError("Checkpoint global_step does not match completed epochs")
+        expected_micro_step = (
+            global_step * config.training.gradient_accumulation_steps
+        )
+        if micro_step != expected_micro_step:
+            raise ValueError("Checkpoint micro_step does not match global_step")
         sampler.load_state_dict(checkpoint_payload["sampler"])
-        expected_offset = micro_step * config.training.batch_size
-        if sampler.start_offset != expected_offset:
-            raise ValueError("Checkpoint sampler cursor does not match micro_step")
+        if sampler.start_offset != epoch_plan.draws_per_epoch:
+            raise ValueError("Checkpoint sampler cursor is not at an epoch boundary")
+        expected_sampler_epoch = completed_epochs - 1
+        if sampler.epoch != expected_sampler_epoch:
+            raise ValueError("Checkpoint sampler epoch does not match completed epochs")
         _restore_rng_state(checkpoint_payload["rng"])
 
-    loader = DataLoader(
-        train_dataset,
-        batch_size=config.training.batch_size,
-        sampler=sampler,
-        num_workers=config.training.num_workers,
-        collate_fn=MultimodalPacker(vocabulary),
-        drop_last=True,
-    )
     masker = MultimodalMasker(vocabulary, config.masking, config.data.seed)
     metrics_path = output_dir / "metrics.jsonl"
     results: list[dict[str, float | int | str]] = []
+    reporter = ProgressReporter()
     model.train()
     optimizer.zero_grad(set_to_none=True)
-    max_micro_steps = (
-        config.training.max_steps * config.training.gradient_accumulation_steps
-    )
-    for packed in loader:
-        if optimizer_step >= config.training.max_steps:
-            break
-        batch = masker.apply(packed, micro_step, max_micro_steps).to(device)
-        with torch.autocast(
-            device_type=device.type,
-            dtype=amp_dtype,
-            enabled=amp_enabled,
-        ):
-            output = model(batch)
-            scaled_loss = output.loss / config.training.gradient_accumulation_steps
-        if not torch.isfinite(output.loss):
-            raise RuntimeError(f"Non-finite total loss at micro step {micro_step}")
-        scaler.scale(scaled_loss).backward()
-        micro_step += 1
-        if micro_step % config.training.gradient_accumulation_steps:
-            continue
-
-        if config.training.max_grad_norm > 0:
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(
-                model.parameters(), config.training.max_grad_norm
-            )
-        scaler.step(optimizer)
-        scaler.update()
-        optimizer.zero_grad(set_to_none=True)
-        scheduler.step()
-        optimizer_step += 1
-        result: dict[str, float | int | str] = {
-            "step": optimizer_step,
-            "micro_step": micro_step,
-            "device": str(device),
-            "loss": float(output.loss.detach().cpu()),
-            "learning_rate": optimizer.param_groups[0]["lr"],
-        }
-        result.update(
-            {
-                f"loss_{name}": float(value.detach().cpu())
-                for name, value in output.losses.items()
-            }
+    latest_valid_loss: float | None = None
+    for epoch_index in range(completed_epochs, config.training.epochs):
+        sampler.set_epoch(epoch_index)
+        sampler.set_start_offset(0)
+        loader = DataLoader(
+            train_dataset,
+            batch_size=config.training.batch_size,
+            sampler=sampler,
+            num_workers=config.training.num_workers,
+            collate_fn=MultimodalPacker(vocabulary),
+            drop_last=True,
         )
-        if (
-            config.training.validation_interval > 0
-            and optimizer_step % config.training.validation_interval == 0
-        ):
-            result.update(
-                _validate(
-                    model,
-                    valid_dataset,
-                    vocabulary,
-                    config,
-                    device,
+        epoch_step = 0
+        epoch_number = epoch_index + 1
+        epoch_description = f"Epoch {epoch_number}/{config.training.epochs}"
+        with reporter.bar(
+            total=epoch_plan.steps_per_epoch,
+            desc=epoch_description,
+            unit="step",
+        ) as progress:
+            for packed in loader:
+                batch = masker.apply(
+                    packed, micro_step, max_micro_steps
+                ).to(device)
+                with torch.autocast(
+                    device_type=device.type,
+                    dtype=amp_dtype,
+                    enabled=amp_enabled,
+                ):
+                    output = model(batch)
+                    scaled_loss = (
+                        output.loss
+                        / config.training.gradient_accumulation_steps
+                    )
+                if not torch.isfinite(output.loss):
+                    raise RuntimeError(
+                        f"Non-finite total loss at micro step {micro_step}"
+                    )
+                scaler.scale(scaled_loss).backward()
+                micro_step += 1
+                if micro_step % config.training.gradient_accumulation_steps:
+                    continue
+
+                if config.training.max_grad_norm > 0:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), config.training.max_grad_norm
+                    )
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad(set_to_none=True)
+                scheduler.step()
+                global_step += 1
+                epoch_step += 1
+                result: dict[str, float | int | str] = {
+                    "epoch": epoch_number,
+                    "epoch_step": epoch_step,
+                    "global_step": global_step,
+                    "micro_step": micro_step,
+                    "device": str(device),
+                    "loss": float(output.loss.detach().cpu()),
+                    "learning_rate": optimizer.param_groups[0]["lr"],
+                }
+                result.update(
+                    {
+                        f"loss_{name}": float(value.detach().cpu())
+                        for name, value in output.losses.items()
+                    }
                 )
-            )
-        serialized = json.dumps(result, sort_keys=True)
-        print(serialized)
-        with metrics_path.open("a", encoding="utf-8") as handle:
-            handle.write(serialized + "\n")
-        results.append(result)
+                epoch_finished = epoch_step == epoch_plan.steps_per_epoch
+                should_validate = (
+                    epoch_finished
+                    and config.training.validation_interval_epochs > 0
+                    and epoch_number
+                    % config.training.validation_interval_epochs
+                    == 0
+                )
+                if should_validate:
+                    progress.set_description_str("Validating")
+                    result.update(
+                        _validate(
+                            model,
+                            valid_dataset,
+                            vocabulary,
+                            config,
+                            device,
+                        )
+                    )
+                    latest_valid_loss = float(result["valid_loss"])
+                    progress.set_description_str(epoch_description)
+                serialized = json.dumps(result, sort_keys=True)
+                reporter.emit_json(result)
+                with metrics_path.open("a", encoding="utf-8") as handle:
+                    handle.write(serialized + "\n")
+                results.append(result)
+                progress.set_postfix(
+                    loss_postfix(
+                        result,
+                        include_learning_rate=True,
+                        valid_loss=latest_valid_loss,
+                    ),
+                    refresh=False,
+                )
+                progress.update(1)
 
-        should_checkpoint = (
-            config.training.checkpoint_interval > 0
-            and optimizer_step % config.training.checkpoint_interval == 0
-        ) or optimizer_step == config.training.max_steps
-        if should_checkpoint:
-            checkpoint_path = output_dir / f"checkpoint_step_{optimizer_step:08d}.pt"
-            # Checkpoint offset is restored from micro_step, so the sampler only
-            # needs its deterministic epoch state here.
-            _save_checkpoint(
-                checkpoint_path,
-                model=model,
-                optimizer=optimizer,
-                scheduler=scheduler,
-                scaler=scaler,
-                optimizer_step=optimizer_step,
-                micro_step=micro_step,
-                sampler=sampler,
-                config=config,
-                config_hash=current_config_hash,
-                artifact_hash=artifact_hash,
-                source_hashes=artifact_metadata.get("source_hashes", {}),
-            )
-            checkpoints = sorted(output_dir.glob("checkpoint_step_*.pt"))
-            for stale in checkpoints[: -config.training.keep_last_checkpoints]:
-                stale.unlink()
+            if epoch_step != epoch_plan.steps_per_epoch:
+                raise RuntimeError(
+                    f"Epoch {epoch_number} stopped at optimizer step "
+                    f"{epoch_step}; expected {epoch_plan.steps_per_epoch}"
+                )
+            completed_epochs = epoch_number
+            should_checkpoint = (
+                config.training.checkpoint_interval_epochs > 0
+                and completed_epochs
+                % config.training.checkpoint_interval_epochs
+                == 0
+            ) or completed_epochs == config.training.epochs
+            if should_checkpoint:
+                progress.set_description_str("Checkpointing")
+                checkpoint_path = (
+                    output_dir
+                    / f"checkpoint_epoch_{completed_epochs:05d}.pt"
+                )
+                _save_checkpoint(
+                    checkpoint_path,
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    scaler=scaler,
+                    completed_epochs=completed_epochs,
+                    global_step=global_step,
+                    micro_step=micro_step,
+                    sampler=sampler,
+                    steps_per_epoch=epoch_plan.steps_per_epoch,
+                    draws_per_epoch=epoch_plan.draws_per_epoch,
+                    config=config,
+                    config_hash=current_config_hash,
+                    artifact_hash=artifact_hash,
+                    source_hashes=artifact_metadata.get("source_hashes", {}),
+                )
+                checkpoints = sorted(
+                    output_dir.glob("checkpoint_epoch_*.pt")
+                )
+                for stale in checkpoints[
+                    : -config.training.keep_last_checkpoints
+                ]:
+                    stale.unlink()
+                progress.set_description_str(epoch_description)
 
-    if optimizer_step != config.training.max_steps:
+    if completed_epochs != config.training.epochs:
         raise RuntimeError(
-            f"Training stopped at step {optimizer_step}; expected {config.training.max_steps}"
+            f"Training stopped after epoch {completed_epochs}; expected "
+            f"{config.training.epochs}"
         )
     return results
 

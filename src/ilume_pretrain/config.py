@@ -111,7 +111,7 @@ class SmokeConfig:
 @dataclass(frozen=True)
 class TrainingConfig:
     batch_size: int = 16
-    max_steps: int = 10000
+    epochs: int = 5
     gradient_accumulation_steps: int = 8
     learning_rate: float = 2.0e-4
     weight_decay: float = 0.01
@@ -120,9 +120,9 @@ class TrainingConfig:
     num_workers: int = 0
     device: str = "auto"
     amp_dtype: str = "bf16"
-    validation_interval: int = 1000
+    validation_interval_epochs: int = 1
     validation_batches: int = 20
-    checkpoint_interval: int = 1000
+    checkpoint_interval_epochs: int = 1
     keep_last_checkpoints: int = 3
     output_dir: Path = Path("artifacts/training")
     resume_from: Path | None = None
@@ -209,8 +209,8 @@ class PretrainConfig:
                 raise ValueError(f"{name} must be between 0 and 1")
         if self.smoke.batch_size <= 0 or self.smoke.steps <= 0:
             raise ValueError("smoke.batch_size and smoke.steps must be positive")
-        if self.training.batch_size <= 0 or self.training.max_steps <= 0:
-            raise ValueError("training.batch_size and training.max_steps must be positive")
+        if self.training.batch_size <= 0 or self.training.epochs <= 0:
+            raise ValueError("training.batch_size and training.epochs must be positive")
         if self.training.gradient_accumulation_steps <= 0:
             raise ValueError("training.gradient_accumulation_steps must be positive")
         if self.training.amp_dtype not in {"bf16", "fp16", "none"}:
@@ -221,8 +221,11 @@ class PretrainConfig:
             raise ValueError("training.validation_batches must be positive")
         if self.training.keep_last_checkpoints <= 0:
             raise ValueError("training.keep_last_checkpoints must be positive")
-        if self.training.validation_interval < 0 or self.training.checkpoint_interval < 0:
-            raise ValueError("training intervals cannot be negative")
+        if (
+            self.training.validation_interval_epochs < 0
+            or self.training.checkpoint_interval_epochs < 0
+        ):
+            raise ValueError("training epoch intervals cannot be negative")
         if self.training.num_workers < 0:
             raise ValueError("training.num_workers cannot be negative")
 
@@ -260,6 +263,17 @@ def _construct(section_type: type, values: dict[str, Any] | None) -> Any:
     known = {item.name for item in section_type.__dataclass_fields__.values()}
     unknown = set(values) - known
     if unknown:
+        legacy_training_fields = {
+            "max_steps",
+            "validation_interval",
+            "checkpoint_interval",
+        }
+        if section_type is TrainingConfig and unknown & legacy_training_fields:
+            fields = ", ".join(sorted(unknown & legacy_training_fields))
+            raise ValueError(
+                "Step-based training fields are incompatible with the epoch "
+                f"trainer: {fields}"
+            )
         raise ValueError(
             f"Unknown {section_type.__name__} fields: {', '.join(sorted(unknown))}"
         )

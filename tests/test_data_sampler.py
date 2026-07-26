@@ -14,11 +14,14 @@ from ilume_pretrain.data import (
     CORPUS_FORMAT_VERSION,
     IPC_SQUARE_OVERFLOW_LIMIT,
     PreparedCorpusDataset,
+    _csv_data_row_count,
     _inspect_entity_qc,
+    _preparation_source_paths,
     prepare_corpus,
 )
 from ilume_pretrain.sampler import (
     RoleBalancedSampler,
+    coverage_epoch_plan,
     minimum_samples_for_coverage,
 )
 
@@ -43,6 +46,26 @@ def _write_role_csv(path, rows):
             writer.writerow(
                 [smiles, charge, "test", seed[0] if seed else "", "", "", ""]
             )
+
+
+def test_prepare_progress_counts_rows_and_only_enabled_sources(tmp_path):
+    stage1 = tmp_path / "stage1"
+    stage1.mkdir()
+    path = stage1 / "cation.csv"
+    _write_role_csv(path, [("CC", 0), ("C\nC", 0)])
+
+    assert _csv_data_row_count(path) == 2
+    config = DataConfig(
+        stage1_dir=stage1,
+        augmentation={"cation": 0, "anion": 1, "neutral": "all"},
+    )
+    assert _preparation_source_paths(config) == [
+        stage1 / "cation.csv",
+        stage1 / "anion.csv",
+        stage1 / "molecule.csv",
+        stage1 / "augmentation" / "anion.csv",
+        stage1 / "augmentation" / "molecule.csv",
+    ]
 
 
 def test_prepare_uses_new_original_sources_and_sharded_artifacts(tmp_path):
@@ -275,6 +298,47 @@ def test_role_balanced_sampler_uses_45_45_10_and_checks_coverage():
             seed=9,
             require_full_coverage=True,
         )
+
+
+def test_coverage_epoch_rounds_to_effective_batch_and_changes_by_epoch():
+    role_ids = [0] * 2 + [1] * 3 + [2] * 4
+    plan = coverage_epoch_plan(
+        (2, 3, 4), batch_size=3, gradient_accumulation_steps=2
+    )
+    assert plan.required_draws == 40
+    assert plan.effective_batch_size == 6
+    assert plan.steps_per_epoch == 7
+    assert plan.draws_per_epoch == 42
+    assert plan.role_quotas == (19, 19, 4)
+
+    sampler = RoleBalancedSampler(
+        role_ids,
+        num_samples=plan.draws_per_epoch,
+        seed=11,
+        require_full_coverage=True,
+    )
+    first = list(sampler)
+    sampler.set_epoch(1)
+    second = list(sampler)
+    repeated = RoleBalancedSampler(
+        role_ids,
+        num_samples=plan.draws_per_epoch,
+        seed=11,
+        require_full_coverage=True,
+    )
+    repeated.set_epoch(1)
+
+    assert first != second
+    assert second == list(repeated)
+    assert Counter(role_ids[index] for index in first) == {
+        0: 19,
+        1: 19,
+        2: 4,
+    }
+    for role in range(3):
+        expected = {index for index, value in enumerate(role_ids) if value == role}
+        observed = {index for index in first if role_ids[index] == role}
+        assert observed == expected
 
 
 def test_sampler_resume_offset_replays_remaining_sequence():

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 import torch
@@ -11,6 +10,7 @@ from ..config import PretrainConfig, load_config
 from ..data import PreparedCorpusDataset
 from ..masking import MultimodalMasker, MultimodalPacker
 from ..model import MultimodalPretrainModel
+from ..progress import ProgressReporter, loss_postfix
 from ..sampler import RoleBalancedSampler
 from ..tokenizer import SmilesTokenizer
 
@@ -82,41 +82,56 @@ def run_smoke(config: PretrainConfig) -> list[dict[str, float | int | str]]:
     scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
 
     results: list[dict[str, float | int | str]] = []
+    reporter = ProgressReporter()
     model.train()
-    for step, packed_batch in enumerate(loader, start=1):
-        if step > config.smoke.steps:
-            break
-        batch = masker.apply(
-            packed_batch,
-            global_step=step - 1,
-            max_steps=config.smoke.steps,
-        ).to(device)
-        optimizer.zero_grad(set_to_none=True)
-        with torch.autocast(
-            device_type=device.type,
-            dtype=torch.float16 if device.type == "cuda" else torch.bfloat16,
-            enabled=amp_enabled,
-        ):
-            output = model(batch)
-        if not torch.isfinite(output.loss):
-            raise RuntimeError(f"Non-finite total loss at smoke step {step}")
-        scaler.scale(output.loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
+    with reporter.bar(
+        total=config.smoke.steps,
+        desc="Smoke training",
+        unit="step",
+    ) as progress:
+        for step, packed_batch in enumerate(loader, start=1):
+            if step > config.smoke.steps:
+                break
+            batch = masker.apply(
+                packed_batch,
+                global_step=step - 1,
+                total_steps=config.smoke.steps,
+            ).to(device)
+            optimizer.zero_grad(set_to_none=True)
+            with torch.autocast(
+                device_type=device.type,
+                dtype=(
+                    torch.float16
+                    if device.type == "cuda"
+                    else torch.bfloat16
+                ),
+                enabled=amp_enabled,
+            ):
+                output = model(batch)
+            if not torch.isfinite(output.loss):
+                raise RuntimeError(f"Non-finite total loss at smoke step {step}")
+            scaler.scale(output.loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
-        result: dict[str, float | int | str] = {
-            "step": step,
-            "device": str(device),
-            "loss": float(output.loss.detach().cpu()),
-        }
-        result.update(
-            {
-                f"loss_{name}": float(value.detach().cpu())
-                for name, value in output.losses.items()
+            result: dict[str, float | int | str] = {
+                "step": step,
+                "device": str(device),
+                "loss": float(output.loss.detach().cpu()),
             }
-        )
-        print(json.dumps(result, sort_keys=True))
-        results.append(result)
+            result.update(
+                {
+                    f"loss_{name}": float(value.detach().cpu())
+                    for name, value in output.losses.items()
+                }
+            )
+            reporter.emit_json(result)
+            results.append(result)
+            progress.set_postfix(
+                loss_postfix(result, include_learning_rate=False),
+                refresh=False,
+            )
+            progress.update(1)
     if len(results) != config.smoke.steps:
         raise RuntimeError(
             f"Smoke loader produced {len(results)} steps; expected {config.smoke.steps}"
