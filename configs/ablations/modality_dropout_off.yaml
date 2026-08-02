@@ -23,7 +23,11 @@ masking:
   graph_dropout: 0.10
   descriptor_dropout: 0.10
   fingerprint_dropout: 0.10
+<<<<<<< HEAD
+  dropout_schedule: "off"
+=======
   dropout_schedule: off
+>>>>>>> origin/main
   asymmetric_enabled: true
   asymmetric_probability: 0.25
   asymmetric_ratio: 0.50
@@ -42,10 +46,10 @@ model:
   gradient_checkpointing: false
 loss: {lambda_smiles: 1, lambda_descriptor: 1, lambda_atom: 1, lambda_bond: 1, lambda_fingerprint: 1}
 training:
-  batch_size: 512
+  batch_size: 256
   epochs: 5
   gradient_accumulation_steps: 1
-  learning_rate: 0.0004
+  learning_rate: 0.0001
   weight_decay: 0.01
   warmup_fraction: 0.05
   max_grad_norm: 1.0
