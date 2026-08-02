@@ -23,7 +23,11 @@ masking:
   graph_dropout: 0.10
   descriptor_dropout: 0.10
   fingerprint_dropout: 0.10
+<<<<<<< HEAD
   dropout_schedule: "off"
+=======
+  dropout_schedule: off
+>>>>>>> origin/main
   asymmetric_enabled: true
   asymmetric_probability: 0.25
   asymmetric_ratio: 0.50
