@@ -132,7 +132,7 @@ CUDA_VISIBLE_DEVICES=0 ilume-train --config configs/pretrain_xlarge.yaml
 
 训练器支持 AdamW、BF16/FP16 AMP、梯度累积、梯度裁剪、warmup+cosine、每 epoch 验证、checkpoint/resume、RNG/sampler 状态、stdout 和 JSONL 指标。验证使用固定 mask seed，关闭 modality dropout 与 asymmetric masking，并按验证集自然 role 分布报告总体及 role 分组指标。
 
-三个 CLI 命令在交互终端中使用 `tqdm`：prepare 分别显示输入加载、实体 QC、tokenizer、descriptor 和 shard 阶段，smoke 显示诊断 step，train 按 `Epoch x/y` 显示当前 epoch 的派生 optimizer step、总 loss、五项模态 loss、学习率和最近 validation loss。输出重定向或运行在非 TTY 作业系统时自动回退为逐步 JSON，其中包含 `epoch`、`epoch_step` 和内部 `global_step`；完整指标始终追加到 `metrics.jsonl`。
+Stage 1 的三个 CLI 命令在交互终端中使用 `tqdm`：prepare 分别显示输入加载、实体 QC、tokenizer、descriptor 和 shard 阶段，smoke 显示诊断 step，train 按 `Epoch x/y` 显示当前 epoch 的派生 optimizer step、总 loss、五项模态 loss、学习率和最近 validation loss。输出重定向或运行在非 TTY 作业系统时自动回退为逐步 JSON，其中包含 `epoch`、`epoch_step` 和内部 `global_step`；完整指标始终追加到 `metrics.jsonl`。
 
 checkpoint v3 在 epoch 边界保存 model、optimizer、scheduler、AMP scaler、已完成 epoch、内部 global/micro step、Python/NumPy/PyTorch/CUDA RNG、sampler epoch、config 与 artifact 哈希。恢复时从下一个完整 epoch 开始：
 
@@ -147,10 +147,9 @@ training:
 
 - `configs/smoke.yaml`：两步最小验证；
 - `configs/train_test.yaml`：覆盖 prepare 后的训练、验证和 checkpoint 链路；
-- `configs/pretrain_base.yaml`：5 epoch Base 正式配置，micro-batch 512；
+- `configs/pretrain_base.yaml`：5 epoch Base 正式配置，micro-batch 256；
 - `configs/pretrain_large.yaml`：5 epoch Large 配置，micro-batch 256 并启用 gradient checkpointing；
 - `configs/pretrain_xlarge.yaml`：5 epoch XLarge 配置，约218.79M参数、640维、10层，micro-batch 128、梯度累积2并启用 gradient checkpointing；
-- `configs/legacy.yaml`：Full/1-token/AIS/无指纹/无 role embedding/linear head；
 - `configs/ablations/`：Base reference 和九个单因素消融配置；
 - `configs/archive/`：不可由当前 trainer 执行的历史 step 配置。
 
@@ -168,3 +167,43 @@ ilume-train --config configs/train_test.yaml
 ```
 
 当前正式训练器是单卡实现；不包含 DDP、TensorBoard 或自动实验矩阵调度。
+
+## Stage 2 物性监督对齐
+
+Stage 2 在保持 Stage 1 `forward(batch)` 不变的前提下，通过 `encode(batch)` 读取完整四模态 `fused_cls`。冻结教师的 CLS 先按 checkpoint 哈希写入缓存，训练时仅保留可训练学生：
+
+```text
+cation CLS + anion CLS + T ──> density / heat capacity / thermal expansion
+molecule CLS ────────────────> 11项 QM 标签
+solute CLS + solvent CLS ────> transfer free energy
+student entity CLS ──────────> MSE(frozen teacher entity CLS)
+```
+
+Stage 2 原始输入固定为 `data/stage2/<task>/{train,valid}.csv`。现有 split 原样保留；温度和标签 scaler 只由训练行拟合。实体特征严格复用 Stage 1 tokenizer、descriptor schema/scaler 和 fingerprint 合同，不重新拟合。无效实体、受影响行和重复条件分别写入审计 CSV；重复 density 观测不会聚合。
+
+完整准备会处理全量 Stage 2 数据并生成教师缓存，因此只在准备正式训练时执行：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 ilume-stage2-prepare --config configs/stage2_base.yaml
+```
+
+Stage 2 reference 默认按20-step块执行35/20/15/15/15任务比例，使用标准化 SmoothL1 加实体 CLS MSE；正式 Base/Large/XLarge 对比保持有效batch 256。Base reference 可这样启动：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+  ilume-stage2-train --config configs/stage2_base.yaml \
+  --lambda-alignment 0.1 \
+  --output-dir artifacts/stage2/training/comparisons/base_reference
+```
+
+恢复时必须使用相同有效配置与输出目录：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+  ilume-stage2-train --config configs/stage2_base.yaml \
+  --lambda-alignment 0.1 \
+  --output-dir artifacts/stage2/training/comparisons/base_reference \
+  --resume-from artifacts/stage2/training/comparisons/base_reference/checkpoint_step_00001000.pt
+```
+
+Stage 2 checkpoint 与 Stage 1 checkpoint v3 是两个显式不同的格式。它保存学生、回归头、优化器、任务游标、RNG、早停状态及 data/teacher/checkpoint 哈希，可从任意保存 step 恢复。采样/容量对比矩阵以及保留原生进度条的单卡串行命令见 [`configs/README.md`](configs/README.md#stage-2-对比矩阵)；详细决定见 ADR-0007。

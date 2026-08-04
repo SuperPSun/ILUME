@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from ilume_pretrain.config import load_config
+from ilume_pretrain.config import config_from_dict, load_config
 from ilume_pretrain.sampler import coverage_epoch_plan
 
 
@@ -38,9 +38,9 @@ def test_formal_profiles_use_five_coverage_epochs():
     large = load_config(ROOT / "configs/pretrain_large.yaml")
     xlarge = load_config(ROOT / "configs/pretrain_xlarge.yaml")
 
-    assert (base.training.batch_size, base.training.epochs) == (512, 5)
+    assert (base.training.batch_size, base.training.epochs) == (256, 5)
     assert base.training.gradient_accumulation_steps == 1
-    assert base.training.learning_rate == pytest.approx(4.0e-4)
+    assert base.training.learning_rate == pytest.approx(1.0e-4)
     assert (large.training.batch_size, large.training.epochs) == (256, 5)
     assert large.training.gradient_accumulation_steps == 1
     assert large.training.learning_rate == pytest.approx(1.0e-4)
@@ -67,23 +67,23 @@ def test_formal_profiles_use_five_coverage_epochs():
     )
 
     counts = (24908, 27907, 56532)
-    base_plan = coverage_epoch_plan(counts, 512, 1)
+    base_plan = coverage_epoch_plan(counts, 256, 1)
     large_plan = coverage_epoch_plan(counts, 256, 1)
     xlarge_plan = coverage_epoch_plan(counts, 128, 2)
     assert (base_plan.steps_per_epoch, base_plan.draws_per_epoch) == (
-        1105,
-        565760,
-    )
-    assert base_plan.role_quotas == (254592, 254592, 56576)
-    assert (large_plan.steps_per_epoch, large_plan.draws_per_epoch) == (
         2209,
         565504,
     )
-    assert large_plan.role_quotas == (254477, 254477, 56550)
-    assert xlarge_plan == large_plan
-    assert base_plan.draws_per_epoch * base.training.epochs == 2828800
+    assert base_plan.role_quotas == (254477, 254477, 56550)
+    assert base_plan == large_plan == xlarge_plan
+    assert base_plan.draws_per_epoch * base.training.epochs == 2827520
     assert large_plan.draws_per_epoch * large.training.epochs == 2827520
     assert xlarge_plan.draws_per_epoch * xlarge.training.epochs == 2827520
+
+
+def test_pretrain_config_round_trips_from_checkpoint_dictionary():
+    config = load_config(ROOT / "configs/pretrain_base.yaml")
+    assert config_from_dict(config.to_dict()) == config
 
 
 def test_ablation_configs_change_only_the_declared_factor():

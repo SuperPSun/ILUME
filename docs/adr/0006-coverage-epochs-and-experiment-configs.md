@@ -2,6 +2,7 @@
 
 - 状态：Accepted
 - 日期：2026-07-26
+- 部分取代：ADR-0008 已取代 Base micro-batch 与 learning rate profile；覆盖型 epoch 决定仍有效。
 
 ## 决定
 

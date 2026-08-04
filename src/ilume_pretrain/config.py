@@ -297,9 +297,7 @@ def _construct(section_type: type, values: dict[str, Any] | None) -> Any:
     return section_type(**values)
 
 
-def load_config(path: str | Path) -> PretrainConfig:
-    with Path(path).open(encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle) or {}
+def config_from_dict(raw: dict[str, Any]) -> PretrainConfig:
     unknown = set(raw) - set(_SECTIONS)
     if unknown:
         raise ValueError(f"Unknown config sections: {', '.join(sorted(unknown))}")
@@ -307,3 +305,11 @@ def load_config(path: str | Path) -> PretrainConfig:
     config = PretrainConfig(**parts)
     config.validate()
     return config
+
+
+def load_config(path: str | Path) -> PretrainConfig:
+    with Path(path).open(encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle) or {}
+    if not isinstance(raw, dict):
+        raise ValueError("Configuration root must be a mapping")
+    return config_from_dict(raw)
