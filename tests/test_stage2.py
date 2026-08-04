@@ -23,9 +23,11 @@ from ilume_pretrain.stage2_config import (
     Stage2DataConfig,
     Stage2InitializationConfig,
     Stage2TrainingConfig,
+    backbone_unfreeze_step,
     load_stage2_config,
 )
 from ilume_pretrain.stage2_data import (
+    ILSystemCursor,
     Stage2EntityDataset,
     Stage2TaskDataset,
     TaskBlockSampler,
@@ -34,15 +36,17 @@ from ilume_pretrain.stage2_data import (
     prepare_stage2_data,
 )
 from ilume_pretrain.stage2_model import (
+    PairEncoder,
     Stage2AlignmentModel,
     load_stage1_model,
+    masked_smooth_l1_loss,
     sha256_file,
 )
 from ilume_pretrain.stage2_prepare import (
     load_teacher_embeddings,
     prepare_teacher_cache,
 )
-from ilume_pretrain.stage2_training import run_stage2_training
+from ilume_pretrain.stage2_training import evaluate_stage2, run_stage2_training
 from ilume_pretrain.tokenizer import SmilesTokenizer
 
 
@@ -280,6 +284,146 @@ def test_stage2_prepare_preserves_duplicates_and_uses_train_only_scalers(
     assert duplicate_rows[0]["duplicate_targets"] == "2"
 
 
+def test_qm_partial_targets_are_masked_audited_and_validated(
+    tiny_stage2_setup,
+):
+    root = tiny_stage2_setup.data.stage2_dir
+    qm_fields = [
+        "SMILES",
+        "ESP_max",
+        "ESP_min",
+        "ESP_std",
+        "ESP_pos_frac",
+        "Dipole",
+        "Quadrupole",
+        "q_max",
+        "q_min",
+        "q_std",
+        "q_pos_frac",
+        "gap_eV",
+        "source_list",
+    ]
+    targets = qm_fields[1:-1]
+    complete = {name: index + 0.5 for index, name in enumerate(targets)}
+    partial = {name: value + 1 for name, value in complete.items()}
+    partial["ESP_max"] = ""
+    partial["gap_eV"] = "NaN"
+    all_missing = {name: "NA" for name in targets}
+    _write_csv(
+        root / "simulated_qm_elec_hf/train.csv",
+        qm_fields,
+        [
+            {"SMILES": "CC", **complete, "source_list": "simulation"},
+            {"SMILES": "CCO", **partial, "source_list": "simulation"},
+            {"SMILES": "CO", **all_missing, "source_list": "simulation"},
+        ],
+    )
+    valid = {name: value + 10 for name, value in complete.items()}
+    valid["gap_eV"] = "null"
+    _write_csv(
+        root / "simulated_qm_elec_hf/valid.csv",
+        qm_fields,
+        [{"SMILES": "CCC", **valid, "source_list": "simulation"}],
+    )
+
+    prepare_teacher_cache(tiny_stage2_setup)
+    metadata = json.loads(
+        (tiny_stage2_setup.data.artifacts_dir / "metadata.json").read_text()
+    )
+    assert metadata["format_version"] == 2
+    assert metadata["summary"]["partial_target_rows"] == 2
+    assert metadata["summary"]["all_target_missing_rows"] == 1
+    qm_train = Stage2TaskDataset(
+        tiny_stage2_setup.data.artifacts_dir,
+        "simulated_qm_elec_hf",
+        "train",
+    )
+    qm_valid = Stage2TaskDataset(
+        tiny_stage2_setup.data.artifacts_dir,
+        "simulated_qm_elec_hf",
+        "valid",
+    )
+    assert len(qm_train) == 2
+    assert qm_train.target_mask.sum(dim=1).tolist() == [11, 9]
+    assert not bool(qm_valid.target_mask[0, -1])
+    assert metadata["scalers"]["targets"]["gap_eV"]["count"] == 1
+    audit = list(
+        csv.DictReader(
+            (tiny_stage2_setup.data.artifacts_dir / "missing_targets.csv").open()
+        )
+    )
+    assert [row["action"] for row in audit].count("retained") == 2
+    assert [row["action"] for row in audit].count("excluded") == 1
+
+    loaded = load_stage1_model(
+        tiny_stage2_setup.initialization.checkpoint,
+        tiny_stage2_setup.data.pretrain_artifacts_dir,
+        backbone_dropout=0.0,
+    )
+    entity_dataset = Stage2EntityDataset(tiny_stage2_setup.data.artifacts_dir)
+    teacher = load_teacher_embeddings(
+        tiny_stage2_setup,
+        checkpoint_hash=loaded.checkpoint_hash,
+        expected_count=len(entity_dataset),
+        expected_dim=loaded.config.model.d_model,
+    )
+    metrics = evaluate_stage2(
+        Stage2AlignmentModel(loaded.model, head_dropout=0.0),
+        {
+            task: Stage2TaskDataset(
+                tiny_stage2_setup.data.artifacts_dir, task, "valid"
+            )
+            for task in (
+                "simulated_qm_elec_hf",
+                "density",
+                "heat_capacity",
+                "thermal_expansion",
+                "transfer_organic",
+            )
+        },
+        entity_dataset,
+        MultimodalPacker(loaded.vocabulary),
+        teacher,
+        metadata["scalers"],
+        tiny_stage2_setup,
+        torch.device("cpu"),
+        full=True,
+    )
+    prefix = "valid_simulated_qm_elec_hf_gap_eV"
+    assert metrics[f"{prefix}_count"] == 0
+    assert torch.isnan(torch.tensor(metrics[f"{prefix}_mae"]))
+    assert torch.isfinite(
+        torch.tensor(metrics["valid_simulated_qm_elec_hf_normalized_mae"])
+    )
+
+
+def test_qm_masked_loss_weights_available_labels_equally():
+    predictions = torch.tensor(
+        [[2.0, 2.0], [0.0, 2.0]],
+        requires_grad=True,
+    )
+    targets = torch.zeros_like(predictions)
+    mask = torch.tensor([[True, True], [False, True]])
+    loss = masked_smooth_l1_loss(predictions, targets, mask)
+
+    assert loss.item() == pytest.approx(1.5)
+    loss.backward()
+    assert predictions.grad[1, 0].item() == 0.0
+
+
+def test_qm_train_column_cannot_be_entirely_missing(tiny_stage2_setup):
+    path = (
+        tiny_stage2_setup.data.stage2_dir
+        / "simulated_qm_elec_hf/train.csv"
+    )
+    rows = list(csv.DictReader(path.open()))
+    rows[0]["gap_eV"] = "N/A"
+    _write_csv(path, tuple(rows[0]), rows)
+
+    with pytest.raises(ValueError, match="gap_eV"):
+        prepare_stage2_data(tiny_stage2_setup)
+
+
 def test_teacher_cache_and_stage2_backward_start_from_aligned_embeddings(
     tiny_stage2_setup,
 ):
@@ -312,19 +456,79 @@ def test_teacher_cache_and_stage2_backward_start_from_aligned_embeddings(
     )
     model = Stage2AlignmentModel(loaded.model, head_dropout=0.0)
     model.eval()
+    model.set_backbone_trainable(False)
     output = model(
         batch.task,
         batch.entities,
         batch.entity_positions,
         batch.conditions,
         batch.targets,
+        batch.target_mask,
         batch.teacher_embeddings,
         lambda_alignment=0.1,
     )
     assert output.alignment_loss.item() == pytest.approx(0.0, abs=1.0e-12)
     output.total_loss.backward()
+    assert loaded.model.fusion.cls_token.grad is None
+    assert model.il_pair_encoder.main[0].weight.grad is not None
+    assert model.regressors["density"].layers[0].weight.grad is not None
+    assert loaded.model.smiles_head.bias.grad is None
+
+    model.zero_grad(set_to_none=True)
+    model.set_backbone_trainable(True)
+    output = model(
+        batch.task,
+        batch.entities,
+        batch.entity_positions,
+        batch.conditions,
+        batch.targets,
+        batch.target_mask,
+        batch.teacher_embeddings,
+        lambda_alignment=0.1,
+    )
+    output.total_loss.backward()
     assert loaded.model.fusion.cls_token.grad is not None
     assert loaded.model.smiles_head.bias.grad is None
+
+
+def test_pair_encoders_preserve_order_and_regression_heads_are_independent(
+    tiny_stage2_setup,
+):
+    loaded = load_stage1_model(
+        tiny_stage2_setup.initialization.checkpoint,
+        tiny_stage2_setup.data.pretrain_artifacts_dir,
+        backbone_dropout=0.0,
+    )
+    model = Stage2AlignmentModel(loaded.model, head_dropout=0.0)
+    d_model = loaded.config.model.d_model
+    left = torch.randn(3, d_model)
+    right = torch.randn(3, d_model)
+
+    encoded = model.il_pair_encoder(left, right)
+    reversed_encoded = model.il_pair_encoder(right, left)
+    assert encoded.shape == (3, d_model)
+    assert not torch.equal(encoded, reversed_encoded)
+    assert model.il_pair_encoder is not model.transfer_pair_encoder
+    parameter_sets = [
+        {id(parameter) for parameter in model.regressors[task].parameters()}
+        for task in (
+            "simulated_qm_elec_hf",
+            "density",
+            "heat_capacity",
+            "thermal_expansion",
+            "transfer_organic",
+        )
+    ]
+    assert all(
+        left_parameters.isdisjoint(right_parameters)
+        for index, left_parameters in enumerate(parameter_sets)
+        for right_parameters in parameter_sets[index + 1 :]
+    )
+
+
+def test_pair_encoder_standalone_shape():
+    encoder = PairEncoder(8, dropout=0.0)
+    assert encoder(torch.randn(2, 8), torch.randn(2, 8)).shape == (2, 8)
 
 
 def test_stage2_task_schedule_and_cursor_resume_are_exact():
@@ -354,6 +558,30 @@ def test_stage2_task_schedule_and_cursor_resume_are_exact():
     assert torch.equal(restored.next_indices(6), expected)
 
 
+def test_il_system_cursor_balances_systems_and_cycles_rows_without_replacement():
+    offsets = torch.tensor([0, 100, 102])
+    rows = torch.arange(102)
+    cursor = ILSystemCursor(offsets, rows, seed=17)
+    selected = cursor.next_indices(200)
+
+    for start in range(0, 200, 2):
+        systems = {0 if value < 100 else 1 for value in selected[start : start + 2]}
+        assert systems == {0, 1}
+    large_system = selected[selected < 100]
+    assert len(set(large_system.tolist())) == 100
+    small_system = selected[selected >= 100]
+    for start in range(0, 100, 2):
+        assert len(set(small_system[start : start + 2].tolist())) == 2
+
+    resumed_source = ILSystemCursor(offsets, rows, seed=17)
+    resumed_source.next_indices(37)
+    state = resumed_source.state_dict()
+    expected = resumed_source.next_indices(29)
+    restored = ILSystemCursor(offsets, rows, seed=17)
+    restored.load_state_dict(state)
+    assert torch.equal(restored.next_indices(29), expected)
+
+
 def test_formal_stage2_sampling_configs_preserve_transfer_coverage():
     profiles = {
         "reference": (
@@ -381,7 +609,12 @@ def test_formal_stage2_sampling_configs_preserve_transfer_coverage():
         "transfer_organic",
     )
     checkpoints = set()
-    for config, expected_quotas in profiles.values():
+    expected_unfreeze_steps = {
+        "reference": 2340,
+        "balanced": 1760,
+        "il_heavy": 3520,
+    }
+    for name, (config, expected_quotas) in profiles.items():
         effective_batch = (
             config.training.batch_size
             * config.training.gradient_accumulation_steps
@@ -406,6 +639,12 @@ def test_formal_stage2_sampling_configs_preserve_transfer_coverage():
         assert config.data.seed == 42
         assert config.loss.lambda_alignment == pytest.approx(0.1)
         assert config.training.amp_dtype == "bf16"
+        assert config.training.backbone_freeze_fraction == pytest.approx(0.10)
+        assert backbone_unfreeze_step(config) == expected_unfreeze_steps[name]
+        assert config.data.artifacts_dir == Path("artifacts/stage_v2/data")
+        assert str(config.training.output_dir).startswith(
+            "artifacts/stage_v2/training/comparisons/"
+        )
         checkpoints.add(config.initialization.checkpoint)
     assert len(checkpoints) == 1
 
@@ -434,6 +673,7 @@ def test_formal_stage2_model_size_configs_share_training_budget():
             * config.training.gradient_accumulation_steps
             == 256
         )
+        assert backbone_unfreeze_step(config) == 2340
     assert len(
         {config.initialization.checkpoint for config in configs.values()}
     ) == len(configs)
@@ -461,7 +701,9 @@ def test_stage2_trainer_checkpoints_and_resumes_exactly(
         tiny_stage2_setup,
         training=replace(
             tiny_stage2_setup.training,
-            validation_interval_steps=10,
+            max_steps=40,
+            backbone_freeze_fraction=0.50,
+            validation_interval_steps=20,
             early_stopping_patience=3,
             keep_last_checkpoints=2,
         ),
@@ -470,15 +712,23 @@ def test_stage2_trainer_checkpoints_and_resumes_exactly(
     capsys.readouterr()
     first = run_stage2_training(config)
     capsys.readouterr()
-    assert len(first) == 20
-    assert [row["global_step"] for row in first] == list(range(1, 21))
-    checkpoint = config.training.output_dir / "checkpoint_step_00000010.pt"
+    assert len(first) == 40
+    assert [row["global_step"] for row in first] == list(range(1, 41))
+    assert {row["training_phase"] for row in first[:20]} == {"heads_only"}
+    assert {row["training_phase"] for row in first[20:]} == {
+        "backbone_trainable"
+    }
+    assert {row["backbone_learning_rate"] for row in first[:20]} == {0.0}
+    assert first[20]["backbone_learning_rate"] > 0.0
+    checkpoint = config.training.output_dir / "checkpoint_step_00000020.pt"
     payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
-    assert payload["format_version"] == 1
+    assert payload["format_version"] == 2
     assert payload["kind"] == "ilume_stage2_alignment"
-    assert payload["global_step"] == 10
-    assert payload["micro_step"] == 10
-    assert sum(payload["task_counts"].values()) == 20
+    assert payload["global_step"] == 20
+    assert payload["micro_step"] == 20
+    assert payload["backbone_unfreeze_step"] == 20
+    assert payload["training_phase"] == "backbone_trainable"
+    assert sum(payload["task_counts"].values()) == 40
 
     resumed = replace(
         config,
@@ -486,10 +736,20 @@ def test_stage2_trainer_checkpoints_and_resumes_exactly(
     )
     second = run_stage2_training(resumed)
     capsys.readouterr()
-    assert [row["task"] for row in second] == [row["task"] for row in first[10:]]
+    assert [row["task"] for row in second] == [row["task"] for row in first[20:]]
     assert [row["loss"] for row in second] == pytest.approx(
-        [row["loss"] for row in first[10:]], abs=1.0e-7
+        [row["loss"] for row in first[20:]], abs=1.0e-7
     )
+
+    legacy_checkpoint = config.training.output_dir / "legacy_v1.pt"
+    payload["format_version"] = 1
+    torch.save(payload, legacy_checkpoint)
+    legacy_resume = replace(
+        config,
+        training=replace(config.training, resume_from=legacy_checkpoint),
+    )
+    with pytest.raises(ValueError, match="Unsupported Stage 2 checkpoint"):
+        run_stage2_training(legacy_resume)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
@@ -531,6 +791,7 @@ def test_stage2_cuda_minimal_forward_backward(tiny_stage2_setup):
         batch.entity_positions,
         batch.conditions,
         batch.targets,
+        batch.target_mask,
         batch.teacher_embeddings,
         lambda_alignment=0.1,
     )

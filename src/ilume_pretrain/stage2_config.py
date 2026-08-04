@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,7 @@ STAGE2_TASKS = (
 class Stage2DataConfig:
     stage2_dir: Path = Path("data/stage2")
     pretrain_artifacts_dir: Path = Path("artifacts/pretrain_base")
-    artifacts_dir: Path = Path("artifacts/stage2/data")
+    artifacts_dir: Path = Path("artifacts/stage_v2/data")
     entity_shard_size: int = 4096
     shard_cache_size: int = 10
     teacher_batch_size: int = 256
@@ -68,6 +69,7 @@ class Stage2TrainingConfig:
     head_learning_rate: float = 1.0e-4
     weight_decay: float = 0.01
     warmup_fraction: float = 0.05
+    backbone_freeze_fraction: float = 0.10
     max_grad_norm: float = 1.0
     device: str = "auto"
     amp_dtype: str = "bf16"
@@ -76,7 +78,7 @@ class Stage2TrainingConfig:
     early_stopping_min_delta: float = 1.0e-4
     keep_last_checkpoints: int = 3
     output_dir: Path = Path(
-        "artifacts/stage2/training/comparisons/base_reference"
+        "artifacts/stage_v2/training/comparisons/base_reference"
     )
     resume_from: Path | None = None
 
@@ -151,6 +153,10 @@ class Stage2Config:
             raise ValueError("training.weight_decay must be non-negative")
         if not 0.0 <= training.warmup_fraction < 1.0:
             raise ValueError("training.warmup_fraction must be in [0, 1)")
+        if not 0.0 <= training.backbone_freeze_fraction < 1.0:
+            raise ValueError(
+                "training.backbone_freeze_fraction must be in [0, 1)"
+            )
         if training.max_grad_norm < 0.0:
             raise ValueError("training.max_grad_norm must be non-negative")
         if training.amp_dtype not in {"bf16", "fp16", "none"}:
@@ -227,3 +233,19 @@ def load_stage2_config(path: str | Path) -> Stage2Config:
     if not isinstance(raw, dict):
         raise ValueError("Stage 2 configuration root must be a mapping")
     return stage2_config_from_dict(raw)
+
+
+def backbone_unfreeze_step(config: Stage2Config) -> int:
+    """Round the frozen phase to the nearest complete task block."""
+    fraction = config.training.backbone_freeze_fraction
+    if fraction == 0.0:
+        return 0
+    block_size = config.sampling.block_size
+    block_count = config.training.max_steps // block_size
+    frozen_blocks = math.floor(
+        config.training.max_steps * fraction / block_size + 0.5
+    )
+    if block_count <= 1:
+        return 0
+    frozen_blocks = min(max(frozen_blocks, 1), block_count - 1)
+    return frozen_blocks * block_size

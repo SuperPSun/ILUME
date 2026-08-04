@@ -52,23 +52,25 @@ Base 的现役训练参数为micro-batch 256和learning rate `1e-4`。已有 che
 
 ## Stage 2 配置
 
-Stage 2 配置与 `PretrainConfig` 分离，模型结构从 checkpoint v3 恢复，不在 YAML 中重复声明。Base、Large 与 XLarge 的 Stage 1 artifact 合同哈希相同，共享 `artifacts/stage2/data` 下的实体和任务工件；冻结教师 CLS 位于该目录的 `teachers/<checkpoint-sha256>/`。
+Stage 2 配置与 `PretrainConfig` 分离，模型结构从 checkpoint v3 恢复，不在 YAML 中重复声明。Base、Large 与 XLarge 的 Stage 1 artifact 合同哈希相同，共享 `artifacts/stage_v2/data` 下的实体和任务工件；冻结教师 CLS 位于该目录的 `teachers/<checkpoint-sha256>/`。旧 `artifacts/stage2/` 和 Stage 2 v1 checkpoint 只保留审计，不能恢复到 v2 trainer。
 
-`sampling.probabilities` 必须包含五个任务且总和为1；概率乘以 `sampling.block_size` 必须为整数。默认20-step块对应7/4/3/3/3。`--lambda-alignment`、`--output-dir` 和 `--resume-from` 会形成有效配置并参与 checkpoint 一致性校验。
+`sampling.probabilities` 必须包含五个任务且总和为1；概率乘以 `sampling.block_size` 必须为整数。默认20-step块对应7/4/3/3/3。三个 IL 任务内部按有序 cation/anion 体系无放回采样，并在每次体系访问时无放回轮换一个条件点；QM 和 transfer 保持逐行采样。验证仍按行统计。
 
-当前 Stage 2 data artifact 含10个实体 shard，正式配置使用 `shard_cache_size: 10` 将它们全部保留在主机内存。较小缓存会在随机实体批次间反复反序列化约60 MiB的 shard，使GPU长时间等待；数据重建后若 shard 数变化，应同步复核该值。
+三项 IL 共享一个交互 PairEncoder，transfer 使用独立 PairEncoder，五个回归 MLP 参数互不共享。`training.backbone_freeze_fraction: 0.10` 先训练新模块，再在最近的完整20-step块解冻编码 backbone；新模块和 backbone 使用各自的 warmup+cosine。QM 支持部分缺失标签，并按有效标签列等权计算 masked SmoothL1。`--lambda-alignment`、`--output-dir` 和 `--resume-from` 会形成有效配置并参与 checkpoint 一致性校验。
+
+旧 v1 Stage 2 data artifact 含10个实体 shard，v2 正式配置继续使用 `shard_cache_size: 10`。首次完整生成 `artifacts/stage_v2/data` 后必须根据 metadata 复核实际 shard 数；较小缓存可能反复反序列化约60 MiB的 shard，使GPU长时间等待。
 
 ### Stage 2 对比矩阵
 
 下表中的比例顺序为QM/density/heat capacity/thermal expansion/transfer。三种Base采样策略均让transfer执行3,516个optimizer step，即抽样900,096行，覆盖当前899,992行transfer训练集一次。模型容量对比固定默认采样、有效batch 256和23,440个optimizer step。
 
-| 配置 | 采样比例 | 20-step配额 | micro-batch × accumulation | max steps |
-|---|---|---|---:|---:|
-| `stage2_base.yaml` | 35/20/15/15/15 | 7/4/3/3/3 | 256 × 1 | 23,440 |
-| `stage2_base_sampling_balanced.yaml` | 20/20/20/20/20 | 4/4/4/4/4 | 256 × 1 | 17,580 |
-| `stage2_base_sampling_il_heavy.yaml` | 10/30/25/25/10 | 2/6/5/5/2 | 256 × 1 | 35,160 |
-| `stage2_large.yaml` | 35/20/15/15/15 | 7/4/3/3/3 | 128 × 2 | 23,440 |
-| `stage2_xlarge.yaml` | 35/20/15/15/15 | 7/4/3/3/3 | 64 × 4 | 23,440 |
+| 配置 | 采样比例 | 20-step配额 | micro-batch × accumulation | 解冻step | max steps |
+|---|---|---|---:|---:|---:|
+| `stage2_base.yaml` | 35/20/15/15/15 | 7/4/3/3/3 | 256 × 1 | 2,340 | 23,440 |
+| `stage2_base_sampling_balanced.yaml` | 20/20/20/20/20 | 4/4/4/4/4 | 256 × 1 | 1,760 | 17,580 |
+| `stage2_base_sampling_il_heavy.yaml` | 10/30/25/25/10 | 2/6/5/5/2 | 256 × 1 | 3,520 | 35,160 |
+| `stage2_large.yaml` | 35/20/15/15/15 | 7/4/3/3/3 | 128 × 2 | 2,340 | 23,440 |
+| `stage2_xlarge.yaml` | 35/20/15/15/15 | 7/4/3/3/3 | 64 × 4 | 2,340 | 23,440 |
 
 ### 单卡串行运行
 
@@ -78,7 +80,7 @@ Stage 2 配置与 `PretrainConfig` 分离，模型结构从 checkpoint v3 恢复
 bash <<'BASH'
 set -u
 
-log_dir=artifacts/stage2/training/comparisons/logs
+log_dir=artifacts/stage_v2/training/comparisons/logs
 mkdir -p "$log_dir"
 
 run_and_continue() {
@@ -106,19 +108,19 @@ run_and_continue base_reference \
   env CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
   ilume-stage2-train --config configs/stage2_base.yaml \
   --lambda-alignment 0.1 \
-  --output-dir artifacts/stage2/training/comparisons/base_reference
+  --output-dir artifacts/stage_v2/training/comparisons/base_reference
 
 run_and_continue base_sampling_balanced \
   env CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
   ilume-stage2-train --config configs/stage2_base_sampling_balanced.yaml \
   --lambda-alignment 0.1 \
-  --output-dir artifacts/stage2/training/comparisons/base_sampling_balanced
+  --output-dir artifacts/stage_v2/training/comparisons/base_sampling_balanced
 
 run_and_continue base_sampling_il_heavy \
   env CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
   ilume-stage2-train --config configs/stage2_base_sampling_il_heavy.yaml \
   --lambda-alignment 0.1 \
-  --output-dir artifacts/stage2/training/comparisons/base_sampling_il_heavy
+  --output-dir artifacts/stage_v2/training/comparisons/base_sampling_il_heavy
 
 run_and_continue large_prepare \
   env CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
@@ -128,7 +130,7 @@ run_and_continue large_reference \
   env CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
   ilume-stage2-train --config configs/stage2_large.yaml \
   --lambda-alignment 0.1 \
-  --output-dir artifacts/stage2/training/comparisons/large_reference
+  --output-dir artifacts/stage_v2/training/comparisons/large_reference
 
 run_and_continue xlarge_prepare \
   env CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
@@ -138,6 +140,6 @@ run_and_continue xlarge_reference \
   env CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
   ilume-stage2-train --config configs/stage2_xlarge.yaml \
   --lambda-alignment 0.1 \
-  --output-dir artifacts/stage2/training/comparisons/xlarge_reference
+  --output-dir artifacts/stage_v2/training/comparisons/xlarge_reference
 BASH
 ```

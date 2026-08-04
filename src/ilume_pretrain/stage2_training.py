@@ -14,8 +14,14 @@ import torch.nn.functional as F
 
 from .masking import MultimodalPacker
 from .progress import ProgressReporter
-from .stage2_config import STAGE2_TASKS, Stage2Config
+from .stage2_config import (
+    STAGE2_TASKS,
+    Stage2Config,
+    backbone_unfreeze_step,
+)
 from .stage2_data import (
+    IL_TASKS,
+    ILSystemCursor,
     Stage2EntityDataset,
     Stage2TaskDataset,
     TaskBlockSampler,
@@ -31,7 +37,7 @@ from .stage2_model import (
 from .stage2_prepare import load_teacher_embeddings, resolve_device
 
 
-STAGE2_CHECKPOINT_VERSION = 1
+STAGE2_CHECKPOINT_VERSION = 2
 
 
 def _config_hash(config: Stage2Config) -> str:
@@ -66,13 +72,31 @@ def _lr_lambda(step: int, total_steps: int, warmup_fraction: float) -> float:
     return 0.5 * (1.0 + math.cos(math.pi * min(1.0, progress)))
 
 
+def _backbone_lr_lambda(
+    step: int,
+    total_steps: int,
+    warmup_fraction: float,
+    unfreeze_step: int,
+) -> float:
+    if step < unfreeze_step:
+        return 0.0
+    return _lr_lambda(
+        step - unfreeze_step,
+        total_steps - unfreeze_step,
+        warmup_fraction,
+    )
+
+
 def _initial_backbone_reference(
     model: Stage2AlignmentModel,
 ) -> dict[str, torch.Tensor]:
+    backbone_parameter_ids = {
+        id(parameter) for parameter in model.backbone_parameters()
+    }
     return {
         name: parameter.detach().cpu().to(torch.float16).clone()
         for name, parameter in model.backbone.named_parameters()
-        if parameter.requires_grad
+        if id(parameter) in backbone_parameter_ids
     }
 
 
@@ -149,6 +173,7 @@ def evaluate_stage2(
         squared = torch.zeros(output_count, dtype=torch.float64)
         target_sum = torch.zeros(output_count, dtype=torch.float64)
         target_squared = torch.zeros(output_count, dtype=torch.float64)
+        target_counts = torch.zeros(output_count, dtype=torch.long)
         alignment_sum = 0.0
         cosine_sum = 0.0
         row_count = 0
@@ -168,22 +193,30 @@ def evaluate_stage2(
                 batch.entity_positions,
                 batch.conditions,
                 batch.targets,
+                batch.target_mask,
                 batch.teacher_embeddings,
                 lambda_alignment=config.loss.lambda_alignment,
             )
             size = int(selected.numel())
-            normalized_absolute += torch.abs(
-                output.predictions.detach().cpu() - batch.targets.detach().cpu()
-            ).double().sum(dim=0)
+            mask = batch.target_mask.detach().cpu()
+            mask_float = mask.double()
+            normalized_difference = (
+                output.predictions.detach().cpu()
+                - batch.targets.detach().cpu()
+            ).double()
+            normalized_absolute += (
+                torch.abs(normalized_difference) * mask_float
+            ).sum(dim=0)
             predicted_raw = _inverse_targets(
                 output.predictions, dataset.target_columns, scalers
             ).double()
             target_raw = dataset.targets[selected].double()
             difference = predicted_raw - target_raw
-            absolute += torch.abs(difference).sum(dim=0)
-            squared += torch.square(difference).sum(dim=0)
-            target_sum += target_raw.sum(dim=0)
-            target_squared += torch.square(target_raw).sum(dim=0)
+            absolute += (torch.abs(difference) * mask_float).sum(dim=0)
+            squared += (torch.square(difference) * mask_float).sum(dim=0)
+            target_sum += (target_raw * mask_float).sum(dim=0)
+            target_squared += (torch.square(target_raw) * mask_float).sum(dim=0)
+            target_counts += mask.sum(dim=0)
             alignment_sum += float(output.alignment_loss.detach().cpu()) * size
             cosine = F.cosine_similarity(
                 output.student_slots,
@@ -192,8 +225,11 @@ def evaluate_stage2(
             ).mean(dim=1)
             cosine_sum += float(cosine.sum().detach().cpu())
             row_count += size
-        normalized_by_target = normalized_absolute / row_count
-        task_normalized = float(normalized_by_target.mean())
+        valid_targets = target_counts > 0
+        if not bool(valid_targets.any()):
+            raise ValueError(f"Stage 2 validation has no targets for {task}")
+        normalized_by_target = normalized_absolute / target_counts.clamp_min(1)
+        task_normalized = float(normalized_by_target[valid_targets].mean())
         task_normalized_maes.append(task_normalized)
         prefix = f"valid_{task}"
         result[f"{prefix}_rows"] = row_count
@@ -201,11 +237,18 @@ def evaluate_stage2(
         result[f"{prefix}_alignment_mse"] = alignment_sum / row_count
         result[f"{prefix}_alignment_cosine"] = cosine_sum / row_count
         for index, name in enumerate(dataset.target_columns):
-            mae = float(absolute[index] / row_count)
-            rmse = math.sqrt(float(squared[index] / row_count))
+            count = int(target_counts[index])
+            result[f"{prefix}_{name}_count"] = count
+            if count == 0:
+                result[f"{prefix}_{name}_mae"] = float("nan")
+                result[f"{prefix}_{name}_rmse"] = float("nan")
+                result[f"{prefix}_{name}_r2"] = float("nan")
+                continue
+            mae = float(absolute[index] / count)
+            rmse = math.sqrt(float(squared[index] / count))
             total_variance = float(
                 target_squared[index]
-                - torch.square(target_sum[index]) / row_count
+                - torch.square(target_sum[index]) / count
             )
             r2 = (
                 1.0 - float(squared[index]) / total_variance
@@ -242,7 +285,7 @@ def _save_checkpoint(
     scaler: torch.amp.GradScaler,
     global_step: int,
     micro_step: int,
-    cursors: dict[str, TaskCursor],
+    cursors: dict[str, TaskCursor | ILSystemCursor],
     task_counts: dict[str, int],
     best_metric: float,
     validations_without_improvement: int,
@@ -251,6 +294,7 @@ def _save_checkpoint(
     data_metadata_hash: str,
     teacher_embeddings_hash: str,
     checkpoint_hash: str,
+    backbone_unfreeze: int,
 ) -> None:
     _atomic_torch_save(
         path,
@@ -280,6 +324,12 @@ def _save_checkpoint(
             "data_metadata_hash": data_metadata_hash,
             "teacher_embeddings_hash": teacher_embeddings_hash,
             "pretrain_checkpoint_hash": checkpoint_hash,
+            "backbone_unfreeze_step": backbone_unfreeze,
+            "training_phase": (
+                "backbone_trainable"
+                if global_step >= backbone_unfreeze
+                else "heads_only"
+            ),
         },
     )
 
@@ -304,6 +354,8 @@ def run_stage2_training(
         loaded.model,
         head_dropout=config.model.head_dropout,
     ).to(device)
+    unfreeze_step = backbone_unfreeze_step(config)
+    model.set_backbone_trainable(unfreeze_step == 0)
     initial_backbone = _initial_backbone_reference(model)
     entity_dataset = Stage2EntityDataset(
         config.data.artifacts_dir,
@@ -335,12 +387,17 @@ def run_stage2_training(
         for task in STAGE2_TASKS
     }
     packer = MultimodalPacker(loaded.vocabulary)
-    cursors = {
-        task: TaskCursor(
-            len(dataset), config.data.seed + 10000 * (index + 1)
-        )
-        for index, (task, dataset) in enumerate(train_datasets.items())
-    }
+    cursors: dict[str, TaskCursor | ILSystemCursor] = {}
+    for index, (task, dataset) in enumerate(train_datasets.items()):
+        cursor_seed = config.data.seed + 10000 * (index + 1)
+        if task in IL_TASKS:
+            cursors[task] = ILSystemCursor(
+                dataset.system_offsets,
+                dataset.system_rows,
+                cursor_seed,
+            )
+        else:
+            cursors[task] = TaskCursor(len(dataset), cursor_seed)
     task_sampler = TaskBlockSampler(
         config.sampling.probabilities,
         config.sampling.block_size,
@@ -356,10 +413,18 @@ def run_stage2_training(
     )
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
-        lambda step: _lr_lambda(
-            step,
-            config.training.max_steps,
-            config.training.warmup_fraction,
+        (
+            lambda step: _backbone_lr_lambda(
+                step,
+                config.training.max_steps,
+                config.training.warmup_fraction,
+                unfreeze_step,
+            ),
+            lambda step: _lr_lambda(
+                step,
+                config.training.max_steps,
+                config.training.warmup_fraction,
+            ),
         ),
     )
     fp16 = config.training.amp_dtype == "fp16" and device.type == "cuda"
@@ -401,6 +466,10 @@ def run_stage2_training(
         for key, value in expected.items():
             if checkpoint.get(key) != value:
                 raise ValueError(f"Stage 2 checkpoint {key} does not match")
+        if checkpoint.get("backbone_unfreeze_step") != unfreeze_step:
+            raise ValueError(
+                "Stage 2 checkpoint backbone unfreeze step does not match"
+            )
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])
@@ -431,6 +500,8 @@ def run_stage2_training(
         _restore_rng_state(checkpoint["rng"])
     if global_step > config.training.max_steps:
         raise ValueError("Stage 2 checkpoint is beyond configured max_steps")
+    backbone_trainable = global_step >= unfreeze_step
+    model.set_backbone_trainable(backbone_trainable)
 
     reporter = ProgressReporter()
     results: list[dict[str, float | int | str]] = []
@@ -444,10 +515,19 @@ def run_stage2_training(
         unit="step",
     ) as progress:
         while global_step < config.training.max_steps:
+            should_train_backbone = global_step >= unfreeze_step
+            if should_train_backbone != backbone_trainable:
+                model.set_backbone_trainable(should_train_backbone)
+                backbone_trainable = should_train_backbone
+            training_phase = (
+                "backbone_trainable" if backbone_trainable else "heads_only"
+            )
             task = task_sampler.task_for_step(global_step)
             supervised_total = 0.0
             alignment_total = 0.0
             total_loss_value = 0.0
+            backbone_learning_rate = optimizer.param_groups[0]["lr"]
+            head_learning_rate = optimizer.param_groups[1]["lr"]
             for _ in range(config.training.gradient_accumulation_steps):
                 indices = cursors[task].next_indices(config.training.batch_size)
                 batch = build_stage2_batch(
@@ -469,6 +549,7 @@ def run_stage2_training(
                         batch.entity_positions,
                         batch.conditions,
                         batch.targets,
+                        batch.target_mask,
                         batch.teacher_embeddings,
                         lambda_alignment=config.loss.lambda_alignment,
                     )
@@ -514,8 +595,11 @@ def run_stage2_training(
                 "loss_supervised": supervised_total / divisor,
                 "loss_alignment": alignment_total / divisor,
                 "lambda_alignment": config.loss.lambda_alignment,
-                "backbone_learning_rate": optimizer.param_groups[0]["lr"],
-                "head_learning_rate": optimizer.param_groups[1]["lr"],
+                "training_phase": training_phase,
+                "backbone_trainable": int(backbone_trainable),
+                "backbone_unfreeze_step": unfreeze_step,
+                "backbone_learning_rate": backbone_learning_rate,
+                "head_learning_rate": head_learning_rate,
                 **{
                     f"samples_{name}": count
                     for name, count in task_counts.items()
@@ -593,6 +677,7 @@ def run_stage2_training(
                     data_metadata_hash=data_metadata_hash,
                     teacher_embeddings_hash=teacher_embeddings_hash,
                     checkpoint_hash=loaded.checkpoint_hash,
+                    backbone_unfreeze=unfreeze_step,
                 )
                 if improved:
                     _save_checkpoint(
@@ -614,6 +699,7 @@ def run_stage2_training(
                         data_metadata_hash=data_metadata_hash,
                         teacher_embeddings_hash=teacher_embeddings_hash,
                         checkpoint_hash=loaded.checkpoint_hash,
+                        backbone_unfreeze=unfreeze_step,
                     )
                 checkpoints = sorted(output_dir.glob("checkpoint_step_*.pt"))
                 for stale in checkpoints[: -config.training.keep_last_checkpoints]:

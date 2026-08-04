@@ -1,5 +1,28 @@
 /data/
-/artifacts/
+# Keep artifact metadata, configs, metrics, and audits trackable. Ignore only
+# heavyweight model/tensor payloads, generated data indexes, and terminal logs.
+/artifacts/**/*.pt
+/artifacts/**/*.pth
+/artifacts/**/*.ckpt
+/artifacts/**/*.safetensors
+/artifacts/**/*.bin
+/artifacts/**/*.npy
+/artifacts/**/*.npz
+/artifacts/**/*.parquet
+/artifacts/**/*.arrow
+/artifacts/**/*.feather
+/artifacts/**/*.h5
+/artifacts/**/*.hdf5
+/artifacts/**/*.pkl
+/artifacts/**/*.joblib
+/artifacts/**/*.zip
+/artifacts/**/*.tar
+/artifacts/**/*.tar.gz
+/artifacts/**/*.log
+/artifacts/**/*.tmp
+/artifacts/**/corpus_index.json
+/artifacts/**/entity_index.json
+/artifacts/**/manifest.csv
 /.pytest_cache/
 __pycache__/
 *.py[cod]

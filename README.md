@@ -179,7 +179,7 @@ solute CLS + solvent CLS ────> transfer free energy
 student entity CLS ──────────> MSE(frozen teacher entity CLS)
 ```
 
-Stage 2 原始输入固定为 `data/stage2/<task>/{train,valid}.csv`。现有 split 原样保留；温度和标签 scaler 只由训练行拟合。实体特征严格复用 Stage 1 tokenizer、descriptor schema/scaler 和 fingerprint 合同，不重新拟合。无效实体、受影响行和重复条件分别写入审计 CSV；重复 density 观测不会聚合。
+Stage 2 原始输入固定为 `data/stage2/<task>/{train,valid}.csv`。现有 split 原样保留；温度和标签 scaler 只由训练行拟合。QM 部分缺失标签通过 mask 保留，全缺失行排除并审计。实体特征严格复用 Stage 1 tokenizer、descriptor schema/scaler 和 fingerprint 合同，不重新拟合。无效实体、受影响行和重复条件分别写入审计 CSV；重复 density 观测不会聚合。
 
 完整准备会处理全量 Stage 2 数据并生成教师缓存，因此只在准备正式训练时执行：
 
@@ -187,13 +187,13 @@ Stage 2 原始输入固定为 `data/stage2/<task>/{train,valid}.csv`。现有 sp
 CUDA_VISIBLE_DEVICES=0 ilume-stage2-prepare --config configs/stage2_base.yaml
 ```
 
-Stage 2 reference 默认按20-step块执行35/20/15/15/15任务比例，使用标准化 SmoothL1 加实体 CLS MSE；正式 Base/Large/XLarge 对比保持有效batch 256。Base reference 可这样启动：
+Stage 2 reference 默认按20-step块执行35/20/15/15/15任务比例。三类 IL 在任务内先均匀抽取 cation/anion 体系，再从体系内无放回轮换一个温度点；QM 和 transfer 仍逐行抽样。三类 IL 共享交互 PairEncoder，但五个回归器参数独立。训练前10%完整任务块只更新新模块，随后解冻编码 backbone；监督项使用 masked 标准化 SmoothL1，并加入实体 CLS MSE。正式 Base/Large/XLarge 对比保持有效batch 256。Base reference 可这样启动：
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
   ilume-stage2-train --config configs/stage2_base.yaml \
   --lambda-alignment 0.1 \
-  --output-dir artifacts/stage2/training/comparisons/base_reference
+  --output-dir artifacts/stage_v2/training/comparisons/base_reference
 ```
 
 恢复时必须使用相同有效配置与输出目录：
@@ -202,8 +202,8 @@ CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
 CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
   ilume-stage2-train --config configs/stage2_base.yaml \
   --lambda-alignment 0.1 \
-  --output-dir artifacts/stage2/training/comparisons/base_reference \
-  --resume-from artifacts/stage2/training/comparisons/base_reference/checkpoint_step_00001000.pt
+  --output-dir artifacts/stage_v2/training/comparisons/base_reference \
+  --resume-from artifacts/stage_v2/training/comparisons/base_reference/checkpoint_step_00001000.pt
 ```
 
-Stage 2 checkpoint 与 Stage 1 checkpoint v3 是两个显式不同的格式。它保存学生、回归头、优化器、任务游标、RNG、早停状态及 data/teacher/checkpoint 哈希，可从任意保存 step 恢复。采样/容量对比矩阵以及保留原生进度条的单卡串行命令见 [`configs/README.md`](configs/README.md#stage-2-对比矩阵)；详细决定见 ADR-0007。
+Stage 2 v2 checkpoint 与 Stage 1 checkpoint v3 是两个显式不同的格式。它保存学生、PairEncoder、五个回归器、优化器、体系/行游标、渐进解冻阶段、RNG、早停状态及 data/teacher/checkpoint 哈希，可从任意保存 step 恢复。旧 Stage 2 v1 checkpoint 不做静默迁移；v2 artifact 和训练输出位于 `artifacts/stage_v2/`。采样/容量对比矩阵以及保留原生进度条的单卡串行命令见 [`configs/README.md`](configs/README.md#stage-2-对比矩阵)；详细决定见 ADR-0007 和 ADR-0009。

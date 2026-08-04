@@ -8,5 +8,6 @@
 - [ADR-0004：指纹、role embedding 与单卡训练器](0004-fourth-modality-and-training.md)
 - [ADR-0005：准备阶段直接排除异常实体](0005-exclude-invalid-pretraining-entities.md)
 - [ADR-0006：覆盖型 epoch 与正式实验配置（Base profile 部分已取代）](0006-coverage-epochs-and-experiment-configs.md)
-- [ADR-0007：Stage 2 多任务物性监督与冻结教师对齐](0007-stage2-property-alignment.md)
+- [ADR-0007：Stage 2 多任务物性监督与冻结教师对齐（部分已取代）](0007-stage2-property-alignment.md)
 - [ADR-0008：Base 正式训练 profile 收敛到 effective batch 256](0008-base-training-profile.md)
+- [ADR-0009：Stage 2 体系采样、PairEncoder 与渐进解冻](0009-stage2-system-sampling-and-progressive-unfreezing.md)

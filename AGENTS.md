@@ -32,8 +32,8 @@ pytest -q
 - descriptor schema、scaler 和 tokenizer 只能由当前配置选中的训练集拟合；valid 不含扩增实体，并需隔离 valid seed 的扩增后代。
 - 正式 sampler 在每个覆盖型 epoch 内使用 45% cation、45% anion、10% molecule，role 内必须先完成一轮无放回覆盖。
 - 保持 `MultimodalPretrainModel.forward(batch)` 接口稳定。
-- Stage 2 只读取 `data/stage2/<task>/{train,valid}.csv`，复用 Stage 1 预处理合同；首版只使用 T，不虚构 P。教师 CLS 必须由 checkpoint 哈希绑定的离线缓存提供，训练时不驻留冻结教师。
-- Stage 2 正式配置和串行命令以 `configs/README.md` 为准；当前10个实体 shard 使用 `shard_cache_size: 10`，未经性能复核不得调低。
+- Stage 2 只读取 `data/stage2/<task>/{train,valid}.csv`，复用 Stage 1 预处理合同；首版只使用 T，不虚构 P。教师 CLS 必须由 checkpoint 哈希绑定的离线缓存提供，训练时不驻留冻结教师。v2 的三类 IL 在任务内按 cation/anion 体系采样，QM 支持部分缺失标签，训练前10%完整任务块只更新 PairEncoder 和独立回归器。
+- Stage 2 v2 正式配置和串行命令以 `configs/README.md` 为准，artifact/output 位于 `artifacts/stage_v2/`，不得覆盖旧 `artifacts/stage2/`。正式配置保留 `shard_cache_size: 10`；首次完整准备后须按实际 shard 数复核，未经性能复核不得调低。
 - `data/`、`artifacts/`、缓存和 `*.egg-info/` 是本地输入或生成物，不提交为源码，也不在无关任务中重建或删除。
 
 ## 当前边界

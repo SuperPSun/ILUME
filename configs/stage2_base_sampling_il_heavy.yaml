@@ -1,7 +1,7 @@
 data:
   stage2_dir: data/stage2
   pretrain_artifacts_dir: artifacts/pretrain_base
-  artifacts_dir: artifacts/stage2/data
+  artifacts_dir: artifacts/stage_v2/data
   entity_shard_size: 4096
   shard_cache_size: 10
   teacher_batch_size: 256
@@ -29,6 +29,7 @@ training:
   head_learning_rate: 0.0001
   weight_decay: 0.01
   warmup_fraction: 0.05
+  backbone_freeze_fraction: 0.10
   max_grad_norm: 1.0
   device: auto
   amp_dtype: bf16
@@ -36,5 +37,5 @@ training:
   early_stopping_patience: 8
   early_stopping_min_delta: 0.0001
   keep_last_checkpoints: 3
-  output_dir: artifacts/stage2/training/comparisons/base_sampling_il_heavy
+  output_dir: artifacts/stage_v2/training/comparisons/base_sampling_il_heavy
   resume_from: null

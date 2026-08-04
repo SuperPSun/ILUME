@@ -35,7 +35,9 @@ from .stage2_model import sha256_file
 from .tokenizer import SmilesTokenizer
 
 
-STAGE2_ARTIFACT_VERSION = 1
+STAGE2_ARTIFACT_VERSION = 2
+IL_TASKS = ("density", "heat_capacity", "thermal_expansion")
+QM_MISSING_MARKERS = frozenset({"", "nan", "na", "n/a", "null"})
 QM_TARGETS = (
     "ESP_max",
     "ESP_min",
@@ -145,6 +147,13 @@ def _finite_float(raw: str, context: str) -> float:
     return value
 
 
+def _target_value(raw: str, context: str, *, allow_missing: bool) -> float | None:
+    stripped = (raw or "").strip()
+    if allow_missing and stripped.lower() in QM_MISSING_MARKERS:
+        return None
+    return _finite_float(stripped, context)
+
+
 def _key_hash(parts: Sequence[str]) -> bytes:
     digest = hashlib.blake2b(digest_size=16)
     for part in parts:
@@ -181,6 +190,7 @@ class CollectedStage2Data:
     scalers: dict[str, Any]
     source_counts: dict[str, dict[str, dict[str, int]]]
     duplicate_rows: tuple[dict[str, Any], ...]
+    missing_target_rows: tuple[dict[str, Any], ...]
 
 
 def _iter_rows(
@@ -216,6 +226,7 @@ def _collect_sources_and_scalers(
     }
     source_counts: dict[str, dict[str, dict[str, int]]] = {}
     duplicate_rows: list[dict[str, Any]] = []
+    missing_target_rows: list[dict[str, Any]] = []
 
     for task in STAGE2_TASKS:
         spec = TASK_SPECS[task]
@@ -242,7 +253,6 @@ def _collect_sources_and_scalers(
                         )
                         canonical_cache[raw] = canonical
                     canonical_entities.append(canonical)
-                    entity_keys.add((role, canonical))
                 conditions = tuple(
                     _finite_float(
                         row[column], f"{task}/{split}:{row_number}/{column}"
@@ -250,8 +260,10 @@ def _collect_sources_and_scalers(
                     for column in spec.condition_columns
                 )
                 targets = tuple(
-                    _finite_float(
-                        row[column], f"{task}/{split}:{row_number}/{column}"
+                    _target_value(
+                        row[column],
+                        f"{task}/{split}:{row_number}/{column}",
+                        allow_missing=task == "simulated_qm_elec_hf",
                     )
                     for column in spec.target_columns
                 )
@@ -260,6 +272,32 @@ def _collect_sources_and_scalers(
                     raise ValueError(
                         f"Empty source_list in {task}/{split}:{row_number}"
                     )
+                missing_columns = tuple(
+                    column
+                    for column, value in zip(
+                        spec.target_columns, targets, strict=True
+                    )
+                    if value is None
+                )
+                if missing_columns:
+                    all_missing = len(missing_columns) == len(spec.target_columns)
+                    missing_target_rows.append(
+                        {
+                            "task": task,
+                            "split": split,
+                            "source_row": row_number,
+                            "missing_columns": ";".join(missing_columns),
+                            "valid_target_count": len(spec.target_columns)
+                            - len(missing_columns),
+                            "action": "excluded" if all_missing else "retained",
+                        }
+                    )
+                    if all_missing:
+                        continue
+                for role, canonical in zip(
+                    spec.entity_roles, canonical_entities, strict=True
+                ):
+                    entity_keys.add((role, canonical))
                 counts[source] += 1
                 input_parts = (
                     *canonical_entities,
@@ -273,7 +311,10 @@ def _collect_sources_and_scalers(
                     )
                 if task != "transfer_organic":
                     previous = detailed_seen.get(input_parts)
-                    target_text = tuple(format(value, ".17g") for value in targets)
+                    target_text = tuple(
+                        "missing" if value is None else format(value, ".17g")
+                        for value in targets
+                    )
                     if previous is not None:
                         duplicate_rows.append(
                             {
@@ -295,10 +336,20 @@ def _collect_sources_and_scalers(
                     for column, value in zip(
                         spec.target_columns, targets, strict=True
                     ):
-                        target_stats[column].update(value)
+                        if value is not None:
+                            target_stats[column].update(value)
             source_counts[task][split] = dict(sorted(counts.items()))
             if split == "train":
                 train_keys = seen_keys
+
+    missing_train_targets = [
+        name for name, stats in target_stats.items() if stats.count == 0
+    ]
+    if missing_train_targets:
+        raise ValueError(
+            "Stage 2 train split has no finite values for target columns: "
+            + ", ".join(missing_train_targets)
+        )
 
     return CollectedStage2Data(
         entity_keys=tuple(
@@ -315,6 +366,7 @@ def _collect_sources_and_scalers(
         },
         source_counts=source_counts,
         duplicate_rows=tuple(duplicate_rows),
+        missing_target_rows=tuple(missing_target_rows),
     )
 
 
@@ -363,6 +415,26 @@ def _write_duplicate_audit(path: Path, rows: Sequence[dict[str, Any]]) -> None:
         "duplicate_row",
         "first_targets",
         "duplicate_targets",
+    )
+    with temporary.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+    temporary.replace(path)
+
+
+def _write_missing_target_audit(
+    path: Path,
+    rows: Sequence[dict[str, Any]],
+) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    fields = (
+        "task",
+        "split",
+        "source_row",
+        "missing_columns",
+        "valid_target_count",
+        "action",
     )
     with temporary.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
@@ -526,11 +598,22 @@ def _write_task_tensors(
                 entity_values = array("q")
                 condition_values = array("f")
                 target_values = array("f")
+                target_mask_values = array("b")
                 source_rows = array("q")
                 retained = 0
                 for row_number, row in _iter_rows(
                     config.data.stage2_dir, task, split
                 ):
+                    parsed_targets = tuple(
+                        _target_value(
+                            row[column],
+                            f"{task}/{split}:{row_number}/{column}",
+                            allow_missing=task == "simulated_qm_elec_hf",
+                        )
+                        for column in spec.target_columns
+                    )
+                    if all(value is None for value in parsed_targets):
+                        continue
                     indices: list[int] = []
                     missing = False
                     for column, role in zip(
@@ -568,11 +651,11 @@ def _write_task_tensors(
                         for column in spec.condition_columns
                     )
                     target_values.extend(
-                        _finite_float(
-                            row[column],
-                            f"{task}/{split}:{row_number}/{column}",
-                        )
-                        for column in spec.target_columns
+                        0.0 if value is None else value
+                        for value in parsed_targets
+                    )
+                    target_mask_values.extend(
+                        value is not None for value in parsed_targets
                     )
                     source_rows.append(row_number)
                     retained += 1
@@ -587,7 +670,22 @@ def _write_task_tensors(
                 targets = torch.tensor(
                     target_values, dtype=torch.float32
                 ).reshape(retained, len(spec.target_columns))
+                target_mask = torch.tensor(
+                    target_mask_values, dtype=torch.bool
+                ).reshape(retained, len(spec.target_columns))
                 rows_tensor = torch.tensor(source_rows, dtype=torch.long)
+                systems: dict[tuple[int, ...], list[int]] = {}
+                if task in IL_TASKS:
+                    for row_index, key in enumerate(entities.tolist()):
+                        systems.setdefault(tuple(key), []).append(row_index)
+                    system_offsets = [0]
+                    system_rows: list[int] = []
+                    for grouped_rows in systems.values():
+                        system_rows.extend(grouped_rows)
+                        system_offsets.append(len(system_rows))
+                else:
+                    system_offsets = []
+                    system_rows = []
                 path = task_dir / f"{task}_{split}.pt"
                 _atomic_torch_save(
                     path,
@@ -598,7 +696,14 @@ def _write_task_tensors(
                         "entity_indices": entities,
                         "conditions": conditions,
                         "targets": targets,
+                        "target_mask": target_mask,
                         "source_rows": rows_tensor,
+                        "system_offsets": torch.tensor(
+                            system_offsets, dtype=torch.long
+                        ),
+                        "system_rows": torch.tensor(
+                            system_rows, dtype=torch.long
+                        ),
                         "condition_columns": list(spec.condition_columns),
                         "target_columns": list(spec.target_columns),
                         "scalers": scalers,
@@ -646,7 +751,10 @@ def prepare_stage2_data(
     metadata_path = output_dir / "metadata.json"
     if metadata_path.is_file():
         existing = json.loads(metadata_path.read_text(encoding="utf-8"))
-        if existing.get("data_signature") == data_signature:
+        if (
+            existing.get("format_version") == STAGE2_ARTIFACT_VERSION
+            and existing.get("data_signature") == data_signature
+        ):
             Stage2EntityDataset(output_dir, config.data.shard_cache_size)
             for task in STAGE2_TASKS:
                 for split in ("train", "valid"):
@@ -664,6 +772,10 @@ def prepare_stage2_data(
     _write_duplicate_audit(
         output_dir / "duplicate_conditions.csv",
         collected.duplicate_rows,
+    )
+    _write_missing_target_audit(
+        output_dir / "missing_targets.csv",
+        collected.missing_target_rows,
     )
     _atomic_json(output_dir / "scalers.json", collected.scalers)
     with reporter.status("Stage 2 entity features"):
@@ -692,6 +804,7 @@ def prepare_stage2_data(
         "excluded_entities.csv",
         "excluded_rows.csv",
         "duplicate_conditions.csv",
+        "missing_targets.csv",
         *[
             f"tasks/{task}_{split}.pt"
             for task in STAGE2_TASKS
@@ -727,6 +840,14 @@ def prepare_stage2_data(
             "rows": row_counts,
             "rows_excluded": excluded_rows,
             "duplicate_conditions": len(collected.duplicate_rows),
+            "partial_target_rows": sum(
+                row["action"] == "retained"
+                for row in collected.missing_target_rows
+            ),
+            "all_target_missing_rows": sum(
+                row["action"] == "excluded"
+                for row in collected.missing_target_rows
+            ),
         },
         "artifact_hashes": {
             relative: sha256_file(output_dir / relative)
@@ -825,9 +946,25 @@ class Stage2TaskDataset:
         self.entity_indices = payload["entity_indices"]
         self.conditions = payload["conditions"]
         self.targets = payload["targets"]
+        self.target_mask = payload["target_mask"]
         self.source_rows = payload["source_rows"]
+        self.system_offsets = payload["system_offsets"]
+        self.system_rows = payload["system_rows"]
         self.condition_columns = tuple(payload["condition_columns"])
         self.target_columns = tuple(payload["target_columns"])
+        if self.target_mask.shape != self.targets.shape:
+            raise ValueError("Stage 2 target mask shape mismatch")
+        if task in IL_TASKS:
+            if (
+                self.system_offsets.ndim != 1
+                or self.system_offsets.numel() < 2
+                or int(self.system_offsets[0]) != 0
+                or int(self.system_offsets[-1]) != len(self)
+                or self.system_rows.shape != (len(self),)
+            ):
+                raise ValueError("Invalid Stage 2 IL system index")
+        elif self.system_offsets.numel() or self.system_rows.numel():
+            raise ValueError("Non-IL Stage 2 tasks cannot define system indices")
 
     def __len__(self) -> int:
         return int(self.entity_indices.shape[0])
@@ -840,6 +977,7 @@ class Stage2Batch:
     entity_positions: torch.Tensor
     conditions: torch.Tensor
     targets: torch.Tensor
+    target_mask: torch.Tensor
     teacher_embeddings: torch.Tensor
 
     def to(self, device: torch.device | str) -> "Stage2Batch":
@@ -849,6 +987,7 @@ class Stage2Batch:
             entity_positions=self.entity_positions.to(device),
             conditions=self.conditions.to(device),
             targets=self.targets.to(device),
+            target_mask=self.target_mask.to(device),
             teacher_embeddings=self.teacher_embeddings.to(device),
         )
 
@@ -883,17 +1022,24 @@ def build_stage2_batch(
             temperature["scale"]
         )
     targets = task_dataset.targets[index_tensor].clone()
+    target_mask = task_dataset.target_mask[index_tensor].clone()
     for column, name in enumerate(task_dataset.target_columns):
         stats = scalers["targets"][name]
-        targets[:, column] = (
+        standardized = (
             targets[:, column] - float(stats["mean"])
         ) / float(stats["scale"])
+        targets[:, column] = torch.where(
+            target_mask[:, column],
+            standardized,
+            torch.zeros_like(standardized),
+        )
     return Stage2Batch(
         task=task_dataset.task,
         entities=entities,
         entity_positions=positions,
         conditions=conditions,
         targets=targets,
+        target_mask=target_mask,
         teacher_embeddings=unique_teacher,
     )
 
@@ -912,22 +1058,28 @@ class TaskCursor:
         generator = torch.Generator().manual_seed(self.seed + self.cycle)
         return torch.randperm(self.size, generator=generator)
 
-    def next_indices(self, count: int) -> torch.Tensor:
+    def _next_with_cycles(self, count: int) -> tuple[torch.Tensor, torch.Tensor]:
         if count <= 0:
             raise ValueError("TaskCursor count must be positive")
         chunks: list[torch.Tensor] = []
+        cycle_chunks: list[torch.Tensor] = []
         remaining = count
         while remaining:
             available = self.size - self.position
             take = min(remaining, available)
             chunks.append(self._permutation[self.position : self.position + take])
+            cycle_chunks.append(torch.full((take,), self.cycle, dtype=torch.long))
             self.position += take
             remaining -= take
             if self.position == self.size:
                 self.cycle += 1
                 self.position = 0
                 self._permutation = self._build_permutation()
-        return torch.cat(chunks)
+        return torch.cat(chunks), torch.cat(cycle_chunks)
+
+    def next_indices(self, count: int) -> torch.Tensor:
+        indices, _ = self._next_with_cycles(count)
+        return indices
 
     def state_dict(self) -> dict[str, int]:
         return {"cycle": self.cycle, "position": self.position}
@@ -940,6 +1092,60 @@ class TaskCursor:
         self.cycle = cycle
         self.position = position
         self._permutation = self._build_permutation()
+
+
+class ILSystemCursor:
+    def __init__(
+        self,
+        system_offsets: torch.Tensor,
+        system_rows: torch.Tensor,
+        seed: int,
+    ) -> None:
+        if system_offsets.ndim != 1 or system_offsets.numel() < 2:
+            raise ValueError("ILSystemCursor requires at least one system")
+        if int(system_offsets[0]) != 0 or int(system_offsets[-1]) != len(system_rows):
+            raise ValueError("Invalid IL system CSR index")
+        self.system_offsets = system_offsets.to(dtype=torch.long, device="cpu")
+        self.system_rows = system_rows.to(dtype=torch.long, device="cpu")
+        self.seed = seed
+        self.system_cursor = TaskCursor(len(system_offsets) - 1, seed)
+
+    def _row_for_visit(self, system_id: int, cycle: int) -> int:
+        start = int(self.system_offsets[system_id])
+        end = int(self.system_offsets[system_id + 1])
+        size = end - start
+        if size == 1:
+            return int(self.system_rows[start])
+        row_cycle, offset = divmod(cycle, size)
+        mixed_seed = (
+            self.seed
+            + 1_000_003 * system_id
+            + 1_000_000_007 * row_cycle
+        ) % (2**63 - 1)
+        generator = torch.Generator().manual_seed(mixed_seed)
+        selected = int(torch.randperm(size, generator=generator)[offset])
+        return int(self.system_rows[start + selected])
+
+    def next_indices(self, count: int) -> torch.Tensor:
+        system_ids, cycles = self.system_cursor._next_with_cycles(count)
+        return torch.tensor(
+            [
+                self._row_for_visit(int(system_id), int(cycle))
+                for system_id, cycle in zip(system_ids, cycles, strict=True)
+            ],
+            dtype=torch.long,
+        )
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "kind": "il_system",
+            "system_cursor": self.system_cursor.state_dict(),
+        }
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        if state.get("kind") != "il_system":
+            raise ValueError("Invalid IL system cursor state")
+        self.system_cursor.load_state_dict(state["system_cursor"])
 
 
 class TaskBlockSampler:

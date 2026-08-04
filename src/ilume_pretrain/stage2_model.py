@@ -94,8 +94,39 @@ def load_stage1_model(
     )
 
 
-class RegressionTrunk(nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int, dropout: float) -> None:
+class PairEncoder(nn.Module):
+    def __init__(self, d_model: int, dropout: float) -> None:
+        super().__init__()
+        self.main = nn.Sequential(
+            nn.Linear(4 * d_model, 2 * d_model),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(2 * d_model, d_model),
+        )
+        self.skip = nn.Linear(2 * d_model, d_model)
+        self.normalization = nn.LayerNorm(d_model)
+
+    def forward(
+        self,
+        left: torch.Tensor,
+        right: torch.Tensor,
+    ) -> torch.Tensor:
+        interactions = torch.cat(
+            (left, right, torch.abs(left - right), left * right),
+            dim=-1,
+        )
+        ordered = torch.cat((left, right), dim=-1)
+        return self.normalization(self.main(interactions) + self.skip(ordered))
+
+
+class RegressionHead(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int,
+        output_dim: int,
+        dropout: float,
+    ) -> None:
         super().__init__()
         self.layers = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
@@ -104,6 +135,7 @@ class RegressionTrunk(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.GELU(),
             nn.Dropout(dropout),
+            nn.Linear(hidden_dim, output_dim),
         )
 
     def forward(self, values: torch.Tensor) -> torch.Tensor:
@@ -120,6 +152,25 @@ class Stage2ForwardOutput:
     teacher_slots: torch.Tensor
 
 
+def masked_smooth_l1_loss(
+    predictions: torch.Tensor,
+    targets: torch.Tensor,
+    target_mask: torch.Tensor,
+) -> torch.Tensor:
+    if target_mask.shape != targets.shape or predictions.shape != targets.shape:
+        raise ValueError("Stage 2 prediction, target, and mask shapes must match")
+    elementwise = F.smooth_l1_loss(predictions, targets, reduction="none")
+    counts = target_mask.sum(dim=0)
+    valid_columns = counts > 0
+    if not bool(valid_columns.any()):
+        raise ValueError("Stage 2 batch has no supervised targets")
+    per_target = (
+        (elementwise * target_mask.to(elementwise.dtype)).sum(dim=0)
+        / counts.clamp_min(1).to(elementwise.dtype)
+    )
+    return per_target[valid_columns].mean()
+
+
 class Stage2AlignmentModel(nn.Module):
     def __init__(
         self,
@@ -130,19 +181,42 @@ class Stage2AlignmentModel(nn.Module):
         super().__init__()
         self.backbone = backbone
         d_model = backbone.config.model.d_model
-        self.il_trunk = RegressionTrunk(2 * d_model + 1, d_model, head_dropout)
-        self.il_heads = nn.ModuleDict(
-            {task: nn.Linear(d_model, 1) for task in IL_TASKS}
+        self.il_pair_encoder = PairEncoder(d_model, head_dropout)
+        self.transfer_pair_encoder = PairEncoder(d_model, head_dropout)
+        self.regressors = nn.ModuleDict(
+            {
+                **{
+                    task: RegressionHead(
+                        d_model + 1,
+                        d_model,
+                        1,
+                        head_dropout,
+                    )
+                    for task in IL_TASKS
+                },
+                QM_TASK: RegressionHead(
+                    d_model,
+                    d_model,
+                    11,
+                    head_dropout,
+                ),
+                TRANSFER_TASK: RegressionHead(
+                    d_model,
+                    d_model,
+                    1,
+                    head_dropout,
+                ),
+            }
         )
-        self.qm_trunk = RegressionTrunk(d_model, d_model, head_dropout)
-        self.qm_head = nn.Linear(d_model, 11)
-        self.transfer_trunk = RegressionTrunk(
-            2 * d_model, d_model, head_dropout
-        )
-        self.transfer_head = nn.Linear(d_model, 1)
-        for name in RECONSTRUCTION_MODULES:
-            for parameter in getattr(self.backbone, name).parameters():
-                parameter.requires_grad_(False)
+        self.set_backbone_trainable(True)
+
+    def set_backbone_trainable(self, trainable: bool) -> None:
+        for name, parameter in self.backbone.named_parameters():
+            is_reconstruction = any(
+                name == prefix or name.startswith(prefix + ".")
+                for prefix in RECONSTRUCTION_MODULES
+            )
+            parameter.requires_grad_(trainable and not is_reconstruction)
 
     def backbone_parameters(self) -> Iterator[nn.Parameter]:
         for name, parameter in self.backbone.named_parameters():
@@ -166,21 +240,21 @@ class Stage2AlignmentModel(nn.Module):
         if task in IL_TASKS:
             if slots.shape[1] != 2 or conditions.shape[1] != 1:
                 raise ValueError("IL tasks require two entities and temperature")
-            features = torch.cat(
-                (slots[:, 0], slots[:, 1], conditions), dim=-1
+            pair = self.il_pair_encoder(slots[:, 0], slots[:, 1])
+            return self.regressors[task](
+                torch.cat((pair, conditions), dim=-1)
             )
-            return self.il_heads[task](self.il_trunk(features))
         if task == QM_TASK:
             if slots.shape[1] != 1 or conditions.shape[1] != 0:
                 raise ValueError("QM task requires one entity and no conditions")
-            return self.qm_head(self.qm_trunk(slots[:, 0]))
+            return self.regressors[task](slots[:, 0])
         if task == TRANSFER_TASK:
             if slots.shape[1] != 2 or conditions.shape[1] != 0:
                 raise ValueError(
                     "Transfer task requires solute and solvent embeddings"
                 )
-            features = torch.cat((slots[:, 0], slots[:, 1]), dim=-1)
-            return self.transfer_head(self.transfer_trunk(features))
+            pair = self.transfer_pair_encoder(slots[:, 0], slots[:, 1])
+            return self.regressors[task](pair)
         raise ValueError(f"Unknown Stage 2 task: {task}")
 
     def forward(
@@ -190,6 +264,7 @@ class Stage2AlignmentModel(nn.Module):
         entity_positions: torch.Tensor,
         conditions: torch.Tensor,
         targets: torch.Tensor,
+        target_mask: torch.Tensor,
         teacher_embeddings: torch.Tensor,
         *,
         lambda_alignment: float,
@@ -198,7 +273,11 @@ class Stage2AlignmentModel(nn.Module):
         student_slots = student_unique[entity_positions]
         teacher_slots = teacher_embeddings[entity_positions]
         predictions = self.predict(task, student_slots, conditions)
-        supervised_loss = F.smooth_l1_loss(predictions, targets)
+        supervised_loss = masked_smooth_l1_loss(
+            predictions,
+            targets,
+            target_mask,
+        )
         per_slot = torch.square(student_slots - teacher_slots).mean(dim=-1)
         alignment_loss = per_slot.mean(dim=1).mean()
         total_loss = supervised_loss + lambda_alignment * alignment_loss
