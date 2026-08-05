@@ -170,6 +170,37 @@ def test_end_to_end_forward_backward_has_five_losses_and_shared_gradients(
     assert all(parameter.grad is not None for parameter in required_parameters)
 
 
+def test_encode_uses_complete_unmasked_modalities_and_preserves_forward(
+    tiny_config,
+    tiny_samples,
+):
+    vocabulary, samples = tiny_samples
+    packed = MultimodalPacker(vocabulary)(samples)
+    zero_masking = MaskingConfig(
+        smiles_ratio=0.0,
+        atom_ratio=0.0,
+        bond_ratio=0.0,
+        descriptor_ratio=0.0,
+        fingerprint_ratio=0.0,
+        smiles_dropout=0.0,
+        graph_dropout=0.0,
+        descriptor_dropout=0.0,
+        fingerprint_dropout=0.0,
+    )
+    masked = MultimodalMasker(vocabulary, zero_masking, seed=1).apply(
+        packed, 0, 1
+    )
+    model = MultimodalPretrainModel(tiny_config, vocabulary).eval()
+
+    encoded = model.encode(packed)
+    reconstructed = model(masked)
+
+    assert encoded.shape == (len(samples), tiny_config.model.d_model)
+    assert torch.equal(encoded, reconstructed.fused_cls)
+    with pytest.raises(ValueError, match="unmasked batch"):
+        model.encode(masked)
+
+
 def test_zero_mask_configuration_returns_backward_safe_zero_loss(
     tiny_config,
     tiny_samples,

@@ -17,6 +17,7 @@ from .encoders import (
 )
 from .fingerprints import fingerprint_families
 from .fusion import (
+    FusionLayout,
     FusionTransformer,
     gather_graph_tokens,
     gather_group_tokens,
@@ -218,21 +219,29 @@ class MultimodalPretrainModel(nn.Module):
             result[family] = chunk_logits.flatten(1)[:, :dimension]
         return result
 
-    def forward(self, batch: MultimodalBatch) -> PretrainOutput:
-        if batch.masks is None:
-            raise ValueError("MultimodalPretrainModel requires a dynamically masked batch")
-        smiles_tokens = self.smiles_encoder(batch.token_ids, batch.token_padding_mask)
+    def _encode_fused(
+        self,
+        batch: MultimodalBatch,
+        *,
+        atom_mask: torch.Tensor,
+        bond_mask: torch.Tensor,
+        descriptor_indicator: torch.Tensor,
+        fingerprint_indicator: dict[str, torch.Tensor],
+    ) -> tuple[torch.Tensor, FusionLayout, dict[str, slice]]:
+        smiles_tokens = self.smiles_encoder(
+            batch.token_ids, batch.token_padding_mask
+        )
         atom_tokens, bond_tokens = self.graph_encoder(
             batch.graphs,
-            batch.masks.atom_mask,
-            batch.masks.bond_mask,
+            atom_mask,
+            bond_mask,
         )
         descriptor_tokens = self.descriptor_encoder(
-            batch.descriptors, batch.masks.descriptor_indicator
+            batch.descriptors, descriptor_indicator
         )
         fingerprint_tokens, family_slices = self.fingerprint_encoder(
             batch.fingerprints,
-            batch.masks.fingerprint_indicator,
+            fingerprint_indicator,
             descriptor_tokens,
         )
         fused, layout = self.fusion(
@@ -244,6 +253,41 @@ class MultimodalPretrainModel(nn.Module):
             fingerprint_tokens,
             batch.graphs,
             batch.roles,
+        )
+        return fused, layout, family_slices
+
+    def encode(self, batch: MultimodalBatch) -> torch.Tensor:
+        """Encode complete, uncorrupted modalities into the fusion CLS state."""
+        if batch.masks is not None:
+            raise ValueError("MultimodalPretrainModel.encode expects an unmasked batch")
+        fused, _, _ = self._encode_fused(
+            batch,
+            atom_mask=torch.zeros(
+                batch.graphs.atom_categorical.shape[0],
+                dtype=torch.bool,
+                device=batch.graphs.atom_categorical.device,
+            ),
+            bond_mask=torch.zeros(
+                batch.graphs.bond_categorical.shape[0],
+                dtype=torch.bool,
+                device=batch.graphs.bond_categorical.device,
+            ),
+            descriptor_indicator=~batch.descriptor_valid,
+            fingerprint_indicator={
+                name: ~valid for name, valid in batch.fingerprints.valid.items()
+            },
+        )
+        return fused[:, 0]
+
+    def forward(self, batch: MultimodalBatch) -> PretrainOutput:
+        if batch.masks is None:
+            raise ValueError("MultimodalPretrainModel requires a dynamically masked batch")
+        fused, layout, family_slices = self._encode_fused(
+            batch,
+            atom_mask=batch.masks.atom_mask,
+            bond_mask=batch.masks.bond_mask,
+            descriptor_indicator=batch.masks.descriptor_indicator,
+            fingerprint_indicator=batch.masks.fingerprint_indicator,
         )
 
         fused_smiles = gather_smiles(fused, layout)
