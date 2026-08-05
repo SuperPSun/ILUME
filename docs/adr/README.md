@@ -11,3 +11,6 @@
 - [ADR-0007：Stage 2 多任务物性监督与冻结教师对齐（部分已取代）](0007-stage2-property-alignment.md)
 - [ADR-0008：Base 正式训练 profile 收敛到 effective batch 256](0008-base-training-profile.md)
 - [ADR-0009：Stage 2 体系采样、PairEncoder 与渐进解冻](0009-stage2-system-sampling-and-progressive-unfreezing.md)
+- [ADR-0010：Stage 3 HoME 与 late-solute 多任务训练（已取代）](0010-stage3-home-and-late-solute.md)
+- [ADR-0011：Stage 3 单阶段双域完全隔离](0011-stage3-single-stage-isolated-domains.md)
+- [ADR-0012：Stage 3 高吞吐与预算守恒执行合同](0012-stage3-throughput-and-budget.md)

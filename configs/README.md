@@ -143,3 +143,60 @@ run_and_continue xlarge_reference \
   --output-dir artifacts/stage_v2/training/comparisons/xlarge_reference
 BASH
 ```
+
+## Stage 3 单阶段双域训练
+
+Stage 3 v2 固定从 `artifacts/stage_v2/training/comparisons/base_reference/best.pt` 生成冻结表示。训练进程不加载 Stage 2 backbone、IL PairEncoder 或 transfer PairEncoder。Stage 3 v1 的 artifact、checkpoint 和日志只保留审计；v2 不读取、不恢复，也不静默迁移它们。
+
+主线一次训练覆盖 27 项任务，但内部是两个数值状态完全隔离的训练域：
+
+- `il21` 包含 19 个直接 IL 任务及 solvation/transfer，使用 HoME 和 late-solute。
+- `aux6` 包含 transfer organic、四个离子 HOMO/LUMO 和 charge，每项使用参数完全独立的 `IndependentTaskHead`。
+
+两个域只依赖同一个冻结 Stage 2 来源，不共享任何可训练参数、optimizer、scheduler、AMP scaler、梯度裁剪、BatchNorm、抽样 cursor、Torch/CUDA dropout RNG、早停或最佳指标。每个外层 cycle 先执行一个 21-task IL block，再执行一个 6-task aux block；任一域早停后，另一域仍独立继续。训练输出分别保存 `best_il21.pt` 与 `best_aux6.pt`，结束时组装仅用于评估的 `best.pt`。恢复只能使用 v2 的 `checkpoint_cycle_*.pt`，不能使用这三个 best 文件。
+
+正式高吞吐配置让当前 fold 的冻结表示、条件、目标和预计算 row-to-embedding index 常驻 GPU，并将 PyTorch CPU intra-op/inter-op 线程限制为 4/1。每个域完成全部任务 forward 后只执行一次 backward，loss 与验证统计也只在域边界同步到 CPU。IL21 使用 `128 × 5000 blocks`、每 50 blocks 验证；Aux6 使用 `256 × 2500 blocks`、每 25 blocks 验证。两域均保持每任务最多 640,000 个样本和每 6,400 个样本一次验证，LR 仍为 `3e-4`。
+
+late-solute HoME 的第一层只接收冻结 IL embedding 和条件。solute CLS 仅在第二层进入共享 `SoluteInteraction`、solvation group expert、任务 private expert 和 gate；第二层 global expert 不接收 solute。直接 IL 任务完全绕过这一路径。条件固定编码 temperature/pressure/frequency/wavelength 的标准化值与 presence mask，以及带 `<missing>/<unk>` 的 phase；fold scaler 只拟合另外四折，已有 `_log10` 目标保持 identity。
+
+artifact 按域分隔在 `artifacts/stage3_v2/data/{il21,aux6}`。IL pair 泄漏和 `cross_task_exposure.csv` 只审计 `il21`。task-local fold 只保证同一任务 train/valid 的 IL pair 不重叠，不保证一个任务的验证 IL 未在另一任务训练集中出现，因此五折指标只能解释为 task-local 泛化。
+
+正式配置包括：
+
+- `stage3_home.yaml`：同时训练相互隔离的 `il21` 和 `aux6`。
+- `stage3_home_legacy.yaml`：`64 × 10000 + per_task backward`，仅用于审计或恢复优化前的 Stage 3 v2 training checkpoint。
+- `stage3_shared_bottom.yaml`、`stage3_mmoe.yaml`：只训练 `il21` 的共享结构基线。
+- `stage3_early_solute.yaml`：只训练 `il21` 的 early-solute 对照。
+- `stage3_without_feature_gate.yaml`、`stage3_without_self_gate.yaml`：只训练 `il21` 的单因素消融。
+
+下面的 Bash 块无需替换 fold 或输出路径，完整命令保存在 [`scripts/run_stage3_matrix.sh`](../scripts/run_stage3_matrix.sh)。它会安装环境，执行一次幂等 v2 prepare，串行运行主线与全部 IL-only 基线五折，分别汇总验证指标，并用主线五个组合 `best.pt` 做固定 test ensemble。优化训练和日志统一写入 `artifacts/stage3_v2/training_optimized/`；旧 `training/home/fold1` 不会被读取或覆盖。脚本固定使用 GPU 1；`script` 保留原生 tqdm，每项写独立日志与状态表，某项失败后继续后续项目。
+
+```bash
+bash <<'BASH'
+set -u
+
+test -f scripts/run_stage3_matrix.sh
+bash -n scripts/run_stage3_matrix.sh
+bash scripts/run_stage3_matrix.sh
+BASH
+```
+
+单 fold 的精确恢复接口如下。checkpoint 必须来自同一 fold、配置、active domains 和 v2 artifact；CLI 不再提供 `--init-from`：
+
+```bash
+ilume-stage3-train \
+  --config configs/stage3_home.yaml \
+  --fold 1 \
+  --resume-from artifacts/stage3_v2/training_optimized/home/fold1/checkpoint_cycle_00000100.pt \
+  --output-dir artifacts/stage3_v2/training_optimized/home/fold1
+```
+
+优化前的 fold1 只能使用 legacy 配置恢复，不能传给 `stage3_home.yaml`：
+
+```bash
+ilume-stage3-train \
+  --config configs/stage3_home_legacy.yaml \
+  --fold 1 \
+  --resume-from artifacts/stage3_v2/training/home/fold1/checkpoint_cycle_00003300.pt \
+  --output-dir artifacts/stage3_v2/training/home/fold1
+```

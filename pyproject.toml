@@ -31,6 +31,9 @@ ilume-smoke = "ilume_pretrain.cli.smoke:main"
 ilume-train = "ilume_pretrain.cli.train:main"
 ilume-stage2-prepare = "ilume_pretrain.cli.stage2_prepare:main"
 ilume-stage2-train = "ilume_pretrain.cli.stage2_train:main"
+ilume-stage3-prepare = "ilume_pretrain.cli.stage3_prepare:main"
+ilume-stage3-train = "ilume_pretrain.cli.stage3_train:main"
+ilume-stage3-evaluate = "ilume_pretrain.cli.stage3_evaluate:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
