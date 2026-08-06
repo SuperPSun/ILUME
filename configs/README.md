@@ -169,7 +169,9 @@ artifact 按域分隔在 `artifacts/stage3_v2/data/{il21,aux6}`。IL pair 泄漏
 - `stage3_early_solute.yaml`：只训练 `il21` 的 early-solute 对照。
 - `stage3_without_feature_gate.yaml`、`stage3_without_self_gate.yaml`：只训练 `il21` 的单因素消融。
 
-下面的 Bash 块无需替换 fold 或输出路径，完整命令保存在 [`scripts/run_stage3_matrix.sh`](../scripts/run_stage3_matrix.sh)。它会安装环境，执行一次幂等 v2 prepare，串行运行主线与全部 IL-only 基线五折，分别汇总验证指标，并用主线五个组合 `best.pt` 做固定 test ensemble。优化训练和日志统一写入 `artifacts/stage3_v2/training_optimized/`；旧 `training/home/fold1` 不会被读取或覆盖。脚本固定使用 GPU 1；`script` 保留原生 tqdm，每项写独立日志与状态表，某项失败后继续后续项目。
+下面的 Bash 块无需替换 fold 或输出路径，完整命令保存在 [`scripts/run_stage3_matrix.sh`](../scripts/run_stage3_matrix.sh)。它会安装环境，执行一次幂等 v2 prepare，串行运行主线与全部 IL-only 基线五折，分别汇总验证指标，并用主线五个组合 `best.pt` 做固定 test ensemble。优化训练和日志统一写入 `artifacts/stage3_v2/training_optimized/`；优化前的 `artifacts/stage3_v2/training/` 不会被读取或覆盖。脚本固定使用 GPU 1；`script` 保留原生 tqdm，每项写独立日志与状态表，某项失败后继续后续项目。
+
+2026年8月5日的正式优化矩阵已经完成；[`status.tsv`](../artifacts/stage3_v2/training_optimized/logs/20260805_152606/status.tsv) 中主线、五组 IL-only 对照、各五折汇总和主线 test ensemble 均为 `OK`。可跟踪结果位于各实验的 `five_fold_summary.json` 和 `home/test_ensemble_metrics.json`；忽略的模型 checkpoint 与终端日志仍保留在同一 artifact 树中。
 
 ```bash
 bash <<'BASH'
