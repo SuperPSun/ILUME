@@ -1,0 +1,261 @@
+{
+  "format_version": 2,
+  "kind": "ilume_stage3_data",
+  "domain": "aux6",
+  "tasks": [
+    "experiment/transfer_organic",
+    "simulation/cation_homo",
+    "simulation/cation_lumo",
+    "simulation/anion_homo",
+    "simulation/anion_lumo",
+    "simulation/charge"
+  ],
+  "task_registry": {
+    "experiment/transfer_organic": {
+      "task": "experiment/transfer_organic",
+      "entity_columns": [
+        "solute",
+        "solvent"
+      ],
+      "entity_roles": [
+        "neutral",
+        "neutral"
+      ],
+      "target": "transfer_organic_kcal/mol",
+      "condition_columns": [
+        "temperature_K"
+      ],
+      "topology": "neutral_pair",
+      "meta_group": "solvation",
+      "fold_strategy": "solute-solvent"
+    },
+    "simulation/cation_homo": {
+      "task": "simulation/cation_homo",
+      "entity_columns": [
+        "cation"
+      ],
+      "entity_roles": [
+        "cation"
+      ],
+      "target": "cation_HOMO_eV",
+      "condition_columns": [],
+      "topology": "single",
+      "meta_group": "quantum",
+      "fold_strategy": "random"
+    },
+    "simulation/cation_lumo": {
+      "task": "simulation/cation_lumo",
+      "entity_columns": [
+        "cation"
+      ],
+      "entity_roles": [
+        "cation"
+      ],
+      "target": "cation_LUMO_eV",
+      "condition_columns": [],
+      "topology": "single",
+      "meta_group": "quantum",
+      "fold_strategy": "random"
+    },
+    "simulation/anion_homo": {
+      "task": "simulation/anion_homo",
+      "entity_columns": [
+        "anion"
+      ],
+      "entity_roles": [
+        "anion"
+      ],
+      "target": "anion_HOMO_eV",
+      "condition_columns": [],
+      "topology": "single",
+      "meta_group": "quantum",
+      "fold_strategy": "random"
+    },
+    "simulation/anion_lumo": {
+      "task": "simulation/anion_lumo",
+      "entity_columns": [
+        "anion"
+      ],
+      "entity_roles": [
+        "anion"
+      ],
+      "target": "anion_LUMO_eV",
+      "condition_columns": [],
+      "topology": "single",
+      "meta_group": "quantum",
+      "fold_strategy": "random"
+    },
+    "simulation/charge": {
+      "task": "simulation/charge",
+      "entity_columns": [
+        "SMILES"
+      ],
+      "entity_roles": [
+        "neutral"
+      ],
+      "target": "charge",
+      "condition_columns": [],
+      "topology": "single",
+      "meta_group": "quantum",
+      "fold_strategy": "random"
+    }
+  },
+  "embedding_dim": 384,
+  "entity_count": 44087,
+  "source_hashes": {
+    "experiment/transfer_organic/solute-solvent/fold1.csv": "62598fca332629a54e16c1730d107a4e27fa1479325f22b0f2fbdb9cab83a67a",
+    "experiment/transfer_organic/solute-solvent/fold2.csv": "138157892ea83a810e7cfdc2bb88490019dea96e38842d9ac163e7d43b9ec7c4",
+    "experiment/transfer_organic/solute-solvent/fold3.csv": "f132ccbc13630a123ba500a5e84ad8f4ca256c17e74ec2617d4cc024310232ee",
+    "experiment/transfer_organic/solute-solvent/fold4.csv": "d4353ea45728994b50b5f2b117ac5561890467ce7529e8b81a0c9fba86455693",
+    "experiment/transfer_organic/solute-solvent/fold5.csv": "c1f207533dafc8d39a8cf00aaa476e0e8d118d0983025c4137bc86198eac5dc6",
+    "simulation/cation_homo/random/fold1.csv": "c43fd0b0ef366c2ed948b381164570f9744e713af1e9d991cfa04f5f07871773",
+    "simulation/cation_homo/random/fold2.csv": "6d76a21a9bf8a846b3405a2b9603b4f4097eb88f7398ee44663f3f1056d50a68",
+    "simulation/cation_homo/random/fold3.csv": "932064759d5842c666501d7215089c7252461f675a13d6799b7e2d94226a0b65",
+    "simulation/cation_homo/random/fold4.csv": "4247e2573902b7ab2a80c8fc562d3e783a01ed403305760945040a4fb236751c",
+    "simulation/cation_homo/random/fold5.csv": "fdaa2ecd08808f6ae3f1ee722939949d71ac83829f93efaf050ed92dfb2acdf5",
+    "simulation/cation_lumo/random/fold1.csv": "7c0e6fde0e7d2f095b572371db6540af8313c33d7f535ea252a95bd77f175f73",
+    "simulation/cation_lumo/random/fold2.csv": "1d7648b407adb6a7e3bd57df27bb3b555352fda8595e710b94ba2650cdf58813",
+    "simulation/cation_lumo/random/fold3.csv": "375080397e0be81d234aee61e2481964eec70a4bd7b6f75d8b387969a3365aca",
+    "simulation/cation_lumo/random/fold4.csv": "9569eadb1b83aba40fb902f9b9c0b5cafbb33ef3ef863969f71e5e46d916e39b",
+    "simulation/cation_lumo/random/fold5.csv": "3e3863c061246f958b3cd64162b63460cdea248322316dcb5a722c8f30ca2bb3",
+    "simulation/anion_homo/random/fold1.csv": "9a848ac1049b07ead6a40c81f4d388b0ee316066cd2e67bbf695e87d87280793",
+    "simulation/anion_homo/random/fold2.csv": "d6288e17655ce4a8d49d1f9d1b3e16d69a73140c200cad4b481656af624ff374",
+    "simulation/anion_homo/random/fold3.csv": "ecd500dcf5fd3ac4d69a1fe3c08710ecf2537f2d1fed7b6c650ad42eb3d86245",
+    "simulation/anion_homo/random/fold4.csv": "5a01393ae182163031eb7e7994d33dfb0e0a493ea4aa73ee7901e44a4b5fa975",
+    "simulation/anion_homo/random/fold5.csv": "e2848e285775b098bc1bbbeeb2dade81e7916e6e624a13ddb97cc7b932759509",
+    "simulation/anion_lumo/random/fold1.csv": "523986ea53ec6a59a90f3dcff3da4ed74d1501bbebd1fa9cc6452e69628d0b9c",
+    "simulation/anion_lumo/random/fold2.csv": "8a8451c747dafc7fada07699d28e93b59b0e8b801344294d8902fa5356448edc",
+    "simulation/anion_lumo/random/fold3.csv": "74a185e03d72a5e1f76ebd1fb1c4834de8f39770e5ca2e9fac08a1808da4135e",
+    "simulation/anion_lumo/random/fold4.csv": "37f3bafce69baa8fc15f9686e02a49155797241ed5f65bbd26ecc9a084165f3a",
+    "simulation/anion_lumo/random/fold5.csv": "453a1fb7bb1674253df014aa871629d9ed0d1c4401458af8f92bc2ee323bbbbe",
+    "simulation/charge/random/fold1.csv": "9e93de5a6623393324ca5ce267fd4714ee0c8b0b2e7c693af9019a71b64b737d",
+    "simulation/charge/random/fold2.csv": "5fc21bd67ea50c06c60ab0621ee298c43de7f5229a1fba0f382c7a63201e9e5e",
+    "simulation/charge/random/fold3.csv": "42ee87c3291211b4a048834e354a4d9183330fb5b1f53b8a4c8ef402651485de",
+    "simulation/charge/random/fold4.csv": "f4b8558e6300728c3a7d3e05abda19ed9477457d8641ae70f1386a00720031bb",
+    "simulation/charge/random/fold5.csv": "c900f57e281b76395b1826e4fa74d1156982daed4cc5d2a1fc4fd37633d6a56d",
+    "experiment/transfer_organic/test.csv": "c6c4a42f84c4bb0629ba5f391dc9049f41f8e778fb246af81430319ca459f569",
+    "simulation/cation_homo/test.csv": "1dc56c895a26c404762b79a2a0399f83b8fdc2eca5751597533892d836c2ba18",
+    "simulation/cation_lumo/test.csv": "bd1328cd6ee06500ea78fb64cc8b11156ecd1fe3f933e67c30d3a31abf34276b",
+    "simulation/anion_homo/test.csv": "da210079d56d193f5ec40ba817c3a8d22d79fbd3db09a3115105529b42baf46d",
+    "simulation/anion_lumo/test.csv": "817f986ab4b5a706b00a986a422b8d03ed07daa616873716e83cb8bdccba0927",
+    "simulation/charge/test.csv": "32e0f4c2a6ca1e8ea10d1c02fd0e14257a4da31b3d06a55966c9e12c57f42037"
+  },
+  "data_signature": "08c2f07d69dac2dbc701e7a4edfdcc1e81ddb7c389f2c9f744d61c8476f35d1f",
+  "provenance": {
+    "stage2_checkpoint": "artifacts/stage_v2/training/comparisons/base_reference/best.pt",
+    "stage2_checkpoint_hash": "4bef1cc671546e8e2f39412def46eb6320cc1ebe4c05a644a31cda7b7641e5bc",
+    "stage2_config_hash": "4c84d53a5c758857eb30df240709553798ac6aacd0117d7230e1afe027d124ee",
+    "stage2_data_metadata_hash": "603cad19ce3ab123179a570e6a7578376dae7ab7e9bdb5fe9638c52ceaa7d8be",
+    "stage1_checkpoint_hash": "885dbb9332000f75a1f4d636d878fdf64c677bf150e71401e0e1a8020003f10d",
+    "stage1_artifact_hash": "180ba9ec91d79da170787b18b7fd16fc9b5d3d9edf17377536f00acf00bee813",
+    "tokenizer_hash": "f80c4b4a5f116d572b05e8d0c788526d03c3445fb387cf645b90220ba024d141",
+    "descriptor_schema_hash": "bb21a40457867b8e3f6f0218c76c5ac8b4c450098c8984284e2d39977ee2dcee",
+    "descriptor_scaler_hash": "23536085a4d0fb4d6cc53640fe8f70707f424907390dc63a321fce2555097dd2"
+  },
+  "rdkit_version": "2025.09.5",
+  "numpy_version": "2.4.3",
+  "torch_version": "2.9.0+cu128",
+  "artifact_hashes": {
+    "entity_index.json": "e49272c7b647b1dd4ae0791f9627801e860fdac4a079cbb0abad8d99d0137231",
+    "frozen_embeddings.pt": "2dbe7769c4ae636e6f82a9b010d9c5837139adbad3807ec5986d5cbc40ce50b9",
+    "excluded_entities.csv": "97ee5026d2dc04cf08c68102579726188cb04679543cd08c53c2a5af8fae1e3d",
+    "folds/fold1/experiment__transfer_organic_train.pt": "b7826cc085d0cc2321f2ed0d11cdae4e087352c45ce2a9d550718f54b693eb2c",
+    "folds/fold1/experiment__transfer_organic_valid.pt": "8e4707ee228e3b51c63f94af70953c940cc2d7595bd17ec65825f5bf65cbe75e",
+    "folds/fold1/experiment__transfer_organic_test.pt": "bd180070a713f42f27cf9132c0c27f4647e1826a2123b33b2b8eaef73e49fe35",
+    "folds/fold1/simulation__cation_homo_train.pt": "4df873c823f3559a671cc797afe6554dd87855e704b57293775709d4eaaf592f",
+    "folds/fold1/simulation__cation_homo_valid.pt": "fb3e074b81c5e5fdab8b013ee8c2f5c9a53bd7589145feaece5a61e266dae91a",
+    "folds/fold1/simulation__cation_homo_test.pt": "85e4f6fe549a31d1126c2ce5d318eb2bb99ea2f82e123db2d4fcaf44022aee0b",
+    "folds/fold1/simulation__cation_lumo_train.pt": "7dc6e12d7ffdd8a9d1d0f1b4dba319f8fa57093dde10a9dd760d5ae299f86519",
+    "folds/fold1/simulation__cation_lumo_valid.pt": "3ff18344ea007a6c97b560e9443e2382b385daefc19a05d3b5aea6c110aa92fc",
+    "folds/fold1/simulation__cation_lumo_test.pt": "066ae4d348c2ff13e22315084a8ffab22d549fa15bee22dbd488c82a4f566caa",
+    "folds/fold1/simulation__anion_homo_train.pt": "5876e32ece50d4cd26aad685ccddf061703e8fc5aeac28c55bf606f0b8e50e8f",
+    "folds/fold1/simulation__anion_homo_valid.pt": "ab630cd3b79e53f658b1c5736afef3cad7544cd3a0f5928c48b1bf73d2e47cba",
+    "folds/fold1/simulation__anion_homo_test.pt": "684ce1e109de674e886213e5386cde89c2ce1fe9b90d1a32ba25462f13d51052",
+    "folds/fold1/simulation__anion_lumo_train.pt": "2266762a392d7d6c89db83a293de22700b3ca274f90c489972fcdd664b314800",
+    "folds/fold1/simulation__anion_lumo_valid.pt": "db074713eab76cccf92e691ceba1eb6355fe63194930da74a0bdbb7c72537715",
+    "folds/fold1/simulation__anion_lumo_test.pt": "7c40c1fe901ec2f144d61947f27c73970a005776eaf9d67e6f97f9cf494c73a7",
+    "folds/fold1/simulation__charge_train.pt": "23e6d6faf2ca911d5c56fdcb362c3c198146d900f76de5dba34bad1287d4c19b",
+    "folds/fold1/simulation__charge_valid.pt": "aefe5d9df3554ba7cb81e4e6c662e7fe43f703bab8c46695c31c73fb0c6d4335",
+    "folds/fold1/simulation__charge_test.pt": "13222f1954dcd079c7bb0c01a2f045f39c7a9d2ef02efacd5b439416cff2e9a5",
+    "folds/fold2/experiment__transfer_organic_train.pt": "7bf44a45095417b7d798052b3d19bc46c002985f2a919e82b847bdb51584ec5c",
+    "folds/fold2/experiment__transfer_organic_valid.pt": "717210f74ce73be95851f60fa31dd9631c385901d007c7e04d65b659da4363fc",
+    "folds/fold2/experiment__transfer_organic_test.pt": "be3448bb51bf04f761df6291698f63a6bd13a1d88982bb36e60de08c81d2dad6",
+    "folds/fold2/simulation__cation_homo_train.pt": "c60966fc213bbd82757a7715e795491566a3da0064ec1c5a794e759a3b4ca203",
+    "folds/fold2/simulation__cation_homo_valid.pt": "3c21ccd81f9c1a59f21f66662689ef7b0daaf022bf17bdbb22f6ef1b65f6bbdd",
+    "folds/fold2/simulation__cation_homo_test.pt": "99e1e82d75086569cb4d7176338fc88ed9e247fdd07e69daa7e05e6eec437803",
+    "folds/fold2/simulation__cation_lumo_train.pt": "76c6f78f4d5e1e840ef98015cdc2c11f714c3824a2bf92f6b0528abf31afba1b",
+    "folds/fold2/simulation__cation_lumo_valid.pt": "fa0e03f6b51df474db4e8c90c46d641d7825a1039354202757c68d9b175a828b",
+    "folds/fold2/simulation__cation_lumo_test.pt": "94b390cd6e23074e26a902f2425c799673fb2a4dca5513f745d56614d0e651d0",
+    "folds/fold2/simulation__anion_homo_train.pt": "3449fc035e10bd39ff4e2e804ee6a70c693a3e13a1e7908be4162bfe005e4617",
+    "folds/fold2/simulation__anion_homo_valid.pt": "f3fd76c8a23e755ff865f56da168649adced3e36516c0eaf066d804daed15365",
+    "folds/fold2/simulation__anion_homo_test.pt": "fe50f5a95ca2ffd722b6366f374f43b81626447188b585d876880c80ef9ce877",
+    "folds/fold2/simulation__anion_lumo_train.pt": "ec8ef8a304d9e7beab3409f1b583101469aa4b60efb819e45028d8fad14b5fa5",
+    "folds/fold2/simulation__anion_lumo_valid.pt": "6eeaae47e73b3b240e73f3b8376e6100678095f8fc77ab4e165cca5c4dd5eb38",
+    "folds/fold2/simulation__anion_lumo_test.pt": "0721bb137ebee0f224ee02fd3806ac481cbb10be86f6593a81e70ec5cde1e356",
+    "folds/fold2/simulation__charge_train.pt": "806b8099d71f73b62619a907406d7aedd01a89a4c2995a3f4cc0f903ccd059b5",
+    "folds/fold2/simulation__charge_valid.pt": "3d220b53d476b1eba63280cc6c20f552d2607be4fa5713c4929bf1407c770e78",
+    "folds/fold2/simulation__charge_test.pt": "45de9a275d6f552a5292ecb9671779365fcbf31aba1a28e679f43f14506ab197",
+    "folds/fold3/experiment__transfer_organic_train.pt": "92c92407959ee449f19a84d69ff9e0f8c72d7a2e60ac88b3b94c06b1a2440992",
+    "folds/fold3/experiment__transfer_organic_valid.pt": "c0d3bcbde4390bce012f2877c5625dd351aba5e7dbdc4f81eb78fceaaff9c175",
+    "folds/fold3/experiment__transfer_organic_test.pt": "63bc52c7ce9c456892f5130f66321539b450feef27964773a724c010702f2469",
+    "folds/fold3/simulation__cation_homo_train.pt": "ae080cb70abed3ca38459ca5a937d5312e21fd08f9bfef6814a28bf8946918e5",
+    "folds/fold3/simulation__cation_homo_valid.pt": "5fe1574a020d91fd1fd81e998bacbffc4c67d60dd1bbbc917bebd8fdc0e9a1e8",
+    "folds/fold3/simulation__cation_homo_test.pt": "ba55da7827c05073410172d8bc4abedfde6ec8dbb11de8ee9b248091077a9f46",
+    "folds/fold3/simulation__cation_lumo_train.pt": "5652f536aac3c888c9cdf8fc5adef6c7e96e4c7b9fac80fc739c594142c1f089",
+    "folds/fold3/simulation__cation_lumo_valid.pt": "62776734126ca4f453571f187636c0f809b5b8a4d2863426019afbffc3f58e06",
+    "folds/fold3/simulation__cation_lumo_test.pt": "3e1d3a4b7b5bdc1ad9908a187ad5b5dc22ebde61b705054ab5f24483275143ef",
+    "folds/fold3/simulation__anion_homo_train.pt": "ffb8c34b194eee81aa54739d67ebbc5acece4db4e0e9d33301d9d8cb6f0284bd",
+    "folds/fold3/simulation__anion_homo_valid.pt": "e438cc855b97c09eaac24792679342560e9178be367d46b1f2a987d934ff6199",
+    "folds/fold3/simulation__anion_homo_test.pt": "1d6e0323bf7d48b91a3d2b7ec11aac7aafa2d1c536fb2f1f4db83b612a3e2f29",
+    "folds/fold3/simulation__anion_lumo_train.pt": "4cf5b334064db5a582cfc105e6af5d9cccc349e3f182025df948a4fdadfda841",
+    "folds/fold3/simulation__anion_lumo_valid.pt": "20a158de97c059d855e9853f62ac76df6253e409c8740d25013fe4035f2ab35e",
+    "folds/fold3/simulation__anion_lumo_test.pt": "b5967d93a6edab8aeb0a0070e15746fcedfed5a6cd75523164d986bcd5b5542f",
+    "folds/fold3/simulation__charge_train.pt": "9098509421917d19f031addc3f5c27871074516c00aac7889b5b0dd3112a05f2",
+    "folds/fold3/simulation__charge_valid.pt": "73e0d0c9d887ef939382158dc5dbefcdce1ff6cce216565070f7fdd0a27fb3e8",
+    "folds/fold3/simulation__charge_test.pt": "ae1023d406950789c77bd14c1fbe09e2084a071ed144cde111059f1184de58bd",
+    "folds/fold4/experiment__transfer_organic_train.pt": "4e138b8c1b34a2f1899cdb7fb49e4180340568f3dcb68ac37106da21397413f3",
+    "folds/fold4/experiment__transfer_organic_valid.pt": "dbefcdbc484073a2a283bacb3c4f78b2d0288d1e7a3cd17cff4e64b618b002f3",
+    "folds/fold4/experiment__transfer_organic_test.pt": "38d3b5c354b851ef8d6e91340deca08db1005dc20957f71c26e28e91597af17f",
+    "folds/fold4/simulation__cation_homo_train.pt": "a2c9bbf69b407c1f23af801a68f4de8ce43b5e552fbf80be36a38acd6197d560",
+    "folds/fold4/simulation__cation_homo_valid.pt": "fdb703e86db5c81f67eae750ec39b5ed2d01af0c29d4d71964e9905ef9818125",
+    "folds/fold4/simulation__cation_homo_test.pt": "7d325a91345426a084e42517ef6936d6f5516209ec1bb32115d6bc4d3bc99e63",
+    "folds/fold4/simulation__cation_lumo_train.pt": "e82eaf093e4641c5f67d0f05730340009bb0f4a3f0b8fb3f5e707cb2329a16a0",
+    "folds/fold4/simulation__cation_lumo_valid.pt": "1d4c6d79a14cd996adf6f0900c643bb400e59d6d24a82c77f771d4f2424edfa9",
+    "folds/fold4/simulation__cation_lumo_test.pt": "a30797548fca90aaed2f8c407785937e2d9ab9ac1ba24d00b75c4ae661dd5dcb",
+    "folds/fold4/simulation__anion_homo_train.pt": "c004e1b94c3687eb66e2b1b09a9281479b005035bd1b5394af21af7b5b070b7c",
+    "folds/fold4/simulation__anion_homo_valid.pt": "f3f7367e200f68d3a7546c8c75441c7fe64ead30adbd76eaeb8e9e142489e9fd",
+    "folds/fold4/simulation__anion_homo_test.pt": "12c55edf14b86b5a2c765a1971698dc14b90511e1b05a742a709f9619709de71",
+    "folds/fold4/simulation__anion_lumo_train.pt": "76310e68e228090da7a9df991eb6fa1502670cc94f3127b33968720acac8f605",
+    "folds/fold4/simulation__anion_lumo_valid.pt": "9fb63d5756f93844c14ce98da128ca1b4a34fa80ba59294f6d4a7f02a93d1856",
+    "folds/fold4/simulation__anion_lumo_test.pt": "0e4017c9cc9d5568240003c0019df4c42c6bc15146d9d419d6dc773118d2fc79",
+    "folds/fold4/simulation__charge_train.pt": "044eb919dd2097f2aea70b4ae72861cbfa2e5a94776659698a85c97cf0c07a49",
+    "folds/fold4/simulation__charge_valid.pt": "5728dd6c54282e2d20a7278493cfa3db15f79250059f1ab1c571cedc258a1a3f",
+    "folds/fold4/simulation__charge_test.pt": "7d79f62a90f3f396e5d4cee1b4037c94dbed14164bacced180dbb5ebab03ea8a",
+    "folds/fold5/experiment__transfer_organic_train.pt": "b3d5cd542b4d2575fda12125cd16f37be031e8d3e13b327220429c220bd1cc71",
+    "folds/fold5/experiment__transfer_organic_valid.pt": "216aeb4d536a273d9542b6da1fc62ebb78a220c14c823a13c36ce7e2dbff47bc",
+    "folds/fold5/experiment__transfer_organic_test.pt": "e5fc7dcf31c78726c6cd675cf2b94fb9178f87e2b8c68f88599da15bd136dd06",
+    "folds/fold5/simulation__cation_homo_train.pt": "61bb837ae465d7c5050d862b468e630be09f6f796c6484e8a9e61b1f0f21fa0e",
+    "folds/fold5/simulation__cation_homo_valid.pt": "492d0262f4a087566aa9d6dd805bc3ab3b571b14bd0925553e63b587cfbb26a7",
+    "folds/fold5/simulation__cation_homo_test.pt": "95bb2aee81a842090c229e639c422f5b84c98ab725883af3a8c9a1361c97e883",
+    "folds/fold5/simulation__cation_lumo_train.pt": "08d6d63d32b0433bff9d77bd71cb8e2fdda35e9dd6dbf70ed2fc9151b786389e",
+    "folds/fold5/simulation__cation_lumo_valid.pt": "e22129f9ad9a9e7e76d978a74e0e49bd0b67b6485c26dfb511409675988707ca",
+    "folds/fold5/simulation__cation_lumo_test.pt": "e9fc107a2cf8efb52db702efb2f5d7cfce9cf5aedc8352b5c8f28e23a8c84020",
+    "folds/fold5/simulation__anion_homo_train.pt": "389496d40956bbe029ecd683ec413c46bbd363482d22c2e434bca58df5a67616",
+    "folds/fold5/simulation__anion_homo_valid.pt": "11554dbfa35371cf1d86e4a0f05cfe1540e955f88a7e209c47523c4efb2e1cd1",
+    "folds/fold5/simulation__anion_homo_test.pt": "58d9b09d43c90d82f2117e4b0331b2e84f7f3d074e9ba665ac07195419e4c764",
+    "folds/fold5/simulation__anion_lumo_train.pt": "8ae0820578ab49681bdb9c3517a1b8ccf1d6a7c35ac1e05bbff8bb8da47ead17",
+    "folds/fold5/simulation__anion_lumo_valid.pt": "5eded9273b33f69c1ec58e379b03ebeb3ca6e4dea8ec790f15f985b2b5f32896",
+    "folds/fold5/simulation__anion_lumo_test.pt": "0a97d5bec2b72ae1007fcb38ebddf4f8085859c5b457bee48cd6c114d50f1c8e",
+    "folds/fold5/simulation__charge_train.pt": "7d0579c3e1e90aea4d81e50adbedf13b6e7780aa8949ab20450e442a413683d9",
+    "folds/fold5/simulation__charge_valid.pt": "21ff6fb3c77e9a2798da80bedcdee7b95f49fd5160ab5beffbc23171cc90942e",
+    "folds/fold5/simulation__charge_test.pt": "4bcc2a06f4a489fd67eb6a36a409fb7e11b78874bba2c4e331273e37e7362f6b",
+    "scalers.json": "f6d76da0ec7477a20a9f8c4d0925287d82b7c784b964a2c5660694db30bb5c81",
+    "excluded_rows.csv": "d5aba85b4910de39a3af4450bc2f3b6ef21bae597e902479708cb91368519567",
+    "cross_task_exposure.csv": "660185c5b4e66e06839b8de25bd6579f20ef8d1b0973d215d5702c4224e017f3"
+  },
+  "summary": {
+    "excluded_entities": 10,
+    "excluded_rows": 50,
+    "cross_task_exposures": 0
+  }
+}

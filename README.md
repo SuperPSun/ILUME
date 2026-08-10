@@ -166,7 +166,7 @@ ilume-smoke --config configs/smoke.yaml
 ilume-train --config configs/train_test.yaml
 ```
 
-当前正式训练器是单卡实现；不包含 DDP、TensorBoard 或自动实验矩阵调度。
+Stage 1/2 正式训练器是单卡实现；不包含 DDP 或 TensorBoard。Stage 3 另提供单卡串行实验矩阵脚本，但不包含并行实验调度。
 
 ## Stage 2 物性监督对齐
 
@@ -207,3 +207,30 @@ CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
 ```
 
 Stage 2 v2 checkpoint 与 Stage 1 checkpoint v3 是两个显式不同的格式。它保存学生、PairEncoder、五个回归器、优化器、体系/行游标、渐进解冻阶段、RNG、早停状态及 data/teacher/checkpoint 哈希，可从任意保存 step 恢复。旧 Stage 2 v1 checkpoint 不做静默迁移；v2 artifact 和训练输出位于 `artifacts/stage_v2/`。采样/容量对比矩阵以及保留原生进度条的单卡串行命令见 [`configs/README.md`](configs/README.md#stage-2-对比矩阵)；详细决定见 ADR-0007 和 ADR-0009。
+
+## Stage 3 多任务物性训练
+
+Stage 3 固定读取 Stage 2 Base reference 的 `best.pt`，准备阶段将 backbone、IL PairEncoder 和 transfer PairEncoder 的表示写入冻结缓存，训练阶段不再加载这些教师模块。27项任务由同一命令协调，但分成可训练状态完全隔离的两个域：
+
+- `il21`：19项直接 IL 任务以及 solvation/transfer，使用两层 HoME；solute CLS 只在第二层进入溶剂化 group、private expert 和 gate，直接 IL 任务与 global expert 不接收 solute。
+- `aux6`：transfer organic、四项离子 HOMO/LUMO 和 charge，使用六个参数互不共享的独立回归 Head；不进入 HoME，也不与 `il21` 共享 optimizer、scheduler、AMP、RNG、BN、早停或选优状态。
+
+Stage 3 artifact/checkpoint 格式为 v2，数据按域写入 `artifacts/stage3_v2/data/{il21,aux6}`。正式配置使用 CUDA resident data、预计算表示索引和每域一次 backward；优化训练写入 `artifacts/stage3_v2/training_optimized/`。优化前的 v2 training checkpoint 只能配合 `configs/stage3_home_legacy.yaml` 恢复，Stage 3 v1 产物不迁移。
+
+单 fold 主线入口：
+
+```bash
+ilume-stage3-prepare --config configs/stage3_home.yaml
+ilume-stage3-train \
+  --config configs/stage3_home.yaml \
+  --fold 1 \
+  --output-dir artifacts/stage3_v2/training_optimized/home/fold1
+```
+
+五折主线、五组 IL-only 基线、验证汇总和主线 test ensemble 的串行入口为：
+
+```bash
+bash scripts/run_stage3_matrix.sh
+```
+
+截至2026年8月5日，`artifacts/stage3_v2/training_optimized/logs/20260805_152606/status.tsv` 记录的正式优化矩阵项目全部成功；五折汇总位于各实验的 `five_fold_summary.json`，主线 test ensemble 位于 `home/test_ensemble_metrics.json`。配置、恢复命令和结果目录合同见 [`configs/README.md`](configs/README.md#stage-3-home-多任务训练)，架构与兼容性决定见 ADR-0011 和 ADR-0012。

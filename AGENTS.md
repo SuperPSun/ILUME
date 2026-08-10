@@ -2,7 +2,7 @@
 
 ## 项目定位
 
-为 cation、anion 和 molecule 提供共享参数的四模态掩码预训练，并以冻结教师 CLS 支持五任务 Stage 2 物性监督对齐。四个模态为可替换 tokenizer 的 SMILES、RDKit molecular graph、经 schema 筛选和语义分组的 RDKit descriptors，以及 Morgan/MACCS fingerprints。
+为 cation、anion 和 molecule 提供共享参数的四模态掩码预训练，以冻结教师 CLS 支持五任务 Stage 2 物性监督对齐，并在冻结 Stage 2 表示上提供 Stage 3 的27任务训练。Stage 3 将21项 IL 任务与6项非 IL 辅助任务分成可训练状态完全隔离的两个域。
 
 ## 运行与验证
 
@@ -13,7 +13,7 @@ ilume-smoke --config configs/smoke.yaml
 pytest -q
 ```
 
-涉及正式训练器时还应运行 `ilume-train --config configs/train_test.yaml`；该配置会验证 45/45/10 覆盖、validation 和 checkpoint。修改 checkpoint/resume 时必须额外验证从已保存 checkpoint 恢复。Stage 2 使用临时小数据测试其 prepare/train/resume 链路；除非用户明确要求，不运行全量教师缓存、λ 扫描或正式训练。
+涉及正式训练器时还应运行 `ilume-train --config configs/train_test.yaml`；该配置会验证 45/45/10 覆盖、validation 和 checkpoint。修改 checkpoint/resume 时必须额外验证从已保存 checkpoint 恢复。Stage 2/3 使用临时小数据测试 prepare/train/resume/evaluate 链路；除非用户明确要求，不运行全量教师缓存、正式 Stage 3 prepare、训练矩阵或 test ensemble。
 
 ## 技术栈
 
@@ -34,8 +34,9 @@ pytest -q
 - 保持 `MultimodalPretrainModel.forward(batch)` 接口稳定。
 - Stage 2 只读取 `data/stage2/<task>/{train,valid}.csv`，复用 Stage 1 预处理合同；首版只使用 T，不虚构 P。教师 CLS 必须由 checkpoint 哈希绑定的离线缓存提供，训练时不驻留冻结教师。v2 的三类 IL 在任务内按 cation/anion 体系采样，QM 支持部分缺失标签，训练前10%完整任务块只更新 PairEncoder 和独立回归器。
 - Stage 2 v2 正式配置和串行命令以 `configs/README.md` 为准，artifact/output 位于 `artifacts/stage_v2/`，不得覆盖旧 `artifacts/stage2/`。正式配置保留 `shard_cache_size: 10`；首次完整准备后须按实际 shard 数复核，未经性能复核不得调低。
-- `data/`、`artifacts/`、缓存和 `*.egg-info/` 是本地输入或生成物，不提交为源码，也不在无关任务中重建或删除。
+- Stage 3 v2 固定读取 Stage 2 Base reference 的 `best.pt`，训练时只使用离线冻结表示。`il21` 使用 HoME 和 late-solute，`aux6` 使用六个互不共享参数的独立 Head；两域的 optimizer、scheduler、AMP、RNG、BN、早停和选优状态不得共享。正式配置是 `configs/stage3_home.yaml`，优化矩阵入口是 `scripts/run_stage3_matrix.sh`，兼容旧 v2 training checkpoint 只能使用 `configs/stage3_home_legacy.yaml`。
+- `.gitignore` 采用 artifact 黑名单：轻量 YAML/JSON/CSV/metrics/audit 可跟踪，模型、tensor、索引和终端日志等重载荷必须忽略。`data/`、重载荷 artifact、缓存和 `*.egg-info/` 不提交，也不在无关任务中重建或删除。
 
 ## 当前边界
 
-项目已包含四模态 Stage 1、分片准备、两步 smoke runner、单卡可恢复预训练器，以及五任务 Stage 2 物性监督对齐的准备和单卡训练入口。当前不实现 DDP、TensorBoard 或自动消融 runner；消融实验仍以独立配置/输出一次改变一个轴。
+项目已包含四模态 Stage 1、五任务 Stage 2，以及单阶段双域隔离的27任务 Stage 3。Stage 3 提供准备、单卡可恢复训练、五折汇总、test ensemble 和串行实验矩阵；不实现 DDP、TensorBoard 或并行实验调度，基线仍以独立配置一次改变一个轴。现役 Stage 3 决定以 ADR-0011/0012 为准，ADR-0010 仅保留为已取代的历史记录。
