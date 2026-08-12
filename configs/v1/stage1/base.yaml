@@ -1,6 +1,6 @@
 data:
   stage1_dir: data/stage1
-  artifacts_dir: outputs/formal_v1/stage1/base/prepare/artifacts
+  artifacts_dir: outputs/v1/stage1/base/prepare/artifacts
   valid_fraction: 0.05
   seed: 42
   max_smiles_tokens: 256

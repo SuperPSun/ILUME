@@ -1,11 +1,11 @@
 active_domains: [il21, aux6]
 data:
   stage3_dir: data/stage3
-  artifacts_dir: outputs/formal_v1/stage3/reference/prepare/artifacts
+  artifacts_dir: outputs/v1/stage3/reference/prepare/artifacts
   entity_batch_size: 256
   seed: 42
 initialization:
-  stage2_checkpoint: outputs/formal_v1/stage2/base/train/best.pt
+  stage2_checkpoint: outputs/v1/stage2/base/train/best.pt
 model:
   architecture: home
   global_experts: 2
