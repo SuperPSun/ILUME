@@ -1,4 +1,0 @@
-name	status	exit_code	log
-install	OK	0	artifacts/stage3_v2/logs/20260805_140807/install.log
-prepare	OK	0	artifacts/stage3_v2/logs/20260805_140807/prepare.log
-home_fold1	OK	0	artifacts/stage3_v2/logs/20260805_140807/home_fold1.log

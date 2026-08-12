@@ -9,7 +9,7 @@
 
 可选共享 role embedding 加到 CLS 与全部非 padding fusion token，不进入各模态 encoder，也不建立 role 专属参数分支。正式参考配置启用 role embedding、MLP graph head、curriculum modality dropout 和 asymmetric masking。
 
-提供单卡 `ilume-train`，包含 AMP、梯度累积/裁剪、warmup+cosine、validation、checkpoint/resume、RNG 与 sampler 状态恢复。暂不加入 DDP、TensorBoard 或自动实验矩阵。
+提供单卡 `python scripts/stage1/train.py`，包含 AMP、梯度累积/裁剪、warmup+cosine、validation、checkpoint/resume、RNG 与 sampler 状态恢复。暂不加入 DDP、TensorBoard 或自动实验矩阵。
 
 ## 理由
 

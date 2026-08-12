@@ -1,0 +1,47 @@
+active_domains: [il21, aux6]
+data:
+  stage3_dir: data/stage3
+  artifacts_dir: outputs/formal_v1/stage3/reference/prepare/artifacts
+  entity_batch_size: 256
+  seed: 42
+initialization:
+  stage2_checkpoint: outputs/formal_v1/stage2/base/train/best.pt
+model:
+  architecture: home
+  global_experts: 2
+  group_experts: 2
+  private_experts: 1
+  dropout: 0.10
+  feature_gate: true
+  self_gate: true
+  solute_injection: late
+training:
+  il21:
+    batch_size: 128
+    max_blocks: 5000
+    learning_rate: 0.0003
+    weight_decay: 0.0001
+    warmup_fraction: 0.10
+    max_grad_norm: 1.0
+    amp_dtype: bf16
+    validation_interval_blocks: 50
+    early_stopping_patience: 10
+    early_stopping_min_delta: 0.0001
+    backward_mode: domain
+  aux6:
+    batch_size: 256
+    max_blocks: 2500
+    learning_rate: 0.0003
+    weight_decay: 0.0001
+    warmup_fraction: 0.10
+    max_grad_norm: 1.0
+    amp_dtype: bf16
+    validation_interval_blocks: 25
+    early_stopping_patience: 10
+    early_stopping_min_delta: 0.0001
+    backward_mode: domain
+  device: auto
+  cpu_threads: 4
+  cpu_interop_threads: 1
+  resident_data: true
+  save_every_n_cycles: 25

@@ -1,30 +1,46 @@
-/data/
-# Keep artifact metadata, configs, metrics, and audits trackable. Ignore only
-# heavyweight model/tensor payloads, generated data indexes, and terminal logs.
-/artifacts/**/*.pt
-/artifacts/**/*.pth
-/artifacts/**/*.ckpt
-/artifacts/**/*.safetensors
-/artifacts/**/*.bin
-/artifacts/**/*.npy
-/artifacts/**/*.npz
-/artifacts/**/*.parquet
-/artifacts/**/*.arrow
-/artifacts/**/*.feather
-/artifacts/**/*.h5
-/artifacts/**/*.hdf5
-/artifacts/**/*.pkl
-/artifacts/**/*.joblib
-/artifacts/**/*.zip
-/artifacts/**/*.tar
-/artifacts/**/*.tar.gz
-/artifacts/**/*.log
-/artifacts/**/*.tmp
-/artifacts/**/corpus_index.json
-/artifacts/**/entity_index.json
-/artifacts/**/manifest.csv
-/.pytest_cache/
+# Python and build products
 __pycache__/
 *.py[cod]
 *.egg-info/
+/.pytest_cache/
+/build/
+/dist/
+
+# Local data: retain only stage identity files
+/data/**
+!/data/stage1/
+!/data/stage2/
+!/data/stage3/
+!/data/stage1/metadata.json
+!/data/stage2/metadata.json
+!/data/stage3/metadata.json
+
+# Self-describing run identities: everything else is payload
+/outputs/**
+!/outputs/**/
+!/outputs/**/run_config.yaml
+!/outputs/**/metadata.json
+!/outputs/**/summary.json
+
+# Historical and local research payloads
+/artifacts/
 /trash/
+
+# Heavy or transient payloads anywhere else
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+*.npy
+*.npz
+*.parquet
+*.arrow
+*.feather
+*.h5
+*.hdf5
+*.pkl
+*.joblib
+*.log
+*.tmp
+metrics.jsonl

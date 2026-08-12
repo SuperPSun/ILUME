@@ -1,2 +1,0 @@
-task,split,input_key,first_row,duplicate_row,first_targets,duplicate_targets
-density,train,CCCCCCOCn1cc[nH+]c1 | C[C@H](O)C(=O)[O-] | 298,13971,20941,1.0737000000000001,1.08422
