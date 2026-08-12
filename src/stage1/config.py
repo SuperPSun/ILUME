@@ -303,7 +303,7 @@ def config_from_dict(raw: dict[str, Any]) -> PretrainConfig:
     return _parse_config(raw, legacy=False)
 
 
-def _config_from_checkpoint_dict(raw: dict[str, Any]) -> PretrainConfig:
+def config_from_checkpoint_dict(raw: dict[str, Any]) -> PretrainConfig:
     return _parse_config(raw, legacy=True)
 
 

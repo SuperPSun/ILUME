@@ -10,6 +10,7 @@ import torch
 import torch.nn.functional as F
 
 from stage1.masking import MultimodalPacker
+from stage1.model import load_stage1_model
 from common.io import atomic_torch_save, sha256_file
 from common.progress import ProgressReporter
 from common.training import (
@@ -37,7 +38,6 @@ from .data import (
 )
 from .model import (
     Stage2AlignmentModel,
-    load_stage1_model,
     stage2_optimizer_groups,
 )
 from .prepare import load_teacher_embeddings

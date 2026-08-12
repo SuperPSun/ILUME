@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 import torch
 
+from common.io import sha256_file
 from stage1.config import (
     DataConfig,
     DescriptorConfig,
@@ -15,7 +16,9 @@ from stage1.config import (
     ModelConfig,
     PretrainConfig,
 )
-from stage1.data import PreparedCorpusDataset, prepare_corpus
+from stage1.data import PreparedCorpusDataset
+from stage1.model import load_stage1_model
+from stage1.prepare import prepare_corpus
 from stage1.masking import MultimodalPacker
 from stage1.model import MultimodalPretrainModel
 from stage2.config import (
@@ -38,9 +41,7 @@ from stage2.data import (
 from stage2.model import (
     PairEncoder,
     Stage2AlignmentModel,
-    load_stage1_model,
     masked_smooth_l1_loss,
-    sha256_file,
 )
 from stage2.prepare import (
     load_teacher_embeddings,

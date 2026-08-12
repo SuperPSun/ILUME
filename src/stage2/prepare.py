@@ -7,12 +7,12 @@ from typing import Any
 import torch
 
 from stage1.masking import MultimodalPacker
+from stage1.model import load_stage1_model
 from common.io import atomic_json, atomic_torch_save, sha256_file
 from common.progress import ProgressReporter
 from common.training import resolve_device
 from .config import Stage2Config
 from .data import Stage2EntityDataset, prepare_stage2_data
-from .model import load_stage1_model
 
 
 TEACHER_CACHE_VERSION = 1

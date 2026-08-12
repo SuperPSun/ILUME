@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .config import PretrainConfig
-from .data import MultimodalBatch
+from common.io import sha256_file
+from .config import PretrainConfig, config_from_checkpoint_dict
+from .data import MultimodalBatch, PreparedCorpusDataset
 from .descriptors import DescriptorSchema
 from .encoders import (
     DescriptorEncoder,
@@ -38,6 +40,14 @@ class PretrainOutput:
     losses: dict[str, torch.Tensor]
     logits: dict[str, torch.Tensor | dict[str, torch.Tensor]]
     fused_cls: torch.Tensor
+
+
+@dataclass(frozen=True)
+class LoadedStage1Model:
+    model: "MultimodalPretrainModel"
+    config: PretrainConfig
+    vocabulary: SmilesTokenizer
+    artifact_hash: str
 
 
 class TiedMLMHead(nn.Module):
@@ -391,3 +401,48 @@ class MultimodalPretrainModel(nn.Module):
             },
             fused_cls=fused[:, 0],
         )
+
+
+def load_stage1_model(
+    checkpoint_path: str | Path,
+    artifact_dir: str | Path,
+    *,
+    device: torch.device | str = "cpu",
+    backbone_dropout: float | None = None,
+) -> LoadedStage1Model:
+    checkpoint_path = Path(checkpoint_path)
+    artifact_dir = Path(artifact_dir)
+    checkpoint = torch.load(
+        checkpoint_path,
+        map_location="cpu",
+        weights_only=False,
+    )
+    if checkpoint.get("format_version") != 3:
+        raise ValueError("Stage 1 model loading requires a checkpoint in format v3")
+    config = config_from_checkpoint_dict(checkpoint["config"])
+    artifact_hash = sha256_file(artifact_dir / "metadata.json")
+    if backbone_dropout is not None:
+        config = replace(
+            config,
+            model=replace(config.model, dropout=backbone_dropout),
+        )
+    dataset = PreparedCorpusDataset(
+        artifact_dir,
+        "train",
+        config.data.shard_cache_size,
+    )
+    vocabulary = SmilesTokenizer.load(artifact_dir / "tokenizer.json")
+    model = MultimodalPretrainModel(
+        config,
+        vocabulary,
+        dataset.descriptor_schema,
+    )
+    model.load_state_dict(checkpoint["model"], strict=True)
+    del checkpoint
+    model.to(device)
+    return LoadedStage1Model(
+        model=model,
+        config=config,
+        vocabulary=vocabulary,
+        artifact_hash=artifact_hash,
+    )

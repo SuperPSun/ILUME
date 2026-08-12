@@ -7,7 +7,7 @@ import json
 import pytest
 
 from stage1.config import (
-    _config_from_checkpoint_dict,
+    config_from_checkpoint_dict,
     config_from_dict,
     load_config,
 )
@@ -54,7 +54,7 @@ def test_stage1_config_round_trip_and_legacy_checkpoint_fields() -> None:
     )
     with pytest.raises(ValueError, match="Unknown config sections: smoke"):
         config_from_dict(legacy)
-    assert _config_from_checkpoint_dict(legacy) == config
+    assert config_from_checkpoint_dict(legacy) == config
 
 
 def test_run_directory_is_non_overwriting_self_describing_and_private(
@@ -106,7 +106,7 @@ from stage1.config import (
     PretrainConfig,
     TrainingConfig,
 )
-from stage1.data import prepare_corpus
+from stage1.prepare import prepare_corpus
 from stage1.train import run_training
 
 

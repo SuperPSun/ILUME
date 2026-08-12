@@ -9,15 +9,16 @@ import numpy as np
 import torch
 from rdkit import Chem, rdBase
 
-from stage1.data import ROLE_TO_ID, _build_sample, _inspect_entity_qc
+from stage1.features import ROLE_TO_ID, build_entity_sample, inspect_entity_qc
 from stage1.descriptors import calculate_descriptors, rdkit_descriptor_names
 from stage1.masking import MultimodalPacker
+from stage1.model import load_stage1_model
 from common.io import atomic_json, atomic_torch_save, sha256_file
 from common.progress import ProgressReporter
 from common.training import canonical_json_sha256, resolve_device
 from stage2.config import _stage2_config_from_checkpoint_dict
 from stage2.data import _load_pretrain_inputs
-from stage2.model import Stage2AlignmentModel, load_stage1_model
+from stage2.model import Stage2AlignmentModel
 from .config import Stage3Config
 from .data import (
     STAGE3_ARTIFACT_VERSION,
@@ -121,7 +122,7 @@ def _encode_entities(
             "is_augmented": False,
             "seed_smiles": (),
         }
-        qc = _inspect_entity_qc(record)
+        qc = inspect_entity_qc(record)
         token_count = vocabulary.token_count(canonical)
         if token_count > pretrain_config.data.max_smiles_tokens:
             qc.reasons.append("smiles_overlength")
@@ -132,7 +133,7 @@ def _encode_entities(
                 molecule = Chem.MolFromSmiles(canonical)
                 if molecule is None:
                     raise ValueError("RDKit parsing failed")
-                sample = _build_sample(
+                sample = build_entity_sample(
                     record,
                     calculate_descriptors(molecule, raw_names),
                     schema,

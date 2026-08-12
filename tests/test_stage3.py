@@ -19,7 +19,8 @@ from stage1.config import (
     ModelConfig,
     PretrainConfig,
 )
-from stage1.data import PreparedCorpusDataset, prepare_corpus
+from stage1.data import PreparedCorpusDataset
+from stage1.prepare import prepare_corpus
 from stage1.model import MultimodalPretrainModel
 from common.progress import ProgressReporter
 from stage2.config import (
@@ -27,7 +28,8 @@ from stage2.config import (
     Stage2DataConfig,
     Stage2InitializationConfig,
 )
-from stage2.model import Stage2AlignmentModel, sha256_file
+from common.io import sha256_file
+from stage2.model import Stage2AlignmentModel
 from stage3.config import (
     AUX6_TASKS,
     IL21_TASKS,

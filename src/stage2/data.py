@@ -15,12 +15,15 @@ import torch
 from rdkit import Chem, rdBase
 from torch.utils.data import Dataset
 
-from stage1.config import PretrainConfig, config_from_dict
+from stage1.config import PretrainConfig
 from stage1.data import (
-    ROLE_TO_ID,
     MultimodalBatch,
-    _build_sample,
-    _inspect_entity_qc,
+)
+from stage1.features import (
+    ROLE_TO_ID,
+    build_entity_sample,
+    inspect_entity_qc,
+    load_stage1_feature_inputs,
 )
 from stage1.descriptors import (
     DescriptorSchema,
@@ -360,30 +363,10 @@ def _load_pretrain_inputs(
     DescriptorStandardizer,
     str,
 ]:
-    checkpoint = torch.load(
+    return load_stage1_feature_inputs(
         config.initialization.checkpoint,
-        map_location="cpu",
-        weights_only=False,
+        config.data.pretrain_artifacts_dir,
     )
-    if checkpoint.get("format_version") != 3:
-        raise ValueError("Stage 2 requires a Stage 1 checkpoint in format v3")
-    pretrain_config = config_from_dict(checkpoint["config"])
-    artifact_dir = config.data.pretrain_artifacts_dir
-    artifact_hash = sha256_file(artifact_dir / "metadata.json")
-    if checkpoint.get("artifact_hash") != artifact_hash:
-        raise ValueError("Stage 1 checkpoint and preprocessing artifact do not match")
-    del checkpoint
-    raw_names = rdkit_descriptor_names()
-    schema = DescriptorSchema.load(
-        artifact_dir / "descriptor_schema.json",
-        expected_raw_names=raw_names,
-    )
-    standardizer = DescriptorStandardizer.load(
-        artifact_dir / "descriptor_scaler.json",
-        expected_names=schema.selected_names,
-    )
-    vocabulary = SmilesTokenizer.load(artifact_dir / "tokenizer.json")
-    return pretrain_config, vocabulary, schema, standardizer, artifact_hash
 
 
 def _write_duplicate_audit(path: Path, rows: Sequence[dict[str, Any]]) -> None:
@@ -482,7 +465,7 @@ def _build_entity_shards(
             "is_augmented": False,
             "seed_smiles": (),
         }
-        qc = _inspect_entity_qc(record)
+        qc = inspect_entity_qc(record)
         token_count = vocabulary.token_count(canonical_smiles)
         if token_count > pretrain_config.data.max_smiles_tokens:
             qc.reasons.append("smiles_overlength")
@@ -496,7 +479,7 @@ def _build_entity_shards(
                 raw = calculate_descriptors(mol, raw_names)
                 entity_id = len(entries) + len(samples)
                 record["sample_id"] = f"stage2_entity_{entity_id:08d}"
-                sample = _build_sample(
+                sample = build_entity_sample(
                     record,
                     raw,
                     schema,

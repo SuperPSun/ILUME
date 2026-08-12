@@ -7,7 +7,7 @@ from typing import Any
 import torch
 from torch.utils.data import DataLoader, Subset
 
-from .config import PretrainConfig, _config_from_checkpoint_dict
+from .config import PretrainConfig, config_from_checkpoint_dict
 from .data import PreparedCorpusDataset
 from .masking import MultimodalMasker, MultimodalPacker
 from .model import MultimodalPretrainModel
@@ -207,7 +207,7 @@ def run_training(
                     "epoch trainer; start a new run"
                 )
             raise ValueError("Unsupported checkpoint format")
-        checkpoint_config = _config_from_checkpoint_dict(checkpoint_payload["config"])
+        checkpoint_config = config_from_checkpoint_dict(checkpoint_payload["config"])
         if checkpoint_config.to_dict() != config.to_dict():
             raise ValueError("Checkpoint config hash does not match the current config")
         if checkpoint_payload["artifact_hash"] != artifact_hash:

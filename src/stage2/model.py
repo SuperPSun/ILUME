@@ -1,18 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Any, Iterator
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 
-from common.io import sha256_file
-from stage1.config import PretrainConfig, _config_from_checkpoint_dict
-from stage1.data import MultimodalBatch, PreparedCorpusDataset
+from stage1.data import MultimodalBatch
 from stage1.model import MultimodalPretrainModel
-from stage1.tokenizer import SmilesTokenizer
 
 
 IL_TASKS = ("density", "heat_capacity", "thermal_expansion")
@@ -27,59 +23,6 @@ RECONSTRUCTION_MODULES = (
     "descriptor_heads",
     "fingerprint_heads",
 )
-
-
-@dataclass(frozen=True)
-class LoadedStage1Model:
-    model: MultimodalPretrainModel
-    config: PretrainConfig
-    vocabulary: SmilesTokenizer
-    artifact_hash: str
-
-
-def load_stage1_model(
-    checkpoint_path: str | Path,
-    artifact_dir: str | Path,
-    *,
-    device: torch.device | str = "cpu",
-    backbone_dropout: float | None = None,
-) -> LoadedStage1Model:
-    checkpoint_path = Path(checkpoint_path)
-    artifact_dir = Path(artifact_dir)
-    checkpoint = torch.load(
-        checkpoint_path,
-        map_location="cpu",
-        weights_only=False,
-    )
-    if checkpoint.get("format_version") != 3:
-        raise ValueError("Stage 2 requires a Stage 1 checkpoint in format v3")
-    config = _config_from_checkpoint_dict(checkpoint["config"])
-    artifact_hash = sha256_file(artifact_dir / "metadata.json")
-    if backbone_dropout is not None:
-        config = replace(
-            config,
-            model=replace(config.model, dropout=backbone_dropout),
-        )
-    dataset = PreparedCorpusDataset(
-        artifact_dir,
-        "train",
-        config.data.shard_cache_size,
-    )
-    vocabulary = SmilesTokenizer.load(artifact_dir / "tokenizer.json")
-    model = MultimodalPretrainModel(
-        config,
-        vocabulary,
-        dataset.descriptor_schema,
-    )
-    model.load_state_dict(checkpoint["model"], strict=True)
-    del checkpoint
-    model.to(device)
-    return LoadedStage1Model(
-        model=model,
-        config=config,
-        vocabulary=vocabulary,
-        artifact_hash=artifact_hash,
-    )
 
 
 class PairEncoder(nn.Module):

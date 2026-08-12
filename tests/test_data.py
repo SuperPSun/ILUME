@@ -9,14 +9,16 @@ import pytest
 from rdkit import Chem
 
 from stage1.config import DataConfig, PretrainConfig
-import stage1.data as data_module
+import stage1.features as features_module
+import stage1.prepare as prepare_module
 from stage1.data import (
     CORPUS_FORMAT_VERSION,
-    IPC_SQUARE_OVERFLOW_LIMIT,
     PreparedCorpusDataset,
+)
+from stage1.features import IPC_SQUARE_OVERFLOW_LIMIT, inspect_entity_qc
+from stage1.prepare import (
     _csv_data_row_count,
-    _inspect_entity_qc,
-    _preparation_source_paths,
+    preparation_source_paths,
     prepare_corpus,
 )
 from stage1.sampler import (
@@ -59,7 +61,7 @@ def test_prepare_progress_counts_rows_and_only_enabled_sources(tmp_path):
         stage1_dir=stage1,
         augmentation={"cation": 0, "anion": 1, "neutral": "all"},
     )
-    assert _preparation_source_paths(config) == [
+    assert preparation_source_paths(config) == [
         stage1 / "cation.csv",
         stage1 / "anion.csv",
         stage1 / "molecule.csv",
@@ -128,29 +130,29 @@ def test_entity_qc_records_multiple_reasons_and_keeps_isolated_hydrogen(monkeypa
         "is_augmented": True,
     }
     monkeypatch.setattr(
-        data_module,
+        features_module,
         "_calculate_ipc",
         lambda mol: IPC_SQUARE_OVERFLOW_LIMIT * 2,
     )
-    inspected = _inspect_entity_qc(record)
+    inspected = inspect_entity_qc(record)
     assert inspected.reasons == [
         "unsupported_bcut_bond_type",
         "ipc_square_overflow",
     ]
     assert inspected.unsupported_bond_types == ("DATIVE",)
 
-    monkeypatch.setattr(data_module, "_calculate_ipc", lambda mol: float("nan"))
-    nonfinite = _inspect_entity_qc({**record, "canonical_smiles": "CC"})
+    monkeypatch.setattr(features_module, "_calculate_ipc", lambda mol: float("nan"))
+    nonfinite = inspect_entity_qc({**record, "canonical_smiles": "CC"})
     assert nonfinite.reasons == ["ipc_nonfinite"]
 
-    monkeypatch.setattr(data_module, "_calculate_ipc", lambda mol: 0.0)
-    quadruple = _inspect_entity_qc(
+    monkeypatch.setattr(features_module, "_calculate_ipc", lambda mol: 0.0)
+    quadruple = inspect_entity_qc(
         {**record, "canonical_smiles": "[Cr]$[Cr]"}
     )
     assert quadruple.reasons == ["unsupported_bcut_bond_type"]
     assert quadruple.unsupported_bond_types == ("QUADRUPLE",)
 
-    hydrogen = _inspect_entity_qc({**record, "canonical_smiles": "[HH]"})
+    hydrogen = inspect_entity_qc({**record, "canonical_smiles": "[HH]"})
     assert hydrogen.reasons == []
 
 
@@ -177,7 +179,7 @@ def test_prepare_excludes_qc_failures_before_descriptor_calculation(
         [("CCCCCCCC", 0), ("P", 0)],
     )
 
-    real_ipc = data_module._calculate_ipc
+    real_ipc = features_module._calculate_ipc
 
     def fake_ipc(mol):
         if Chem.MolToSmiles(mol, canonical=True) == "P":
@@ -190,8 +192,8 @@ def test_prepare_excludes_qc_failures_before_descriptor_calculation(
         descriptor_smiles.append(Chem.MolToSmiles(mol, canonical=True))
         return np.arange(len(names), dtype=np.float64)
 
-    monkeypatch.setattr(data_module, "_calculate_ipc", fake_ipc)
-    monkeypatch.setattr(data_module, "calculate_descriptors", fake_descriptors)
+    monkeypatch.setattr(features_module, "_calculate_ipc", fake_ipc)
+    monkeypatch.setattr(prepare_module, "calculate_descriptors", fake_descriptors)
     summary = prepare_corpus(
         PretrainConfig(
             data=DataConfig(
