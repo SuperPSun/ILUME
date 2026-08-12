@@ -5,6 +5,7 @@ __pycache__/
 /.pytest_cache/
 /build/
 /dist/
+/.vscode/
 
 # Local data: retain only stage identity files
 /data/**
