@@ -7,41 +7,19 @@ from typing import Any
 import torch
 
 from stage1.masking import MultimodalPacker
+from common.io import atomic_json, atomic_torch_save, sha256_file
 from common.progress import ProgressReporter
+from common.training import resolve_device
 from .config import Stage2Config
 from .data import Stage2EntityDataset, prepare_stage2_data
-from .model import load_stage1_model, sha256_file
+from .model import load_stage1_model
 
 
 TEACHER_CACHE_VERSION = 1
 
 
-def resolve_device(requested: str) -> torch.device:
-    if requested == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = torch.device(requested)
-    if device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("A CUDA device was requested, but CUDA is unavailable")
-    return device
-
-
 def teacher_cache_dir(config: Stage2Config) -> Path:
     return config.data.artifacts_dir / "teachers"
-
-
-def _atomic_json(path: Path, payload: Any) -> None:
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(path)
-
-
-def _atomic_torch_save(path: Path, payload: Any) -> None:
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    torch.save(payload, temporary)
-    temporary.replace(path)
 
 
 def prepare_teacher_cache(
@@ -111,7 +89,7 @@ def prepare_teacher_cache(
                 )
             embeddings[start:end] = encoded
             progress.update(end - start)
-    _atomic_torch_save(embeddings_path, embeddings)
+    atomic_torch_save(embeddings_path, embeddings)
     metadata = {
         "format_version": TEACHER_CACHE_VERSION,
         "checkpoint": str(config.initialization.checkpoint),
@@ -122,7 +100,7 @@ def prepare_teacher_cache(
         "dtype": "float32",
         "embeddings_hash": sha256_file(embeddings_path),
     }
-    _atomic_json(metadata_path, metadata)
+    atomic_json(metadata_path, metadata)
     reporter.emit_json(
         {
             "event": "stage2_teacher_cache_complete",

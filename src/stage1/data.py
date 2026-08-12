@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import importlib.metadata
 import json
 import math
@@ -18,6 +17,8 @@ from rdkit import Chem, rdBase
 from rdkit.Chem import Descriptors
 from torch.utils.data import Dataset
 
+from common.io import atomic_json, sha256_file
+from common.training import canonical_json_sha256
 from .config import DataConfig, PretrainConfig
 from .descriptors import (
     DescriptorSchema,
@@ -499,22 +500,6 @@ def _write_excluded_entities(
     temporary.replace(path)
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def _atomic_json(path: Path, payload: Any) -> None:
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-    temporary.replace(path)
-
-
 def _build_sample(
     record: dict[str, Any],
     raw_descriptors: np.ndarray,
@@ -702,8 +687,7 @@ def _preparation_signature(
     }
     payload["data"].pop("artifacts_dir", None)
     payload["data"].pop("shard_cache_size", None)
-    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(serialized.encode()).hexdigest()
+    return canonical_json_sha256(payload)
 
 
 def prepare_corpus(config: PretrainConfig | DataConfig) -> dict[str, int]:
@@ -779,7 +763,7 @@ def prepare_corpus(config: PretrainConfig | DataConfig) -> dict[str, int]:
         }
     )
     with reporter.status("Hash source files"):
-        source_hashes = {str(path): _sha256(path) for path in source_paths}
+        source_hashes = {str(path): sha256_file(path) for path in source_paths}
     preparation_signature = _preparation_signature(config, source_hashes)
     metadata_path = output_dir / "metadata.json"
     if metadata_path.is_file():
@@ -841,7 +825,7 @@ def prepare_corpus(config: PretrainConfig | DataConfig) -> dict[str, int]:
                         }
                     )
         raw_matrix.flush()
-        _atomic_json(
+        atomic_json(
             state_path,
             {
                 "format_version": 1,
@@ -909,7 +893,7 @@ def prepare_corpus(config: PretrainConfig | DataConfig) -> dict[str, int]:
         tokenizer.save(output_dir / "tokenizer.json")
         schema.save(output_dir / "descriptor_schema.json")
         standardizer.save(output_dir / "descriptor_scaler.json")
-    _atomic_json(
+    atomic_json(
         state_path,
         {
             "format_version": 1,
@@ -976,12 +960,12 @@ def prepare_corpus(config: PretrainConfig | DataConfig) -> dict[str, int]:
         "seed": data_config.seed,
         "valid_fraction": data_config.valid_fraction,
         "shard_hashes": {
-            shard: _sha256(output_dir / shard)
+            shard: sha256_file(output_dir / shard)
             for shard in sorted({entry["shard"] for entry in entries})
         },
         "summary": summary,
     }
-    _atomic_json(
+    atomic_json(
         output_dir / "corpus_index.json",
         {"format_version": CORPUS_FORMAT_VERSION, "entries": entries},
     )
@@ -1016,7 +1000,7 @@ def prepare_corpus(config: PretrainConfig | DataConfig) -> dict[str, int]:
             )
     manifest_temporary.replace(manifest_path)
     metadata["artifact_hashes"] = {
-        filename: _sha256(output_dir / filename)
+        filename: sha256_file(output_dir / filename)
         for filename in (
             "tokenizer.json",
             "descriptor_schema.json",
@@ -1026,9 +1010,9 @@ def prepare_corpus(config: PretrainConfig | DataConfig) -> dict[str, int]:
             "excluded_entities.csv",
         )
     }
-    _atomic_json(output_dir / "metadata.json", metadata)
+    atomic_json(output_dir / "metadata.json", metadata)
 
-    _atomic_json(
+    atomic_json(
         state_path,
         {
             "format_version": 1,
@@ -1065,7 +1049,7 @@ class PreparedCorpusDataset(Dataset):
         if not isinstance(artifact_hashes, dict) or not artifact_hashes:
             raise ValueError("Corpus artifact hashes are missing; rerun scripts/stage1/prepare.py")
         for filename, expected_hash in artifact_hashes.items():
-            if _sha256(path / filename) != expected_hash:
+            if sha256_file(path / filename) != expected_hash:
                 raise ValueError(f"Artifact hash mismatch: {filename}")
         if self.metadata.get("rdkit_version") != rdBase.rdkitVersion:
             raise ValueError("RDKit version does not match the prepared corpus")
@@ -1104,7 +1088,7 @@ class PreparedCorpusDataset(Dataset):
         shard_path = self.artifact_dir / relative_path
         if relative_path not in self._verified_shards:
             expected_hash = self.metadata.get("shard_hashes", {}).get(relative_path)
-            if expected_hash is None or _sha256(shard_path) != expected_hash:
+            if expected_hash is None or sha256_file(shard_path) != expected_hash:
                 raise ValueError(f"Shard hash mismatch: {relative_path}")
             self._verified_shards.add(relative_path)
         payload = torch.load(

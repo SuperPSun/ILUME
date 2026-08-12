@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-import hashlib
 import json
-import math
-import random
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import torch
 from torch.utils.data import DataLoader, Subset
 
@@ -15,57 +11,22 @@ from .config import PretrainConfig, _config_from_checkpoint_dict
 from .data import PreparedCorpusDataset
 from .masking import MultimodalMasker, MultimodalPacker
 from .model import MultimodalPretrainModel
+from common.io import atomic_torch_save, sha256_file
 from common.progress import ProgressReporter, loss_postfix
+from common.training import (
+    canonical_json_sha256,
+    capture_rng_state,
+    cosine_warmup,
+    resolve_device,
+    restore_rng_state,
+    seed_everything,
+)
 from .sampler import RoleBalancedSampler, coverage_epoch_plan
 from .tokenizer import SmilesTokenizer
 
 
-def _resolve_device(requested: str) -> torch.device:
-    if requested == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = torch.device(requested)
-    if device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("A CUDA device was requested, but CUDA is unavailable")
-    return device
-
-
 def _config_hash(config: PretrainConfig) -> str:
-    payload = config.to_dict()
-    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(serialized.encode()).hexdigest()
-
-
-def _file_hash(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def _lr_lambda(step: int, total_steps: int, warmup_fraction: float) -> float:
-    warmup_steps = max(1, round(total_steps * warmup_fraction))
-    if step < warmup_steps:
-        return (step + 1) / warmup_steps
-    progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
-    return 0.5 * (1.0 + math.cos(math.pi * min(1.0, progress)))
-
-
-def _rng_state() -> dict[str, Any]:
-    return {
-        "python": random.getstate(),
-        "numpy": np.random.get_state(),
-        "torch": torch.get_rng_state(),
-        "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
-    }
-
-
-def _restore_rng_state(state: dict[str, Any]) -> None:
-    random.setstate(state["python"])
-    np.random.set_state(state["numpy"])
-    torch.set_rng_state(state["torch"])
-    if state.get("cuda") is not None and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all(state["cuda"])
+    return canonical_json_sha256(config.to_dict())
 
 
 def _save_checkpoint(
@@ -98,15 +59,13 @@ def _save_checkpoint(
         "steps_per_epoch": steps_per_epoch,
         "draws_per_epoch": draws_per_epoch,
         "sampler": sampler.state_dict(start_offset=draws_per_epoch),
-        "rng": _rng_state(),
+        "rng": capture_rng_state(),
         "config": config.to_dict(),
         "config_hash": config_hash,
         "artifact_hash": artifact_hash,
         "source_hashes": source_hashes,
     }
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    torch.save(payload, temporary)
-    temporary.replace(path)
+    atomic_torch_save(path, payload)
 
 
 @torch.no_grad()
@@ -173,11 +132,7 @@ def run_training(
         raise ValueError(
             "Epoch training requires sampling.require_full_coverage=true"
         )
-    random.seed(config.data.seed)
-    np.random.seed(config.data.seed)
-    torch.manual_seed(config.data.seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(config.data.seed)
+    seed_everything(config.data.seed)
 
     artifact_dir = config.data.artifacts_dir
     artifact_metadata = json.loads(
@@ -190,7 +145,7 @@ def run_training(
         artifact_dir, "valid", config.data.shard_cache_size
     )
     vocabulary = SmilesTokenizer.load(artifact_dir / "tokenizer.json")
-    device = _resolve_device(config.training.device)
+    device = resolve_device(config.training.device)
     model = MultimodalPretrainModel(
         config, vocabulary, train_dataset.descriptor_schema
     ).to(device)
@@ -222,7 +177,7 @@ def run_training(
     )
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
-        lambda step: _lr_lambda(
+        lambda step: cosine_warmup(
             step, total_steps, config.training.warmup_fraction
         ),
     )
@@ -234,7 +189,7 @@ def run_training(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     current_config_hash = _config_hash(config)
-    artifact_hash = _file_hash(artifact_dir / "metadata.json")
+    artifact_hash = sha256_file(artifact_dir / "metadata.json")
     completed_epochs = 0
     global_step = 0
     micro_step = 0
@@ -282,7 +237,7 @@ def run_training(
         expected_sampler_epoch = completed_epochs - 1
         if sampler.epoch != expected_sampler_epoch:
             raise ValueError("Checkpoint sampler epoch does not match completed epochs")
-        _restore_rng_state(checkpoint_payload["rng"])
+        restore_rng_state(checkpoint_payload["rng"])
 
     masker = MultimodalMasker(vocabulary, config.masking, config.data.seed)
     metrics_path = output_dir / "metrics.jsonl"

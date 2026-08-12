@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import json
 import math
 from dataclasses import dataclass
@@ -11,7 +10,8 @@ from typing import Any, Iterator, Sequence
 import torch
 from rdkit import Chem
 
-from stage2.model import sha256_file
+from common.io import sha256_file
+from common.training import canonical_json_sha256
 from .config import STAGE3_TASKS, Stage3Config
 
 
@@ -494,4 +494,4 @@ def source_hashes(
 
 
 def signature(payload: Any) -> str:
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return canonical_json_sha256(payload)

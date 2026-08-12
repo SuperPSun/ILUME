@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import math
-import random
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -12,7 +10,16 @@ import torch
 import torch.nn.functional as F
 
 from stage1.masking import MultimodalPacker
+from common.io import atomic_torch_save, sha256_file
 from common.progress import ProgressReporter
+from common.training import (
+    canonical_json_sha256,
+    capture_rng_state,
+    cosine_warmup,
+    resolve_device,
+    restore_rng_state,
+    seed_everything,
+)
 from .config import (
     STAGE2_TASKS,
     Stage2Config,
@@ -31,44 +38,16 @@ from .data import (
 from .model import (
     Stage2AlignmentModel,
     load_stage1_model,
-    sha256_file,
     stage2_optimizer_groups,
 )
-from .prepare import load_teacher_embeddings, resolve_device
+from .prepare import load_teacher_embeddings
 
 
 STAGE2_CHECKPOINT_VERSION = 2
 
 
 def _config_hash(config: Stage2Config) -> str:
-    payload = config.to_dict()
-    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(serialized.encode()).hexdigest()
-
-
-def _rng_state() -> dict[str, Any]:
-    return {
-        "python": random.getstate(),
-        "numpy": np.random.get_state(),
-        "torch": torch.get_rng_state(),
-        "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
-    }
-
-
-def _restore_rng_state(state: dict[str, Any]) -> None:
-    random.setstate(state["python"])
-    np.random.set_state(state["numpy"])
-    torch.set_rng_state(state["torch"])
-    if state.get("cuda") is not None and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all(state["cuda"])
-
-
-def _lr_lambda(step: int, total_steps: int, warmup_fraction: float) -> float:
-    warmup_steps = max(1, round(total_steps * warmup_fraction))
-    if step < warmup_steps:
-        return (step + 1) / warmup_steps
-    progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
-    return 0.5 * (1.0 + math.cos(math.pi * min(1.0, progress)))
+    return canonical_json_sha256(config.to_dict())
 
 
 def _backbone_lr_lambda(
@@ -79,7 +58,7 @@ def _backbone_lr_lambda(
 ) -> float:
     if step < unfreeze_step:
         return 0.0
-    return _lr_lambda(
+    return cosine_warmup(
         step - unfreeze_step,
         total_steps - unfreeze_step,
         warmup_fraction,
@@ -269,12 +248,6 @@ def evaluate_stage2(
     return result
 
 
-def _atomic_torch_save(path: Path, payload: Any) -> None:
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    torch.save(payload, temporary)
-    temporary.replace(path)
-
-
 def _save_checkpoint(
     path: Path,
     *,
@@ -294,7 +267,7 @@ def _save_checkpoint(
     teacher_embeddings_hash: str,
     backbone_unfreeze: int,
 ) -> None:
-    _atomic_torch_save(
+    atomic_torch_save(
         path,
         {
             "format_version": STAGE2_CHECKPOINT_VERSION,
@@ -314,7 +287,7 @@ def _save_checkpoint(
                 "offset": global_step % config.sampling.block_size,
             },
             "task_counts": task_counts,
-            "rng": _rng_state(),
+            "rng": capture_rng_state(),
             "best_metric": best_metric,
             "validations_without_improvement": validations_without_improvement,
             "config": config.to_dict(),
@@ -338,11 +311,7 @@ def run_stage2_training(
     resume_from: str | Path | None = None,
 ) -> list[dict[str, float | int | str]]:
     config.validate()
-    random.seed(config.data.seed)
-    np.random.seed(config.data.seed)
-    torch.manual_seed(config.data.seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(config.data.seed)
+    seed_everything(config.data.seed)
     device = resolve_device(config.training.device)
     loaded = load_stage1_model(
         config.initialization.checkpoint,
@@ -418,7 +387,7 @@ def run_stage2_training(
                 config.training.warmup_fraction,
                 unfreeze_step,
             ),
-            lambda step: _lr_lambda(
+            lambda step: cosine_warmup(
                 step,
                 config.training.max_steps,
                 config.training.warmup_fraction,
@@ -496,7 +465,7 @@ def run_stage2_training(
         validations_without_improvement = int(
             checkpoint["validations_without_improvement"]
         )
-        _restore_rng_state(checkpoint["rng"])
+        restore_rng_state(checkpoint["rng"])
     if global_step > config.training.max_steps:
         raise ValueError("Stage 2 checkpoint is beyond configured max_steps")
     backbone_trainable = global_step >= unfreeze_step

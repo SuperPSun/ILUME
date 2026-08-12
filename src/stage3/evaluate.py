@@ -6,8 +6,8 @@ from typing import Any
 
 import torch
 
-from stage2.model import sha256_file
-from stage2.prepare import resolve_device
+from common.io import sha256_file
+from common.training import resolve_device
 from .config import DOMAIN_TASKS, Stage3Config
 from .data import Stage3TaskDataset
 from .model import Stage3MultiDomainModel

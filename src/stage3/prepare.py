@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import json
 from pathlib import Path
 from typing import Any, Sequence
@@ -13,11 +12,12 @@ from rdkit import Chem, rdBase
 from stage1.data import ROLE_TO_ID, _build_sample, _inspect_entity_qc
 from stage1.descriptors import calculate_descriptors, rdkit_descriptor_names
 from stage1.masking import MultimodalPacker
+from common.io import atomic_json, atomic_torch_save, sha256_file
 from common.progress import ProgressReporter
+from common.training import canonical_json_sha256, resolve_device
 from stage2.config import _stage2_config_from_checkpoint_dict
 from stage2.data import _load_pretrain_inputs
-from stage2.model import Stage2AlignmentModel, load_stage1_model, sha256_file
-from stage2.prepare import resolve_device
+from stage2.model import Stage2AlignmentModel, load_stage1_model
 from .config import Stage3Config
 from .data import (
     STAGE3_ARTIFACT_VERSION,
@@ -35,21 +35,9 @@ STAGE2_CHECKPOINT_VERSION = 2
 STAGE2_CHECKPOINT_KIND = "ilume_stage2_alignment"
 
 
-def _atomic_json(path: Path, payload: Any) -> None:
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(path)
-
-
-def _atomic_torch_save(path: Path, payload: Any) -> None:
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    torch.save(payload, temporary)
-    temporary.replace(path)
-
-
 def _config_hash(raw: dict[str, Any]) -> str:
     payload = _stage2_config_from_checkpoint_dict(raw).to_dict()
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return canonical_json_sha256(payload)
 
 
 def load_frozen_stage2(
@@ -306,8 +294,8 @@ def _prepare_domain(
         entity_embeddings,
         device,
     )
-    _atomic_json(output_dir / "entity_index.json", {"format_version": STAGE3_ARTIFACT_VERSION, "entries": entries})
-    _atomic_torch_save(output_dir / "frozen_embeddings.pt", cache)
+    atomic_json(output_dir / "entity_index.json", {"format_version": STAGE3_ARTIFACT_VERSION, "entries": entries})
+    atomic_torch_save(output_dir / "frozen_embeddings.pt", cache)
     _write_csv(output_dir / "excluded_entities.csv", ("task", "fold", "source_row", "column", "smiles", "reason"), excluded_entities)
     task_payloads: dict[tuple[int, str, str], dict[str, Any]] = {}
     excluded_rows: list[dict[str, Any]] = []
@@ -324,9 +312,9 @@ def _prepare_domain(
                 task_payloads[(fold, task, split)] = payload
                 excluded_rows.extend(exclusions)
                 relative = f"folds/fold{fold}/{sanitize_task(task)}_{split}.pt"
-                _atomic_torch_save(output_dir / relative, payload)
+                atomic_torch_save(output_dir / relative, payload)
                 artifact_files.append(relative)
-    _atomic_json(output_dir / "scalers.json", scaler_payload)
+    atomic_json(output_dir / "scalers.json", scaler_payload)
     artifact_files.append("scalers.json")
     _write_csv(output_dir / "excluded_rows.csv", ("task", "fold", "source_row", "reason"), excluded_rows)
     artifact_files.append("excluded_rows.csv")
@@ -355,7 +343,7 @@ def _prepare_domain(
         "summary": {"excluded_entities": len(excluded_entities), "excluded_rows": len(excluded_rows), "cross_task_exposures": len(exposure_rows)},
     }
     metadata = json.loads(json.dumps(metadata, ensure_ascii=False))
-    _atomic_json(metadata_path, metadata)
+    atomic_json(metadata_path, metadata)
     reporter.emit_json(
         {
             "event": "stage3_prepare_domain_complete",

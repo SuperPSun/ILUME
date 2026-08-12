@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import random
@@ -12,9 +11,9 @@ from typing import Any, Iterator
 import torch
 import torch.nn.functional as F
 
+from common.io import atomic_torch_save, sha256_file
 from common.progress import ProgressReporter
-from stage2.model import sha256_file
-from stage2.prepare import resolve_device
+from common.training import canonical_json_sha256, cosine_warmup, resolve_device
 from .config import Stage3Config, _stage3_config_from_checkpoint_dict
 from .data import Stage3TaskDataset, SystemCursor, TASK_REGISTRY
 from .model import Stage3MultiDomainModel
@@ -242,9 +241,7 @@ class DomainRuntime:
 def _config_hash(config: Stage3Config, fold: int) -> str:
     payload = _semantic_config(config)
     payload["fold"] = fold
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    return canonical_json_sha256(payload)
 
 
 def _checkpoint_config(config: Stage3Config) -> dict[str, Any]:
@@ -261,14 +258,6 @@ def _semantic_config(config: Stage3Config) -> dict[str, Any]:
         if domain_config.get("backward_mode") == "per_task":
             domain_config.pop("backward_mode")
     return payload
-
-
-def _lr_lambda(block: int, total: int, warmup_fraction: float) -> float:
-    warmup = max(1, round(total * warmup_fraction))
-    if block < warmup:
-        return (block + 1) / warmup
-    progress = (block - warmup) / max(1, total - warmup)
-    return 0.5 * (1.0 + math.cos(math.pi * min(progress, 1.0)))
 
 
 @torch.no_grad()
@@ -340,12 +329,6 @@ def evaluate_domain(
     if was_training:
         module.train()
     return result
-
-
-def _atomic_save(path: Path, payload: Any) -> None:
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    torch.save(payload, temporary)
-    temporary.replace(path)
 
 
 def _domain_best_payload(
@@ -503,7 +486,7 @@ def _build_runtime(
     )
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
-        lambda block: _lr_lambda(
+        lambda block: cosine_warmup(
             block, training.max_blocks, training.warmup_fraction
         ),
     )
@@ -608,7 +591,7 @@ def _assemble_best(
             payload["model"], strict=True
         )
         domain_metrics[domain] = float(payload["best_metric"])
-    _atomic_save(
+    atomic_torch_save(
         output_dir / "best.pt",
         {
             "format_version": STAGE3_CHECKPOINT_VERSION,
@@ -844,7 +827,7 @@ def run_stage3_training(
                     if improved:
                         runtime.best_metric = metric
                         runtime.validations_without_improvement = 0
-                        _atomic_save(
+                        atomic_torch_save(
                             output_dir / f"best_{domain}.pt",
                             _domain_best_payload(
                                 domain=domain,
@@ -890,7 +873,7 @@ def run_stage3_training(
                 checkpoint_path = (
                     output_dir / f"checkpoint_cycle_{cycle:08d}.pt"
                 )
-                _atomic_save(
+                atomic_torch_save(
                     checkpoint_path,
                     _training_checkpoint_payload(
                         model=model,
@@ -901,7 +884,7 @@ def run_stage3_training(
                         config_hash=config_hash,
                     ),
                 )
-                _atomic_save(
+                atomic_torch_save(
                     output_dir / "last.pt",
                     _training_checkpoint_payload(
                         model=model,

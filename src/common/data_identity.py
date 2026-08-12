@@ -1,20 +1,11 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import subprocess
 from pathlib import Path
 from typing import Iterable
 
-from .io import atomic_json
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+from .io import atomic_json, sha256_file
 
 
 def _row_count(path: Path) -> int:
@@ -60,7 +51,7 @@ def write_data_identity(
         files.append(
             {
                 "path": relative,
-                "sha256": _sha256(path),
+                "sha256": sha256_file(path),
                 "size": path.stat().st_size,
                 "rows": _row_count(path),
             }
@@ -77,4 +68,3 @@ def write_data_identity(
     output.parent.mkdir(parents=True, exist_ok=True)
     atomic_json(output, payload)
     return payload
-

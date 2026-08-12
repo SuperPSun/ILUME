@@ -29,9 +29,10 @@ from stage1.descriptors import (
     rdkit_descriptor_names,
 )
 from stage1.masking import MultimodalPacker
+from common.io import atomic_json, atomic_torch_save, sha256_file
 from common.progress import ProgressReporter
+from common.training import canonical_json_sha256
 from .config import STAGE2_TASKS, Stage2Config
-from .model import sha256_file
 from stage1.tokenizer import SmilesTokenizer
 
 
@@ -108,26 +109,6 @@ TASK_SPECS: dict[str, Stage2TaskSpec] = {
         ("transfer_organic_kcal/mol",),
     ),
 }
-
-
-def _atomic_json(path: Path, payload: Any) -> None:
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(path)
-
-
-def _atomic_torch_save(path: Path, payload: Any) -> None:
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    torch.save(payload, temporary)
-    temporary.replace(path)
-
-
-def _signature(payload: Any) -> str:
-    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(serialized.encode()).hexdigest()
 
 
 def _canonicalize(smiles: str, context: str) -> str:
@@ -467,7 +448,7 @@ def _build_entity_shards(
         if not samples:
             return
         path = shard_dir / f"entities_{shard_number:05d}.pt"
-        _atomic_torch_save(
+        atomic_torch_save(
             path,
             {
                 "format_version": STAGE2_ARTIFACT_VERSION,
@@ -687,7 +668,7 @@ def _write_task_tensors(
                     system_offsets = []
                     system_rows = []
                 path = task_dir / f"{task}_{split}.pt"
-                _atomic_torch_save(
+                atomic_torch_save(
                     path,
                     {
                         "format_version": STAGE2_ARTIFACT_VERSION,
@@ -741,7 +722,7 @@ def prepare_stage2_data(
         "max_smiles_tokens": pretrain_config.data.max_smiles_tokens,
         "fingerprint": pretrain_config.to_dict()["fingerprint"],
     }
-    data_signature = _signature(
+    data_signature = canonical_json_sha256(
         {
             "source_hashes": source_hashes,
             "feature_contract": feature_contract,
@@ -777,7 +758,7 @@ def prepare_stage2_data(
         output_dir / "missing_targets.csv",
         collected.missing_target_rows,
     )
-    _atomic_json(output_dir / "scalers.json", collected.scalers)
+    atomic_json(output_dir / "scalers.json", collected.scalers)
     with reporter.status("Stage 2 entity features"):
         entries, valid_ids, excluded_entities = _build_entity_shards(
             config,
@@ -794,7 +775,7 @@ def prepare_stage2_data(
             collected.scalers,
         )
     index_path = output_dir / "entity_index.json"
-    _atomic_json(
+    atomic_json(
         index_path,
         {"format_version": STAGE2_ARTIFACT_VERSION, "entries": entries},
     )
@@ -854,7 +835,7 @@ def prepare_stage2_data(
             for relative in artifact_files
         },
     }
-    _atomic_json(metadata_path, metadata)
+    atomic_json(metadata_path, metadata)
     reporter.emit_json(
         {"event": "stage2_data_complete", **metadata["summary"]}
     )
