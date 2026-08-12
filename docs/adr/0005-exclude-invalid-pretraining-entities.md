@@ -1,7 +1,9 @@
 # ADR-0005：准备阶段直接排除异常实体
 
-- 状态：Accepted
+- 状态：Partially Superseded by ADR-0013
 - 日期：2026-07-24
+
+> QC 排除规则继续有效；下文 corpus/index/shard format v3 已由 [ADR-0013](0013-stage1-full-corpus-ddp.md) 的 kind 区分 artifact v1 取代。
 
 ## 决定
 

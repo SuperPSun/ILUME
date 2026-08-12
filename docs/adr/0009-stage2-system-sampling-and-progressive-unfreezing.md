@@ -20,4 +20,4 @@ QM 允许单行部分标签缺失。常见缺失标记写入布尔 target mask�
 
 ## 后果
 
-Stage 2 data artifact 和 checkpoint 均为 v2，旧 checkpoint 不可恢复。正式 prepared payload 与训练输出分别位于 `outputs/formal_v1/stage2/<capacity>/prepare/artifacts` 和 `outputs/formal_v1/stage2/<capacity>/train`。checkpoint 保存体系 cursor、解冻 step 与阶段语义；恢复后必须重现任务、体系、源行和 loss 序列。
+Stage 2 data artifact 和 checkpoint 均为 v2，旧 checkpoint 不可恢复。现役正式 Base 的 prepared payload 与训练输出分别位于 `outputs/v1/stage2/base/prepare/artifacts` 和 `outputs/v1/stage2/base/train`。checkpoint 保存体系 cursor、解冻 step 与阶段语义；恢复后必须重现任务、体系、源行和 loss 序列。

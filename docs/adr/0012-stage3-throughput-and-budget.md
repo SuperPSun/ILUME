@@ -15,7 +15,7 @@
 3. 正式配置使用 `domain` backward：按确定性任务顺序完成全部 forward，IL21/Aux6 loss 分别除以 21/6，每域只 backward 一次。loss 和验证统计只在域边界同步到 CPU。
 4. IL21 使用 batch 128、5000 blocks、每 50 blocks 验证；Aux6 使用 batch 256、2500 blocks、每 25 blocks 验证。两域每任务总预算仍为 640,000 行，验证间隔仍为 6,400 行，LR 保持 `3e-4`。
 5. artifact 与 checkpoint schema 继续使用 v2。线程数、resident 模式不进入语义哈希；batch、blocks 和 `domain` backward 进入，因此优化前 training checkpoint 不能恢复到正式优化配置。
-6. 正式自包含配置为 `configs/formal/stage3/reference.yaml`，新训练写入 `outputs/formal_v1/stage3/reference/checkpoints/fold<fold>`。旧 v2 checkpoint 配置只由私有兼容解析器读取，不恢复 legacy YAML 或旧运行入口。
+6. 正式自包含配置为 `configs/v1/stage3/reference.yaml`，新训练写入 `outputs/v1/stage3/reference/checkpoints/fold<fold>`。旧 v2 checkpoint 配置只由私有兼容解析器读取，不恢复 legacy YAML 或旧运行入口。
 
 ## 后果
 

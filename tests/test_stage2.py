@@ -625,7 +625,7 @@ def test_il_system_cursor_balances_systems_and_cycles_rows_without_replacement()
 def test_formal_stage2_sampling_configs_preserve_transfer_coverage():
     profiles = {
         "reference": (
-            load_stage2_config("configs/formal/stage2/base.yaml"),
+            load_stage2_config("configs/v1/stage2/base.yaml"),
             (7, 4, 3, 3, 3),
         ),
     }
@@ -666,14 +666,14 @@ def test_formal_stage2_sampling_configs_preserve_transfer_coverage():
         assert config.training.backbone_freeze_fraction == pytest.approx(0.10)
         assert backbone_unfreeze_step(config) == expected_unfreeze_steps[name]
         assert config.data.artifacts_dir == Path(
-            "outputs/formal_v1/stage2/base/prepare/artifacts"
+            "outputs/v1/stage2/base/prepare/artifacts"
         )
         checkpoints.add(config.initialization.checkpoint)
     assert len(checkpoints) == 1
 
 
 def test_formal_stage2_has_one_base_profile():
-    config_dir = Path("configs/formal/stage2")
+    config_dir = Path("configs/v1/stage2")
     assert sorted(path.name for path in config_dir.glob("*.yaml")) == ["base.yaml"]
     config = load_stage2_config(config_dir / "base.yaml")
     assert config.training.max_steps == 23440
@@ -681,7 +681,7 @@ def test_formal_stage2_has_one_base_profile():
     assert config.training.gradient_accumulation_steps == 1
     assert backbone_unfreeze_step(config) == 2340
     assert config.initialization.checkpoint == Path(
-        "outputs/formal_v1/stage1/base/train/checkpoint_epoch_00005.pt"
+        "outputs/v1/stage1/base/train/checkpoint_epoch_00005.pt"
     )
 
 

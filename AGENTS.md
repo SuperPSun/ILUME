@@ -14,7 +14,7 @@ Stage 2 保持五任务、PairEncoder、任务内体系采样、部分标签 mas
 - `common` 只接收至少两个 Stage 实际复用的原子功能；禁止建立 `utils.py`。
 - Stage 可以导入其他 Stage 的公开 contract，但 `src/stageN` 禁止从其他 Stage 导入 `_private_symbol` 或使用 `import *`。
 - 唯一运行入口是 `scripts/stage{1,2,3}/*.py`；不恢复 console CLI、shell runner、smoke 或 matrix runner。
-- 科研参数只写入完整自包含 YAML。正式配置位于 `configs/formal`；首次真实消融时再建立 `configs/experiments/<stage>`。
+- 科研参数只写入完整自包含 YAML。正式 v1 配置位于 `configs/v1`；首次真实消融时再建立 `configs/experiments/<stage>`。
 - `--output`、`--resume`、Stage 3 fold 和 evaluation selector 是运行参数，不进入科研 config schema。
 
 ## 数据、输出与恢复

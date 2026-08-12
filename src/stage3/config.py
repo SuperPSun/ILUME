@@ -49,7 +49,7 @@ DOMAIN_NAMES = tuple(DOMAIN_TASKS)
 class Stage3DataConfig:
     stage3_dir: Path = Path("data/stage3")
     artifacts_dir: Path = Path(
-        "outputs/formal_v1/stage3/reference/prepare/artifacts"
+        "outputs/v1/stage3/reference/prepare/artifacts"
     )
     entity_batch_size: int = 256
     seed: int = 42
@@ -58,7 +58,7 @@ class Stage3DataConfig:
 @dataclass(frozen=True)
 class Stage3InitializationConfig:
     stage2_checkpoint: Path = Path(
-        "outputs/formal_v1/stage2/base/train/best.pt"
+        "outputs/v1/stage2/base/train/best.pt"
     )
 
 

@@ -21,9 +21,9 @@ STAGE2_TASKS = (
 class Stage2DataConfig:
     stage2_dir: Path = Path("data/stage2")
     pretrain_artifacts_dir: Path = Path(
-        "outputs/formal_v1/stage1/base/prepare/artifacts"
+        "outputs/v1/stage1/base/prepare/artifacts"
     )
-    artifacts_dir: Path = Path("outputs/formal_v1/stage2/base/prepare/artifacts")
+    artifacts_dir: Path = Path("outputs/v1/stage2/base/prepare/artifacts")
     entity_shard_size: int = 4096
     shard_cache_size: int = 10
     teacher_batch_size: int = 256
@@ -34,7 +34,7 @@ class Stage2DataConfig:
 @dataclass(frozen=True)
 class Stage2InitializationConfig:
     checkpoint: Path = Path(
-        "outputs/formal_v1/stage1/base/train/checkpoint_epoch_00005.pt"
+        "outputs/v1/stage1/base/train/checkpoint_epoch_00005.pt"
     )
 
 

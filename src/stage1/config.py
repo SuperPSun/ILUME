@@ -14,7 +14,7 @@ STAGE1_CHECKPOINT_KIND = "ilume_stage1_pretraining"
 @dataclass(frozen=True)
 class DataConfig:
     stage1_dir: Path = Path("data/stage1")
-    artifacts_dir: Path = Path("outputs/formal_v1/stage1/base/prepare/artifacts")
+    artifacts_dir: Path = Path("outputs/v1/stage1/base/prepare/artifacts")
     valid_fraction: float = 0.05
     seed: int = 42
     max_smiles_tokens: int = 256

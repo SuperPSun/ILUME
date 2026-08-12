@@ -13,7 +13,7 @@ transfer organic、四个离子 HOMO/LUMO 和 charge 不涉及 IL 体系。若�
 1. 删除 Phase 1/Phase 2 和 `--init-from`。Stage 3 v2 一次运行协调 `il21` 与 `aux6`；旧 v1 artifact/checkpoint 只保留审计，不能恢复或迁移到 v2。
 2. `il21` 保留 19 个直接 IL 任务以及 solvation/transfer。HoME 仍使用两层 global/group/private experts；solute CLS 只在第二层进入 solvation group、private expert 与 gate，第二层 global expert 和全部直接 IL 任务不接收 solute。
 3. `aux6` 的六项任务分别使用独立 `IndependentTaskHead`。每个 head 私有地包含 embedding adapter、条件与 phase fusion、LayerNorm、一个固定 Expert block 和回归 tower；六项之间不共享任何可训练参数，也不进入 HoME。
-4. artifact 分隔在 `outputs/formal_v1/stage3/reference/prepare/artifacts/{il21,aux6}`。两个域独立生成冻结缓存、fold scaler、任务 tensor、哈希和排除审计；IL pair 泄漏与跨任务曝光只审计 `il21`。
+4. artifact 分隔在 `outputs/v1/stage3/reference/prepare/artifacts/{il21,aux6}`。两个域独立生成冻结缓存、fold scaler、任务 tensor、哈希和排除审计；IL pair 泄漏与跨任务曝光只审计 `il21`。
 5. 每个外层 cycle 最多执行一个 21-task IL block 和一个 6-task aux block。两个域分别持有 optimizer、scheduler、AMP scaler、梯度裁剪、sampling cursor、任务顺序 RNG、Torch/CUDA dropout RNG、block 计数、验证、早停和最佳指标。执行 aux block 不得改变任何 IL 参数、梯度、BatchNorm buffer 或随机状态。
 6. 两域分别按 macro normalized MAE 选优，并保存 `best_il21.pt` 与 `best_aux6.pt`。训练结束后组装评估专用 `best.pt`；只有包含双方完整运行状态的 v2 training checkpoint 可以用于 `--resume-from`。
 7. Shared-bottom、MMoE、early-solute、without Feature-gate 和 without Self-gate 是 `il21`-only 对照，不创建也不重复训练 `aux6`。

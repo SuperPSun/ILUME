@@ -348,13 +348,13 @@ def test_stage3_registry_and_formal_configs_are_explicit() -> None:
     assert len(AUX6_TASKS) == 6
     assert len(STAGE3_TASKS) == 27
     assert set(STAGE3_TASKS) == set(TASK_REGISTRY)
-    home = load_stage3_config("configs/formal/stage3/reference.yaml")
+    home = load_stage3_config("configs/v1/stage3/reference.yaml")
     assert home.active_domains == ("il21", "aux6")
     assert home.data.artifacts_dir == Path(
-        "outputs/formal_v1/stage3/reference/prepare/artifacts"
+        "outputs/v1/stage3/reference/prepare/artifacts"
     )
     assert home.initialization.stage2_checkpoint == Path(
-        "outputs/formal_v1/stage2/base/train/best.pt"
+        "outputs/v1/stage2/base/train/best.pt"
     )
     assert home.model.global_experts == home.model.group_experts == 2
     assert home.model.private_experts == 1

@@ -18,29 +18,29 @@ Stage 1 只保留一个正式 Base。prepare 会消费三类 original；当 `inc
 
 ```bash
 python scripts/stage1/prepare.py \
-  --config configs/formal/stage1/base.yaml \
-  --output outputs/formal_v1/stage1/base/prepare
+  --config configs/v1/stage1/base.yaml \
+  --output outputs/v1/stage1/base/prepare
 
 python scripts/stage1/train.py \
-  --config configs/formal/stage1/base.yaml \
-  --output outputs/formal_v1/stage1/base/train
+  --config configs/v1/stage1/base.yaml \
+  --output outputs/v1/stage1/base/train
 ```
 
 `training.batch_size: 256` 是跨所有 rank 的 global batch。四卡训练使用每卡 64：
 
 ```bash
 torchrun --nproc-per-node=4 scripts/stage1/train.py \
-  --config configs/formal/stage1/base.yaml \
-  --output outputs/formal_v1/stage1/base/train
+  --config configs/v1/stage1/base.yaml \
+  --output outputs/v1/stage1/base/train
 ```
 
 恢复训练需显式指定同一操作目录中的 checkpoint，并保持 checkpoint 保存时的 `world_size`：
 
 ```bash
 python scripts/stage1/train.py \
-  --config configs/formal/stage1/base.yaml \
-  --output outputs/formal_v1/stage1/base/train \
-  --resume outputs/formal_v1/stage1/base/train/last.pt
+  --config configs/v1/stage1/base.yaml \
+  --output outputs/v1/stage1/base/train \
+  --resume outputs/v1/stage1/base/train/last.pt
 ```
 
 四卡 checkpoint 恢复时仍使用 `torchrun --nproc-per-node=4`，并在同一条命令末尾添加上述 `--resume` 参数。
@@ -51,15 +51,15 @@ Stage 2 同样只保留一个正式 Base，并从 Stage 1 Base 的 v1 checkpoint
 
 ```bash
 python scripts/stage2/prepare.py \
-  --config configs/formal/stage2/base.yaml \
-  --output outputs/formal_v1/stage2/base/prepare
+  --config configs/v1/stage2/base.yaml \
+  --output outputs/v1/stage2/base/prepare
 
 python scripts/stage2/train.py \
-  --config configs/formal/stage2/base.yaml \
-  --output outputs/formal_v1/stage2/base/train
+  --config configs/v1/stage2/base.yaml \
+  --output outputs/v1/stage2/base/train
 ```
 
-恢复时增加 `--resume outputs/formal_v1/stage2/base/train/last.pt`。
+恢复时增加 `--resume outputs/v1/stage2/base/train/last.pt`。
 
 ## Stage 3
 
@@ -67,29 +67,29 @@ Stage 3 reference 使用 Stage 2 Base 的 `best.pt`。五折需要分别执行 t
 
 ```bash
 python scripts/stage3/prepare.py \
-  --config configs/formal/stage3/reference.yaml \
-  --output outputs/formal_v1/stage3/reference/prepare
+  --config configs/v1/stage3/reference.yaml \
+  --output outputs/v1/stage3/reference/prepare
 
 python scripts/stage3/train.py \
-  --config configs/formal/stage3/reference.yaml \
+  --config configs/v1/stage3/reference.yaml \
   --fold 1 \
-  --output outputs/formal_v1/stage3/reference/checkpoints/fold1
+  --output outputs/v1/stage3/reference/checkpoints/fold1
 ```
 
 验证集汇总和 test ensemble：
 
 ```bash
 python scripts/stage3/evaluate.py \
-  --config configs/formal/stage3/reference.yaml \
-  --checkpoint-dir outputs/formal_v1/stage3/reference/checkpoints \
+  --config configs/v1/stage3/reference.yaml \
+  --checkpoint-dir outputs/v1/stage3/reference/checkpoints \
   --split valid \
-  --output outputs/formal_v1/stage3/reference/evaluate_valid
+  --output outputs/v1/stage3/reference/evaluate_valid
 
 python scripts/stage3/evaluate.py \
-  --config configs/formal/stage3/reference.yaml \
-  --checkpoint-dir outputs/formal_v1/stage3/reference/checkpoints \
+  --config configs/v1/stage3/reference.yaml \
+  --checkpoint-dir outputs/v1/stage3/reference/checkpoints \
   --split test --ensemble-folds \
-  --output outputs/formal_v1/stage3/reference/evaluate_test
+  --output outputs/v1/stage3/reference/evaluate_test
 ```
 
 ## Outputs

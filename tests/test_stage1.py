@@ -21,10 +21,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_formal_stage1_has_one_large_capacity_base_profile() -> None:
-    assert sorted(path.name for path in (ROOT / "configs/formal/stage1").glob("*.yaml")) == [
+    assert sorted(path.name for path in (ROOT / "configs/v1/stage1").glob("*.yaml")) == [
         "base.yaml"
     ]
-    base = load_config(ROOT / "configs/formal/stage1/base.yaml")
+    base = load_config(ROOT / "configs/v1/stage1/base.yaml")
     assert (
         base.model.d_model,
         base.model.n_heads,
@@ -48,7 +48,7 @@ def test_formal_stage1_has_one_large_capacity_base_profile() -> None:
 
 
 def test_stage1_config_round_trip_and_rejects_legacy_fields() -> None:
-    config = load_config(ROOT / "configs/formal/stage1/base.yaml")
+    config = load_config(ROOT / "configs/v1/stage1/base.yaml")
     assert config_from_dict(config.to_dict()) == config
     legacy = config.to_dict()
     legacy["smoke"] = {"steps": 2}
