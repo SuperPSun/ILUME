@@ -124,7 +124,7 @@ def load_stage1_feature_inputs(
         Path(checkpoint_path), map_location="cpu", weights_only=False
     )
     if checkpoint.get("format_version") != 3:
-        raise ValueError("Stage 1 feature loading requires a checkpoint in format v3")
+        raise ValueError("Stage 2 requires a Stage 1 checkpoint in format v3")
     config = config_from_dict(checkpoint["config"])
     artifact_dir = Path(artifact_dir)
     artifact_hash = sha256_file(artifact_dir / "metadata.json")

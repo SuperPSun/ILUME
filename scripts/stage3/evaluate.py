@@ -8,8 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
 from common.outputs import open_run_directory, repository_path, repository_relative
-from stage3.config import load_stage3_config
-from stage3.runtime import configure_stage3_runtime
+from stage3.config import configure_process_runtime, load_stage3_config
 
 
 def main() -> None:
@@ -21,7 +20,7 @@ def main() -> None:
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     config = load_stage3_config(args.config)
-    configure_stage3_runtime(config)
+    configure_process_runtime(config)
     from stage3.evaluate import evaluate_checkpoints
 
     run = open_run_directory(

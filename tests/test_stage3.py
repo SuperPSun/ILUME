@@ -383,7 +383,7 @@ def test_stage3_scripts_configure_runtime_before_loading_operation() -> None:
         source = (root / "scripts" / "stage3" / filename).read_text(
             encoding="utf-8"
         )
-        assert source.index("configure_stage3_runtime(config)") < source.index(
+        assert source.index("configure_process_runtime(config)") < source.index(
             operation_import
         )
 

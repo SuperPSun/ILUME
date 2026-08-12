@@ -10,7 +10,7 @@
 
 ## 决定
 
-1. Stage 3 三个 Python 入口在导入运行实现前调用公共 runtime，将 CPU intra-op/inter-op 线程限制为 4/1，并将 OMP、MKL 和 OpenBLAS 设置为 4 线程。
+1. Stage 3 三个 Python 入口在导入运行实现前调用 `stage3.config.configure_process_runtime()`，将 CPU intra-op/inter-op 线程限制为 4/1，并将 OMP、MKL 和 OpenBLAS 设置为 4 线程。
 2. 当前 fold 的冻结表示、条件、目标和预计算 embedding index 在 CUDA 上常驻。SystemCursor 与审计字段保留在 CPU；resident 分配失败时直接报错，不静默回退。
 3. 正式配置使用 `domain` backward：按确定性任务顺序完成全部 forward，IL21/Aux6 loss 分别除以 21/6，每域只 backward 一次。loss 和验证统计只在域边界同步到 CPU。
 4. IL21 使用 batch 128、5000 blocks、每 50 blocks 验证；Aux6 使用 batch 256、2500 blocks、每 25 blocks 验证。两域每任务总预算仍为 640,000 行，验证间隔仍为 6,400 行，LR 保持 `3e-4`。
