@@ -25,7 +25,7 @@ from .config import (
     STAGE2_TASKS,
     Stage2Config,
     backbone_unfreeze_step,
-    _stage2_config_from_checkpoint_dict,
+    stage2_config_from_checkpoint_dict,
 )
 from .data import (
     IL_TASKS,
@@ -424,7 +424,7 @@ def run_stage2_training(
             or checkpoint.get("kind") != "ilume_stage2_alignment"
         ):
             raise ValueError("Unsupported Stage 2 checkpoint format")
-        checkpoint_config = _stage2_config_from_checkpoint_dict(checkpoint["config"])
+        checkpoint_config = stage2_config_from_checkpoint_dict(checkpoint["config"])
         if checkpoint_config.to_dict() != config.to_dict():
             raise ValueError("Stage 2 checkpoint config_hash does not match")
         expected = {

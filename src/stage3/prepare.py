@@ -9,15 +9,19 @@ import numpy as np
 import torch
 from rdkit import Chem, rdBase
 
-from stage1.features import ROLE_TO_ID, build_entity_sample, inspect_entity_qc
+from stage1.features import (
+    ROLE_TO_ID,
+    build_entity_sample,
+    inspect_entity_qc,
+    load_stage1_feature_inputs,
+)
 from stage1.descriptors import calculate_descriptors, rdkit_descriptor_names
 from stage1.masking import MultimodalPacker
 from stage1.model import load_stage1_model
 from common.io import atomic_json, atomic_torch_save, sha256_file
 from common.progress import ProgressReporter
 from common.training import canonical_json_sha256, resolve_device
-from stage2.config import _stage2_config_from_checkpoint_dict
-from stage2.data import _load_pretrain_inputs
+from stage2.config import stage2_config_from_checkpoint_dict
 from stage2.model import Stage2AlignmentModel
 from .config import Stage3Config
 from .data import (
@@ -37,7 +41,7 @@ STAGE2_CHECKPOINT_KIND = "ilume_stage2_alignment"
 
 
 def _config_hash(raw: dict[str, Any]) -> str:
-    payload = _stage2_config_from_checkpoint_dict(raw).to_dict()
+    payload = stage2_config_from_checkpoint_dict(raw).to_dict()
     return canonical_json_sha256(payload)
 
 
@@ -53,7 +57,7 @@ def load_frozen_stage2(
     raw_config = checkpoint.get("config")
     if not isinstance(raw_config, dict):
         raise ValueError("Stage 2 checkpoint configuration is missing")
-    stage2_config = _stage2_config_from_checkpoint_dict(raw_config)
+    stage2_config = stage2_config_from_checkpoint_dict(raw_config)
     loaded = load_stage1_model(
         stage2_config.initialization.checkpoint,
         stage2_config.data.pretrain_artifacts_dir,
@@ -91,8 +95,11 @@ def _write_csv(path: Path, fieldnames: tuple[str, ...], rows: list[dict[str, Any
 
 
 def _stage2_pretrain_inputs(raw_stage2_config: dict[str, Any]):
-    config = _stage2_config_from_checkpoint_dict(raw_stage2_config)
-    return config, _load_pretrain_inputs(config)
+    config = stage2_config_from_checkpoint_dict(raw_stage2_config)
+    return config, load_stage1_feature_inputs(
+        config.initialization.checkpoint,
+        config.data.pretrain_artifacts_dir,
+    )
 
 
 def _encode_entities(

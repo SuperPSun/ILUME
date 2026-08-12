@@ -234,7 +234,7 @@ def stage2_config_from_dict(raw: dict[str, Any]) -> Stage2Config:
     return _parse_stage2_config(raw, legacy=False)
 
 
-def _stage2_config_from_checkpoint_dict(raw: dict[str, Any]) -> Stage2Config:
+def stage2_config_from_checkpoint_dict(raw: dict[str, Any]) -> Stage2Config:
     return _parse_stage2_config(raw, legacy=True)
 
 

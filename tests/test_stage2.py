@@ -36,7 +36,6 @@ from stage2.data import (
     TaskBlockSampler,
     TaskCursor,
     build_stage2_batch,
-    prepare_stage2_data,
 )
 from stage2.model import (
     PairEncoder,
@@ -45,6 +44,7 @@ from stage2.model import (
 )
 from stage2.prepare import (
     load_teacher_embeddings,
+    prepare_stage2_data,
     prepare_teacher_cache,
 )
 from stage2.train import evaluate_stage2, run_stage2_training
