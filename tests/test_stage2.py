@@ -10,6 +10,8 @@ import torch
 
 from common.io import sha256_file
 from stage1.config import (
+    STAGE1_CHECKPOINT_KIND,
+    STAGE1_CHECKPOINT_VERSION,
     DataConfig,
     DescriptorConfig,
     FingerprintConfig,
@@ -17,6 +19,7 @@ from stage1.config import (
     PretrainConfig,
 )
 from stage1.data import PreparedCorpusDataset
+from stage1.features import load_stage1_feature_inputs
 from stage1.model import load_stage1_model
 from stage1.prepare import prepare_corpus
 from stage1.masking import MultimodalPacker
@@ -234,7 +237,8 @@ def tiny_stage2_setup(tmp_path):
     checkpoint = tmp_path / "checkpoint.pt"
     torch.save(
         {
-            "format_version": 3,
+            "kind": STAGE1_CHECKPOINT_KIND,
+            "format_version": STAGE1_CHECKPOINT_VERSION,
             "model": model.state_dict(),
             "config": pretrain.to_dict(),
             "artifact_hash": sha256_file(corpus / "metadata.json"),
@@ -264,6 +268,28 @@ def tiny_stage2_setup(tmp_path):
         ),
     )
     return config
+
+
+def test_stage2_loaders_reject_legacy_stage1_checkpoint(tiny_stage2_setup, tmp_path):
+    payload = torch.load(
+        tiny_stage2_setup.initialization.checkpoint,
+        map_location="cpu",
+        weights_only=False,
+    )
+    payload["format_version"] = 3
+    payload.pop("kind")
+    legacy = tmp_path / "legacy_stage1.pt"
+    torch.save(payload, legacy)
+    with pytest.raises(ValueError, match="checkpoint v1"):
+        load_stage1_model(
+            legacy,
+            tiny_stage2_setup.data.pretrain_artifacts_dir,
+        )
+    with pytest.raises(ValueError, match="checkpoint v1"):
+        load_stage1_feature_inputs(
+            legacy,
+            tiny_stage2_setup.data.pretrain_artifacts_dir,
+        )
 
 
 def test_stage2_prepare_preserves_duplicates_and_uses_train_only_scalers(
@@ -646,41 +672,17 @@ def test_formal_stage2_sampling_configs_preserve_transfer_coverage():
     assert len(checkpoints) == 1
 
 
-def test_formal_stage2_model_size_configs_share_training_budget():
-    configs = {
-        name: load_stage2_config(f"configs/formal/stage2/{name}.yaml")
-        for name in ("base", "large", "xlarge")
-    }
-    expected_micro_batches = {"base": 256, "large": 128, "xlarge": 64}
-    expected_accumulation = {"base": 1, "large": 2, "xlarge": 4}
-    reference = configs["base"]
-    for name, config in configs.items():
-        assert config.sampling.probabilities == reference.sampling.probabilities
-        assert config.training.max_steps == 23440
-        assert config.training.batch_size == expected_micro_batches[name]
-        assert (
-            config.training.gradient_accumulation_steps
-            == expected_accumulation[name]
-        )
-        assert (
-            config.training.batch_size
-            * config.training.gradient_accumulation_steps
-            == 256
-        )
-        assert backbone_unfreeze_step(config) == 2340
-    assert len(
-        {config.initialization.checkpoint for config in configs.values()}
-    ) == len(configs)
-
-
-def test_formal_stage2_comparison_outputs_are_unique():
-    paths = (
-        "configs/formal/stage2/base.yaml",
-        "configs/formal/stage2/large.yaml",
-        "configs/formal/stage2/xlarge.yaml",
+def test_formal_stage2_has_one_base_profile():
+    config_dir = Path("configs/formal/stage2")
+    assert sorted(path.name for path in config_dir.glob("*.yaml")) == ["base.yaml"]
+    config = load_stage2_config(config_dir / "base.yaml")
+    assert config.training.max_steps == 23440
+    assert config.training.batch_size == 256
+    assert config.training.gradient_accumulation_steps == 1
+    assert backbone_unfreeze_step(config) == 2340
+    assert config.initialization.checkpoint == Path(
+        "outputs/formal_v1/stage1/base/train/checkpoint_epoch_00005.pt"
     )
-    output_dirs = {load_stage2_config(path).data.artifacts_dir for path in paths}
-    assert len(output_dirs) == len(paths)
 
 
 def test_stage2_trainer_checkpoints_and_resumes_exactly(

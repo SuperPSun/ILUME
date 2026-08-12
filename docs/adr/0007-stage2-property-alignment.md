@@ -4,6 +4,8 @@
 - 日期：2026-08-03
 - 部分取代：ADR-0009 已取代任务内行级采样、共享 IL 回归 trunk、立即训练 backbone 和完整 QM 标签假设；冻结教师与五任务总体设计仍有效。
 
+> 2026-08-12：下文 Stage 1 checkpoint v3 引用已由 [ADR-0013](0013-stage1-full-corpus-ddp.md) 的 kind/v1 合同取代；Stage 2 五任务与冻结教师决定不变。
+
 ## 决定
 
 Stage 2 从一个 checkpoint v3 初始化两条逻辑分支：冻结教师 A 以完整、无掩码四模态输入离线生成 FP32 `fused_cls`；学生 B 从相同权重开始，训练全部编码路径和新增回归头。一个不可覆盖的 prepare 操作目录对应配置中记录的 checkpoint 路径，并以 Stage 2 data metadata 和缓存自身哈希校验内容；正式训练不把教师模型驻留在显存，也不强制跨阶段 checkpoint SHA lineage。
@@ -22,4 +24,4 @@ reference 任务调度使用确定性打乱的20-step块，每块固定7个 QM�
 
 Stage 2 data artifact 绑定 Stage 1 tokenizer、descriptor schema/scaler 和 fingerprint 合同；未进入 Stage 1 manifest 的实体仍可在通过相同 QC 后编码。更换 checkpoint 只需重建教师缓存，若预处理合同不变则复用实体与任务工件。当前10个实体 shard 在正式配置中全部缓存，避免随机批次触发重复反序列化。
 
-验证以五任务等权宏平均 normalized MAE 选 checkpoint，同时报告原单位 MAE/RMSE/R²、CLS MSE/cosine 和参数相对漂移。正式 Base λ 扫描及 XLarge 训练由用户运行；代码交付阶段只执行临时小数据测试，不生成完整缓存或启动长任务。
+验证以五任务等权宏平均 normalized MAE 选 checkpoint，同时报告原单位 MAE/RMSE/R²、CLS MSE/cosine 和参数相对漂移。正式配置现仅保留 Base；代码交付阶段只执行临时小数据测试，不生成完整缓存或启动长任务。

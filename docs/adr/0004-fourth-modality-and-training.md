@@ -1,7 +1,9 @@
 # ADR-0004：指纹、role embedding 与单卡训练器
 
-- 状态：Accepted
+- 状态：Partially Superseded by ADR-0013
 - 日期：2026-07-23
+
+> 指纹与 role embedding 决定继续有效；单卡限定及旧恢复合同已由 [ADR-0013](0013-stage1-full-corpus-ddp.md) 取代。
 
 ## 决定
 

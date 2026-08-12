@@ -7,7 +7,8 @@ from typing import Any
 import yaml
 
 
-AugmentationLimit = float | str
+STAGE1_CHECKPOINT_VERSION = 1
+STAGE1_CHECKPOINT_KIND = "ilume_stage1_pretraining"
 
 
 @dataclass(frozen=True)
@@ -21,9 +22,7 @@ class DataConfig:
     max_samples_per_role: int | None = None
     shard_size: int = 8192
     shard_cache_size: int = 4
-    augmentation: dict[str, AugmentationLimit] = field(
-        default_factory=lambda: {"cation": 0.0, "anion": 0.0, "neutral": 0.0}
-    )
+    include_augmentation: bool = False
 
 
 @dataclass(frozen=True)
@@ -47,12 +46,6 @@ class FingerprintConfig:
     morgan_bits: int = 2048
     maccs_bits: int = 167
     chunk_size: int = 128
-
-
-@dataclass(frozen=True)
-class SamplingConfig:
-    role_probabilities: tuple[float, float, float] = (0.45, 0.45, 0.10)
-    require_full_coverage: bool = True
 
 
 @dataclass(frozen=True)
@@ -95,23 +88,24 @@ class LossConfig:
     lambda_atom: float = 1.0
     lambda_bond: float = 1.0
     lambda_fingerprint: float = 1.0
+    role_weights: tuple[float, float, float] = (2.0, 2.0, 1.0)
 
 
 @dataclass(frozen=True)
 class TrainingConfig:
-    batch_size: int = 16
+    batch_size: int = 256
     epochs: int = 5
-    gradient_accumulation_steps: int = 8
-    learning_rate: float = 2.0e-4
+    gradient_accumulation_steps: int = 1
+    learning_rate: float = 1.0e-4
     weight_decay: float = 0.01
     warmup_fraction: float = 0.05
     max_grad_norm: float = 1.0
-    num_workers: int = 0
+    num_workers: int = 8
     device: str = "auto"
     amp_dtype: str = "bf16"
-    validation_interval_epochs: int = 1
-    validation_batches: int = 20
-    save_every_n_epochs: int | None = 1
+    checkpoint_interval_steps: int = 1000
+    validation_interval_steps: int = 2000
+    quick_validation_samples_per_role: int = 256
 
 
 @dataclass(frozen=True)
@@ -120,7 +114,6 @@ class PretrainConfig:
     tokenizer: TokenizerConfig = field(default_factory=TokenizerConfig)
     descriptor: DescriptorConfig = field(default_factory=DescriptorConfig)
     fingerprint: FingerprintConfig = field(default_factory=FingerprintConfig)
-    sampling: SamplingConfig = field(default_factory=SamplingConfig)
     masking: MaskingConfig = field(default_factory=MaskingConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     loss: LossConfig = field(default_factory=LossConfig)
@@ -137,10 +130,8 @@ class PretrainConfig:
             raise ValueError("data shard sizes must be positive")
         if self.data.max_samples_per_role is not None and self.data.max_samples_per_role < 2:
             raise ValueError("data.max_samples_per_role must be at least 2 or null")
-        for role in ("cation", "anion", "neutral"):
-            value = self.data.augmentation.get(role, 0.0)
-            if value != "all" and (not isinstance(value, (int, float)) or value < 0):
-                raise ValueError(f"data.augmentation.{role} must be non-negative or 'all'")
+        if not isinstance(self.data.include_augmentation, bool):
+            raise ValueError("data.include_augmentation must be true or false")
         if self.tokenizer.backend not in {"ais", "ape", "bpe", "spe"}:
             raise ValueError("tokenizer.backend must be ais, ape, bpe, or spe")
         if self.tokenizer.vocab_size <= len(("[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]")):
@@ -165,11 +156,10 @@ class PretrainConfig:
                 "fingerprint layout is fixed to Morgan radius=2/2048 bits, "
                 "MACCS 167 bits, and 128-bit chunks"
             )
-        probabilities = self.sampling.role_probabilities
-        if len(probabilities) != 3 or any(value <= 0 for value in probabilities):
-            raise ValueError("sampling.role_probabilities must contain three positive values")
-        if abs(sum(probabilities) - 1.0) > 1e-8:
-            raise ValueError("sampling.role_probabilities must sum to 1")
+        if len(self.loss.role_weights) != 3 or any(
+            value <= 0 for value in self.loss.role_weights
+        ):
+            raise ValueError("loss.role_weights must contain three positive values")
         if self.model.d_model % self.model.n_heads:
             raise ValueError("model.d_model must be divisible by model.n_heads")
         if self.model.graph_head not in {"linear", "mlp"}:
@@ -196,19 +186,20 @@ class PretrainConfig:
             raise ValueError("training.batch_size and training.epochs must be positive")
         if self.training.gradient_accumulation_steps <= 0:
             raise ValueError("training.gradient_accumulation_steps must be positive")
+        if self.training.gradient_accumulation_steps != 1:
+            raise ValueError("Stage 1 requires gradient_accumulation_steps=1")
         if self.training.amp_dtype not in {"bf16", "fp16", "none"}:
             raise ValueError("training.amp_dtype must be bf16, fp16, or none")
         if not 0.0 <= self.training.warmup_fraction < 1.0:
             raise ValueError("training.warmup_fraction must be in [0, 1)")
-        if self.training.validation_batches <= 0:
-            raise ValueError("training.validation_batches must be positive")
-        if self.training.validation_interval_epochs < 0:
-            raise ValueError("training epoch intervals cannot be negative")
-        if (
-            self.training.save_every_n_epochs is not None
-            and self.training.save_every_n_epochs < 0
-        ):
-            raise ValueError("training.save_every_n_epochs cannot be negative")
+        if self.training.checkpoint_interval_steps <= 0:
+            raise ValueError("training.checkpoint_interval_steps must be positive")
+        if self.training.validation_interval_steps <= 0:
+            raise ValueError("training.validation_interval_steps must be positive")
+        if self.training.quick_validation_samples_per_role <= 0:
+            raise ValueError(
+                "training.quick_validation_samples_per_role must be positive"
+            )
         if self.training.num_workers < 0:
             raise ValueError("training.num_workers cannot be negative")
 
@@ -232,7 +223,6 @@ _SECTIONS: dict[str, type] = {
     "tokenizer": TokenizerConfig,
     "descriptor": DescriptorConfig,
     "fingerprint": FingerprintConfig,
-    "sampling": SamplingConfig,
     "masking": MaskingConfig,
     "model": ModelConfig,
     "loss": LossConfig,
@@ -240,30 +230,11 @@ _SECTIONS: dict[str, type] = {
 }
 
 
-def _construct(
-    section_type: type, values: dict[str, Any] | None, *, legacy: bool = False
-) -> Any:
+def _construct(section_type: type, values: dict[str, Any] | None) -> Any:
     values = dict(values or {})
-    if section_type is TrainingConfig and legacy:
-        legacy_interval = values.pop("checkpoint_interval_epochs", None)
-        if "save_every_n_epochs" not in values and legacy_interval is not None:
-            values["save_every_n_epochs"] = legacy_interval
-        for key in ("keep_last_checkpoints", "output_dir", "resume_from"):
-            values.pop(key, None)
     known = {item.name for item in section_type.__dataclass_fields__.values()}
     unknown = set(values) - known
     if unknown:
-        legacy_training_fields = {
-            "max_steps",
-            "validation_interval",
-            "checkpoint_interval",
-        }
-        if section_type is TrainingConfig and unknown & legacy_training_fields:
-            fields = ", ".join(sorted(unknown & legacy_training_fields))
-            raise ValueError(
-                "Step-based training fields are incompatible with the epoch "
-                f"trainer: {fields}"
-            )
         raise ValueError(
             f"Unknown {section_type.__name__} fields: {', '.join(sorted(unknown))}"
         )
@@ -271,40 +242,23 @@ def _construct(
         for key in ("stage1_dir", "artifacts_dir"):
             if key in values:
                 values[key] = Path(values[key])
-        if "augmentation" in values:
-            raw = values["augmentation"] or {}
-            values["augmentation"] = {
-                "cation": raw.get("cation", 0.0),
-                "anion": raw.get("anion", 0.0),
-                "neutral": raw.get("neutral", raw.get("molecule", 0.0)),
-            }
-    elif section_type is SamplingConfig and "role_probabilities" in values:
-        values["role_probabilities"] = tuple(values["role_probabilities"])
+    elif section_type is LossConfig and "role_weights" in values:
+        values["role_weights"] = tuple(values["role_weights"])
     return section_type(**values)
 
 
-def _parse_config(raw: dict[str, Any], *, legacy: bool) -> PretrainConfig:
+def config_from_dict(raw: dict[str, Any]) -> PretrainConfig:
     raw = dict(raw)
-    if legacy:
-        raw.pop("smoke", None)
     unknown = set(raw) - set(_SECTIONS)
     if unknown:
         raise ValueError(f"Unknown config sections: {', '.join(sorted(unknown))}")
     parts = {
-        name: _construct(section, raw.get(name), legacy=legacy)
+        name: _construct(section, raw.get(name))
         for name, section in _SECTIONS.items()
     }
     config = PretrainConfig(**parts)
     config.validate()
     return config
-
-
-def config_from_dict(raw: dict[str, Any]) -> PretrainConfig:
-    return _parse_config(raw, legacy=False)
-
-
-def config_from_checkpoint_dict(raw: dict[str, Any]) -> PretrainConfig:
-    return _parse_config(raw, legacy=True)
 
 
 def load_config(path: str | Path) -> PretrainConfig:

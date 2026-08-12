@@ -1,6 +1,6 @@
 # ILUME
 
-ILUME 以四模态掩码预训练（Stage 1）、五任务物性监督对齐（Stage 2）和双域 27 任务训练（Stage 3）组成科研 pipeline。仓库按 Stage 组织代码；重构不改变数据、模型、loss、sampling、训练顺序或 evaluation protocol。
+ILUME 以四模态掩码预训练（Stage 1）、五任务物性监督对齐（Stage 2）和双域 27 任务训练（Stage 3）组成科研 pipeline。仓库按 Stage 组织代码；现役科研合同由正式 YAML 与 [ADR](docs/adr/README.md) 共同定义。
 
 ## Installation
 
@@ -14,7 +14,7 @@ python -m pip install -e ".[dev,tokenizers]"
 
 ## Stage 1
 
-三种模型容量共享 Base prepared data：
+Stage 1 只保留一个正式 Base。prepare 会消费三类 original；当 `include_augmentation: true` 时还会要求并全量处理三份 augmentation CSV。旧 corpus artifact 不兼容，必须重新 prepare：
 
 ```bash
 python scripts/stage1/prepare.py \
@@ -26,7 +26,15 @@ python scripts/stage1/train.py \
   --output outputs/formal_v1/stage1/base/train
 ```
 
-Base prepare 只需执行一次。训练 Large 或 XLarge 时复用该 prepared data，只替换训练命令中的配置名和训练输出容量，例如 `configs/formal/stage1/large.yaml` 与 `outputs/formal_v1/stage1/large/train`。恢复训练需显式指定同一操作目录中的 checkpoint：
+`training.batch_size: 256` 是跨所有 rank 的 global batch。四卡训练使用每卡 64：
+
+```bash
+torchrun --nproc-per-node=4 scripts/stage1/train.py \
+  --config configs/formal/stage1/base.yaml \
+  --output outputs/formal_v1/stage1/base/train
+```
+
+恢复训练需显式指定同一操作目录中的 checkpoint，并保持 checkpoint 保存时的 `world_size`：
 
 ```bash
 python scripts/stage1/train.py \
@@ -35,9 +43,11 @@ python scripts/stage1/train.py \
   --resume outputs/formal_v1/stage1/base/train/last.pt
 ```
 
+四卡 checkpoint 恢复时仍使用 `torchrun --nproc-per-node=4`，并在同一条命令末尾添加上述 `--resume` 参数。
+
 ## Stage 2
 
-Stage 2 三种容量分别准备与对应 Stage 1 checkpoint 匹配的离线教师缓存：
+Stage 2 同样只保留一个正式 Base，并从 Stage 1 Base 的 v1 checkpoint 准备离线教师缓存：
 
 ```bash
 python scripts/stage2/prepare.py \

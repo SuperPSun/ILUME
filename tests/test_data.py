@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 import json
-from collections import Counter
 
 import numpy as np
 import pytest
@@ -13,6 +12,7 @@ import stage1.features as features_module
 import stage1.prepare as prepare_module
 from stage1.data import (
     CORPUS_FORMAT_VERSION,
+    CORPUS_KIND,
     PreparedCorpusDataset,
 )
 from stage1.features import IPC_SQUARE_OVERFLOW_LIMIT, inspect_entity_qc
@@ -20,11 +20,6 @@ from stage1.prepare import (
     _csv_data_row_count,
     preparation_source_paths,
     prepare_corpus,
-)
-from stage1.sampler import (
-    RoleBalancedSampler,
-    coverage_epoch_plan,
-    minimum_samples_for_coverage,
 )
 
 
@@ -59,12 +54,13 @@ def test_prepare_progress_counts_rows_and_only_enabled_sources(tmp_path):
     assert _csv_data_row_count(path) == 2
     config = DataConfig(
         stage1_dir=stage1,
-        augmentation={"cation": 0, "anion": 1, "neutral": "all"},
+        include_augmentation=True,
     )
     assert preparation_source_paths(config) == [
         stage1 / "cation.csv",
         stage1 / "anion.csv",
         stage1 / "molecule.csv",
+        stage1 / "augmentation" / "cation.csv",
         stage1 / "augmentation" / "anion.csv",
         stage1 / "augmentation" / "molecule.csv",
     ]
@@ -95,27 +91,40 @@ def test_prepare_uses_new_original_sources_and_sharded_artifacts(tmp_path):
     assert summary["cation"] == summary["anion"] == summary["neutral"] == 2
     assert summary["augmented"] == 0
     assert summary["excluded_entities"] == 0
-    assert (artifacts / "corpus_index.json").is_file()
+    assert not (artifacts / "corpus_index.json").exists()
+    assert (artifacts / "train_index.npy").is_file()
+    assert (artifacts / "valid_index.npy").is_file()
+    assert (artifacts / "shard_manifest.json").is_file()
     assert (artifacts / "descriptor_schema.json").is_file()
     assert (artifacts / "excluded_entities.csv").is_file()
-    assert len(list((artifacts / "shards").glob("*.pt"))) == 6
+    assert not (artifacts / ".prepare.sqlite").exists()
+    assert not (artifacts / ".raw_descriptors.npy").exists()
+    assert not (artifacts / "preparation_state.json").exists()
+    assert len(list((artifacts / "shards").glob("*.pt"))) == 4
     metadata_path = artifacts / "metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    assert metadata["format_version"] == CORPUS_FORMAT_VERSION == 3
+    assert metadata["format_version"] == CORPUS_FORMAT_VERSION == 1
+    assert metadata["kind"] == CORPUS_KIND
+    assert set(metadata["source_hashes"]) == {
+        "cation.csv",
+        "anion.csv",
+        "molecule.csv",
+    }
     assert "excluded_entities.csv" in metadata["artifact_hashes"]
+    assert "augmentation_audit.json" in metadata["artifact_hashes"]
     dataset = PreparedCorpusDataset(artifacts, "train")
     assert len(dataset) == 3
     with pytest.raises(ValueError, match="Legacy corpus.pt"):
         legacy = artifacts / "corpus.pt"
         legacy.touch()
         PreparedCorpusDataset(legacy)
-    metadata["format_version"] = 2
+    metadata["format_version"] = 3
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
-    with pytest.raises(ValueError, match="Unsupported corpus artifact format"):
+    with pytest.raises(ValueError, match="Unsupported Stage 1 corpus artifact"):
         PreparedCorpusDataset(artifacts)
     metadata["format_version"] = CORPUS_FORMAT_VERSION
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
-    shard = artifacts / dataset.entries[0]["shard"]
+    shard = artifacts / dataset.shards[0]["path"]
     shard.write_bytes(shard.read_bytes() + b"corrupt")
     with pytest.raises(ValueError, match="Shard hash mismatch"):
         dataset[0]
@@ -171,6 +180,10 @@ def test_prepare_excludes_qc_failures_before_descriptor_calculation(
     for name, rows in originals.items():
         _write_role_csv(stage1 / f"{name}.csv", rows)
     _write_role_csv(
+        augmentation / "cation.csv",
+        [],
+    )
+    _write_role_csv(
         augmentation / "anion.csv",
         [("CC(C)[CH2][AlH-](<-[CH2](C)C)[S](C)(=O)=O", -1)],
     )
@@ -202,7 +215,7 @@ def test_prepare_excludes_qc_failures_before_descriptor_calculation(
                 valid_fraction=0.25,
                 seed=7,
                 max_smiles_tokens=8,
-                augmentation={"cation": 0, "anion": "all", "neutral": "all"},
+                include_augmentation=True,
                 shard_size=4,
             )
         )
@@ -229,11 +242,11 @@ def test_prepare_excludes_qc_failures_before_descriptor_calculation(
     assert "unsupported_bcut_bond_type" in dative_reasons
     metadata = json.loads((artifacts / "metadata.json").read_text(encoding="utf-8"))
     assert metadata["quality_control"]["excluded"]["total"] == 3
-    assert metadata["augmentation_audit"]["anion"]["selected_after_qc"] == 0
-    assert metadata["augmentation_audit"]["neutral"]["selected_after_qc"] == 0
+    assert metadata["augmentation_audit"]["anion"]["retained"] == 0
+    assert metadata["augmentation_audit"]["neutral"]["retained"] == 0
 
 
-def test_augmentation_ratio_and_validation_seed_descendant_isolation(tmp_path):
+def test_full_augmentation_ingestion_dedup_leakage_and_audit(tmp_path):
     stage1 = tmp_path / "stage1"
     augmentation = stage1 / "augmentation"
     artifacts = tmp_path / "artifacts"
@@ -246,16 +259,21 @@ def test_augmentation_ratio_and_validation_seed_descendant_isolation(tmp_path):
     for name, rows in originals.items():
         _write_role_csv(stage1 / f"{name}.csv", rows)
         charge = rows[0][1]
-        # First row is guaranteed to be excluded because every original is a seed;
-        # the remaining rows are eligible and the 1x cap selects train_count rows.
         all_seeds = ";".join(row[0] for row in rows)
+        candidate = (
+            "C1CC1"
+            if name == "molecule"
+            else ("C[NH+](C)C" if name == "cation" else "C[S-]")
+        )
         _write_role_csv(
             augmentation / f"{name}.csv",
             [
-                ("C1CC1" if name == "molecule" else ("C[NH+](C)C" if name == "cation" else "C[S-]"), charge, all_seeds),
+                (candidate, charge, all_seeds),
+                (rows[0][0], charge, "unrelated"),
+                (candidate, charge, "unrelated"),
+                (candidate, charge, "unrelated"),
                 ("CCC" if name == "molecule" else ("CC[NH2+]C" if name == "cation" else "CC[S-]"), charge, "unrelated"),
                 ("CCCC" if name == "molecule" else ("CCC[NH2+]C" if name == "cation" else "CCC[S-]"), charge, "unrelated"),
-                ("CCCCC" if name == "molecule" else ("CCCC[NH2+]C" if name == "cation" else "CCCC[S-]"), charge, "unrelated"),
             ],
         )
 
@@ -265,11 +283,27 @@ def test_augmentation_ratio_and_validation_seed_descendant_isolation(tmp_path):
             artifacts_dir=artifacts,
             valid_fraction=0.25,
             seed=7,
-            augmentation={"cation": 1.0, "anion": 1.0, "neutral": 1.0},
+            include_augmentation=True,
         )
     )
     summary = prepare_corpus(config)
     assert summary["augmented"] == 9
+    metadata = json.loads((artifacts / "metadata.json").read_text(encoding="utf-8"))
+    for role in ("cation", "anion", "neutral"):
+        assert metadata["augmentation_audit"][role] == {
+            "included": True,
+            "source_rows": 6,
+            "excluded_valid_seed": 1,
+            "excluded_overlap": 1,
+            "excluded_duplicate": 1,
+            "eligible": 3,
+            "excluded_qc": 0,
+            "retained": 3,
+        }
+    audit = json.loads(
+        (artifacts / "augmentation_audit.json").read_text(encoding="utf-8")
+    )
+    assert audit["roles"] == metadata["augmentation_audit"]
     with (artifacts / "manifest.csv").open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     valid_smiles = {
@@ -284,110 +318,6 @@ def test_augmentation_ratio_and_validation_seed_descendant_isolation(tmp_path):
     }
     assert valid_smiles.isdisjoint(augmented_seeds)
 
-
-def test_role_balanced_sampler_uses_45_45_10_and_checks_coverage():
-    role_ids = [0] * 2 + [1] * 3 + [2] * 4
-    first = list(RoleBalancedSampler(role_ids, num_samples=20, seed=9))
-    second = list(RoleBalancedSampler(role_ids, num_samples=20, seed=9))
-    counts = Counter(role_ids[index] for index in first)
-    assert counts == {0: 9, 1: 9, 2: 2}
-    assert first == second
-    assert minimum_samples_for_coverage((2, 3, 4)) == 40
-    with pytest.raises(ValueError, match="cannot cover"):
-        RoleBalancedSampler(
-            role_ids,
-            num_samples=20,
-            seed=9,
-            require_full_coverage=True,
-        )
-
-
-def test_coverage_epoch_rounds_to_effective_batch_and_changes_by_epoch():
-    role_ids = [0] * 2 + [1] * 3 + [2] * 4
-    plan = coverage_epoch_plan(
-        (2, 3, 4), batch_size=3, gradient_accumulation_steps=2
-    )
-    assert plan.required_draws == 40
-    assert plan.effective_batch_size == 6
-    assert plan.steps_per_epoch == 7
-    assert plan.draws_per_epoch == 42
-    assert plan.role_quotas == (19, 19, 4)
-
-    sampler = RoleBalancedSampler(
-        role_ids,
-        num_samples=plan.draws_per_epoch,
-        seed=11,
-        require_full_coverage=True,
-    )
-    first = list(sampler)
-    sampler.set_epoch(1)
-    second = list(sampler)
-    repeated = RoleBalancedSampler(
-        role_ids,
-        num_samples=plan.draws_per_epoch,
-        seed=11,
-        require_full_coverage=True,
-    )
-    repeated.set_epoch(1)
-
-    assert first != second
-    assert second == list(repeated)
-    assert Counter(role_ids[index] for index in first) == {
-        0: 19,
-        1: 19,
-        2: 4,
-    }
-    for role in range(3):
-        expected = {index for index, value in enumerate(role_ids) if value == role}
-        observed = {index for index in first if role_ids[index] == role}
-        assert observed == expected
-
-
-def test_sampler_resume_offset_replays_remaining_sequence():
-    role_ids = [0] * 4 + [1] * 4 + [2] * 2
-    sampler = RoleBalancedSampler(role_ids, num_samples=40, seed=5)
-    complete = list(sampler)
-    sampler.set_start_offset(13)
-    assert list(sampler) == complete[13:]
-    restored = RoleBalancedSampler(role_ids, num_samples=40, seed=5)
-    restored.load_state_dict(sampler.state_dict())
-    assert list(restored) == complete[13:]
-
-
-def test_sampler_advances_each_role_one_shard_at_a_time():
-    role_ids = [0] * 4 + [1] * 4 + [2] * 4
-    shard_ids = [
-        "cation_a",
-        "cation_a",
-        "cation_b",
-        "cation_b",
-        "anion_a",
-        "anion_a",
-        "anion_b",
-        "anion_b",
-        "neutral_a",
-        "neutral_a",
-        "neutral_b",
-        "neutral_b",
-    ]
-    sampler = RoleBalancedSampler(
-        role_ids,
-        num_samples=40,
-        seed=4,
-        require_full_coverage=True,
-        shard_ids=shard_ids,
-    )
-    selected = list(sampler)
-    for role in range(3):
-        role_draws = [index for index in selected if role_ids[index] == role]
-        first_cycle = role_draws[:4]
-        assert len(set(first_cycle)) == 4
-        shard_sequence = [shard_ids[index] for index in first_cycle]
-        changes = sum(
-            left != right
-            for left, right in zip(shard_sequence, shard_sequence[1:])
-        )
-        assert changes == 1
 
 import numpy as np
 import pytest

@@ -10,7 +10,12 @@ from rdkit import Chem
 from rdkit.Chem import Descriptors
 
 from common.io import sha256_file
-from .config import PretrainConfig, config_from_dict
+from .config import (
+    STAGE1_CHECKPOINT_KIND,
+    STAGE1_CHECKPOINT_VERSION,
+    PretrainConfig,
+    config_from_dict,
+)
 from .descriptors import DescriptorSchema, DescriptorStandardizer, rdkit_descriptor_names
 from .fingerprints import calculate_fingerprints
 from .graph import featurize_mol
@@ -123,8 +128,11 @@ def load_stage1_feature_inputs(
     checkpoint = torch.load(
         Path(checkpoint_path), map_location="cpu", weights_only=False
     )
-    if checkpoint.get("format_version") != 3:
-        raise ValueError("Stage 2 requires a Stage 1 checkpoint in format v3")
+    if (
+        checkpoint.get("kind") != STAGE1_CHECKPOINT_KIND
+        or checkpoint.get("format_version") != STAGE1_CHECKPOINT_VERSION
+    ):
+        raise ValueError("Stage 2 requires a Stage 1 pretraining checkpoint v1")
     config = config_from_dict(checkpoint["config"])
     artifact_dir = Path(artifact_dir)
     artifact_hash = sha256_file(artifact_dir / "metadata.json")

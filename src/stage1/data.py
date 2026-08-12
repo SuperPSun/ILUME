@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 from rdkit import rdBase
 from torch.utils.data import Dataset
@@ -17,7 +18,12 @@ from .graph import GraphRecord, PackedGraph
 from .tokenizer import tokenizer_backend_version
 
 
-CORPUS_FORMAT_VERSION = 3
+CORPUS_FORMAT_VERSION = 1
+CORPUS_KIND = "ilume_stage1_corpus"
+CORPUS_SHARD_KIND = "ilume_stage1_corpus_shard"
+INDEX_DTYPE = np.dtype(
+    [("shard_id", "<u4"), ("offset", "<u4"), ("role_id", "u1")]
+)
 
 
 @dataclass(frozen=True)
@@ -92,8 +98,13 @@ class PreparedCorpusDataset(Dataset):
             raise ValueError("PreparedCorpusDataset expects an artifact directory")
         self.artifact_dir = path
         self.metadata = json.loads((path / "metadata.json").read_text(encoding="utf-8"))
-        if self.metadata.get("format_version") != CORPUS_FORMAT_VERSION:
-            raise ValueError("Unsupported corpus artifact format; rerun scripts/stage1/prepare.py")
+        if (
+            self.metadata.get("kind") != CORPUS_KIND
+            or self.metadata.get("format_version") != CORPUS_FORMAT_VERSION
+        ):
+            raise ValueError(
+                "Unsupported Stage 1 corpus artifact; rerun scripts/stage1/prepare.py"
+            )
         artifact_hashes = self.metadata.get("artifact_hashes")
         if not isinstance(artifact_hashes, dict) or not artifact_hashes:
             raise ValueError("Corpus artifact hashes are missing; rerun scripts/stage1/prepare.py")
@@ -115,19 +126,59 @@ class PreparedCorpusDataset(Dataset):
             path / "descriptor_scaler.json",
             expected_names=self.descriptor_schema.selected_names,
         )
-        payload = json.loads((path / "corpus_index.json").read_text(encoding="utf-8"))
-        if payload.get("format_version") != CORPUS_FORMAT_VERSION:
-            raise ValueError("Unsupported corpus index format")
-        self.entries = [
-            entry for entry in payload["entries"] if split == "all" or entry["split"] == split
-        ]
-        self.role_ids = [int(entry["role_id"]) for entry in self.entries]
+        shard_manifest = json.loads(
+            (path / "shard_manifest.json").read_text(encoding="utf-8")
+        )
+        if (
+            shard_manifest.get("kind") != CORPUS_KIND
+            or shard_manifest.get("format_version") != CORPUS_FORMAT_VERSION
+        ):
+            raise ValueError("Unsupported Stage 1 shard manifest")
+        self.shards = tuple(shard_manifest["shards"])
+        shard_hashes = self.metadata.get("shard_hashes", {})
+        for shard in self.shards:
+            if shard.get("sha256") != shard_hashes.get(shard.get("path")):
+                raise ValueError("Stage 1 shard manifest hash does not match metadata")
+        selected_splits = ("train", "valid") if split == "all" else (split,)
+        self._indices = tuple(
+            np.load(path / f"{name}_index.npy", mmap_mode="r")
+            for name in selected_splits
+        )
+        for index in self._indices:
+            if index.dtype != INDEX_DTYPE:
+                raise ValueError("Unsupported Stage 1 compact index dtype")
+        self._lengths = tuple(len(index) for index in self._indices)
         self.shard_cache_size = shard_cache_size
         self._cache: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
         self._verified_shards: set[str] = set()
 
     def __len__(self) -> int:
-        return len(self.entries)
+        return sum(self._lengths)
+
+    @property
+    def role_ids(self) -> np.ndarray:
+        if len(self._indices) == 1:
+            return self._indices[0]["role_id"]
+        return np.concatenate([index["role_id"] for index in self._indices])
+
+    @property
+    def shard_ranges(self) -> tuple[tuple[int, int], ...]:
+        ranges: list[tuple[int, int]] = []
+        logical_offset = 0
+        selected_splits = {
+            str(self.shards[int(index[0]["shard_id"])]["split"])
+            for index in self._indices
+            if len(index)
+        }
+        for shard in self.shards:
+            if shard["split"] not in selected_splits:
+                continue
+            count = int(shard["count"])
+            ranges.append((logical_offset, count))
+            logical_offset += count
+        if logical_offset != len(self):
+            raise ValueError("Stage 1 shard manifest does not match compact index")
+        return tuple(ranges)
 
     def _load_shard(self, relative_path: str) -> list[dict[str, Any]]:
         if relative_path in self._cache:
@@ -141,7 +192,10 @@ class PreparedCorpusDataset(Dataset):
                 raise ValueError(f"Shard hash mismatch: {relative_path}")
             self._verified_shards.add(relative_path)
         payload = torch.load(shard_path, map_location="cpu", weights_only=False)
-        if payload.get("format_version") != CORPUS_FORMAT_VERSION:
+        if (
+            payload.get("kind") != CORPUS_SHARD_KIND
+            or payload.get("format_version") != CORPUS_FORMAT_VERSION
+        ):
             raise ValueError(f"Unsupported shard format: {relative_path}")
         samples = payload["samples"]
         self._cache[relative_path] = samples
@@ -150,8 +204,17 @@ class PreparedCorpusDataset(Dataset):
         return samples
 
     def __getitem__(self, index: int) -> dict[str, Any]:
-        entry = self.entries[index]
-        return self._load_shard(entry["shard"])[int(entry["offset"])]
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        for compact, length in zip(self._indices, self._lengths, strict=True):
+            if index < length:
+                entry = compact[index]
+                shard = self.shards[int(entry["shard_id"])]["path"]
+                return self._load_shard(shard)[int(entry["offset"])]
+            index -= length
+        raise IndexError(index)
 
 
 def graph_record_from_sample(sample: dict[str, Any]) -> GraphRecord:

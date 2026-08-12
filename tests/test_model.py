@@ -4,15 +4,131 @@ from dataclasses import replace
 
 import pytest
 import torch
+import torch.nn.functional as F
 
 from stage1.config import MaskingConfig
+from stage1.graph import ATOM_FEATURE_NAMES, BOND_FEATURE_NAMES
 from stage1.masking import (
     MultimodalCollator,
     MultimodalMasker,
     MultimodalPacker,
     curriculum_dropout_probability,
 )
-from stage1.model import MultimodalPretrainModel
+from stage1.model import MultimodalPretrainModel, _weighted_component
+
+
+def test_role_weight_reduction_is_exact() -> None:
+    losses = torch.tensor([1.0, 3.0, 5.0])
+    roles = torch.tensor([0, 1, 2])
+    weights = torch.tensor([2.0, 2.0, 1.0])
+    numerator, denominator, role_numerators, role_denominators = (
+        _weighted_component(losses, roles, weights)
+    )
+    assert numerator.item() == 13.0
+    assert denominator.item() == 5.0
+    assert (numerator / denominator).item() == pytest.approx(2.6)
+    assert role_numerators.tolist() == [2.0, 6.0, 5.0]
+    assert role_denominators.tolist() == [2.0, 2.0, 1.0]
+
+
+def test_all_five_modalities_use_element_role_weights_and_component_means(
+    tiny_config,
+    tiny_samples,
+) -> None:
+    vocabulary, samples = tiny_samples
+    batch = MultimodalCollator(
+        vocabulary, tiny_config.masking, seed=tiny_config.data.seed
+    )(samples)
+    model = MultimodalPretrainModel(tiny_config, vocabulary)
+    output = model(batch)
+    role_weights = torch.tensor(tiny_config.loss.role_weights)
+
+    expected: dict[str, list[tuple[torch.Tensor, ...]]] = {}
+    smiles_mask = batch.masks.smiles_labels != -100
+    token_roles = batch.roles[:, None].expand_as(smiles_mask)
+    expected["smiles"] = [
+        _weighted_component(
+            F.cross_entropy(
+                output.logits["smiles"][smiles_mask],
+                batch.masks.smiles_labels[smiles_mask],
+                reduction="none",
+            ),
+            token_roles[smiles_mask],
+            role_weights,
+        )
+    ]
+
+    atom_mask = batch.masks.atom_mask
+    atom_roles = batch.roles[batch.graphs.atom_batch][atom_mask]
+    expected["atom"] = [
+        _weighted_component(
+            F.cross_entropy(
+                output.logits["atom"][name][atom_mask],
+                batch.graphs.atom_categorical[atom_mask, column],
+                reduction="none",
+            ),
+            atom_roles,
+            role_weights,
+        )
+        for column, name in enumerate(ATOM_FEATURE_NAMES)
+    ]
+
+    bond_mask = batch.masks.bond_mask
+    bond_roles = batch.roles[batch.graphs.bond_batch][bond_mask]
+    expected["bond"] = [
+        _weighted_component(
+            F.cross_entropy(
+                output.logits["bond"][name][bond_mask],
+                batch.graphs.bond_categorical[bond_mask, column],
+                reduction="none",
+            ),
+            bond_roles,
+            role_weights,
+        )
+        for column, name in enumerate(BOND_FEATURE_NAMES)
+    ]
+
+    descriptor_mask = batch.masks.descriptor_loss_mask
+    descriptor_roles = batch.roles[:, None].expand_as(descriptor_mask)
+    expected["descriptor"] = [
+        _weighted_component(
+            F.smooth_l1_loss(
+                output.logits["descriptor"][descriptor_mask],
+                batch.descriptors[descriptor_mask],
+                reduction="none",
+            ),
+            descriptor_roles[descriptor_mask],
+            role_weights,
+        )
+    ]
+
+    expected["fingerprint"] = []
+    for family, logits in output.logits["fingerprint"].items():
+        loss_mask = batch.masks.fingerprint_loss_mask[family]
+        fingerprint_roles = batch.roles[:, None].expand_as(loss_mask)
+        expected["fingerprint"].append(
+            _weighted_component(
+                F.binary_cross_entropy_with_logits(
+                    logits[loss_mask],
+                    batch.fingerprints.values[family][loss_mask],
+                    reduction="none",
+                ),
+                fingerprint_roles[loss_mask],
+                role_weights,
+            )
+        )
+
+    for modality, components in expected.items():
+        statistics = output.loss_statistics[modality]
+        assert torch.allclose(
+            statistics.numerators,
+            torch.stack([component[0] for component in components]),
+        )
+        assert torch.equal(
+            statistics.denominators,
+            torch.stack([component[1] for component in components]),
+        )
+        assert torch.allclose(output.losses[modality], statistics.mean())
 
 
 def test_modality_dropout_never_drops_all_and_supervises_dropped_content(

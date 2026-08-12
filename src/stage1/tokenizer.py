@@ -5,6 +5,7 @@ import importlib.metadata
 import json
 from collections import Counter
 from dataclasses import dataclass
+from itertools import chain
 from pathlib import Path
 from typing import Iterable
 
@@ -73,9 +74,12 @@ class SmilesTokenizer:
         vocab_size: int = 2048,
         min_frequency: int = 2,
     ) -> "SmilesTokenizer":
-        corpus = list(smiles_values)
-        if not corpus:
-            raise ValueError("Cannot fit a tokenizer on an empty corpus")
+        iterator = iter(smiles_values)
+        try:
+            first = next(iterator)
+        except StopIteration as error:
+            raise ValueError("Cannot fit a tokenizer on an empty corpus") from error
+        corpus = chain((first,), iterator)
         if backend == "ais":
             counts: Counter[str] = Counter()
             for smiles in corpus:
@@ -119,6 +123,7 @@ class SmilesTokenizer:
                 backend_version=tokenizer_backend_version("bpe"),
             )
         if backend == "spe":
+            corpus = list(corpus)
             _require_backend(
                 "SmilesPE",
                 "SPE support requires the tokenizers extra: pip install -e '.[tokenizers]'",
@@ -148,6 +153,7 @@ class SmilesTokenizer:
                 backend_version=tokenizer_backend_version("spe"),
             )
         if backend == "ape":
+            corpus = list(corpus)
             _require_backend(
                 "apetokenizer",
                 "APE support requires the pinned tokenizer extra: pip install -e '.[tokenizers]'",

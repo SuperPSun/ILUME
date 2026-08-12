@@ -2,7 +2,9 @@
 
 ## 科学边界
 
-仓库重构不得改变数据筛选与 split、tokenizer、descriptor、fingerprint、masking、45/45/10 sampling、模型、loss、优化顺序、验证指标、早停和 Stage 1/2/3 数值训练行为。发现科研问题时单独记录，不在结构整理中顺手修改。
+仓库重构不得改变现役数据筛选与 split、tokenizer、descriptor、fingerprint、masking、模型、loss、优化顺序、验证指标、早停和 Stage 1/2/3 数值训练行为。发现科研问题时单独记录，不在结构整理中顺手修改。
+
+Stage 1 现役合同以 ADR-0013 为准：自然频率全量 epoch、cation/anion/molecule 的 element-level loss 权重 2/2/1、五模态等权、global batch 256、单一 Base、原生单卡/DDP，以及 corpus/checkpoint 的 kind 区分 v1。不得恢复 45/45/10 coverage sampler、augmentation multiplier、多容量正式配置或旧 checkpoint 兼容。
 
 Stage 2 保持五任务、PairEncoder、任务内体系采样、部分标签 mask 与 10% 渐进解冻。Stage 3 保持 `il21`/`aux6` 双域的模型与 optimizer、scheduler、AMP、RNG、BN、早停和选优状态完全隔离；现役决定以 ADR-0011/0012 为准。
 

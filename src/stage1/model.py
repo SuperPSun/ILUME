@@ -8,7 +8,12 @@ import torch.nn.functional as F
 from torch import nn
 
 from common.io import sha256_file
-from .config import PretrainConfig, config_from_checkpoint_dict
+from .config import (
+    STAGE1_CHECKPOINT_KIND,
+    STAGE1_CHECKPOINT_VERSION,
+    PretrainConfig,
+    config_from_dict,
+)
 from .data import MultimodalBatch, PreparedCorpusDataset
 from .descriptors import DescriptorSchema
 from .encoders import (
@@ -38,8 +43,38 @@ from .tokenizer import SmilesTokenizer
 class PretrainOutput:
     loss: torch.Tensor
     losses: dict[str, torch.Tensor]
+    loss_statistics: dict[str, "LossStatistics"]
     logits: dict[str, torch.Tensor | dict[str, torch.Tensor]]
     fused_cls: torch.Tensor
+
+
+@dataclass(frozen=True)
+class LossStatistics:
+    numerators: torch.Tensor
+    denominators: torch.Tensor
+    role_numerators: torch.Tensor
+    role_denominators: torch.Tensor
+
+    def mean(self) -> torch.Tensor:
+        return (
+            self.numerators
+            / torch.where(
+                self.denominators > 0,
+                self.denominators,
+                torch.ones_like(self.denominators),
+            )
+        ).mean()
+
+    def role_mean(self, role: int) -> torch.Tensor:
+        denominators = self.role_denominators[:, role]
+        return (
+            self.role_numerators[:, role]
+            / torch.where(
+                denominators > 0,
+                denominators,
+                torch.ones_like(denominators),
+            )
+        ).mean()
 
 
 @dataclass(frozen=True)
@@ -85,20 +120,70 @@ class ReconstructionTrunk(nn.Module):
         return hidden + self.layers(self.norm(hidden))
 
 
+def _weighted_component(
+    losses: torch.Tensor,
+    roles: torch.Tensor,
+    role_weights: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    losses = losses.float()
+    weights = role_weights[roles]
+    numerator = (losses * weights).sum()
+    denominator = weights.sum()
+    role_numerators = torch.stack(
+        [
+            (losses[roles == role] * weights[roles == role]).sum()
+            for role in range(3)
+        ]
+    )
+    role_denominators = torch.stack(
+        [weights[roles == role].sum() for role in range(3)]
+    )
+    return numerator, denominator, role_numerators, role_denominators
+
+
+def _statistics(
+    components: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]],
+    zero_reference: torch.Tensor,
+    component_count: int,
+) -> LossStatistics:
+    if not components:
+        zero = zero_reference.float().sum() * 0.0
+        return LossStatistics(
+            numerators=zero.expand(component_count),
+            denominators=zero.new_zeros(component_count),
+            role_numerators=zero.new_zeros((component_count, 3)),
+            role_denominators=zero.new_zeros((component_count, 3)),
+        )
+    return LossStatistics(
+        numerators=torch.stack([item[0] for item in components]),
+        denominators=torch.stack([item[1] for item in components]),
+        role_numerators=torch.stack([item[2] for item in components]),
+        role_denominators=torch.stack([item[3] for item in components]),
+    )
+
+
 def _masked_multitask_cross_entropy(
     logits: dict[str, torch.Tensor],
     targets: torch.Tensor,
     mask: torch.Tensor,
     feature_names: tuple[str, ...],
+    element_roles: torch.Tensor,
+    role_weights: torch.Tensor,
     zero_reference: torch.Tensor,
-) -> torch.Tensor:
+) -> LossStatistics:
     if not bool(mask.any()):
-        return zero_reference.sum() * 0.0
-    losses = [
-        F.cross_entropy(logits[name][mask], targets[mask, column])
+        return _statistics([], zero_reference, len(feature_names))
+    components = [
+        _weighted_component(
+            F.cross_entropy(
+                logits[name][mask], targets[mask, column], reduction="none"
+            ),
+            element_roles[mask],
+            role_weights,
+        )
         for column, name in enumerate(feature_names)
     ]
-    return torch.stack(losses).mean()
+    return _statistics(components, zero_reference, len(feature_names))
 
 
 class MultimodalPretrainModel(nn.Module):
@@ -326,72 +411,116 @@ class MultimodalPretrainModel(nn.Module):
             fused_fingerprints, family_slices
         )
 
-        if bool((batch.masks.smiles_labels != -100).any()):
-            smiles_loss = F.cross_entropy(
-                smiles_logits.reshape(-1, smiles_logits.shape[-1]),
-                batch.masks.smiles_labels.reshape(-1),
-                ignore_index=-100,
+        role_weights = torch.as_tensor(
+            self.config.loss.role_weights,
+            dtype=torch.float32,
+            device=fused.device,
+        )
+
+        smiles_mask = batch.masks.smiles_labels != -100
+        smiles_components = []
+        if bool(smiles_mask.any()):
+            token_roles = batch.roles[:, None].expand_as(smiles_mask)
+            smiles_components.append(
+                _weighted_component(
+                    F.cross_entropy(
+                        smiles_logits[smiles_mask],
+                        batch.masks.smiles_labels[smiles_mask],
+                        reduction="none",
+                    ),
+                    token_roles[smiles_mask],
+                    role_weights,
+                )
             )
-        else:
-            smiles_loss = fused_smiles.sum() * 0.0
-        atom_loss = _masked_multitask_cross_entropy(
+        smiles_statistics = _statistics(smiles_components, fused_smiles, 1)
+        atom_statistics = _masked_multitask_cross_entropy(
             atom_logits,
             batch.graphs.atom_categorical,
             batch.masks.atom_mask,
             ATOM_FEATURE_NAMES,
+            batch.roles[batch.graphs.atom_batch],
+            role_weights,
             fused_atoms,
         )
-        bond_loss = _masked_multitask_cross_entropy(
+        bond_statistics = _masked_multitask_cross_entropy(
             bond_logits,
             batch.graphs.bond_categorical,
             batch.masks.bond_mask,
             BOND_FEATURE_NAMES,
+            batch.roles[batch.graphs.bond_batch],
+            role_weights,
             fused_bonds,
         )
+        descriptor_components = []
         if bool(batch.masks.descriptor_loss_mask.any()):
-            descriptor_loss = F.smooth_l1_loss(
-                descriptor_logits[batch.masks.descriptor_loss_mask],
-                batch.descriptors[batch.masks.descriptor_loss_mask],
+            descriptor_roles = batch.roles[:, None].expand_as(
+                batch.masks.descriptor_loss_mask
             )
-        else:
-            descriptor_loss = descriptor_logits.sum() * 0.0
+            descriptor_components.append(
+                _weighted_component(
+                    F.smooth_l1_loss(
+                        descriptor_logits[batch.masks.descriptor_loss_mask],
+                        batch.descriptors[batch.masks.descriptor_loss_mask],
+                        reduction="none",
+                    ),
+                    descriptor_roles[batch.masks.descriptor_loss_mask],
+                    role_weights,
+                )
+            )
+        descriptor_statistics = _statistics(
+            descriptor_components, descriptor_logits, 1
+        )
 
-        fingerprint_losses: list[torch.Tensor] = []
+        fingerprint_components = []
         for family, logits in fingerprint_logits.items():
             loss_mask = batch.masks.fingerprint_loss_mask[family]
             if bool(loss_mask.any()):
-                fingerprint_losses.append(
-                    F.binary_cross_entropy_with_logits(
-                        logits[loss_mask],
-                        batch.fingerprints.values[family][loss_mask],
+                fingerprint_roles = batch.roles[:, None].expand_as(loss_mask)
+                fingerprint_components.append(
+                    _weighted_component(
+                        F.binary_cross_entropy_with_logits(
+                            logits[loss_mask],
+                            batch.fingerprints.values[family][loss_mask],
+                            reduction="none",
+                        ),
+                        fingerprint_roles[loss_mask],
+                        role_weights,
                     )
                 )
             else:
-                fingerprint_losses.append(logits.sum() * 0.0)
-        fingerprint_loss = (
-            torch.stack(fingerprint_losses).mean()
-            if fingerprint_losses
-            else fused.sum() * 0.0
+                zero = logits.float().sum() * 0.0
+                fingerprint_components.append(
+                    (
+                        zero,
+                        zero.new_zeros(()),
+                        zero.new_zeros(3),
+                        zero.new_zeros(3),
+                    )
+                )
+        fingerprint_statistics = _statistics(
+            fingerprint_components, fused, len(self.fingerprint_families)
         )
 
-        losses = {
-            "smiles": smiles_loss,
-            "descriptor": descriptor_loss,
-            "atom": atom_loss,
-            "bond": bond_loss,
-            "fingerprint": fingerprint_loss,
+        loss_statistics = {
+            "smiles": smiles_statistics,
+            "descriptor": descriptor_statistics,
+            "atom": atom_statistics,
+            "bond": bond_statistics,
+            "fingerprint": fingerprint_statistics,
         }
+        losses = {name: stats.mean() for name, stats in loss_statistics.items()}
         weights = self.config.loss
         total = (
-            weights.lambda_smiles * smiles_loss
-            + weights.lambda_descriptor * descriptor_loss
-            + weights.lambda_atom * atom_loss
-            + weights.lambda_bond * bond_loss
-            + weights.lambda_fingerprint * fingerprint_loss
+            weights.lambda_smiles * losses["smiles"]
+            + weights.lambda_descriptor * losses["descriptor"]
+            + weights.lambda_atom * losses["atom"]
+            + weights.lambda_bond * losses["bond"]
+            + weights.lambda_fingerprint * losses["fingerprint"]
         )
         return PretrainOutput(
             loss=total,
             losses=losses,
+            loss_statistics=loss_statistics,
             logits={
                 "smiles": smiles_logits,
                 "atom": atom_logits,
@@ -417,9 +546,12 @@ def load_stage1_model(
         map_location="cpu",
         weights_only=False,
     )
-    if checkpoint.get("format_version") != 3:
-        raise ValueError("Stage 2 requires a Stage 1 checkpoint in format v3")
-    config = config_from_checkpoint_dict(checkpoint["config"])
+    if (
+        checkpoint.get("kind") != STAGE1_CHECKPOINT_KIND
+        or checkpoint.get("format_version") != STAGE1_CHECKPOINT_VERSION
+    ):
+        raise ValueError("Stage 2 requires a Stage 1 pretraining checkpoint v1")
+    config = config_from_dict(checkpoint["config"])
     artifact_hash = sha256_file(artifact_dir / "metadata.json")
     if backbone_dropout is not None:
         config = replace(

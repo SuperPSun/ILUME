@@ -1,7 +1,9 @@
 # ADR-0008：Base 正式训练 profile 收敛到 effective batch 256
 
-- 状态：Accepted
+- 状态：Superseded by ADR-0013
 - 日期：2026-08-03
+
+> global batch 256 与 learning rate `1e-4` 被 ADR-0013 延续；覆盖采样、多容量和 checkpoint v3 已被取代。
 
 ## 决定
 

@@ -13,6 +13,8 @@ import pytest
 import torch
 
 from stage1.config import (
+    STAGE1_CHECKPOINT_KIND,
+    STAGE1_CHECKPOINT_VERSION,
     DataConfig,
     DescriptorConfig,
     FingerprintConfig,
@@ -205,7 +207,8 @@ def tiny_stage3(tmp_path_factory: pytest.TempPathFactory) -> Stage3Config:
     stage1_checkpoint = root / "stage1.pt"
     torch.save(
         {
-            "format_version": 3,
+            "kind": STAGE1_CHECKPOINT_KIND,
+            "format_version": STAGE1_CHECKPOINT_VERSION,
             "model": backbone.state_dict(),
             "config": pretrain.to_dict(),
             "artifact_hash": sha256_file(pretrain_dir / "metadata.json"),

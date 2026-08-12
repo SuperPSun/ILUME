@@ -1,8 +1,8 @@
 # ADR-0006：覆盖型 epoch 与正式实验配置
 
-- 状态：Accepted
+- 状态：Superseded by ADR-0013
 - 日期：2026-07-26
-- 部分取代：ADR-0008 已取代 Base micro-batch 与 learning rate profile；覆盖型 epoch 决定仍有效。
+- 取代说明：自然频率全量 epoch、单一 Base 与 checkpoint v1 现由 [ADR-0013](0013-stage1-full-corpus-ddp.md) 定义。以下内容作为历史决定保留。
 
 ## 决定
 
