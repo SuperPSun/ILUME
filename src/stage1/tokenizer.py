@@ -5,6 +5,7 @@ import importlib.metadata
 import json
 from collections import Counter
 from dataclasses import dataclass
+from functools import cached_property
 from itertools import chain
 from pathlib import Path
 from typing import Iterable
@@ -72,7 +73,7 @@ class SmilesTokenizer:
         smiles_values: Iterable[str],
         backend: str = "ais",
         vocab_size: int = 2048,
-        min_frequency: int = 2,
+        min_frequency: int = 1,
     ) -> "SmilesTokenizer":
         iterator = iter(smiles_values)
         try:
@@ -84,15 +85,10 @@ class SmilesTokenizer:
             counts: Counter[str] = Counter()
             for smiles in corpus:
                 counts.update(ais_tokenize(smiles))
-            learned = sorted(counts, key=lambda token: (-counts[token], token))
-            learned = [token for token in learned if token not in SPECIAL_TOKENS]
-            learned = learned[: max(0, vocab_size - len(SPECIAL_TOKENS))]
-            return cls(
-                tuple(SPECIAL_TOKENS) + tuple(learned),
-                backend="ais",
-                vocabulary_budget=vocab_size,
+            return cls.fit_ais_counts(
+                counts,
+                vocab_size=vocab_size,
                 min_frequency=min_frequency,
-                backend_version=tokenizer_backend_version("ais"),
             )
         if backend == "bpe":
             _require_backend(
@@ -217,7 +213,36 @@ class SmilesTokenizer:
             )
         raise ValueError(f"Unsupported tokenizer backend: {backend}")
 
-    @property
+    @classmethod
+    def fit_ais_counts(
+        cls,
+        counts: Counter[str],
+        *,
+        vocab_size: int = 2048,
+        min_frequency: int = 1,
+    ) -> "SmilesTokenizer":
+        if not counts:
+            raise ValueError("Cannot fit a tokenizer on empty AIS counts")
+        if min_frequency < 1:
+            raise ValueError("min_frequency must be positive")
+        learned = sorted(
+            (
+                token
+                for token, frequency in counts.items()
+                if frequency >= min_frequency and token not in SPECIAL_TOKENS
+            ),
+            key=lambda token: (-counts[token], token),
+        )
+        learned = learned[: max(0, vocab_size - len(SPECIAL_TOKENS))]
+        return cls(
+            tuple(SPECIAL_TOKENS) + tuple(learned),
+            backend="ais",
+            vocabulary_budget=vocab_size,
+            min_frequency=min_frequency,
+            backend_version=tokenizer_backend_version("ais"),
+        )
+
+    @cached_property
     def token_to_id(self) -> dict[str, int]:
         return {token: index for index, token in enumerate(self.tokens)}
 

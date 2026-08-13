@@ -39,7 +39,7 @@ from .features import (
     build_entity_sample,
     inspect_entity_qc,
 )
-from .tokenizer import SmilesTokenizer
+from .tokenizer import SmilesTokenizer, ais_tokenize
 
 
 ROLE_SOURCE_FILES = {
@@ -386,40 +386,33 @@ def _run_qc_and_tokenizer(
             )
             connection.commit()
 
-    pass_index = 0
-    while True:
-        pass_index += 1
+    if config.tokenizer.backend == "ais":
         _validate_role_splits(connection)
-        with reporter.status(f"Tokenizer fit pass {pass_index}"):
-            tokenizer = SmilesTokenizer.fit(
-                _retained_smiles(connection, "train"),
-                backend=config.tokenizer.backend,
-                vocab_size=config.tokenizer.vocab_size,
-                min_frequency=config.tokenizer.min_frequency,
-            )
         retained = int(
             connection.execute(
                 "SELECT COUNT(*) FROM records WHERE reasons = '[]'"
             ).fetchone()[0]
         )
-        newly_excluded = 0
+        counts: Counter[str] = Counter()
         updates = []
         with reporter.bar(
             total=retained,
-            desc=f"Token length QC pass {pass_index}",
+            desc="AIS tokenization/QC",
             unit="entity",
         ) as progress:
             for row in connection.execute(
                 """
-                SELECT id, canonical_smiles, reasons FROM records
+                SELECT id, canonical_smiles, split, reasons FROM records
                 WHERE reasons = '[]' ORDER BY id
                 """
             ):
-                token_count = tokenizer.token_count(row["canonical_smiles"])
+                tokens = ais_tokenize(row["canonical_smiles"])
+                token_count = len(tokens) + 2
                 reasons = json.loads(row["reasons"])
                 if token_count > config.data.max_smiles_tokens:
                     reasons.append("smiles_overlength")
-                    newly_excluded += 1
+                elif row["split"] == "train":
+                    counts.update(tokens)
                 updates.append((token_count, json.dumps(reasons), int(row["id"])))
                 if len(updates) >= 10000:
                     connection.executemany(
@@ -435,8 +428,63 @@ def _run_qc_and_tokenizer(
                     updates,
                 )
                 connection.commit()
-        if newly_excluded == 0:
-            break
+        tokenizer = SmilesTokenizer.fit_ais_counts(
+            counts,
+            vocab_size=config.tokenizer.vocab_size,
+            min_frequency=config.tokenizer.min_frequency,
+        )
+    else:
+        pass_index = 0
+        while True:
+            pass_index += 1
+            _validate_role_splits(connection)
+            with reporter.status(f"Tokenizer fit pass {pass_index}"):
+                tokenizer = SmilesTokenizer.fit(
+                    _retained_smiles(connection, "train"),
+                    backend=config.tokenizer.backend,
+                    vocab_size=config.tokenizer.vocab_size,
+                    min_frequency=config.tokenizer.min_frequency,
+                )
+            retained = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM records WHERE reasons = '[]'"
+                ).fetchone()[0]
+            )
+            newly_excluded = 0
+            updates = []
+            with reporter.bar(
+                total=retained,
+                desc=f"Token length QC pass {pass_index}",
+                unit="entity",
+            ) as progress:
+                for row in connection.execute(
+                    """
+                    SELECT id, canonical_smiles, reasons FROM records
+                    WHERE reasons = '[]' ORDER BY id
+                    """
+                ):
+                    token_count = tokenizer.token_count(row["canonical_smiles"])
+                    reasons = json.loads(row["reasons"])
+                    if token_count > config.data.max_smiles_tokens:
+                        reasons.append("smiles_overlength")
+                        newly_excluded += 1
+                    updates.append((token_count, json.dumps(reasons), int(row["id"])))
+                    if len(updates) >= 10000:
+                        connection.executemany(
+                            "UPDATE records SET token_count = ?, reasons = ? WHERE id = ?",
+                            updates,
+                        )
+                        connection.commit()
+                        updates.clear()
+                    progress.update(1)
+                if updates:
+                    connection.executemany(
+                        "UPDATE records SET token_count = ?, reasons = ? WHERE id = ?",
+                        updates,
+                    )
+                    connection.commit()
+            if newly_excluded == 0:
+                break
 
     _validate_role_splits(connection)
     for role in ROLE_TO_ID:

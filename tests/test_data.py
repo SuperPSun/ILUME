@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+from collections import Counter
 
 import numpy as np
 import pytest
@@ -348,6 +349,25 @@ def test_ais_round_trip_and_vocabulary_save_load(tmp_path):
     )
     with pytest.raises(ValueError, match="exceeding"):
         loaded.encode(smiles, max_length=3)
+
+
+def test_ais_min_frequency_filters_counts_and_preserves_frequency_order():
+    counts = Counter({"rare": 1, "common-b": 3, "common-a": 3, "twice": 2})
+    expected = {
+        1: ("common-a", "common-b", "twice", "rare"),
+        2: ("common-a", "common-b", "twice"),
+        3: ("common-a", "common-b"),
+    }
+    for minimum, learned in expected.items():
+        tokenizer = SmilesTokenizer.fit_ais_counts(
+            counts, vocab_size=32, min_frequency=minimum
+        )
+        assert tokenizer.tokens[5:] == learned
+
+
+def test_token_to_id_is_cached():
+    tokenizer = SmilesTokenizer.fit(["CCO"], backend="ais")
+    assert tokenizer.token_to_id is tokenizer.token_to_id
 
 
 def test_token_count_includes_special_tokens_and_matches_encode_boundary():

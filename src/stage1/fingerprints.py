@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 import torch
@@ -29,13 +30,15 @@ def _to_numpy(bit_vector, dimension: int) -> np.ndarray:
     return values
 
 
+@lru_cache(maxsize=None)
+def _morgan_generator(radius: int, bits: int):
+    return rdFingerprintGenerator.GetMorganGenerator(radius=radius, fpSize=bits)
+
+
 def calculate_fingerprints(mol, config: FingerprintConfig) -> dict[str, np.ndarray]:
     result: dict[str, np.ndarray] = {}
     if "morgan" in fingerprint_families(config.kind):
-        generator = rdFingerprintGenerator.GetMorganGenerator(
-            radius=config.morgan_radius,
-            fpSize=config.morgan_bits,
-        )
+        generator = _morgan_generator(config.morgan_radius, config.morgan_bits)
         result["morgan"] = _to_numpy(generator.GetFingerprint(mol), config.morgan_bits)
     if "maccs" in fingerprint_families(config.kind):
         result["maccs"] = _to_numpy(MACCSkeys.GenMACCSKeys(mol), config.maccs_bits)

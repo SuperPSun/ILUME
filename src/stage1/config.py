@@ -29,7 +29,7 @@ class DataConfig:
 class TokenizerConfig:
     backend: str = "ais"
     vocab_size: int = 2048
-    min_frequency: int = 2
+    min_frequency: int = 1
 
 
 @dataclass(frozen=True)

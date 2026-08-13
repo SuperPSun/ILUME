@@ -9,7 +9,7 @@ data:
   shard_size: 8192
   shard_cache_size: 4
   include_augmentation: true
-tokenizer: {backend: ais, vocab_size: 2048, min_frequency: 2}
+tokenizer: {backend: ais, vocab_size: 2048, min_frequency: 1}
 descriptor: {mode: clean, token_count: 8, correlation_threshold: 0.98}
 fingerprint: {kind: both, morgan_radius: 2, morgan_bits: 2048, maccs_bits: 167, chunk_size: 128}
 masking:
