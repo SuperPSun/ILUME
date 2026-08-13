@@ -12,7 +12,7 @@ data:
 tokenizer:
   backend: ais
   vocab_size: 2048
-  min_frequency: 2
+  min_frequency: 1
 descriptor:
   mode: clean
   token_count: 8
@@ -23,6 +23,12 @@ fingerprint:
   morgan_bits: 2048
   maccs_bits: 167
   chunk_size: 128
+preparation:
+  workers: 16
+  catalog_batch_size: 10000
+  qc_batch_size: 2048
+  tokenizer_batch_size: 2048
+  descriptor_batch_size: 512
 masking:
   smiles_ratio: 0.15
   atom_ratio: 0.15
