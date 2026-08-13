@@ -8,17 +8,20 @@ from pathlib import Path
 import pytest
 import torch
 
-from ilume_pretrain.config import (
+from common.io import sha256_file
+from stage1.config import (
     DataConfig,
     DescriptorConfig,
     FingerprintConfig,
     ModelConfig,
     PretrainConfig,
 )
-from ilume_pretrain.data import PreparedCorpusDataset, prepare_corpus
-from ilume_pretrain.masking import MultimodalPacker
-from ilume_pretrain.model import MultimodalPretrainModel
-from ilume_pretrain.stage2_config import (
+from stage1.data import PreparedCorpusDataset
+from stage1.model import load_stage1_model
+from stage1.prepare import prepare_corpus
+from stage1.masking import MultimodalPacker
+from stage1.model import MultimodalPretrainModel
+from stage2.config import (
     Stage2Config,
     Stage2DataConfig,
     Stage2InitializationConfig,
@@ -26,28 +29,26 @@ from ilume_pretrain.stage2_config import (
     backbone_unfreeze_step,
     load_stage2_config,
 )
-from ilume_pretrain.stage2_data import (
+from stage2.data import (
     ILSystemCursor,
     Stage2EntityDataset,
     Stage2TaskDataset,
     TaskBlockSampler,
     TaskCursor,
     build_stage2_batch,
-    prepare_stage2_data,
 )
-from ilume_pretrain.stage2_model import (
+from stage2.model import (
     PairEncoder,
     Stage2AlignmentModel,
-    load_stage1_model,
     masked_smooth_l1_loss,
-    sha256_file,
 )
-from ilume_pretrain.stage2_prepare import (
+from stage2.prepare import (
     load_teacher_embeddings,
+    prepare_stage2_data,
     prepare_teacher_cache,
 )
-from ilume_pretrain.stage2_training import evaluate_stage2, run_stage2_training
-from ilume_pretrain.tokenizer import SmilesTokenizer
+from stage2.train import evaluate_stage2, run_stage2_training
+from stage1.tokenizer import SmilesTokenizer
 
 
 def _write_csv(path: Path, fieldnames, rows) -> None:
@@ -259,7 +260,7 @@ def tiny_stage2_setup(tmp_path):
             amp_dtype="none",
             validation_interval_steps=20,
             early_stopping_patience=1,
-            output_dir=tmp_path / "stage2_training",
+            save_every_n_steps=20,
         ),
     )
     return config
@@ -363,7 +364,6 @@ def test_qm_partial_targets_are_masked_audited_and_validated(
     entity_dataset = Stage2EntityDataset(tiny_stage2_setup.data.artifacts_dir)
     teacher = load_teacher_embeddings(
         tiny_stage2_setup,
-        checkpoint_hash=loaded.checkpoint_hash,
         expected_count=len(entity_dataset),
         expected_dim=loaded.config.model.d_model,
     )
@@ -436,7 +436,6 @@ def test_teacher_cache_and_stage2_backward_start_from_aligned_embeddings(
     entities = Stage2EntityDataset(tiny_stage2_setup.data.artifacts_dir)
     teacher = load_teacher_embeddings(
         tiny_stage2_setup,
-        checkpoint_hash=loaded.checkpoint_hash,
         expected_count=len(entities),
         expected_dim=loaded.config.model.d_model,
     )
@@ -526,6 +525,21 @@ def test_pair_encoders_preserve_order_and_regression_heads_are_independent(
     )
 
 
+def test_compatible_stage1_checkpoint_is_not_blocked_by_lineage_sha(
+    tiny_stage2_setup,
+) -> None:
+    checkpoint_path = tiny_stage2_setup.initialization.checkpoint
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    checkpoint["artifact_hash"] = "historical-lineage-value"
+    torch.save(checkpoint, checkpoint_path)
+    loaded = load_stage1_model(
+        checkpoint_path,
+        tiny_stage2_setup.data.pretrain_artifacts_dir,
+        backbone_dropout=0.0,
+    )
+    assert loaded.model.config.model.d_model == 16
+
+
 def test_pair_encoder_standalone_shape():
     encoder = PairEncoder(8, dropout=0.0)
     assert encoder(torch.randn(2, 8), torch.randn(2, 8)).shape == (2, 8)
@@ -585,20 +599,8 @@ def test_il_system_cursor_balances_systems_and_cycles_rows_without_replacement()
 def test_formal_stage2_sampling_configs_preserve_transfer_coverage():
     profiles = {
         "reference": (
-            load_stage2_config("configs/stage2_base.yaml"),
+            load_stage2_config("configs/formal/stage2/base.yaml"),
             (7, 4, 3, 3, 3),
-        ),
-        "balanced": (
-            load_stage2_config(
-                "configs/stage2_base_sampling_balanced.yaml"
-            ),
-            (4, 4, 4, 4, 4),
-        ),
-        "il_heavy": (
-            load_stage2_config(
-                "configs/stage2_base_sampling_il_heavy.yaml"
-            ),
-            (2, 6, 5, 5, 2),
         ),
     }
     task_order = (
@@ -609,11 +611,7 @@ def test_formal_stage2_sampling_configs_preserve_transfer_coverage():
         "transfer_organic",
     )
     checkpoints = set()
-    expected_unfreeze_steps = {
-        "reference": 2340,
-        "balanced": 1760,
-        "il_heavy": 3520,
-    }
+    expected_unfreeze_steps = {"reference": 2340}
     for name, (config, expected_quotas) in profiles.items():
         effective_batch = (
             config.training.batch_size
@@ -641,9 +639,8 @@ def test_formal_stage2_sampling_configs_preserve_transfer_coverage():
         assert config.training.amp_dtype == "bf16"
         assert config.training.backbone_freeze_fraction == pytest.approx(0.10)
         assert backbone_unfreeze_step(config) == expected_unfreeze_steps[name]
-        assert config.data.artifacts_dir == Path("artifacts/stage_v2/data")
-        assert str(config.training.output_dir).startswith(
-            "artifacts/stage_v2/training/comparisons/"
+        assert config.data.artifacts_dir == Path(
+            "outputs/formal_v1/stage2/base/prepare/artifacts"
         )
         checkpoints.add(config.initialization.checkpoint)
     assert len(checkpoints) == 1
@@ -651,16 +648,13 @@ def test_formal_stage2_sampling_configs_preserve_transfer_coverage():
 
 def test_formal_stage2_model_size_configs_share_training_budget():
     configs = {
-        "base": load_stage2_config("configs/stage2_base.yaml"),
-        "large": load_stage2_config("configs/stage2_large.yaml"),
-        "xlarge": load_stage2_config("configs/stage2_xlarge.yaml"),
+        name: load_stage2_config(f"configs/formal/stage2/{name}.yaml")
+        for name in ("base", "large", "xlarge")
     }
     expected_micro_batches = {"base": 256, "large": 128, "xlarge": 64}
     expected_accumulation = {"base": 1, "large": 2, "xlarge": 4}
     reference = configs["base"]
-    assert Stage2Config() == reference
     for name, config in configs.items():
-        assert config.data.artifacts_dir == reference.data.artifacts_dir
         assert config.sampling.probabilities == reference.sampling.probabilities
         assert config.training.max_steps == 23440
         assert config.training.batch_size == expected_micro_batches[name]
@@ -681,15 +675,11 @@ def test_formal_stage2_model_size_configs_share_training_budget():
 
 def test_formal_stage2_comparison_outputs_are_unique():
     paths = (
-        "configs/stage2_base.yaml",
-        "configs/stage2_base_sampling_balanced.yaml",
-        "configs/stage2_base_sampling_il_heavy.yaml",
-        "configs/stage2_large.yaml",
-        "configs/stage2_xlarge.yaml",
+        "configs/formal/stage2/base.yaml",
+        "configs/formal/stage2/large.yaml",
+        "configs/formal/stage2/xlarge.yaml",
     )
-    output_dirs = {
-        load_stage2_config(path).training.output_dir for path in paths
-    }
+    output_dirs = {load_stage2_config(path).data.artifacts_dir for path in paths}
     assert len(output_dirs) == len(paths)
 
 
@@ -705,12 +695,13 @@ def test_stage2_trainer_checkpoints_and_resumes_exactly(
             backbone_freeze_fraction=0.50,
             validation_interval_steps=20,
             early_stopping_patience=3,
-            keep_last_checkpoints=2,
+            save_every_n_steps=20,
         ),
     )
     prepare_teacher_cache(config)
     capsys.readouterr()
-    first = run_stage2_training(config)
+    output = config.data.artifacts_dir.parent / "training"
+    first = run_stage2_training(config, output_dir=output)
     capsys.readouterr()
     assert len(first) == 40
     assert [row["global_step"] for row in first] == list(range(1, 41))
@@ -720,7 +711,7 @@ def test_stage2_trainer_checkpoints_and_resumes_exactly(
     }
     assert {row["backbone_learning_rate"] for row in first[:20]} == {0.0}
     assert first[20]["backbone_learning_rate"] > 0.0
-    checkpoint = config.training.output_dir / "checkpoint_step_00000020.pt"
+    checkpoint = output / "checkpoint_step_00000020.pt"
     payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
     assert payload["format_version"] == 2
     assert payload["kind"] == "ilume_stage2_alignment"
@@ -730,26 +721,22 @@ def test_stage2_trainer_checkpoints_and_resumes_exactly(
     assert payload["training_phase"] == "backbone_trainable"
     assert sum(payload["task_counts"].values()) == 40
 
-    resumed = replace(
-        config,
-        training=replace(config.training, resume_from=checkpoint),
+    second = run_stage2_training(
+        config, output_dir=output, resume_from=checkpoint
     )
-    second = run_stage2_training(resumed)
     capsys.readouterr()
     assert [row["task"] for row in second] == [row["task"] for row in first[20:]]
     assert [row["loss"] for row in second] == pytest.approx(
         [row["loss"] for row in first[20:]], abs=1.0e-7
     )
 
-    legacy_checkpoint = config.training.output_dir / "legacy_v1.pt"
+    legacy_checkpoint = output / "legacy_v1.pt"
     payload["format_version"] = 1
     torch.save(payload, legacy_checkpoint)
-    legacy_resume = replace(
-        config,
-        training=replace(config.training, resume_from=legacy_checkpoint),
-    )
     with pytest.raises(ValueError, match="Unsupported Stage 2 checkpoint"):
-        run_stage2_training(legacy_resume)
+        run_stage2_training(
+            config, output_dir=output, resume_from=legacy_checkpoint
+        )
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
@@ -768,7 +755,6 @@ def test_stage2_cuda_minimal_forward_backward(tiny_stage2_setup):
     entities = Stage2EntityDataset(config.data.artifacts_dir)
     teacher = load_teacher_embeddings(
         config,
-        checkpoint_hash=loaded.checkpoint_hash,
         expected_count=len(entities),
         expected_dim=loaded.config.model.d_model,
     )

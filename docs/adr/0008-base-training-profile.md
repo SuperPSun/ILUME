@@ -7,7 +7,7 @@
 
 Stage 1 的 Base 正式配置及其 Base 消融统一使用micro-batch 256、梯度累积1和learning rate `1e-4`，训练5个覆盖型epoch。Large 使用256 × 1，XLarge 使用128 × 2，因此三个容量档位的effective batch均为256，并在相同训练池上产生相同的epoch抽样预算。
 
-已有 Base checkpoint 目录继续保留历史名称 `artifacts/training/pretrain_base_bs512`。目录名不再表达现役batch；checkpoint 内嵌配置及哈希是恢复和Stage 2初始化的权威来源，不对已生成checkpoint就地改名。
+正式 Base checkpoint 写入 `outputs/formal_v1/stage1/base/train`；checkpoint 内嵌配置是恢复语义的权威来源。旧 `artifacts/training/pretrain_base_bs512` 仅是历史路径，不对已生成 checkpoint 就地改名。
 
 本决定取代ADR-0006中“Base使用512 micro-batch”的profile描述，不改变覆盖型epoch、45/45/10采样或checkpoint v3语义。
 
