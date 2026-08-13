@@ -9,9 +9,20 @@ data:
   shard_size: 8192
   shard_cache_size: 4
   include_augmentation: true
-tokenizer: {backend: ais, vocab_size: 2048, min_frequency: 1}
-descriptor: {mode: clean, token_count: 8, correlation_threshold: 0.98}
-fingerprint: {kind: both, morgan_radius: 2, morgan_bits: 2048, maccs_bits: 167, chunk_size: 128}
+tokenizer:
+  backend: ais
+  vocab_size: 2048
+  min_frequency: 1
+descriptor:
+  mode: clean
+  token_count: 8
+  correlation_threshold: 0.98
+fingerprint:
+  kind: both
+  morgan_radius: 2
+  morgan_bits: 2048
+  maccs_bits: 167
+  chunk_size: 128
 preparation:
   workers: 16
   catalog_batch_size: 10000
@@ -24,14 +35,14 @@ masking:
   bond_ratio: 0.15
   descriptor_ratio: 0.15
   fingerprint_ratio: 0.15
-  smiles_dropout: 0.10
-  graph_dropout: 0.10
-  descriptor_dropout: 0.10
-  fingerprint_dropout: 0.10
+  smiles_dropout: 0.1
+  graph_dropout: 0.1
+  descriptor_dropout: 0.1
+  fingerprint_dropout: 0.1
   dropout_schedule: curriculum
   asymmetric_enabled: true
   asymmetric_probability: 0.25
-  asymmetric_ratio: 0.50
+  asymmetric_ratio: 0.5
 model:
   d_model: 512
   n_heads: 8
@@ -41,7 +52,7 @@ model:
   descriptor_blocks: 2
   fusion_layers: 8
   feedforward_dim: 2048
-  dropout: 0.10
+  dropout: 0.1
   role_embedding: true
   graph_head: mlp
   gradient_checkpointing: false
@@ -51,7 +62,10 @@ loss:
   lambda_atom: 1
   lambda_bond: 1
   lambda_fingerprint: 1
-  role_weights: [2.0, 2.0, 1.0]
+  role_weights:
+  - 2.0
+  - 2.0
+  - 1.0
 training:
   batch_size: 128
   epochs: 5
