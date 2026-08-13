@@ -1,6 +1,6 @@
 # ILUME
 
-ILUME 以四模态掩码预训练（Stage 1）、五任务物性监督对齐（Stage 2）和双域 27 任务训练（Stage 3）组成科研 pipeline。仓库按 Stage 组织代码；现役科研合同由正式 YAML 与 [ADR](docs/adr/README.md) 共同定义。
+ILUME 以四模态掩码预训练（Stage 1）、五任务物性 Object 建模（Stage 2）和双域 27 任务训练（Stage 3）组成科研 pipeline。仓库按 Stage 组织代码；现役科研合同由正式 YAML 与 [ADR](docs/adr/README.md) 共同定义。
 
 ## Installation
 
@@ -32,11 +32,11 @@ python scripts/stage1/train.py \
   --output outputs/v1/stage1/base/train
 ```
 
-正式 Base 默认 `training.compile: true`，编译失败会明确终止且不会静默切换 eager；机器或环境不适合时，应在 YAML 中显式改为 `compile: false`。
+正式 Base 默认 `training.compile: false`，直接使用 eager 执行。如需开启编译，必须在冻结的 YAML 中显式设为 `true`；编译失败仍会明确终止，不会静默回退。
 
 prepare 期间可查看同一输出目录下的 `performance.json`，其中记录本次 invocation 各 phase 的处理量、耗时、吞吐和复用状态；该文件不参与 corpus 或 checkpoint 身份。
 
-`training.batch_size: 256` 是跨所有 rank 的 global batch。四卡训练使用每卡 64：
+`training.batch_size: 128` 是跨所有 rank 的 global batch。四卡训练使用每卡 32：
 
 ```bash
 torchrun --nproc-per-node=4 scripts/stage1/train.py \

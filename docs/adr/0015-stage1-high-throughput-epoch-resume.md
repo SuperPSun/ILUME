@@ -1,8 +1,10 @@
 # ADR-0015：Stage 1 高吞吐与 Epoch 边界恢复合同
 
-- 状态：Accepted
+- 状态：Partially Superseded by ADR-0017
 - 日期：2026-08-13
 - 局部取代：ADR-0013 的训练执行、validation、日志与 checkpoint v1 合同
+
+> 2026-08-13：global batch 256 与默认 `compile: true` 由 [ADR-0017](0017-stage1-base-runtime-profile.md) 取代；其余执行、validation、日志和 checkpoint v2 合同仍然有效。
 
 ## 决定
 
