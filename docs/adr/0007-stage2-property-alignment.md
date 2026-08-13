@@ -1,8 +1,10 @@
 # ADR-0007：Stage 2 多任务物性监督与冻结教师对齐
 
-- 状态：Accepted
+- 状态：Superseded by ADR-0016
 - 日期：2026-08-03
 - 部分取代：ADR-0009 已取代任务内行级采样、共享 IL 回归 trunk、立即训练 backbone 和完整 QM 标签假设；冻结教师与五任务总体设计仍有效。
+
+> 2026-08-13：Stage 2 现役 object 架构、full-coverage epoch 与 checkpoint 合同由 [ADR-0016](0016-stage2-universal-object-modeling.md) 定义。本文作为历史决定保留。
 
 > 2026-08-13：下文 Stage 1 checkpoint v3 引用已由 [ADR-0015](0015-stage1-high-throughput-epoch-resume.md) 的 kind/v2 合同取代；Stage 2 五任务与冻结教师决定不变。
 

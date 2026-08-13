@@ -1,2 +1,1 @@
-"""Stage 2 supervised property alignment."""
-
+"""Stage 2 universal molecule and ionic-liquid object modeling."""

@@ -29,20 +29,18 @@ from stage2.config import (
     Stage2DataConfig,
     Stage2InitializationConfig,
     Stage2TrainingConfig,
-    backbone_unfreeze_step,
     load_stage2_config,
 )
 from stage2.data import (
-    ILSystemCursor,
     Stage2EntityDataset,
     Stage2TaskDataset,
-    TaskBlockSampler,
-    TaskCursor,
     build_stage2_batch,
+    epoch_batch_schedule,
+    task_batch_counts,
 )
 from stage2.model import (
-    PairEncoder,
-    Stage2AlignmentModel,
+    ObjectEncoder,
+    Stage2ObjectModel,
     masked_smooth_l1_loss,
 )
 from stage2.prepare import (
@@ -50,7 +48,11 @@ from stage2.prepare import (
     prepare_stage2_data,
     prepare_teacher_cache,
 )
-from stage2.train import evaluate_stage2, run_stage2_training
+from stage2.train import (
+    evaluate_stage2,
+    run_stage2_training,
+    task_compensation_scale,
+)
 from stage1.tokenizer import SmilesTokenizer
 
 
@@ -259,12 +261,10 @@ def tiny_stage2_setup(tmp_path):
         training=Stage2TrainingConfig(
             batch_size=2,
             gradient_accumulation_steps=1,
-            max_steps=20,
+            epochs=2,
+            backbone_frozen_epochs=1,
             device="cpu",
             amp_dtype="none",
-            validation_interval_steps=20,
-            early_stopping_patience=1,
-            save_every_n_steps=20,
         ),
     )
     return config
@@ -357,7 +357,9 @@ def test_qm_partial_targets_are_masked_audited_and_validated(
     metadata = json.loads(
         (tiny_stage2_setup.data.artifacts_dir / "metadata.json").read_text()
     )
-    assert metadata["format_version"] == 2
+    assert metadata["format_version"] == 1
+    assert metadata["kind"] == "ilume_stage2_object_data"
+    assert metadata["model_contract"] == {"d_model": 16, "n_heads": 4}
     assert metadata["summary"]["partial_target_rows"] == 2
     assert metadata["summary"]["all_target_missing_rows"] == 1
     qm_train = Stage2TaskDataset(
@@ -394,7 +396,12 @@ def test_qm_partial_targets_are_masked_audited_and_validated(
         expected_dim=loaded.config.model.d_model,
     )
     metrics = evaluate_stage2(
-        Stage2AlignmentModel(loaded.model, head_dropout=0.0),
+        Stage2ObjectModel(
+            loaded.model,
+            object_layers=1,
+            object_ffn_dim=32,
+            dropout=0.0,
+        ),
         {
             task: Stage2TaskDataset(
                 tiny_stage2_setup.data.artifacts_dir, task, "valid"
@@ -413,7 +420,6 @@ def test_qm_partial_targets_are_masked_audited_and_validated(
         metadata["scalers"],
         tiny_stage2_setup,
         torch.device("cpu"),
-        full=True,
     )
     prefix = "valid_simulated_qm_elec_hf_gap_eV"
     assert metrics[f"{prefix}_count"] == 0
@@ -450,9 +456,7 @@ def test_qm_train_column_cannot_be_entirely_missing(tiny_stage2_setup):
         prepare_stage2_data(tiny_stage2_setup)
 
 
-def test_teacher_cache_and_stage2_backward_start_from_aligned_embeddings(
-    tiny_stage2_setup,
-):
+def test_teacher_cache_and_object_model_freeze_boundary(tiny_stage2_setup):
     prepare_teacher_cache(tiny_stage2_setup)
     loaded = load_stage1_model(
         tiny_stage2_setup.initialization.checkpoint,
@@ -479,7 +483,12 @@ def test_teacher_cache_and_stage2_backward_start_from_aligned_embeddings(
         teacher,
         metadata["scalers"],
     )
-    model = Stage2AlignmentModel(loaded.model, head_dropout=0.0)
+    model = Stage2ObjectModel(
+        loaded.model,
+        object_layers=1,
+        object_ffn_dim=32,
+        dropout=0.0,
+    )
     model.eval()
     model.set_backbone_trainable(False)
     output = model(
@@ -490,13 +499,13 @@ def test_teacher_cache_and_stage2_backward_start_from_aligned_embeddings(
         batch.targets,
         batch.target_mask,
         batch.teacher_embeddings,
-        lambda_alignment=0.1,
+        lambda_teacher=0.1,
     )
-    assert output.alignment_loss.item() == pytest.approx(0.0, abs=1.0e-12)
+    assert output.teacher_loss.item() == pytest.approx(0.0, abs=1.0e-12)
     output.total_loss.backward()
     assert loaded.model.fusion.cls_token.grad is None
-    assert model.il_pair_encoder.main[0].weight.grad is not None
-    assert model.regressors["density"].layers[0].weight.grad is not None
+    assert model.object_encoder.object_cls.grad is not None
+    assert model.property_heads["density"].layers[0].weight.grad is not None
     assert loaded.model.smiles_head.bias.grad is None
 
     model.zero_grad(set_to_none=True)
@@ -509,46 +518,63 @@ def test_teacher_cache_and_stage2_backward_start_from_aligned_embeddings(
         batch.targets,
         batch.target_mask,
         batch.teacher_embeddings,
-        lambda_alignment=0.1,
+        lambda_teacher=0.1,
     )
     output.total_loss.backward()
     assert loaded.model.fusion.cls_token.grad is not None
     assert loaded.model.smiles_head.bias.grad is None
 
 
-def test_pair_encoders_preserve_order_and_regression_heads_are_independent(
-    tiny_stage2_setup,
-):
+def test_object_encoder_zero_init_roles_and_independent_heads(tiny_stage2_setup):
     loaded = load_stage1_model(
         tiny_stage2_setup.initialization.checkpoint,
         tiny_stage2_setup.data.pretrain_artifacts_dir,
         backbone_dropout=0.0,
     )
-    model = Stage2AlignmentModel(loaded.model, head_dropout=0.0)
+    model = Stage2ObjectModel(
+        loaded.model,
+        object_layers=1,
+        object_ffn_dim=32,
+        dropout=0.0,
+    )
     d_model = loaded.config.model.d_model
-    left = torch.randn(3, d_model)
-    right = torch.randn(3, d_model)
-
-    encoded = model.il_pair_encoder(left, right)
-    reversed_encoded = model.il_pair_encoder(right, left)
-    assert encoded.shape == (3, d_model)
-    assert not torch.equal(encoded, reversed_encoded)
-    assert model.il_pair_encoder is not model.transfer_pair_encoder
+    values = torch.randn(3, 1, d_model)
+    neutral = torch.full((3, 1), 2, dtype=torch.long)
+    expected = model.object_encoder.output_normalization(values[:, 0])
+    assert torch.equal(model.encode_object(values, neutral), expected)
+    with pytest.raises(ValueError, match="neutral"):
+        model.encode_object(values, torch.zeros_like(neutral))
+    ions = torch.randn(3, 2, d_model)
+    roles = torch.tensor([[0, 1]]).expand(3, -1)
+    expected_il = model.object_encoder.output_normalization(ions.mean(dim=1))
+    assert torch.equal(model.encode_object(ions, roles), expected_il)
+    with pytest.raises(ValueError, match="ordered"):
+        model.encode_object(ions, roles.flip(1))
     parameter_sets = [
-        {id(parameter) for parameter in model.regressors[task].parameters()}
-        for task in (
-            "simulated_qm_elec_hf",
-            "density",
-            "heat_capacity",
-            "thermal_expansion",
-            "transfer_organic",
-        )
+        {id(parameter) for parameter in model.property_heads[task].parameters()}
+        for task in ("simulated_qm_elec_hf", "density", "heat_capacity", "thermal_expansion")
     ]
     assert all(
         left_parameters.isdisjoint(right_parameters)
         for index, left_parameters in enumerate(parameter_sets)
         for right_parameters in parameter_sets[index + 1 :]
     )
+
+    calls = []
+    hook = model.object_encoder.register_forward_hook(
+        lambda _module, _inputs, _output: calls.append(1)
+    )
+    transfer_slots = torch.randn(3, 2, d_model)
+    transfer_roles = torch.full((3, 2), 2, dtype=torch.long)
+    prediction = model.predict(
+        "transfer_organic",
+        transfer_slots,
+        transfer_roles,
+        torch.empty(3, 0),
+    )
+    hook.remove()
+    assert prediction.shape == (3, 1)
+    assert len(calls) == 2
 
 
 def test_compatible_stage1_checkpoint_is_not_blocked_by_lineage_sha(
@@ -566,179 +592,95 @@ def test_compatible_stage1_checkpoint_is_not_blocked_by_lineage_sha(
     assert loaded.model.config.model.d_model == 16
 
 
-def test_pair_encoder_standalone_shape():
-    encoder = PairEncoder(8, dropout=0.0)
-    assert encoder(torch.randn(2, 8), torch.randn(2, 8)).shape == (2, 8)
-
-
-def test_stage2_task_schedule_and_cursor_resume_are_exact():
-    probabilities = {
-        "simulated_qm_elec_hf": 0.35,
-        "density": 0.20,
-        "heat_capacity": 0.15,
-        "thermal_expansion": 0.15,
-        "transfer_organic": 0.15,
+def test_full_coverage_schedule_is_deterministic_and_complete(tiny_stage2_setup):
+    prepare_stage2_data(tiny_stage2_setup)
+    datasets = {
+        task: Stage2TaskDataset(tiny_stage2_setup.data.artifacts_dir, task, "train")
+        for task in tiny_stage2_setup.loss.task_weights
     }
-    sampler = TaskBlockSampler(probabilities, 20, seed=42)
-    block = [sampler.task_for_step(step) for step in range(20)]
-    assert {task: block.count(task) for task in probabilities} == {
-        "simulated_qm_elec_hf": 7,
-        "density": 4,
-        "heat_capacity": 3,
-        "thermal_expansion": 3,
-        "transfer_organic": 3,
-    }
-
-    cursor = TaskCursor(5, seed=9)
-    cursor.next_indices(7)
-    state = cursor.state_dict()
-    expected = cursor.next_indices(6)
-    restored = TaskCursor(5, seed=9)
-    restored.load_state_dict(state)
-    assert torch.equal(restored.next_indices(6), expected)
+    first = epoch_batch_schedule(datasets, 2, seed=42, epoch=1)
+    repeated = epoch_batch_schedule(datasets, 2, seed=42, epoch=1)
+    second = epoch_batch_schedule(datasets, 2, seed=42, epoch=2)
+    assert [(x.task, x.indices.tolist()) for x in first] == [
+        (x.task, x.indices.tolist()) for x in repeated
+    ]
+    assert [(x.task, x.indices.tolist()) for x in first] != [
+        (x.task, x.indices.tolist()) for x in second
+    ]
+    for task, dataset in datasets.items():
+        visited = torch.cat([x.indices for x in first if x.task == task])
+        assert sorted(visited.tolist()) == list(range(len(dataset)))
+    assert sum(task_batch_counts(datasets, 2).values()) == len(first)
 
 
-def test_il_system_cursor_balances_systems_and_cycles_rows_without_replacement():
-    offsets = torch.tensor([0, 100, 102])
-    rows = torch.arange(102)
-    cursor = ILSystemCursor(offsets, rows, seed=17)
-    selected = cursor.next_indices(200)
-
-    for start in range(0, 200, 2):
-        systems = {0 if value < 100 else 1 for value in selected[start : start + 2]}
-        assert systems == {0, 1}
-    large_system = selected[selected < 100]
-    assert len(set(large_system.tolist())) == 100
-    small_system = selected[selected >= 100]
-    for start in range(0, 100, 2):
-        assert len(set(small_system[start : start + 2].tolist())) == 2
-
-    resumed_source = ILSystemCursor(offsets, rows, seed=17)
-    resumed_source.next_indices(37)
-    state = resumed_source.state_dict()
-    expected = resumed_source.next_indices(29)
-    restored = ILSystemCursor(offsets, rows, seed=17)
-    restored.load_state_dict(state)
-    assert torch.equal(restored.next_indices(29), expected)
-
-
-def test_formal_stage2_sampling_configs_preserve_transfer_coverage():
-    profiles = {
-        "reference": (
-            load_stage2_config("configs/v1/stage2/base.yaml"),
-            (7, 4, 3, 3, 3),
-        ),
-    }
-    task_order = (
-        "simulated_qm_elec_hf",
-        "density",
-        "heat_capacity",
-        "thermal_expansion",
-        "transfer_organic",
-    )
-    checkpoints = set()
-    expected_unfreeze_steps = {"reference": 2340}
-    for name, (config, expected_quotas) in profiles.items():
-        effective_batch = (
-            config.training.batch_size
-            * config.training.gradient_accumulation_steps
-        )
-        quotas = tuple(
-            round(
-                config.sampling.probabilities[task]
-                * config.sampling.block_size
-            )
-            for task in task_order
-        )
-        transfer_steps = (
-            config.training.max_steps
-            // config.sampling.block_size
-            * quotas[-1]
-        )
-        assert quotas == expected_quotas
-        assert effective_batch == 256
-        assert transfer_steps == 3516
-        assert transfer_steps * effective_batch == 900096
-        assert config.data.shard_cache_size == 10
-        assert config.data.seed == 42
-        assert config.loss.lambda_alignment == pytest.approx(0.1)
-        assert config.training.amp_dtype == "bf16"
-        assert config.training.backbone_freeze_fraction == pytest.approx(0.10)
-        assert backbone_unfreeze_step(config) == expected_unfreeze_steps[name]
-        assert config.data.artifacts_dir == Path(
-            "outputs/v1/stage2/base/prepare/artifacts"
-        )
-        checkpoints.add(config.initialization.checkpoint)
-    assert len(checkpoints) == 1
+def test_batch_size_aware_task_compensation_is_partition_invariant():
+    total_batches = 4
+    sizes = [256, 256, 256, 1]
+    scales = [
+        task_compensation_scale(0.25, total_batches, size, 769)
+        for size in sizes
+    ]
+    assert sum(scales) == pytest.approx(1.0)
+    assert scales[-1] == pytest.approx(scales[0] / 256)
 
 
 def test_formal_stage2_has_one_base_profile():
     config_dir = Path("configs/v1/stage2")
     assert sorted(path.name for path in config_dir.glob("*.yaml")) == ["base.yaml"]
     config = load_stage2_config(config_dir / "base.yaml")
-    assert config.training.max_steps == 23440
+    assert config.training.epochs == 5
+    assert config.training.backbone_frozen_epochs == 1
     assert config.training.batch_size == 256
     assert config.training.gradient_accumulation_steps == 1
-    assert backbone_unfreeze_step(config) == 2340
+    assert config.model.object_layers == 2
+    assert config.model.object_ffn_dim == 1024
+    assert not hasattr(config.model, "d_model")
+    assert not hasattr(config.model, "n_heads")
     assert config.initialization.checkpoint == Path(
         "outputs/v1/stage1/base/train/checkpoint_epoch_00005.pt"
     )
 
 
-def test_stage2_trainer_checkpoints_and_resumes_exactly(
-    tiny_stage2_setup,
-    capsys,
+def test_stage2_trainer_saves_only_epoch_checkpoints_and_resumes(
+    tiny_stage2_setup, capsys
 ):
-    config = replace(
-        tiny_stage2_setup,
-        training=replace(
-            tiny_stage2_setup.training,
-            max_steps=40,
-            backbone_freeze_fraction=0.50,
-            validation_interval_steps=20,
-            early_stopping_patience=3,
-            save_every_n_steps=20,
-        ),
-    )
+    config = tiny_stage2_setup
     prepare_teacher_cache(config)
     capsys.readouterr()
     output = config.data.artifacts_dir.parent / "training"
     first = run_stage2_training(config, output_dir=output)
     capsys.readouterr()
-    assert len(first) == 40
-    assert [row["global_step"] for row in first] == list(range(1, 41))
-    assert {row["training_phase"] for row in first[:20]} == {"heads_only"}
-    assert {row["training_phase"] for row in first[20:]} == {
-        "backbone_trainable"
-    }
-    assert {row["backbone_learning_rate"] for row in first[:20]} == {0.0}
-    assert first[20]["backbone_learning_rate"] > 0.0
-    checkpoint = output / "checkpoint_step_00000020.pt"
+    assert {row["backbone_trainable"] for row in first if row["epoch"] == 1} == {0}
+    assert {row["backbone_trainable"] for row in first if row["epoch"] == 2} == {1}
+    assert {row["backbone_learning_rate"] for row in first if row["epoch"] == 1} == {0.0}
+    assert any(
+        row["backbone_learning_rate"] > 0.0
+        for row in first
+        if row["epoch"] == 2
+    )
+    assert any(row["stage2_new_module_learning_rate"] > 0.0 for row in first)
+    checkpoint = output / "checkpoint_epoch_00001.pt"
     payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
-    assert payload["format_version"] == 2
-    assert payload["kind"] == "ilume_stage2_alignment"
-    assert payload["global_step"] == 20
-    assert payload["micro_step"] == 20
-    assert payload["backbone_unfreeze_step"] == 20
-    assert payload["training_phase"] == "backbone_trainable"
-    assert sum(payload["task_counts"].values()) == 40
-
-    second = run_stage2_training(
-        config, output_dir=output, resume_from=checkpoint
-    )
+    assert payload["format_version"] == 1
+    assert payload["kind"] == "ilume_stage2_object"
+    assert payload["completed_epoch"] == 1
+    assert set(path.name for path in output.glob("*.pt")) == {
+        "checkpoint_epoch_00001.pt", "checkpoint_epoch_00002.pt"
+    }
+    (output / "checkpoint_epoch_00002.pt").unlink()
+    (output / "final_metrics.json").unlink()
+    second = run_stage2_training(config, output_dir=output, resume_from=checkpoint)
     capsys.readouterr()
-    assert [row["task"] for row in second] == [row["task"] for row in first[20:]]
-    assert [row["loss"] for row in second] == pytest.approx(
-        [row["loss"] for row in first[20:]], abs=1.0e-7
+    expected = [row for row in first if row["epoch"] == 2]
+    assert [row["task"] for row in second] == [row["task"] for row in expected]
+    assert [row["loss_weighted"] for row in second] == pytest.approx(
+        [row["loss_weighted"] for row in expected], abs=1.0e-7
     )
-
-    legacy_checkpoint = output / "legacy_v1.pt"
-    payload["format_version"] = 1
+    legacy_checkpoint = output / "legacy.pt"
+    payload["kind"] = "legacy_stage2_checkpoint"
     torch.save(payload, legacy_checkpoint)
-    with pytest.raises(ValueError, match="Unsupported Stage 2 checkpoint"):
-        run_stage2_training(
-            config, output_dir=output, resume_from=legacy_checkpoint
-        )
+    with pytest.raises(ValueError, match="Unsupported Stage 2 object"):
+        run_stage2_training(config, output_dir=output, resume_from=legacy_checkpoint)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
@@ -772,7 +714,9 @@ def test_stage2_cuda_minimal_forward_backward(tiny_stage2_setup):
         teacher,
         metadata["scalers"],
     ).to("cuda")
-    model = Stage2AlignmentModel(loaded.model, head_dropout=0.0).cuda()
+    model = Stage2ObjectModel(
+        loaded.model, object_layers=1, object_ffn_dim=32, dropout=0.0
+    ).cuda()
     output = model(
         batch.task,
         batch.entities,
@@ -781,7 +725,7 @@ def test_stage2_cuda_minimal_forward_backward(tiny_stage2_setup):
         batch.targets,
         batch.target_mask,
         batch.teacher_embeddings,
-        lambda_alignment=0.1,
+        lambda_teacher=0.1,
     )
     assert torch.isfinite(output.total_loss)
     output.total_loss.backward()

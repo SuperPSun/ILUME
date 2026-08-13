@@ -33,11 +33,15 @@ from common.io import atomic_json, atomic_torch_save, sha256_file
 from common.progress import ProgressReporter
 from common.training import canonical_json_sha256, resolve_device
 from .config import STAGE2_TASKS, Stage2Config
-from .data import Stage2EntityDataset, Stage2TaskDataset
+from .data import (
+    STAGE2_ARTIFACT_KIND,
+    STAGE2_ARTIFACT_VERSION,
+    Stage2EntityDataset,
+    Stage2TaskDataset,
+)
 from stage1.tokenizer import SmilesTokenizer
 
 
-STAGE2_ARTIFACT_VERSION = 2
 IL_TASKS = ("density", "heat_capacity", "thermal_expansion")
 QM_MISSING_MARKERS = frozenset({"", "nan", "na", "n/a", "null"})
 QM_TARGETS = (
@@ -418,6 +422,7 @@ def _build_entity_shards(
             path,
             {
                 "format_version": STAGE2_ARTIFACT_VERSION,
+                "kind": STAGE2_ARTIFACT_KIND,
                 "samples": samples,
             },
         )
@@ -621,23 +626,12 @@ def _write_task_tensors(
                     target_mask_values, dtype=torch.bool
                 ).reshape(retained, len(spec.target_columns))
                 rows_tensor = torch.tensor(source_rows, dtype=torch.long)
-                systems: dict[tuple[int, ...], list[int]] = {}
-                if task in IL_TASKS:
-                    for row_index, key in enumerate(entities.tolist()):
-                        systems.setdefault(tuple(key), []).append(row_index)
-                    system_offsets = [0]
-                    system_rows: list[int] = []
-                    for grouped_rows in systems.values():
-                        system_rows.extend(grouped_rows)
-                        system_offsets.append(len(system_rows))
-                else:
-                    system_offsets = []
-                    system_rows = []
                 path = task_dir / f"{task}_{split}.pt"
                 atomic_torch_save(
                     path,
                     {
                         "format_version": STAGE2_ARTIFACT_VERSION,
+                        "kind": STAGE2_ARTIFACT_KIND,
                         "task": task,
                         "split": split,
                         "entity_indices": entities,
@@ -645,12 +639,6 @@ def _write_task_tensors(
                         "targets": targets,
                         "target_mask": target_mask,
                         "source_rows": rows_tensor,
-                        "system_offsets": torch.tensor(
-                            system_offsets, dtype=torch.long
-                        ),
-                        "system_rows": torch.tensor(
-                            system_rows, dtype=torch.long
-                        ),
                         "condition_columns": list(spec.condition_columns),
                         "target_columns": list(spec.target_columns),
                         "scalers": scalers,
@@ -691,10 +679,15 @@ def prepare_stage2_data(
         "max_smiles_tokens": pretrain_config.data.max_smiles_tokens,
         "fingerprint": pretrain_config.to_dict()["fingerprint"],
     }
+    model_contract = {
+        "d_model": pretrain_config.model.d_model,
+        "n_heads": pretrain_config.model.n_heads,
+    }
     data_signature = canonical_json_sha256(
         {
             "source_hashes": source_hashes,
             "feature_contract": feature_contract,
+            "model_contract": model_contract,
             "entity_shard_size": config.data.entity_shard_size,
         }
     )
@@ -703,6 +696,7 @@ def prepare_stage2_data(
         existing = json.loads(metadata_path.read_text(encoding="utf-8"))
         if (
             existing.get("format_version") == STAGE2_ARTIFACT_VERSION
+            and existing.get("kind") == STAGE2_ARTIFACT_KIND
             and existing.get("data_signature") == data_signature
         ):
             Stage2EntityDataset(output_dir, config.data.shard_cache_size)
@@ -746,7 +740,11 @@ def prepare_stage2_data(
     index_path = output_dir / "entity_index.json"
     atomic_json(
         index_path,
-        {"format_version": STAGE2_ARTIFACT_VERSION, "entries": entries},
+        {
+            "format_version": STAGE2_ARTIFACT_VERSION,
+            "kind": STAGE2_ARTIFACT_KIND,
+            "entries": entries,
+        },
     )
     artifact_files = [
         "entity_index.json",
@@ -765,9 +763,11 @@ def prepare_stage2_data(
     artifact_files.extend(shard_paths)
     metadata = {
         "format_version": STAGE2_ARTIFACT_VERSION,
+        "kind": STAGE2_ARTIFACT_KIND,
         "data_signature": data_signature,
         "pretrain_artifact_hash": artifact_hash,
         "feature_contract": feature_contract,
+        "model_contract": model_contract,
         "source_hashes": source_hashes,
         "source_counts": collected.source_counts,
         "rdkit_version": rdBase.rdkitVersion,
@@ -812,6 +812,7 @@ def prepare_stage2_data(
 
 
 TEACHER_CACHE_VERSION = 1
+TEACHER_CACHE_KIND = "ilume_stage2_object_teacher"
 
 
 def teacher_cache_dir(config: Stage2Config) -> Path:
@@ -843,8 +844,10 @@ def prepare_teacher_cache(
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         if (
             metadata.get("format_version") == TEACHER_CACHE_VERSION
+            and metadata.get("kind") == TEACHER_CACHE_KIND
             and metadata.get("checkpoint") == str(config.initialization.checkpoint)
             and metadata.get("data_metadata_hash") == data_metadata_hash
+            and metadata.get("model_contract") == data_metadata["model_contract"]
             and metadata.get("embeddings_hash") == sha256_file(embeddings_path)
         ):
             embeddings = torch.load(
@@ -888,11 +891,13 @@ def prepare_teacher_cache(
     atomic_torch_save(embeddings_path, embeddings)
     metadata = {
         "format_version": TEACHER_CACHE_VERSION,
+        "kind": TEACHER_CACHE_KIND,
         "checkpoint": str(config.initialization.checkpoint),
         "pretrain_artifact_hash": loaded.artifact_hash,
         "data_metadata_hash": data_metadata_hash,
         "entity_count": len(entity_dataset),
         "embedding_dim": loaded.config.model.d_model,
+        "model_contract": data_metadata["model_contract"],
         "dtype": "float32",
         "embeddings_hash": sha256_file(embeddings_path),
     }
@@ -922,7 +927,10 @@ def load_teacher_embeddings(
             "Missing Stage 2 teacher cache; run scripts/stage2/prepare.py first"
         )
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    if metadata.get("format_version") != TEACHER_CACHE_VERSION:
+    if (
+        metadata.get("format_version") != TEACHER_CACHE_VERSION
+        or metadata.get("kind") != TEACHER_CACHE_KIND
+    ):
         raise ValueError("Unsupported Stage 2 teacher cache format")
     if metadata.get("checkpoint") != str(config.initialization.checkpoint):
         raise ValueError("Stage 2 teacher checkpoint path mismatch")
@@ -930,6 +938,11 @@ def load_teacher_embeddings(
         config.data.artifacts_dir / "metadata.json"
     ):
         raise ValueError("Stage 2 teacher cache does not match the data artifact")
+    data_metadata = json.loads(
+        (config.data.artifacts_dir / "metadata.json").read_text(encoding="utf-8")
+    )
+    if metadata.get("model_contract") != data_metadata.get("model_contract"):
+        raise ValueError("Stage 2 teacher model contract mismatch")
     if metadata.get("embeddings_hash") != sha256_file(embeddings_path):
         raise ValueError("Stage 2 teacher embedding hash mismatch")
     embeddings = torch.load(

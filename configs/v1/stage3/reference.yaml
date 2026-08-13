@@ -5,7 +5,7 @@ data:
   entity_batch_size: 256
   seed: 42
 initialization:
-  stage2_checkpoint: outputs/v1/stage2/base/train/best.pt
+  stage2_checkpoint: outputs/v1/stage2/base/train/checkpoint_epoch_00005.pt
 model:
   architecture: home
   global_experts: 2

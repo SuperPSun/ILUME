@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 import torch
+from rdkit import rdBase
 
 from stage1.config import (
     STAGE1_CHECKPOINT_KIND,
@@ -30,8 +31,8 @@ from stage2.config import (
     Stage2DataConfig,
     Stage2InitializationConfig,
 )
-from common.io import sha256_file
-from stage2.model import Stage2AlignmentModel
+from common.io import atomic_json, atomic_torch_save, sha256_file
+from stage2.model import Stage2ObjectModel
 from stage3.config import (
     AUX6_TASKS,
     IL21_TASKS,
@@ -45,11 +46,15 @@ from stage3.config import (
     load_stage3_config,
 )
 from stage3.data import (
+    STAGE3_ARTIFACT_VERSION,
     TASK_REGISTRY,
     Stage3TaskDataset,
     SystemCursor,
+    build_task_payload,
+    collect_entity_keys,
     fit_fold_scalers,
     sanitize_task,
+    source_hashes,
 )
 from stage3.evaluate import evaluate_checkpoints
 from stage3.model import (
@@ -57,6 +62,7 @@ from stage3.model import (
     Stage3MultiDomainModel,
 )
 from stage3.prepare import (
+    load_frozen_stage2,
     load_frozen_embeddings,
     prepare_stage3,
 )
@@ -130,6 +136,82 @@ def _task_row(task: str, fold: int) -> dict[str, object]:
         else:
             row[column] = solutes[fold - 1]
     return row
+
+
+def _prepare_frozen_stage3_test_artifacts(config: Stage3Config) -> None:
+    for domain in config.active_domains:
+        tasks = config.tasks_for_domain(domain)
+        root = config.data.artifacts_dir / domain
+        keys = collect_entity_keys(config, tasks)
+        entity_ids = {key: index for index, key in enumerate(keys)}
+        generator = torch.Generator().manual_seed(config.data.seed + len(tasks))
+        entities = torch.randn(len(keys), 16, generator=generator)
+        scaler_payload = {}
+        il_keys = set()
+        neutral_keys = set()
+        artifact_files = []
+        for fold in range(1, 6):
+            scalers = fit_fold_scalers(config, fold, tasks)
+            scaler_payload[f"fold{fold}"] = scalers
+            fold_root = root / "folds" / f"fold{fold}"
+            fold_root.mkdir(parents=True, exist_ok=True)
+            for task in tasks:
+                for split in ("train", "valid", "test"):
+                    payload, _ = build_task_payload(
+                        config, task, fold, split, entity_ids, scalers
+                    )
+                    relative = f"folds/fold{fold}/{sanitize_task(task)}_{split}.pt"
+                    atomic_torch_save(root / relative, payload)
+                    artifact_files.append(relative)
+                    rows = payload["entity_ids"]
+                    topology = TASK_REGISTRY[task].topology
+                    if topology in {"il", "il_solute"}:
+                        il_keys.update(tuple(map(int, row[:2])) for row in rows)
+                    elif topology == "neutral_pair":
+                        neutral_keys.update(tuple(map(int, row[:2])) for row in rows)
+
+        def object_values(keys_to_encode):
+            ordered = sorted(keys_to_encode)
+            index = torch.tensor(ordered, dtype=torch.long).reshape(len(ordered), 2)
+            return index, entities[index].mean(dim=1)
+
+        il_index, il_values = object_values(il_keys)
+        neutral_index, neutral_values = object_values(neutral_keys)
+        root.mkdir(parents=True, exist_ok=True)
+        atomic_torch_save(
+            root / "frozen_embeddings.pt",
+            {
+                "format_version": STAGE3_ARTIFACT_VERSION,
+                "entity_embeddings": entities,
+                "il_pair_keys": il_index,
+                "il_pair_embeddings": il_values,
+                "neutral_pair_keys": neutral_index,
+                "neutral_pair_embeddings": neutral_values,
+            },
+        )
+        atomic_json(root / "scalers.json", scaler_payload)
+        artifact_files.extend(["frozen_embeddings.pt", "scalers.json"])
+        atomic_json(
+            root / "metadata.json",
+            {
+                "format_version": STAGE3_ARTIFACT_VERSION,
+                "kind": "ilume_stage3_data",
+                "domain": domain,
+                "tasks": list(tasks),
+                "embedding_dim": 16,
+                "rdkit_version": rdBase.rdkitVersion,
+                "source_hashes": source_hashes(config, tasks),
+                "provenance": {
+                    "stage2_checkpoint": str(
+                        config.initialization.stage2_checkpoint
+                    )
+                },
+                "artifact_hashes": {
+                    relative: sha256_file(root / relative)
+                    for relative in artifact_files
+                },
+            },
+        )
 
 
 @pytest.fixture(scope="module")
@@ -230,15 +312,18 @@ def tiny_stage3(tmp_path_factory: pytest.TempPathFactory) -> Stage3Config:
             checkpoint=stage1_checkpoint
         ),
     )
-    stage2_model = Stage2AlignmentModel(
-        backbone, head_dropout=stage2_config.model.head_dropout
+    stage2_model = Stage2ObjectModel(
+        backbone,
+        object_layers=stage2_config.model.object_layers,
+        object_ffn_dim=stage2_config.model.object_ffn_dim,
+        dropout=stage2_config.model.dropout,
     )
     raw_stage2 = stage2_config.to_dict()
     stage2_checkpoint = root / "stage2.pt"
     torch.save(
         {
-            "format_version": 2,
-            "kind": "ilume_stage2_alignment",
+            "format_version": 1,
+            "kind": "ilume_stage2_object",
             "model": stage2_model.state_dict(),
             "config": raw_stage2,
             "config_hash": _stage2_config_hash(raw_stage2),
@@ -309,7 +394,7 @@ def tiny_stage3(tmp_path_factory: pytest.TempPathFactory) -> Stage3Config:
             save_every_n_cycles=1,
         ),
     )
-    prepare_stage3(config, reporter=ProgressReporter(interactive=False))
+    _prepare_frozen_stage3_test_artifacts(config)
     return config
 
 
@@ -354,7 +439,7 @@ def test_stage3_registry_and_formal_configs_are_explicit() -> None:
         "outputs/v1/stage3/reference/prepare/artifacts"
     )
     assert home.initialization.stage2_checkpoint == Path(
-        "outputs/v1/stage2/base/train/best.pt"
+        "outputs/v1/stage2/base/train/checkpoint_epoch_00005.pt"
     )
     assert home.model.global_experts == home.model.group_experts == 2
     assert home.model.private_experts == 1
@@ -373,6 +458,15 @@ def test_stage3_registry_and_formal_configs_are_explicit() -> None:
         assert training.batch_size * training.max_blocks == 640000
         assert training.batch_size * training.validation_interval_blocks == 6400
     assert home.training.save_every_n_cycles == 25
+
+
+def test_stage3_rejects_object_checkpoint_before_migration(tmp_path) -> None:
+    checkpoint = tmp_path / "stage2_object.pt"
+    torch.save(
+        {"format_version": 1, "kind": "ilume_stage2_object"}, checkpoint
+    )
+    with pytest.raises(ValueError, match="object contract migration pending"):
+        load_frozen_stage2(checkpoint)
 
 
 def test_stage3_scripts_configure_runtime_before_loading_operation() -> None:
@@ -514,28 +608,25 @@ def test_domain_mode_calls_backward_once(
     assert backward.call_count == 1
 
 
-def test_stage3_v2_prepare_is_domain_separated_and_reproducible(
+def test_stage3_existing_artifacts_remain_loadable_while_prepare_is_deferred(
     tiny_stage3: Stage3Config,
 ) -> None:
     il_scalers = fit_fold_scalers(tiny_stage3, 1, IL21_TASKS)
     aux_scalers = fit_fold_scalers(tiny_stage3, 1, AUX6_TASKS)
     assert il_scalers["experiment/density"]["target"]["count"] == 4
     assert aux_scalers["simulation/charge"]["target"]["count"] == 4
-    metadata = prepare_stage3(
-        tiny_stage3, reporter=ProgressReporter(interactive=False)
-    )
-    assert set(metadata) == {"il21", "aux6"}
     for domain, tasks in (("il21", IL21_TASKS), ("aux6", AUX6_TASKS)):
         root = tiny_stage3.data.artifacts_dir / domain
-        assert metadata[domain]["format_version"] == 2
-        assert metadata[domain]["domain"] == domain
-        assert tuple(metadata[domain]["tasks"]) == tasks
+        metadata = json.loads((root / "metadata.json").read_text())
+        assert metadata["format_version"] == 2
+        assert metadata["domain"] == domain
+        assert tuple(metadata["tasks"]) == tasks
         assert (root / "frozen_embeddings.pt").is_file()
         assert (root / "scalers.json").is_file()
-    repeated = prepare_stage3(
-        tiny_stage3, reporter=ProgressReporter(interactive=False)
-    )
-    assert repeated == metadata
+    with pytest.raises(ValueError, match="object contract migration pending"):
+        prepare_stage3(
+            tiny_stage3, reporter=ProgressReporter(interactive=False)
+        )
     train = Stage3TaskDataset(
         tiny_stage3.data.artifacts_dir,
         "il21",
