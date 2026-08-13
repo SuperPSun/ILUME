@@ -6,13 +6,13 @@
 
 ## 决定
 
-Stage 2 从一个 checkpoint v3 初始化两条逻辑分支：冻结教师 A 以完整、无掩码四模态输入离线生成 FP32 `fused_cls`；学生 B 从相同权重开始，训练全部编码路径和新增回归头。一个不可覆盖的 prepare 操作目录对应配置中记录的 checkpoint 路径，并以 Stage 2 data metadata 和缓存自身哈希校验内容；正式训练不把教师模型驻留在显存，也不强制跨阶段 checkpoint SHA lineage。
+Stage 2 从一个 checkpoint v3 初始化两条逻辑分支：冻结教师 A 以完整、无掩码四模态输入离线生成 FP32 `fused_cls`；学生 B 从相同权重开始，训练全部编码路径和新增回归头。教师缓存以 `(checkpoint SHA-256, Stage 2 data metadata SHA-256)` 标识，正式训练不把教师模型驻留在显存。
 
 首版联合五项任务：density、heat capacity、thermal expansion 使用有序的 cation/anion CLS 与 train-only 标准化温度；QM 使用一个 neutral CLS 预测11项标签；transfer 使用有序的 solute/solvent neutral CLS。所有目标只用各自训练集拟合 scaler。首版不输入压力，也不加入显式热力学恒等式。
 
 监督项使用标准化目标上的 SmoothL1。对齐项直接计算输入实体学生 CLS 与冻结教师 CLS 的逐维 MSE；二元输入先在两个实体间平均。Stage 1 reconstruction heads 不进入 Stage 2 optimizer。学生编码路径关闭随机 dropout，使初始化时的对齐损失为零；新增回归头保留 dropout。
 
-reference 任务调度使用确定性打乱的20-step块，每块固定7个 QM、4个 density、3个 heat capacity、3个 thermal expansion 和3个 transfer step。各任务内部无放回抽样并在耗尽后重排。Stage 2 使用独立的 step checkpoint 格式，保存任务游标和 RNG，可从任意保存 step 恢复；这不改变 Stage 1 的覆盖型 epoch 或 checkpoint v3。采样消融若重新开展，应作为完整自包含的 experiments YAML 单独定义，不属于现役正式配置。
+reference 任务调度使用确定性打乱的20-step块，每块固定7个 QM、4个 density、3个 heat capacity、3个 thermal expansion 和3个 transfer step。正式采样消融还提供4/4/4/4/4和2/6/5/5/2两种整数配额，并通过调整总step让三种配置都抽样900,096条transfer训练行。各任务内部无放回抽样并在耗尽后重排。Stage 2 使用独立的 step checkpoint 格式，保存任务游标和 RNG，可从任意保存 step 恢复；这不改变 Stage 1 的覆盖型 epoch 或 checkpoint v3。
 
 ## 理由
 

@@ -10,7 +10,7 @@
 
 用户通过 `training.epochs` 控制训练程度。warmup、cosine scheduler、masking curriculum 和日志仍使用由 epoch 数推导出的内部 global step。validation 和 checkpoint 只在 epoch 边界执行；checkpoint 格式升级为v3，旧step配置和v2 checkpoint不迁移。
 
-正式 Base/Large/XLarge 默认训练5个覆盖 epoch。Base 使用512 micro-batch；Large 使用256；XLarge 使用128 micro-batch 和2步梯度累积，与 Large 保持相同的 effective batch=256。三种容量的数据准备参数相同，因此共享 Base prepared artifact；Large/XLarge 只改变模型和训练参数。OOM 时通过等比例增大梯度累积保持 effective batch；核心消融以 Base 为参考，一次只改变一个因素并隔离训练输出。
+正式 Base/Large/XLarge 默认训练5个覆盖 epoch。Base 使用512 micro-batch；Large 使用256；XLarge 使用128 micro-batch 和2步梯度累积，与 Large 保持相同的 effective batch=256。XLarge 只改变模型和训练参数，因此复用 Base prepared artifact。OOM 时通过等比例增大梯度累积保持 effective batch；核心消融以 Base 为参考，一次只改变一个因素并隔离训练输出。
 
 ## 理由
 

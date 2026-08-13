@@ -1,0 +1,48 @@
+active_domains: [il21, aux6]
+data:
+  stage3_dir: data/stage3
+  artifacts_dir: artifacts/stage3_v2/data
+  entity_batch_size: 256
+  seed: 42
+initialization:
+  stage2_checkpoint: artifacts/stage_v2/training/comparisons/base_reference/best.pt
+model:
+  architecture: home
+  global_experts: 2
+  group_experts: 2
+  private_experts: 1
+  dropout: 0.10
+  feature_gate: true
+  self_gate: true
+  solute_injection: late
+training:
+  il21:
+    batch_size: 64
+    max_blocks: 10000
+    learning_rate: 0.0003
+    weight_decay: 0.0001
+    warmup_fraction: 0.10
+    max_grad_norm: 1.0
+    amp_dtype: bf16
+    validation_interval_blocks: 100
+    early_stopping_patience: 10
+    early_stopping_min_delta: 0.0001
+    backward_mode: per_task
+  aux6:
+    batch_size: 64
+    max_blocks: 10000
+    learning_rate: 0.0003
+    weight_decay: 0.0001
+    warmup_fraction: 0.10
+    max_grad_norm: 1.0
+    amp_dtype: bf16
+    validation_interval_blocks: 100
+    early_stopping_patience: 10
+    early_stopping_min_delta: 0.0001
+    backward_mode: per_task
+  device: auto
+  cpu_threads: 4
+  cpu_interop_threads: 1
+  resident_data: true
+  keep_last_checkpoints: 3
+  output_dir: artifacts/stage3_v2/training/home/fold1
