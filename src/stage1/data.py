@@ -18,7 +18,7 @@ from .graph import GraphRecord, PackedGraph
 from .tokenizer import tokenizer_backend_version
 
 
-CORPUS_FORMAT_VERSION = 1
+CORPUS_FORMAT_VERSION = 2
 CORPUS_KIND = "ilume_stage1_corpus"
 CORPUS_SHARD_KIND = "ilume_stage1_corpus_shard"
 INDEX_DTYPE = np.dtype(
@@ -103,7 +103,8 @@ class PreparedCorpusDataset(Dataset):
             or self.metadata.get("format_version") != CORPUS_FORMAT_VERSION
         ):
             raise ValueError(
-                "Unsupported Stage 1 corpus artifact; rerun scripts/stage1/prepare.py"
+                "Unsupported Stage 1 corpus artifact version; "
+                "rerun scripts/stage1/prepare.py to create corpus v2"
             )
         artifact_hashes = self.metadata.get("artifact_hashes")
         if not isinstance(artifact_hashes, dict) or not artifact_hashes:

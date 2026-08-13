@@ -6,6 +6,7 @@ from collections import Counter
 
 import numpy as np
 import pytest
+import torch
 from rdkit import Chem
 
 from stage1.config import DataConfig, PreparationConfig, PretrainConfig
@@ -17,11 +18,13 @@ from stage1.data import (
     PreparedCorpusDataset,
 )
 from stage1.features import IPC_SQUARE_OVERFLOW_LIMIT, inspect_entity_qc
+from stage1.masking import MultimodalPacker
 from stage1.prepare import (
     _descriptor_batch,
     _csv_data_row_count,
     _entity_qc_batch,
     _ordered_batch_map,
+    _stage1_shard_sample,
     preparation_source_paths,
     prepare_corpus,
 )
@@ -108,7 +111,7 @@ def test_prepare_uses_new_original_sources_and_sharded_artifacts(tmp_path):
     assert len(list((artifacts / "shards").glob("*.pt"))) == 4
     metadata_path = artifacts / "metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    assert metadata["format_version"] == CORPUS_FORMAT_VERSION == 1
+    assert metadata["format_version"] == CORPUS_FORMAT_VERSION == 2
     assert metadata["kind"] == CORPUS_KIND
     assert set(metadata["source_hashes"]) == {
         "cation.csv",
@@ -119,20 +122,40 @@ def test_prepare_uses_new_original_sources_and_sharded_artifacts(tmp_path):
     assert "augmentation_audit.json" in metadata["artifact_hashes"]
     dataset = PreparedCorpusDataset(artifacts, "train")
     assert len(dataset) == 3
+    sample = dataset[0]
+    assert set(sample) == {
+        "sample_id",
+        "role_id",
+        "token_ids",
+        "atom_categorical",
+        "atom_continuous",
+        "bond_categorical",
+        "bond_index",
+        "descriptors",
+        "descriptor_valid",
+        "fingerprints",
+    }
+    assert all(value.dtype == torch.uint8 for value in sample["fingerprints"].values())
+    vocabulary = SmilesTokenizer.load(artifacts / "tokenizer.json")
+    packed = MultimodalPacker(vocabulary)([sample])
+    assert all(
+        value.dtype == torch.float32 for value in packed.fingerprints.values.values()
+    )
     with pytest.raises(ValueError, match="Legacy corpus.pt"):
         legacy = artifacts / "corpus.pt"
         legacy.touch()
         PreparedCorpusDataset(legacy)
-    metadata["format_version"] = 3
-    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
-    with pytest.raises(ValueError, match="Unsupported Stage 1 corpus artifact"):
-        PreparedCorpusDataset(artifacts)
+    for unsupported_version in (1, 3):
+        metadata["format_version"] = unsupported_version
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+        with pytest.raises(ValueError, match="create corpus v2"):
+            PreparedCorpusDataset(artifacts)
     metadata["format_version"] = CORPUS_FORMAT_VERSION
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
     shard = artifacts / dataset.shards[0]["path"]
     shard.write_bytes(shard.read_bytes() + b"corrupt")
     with pytest.raises(ValueError, match="Shard hash mismatch"):
-        dataset[0]
+        PreparedCorpusDataset(artifacts, "train")[0]
 
 
 def test_entity_qc_records_multiple_reasons_and_keeps_isolated_hydrogen(monkeypatch):
@@ -416,6 +439,32 @@ def test_descriptor_workers_are_bitwise_equal_and_qc_errors_have_context():
     np.testing.assert_array_equal(serial_values, parallel_values)
     with pytest.raises(RuntimeError, match=r"entity_qc record id=7 smiles='invalid'"):
         _entity_qc_batch([(7, "invalid")])
+
+
+def test_stage1_shard_fingerprint_uint8_preserves_every_bit():
+    fingerprint = torch.tensor([0.0, 1.0, 1.0, 0.0], dtype=torch.float32)
+    sample = {
+        "sample_id": "neutral_00000001",
+        "role_id": 2,
+        "token_ids": torch.tensor([2, 3]),
+        "atom_categorical": torch.zeros((1, 1), dtype=torch.long),
+        "atom_continuous": torch.zeros((1, 1)),
+        "bond_categorical": torch.zeros((0, 1), dtype=torch.long),
+        "bond_index": torch.zeros((2, 0), dtype=torch.long),
+        "descriptors": torch.zeros(1),
+        "descriptor_valid": torch.ones(1, dtype=torch.bool),
+        "fingerprints": {"morgan": fingerprint},
+        "canonical_smiles": "CC",
+        "sources": ("test",),
+        "split": "train",
+        "is_augmented": False,
+        "seed_smiles": (),
+    }
+    compact = _stage1_shard_sample(sample)
+    assert "canonical_smiles" not in compact
+    stored = compact["fingerprints"]["morgan"]
+    assert stored.dtype == torch.uint8
+    assert torch.equal(stored.float(), fingerprint)
 
 
 import numpy as np

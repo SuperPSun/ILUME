@@ -933,6 +933,24 @@ def _descriptor_matrix(
     return matrix
 
 
+def _stage1_shard_sample(sample: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "sample_id": sample["sample_id"],
+        "role_id": sample["role_id"],
+        "token_ids": sample["token_ids"],
+        "atom_categorical": sample["atom_categorical"],
+        "atom_continuous": sample["atom_continuous"],
+        "bond_categorical": sample["bond_categorical"],
+        "bond_index": sample["bond_index"],
+        "descriptors": sample["descriptors"],
+        "descriptor_valid": sample["descriptor_valid"],
+        "fingerprints": {
+            name: value.to(torch.uint8)
+            for name, value in sample["fingerprints"].items()
+        },
+    }
+
+
 def _write_shards(
     connection: sqlite3.Connection,
     raw_matrix: np.ndarray,
@@ -1002,13 +1020,15 @@ def _write_shards(
                 reused = samples is not None
                 if samples is None:
                     samples = [
-                        build_entity_sample(
-                            record,
-                            raw_matrix[int(row["descriptor_row"])],
-                            schema,
-                            standardizer,
-                            tokenizer,
-                            config,
+                        _stage1_shard_sample(
+                            build_entity_sample(
+                                record,
+                                raw_matrix[int(row["descriptor_row"])],
+                                schema,
+                                standardizer,
+                                tokenizer,
+                                config,
+                            )
                         )
                         for row, record in zip(rows, records, strict=True)
                     ]
