@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "stage": "stage1",
+  "operation": "prepare",
+  "status": "completed",
+  "config_path": "configs/v1/stage1/base.yaml",
+  "data_metadata": "data/stage1/metadata.json",
+  "seed": 42,
+  "repository_commit": "457e9b4ef8d1337746a0692f1ec2329a54a8a633",
+  "repository_dirty": true,
+  "python_version": "3.12.12",
+  "pytorch_version": "2.9.0+cu128",
+  "cuda_version": "12.8",
+  "rdkit_version": "2025.09.5",
+  "gpu_model": "NVIDIA GeForce RTX 4090"
+}

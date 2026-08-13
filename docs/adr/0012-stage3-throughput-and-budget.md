@@ -10,15 +10,15 @@
 
 ## 决定
 
-1. Stage 3 CLI 将 CPU intra-op/inter-op 线程限制为 4/1；正式脚本同时设置 OMP、MKL 和 OpenBLAS 为 4 线程。
+1. Stage 3 三个 Python 入口在导入运行实现前调用 `stage3.config.configure_process_runtime()`，将 CPU intra-op/inter-op 线程限制为 4/1，并将 OMP、MKL 和 OpenBLAS 设置为 4 线程。
 2. 当前 fold 的冻结表示、条件、目标和预计算 embedding index 在 CUDA 上常驻。SystemCursor 与审计字段保留在 CPU；resident 分配失败时直接报错，不静默回退。
 3. 正式配置使用 `domain` backward：按确定性任务顺序完成全部 forward，IL21/Aux6 loss 分别除以 21/6，每域只 backward 一次。loss 和验证统计只在域边界同步到 CPU。
 4. IL21 使用 batch 128、5000 blocks、每 50 blocks 验证；Aux6 使用 batch 256、2500 blocks、每 25 blocks 验证。两域每任务总预算仍为 640,000 行，验证间隔仍为 6,400 行，LR 保持 `3e-4`。
 5. artifact 与 checkpoint schema 继续使用 v2。线程数、resident 模式不进入语义哈希；batch、blocks 和 `domain` backward 进入，因此优化前 training checkpoint 不能恢复到正式优化配置。
-6. `stage3_home_legacy.yaml` 保留 64 × 10000 和 `per_task` backward，并使用兼容哈希规范恢复旧 v2 checkpoint。新训练写入 `artifacts/stage3_v2/training_optimized`，旧输出只保留审计。
+6. 正式自包含配置为 `configs/v1/stage3/reference.yaml`，新训练写入 `outputs/v1/stage3/reference/checkpoints/fold<fold>`。旧 v2 checkpoint 配置只由私有兼容解析器读取，不恢复 legacy YAML 或旧运行入口。
 
 ## 后果
 
 - 单域内部的梯度求和浮点顺序与旧实现不同，因此优化训练必须从头开始；双域参数、RNG、BN、optimizer、scheduler、scaler 与早停隔离不变。
-- 若正式 batch 的短 CUDA smoke 发生 OOM，IL21 固定降级到 `64 × 10000/validation 100`，Aux6 固定降级到 `128 × 5000/validation 50`，仍使用 domain backward。
-- `torch.compile` 不在本次决定中。正式矩阵仍由用户运行，代码验收只做短 benchmark 和临时链路。
+- 若正式 batch 的短 CUDA 验证发生 OOM，IL21 固定降级到 `64 × 10000/validation 100`，Aux6 固定降级到 `128 × 5000/validation 50`，仍使用 domain backward。
+- `torch.compile` 不在本次决定中。正式五折与对照实验由用户逐配置运行，不提供 matrix runner；代码验收只做短 benchmark 和临时链路。

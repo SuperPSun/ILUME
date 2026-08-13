@@ -1,7 +1,9 @@
 # ADR-0004：指纹、role embedding 与单卡训练器
 
-- 状态：Accepted
+- 状态：Partially Superseded by ADR-0013
 - 日期：2026-07-23
+
+> 指纹与 role embedding 决定继续有效；单卡限定及旧恢复合同已由 [ADR-0013](0013-stage1-full-corpus-ddp.md) 取代。
 
 ## 决定
 
@@ -9,7 +11,7 @@
 
 可选共享 role embedding 加到 CLS 与全部非 padding fusion token，不进入各模态 encoder，也不建立 role 专属参数分支。正式参考配置启用 role embedding、MLP graph head、curriculum modality dropout 和 asymmetric masking。
 
-提供单卡 `ilume-train`，包含 AMP、梯度累积/裁剪、warmup+cosine、validation、checkpoint/resume、RNG 与 sampler 状态恢复。暂不加入 DDP、TensorBoard 或自动实验矩阵。
+提供单卡 `python scripts/stage1/train.py`，包含 AMP、梯度累积/裁剪、warmup+cosine、validation、checkpoint/resume、RNG 与 sampler 状态恢复。暂不加入 DDP、TensorBoard 或自动实验矩阵。
 
 ## 理由
 
