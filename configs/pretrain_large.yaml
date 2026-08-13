@@ -1,0 +1,60 @@
+data:
+  stage1_dir: data/stage1
+  artifacts_dir: artifacts/pretrain_large
+  valid_fraction: 0.05
+  seed: 42
+  max_smiles_tokens: 256
+  descriptor_dim: 217
+  max_samples_per_role: null
+  shard_size: 8192
+  shard_cache_size: 4
+  augmentation: {cation: 1, anion: 1, neutral: 1}
+tokenizer: {backend: ais, vocab_size: 2048, min_frequency: 2}
+descriptor: {mode: clean, token_count: 8, correlation_threshold: 0.98}
+fingerprint: {kind: both, morgan_radius: 2, morgan_bits: 2048, maccs_bits: 167, chunk_size: 128}
+sampling: {role_probabilities: [0.45, 0.45, 0.10], require_full_coverage: true}
+masking:
+  smiles_ratio: 0.15
+  atom_ratio: 0.15
+  bond_ratio: 0.15
+  descriptor_ratio: 0.15
+  fingerprint_ratio: 0.15
+  smiles_dropout: 0.10
+  graph_dropout: 0.10
+  descriptor_dropout: 0.10
+  fingerprint_dropout: 0.10
+  dropout_schedule: curriculum
+  asymmetric_enabled: true
+  asymmetric_probability: 0.25
+  asymmetric_ratio: 0.50
+model:
+  d_model: 512
+  n_heads: 8
+  smiles_layers: 8
+  graph_depth: 6
+  descriptor_hidden_dim: 1024
+  descriptor_blocks: 2
+  fusion_layers: 8
+  feedforward_dim: 2048
+  dropout: 0.10
+  role_embedding: true
+  graph_head: mlp
+  gradient_checkpointing: true
+loss: {lambda_smiles: 1, lambda_descriptor: 1, lambda_atom: 1, lambda_bond: 1, lambda_fingerprint: 1}
+training:
+  batch_size: 256
+  epochs: 5
+  gradient_accumulation_steps: 1
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  warmup_fraction: 0.05
+  max_grad_norm: 1.0
+  num_workers: 4
+  device: auto
+  amp_dtype: bf16
+  validation_interval_epochs: 1
+  validation_batches: 20
+  checkpoint_interval_epochs: 1
+  keep_last_checkpoints: 3
+  output_dir: artifacts/training/pretrain_large_bs256
+  resume_from: null

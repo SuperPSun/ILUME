@@ -12,25 +12,23 @@ from unittest.mock import patch
 import pytest
 import torch
 
-from stage1.config import (
+from ilume_pretrain.config import (
     DataConfig,
     DescriptorConfig,
     FingerprintConfig,
     ModelConfig,
     PretrainConfig,
 )
-from stage1.data import PreparedCorpusDataset
-from stage1.prepare import prepare_corpus
-from stage1.model import MultimodalPretrainModel
-from common.progress import ProgressReporter
-from stage2.config import (
+from ilume_pretrain.data import PreparedCorpusDataset, prepare_corpus
+from ilume_pretrain.model import MultimodalPretrainModel
+from ilume_pretrain.progress import ProgressReporter
+from ilume_pretrain.stage2_config import (
     Stage2Config,
     Stage2DataConfig,
     Stage2InitializationConfig,
 )
-from common.io import sha256_file
-from stage2.model import Stage2AlignmentModel
-from stage3.config import (
+from ilume_pretrain.stage2_model import Stage2AlignmentModel, sha256_file
+from ilume_pretrain.stage3_config import (
     AUX6_TASKS,
     IL21_TASKS,
     STAGE3_TASKS,
@@ -42,33 +40,34 @@ from stage3.config import (
     Stage3TrainingConfig,
     load_stage3_config,
 )
-from stage3.data import (
+from ilume_pretrain.stage3_data import (
     TASK_REGISTRY,
     Stage3TaskDataset,
     SystemCursor,
     fit_fold_scalers,
     sanitize_task,
 )
-from stage3.evaluate import evaluate_checkpoints
-from stage3.model import (
+from ilume_pretrain.stage3_evaluate import evaluate_checkpoints
+from ilume_pretrain.stage3_model import (
     Expert,
     Stage3MultiDomainModel,
 )
-from stage3.prepare import (
+from ilume_pretrain.stage3_prepare import (
     load_frozen_embeddings,
     prepare_stage3,
 )
-from stage3.train import (
+from ilume_pretrain.stage3_training import (
     STAGE3_CHECKPOINT_VERSION,
     STAGE3_DOMAIN_MODEL_KIND,
     STAGE3_MODEL_KIND,
     STAGE3_TRAINING_KIND,
     _build_runtime,
+    _config_hash,
     _load_training_checkpoint,
     _train_domain_block,
     run_stage3_training,
 )
-from stage1.tokenizer import SmilesTokenizer
+from ilume_pretrain.tokenizer import SmilesTokenizer
 
 
 def _write_csv(
@@ -83,6 +82,7 @@ def _write_csv(
 
 def _stage2_config_hash(raw: dict[str, object]) -> str:
     payload = json.loads(json.dumps(raw))
+    payload["training"]["resume_from"] = None
     return hashlib.sha256(
         json.dumps(
             payload, sort_keys=True, separators=(",", ":")
@@ -303,7 +303,8 @@ def tiny_stage3(tmp_path_factory: pytest.TempPathFactory) -> Stage3Config:
             il21=domain_training,
             aux6=aux_training,
             device="cpu",
-            save_every_n_cycles=1,
+            keep_last_checkpoints=3,
+            output_dir=root / "combined_train",
         ),
     )
     prepare_stage3(config, reporter=ProgressReporter(interactive=False))
@@ -315,9 +316,7 @@ def trained_stage3(
     tiny_stage3: Stage3Config,
 ) -> tuple[Stage3Config, list[dict[str, Any]]]:
     rows = run_stage3_training(
-        tiny_stage3, 1,
-        output_dir=tiny_stage3.data.artifacts_dir.parent / "combined_train",
-        reporter=ProgressReporter(interactive=False),
+        tiny_stage3, 1, reporter=ProgressReporter(interactive=False)
     )
     return tiny_stage3, rows
 
@@ -345,13 +344,11 @@ def test_stage3_registry_and_formal_configs_are_explicit() -> None:
     assert len(AUX6_TASKS) == 6
     assert len(STAGE3_TASKS) == 27
     assert set(STAGE3_TASKS) == set(TASK_REGISTRY)
-    home = load_stage3_config("configs/formal/stage3/reference.yaml")
+    home = load_stage3_config("configs/stage3_home.yaml")
     assert home.active_domains == ("il21", "aux6")
-    assert home.data.artifacts_dir == Path(
-        "outputs/formal_v1/stage3/reference/prepare/artifacts"
-    )
+    assert home.data.artifacts_dir == Path("artifacts/stage3_v2/data")
     assert home.initialization.stage2_checkpoint == Path(
-        "outputs/formal_v1/stage2/base/train/best.pt"
+        "artifacts/stage_v2/training/comparisons/base_reference/best.pt"
     )
     assert home.model.global_experts == home.model.group_experts == 2
     assert home.model.private_experts == 1
@@ -369,23 +366,38 @@ def test_stage3_registry_and_formal_configs_are_explicit() -> None:
         assert training.backward_mode == "domain"
         assert training.batch_size * training.max_blocks == 640000
         assert training.batch_size * training.validation_interval_blocks == 6400
-    assert home.training.save_every_n_cycles == 25
-
-
-def test_stage3_scripts_configure_runtime_before_loading_operation() -> None:
-    root = Path(__file__).resolve().parents[1]
-    operations = {
-        "prepare.py": "from stage3.prepare import prepare_stage3",
-        "train.py": "from stage3.train import run_stage3_training",
-        "evaluate.py": "from stage3.evaluate import evaluate_checkpoints",
+    legacy = load_stage3_config("configs/stage3_home_legacy.yaml")
+    assert legacy.training.il21.backward_mode == "per_task"
+    assert legacy.training.aux6.backward_mode == "per_task"
+    old_payload = legacy.to_dict()
+    old_payload["training"]["resume_from"] = None
+    for name in ("cpu_threads", "cpu_interop_threads", "resident_data"):
+        old_payload["training"].pop(name)
+    for domain in ("il21", "aux6"):
+        old_payload["training"][domain].pop("backward_mode")
+    old_payload["fold"] = 1
+    expected_hash = hashlib.sha256(
+        json.dumps(
+            old_payload, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    assert _config_hash(legacy, 1) == expected_hash
+    assert _config_hash(home, 1) != expected_hash
+    variants = {
+        "shared_bottom": ("architecture", "shared_bottom"),
+        "mmoe": ("architecture", "mmoe"),
+        "early_solute": ("solute_injection", "early"),
+        "without_feature_gate": ("feature_gate", False),
+        "without_self_gate": ("self_gate", False),
     }
-    for filename, operation_import in operations.items():
-        source = (root / "scripts" / "stage3" / filename).read_text(
-            encoding="utf-8"
-        )
-        assert source.index("configure_process_runtime(config)") < source.index(
-            operation_import
-        )
+    for name, (field, expected) in variants.items():
+        variant = load_stage3_config(f"configs/stage3_{name}.yaml")
+        assert variant.active_domains == ("il21",)
+        assert variant.tasks == IL21_TASKS
+        assert variant.data == home.data
+        assert variant.initialization == home.initialization
+        assert variant.training.il21 == home.training.il21
+        assert getattr(variant.model, field) == expected
 
 
 def test_late_solute_is_invisible_to_first_layer_and_global_experts() -> None:
@@ -573,23 +585,23 @@ def test_combined_aux_activity_cannot_change_il_training_or_resume(
     il_only = replace(
         tiny_stage3,
         active_domains=("il21",),
+        training=replace(
+            tiny_stage3.training,
+            output_dir=tiny_stage3.training.output_dir.parent / "il_only",
+        ),
     )
-    combined_output = tiny_stage3.data.artifacts_dir.parent / "combined_train"
-    il_output = tiny_stage3.data.artifacts_dir.parent / "il_only"
-    il_rows = run_stage3_training(
-        il_only, 1, output_dir=il_output, reporter=reporter
-    )
-    assert not (il_output / "best.pt").exists()
+    il_rows = run_stage3_training(il_only, 1, reporter=reporter)
+    assert not (il_only.training.output_dir / "best.pt").exists()
     combined_il_rows = [
         row for row in combined_rows if row["domain"] == "il21"
     ]
     _assert_nested_equal(combined_il_rows, il_rows)
 
     combined_final_path = (
-        combined_output / "checkpoint_cycle_00000003.pt"
+        tiny_stage3.training.output_dir / "checkpoint_cycle_00000003.pt"
     )
     il_final_path = (
-        il_output / "checkpoint_cycle_00000003.pt"
+        il_only.training.output_dir / "checkpoint_cycle_00000003.pt"
     )
     combined_final = torch.load(
         combined_final_path, map_location="cpu", weights_only=False
@@ -612,12 +624,15 @@ def test_combined_aux_activity_cannot_change_il_training_or_resume(
 
     original_final = combined_final
     resume_checkpoint = (
-        combined_output / "checkpoint_cycle_00000001.pt"
+        tiny_stage3.training.output_dir / "checkpoint_cycle_00000001.pt"
     )
-    replay_rows = run_stage3_training(
-        tiny_stage3, 1, output_dir=combined_output,
-        resume_from=resume_checkpoint, reporter=reporter,
+    resumed = replace(
+        tiny_stage3,
+        training=replace(
+            tiny_stage3.training, resume_from=resume_checkpoint
+        ),
     )
+    replay_rows = run_stage3_training(resumed, 1, reporter=reporter)
     expected_replay = [
         row
         for row in combined_rows
@@ -631,7 +646,7 @@ def test_combined_aux_activity_cannot_change_il_training_or_resume(
     metric_rows = [
         json.loads(line)
         for line in (
-            combined_output / "metrics.jsonl"
+            tiny_stage3.training.output_dir / "metrics.jsonl"
         ).read_text(encoding="utf-8").splitlines()
     ]
     assert [
@@ -646,7 +661,7 @@ def test_domain_bests_are_assembled_and_evaluation_runs(
     trained_stage3: tuple[Stage3Config, list[dict[str, Any]]],
 ) -> None:
     tiny_stage3, _ = trained_stage3
-    output = tiny_stage3.data.artifacts_dir.parent / "combined_train"
+    output = tiny_stage3.training.output_dir
     combined = torch.load(
         output / "best.pt", map_location="cpu", weights_only=False
     )

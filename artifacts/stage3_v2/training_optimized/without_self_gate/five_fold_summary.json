@@ -1,0 +1,841 @@
+{
+  "split": "valid",
+  "folds": [
+    {
+      "fold": 1,
+      "domain_best_macro_normalized_mae": {
+        "il21": 0.28057042369649043
+      },
+      "experiment/density": {
+        "count": 14262,
+        "mae": 0.01932627521455288,
+        "rmse": 0.030161947011947632,
+        "r2": 0.9723507238479999
+      },
+      "experiment/dynamic_relative_permittivity": {
+        "count": 180,
+        "mae": 1.3073920011520386,
+        "rmse": 1.8792370557785034,
+        "r2": 0.36505444392224495
+      },
+      "experiment/electrical_conductivity": {
+        "count": 2101,
+        "mae": 0.2768975496292114,
+        "rmse": 0.5641875267028809,
+        "r2": 0.8967793907414974
+      },
+      "experiment/equilibrium_pressure": {
+        "count": 582,
+        "mae": 0.6566028594970703,
+        "rmse": 0.9884380102157593,
+        "r2": 0.8297479939670072
+      },
+      "experiment/glass_transition_temperature": {
+        "count": 143,
+        "mae": 9.929460525512695,
+        "rmse": 13.559957504272461,
+        "r2": 0.768321243674544
+      },
+      "experiment/heat_capacity": {
+        "count": 5288,
+        "mae": 48.26715087890625,
+        "rmse": 92.16014862060547,
+        "r2": 0.8500209920425786
+      },
+      "experiment/isobaric_coefficient_of_volume_expansion": {
+        "count": 163,
+        "mae": 2.013994708249811e-05,
+        "rmse": 2.9762915801256895e-05,
+        "r2": -0.2845839900490852
+      },
+      "experiment/melting_point": {
+        "count": 807,
+        "mae": 32.17190933227539,
+        "rmse": 41.38210678100586,
+        "r2": 0.6356519956095383
+      },
+      "experiment/pec50": {
+        "count": 64,
+        "mae": 0.32682570815086365,
+        "rmse": 0.43016892671585083,
+        "r2": 0.81303668739443
+      },
+      "experiment/refractive_index": {
+        "count": 2251,
+        "mae": 0.006249372381716967,
+        "rmse": 0.009541553445160389,
+        "r2": 0.9209574082743632
+      },
+      "experiment/self_diffusion_coefficient": {
+        "count": 60,
+        "mae": 0.15537713468074799,
+        "rmse": 0.19382086396217346,
+        "r2": 0.8931773775620568
+      },
+      "experiment/speed_of_sound": {
+        "count": 1344,
+        "mae": 30.362422943115234,
+        "rmse": 48.758705139160156,
+        "r2": 0.9499248412102487
+      },
+      "experiment/static_relative_permittivity": {
+        "count": 14,
+        "mae": 4.455496788024902,
+        "rmse": 8.923117637634277,
+        "r2": 0.7815519520565477
+      },
+      "experiment/surface_tension": {
+        "count": 2215,
+        "mae": 2.475393295288086,
+        "rmse": 4.612362861633301,
+        "r2": 0.7317242948636519
+      },
+      "experiment/thermal_conductivity": {
+        "count": 229,
+        "mae": 0.008923591114580631,
+        "rmse": 0.011503268964588642,
+        "r2": 0.7791550840340652
+      },
+      "experiment/thermal_decomposition_temperature": {
+        "count": 499,
+        "mae": 26.271657943725586,
+        "rmse": 36.75954055786133,
+        "r2": 0.7632926385423351
+      },
+      "experiment/viscosity": {
+        "count": 10151,
+        "mae": 0.16691264510154724,
+        "rmse": 0.25331881642341614,
+        "r2": 0.8775594890530377
+      },
+      "experiment/x_co2": {
+        "count": 1756,
+        "mae": 0.032561831176280975,
+        "rmse": 0.043571725487709045,
+        "r2": 0.9631637804779664
+      },
+      "simulation/heat_of_vaporization": {
+        "count": 4829,
+        "mae": 6.760592937469482,
+        "rmse": 8.005064964294434,
+        "r2": 0.9179412462943815
+      },
+      "experiment/solvation": {
+        "count": 3872,
+        "mae": 0.14888443052768707,
+        "rmse": 0.21456746757030487,
+        "r2": 0.9597060946586801
+      },
+      "experiment/transfer": {
+        "count": 524,
+        "mae": 0.17257636785507202,
+        "rmse": 0.2335214912891388,
+        "r2": 0.9904438250083953
+      }
+    },
+    {
+      "fold": 2,
+      "domain_best_macro_normalized_mae": {
+        "il21": 0.35415773064212963
+      },
+      "experiment/density": {
+        "count": 17082,
+        "mae": 0.03402607887983322,
+        "rmse": 0.04804055765271187,
+        "r2": 0.9247573319523806
+      },
+      "experiment/dynamic_relative_permittivity": {
+        "count": 180,
+        "mae": 0.98199862241745,
+        "rmse": 1.4892866611480713,
+        "r2": -0.6197115752476403
+      },
+      "experiment/electrical_conductivity": {
+        "count": 1636,
+        "mae": 0.21817699074745178,
+        "rmse": 0.3510584533214569,
+        "r2": 0.8429182002802492
+      },
+      "experiment/equilibrium_pressure": {
+        "count": 416,
+        "mae": 0.484759122133255,
+        "rmse": 0.7966848611831665,
+        "r2": 0.8140471840604251
+      },
+      "experiment/glass_transition_temperature": {
+        "count": 143,
+        "mae": 12.061705589294434,
+        "rmse": 18.320772171020508,
+        "r2": 0.5335166769245534
+      },
+      "experiment/heat_capacity": {
+        "count": 3586,
+        "mae": 42.87328338623047,
+        "rmse": 74.02533721923828,
+        "r2": 0.8695333344381286
+      },
+      "experiment/isobaric_coefficient_of_volume_expansion": {
+        "count": 163,
+        "mae": 4.1426854295423254e-05,
+        "rmse": 4.8891717597143725e-05,
+        "r2": 0.2837470727512549
+      },
+      "experiment/melting_point": {
+        "count": 840,
+        "mae": 46.104854583740234,
+        "rmse": 56.12746047973633,
+        "r2": 0.3951245057269275
+      },
+      "experiment/pec50": {
+        "count": 67,
+        "mae": 0.28500884771347046,
+        "rmse": 0.39993616938591003,
+        "r2": 0.8508697166474093
+      },
+      "experiment/refractive_index": {
+        "count": 2222,
+        "mae": 0.0067905099131166935,
+        "rmse": 0.01007505040615797,
+        "r2": 0.9378009060796293
+      },
+      "experiment/self_diffusion_coefficient": {
+        "count": 173,
+        "mae": 0.41969141364097595,
+        "rmse": 0.6076153516769409,
+        "r2": 0.7470658640481257
+      },
+      "experiment/speed_of_sound": {
+        "count": 1901,
+        "mae": 36.652156829833984,
+        "rmse": 52.232784271240234,
+        "r2": 0.9008549718968341
+      },
+      "experiment/static_relative_permittivity": {
+        "count": 15,
+        "mae": 6.139155864715576,
+        "rmse": 8.111466407775879,
+        "r2": 0.10379034079912419
+      },
+      "experiment/surface_tension": {
+        "count": 1902,
+        "mae": 2.6410365104675293,
+        "rmse": 3.886453151702881,
+        "r2": 0.7989379422051335
+      },
+      "experiment/thermal_conductivity": {
+        "count": 282,
+        "mae": 0.007089078892022371,
+        "rmse": 0.00897903274744749,
+        "r2": 0.8691757695309696
+      },
+      "experiment/thermal_decomposition_temperature": {
+        "count": 501,
+        "mae": 36.69655227661133,
+        "rmse": 46.17792892456055,
+        "r2": 0.6332008707390595
+      },
+      "experiment/viscosity": {
+        "count": 7759,
+        "mae": 0.319951593875885,
+        "rmse": 0.4374513030052185,
+        "r2": 0.7138793027119945
+      },
+      "experiment/x_co2": {
+        "count": 1555,
+        "mae": 0.039664629846811295,
+        "rmse": 0.050566330552101135,
+        "r2": 0.9452084130832265
+      },
+      "simulation/heat_of_vaporization": {
+        "count": 4834,
+        "mae": 6.131443977355957,
+        "rmse": 7.451485633850098,
+        "r2": 0.9287519325499984
+      },
+      "experiment/solvation": {
+        "count": 3019,
+        "mae": 0.26945754885673523,
+        "rmse": 0.3321646451950073,
+        "r2": 0.9002084696964943
+      },
+      "experiment/transfer": {
+        "count": 571,
+        "mae": 0.4104965031147003,
+        "rmse": 0.5539073348045349,
+        "r2": 0.9436084183913036
+      }
+    },
+    {
+      "fold": 3,
+      "domain_best_macro_normalized_mae": {
+        "il21": 0.24916893242907406
+      },
+      "experiment/density": {
+        "count": 21122,
+        "mae": 0.02005782723426819,
+        "rmse": 0.030145468190312386,
+        "r2": 0.9688096223277469
+      },
+      "experiment/dynamic_relative_permittivity": {
+        "count": 180,
+        "mae": 0.64364093542099,
+        "rmse": 0.8983957171440125,
+        "r2": 0.6893641394980725
+      },
+      "experiment/electrical_conductivity": {
+        "count": 2081,
+        "mae": 0.1969050168991089,
+        "rmse": 0.3059767484664917,
+        "r2": 0.8786666804773898
+      },
+      "experiment/equilibrium_pressure": {
+        "count": 362,
+        "mae": 0.3986611068248749,
+        "rmse": 0.652677059173584,
+        "r2": 0.857357787401926
+      },
+      "experiment/glass_transition_temperature": {
+        "count": 143,
+        "mae": 11.898123741149902,
+        "rmse": 20.109453201293945,
+        "r2": 0.47908971489672725
+      },
+      "experiment/heat_capacity": {
+        "count": 3489,
+        "mae": 33.981571197509766,
+        "rmse": 48.2628059387207,
+        "r2": 0.9707480864810475
+      },
+      "experiment/isobaric_coefficient_of_volume_expansion": {
+        "count": 163,
+        "mae": 1.7507523807580583e-05,
+        "rmse": 1.969001277757343e-05,
+        "r2": 0.47018690691326115
+      },
+      "experiment/melting_point": {
+        "count": 840,
+        "mae": 36.104732513427734,
+        "rmse": 46.681270599365234,
+        "r2": 0.5856503499321142
+      },
+      "experiment/pec50": {
+        "count": 66,
+        "mae": 0.3141973614692688,
+        "rmse": 0.4264851212501526,
+        "r2": 0.8923990801261192
+      },
+      "experiment/refractive_index": {
+        "count": 2326,
+        "mae": 0.00592016289010644,
+        "rmse": 0.010337645187973976,
+        "r2": 0.9313800870691544
+      },
+      "experiment/self_diffusion_coefficient": {
+        "count": 48,
+        "mae": 0.23303790390491486,
+        "rmse": 0.2900012731552124,
+        "r2": 0.5337580102619028
+      },
+      "experiment/speed_of_sound": {
+        "count": 1070,
+        "mae": 27.6419620513916,
+        "rmse": 43.99163055419922,
+        "r2": 0.9561533390495947
+      },
+      "experiment/static_relative_permittivity": {
+        "count": 15,
+        "mae": 4.2700090408325195,
+        "rmse": 4.981839179992676,
+        "r2": 0.29567508938227904
+      },
+      "experiment/surface_tension": {
+        "count": 2109,
+        "mae": 2.187469720840454,
+        "rmse": 3.7633111476898193,
+        "r2": 0.7844860300290171
+      },
+      "experiment/thermal_conductivity": {
+        "count": 341,
+        "mae": 0.009195435792207718,
+        "rmse": 0.01194863673299551,
+        "r2": 0.7831571665143799
+      },
+      "experiment/thermal_decomposition_temperature": {
+        "count": 503,
+        "mae": 26.85492706298828,
+        "rmse": 37.053558349609375,
+        "r2": 0.7642284834595561
+      },
+      "experiment/viscosity": {
+        "count": 9003,
+        "mae": 0.21928727626800537,
+        "rmse": 0.28539472818374634,
+        "r2": 0.7804293091005641
+      },
+      "experiment/x_co2": {
+        "count": 2200,
+        "mae": 0.037385132163763046,
+        "rmse": 0.049094535410404205,
+        "r2": 0.9567260381661429
+      },
+      "simulation/heat_of_vaporization": {
+        "count": 4826,
+        "mae": 5.996684551239014,
+        "rmse": 7.072624206542969,
+        "r2": 0.9372197930048943
+      },
+      "experiment/solvation": {
+        "count": 5298,
+        "mae": 0.14946970343589783,
+        "rmse": 0.26145780086517334,
+        "r2": 0.9444421037177855
+      },
+      "experiment/transfer": {
+        "count": 618,
+        "mae": 0.2712036073207855,
+        "rmse": 0.37919241189956665,
+        "r2": 0.9710516886765141
+      }
+    },
+    {
+      "fold": 4,
+      "domain_best_macro_normalized_mae": {
+        "il21": 0.2548247565145628
+      },
+      "experiment/density": {
+        "count": 17656,
+        "mae": 0.022131046280264854,
+        "rmse": 0.035340696573257446,
+        "r2": 0.9587767754647882
+      },
+      "experiment/dynamic_relative_permittivity": {
+        "count": 180,
+        "mae": 0.6242309808731079,
+        "rmse": 0.9121425151824951,
+        "r2": 0.659626802963187
+      },
+      "experiment/electrical_conductivity": {
+        "count": 2300,
+        "mae": 0.17556984722614288,
+        "rmse": 0.27140045166015625,
+        "r2": 0.9046866365941308
+      },
+      "experiment/equilibrium_pressure": {
+        "count": 344,
+        "mae": 0.807377815246582,
+        "rmse": 1.7085343599319458,
+        "r2": 0.18804083458088006
+      },
+      "experiment/glass_transition_temperature": {
+        "count": 143,
+        "mae": 12.10034465789795,
+        "rmse": 19.155330657958984,
+        "r2": 0.6114742088566771
+      },
+      "experiment/heat_capacity": {
+        "count": 5545,
+        "mae": 29.21737289428711,
+        "rmse": 43.04488754272461,
+        "r2": 0.925327631515142
+      },
+      "experiment/isobaric_coefficient_of_volume_expansion": {
+        "count": 163,
+        "mae": 1.06454172055237e-05,
+        "rmse": 3.278055737609975e-05,
+        "r2": 0.5810011583395107
+      },
+      "experiment/melting_point": {
+        "count": 845,
+        "mae": 31.82445526123047,
+        "rmse": 41.65624237060547,
+        "r2": 0.6545718326943779
+      },
+      "experiment/pec50": {
+        "count": 66,
+        "mae": 0.3571747839450836,
+        "rmse": 0.45460885763168335,
+        "r2": 0.8109262175751988
+      },
+      "experiment/refractive_index": {
+        "count": 1840,
+        "mae": 0.006637839134782553,
+        "rmse": 0.012385948561131954,
+        "r2": 0.9102816755188351
+      },
+      "experiment/self_diffusion_coefficient": {
+        "count": 50,
+        "mae": 0.20686958730220795,
+        "rmse": 0.27831345796585083,
+        "r2": 0.7831942736666053
+      },
+      "experiment/speed_of_sound": {
+        "count": 1203,
+        "mae": 33.445858001708984,
+        "rmse": 55.741844177246094,
+        "r2": 0.8934850437594336
+      },
+      "experiment/static_relative_permittivity": {
+        "count": 11,
+        "mae": 2.9145667552948,
+        "rmse": 3.7488949298858643,
+        "r2": 0.43694933535117275
+      },
+      "experiment/surface_tension": {
+        "count": 1879,
+        "mae": 2.4217541217803955,
+        "rmse": 3.970215320587158,
+        "r2": 0.7914444000925961
+      },
+      "experiment/thermal_conductivity": {
+        "count": 326,
+        "mae": 0.00711390795186162,
+        "rmse": 0.009323662146925926,
+        "r2": 0.8441001409457943
+      },
+      "experiment/thermal_decomposition_temperature": {
+        "count": 498,
+        "mae": 25.945146560668945,
+        "rmse": 37.12110900878906,
+        "r2": 0.7503861838614385
+      },
+      "experiment/viscosity": {
+        "count": 8367,
+        "mae": 0.23992718756198883,
+        "rmse": 0.3344977796077728,
+        "r2": 0.8195702184628354
+      },
+      "experiment/x_co2": {
+        "count": 1512,
+        "mae": 0.044933006167411804,
+        "rmse": 0.06051725149154663,
+        "r2": 0.9228423439599217
+      },
+      "simulation/heat_of_vaporization": {
+        "count": 4830,
+        "mae": 5.877443313598633,
+        "rmse": 7.2320332527160645,
+        "r2": 0.9332238129865901
+      },
+      "experiment/solvation": {
+        "count": 6182,
+        "mae": 0.31952255964279175,
+        "rmse": 0.5646557807922363,
+        "r2": 0.7505553444253912
+      },
+      "experiment/transfer": {
+        "count": 554,
+        "mae": 0.34307029843330383,
+        "rmse": 0.621331512928009,
+        "r2": 0.9259437381215371
+      }
+    },
+    {
+      "fold": 5,
+      "domain_best_macro_normalized_mae": {
+        "il21": 0.26580334962890606
+      },
+      "experiment/density": {
+        "count": 19937,
+        "mae": 0.021956071257591248,
+        "rmse": 0.035559818148612976,
+        "r2": 0.9611052903766741
+      },
+      "experiment/dynamic_relative_permittivity": {
+        "count": 162,
+        "mae": 0.5741090774536133,
+        "rmse": 0.8615365028381348,
+        "r2": 0.8107143979225858
+      },
+      "experiment/electrical_conductivity": {
+        "count": 2364,
+        "mae": 0.3952440619468689,
+        "rmse": 0.8578057885169983,
+        "r2": 0.7924347639946588
+      },
+      "experiment/equilibrium_pressure": {
+        "count": 325,
+        "mae": 0.45779865980148315,
+        "rmse": 0.6318604350090027,
+        "r2": 0.8768179076945113
+      },
+      "experiment/glass_transition_temperature": {
+        "count": 142,
+        "mae": 12.164361953735352,
+        "rmse": 22.81998634338379,
+        "r2": 0.4995765648832765
+      },
+      "experiment/heat_capacity": {
+        "count": 3954,
+        "mae": 29.76693344116211,
+        "rmse": 47.45044708251953,
+        "r2": 0.9183249038754834
+      },
+      "experiment/isobaric_coefficient_of_volume_expansion": {
+        "count": 242,
+        "mae": 1.1026480024156626e-05,
+        "rmse": 1.2688970855379011e-05,
+        "r2": 0.8914034316153922
+      },
+      "experiment/melting_point": {
+        "count": 833,
+        "mae": 42.36538314819336,
+        "rmse": 54.022911071777344,
+        "r2": 0.43935476282996655
+      },
+      "experiment/pec50": {
+        "count": 67,
+        "mae": 0.25852227210998535,
+        "rmse": 0.34857234358787537,
+        "r2": 0.8629520311293563
+      },
+      "experiment/refractive_index": {
+        "count": 1539,
+        "mae": 0.005140150431543589,
+        "rmse": 0.007867112755775452,
+        "r2": 0.9635266657838456
+      },
+      "experiment/self_diffusion_coefficient": {
+        "count": 51,
+        "mae": 0.18465109169483185,
+        "rmse": 0.21868818998336792,
+        "r2": 0.8842522024182792
+      },
+      "experiment/speed_of_sound": {
+        "count": 1301,
+        "mae": 48.76895523071289,
+        "rmse": 59.481964111328125,
+        "r2": 0.9425481611711152
+      },
+      "experiment/static_relative_permittivity": {
+        "count": 10,
+        "mae": 4.218532085418701,
+        "rmse": 7.39624547958374,
+        "r2": 0.7094238693880981
+      },
+      "experiment/surface_tension": {
+        "count": 1481,
+        "mae": 2.774078845977783,
+        "rmse": 3.6312530040740967,
+        "r2": 0.8639233889305584
+      },
+      "experiment/thermal_conductivity": {
+        "count": 362,
+        "mae": 0.0067930566146969795,
+        "rmse": 0.009631370194256306,
+        "r2": 0.8849915394746941
+      },
+      "experiment/thermal_decomposition_temperature": {
+        "count": 498,
+        "mae": 26.343181610107422,
+        "rmse": 36.188228607177734,
+        "r2": 0.7698791880711507
+      },
+      "experiment/viscosity": {
+        "count": 6661,
+        "mae": 0.2737513482570648,
+        "rmse": 0.3728122413158417,
+        "r2": 0.7140832490634812
+      },
+      "experiment/x_co2": {
+        "count": 2513,
+        "mae": 0.06379389762878418,
+        "rmse": 0.08393309265375137,
+        "r2": 0.8842623392032327
+      },
+      "simulation/heat_of_vaporization": {
+        "count": 4832,
+        "mae": 4.47567081451416,
+        "rmse": 5.645497798919678,
+        "r2": 0.9585239462445837
+      },
+      "experiment/solvation": {
+        "count": 3033,
+        "mae": 0.2037716507911682,
+        "rmse": 0.3304769992828369,
+        "r2": 0.9051835284373548
+      },
+      "experiment/transfer": {
+        "count": 504,
+        "mae": 0.24196778237819672,
+        "rmse": 0.32136160135269165,
+        "r2": 0.9804507169674417
+      }
+    }
+  ],
+  "domains": {
+    "il21": {
+      "macro_normalized_mae_mean": 0.2809050385822326,
+      "macro_normalized_mae_std": 0.0381614764307689
+    }
+  },
+  "tasks": {
+    "experiment/density": {
+      "mae_mean": 0.02349945977330208,
+      "mae_std": 0.005372608627239854,
+      "rmse_mean": 0.03584969751536846,
+      "rmse_std": 0.0065398611740097755,
+      "r2_mean": 0.957159948793918,
+      "r2_std": 0.016938618403259782
+    },
+    "experiment/dynamic_relative_permittivity": {
+      "mae_mean": 0.82627432346344,
+      "mae_std": 0.280530944844708,
+      "rmse_mean": 1.2081196904182434,
+      "rmse_std": 0.4081922873627043,
+      "r2_mean": 0.38100964181169,
+      "r2_std": 0.5213547197001794
+    },
+    "experiment/electrical_conductivity": {
+      "mae_mean": 0.2525586932897568,
+      "mae_std": 0.07894074985764696,
+      "rmse_mean": 0.4700857937335968,
+      "rmse_std": 0.21897811861534092,
+      "r2_mean": 0.8630971344175853,
+      "r2_std": 0.041247913458929766
+    },
+    "experiment/equilibrium_pressure": {
+      "mae_mean": 0.5610399127006531,
+      "mae_std": 0.150105983184258,
+      "rmse_mean": 0.9556389451026917,
+      "rmse_std": 0.3974448673871917,
+      "r2_mean": 0.7132023415409499,
+      "r2_std": 0.2634760049089449
+    },
+    "experiment/glass_transition_temperature": {
+      "mae_mean": 11.630799293518066,
+      "mae_std": 0.8552026848821505,
+      "rmse_mean": 18.79309997558594,
+      "rmse_std": 3.022868980993752,
+      "r2_mean": 0.5783956818471557,
+      "r2_std": 0.10512293882720077
+    },
+    "experiment/heat_capacity": {
+      "mae_mean": 36.82126235961914,
+      "mae_std": 7.527042711309971,
+      "rmse_mean": 60.98872528076172,
+      "rmse_std": 19.02012721465513,
+      "r2_mean": 0.906790989670476,
+      "r2_std": 0.04284416880810419
+    },
+    "experiment/isobaric_coefficient_of_volume_expansion": {
+      "mae_mean": 2.0149244483036456e-05,
+      "mae_std": 1.1254003893636818e-05,
+      "rmse_mean": 2.876283488149056e-05,
+      "rmse_std": 1.2353132241901569e-05,
+      "r2_mean": 0.38835091591406673,
+      "r2_std": 0.39004010833525854
+    },
+    "experiment/melting_point": {
+      "mae_mean": 37.71426696777344,
+      "mae_std": 5.65743852857456,
+      "rmse_mean": 47.97399826049805,
+      "rmse_std": 6.13362062613163,
+      "r2_mean": 0.5420706893585849,
+      "r2_std": 0.10531561839892573
+    },
+    "experiment/pec50": {
+      "mae_mean": 0.3083457946777344,
+      "mae_std": 0.034020625283592024,
+      "rmse_mean": 0.41195428371429443,
+      "rmse_std": 0.03612211660863947,
+      "r2_mean": 0.8460367465745028,
+      "r2_std": 0.03092152511163667
+    },
+    "experiment/refractive_index": {
+      "mae_mean": 0.006147606950253248,
+      "mae_std": 0.0005883379054649835,
+      "rmse_mean": 0.010041462071239949,
+      "rmse_std": 0.0014534904950674198,
+      "r2_mean": 0.9327893485451655,
+      "r2_std": 0.0179915233012233
+    },
+    "experiment/self_diffusion_coefficient": {
+      "mae_mean": 0.23992542624473573,
+      "mae_std": 0.09344474553771855,
+      "rmse_mean": 0.3176878273487091,
+      "rmse_std": 0.1493444397542641,
+      "r2_mean": 0.7682895455913938,
+      "r2_std": 0.13017061495893523
+    },
+    "experiment/speed_of_sound": {
+      "mae_mean": 35.37427101135254,
+      "mae_std": 7.3440664096753085,
+      "rmse_mean": 52.041385650634766,
+      "rmse_std": 5.378973564201248,
+      "r2_mean": 0.9285932714174452,
+      "r2_std": 0.026120233748314303
+    },
+    "experiment/static_relative_permittivity": {
+      "mae_mean": 4.3995521068573,
+      "mae_std": 1.028015777133553,
+      "rmse_mean": 6.6323127269744875,
+      "rmse_std": 1.952303107741961,
+      "r2_mean": 0.46547811739544437,
+      "r2_std": 0.25293366969986214
+    },
+    "experiment/surface_tension": {
+      "mae_mean": 2.4999464988708495,
+      "mae_std": 0.19970657452983215,
+      "rmse_mean": 3.972719097137451,
+      "rmse_std": 0.3397184156624334,
+      "r2_mean": 0.7941032112241915,
+      "r2_std": 0.04216377709763737
+    },
+    "experiment/thermal_conductivity": {
+      "mae_mean": 0.007823014073073864,
+      "mae_std": 0.0010195210548717515,
+      "rmse_mean": 0.010277194157242774,
+      "rmse_std": 0.0012090090693617863,
+      "r2_mean": 0.8321159400999807,
+      "r2_std": 0.04362268864442614
+    },
+    "experiment/thermal_decomposition_temperature": {
+      "mae_mean": 28.42229309082031,
+      "mae_std": 4.147389356109244,
+      "rmse_mean": 38.66007308959961,
+      "rmse_std": 3.773314072710146,
+      "r2_mean": 0.736197472934708,
+      "r2_std": 0.051892124771476346
+    },
+    "experiment/viscosity": {
+      "mae_mean": 0.24396601021289827,
+      "mae_std": 0.05142674082521954,
+      "rmse_mean": 0.3366949737071991,
+      "rmse_std": 0.0648759144355013,
+      "r2_mean": 0.7811043136783826,
+      "r2_std": 0.06292012002558153
+    },
+    "experiment/x_co2": {
+      "mae_mean": 0.04366769939661026,
+      "mae_std": 0.010821278873479695,
+      "rmse_mean": 0.05753658711910248,
+      "rmse_std": 0.014286566687542763,
+      "r2_mean": 0.934440582978098,
+      "r2_std": 0.02860064701848636
+    },
+    "simulation/heat_of_vaporization": {
+      "mae_mean": 5.84836711883545,
+      "mae_std": 0.7509230428967257,
+      "rmse_mean": 7.081341171264649,
+      "rmse_std": 0.7841814646859618,
+      "r2_mean": 0.9351321462160896,
+      "r2_std": 0.01335223187295545
+    },
+    "experiment/solvation": {
+      "mae_mean": 0.21822117865085602,
+      "mae_std": 0.06727596043557298,
+      "rmse_mean": 0.34066453874111174,
+      "rmse_std": 0.12043445466220838,
+      "r2_mean": 0.8920191081871411,
+      "r2_std": 0.07427255570949415
+    },
+    "experiment/transfer": {
+      "mae_mean": 0.2878629118204117,
+      "mae_std": 0.08217266674845243,
+      "rmse_mean": 0.4218628704547882,
+      "rmse_std": 0.14464938860982784,
+      "r2_mean": 0.9622996774330383,
+      "r2_std": 0.02395524354923434
+    }
+  }
+}

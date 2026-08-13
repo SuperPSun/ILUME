@@ -1,0 +1,302 @@
+{
+  "format_version": 2,
+  "data_signature": "29621fe78414294dffa171bc6e8fb8f39f79c06afc3f5f0bada3df0c1b0b148c",
+  "pretrain_artifact_hash": "180ba9ec91d79da170787b18b7fd16fc9b5d3d9edf17377536f00acf00bee813",
+  "feature_contract": {
+    "artifact_hash": "180ba9ec91d79da170787b18b7fd16fc9b5d3d9edf17377536f00acf00bee813",
+    "max_smiles_tokens": 256,
+    "fingerprint": {
+      "kind": "both",
+      "morgan_radius": 2,
+      "morgan_bits": 2048,
+      "maccs_bits": 167,
+      "chunk_size": 128
+    }
+  },
+  "source_hashes": {
+    "data/stage2/simulated_qm_elec_hf/train.csv": "236e3ceaf4169a28802e040161fd389eb616e404eebd38ea67c9131798bd19cb",
+    "data/stage2/simulated_qm_elec_hf/valid.csv": "b40f79f9448c5bcd568aad130abde513520e7b36f054ba8e145c1af5d66f70b0",
+    "data/stage2/density/train.csv": "2ea159e856e4e7fdaeb9be7ed319c1afbadbcfde35aeeb568794f4589fcda38d",
+    "data/stage2/density/valid.csv": "d23910f61cd4c66fa91a48d86fb5f754d26ae8df2f781529e947aef19c5b7522",
+    "data/stage2/heat_capacity/train.csv": "6b564e5e32454be5a4a01a075337decc640770dba2d54046f7be5c041609aa78",
+    "data/stage2/heat_capacity/valid.csv": "8b0d85488821df4d9d4ae0cd902fedfbacefbccf47e17dd588306b8de61ece49",
+    "data/stage2/thermal_expansion/train.csv": "49b9093482766dffcaf80fc91a937001ade6a2e104199523c6ff3bf98cd19de7",
+    "data/stage2/thermal_expansion/valid.csv": "d5aab5f1d10ceb1305f061dfb33965e012fa72faa8d1931f74f5caf093ca017c",
+    "data/stage2/transfer_organic/train.csv": "5571dc044951914964c007620b830cb4472e25f782e5387f961f5fb2ef2975f4",
+    "data/stage2/transfer_organic/valid.csv": "be37fb6bbc6afaa0b34edbefa90ae9d647d0d7e5375e8a6ebd3e8131ad05010b"
+  },
+  "source_counts": {
+    "simulated_qm_elec_hf": {
+      "train": {
+        "simulation": 24543
+      },
+      "valid": {
+        "simulation": 2715
+      }
+    },
+    "density": {
+      "train": {
+        "simulation": 22747
+      },
+      "valid": {
+        "simulation": 2599
+      }
+    },
+    "heat_capacity": {
+      "train": {
+        "simulation": 10836
+      },
+      "valid": {
+        "simulation": 1202
+      }
+    },
+    "thermal_expansion": {
+      "train": {
+        "simulation": 10868
+      },
+      "valid": {
+        "simulation": 1170
+      }
+    },
+    "transfer_organic": {
+      "train": {
+        "simulation": 899778
+      },
+      "valid": {
+        "simulation": 100222
+      }
+    }
+  },
+  "rdkit_version": "2025.09.5",
+  "numpy_version": "2.4.3",
+  "torch_version": "2.9.0+cu128",
+  "tasks": {
+    "simulated_qm_elec_hf": {
+      "entity_columns": [
+        "SMILES"
+      ],
+      "entity_roles": [
+        "neutral"
+      ],
+      "condition_columns": [],
+      "target_columns": [
+        "ESP_max",
+        "ESP_min",
+        "ESP_std",
+        "ESP_pos_frac",
+        "Dipole",
+        "Quadrupole",
+        "q_max",
+        "q_min",
+        "q_std",
+        "q_pos_frac",
+        "gap_eV"
+      ]
+    },
+    "density": {
+      "entity_columns": [
+        "cation",
+        "anion"
+      ],
+      "entity_roles": [
+        "cation",
+        "anion"
+      ],
+      "condition_columns": [
+        "temperature_K"
+      ],
+      "target_columns": [
+        "density_g/cm^3"
+      ]
+    },
+    "heat_capacity": {
+      "entity_columns": [
+        "cation",
+        "anion"
+      ],
+      "entity_roles": [
+        "cation",
+        "anion"
+      ],
+      "condition_columns": [
+        "temperature_K"
+      ],
+      "target_columns": [
+        "heat_capacity_J/mol/K"
+      ]
+    },
+    "thermal_expansion": {
+      "entity_columns": [
+        "cation",
+        "anion"
+      ],
+      "entity_roles": [
+        "cation",
+        "anion"
+      ],
+      "condition_columns": [
+        "temperature_K"
+      ],
+      "target_columns": [
+        "thermal_expansion_K^-1"
+      ]
+    },
+    "transfer_organic": {
+      "entity_columns": [
+        "solute",
+        "solvent"
+      ],
+      "entity_roles": [
+        "neutral",
+        "neutral"
+      ],
+      "condition_columns": [],
+      "target_columns": [
+        "transfer_organic_kcal/mol"
+      ]
+    }
+  },
+  "scalers": {
+    "temperature_K": {
+      "count": 44451,
+      "mean": 313.1666441699854,
+      "scale": 11.082723009439992
+    },
+    "targets": {
+      "ESP_max": {
+        "count": 24543,
+        "mean": 16.582054762508683,
+        "scale": 40.00193001922932
+      },
+      "ESP_min": {
+        "count": 24543,
+        "mean": -66.98915549606822,
+        "scale": 59.85211346214285
+      },
+      "ESP_std": {
+        "count": 24543,
+        "mean": 14.362126960364634,
+        "scale": 7.235196215387106
+      },
+      "ESP_pos_frac": {
+        "count": 24543,
+        "mean": 0.40996192662327074,
+        "scale": 0.25358255569671434
+      },
+      "Dipole": {
+        "count": 24543,
+        "mean": 8.238261540968969,
+        "scale": 8.547805380019094
+      },
+      "Quadrupole": {
+        "count": 24543,
+        "mean": 45.02587990861915,
+        "scale": 96.632481136118
+      },
+      "q_max": {
+        "count": 24543,
+        "mean": 0.9004600689198574,
+        "scale": 0.36965723341050827
+      },
+      "q_min": {
+        "count": 24543,
+        "mean": -0.849061745833842,
+        "scale": 0.10301949930084225
+      },
+      "q_std": {
+        "count": 24543,
+        "mean": 0.34585558362119495,
+        "scale": 0.06655878510187557
+      },
+      "q_pos_frac": {
+        "count": 24543,
+        "mean": 0.48518053669018957,
+        "scale": 0.03589785481613381
+      },
+      "gap_eV": {
+        "count": 24543,
+        "mean": 7.593106636181827,
+        "scale": 1.6573413981492582
+      },
+      "density_g/cm^3": {
+        "count": 22747,
+        "mean": 1.0768900131885524,
+        "scale": 0.17260858792949763
+      },
+      "heat_capacity_J/mol/K": {
+        "count": 10836,
+        "mean": 863.9382924510863,
+        "scale": 323.27224087514566
+      },
+      "thermal_expansion_K^-1": {
+        "count": 10868,
+        "mean": 0.0006014886702613162,
+        "scale": 0.00010803267547555689
+      },
+      "transfer_organic_kcal/mol": {
+        "count": 899778,
+        "mean": -8.102766226780947,
+        "scale": 4.464214911377466
+      }
+    }
+  },
+  "summary": {
+    "entities_selected": 37515,
+    "entities_retained": 37505,
+    "entities_excluded": 10,
+    "rows": {
+      "simulated_qm_elec_hf": {
+        "train": 24535,
+        "valid": 2713
+      },
+      "density": {
+        "train": 22747,
+        "valid": 2599
+      },
+      "heat_capacity": {
+        "train": 10836,
+        "valid": 1202
+      },
+      "thermal_expansion": {
+        "train": 10868,
+        "valid": 1170
+      },
+      "transfer_organic": {
+        "train": 899778,
+        "valid": 100222
+      }
+    },
+    "rows_excluded": 10,
+    "duplicate_conditions": 1,
+    "partial_target_rows": 0,
+    "all_target_missing_rows": 0
+  },
+  "artifact_hashes": {
+    "entity_index.json": "b44afe59af5a901e30e2dff4cc61627cc0bdbbfca42be0377a972e57ce5d1bdf",
+    "scalers.json": "c2ebcc22a95436bf73c39952ec3a31954d1351f608f5fa6cd2fd99db7427679d",
+    "excluded_entities.csv": "12925187c45559d22000c7fa99e6df1f655a6012ce58fa378338a87f168c0383",
+    "excluded_rows.csv": "5706cedca0e2df73d5f596932a3d547c24832dfc538b61f20e610d15c1f3d08e",
+    "duplicate_conditions.csv": "e6c91d012526a6cb9398f871fb3314c78f92f747c57d04653110b0cb58fc94d1",
+    "missing_targets.csv": "47b6a7d63f9090a7a36830159e2b1ce11d892afdbd52e44442a6255bf8eef321",
+    "tasks/simulated_qm_elec_hf_train.pt": "f27480a35f75687c145a6af2f1c81fe818a94c0315187303155ca65d24de29a8",
+    "tasks/simulated_qm_elec_hf_valid.pt": "f9a5d98cc0890c11c7644f552adcea1d717d9dab0e243d92672d6be29ca1d896",
+    "tasks/density_train.pt": "c701d1de89e9ca4fed1feab0dc029dd67f8cef135a64022e540c77e842466405",
+    "tasks/density_valid.pt": "16b92e2d0a8919b2d10f07713853d61cbe64ae8078dbe058658afed5506e6d72",
+    "tasks/heat_capacity_train.pt": "4ba0007181813cdf10cc2ed918a67479db62a4e0dd1507ef8406c570fb8f0d66",
+    "tasks/heat_capacity_valid.pt": "44cef128c3df0c74b3d2875a8e80a02a4fd23e32b8194e9b8dad8eec7dcb80e5",
+    "tasks/thermal_expansion_train.pt": "bd5c1cda7ddcbe0db7ab881dadec81721e4f219279253c4495e40a43dd661f4c",
+    "tasks/thermal_expansion_valid.pt": "245884dd88cb2f0d8823a5e89eb1787107bcbb7e8267f359858ad2e15950eaa7",
+    "tasks/transfer_organic_train.pt": "0b8dd115fb6af61fd83b646bf769130f92dae2337f8637fcc474107f9784cd19",
+    "tasks/transfer_organic_valid.pt": "e8e96f274aae3cf0f57a4db059f0dcd041920741b165a88a26930c2822f3e241",
+    "entities/entities_00000.pt": "f5b34dd4e2b4c403fa395bc80729c16f11fb37c61bfa84d6efebb2bfeb36f603",
+    "entities/entities_00001.pt": "5fffdb536e3e8de7afac6cd8aa57936a7e85d8fdbb18ebd971428a34bcd8ba70",
+    "entities/entities_00002.pt": "e9fe4ce3c7c774d9f3a43c3d3d3d7fd5a2a16c2377ac714415c9b7d728864c81",
+    "entities/entities_00003.pt": "57da9a131f831f800732d51b76e37b449ce1a4406527d51df842d4f5ad4f8938",
+    "entities/entities_00004.pt": "3e5ab71754b17d6a6632eb2e698313ab67c4c403fcc86adbd9bb917794bde96e",
+    "entities/entities_00005.pt": "bd8a424b7b4e53f67742aacb997937b2a44e5bb8304f0dd16c10ac53845a416b",
+    "entities/entities_00006.pt": "1e3480c996e565455abf36ac62ae5b3981a090ab634a326bdc2c738251d0a1ea",
+    "entities/entities_00007.pt": "5b09230e1411af6818a89127b18eb8d7e2b228659584ce20eba0db63ad28143f",
+    "entities/entities_00008.pt": "60617371ef3c2cb3459f0fd442f78526c505b5e7633b750c8c8df0e9962ca9ac",
+    "entities/entities_00009.pt": "33eb51a29f78dfea38501a46e6934112ddb714b86e4febbd27194f19d094c482"
+  }
+}

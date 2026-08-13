@@ -6,15 +6,15 @@ import pytest
 import torch
 from rdkit import Chem
 
-from stage1.config import (
+from ilume_pretrain.config import (
     DescriptorConfig,
     FingerprintConfig,
     MaskingConfig,
     PretrainConfig,
 )
-from stage1.fingerprints import calculate_fingerprints
-from stage1.graph import featurize_mol
-from stage1.tokenizer import AISVocabulary
+from ilume_pretrain.fingerprints import calculate_fingerprints
+from ilume_pretrain.graph import featurize_mol
+from ilume_pretrain.tokenizer import AISVocabulary
 
 
 @pytest.fixture

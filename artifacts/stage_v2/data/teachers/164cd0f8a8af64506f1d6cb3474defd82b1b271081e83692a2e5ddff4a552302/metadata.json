@@ -1,0 +1,11 @@
+{
+  "format_version": 1,
+  "checkpoint": "artifacts/training/pretrain_xlarge_bs128_acc2/checkpoint_epoch_00005.pt",
+  "checkpoint_hash": "164cd0f8a8af64506f1d6cb3474defd82b1b271081e83692a2e5ddff4a552302",
+  "pretrain_artifact_hash": "180ba9ec91d79da170787b18b7fd16fc9b5d3d9edf17377536f00acf00bee813",
+  "data_metadata_hash": "603cad19ce3ab123179a570e6a7578376dae7ab7e9bdb5fe9638c52ceaa7d8be",
+  "entity_count": 37505,
+  "embedding_dim": 640,
+  "dtype": "float32",
+  "embeddings_hash": "ad2e20d0a1eb4122e03526c15deb54527e1aa66d6f658ee3e98c2feccb40e14a"
+}

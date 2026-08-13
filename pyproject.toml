@@ -25,6 +25,16 @@ tokenizers = [
     "apetokenizer @ git+https://github.com/mikemayuare/apetokenizer.git@ff1b3cc00476a8d017d7d54e925681a04475d47f",
 ]
 
+[project.scripts]
+ilume-prepare = "ilume_pretrain.cli.prepare:main"
+ilume-smoke = "ilume_pretrain.cli.smoke:main"
+ilume-train = "ilume_pretrain.cli.train:main"
+ilume-stage2-prepare = "ilume_pretrain.cli.stage2_prepare:main"
+ilume-stage2-train = "ilume_pretrain.cli.stage2_train:main"
+ilume-stage3-prepare = "ilume_pretrain.cli.stage3_prepare:main"
+ilume-stage3-train = "ilume_pretrain.cli.stage3_train:main"
+ilume-stage3-evaluate = "ilume_pretrain.cli.stage3_evaluate:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
