@@ -32,6 +32,8 @@ python scripts/stage1/train.py \
   --output outputs/v1/stage1/base/train
 ```
 
+prepare 期间可查看同一输出目录下的 `performance.json`，其中记录本次 invocation 各 phase 的处理量、耗时、吞吐和复用状态；该文件不参与 corpus 或 checkpoint 身份。
+
 `training.batch_size: 256` 是跨所有 rank 的 global batch。四卡训练使用每卡 64：
 
 ```bash
