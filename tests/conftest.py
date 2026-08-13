@@ -14,7 +14,7 @@ from stage1.config import (
 )
 from stage1.fingerprints import calculate_fingerprints
 from stage1.graph import featurize_mol
-from stage1.tokenizer import AISVocabulary
+from stage1.tokenizer import SmilesTokenizer
 
 
 @pytest.fixture
@@ -53,7 +53,7 @@ def tiny_config() -> PretrainConfig:
 @pytest.fixture
 def tiny_samples():
     smiles_values = ["[Na+]", "CC", "CCO"]
-    vocabulary = AISVocabulary.fit(smiles_values)
+    vocabulary = SmilesTokenizer.fit(smiles_values, backend="ais")
     generator = torch.Generator().manual_seed(7)
     samples = []
     for index, smiles in enumerate(smiles_values):

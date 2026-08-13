@@ -325,7 +325,7 @@ from rdkit import Chem
 
 from stage1.descriptors import DescriptorSchema, DescriptorStandardizer
 from stage1.masking import mask_smiles_tokens
-from stage1.tokenizer import AISVocabulary, SmilesTokenizer, ais_tokenize
+from stage1.tokenizer import SmilesTokenizer, ais_tokenize
 
 
 def test_ais_round_trip_and_vocabulary_save_load(tmp_path):
@@ -338,10 +338,10 @@ def test_ais_round_trip_and_vocabulary_save_load(tmp_path):
         Chem.MolFromSmiles(smiles)
     )
 
-    vocabulary = AISVocabulary.fit([smiles, "CCO"])
+    vocabulary = SmilesTokenizer.fit([smiles, "CCO"], backend="ais")
     path = tmp_path / "tokenizer.json"
     vocabulary.save(path)
-    loaded = AISVocabulary.load(path)
+    loaded = SmilesTokenizer.load(path)
     assert loaded.tokens == vocabulary.tokens
     assert loaded.encode(smiles, max_length=32) == vocabulary.encode(
         smiles, max_length=32
@@ -351,7 +351,7 @@ def test_ais_round_trip_and_vocabulary_save_load(tmp_path):
 
 
 def test_token_count_includes_special_tokens_and_matches_encode_boundary():
-    tokenizer = AISVocabulary.fit(["C" * 255])
+    tokenizer = SmilesTokenizer.fit(["C" * 255], backend="ais")
     assert tokenizer.token_count("C" * 254) == 256
     assert len(tokenizer.encode("C" * 254, max_length=256)) == 256
     assert tokenizer.token_count("C" * 255) == 257
@@ -360,7 +360,7 @@ def test_token_count_includes_special_tokens_and_matches_encode_boundary():
 
 
 def test_smiles_masking_uses_bert_replacement_distribution():
-    vocabulary = AISVocabulary.fit(["CCO", "NCC"])
+    vocabulary = SmilesTokenizer.fit(["CCO", "NCC"], backend="ais")
     token_ids = np.full(10_002, vocabulary.token_to_id[ais_tokenize("CCO")[0]])
     token_ids[0] = vocabulary.cls_id
     token_ids[-1] = vocabulary.sep_id
