@@ -1,8 +1,10 @@
 # ADR-0009：Stage 2 体系采样、PairEncoder 与渐进解冻
 
-- 状态：Accepted
+- 状态：Superseded by ADR-0016
 - 日期：2026-08-04
 - 部分取代：ADR-0007 的任务内行级采样、共享 IL 回归 trunk、立即训练 backbone 和完整 QM 标签假设。
+
+> 2026-08-13：体系采样、旧双实体编码器与 step checkpoint 已由 [ADR-0016](0016-stage2-universal-object-modeling.md) 取代。本文作为历史决定保留。
 
 ## 决定
 

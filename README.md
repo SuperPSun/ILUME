@@ -57,7 +57,7 @@ python scripts/stage1/train.py \
 
 ## Stage 2
 
-Stage 2 同样只保留一个正式 Base，并从 Stage 1 Base 的 v2 checkpoint 准备离线教师缓存：
+Stage 2 只保留一个正式 Base，以共享 ObjectEncoder 建模 molecule 与 IL，并从 Stage 1 Base 的 v2 checkpoint 准备离线 entity teacher 缓存：
 
 ```bash
 python scripts/stage2/prepare.py \
@@ -69,11 +69,11 @@ python scripts/stage2/train.py \
   --output outputs/v1/stage2/base/train
 ```
 
-恢复时增加 `--resume outputs/v1/stage2/base/train/last.pt`。
+训练每个 epoch 完整覆盖五个任务的全部有效行，并在 full validation 后保存 `checkpoint_epoch_00001.pt` 至 `checkpoint_epoch_00005.pt`。只允许从完整 epoch 恢复，例如增加 `--resume outputs/v1/stage2/base/train/checkpoint_epoch_00003.pt`；不生成 `best.pt` 或 `last.pt`。
 
 ## Stage 3
 
-Stage 3 reference 使用 Stage 2 Base 的 `best.pt`。五折需要分别执行 train，不提供 matrix runner：
+Stage 3 到新 Stage 2 object v1 的表示迁移尚未完成。当前 `scripts/stage3/prepare.py` 会在写入 artifact 前明确拒绝运行；以下历史命令暂不可用于新 Stage 2 checkpoint，待 neutral-pair 与 single topology 合同另行确定后恢复：
 
 ```bash
 python scripts/stage3/prepare.py \
@@ -106,7 +106,7 @@ python scripts/stage3/evaluate.py \
 
 `--output` 是一次操作的独立目录。新训练和 evaluate 拒绝覆盖已有目录；只有显式 `--resume` 可继续训练。Prepare 保留可校验的幂等复用。
 
-每个操作目录包含 Git 可跟踪的 `run_config.yaml`、`metadata.json` 和成功后生成的 `summary.json`。Prepare payload 位于 `artifacts/` 子目录；checkpoint、metrics JSONL、日志和 tensor 默认不进入 Git。所有阶段保留全部周期 checkpoint，并用 `last.pt` 表示最新完整可恢复状态。
+每个操作目录包含 Git 可跟踪的 `run_config.yaml`、`metadata.json` 和成功后生成的 `summary.json`。Prepare payload 位于 `artifacts/` 子目录；checkpoint、metrics JSONL、日志和 tensor 默认不进入 Git。所有阶段保留全部周期 checkpoint；Stage 1/3 用 `last.pt` 表示最新完整恢复状态，Stage 2 直接通过最新的完整 epoch checkpoint 恢复。
 
 ## Tests
 

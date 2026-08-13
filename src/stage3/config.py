@@ -58,7 +58,7 @@ class Stage3DataConfig:
 @dataclass(frozen=True)
 class Stage3InitializationConfig:
     stage2_checkpoint: Path = Path(
-        "outputs/v1/stage2/base/train/best.pt"
+        "outputs/v1/stage2/base/train/checkpoint_epoch_00005.pt"
     )
 
 

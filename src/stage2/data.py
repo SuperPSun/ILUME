@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,8 +17,8 @@ from stage1.masking import MultimodalPacker
 from .config import STAGE2_TASKS
 
 
-STAGE2_ARTIFACT_VERSION = 2
-IL_TASKS = ("density", "heat_capacity", "thermal_expansion")
+STAGE2_ARTIFACT_VERSION = 1
+STAGE2_ARTIFACT_KIND = "ilume_stage2_object_data"
 
 
 class Stage2EntityDataset(Dataset):
@@ -30,8 +31,11 @@ class Stage2EntityDataset(Dataset):
         self.metadata = json.loads(
             (self.artifact_dir / "metadata.json").read_text(encoding="utf-8")
         )
-        if self.metadata.get("format_version") != STAGE2_ARTIFACT_VERSION:
-            raise ValueError("Unsupported Stage 2 artifact format")
+        if (
+            self.metadata.get("format_version") != STAGE2_ARTIFACT_VERSION
+            or self.metadata.get("kind") != STAGE2_ARTIFACT_KIND
+        ):
+            raise ValueError("Unsupported Stage 2 object data artifact")
         if self.metadata.get("rdkit_version") != rdBase.rdkitVersion:
             raise ValueError("RDKit version does not match the Stage 2 artifact")
         index_path = self.artifact_dir / "entity_index.json"
@@ -41,7 +45,10 @@ class Stage2EntityDataset(Dataset):
         if expected_index_hash is None or sha256_file(index_path) != expected_index_hash:
             raise ValueError("Stage 2 artifact hash mismatch: entity_index.json")
         payload = json.loads(index_path.read_text(encoding="utf-8"))
-        if payload.get("format_version") != STAGE2_ARTIFACT_VERSION:
+        if (
+            payload.get("format_version") != STAGE2_ARTIFACT_VERSION
+            or payload.get("kind") != STAGE2_ARTIFACT_KIND
+        ):
             raise ValueError("Unsupported Stage 2 entity index format")
         self.entries = payload["entries"]
         self.shard_cache_size = shard_cache_size
@@ -63,7 +70,10 @@ class Stage2EntityDataset(Dataset):
                 raise ValueError(f"Stage 2 artifact hash mismatch: {relative}")
             self._verified.add(relative)
         payload = torch.load(path, map_location="cpu", weights_only=False)
-        if payload.get("format_version") != STAGE2_ARTIFACT_VERSION:
+        if (
+            payload.get("format_version") != STAGE2_ARTIFACT_VERSION
+            or payload.get("kind") != STAGE2_ARTIFACT_KIND
+        ):
             raise ValueError(f"Unsupported Stage 2 entity shard: {relative}")
         samples = payload["samples"]
         self._cache[relative] = samples
@@ -87,13 +97,21 @@ class Stage2TaskDataset:
         metadata = json.loads(
             (self.artifact_dir / "metadata.json").read_text(encoding="utf-8")
         )
+        if (
+            metadata.get("format_version") != STAGE2_ARTIFACT_VERSION
+            or metadata.get("kind") != STAGE2_ARTIFACT_KIND
+        ):
+            raise ValueError("Unsupported Stage 2 object data artifact")
         expected = metadata["artifact_hashes"].get(
             str(path.relative_to(self.artifact_dir))
         )
         if expected is None or sha256_file(path) != expected:
             raise ValueError(f"Stage 2 artifact hash mismatch: {path.name}")
         payload = torch.load(path, map_location="cpu", weights_only=False)
-        if payload.get("format_version") != STAGE2_ARTIFACT_VERSION:
+        if (
+            payload.get("format_version") != STAGE2_ARTIFACT_VERSION
+            or payload.get("kind") != STAGE2_ARTIFACT_KIND
+        ):
             raise ValueError("Unsupported Stage 2 task artifact format")
         if payload.get("task") != task or payload.get("split") != split:
             raise ValueError("Stage 2 task artifact identity mismatch")
@@ -104,23 +122,10 @@ class Stage2TaskDataset:
         self.targets = payload["targets"]
         self.target_mask = payload["target_mask"]
         self.source_rows = payload["source_rows"]
-        self.system_offsets = payload["system_offsets"]
-        self.system_rows = payload["system_rows"]
         self.condition_columns = tuple(payload["condition_columns"])
         self.target_columns = tuple(payload["target_columns"])
         if self.target_mask.shape != self.targets.shape:
             raise ValueError("Stage 2 target mask shape mismatch")
-        if task in IL_TASKS:
-            if (
-                self.system_offsets.ndim != 1
-                or self.system_offsets.numel() < 2
-                or int(self.system_offsets[0]) != 0
-                or int(self.system_offsets[-1]) != len(self)
-                or self.system_rows.shape != (len(self),)
-            ):
-                raise ValueError("Invalid Stage 2 IL system index")
-        elif self.system_offsets.numel() or self.system_rows.numel():
-            raise ValueError("Non-IL Stage 2 tasks cannot define system indices")
 
     def __len__(self) -> int:
         return int(self.entity_indices.shape[0])
@@ -198,138 +203,47 @@ def build_stage2_batch(
     )
 
 
-class TaskCursor:
-    def __init__(self, size: int, seed: int) -> None:
-        if size <= 0:
-            raise ValueError("TaskCursor requires a non-empty dataset")
-        self.size = size
-        self.seed = seed
-        self.cycle = 0
-        self.position = 0
-        self._permutation = self._build_permutation()
-
-    def _build_permutation(self) -> torch.Tensor:
-        generator = torch.Generator().manual_seed(self.seed + self.cycle)
-        return torch.randperm(self.size, generator=generator)
-
-    def _next_with_cycles(self, count: int) -> tuple[torch.Tensor, torch.Tensor]:
-        if count <= 0:
-            raise ValueError("TaskCursor count must be positive")
-        chunks: list[torch.Tensor] = []
-        cycle_chunks: list[torch.Tensor] = []
-        remaining = count
-        while remaining:
-            available = self.size - self.position
-            take = min(remaining, available)
-            chunks.append(self._permutation[self.position : self.position + take])
-            cycle_chunks.append(torch.full((take,), self.cycle, dtype=torch.long))
-            self.position += take
-            remaining -= take
-            if self.position == self.size:
-                self.cycle += 1
-                self.position = 0
-                self._permutation = self._build_permutation()
-        return torch.cat(chunks), torch.cat(cycle_chunks)
-
-    def next_indices(self, count: int) -> torch.Tensor:
-        indices, _ = self._next_with_cycles(count)
-        return indices
-
-    def state_dict(self) -> dict[str, int]:
-        return {"cycle": self.cycle, "position": self.position}
-
-    def load_state_dict(self, state: dict[str, Any]) -> None:
-        cycle = int(state["cycle"])
-        position = int(state["position"])
-        if cycle < 0 or not 0 <= position < self.size:
-            raise ValueError("Invalid Stage 2 task cursor state")
-        self.cycle = cycle
-        self.position = position
-        self._permutation = self._build_permutation()
+@dataclass(frozen=True)
+class Stage2BatchDescriptor:
+    task: str
+    indices: torch.Tensor
 
 
-class ILSystemCursor:
-    def __init__(
-        self,
-        system_offsets: torch.Tensor,
-        system_rows: torch.Tensor,
-        seed: int,
-    ) -> None:
-        if system_offsets.ndim != 1 or system_offsets.numel() < 2:
-            raise ValueError("ILSystemCursor requires at least one system")
-        if int(system_offsets[0]) != 0 or int(system_offsets[-1]) != len(system_rows):
-            raise ValueError("Invalid IL system CSR index")
-        self.system_offsets = system_offsets.to(dtype=torch.long, device="cpu")
-        self.system_rows = system_rows.to(dtype=torch.long, device="cpu")
-        self.seed = seed
-        self.system_cursor = TaskCursor(len(system_offsets) - 1, seed)
+def task_batch_counts(
+    datasets: dict[str, Stage2TaskDataset], batch_size: int
+) -> dict[str, int]:
+    if batch_size <= 0:
+        raise ValueError("Stage 2 batch size must be positive")
+    return {
+        task: math.ceil(len(datasets[task]) / batch_size)
+        for task in STAGE2_TASKS
+    }
 
-    def _row_for_visit(self, system_id: int, cycle: int) -> int:
-        start = int(self.system_offsets[system_id])
-        end = int(self.system_offsets[system_id + 1])
-        size = end - start
-        if size == 1:
-            return int(self.system_rows[start])
-        row_cycle, offset = divmod(cycle, size)
-        mixed_seed = (
-            self.seed + 1_000_003 * system_id + 1_000_000_007 * row_cycle
-        ) % (2**63 - 1)
-        generator = torch.Generator().manual_seed(mixed_seed)
-        selected = int(torch.randperm(size, generator=generator)[offset])
-        return int(self.system_rows[start + selected])
 
-    def next_indices(self, count: int) -> torch.Tensor:
-        system_ids, cycles = self.system_cursor._next_with_cycles(count)
-        return torch.tensor(
-            [
-                self._row_for_visit(int(system_id), int(cycle))
-                for system_id, cycle in zip(system_ids, cycles, strict=True)
-            ],
-            dtype=torch.long,
+def epoch_batch_schedule(
+    datasets: dict[str, Stage2TaskDataset],
+    batch_size: int,
+    *,
+    seed: int,
+    epoch: int,
+) -> list[Stage2BatchDescriptor]:
+    if epoch <= 0:
+        raise ValueError("Stage 2 epoch must be positive")
+    descriptors: list[Stage2BatchDescriptor] = []
+    for task_index, task in enumerate(STAGE2_TASKS):
+        dataset = datasets[task]
+        if len(dataset) == 0:
+            raise ValueError(f"Stage 2 training dataset is empty: {task}")
+        generator = torch.Generator().manual_seed(
+            seed + 1_000_003 * epoch + 10_007 * (task_index + 1)
         )
-
-    def state_dict(self) -> dict[str, Any]:
-        return {"kind": "il_system", "system_cursor": self.system_cursor.state_dict()}
-
-    def load_state_dict(self, state: dict[str, Any]) -> None:
-        if state.get("kind") != "il_system":
-            raise ValueError("Invalid IL system cursor state")
-        self.system_cursor.load_state_dict(state["system_cursor"])
-
-
-class TaskBlockSampler:
-    def __init__(
-        self,
-        probabilities: dict[str, float],
-        block_size: int,
-        seed: int,
-    ) -> None:
-        self.probabilities = dict(probabilities)
-        self.block_size = block_size
-        self.seed = seed
-        tasks: list[str] = []
-        for task in STAGE2_TASKS:
-            quota = probabilities[task] * block_size
-            if abs(quota - round(quota)) > 1.0e-8:
-                raise ValueError("Task block quotas must be integers")
-            tasks.extend([task] * round(quota))
-        if len(tasks) != block_size:
-            raise ValueError("Task block quotas do not fill the block")
-        self._tasks = tuple(tasks)
-        self._cache: dict[int, tuple[str, ...]] = {}
-
-    def block(self, block_index: int) -> tuple[str, ...]:
-        cached = self._cache.get(block_index)
-        if cached is not None:
-            return cached
-        generator = torch.Generator().manual_seed(self.seed + block_index)
-        order = torch.randperm(self.block_size, generator=generator).tolist()
-        result = tuple(self._tasks[index] for index in order)
-        self._cache = {block_index: result}
-        return result
-
-    def task_for_step(self, step: int) -> str:
-        if step < 0:
-            raise ValueError("Stage 2 step must be non-negative")
-        block_index, offset = divmod(step, self.block_size)
-        return self.block(block_index)[offset]
+        permutation = torch.randperm(len(dataset), generator=generator)
+        descriptors.extend(
+            Stage2BatchDescriptor(task, permutation[start : start + batch_size])
+            for start in range(0, len(dataset), batch_size)
+        )
+    interleave = torch.Generator().manual_seed(
+        seed + 2_000_003 * epoch + 500_009
+    )
+    order = torch.randperm(len(descriptors), generator=interleave).tolist()
+    return [descriptors[index] for index in order]
