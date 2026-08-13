@@ -6,13 +6,12 @@ from stage1.train import _EpochSampler
 SHARDS = ((0, 4), (4, 3), (7, 4))
 
 
-def _sampler(*, epoch=0, cursor=0, rank=0, world_size=1):
+def _sampler(*, epoch=0, rank=0, world_size=1):
     return _EpochSampler(
         SHARDS,
         size=11,
         seed=17,
         epoch=epoch,
-        cursor=cursor,
         rank=rank,
         world_size=world_size,
     )
@@ -26,10 +25,12 @@ def test_epoch_sampler_is_deterministic_unique_and_changes_by_epoch() -> None:
     assert first != list(_sampler(epoch=1))
 
 
-def test_epoch_sampler_cursor_replays_exact_tail() -> None:
-    complete = list(_sampler())
-    assert list(_sampler(cursor=5)) == complete[5:]
-    assert len(_sampler(cursor=5)) == len(complete) - 5
+def test_epoch_sampler_set_epoch_changes_the_reusable_loader_order() -> None:
+    sampler = _sampler()
+    first = list(sampler)
+    sampler.set_epoch(1)
+    assert list(sampler) == list(_sampler(epoch=1))
+    assert list(sampler) != first
 
 
 def test_epoch_sampler_ddp_partitions_and_only_pads_prefix() -> None:

@@ -1,10 +1,10 @@
 # ADR-0013：Stage 1 大规模全量预训练协议
 
-- 状态：Partially Superseded by ADR-0014
+- 状态：Partially Superseded by ADR-0014/0015
 - 日期：2026-08-12
 - 取代：ADR-0001 的 augmentation multiplier 与 45/45/10 采样、ADR-0004 的单卡限定、ADR-0006、ADR-0008 的覆盖 epoch 与多容量/checkpoint v3 合同
 
-> 2026-08-13：训练、loss、DDP 与 checkpoint v1 合同继续有效；corpus 格式和 prepare 执行合同由 [ADR-0014](0014-stage1-prepare-performance-and-corpus-v2.md) 升级为 corpus v2。
+> 2026-08-13：corpus 格式和 prepare 执行合同由 [ADR-0014](0014-stage1-prepare-performance-and-corpus-v2.md) 升级为 corpus v2；训练执行、validation、日志和 checkpoint 合同由 [ADR-0015](0015-stage1-high-throughput-epoch-resume.md) 取代。
 
 ## 决定
 

@@ -1,0 +1,11 @@
+{
+  "total": 5179333,
+  "train": 5176453,
+  "valid": 2880,
+  "cation": 2254943,
+  "anion": 1544823,
+  "neutral": 1379567,
+  "augmented": 5121738,
+  "excluded_entities": 1581,
+  "descriptor_dim": 213
+}

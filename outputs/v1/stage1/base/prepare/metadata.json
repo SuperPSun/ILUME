@@ -2,7 +2,7 @@
   "schema_version": 1,
   "stage": "stage1",
   "operation": "prepare",
-  "status": "running",
+  "status": "completed",
   "config_path": "configs/v1/stage1/base.yaml",
   "data_metadata": "data/stage1/metadata.json",
   "seed": 42,

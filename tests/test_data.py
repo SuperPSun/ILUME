@@ -76,7 +76,7 @@ def test_prepare_progress_counts_rows_and_only_enabled_sources(tmp_path):
     ]
 
 
-def test_prepare_uses_new_original_sources_and_sharded_artifacts(tmp_path):
+def test_prepare_uses_new_original_sources_and_sharded_artifacts(tmp_path, monkeypatch):
     stage1 = tmp_path / "stage1"
     artifacts = tmp_path / "artifacts"
     stage1.mkdir()
@@ -143,6 +143,25 @@ def test_prepare_uses_new_original_sources_and_sharded_artifacts(tmp_path):
     assert all(
         value.dtype == torch.float32 for value in packed.fingerprints.values.values()
     )
+    batched_dataset = PreparedCorpusDataset(artifacts, "train")
+    expected_ids = [batched_dataset[index]["sample_id"] for index in (0, 0, 1)]
+    load_calls: list[str] = []
+    real_load = batched_dataset._load_shard
+
+    def record_load(relative_path):
+        load_calls.append(relative_path)
+        return real_load(relative_path)
+
+    monkeypatch.setattr(batched_dataset, "_load_shard", record_load)
+    batched = batched_dataset.__getitems__([0, 0, 1])
+    assert [item["sample_id"] for item in batched] == expected_ids
+    assert len(load_calls) == len(set(load_calls))
+    if torch.cuda.is_available():
+        pinned = packed.pin_memory()
+        assert pinned.token_ids.is_pinned()
+        assert pinned.graphs.atom_categorical.is_pinned()
+        assert pinned.fusion_layout.smiles_lengths.is_pinned()
+        assert all(value.is_pinned() for value in pinned.fingerprints.values.values())
     with pytest.raises(ValueError, match="Legacy corpus.pt"):
         legacy = artifacts / "corpus.pt"
         legacy.touch()

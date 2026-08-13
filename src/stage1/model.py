@@ -124,19 +124,22 @@ def _weighted_component(
     losses: torch.Tensor,
     roles: torch.Tensor,
     role_weights: torch.Tensor,
+    mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     losses = losses.float()
     weights = role_weights[roles]
+    if mask is not None:
+        weights = weights * mask.to(weights.dtype)
     numerator = (losses * weights).sum()
     denominator = weights.sum()
     role_numerators = torch.stack(
         [
-            (losses[roles == role] * weights[roles == role]).sum()
+            (losses * weights * (roles == role)).sum()
             for role in range(3)
         ]
     )
     role_denominators = torch.stack(
-        [weights[roles == role].sum() for role in range(3)]
+        [(weights * (roles == role)).sum() for role in range(3)]
     )
     return numerator, denominator, role_numerators, role_denominators
 
@@ -171,15 +174,14 @@ def _masked_multitask_cross_entropy(
     role_weights: torch.Tensor,
     zero_reference: torch.Tensor,
 ) -> LossStatistics:
-    if not bool(mask.any()):
-        return _statistics([], zero_reference, len(feature_names))
     components = [
         _weighted_component(
             F.cross_entropy(
-                logits[name][mask], targets[mask, column], reduction="none"
+                logits[name], targets[:, column], reduction="none"
             ),
-            element_roles[mask],
+            element_roles,
             role_weights,
+            mask,
         )
         for column, name in enumerate(feature_names)
     ]
@@ -348,6 +350,7 @@ class MultimodalPretrainModel(nn.Module):
             fingerprint_tokens,
             batch.graphs,
             batch.roles,
+            batch.fusion_layout,
         )
         return fused, layout, family_slices
 
@@ -418,20 +421,19 @@ class MultimodalPretrainModel(nn.Module):
         )
 
         smiles_mask = batch.masks.smiles_labels != -100
-        smiles_components = []
-        if bool(smiles_mask.any()):
-            token_roles = batch.roles[:, None].expand_as(smiles_mask)
-            smiles_components.append(
-                _weighted_component(
-                    F.cross_entropy(
-                        smiles_logits[smiles_mask],
-                        batch.masks.smiles_labels[smiles_mask],
-                        reduction="none",
-                    ),
-                    token_roles[smiles_mask],
-                    role_weights,
-                )
+        token_roles = batch.roles[:, None].expand_as(smiles_mask)
+        smiles_components = [
+            _weighted_component(
+                F.cross_entropy(
+                    smiles_logits.transpose(1, 2),
+                    batch.masks.smiles_labels,
+                    reduction="none",
+                ),
+                token_roles,
+                role_weights,
+                smiles_mask,
             )
+        ]
         smiles_statistics = _statistics(smiles_components, fused_smiles, 1)
         atom_statistics = _masked_multitask_cross_entropy(
             atom_logits,
@@ -451,22 +453,21 @@ class MultimodalPretrainModel(nn.Module):
             role_weights,
             fused_bonds,
         )
-        descriptor_components = []
-        if bool(batch.masks.descriptor_loss_mask.any()):
-            descriptor_roles = batch.roles[:, None].expand_as(
-                batch.masks.descriptor_loss_mask
+        descriptor_roles = batch.roles[:, None].expand_as(
+            batch.masks.descriptor_loss_mask
+        )
+        descriptor_components = [
+            _weighted_component(
+                F.smooth_l1_loss(
+                    descriptor_logits,
+                    batch.descriptors,
+                    reduction="none",
+                ),
+                descriptor_roles,
+                role_weights,
+                batch.masks.descriptor_loss_mask,
             )
-            descriptor_components.append(
-                _weighted_component(
-                    F.smooth_l1_loss(
-                        descriptor_logits[batch.masks.descriptor_loss_mask],
-                        batch.descriptors[batch.masks.descriptor_loss_mask],
-                        reduction="none",
-                    ),
-                    descriptor_roles[batch.masks.descriptor_loss_mask],
-                    role_weights,
-                )
-            )
+        ]
         descriptor_statistics = _statistics(
             descriptor_components, descriptor_logits, 1
         )
@@ -474,29 +475,19 @@ class MultimodalPretrainModel(nn.Module):
         fingerprint_components = []
         for family, logits in fingerprint_logits.items():
             loss_mask = batch.masks.fingerprint_loss_mask[family]
-            if bool(loss_mask.any()):
-                fingerprint_roles = batch.roles[:, None].expand_as(loss_mask)
-                fingerprint_components.append(
-                    _weighted_component(
-                        F.binary_cross_entropy_with_logits(
-                            logits[loss_mask],
-                            batch.fingerprints.values[family][loss_mask],
-                            reduction="none",
-                        ),
-                        fingerprint_roles[loss_mask],
-                        role_weights,
-                    )
+            fingerprint_roles = batch.roles[:, None].expand_as(loss_mask)
+            fingerprint_components.append(
+                _weighted_component(
+                    F.binary_cross_entropy_with_logits(
+                        logits,
+                        batch.fingerprints.values[family],
+                        reduction="none",
+                    ),
+                    fingerprint_roles,
+                    role_weights,
+                    loss_mask,
                 )
-            else:
-                zero = logits.float().sum() * 0.0
-                fingerprint_components.append(
-                    (
-                        zero,
-                        zero.new_zeros(()),
-                        zero.new_zeros(3),
-                        zero.new_zeros(3),
-                    )
-                )
+            )
         fingerprint_statistics = _statistics(
             fingerprint_components, fused, len(self.fingerprint_families)
         )
@@ -550,7 +541,7 @@ def load_stage1_model(
         checkpoint.get("kind") != STAGE1_CHECKPOINT_KIND
         or checkpoint.get("format_version") != STAGE1_CHECKPOINT_VERSION
     ):
-        raise ValueError("Stage 2 requires a Stage 1 pretraining checkpoint v1")
+        raise ValueError("Stage 2 requires a Stage 1 pretraining checkpoint v2")
     config = config_from_dict(checkpoint["config"])
     artifact_hash = sha256_file(artifact_dir / "metadata.json")
     if backbone_dropout is not None:

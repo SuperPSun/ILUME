@@ -280,12 +280,12 @@ def test_stage2_loaders_reject_legacy_stage1_checkpoint(tiny_stage2_setup, tmp_p
     payload.pop("kind")
     legacy = tmp_path / "legacy_stage1.pt"
     torch.save(payload, legacy)
-    with pytest.raises(ValueError, match="checkpoint v1"):
+    with pytest.raises(ValueError, match="checkpoint v2"):
         load_stage1_model(
             legacy,
             tiny_stage2_setup.data.pretrain_artifacts_dir,
         )
-    with pytest.raises(ValueError, match="checkpoint v1"):
+    with pytest.raises(ValueError, match="checkpoint v2"):
         load_stage1_feature_inputs(
             legacy,
             tiny_stage2_setup.data.pretrain_artifacts_dir,

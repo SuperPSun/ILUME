@@ -55,7 +55,6 @@ loss:
 training:
   batch_size: 256
   epochs: 5
-  gradient_accumulation_steps: 1
   learning_rate: 0.0001
   weight_decay: 0.01
   warmup_fraction: 0.05
@@ -63,6 +62,6 @@ training:
   num_workers: 8
   device: auto
   amp_dtype: bf16
-  checkpoint_interval_steps: 1000
-  validation_interval_steps: 2000
+  compile: true
+  validation_interval_steps: 5000
   quick_validation_samples_per_role: 256

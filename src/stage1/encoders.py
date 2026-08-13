@@ -185,7 +185,10 @@ class DirectedMessagePassingEncoder(nn.Module):
                 self.atom_output(torch.cat([atom_features, atom_messages], dim=-1))
             )
         )
-        return atom_tokens, bond_tokens
+        parameter_zero = sum(
+            parameter.float().sum() for parameter in self.parameters()
+        ) * 0.0
+        return atom_tokens + parameter_zero, bond_tokens + parameter_zero
 
 
 class ResidualMLPBlock(nn.Module):
@@ -292,7 +295,7 @@ class DescriptorEncoder(nn.Module):
                     mask_indicator.index_select(1, index),
                 )
             )
-        return torch.stack(tokens, dim=1)
+        return torch.stack(tokens, dim=1) + self.empty_group_tokens.sum() * 0.0
 
 
 class FingerprintEncoder(nn.Module):

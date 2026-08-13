@@ -82,17 +82,34 @@ class PackedGraph:
     atom_scopes: tuple[tuple[int, int], ...]
     bond_scopes: tuple[tuple[int, int], ...]
 
-    def to(self, device: torch.device | str) -> "PackedGraph":
+    def to(
+        self, device: torch.device | str, *, non_blocking: bool = False
+    ) -> "PackedGraph":
         return PackedGraph(
-            atom_categorical=self.atom_categorical.to(device),
-            atom_continuous=self.atom_continuous.to(device),
-            bond_categorical=self.bond_categorical.to(device),
-            bond_index=self.bond_index.to(device),
-            directed_edge_index=self.directed_edge_index.to(device),
-            reverse_edge_index=self.reverse_edge_index.to(device),
-            directed_to_bond=self.directed_to_bond.to(device),
-            atom_batch=self.atom_batch.to(device),
-            bond_batch=self.bond_batch.to(device),
+            atom_categorical=self.atom_categorical.to(device, non_blocking=non_blocking),
+            atom_continuous=self.atom_continuous.to(device, non_blocking=non_blocking),
+            bond_categorical=self.bond_categorical.to(device, non_blocking=non_blocking),
+            bond_index=self.bond_index.to(device, non_blocking=non_blocking),
+            directed_edge_index=self.directed_edge_index.to(device, non_blocking=non_blocking),
+            reverse_edge_index=self.reverse_edge_index.to(device, non_blocking=non_blocking),
+            directed_to_bond=self.directed_to_bond.to(device, non_blocking=non_blocking),
+            atom_batch=self.atom_batch.to(device, non_blocking=non_blocking),
+            bond_batch=self.bond_batch.to(device, non_blocking=non_blocking),
+            atom_scopes=self.atom_scopes,
+            bond_scopes=self.bond_scopes,
+        )
+
+    def pin_memory(self) -> "PackedGraph":
+        return PackedGraph(
+            atom_categorical=self.atom_categorical.pin_memory(),
+            atom_continuous=self.atom_continuous.pin_memory(),
+            bond_categorical=self.bond_categorical.pin_memory(),
+            bond_index=self.bond_index.pin_memory(),
+            directed_edge_index=self.directed_edge_index.pin_memory(),
+            reverse_edge_index=self.reverse_edge_index.pin_memory(),
+            directed_to_bond=self.directed_to_bond.pin_memory(),
+            atom_batch=self.atom_batch.pin_memory(),
+            bond_batch=self.bond_batch.pin_memory(),
             atom_scopes=self.atom_scopes,
             bond_scopes=self.bond_scopes,
         )

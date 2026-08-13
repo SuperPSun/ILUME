@@ -8,6 +8,7 @@ import torch.nn.functional as F
 
 from stage1.config import MaskingConfig
 from stage1.graph import ATOM_FEATURE_NAMES, BOND_FEATURE_NAMES
+from stage1.data import BatchFusionLayout
 from stage1.masking import (
     MultimodalCollator,
     MultimodalMasker,
@@ -400,6 +401,23 @@ def test_fusion_layout_tracks_variable_smiles_atoms_bonds_and_descriptor():
         feedforward_dim=16,
         dropout=0.0,
     )
+    smiles_lengths = (~smiles_padding).sum(dim=1)
+    atom_counts = torch.tensor([count for _, count in graphs.atom_scopes])
+    bond_counts = torch.tensor([count for _, count in graphs.bond_scopes])
+    batch_layout = BatchFusionLayout(
+        smiles_lengths=smiles_lengths,
+        atom_counts=atom_counts,
+        bond_counts=bond_counts,
+        atom_local_indices=torch.cat(
+            [torch.arange(count) for count in atom_counts.tolist()]
+        ),
+        bond_local_indices=torch.cat(
+            [torch.arange(count) for count in bond_counts.tolist()]
+        ),
+        max_core_length=int((1 + smiles_lengths + atom_counts + bond_counts).max()),
+        max_atom_count=int(atom_counts.max()),
+        max_bond_count=int(bond_counts.max()),
+    )
     fused, layout = fusion(
         smiles,
         smiles_padding,
@@ -409,6 +427,7 @@ def test_fusion_layout_tracks_variable_smiles_atoms_bonds_and_descriptor():
         fingerprints,
         graphs,
         torch.tensor([0, 2]),
+        batch_layout,
     )
 
     assert layout.sequence_lengths.tolist() == [31, 37]
@@ -420,3 +439,57 @@ def test_fusion_layout_tracks_variable_smiles_atoms_bonds_and_descriptor():
     assert layout.fingerprint_indices[0].tolist() == list(range(13, 31))
     assert layout.fingerprint_indices[1].tolist() == list(range(19, 37))
     assert fused.shape == (2, 37, d_model)
+
+    assembled, _ = fusion._assemble(
+        smiles,
+        smiles_padding,
+        atoms,
+        bonds,
+        descriptors,
+        fingerprints,
+        graphs,
+        torch.tensor([0, 2]),
+        batch_layout,
+    )
+    expected = torch.zeros_like(assembled)
+    modality = fusion.modality_embedding.weight
+    role_types = fusion.role_embedding(torch.tensor([0, 2]))
+    for row, ((atom_start, atom_count), (bond_start, bond_count)) in enumerate(
+        zip(graphs.atom_scopes, graphs.bond_scopes, strict=True)
+    ):
+        cursor = 0
+        expected[row, cursor] = fusion.cls_token + modality[0] + role_types[row]
+        cursor += 1
+        smiles_count = int(smiles_lengths[row])
+        expected[row, cursor : cursor + smiles_count] = (
+            smiles[row, :smiles_count] + modality[1] + role_types[row]
+        )
+        cursor += smiles_count
+        expected[row, cursor : cursor + atom_count] = (
+            atoms[atom_start : atom_start + atom_count] + modality[2] + role_types[row]
+        )
+        cursor += atom_count
+        expected[row, cursor : cursor + bond_count] = (
+            bonds[bond_start : bond_start + bond_count] + modality[2] + role_types[row]
+        )
+        cursor += bond_count
+        expected[row, cursor : cursor + 8] = descriptors[row] + modality[3] + role_types[row]
+        cursor += 8
+        expected[row, cursor : cursor + 18] = fingerprints[row] + modality[4] + role_types[row]
+    assert torch.equal(assembled, expected)
+
+
+def test_model_fullgraph_compile_handles_two_dynamic_batch_shapes(
+    tiny_config, tiny_samples
+):
+    vocabulary, samples = tiny_samples
+    model = MultimodalPretrainModel(tiny_config, vocabulary)
+    compiled = torch.compile(model, backend="eager", fullgraph=True)
+    for selected in (samples[:2], samples):
+        batch = MultimodalCollator(
+            vocabulary, tiny_config.masking, seed=tiny_config.data.seed
+        )(selected)
+        output = compiled(batch)
+        assert torch.isfinite(output.loss)
+        output.loss.backward()
+        model.zero_grad(set_to_none=True)

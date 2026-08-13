@@ -6,6 +6,7 @@ import torch
 from torch import nn
 from torch.utils.checkpoint import checkpoint
 
+from .data import BatchFusionLayout
 from .graph import PackedGraph
 
 
@@ -69,125 +70,100 @@ class FusionTransformer(nn.Module):
         fingerprint_tokens: torch.Tensor,
         graph: PackedGraph,
         roles: torch.Tensor,
+        batch_layout: BatchFusionLayout,
     ) -> tuple[torch.Tensor, FusionLayout]:
         batch_size, smiles_width, d_model = smiles_tokens.shape
         descriptor_count = descriptor_tokens.shape[1]
         fingerprint_count = fingerprint_tokens.shape[1]
-        smiles_lengths = (~smiles_padding_mask).sum(dim=1)
-        sequence_lengths = torch.empty(
-            batch_size, dtype=torch.long, device=smiles_tokens.device
+        smiles_lengths = batch_layout.smiles_lengths
+        atom_counts = batch_layout.atom_counts
+        bond_counts = batch_layout.bond_counts
+        sequence_lengths = (
+            1
+            + smiles_lengths
+            + atom_counts
+            + bond_counts
+            + descriptor_count
+            + fingerprint_count
         )
-        for row, ((_, atom_count), (_, bond_count)) in enumerate(
-            zip(graph.atom_scopes, graph.bond_scopes, strict=True)
-        ):
-            sequence_lengths[row] = (
-                1
-                + smiles_lengths[row]
-                + atom_count
-                + bond_count
-                + descriptor_count
-                + fingerprint_count
-            )
-        max_length = int(sequence_lengths.max().item())
+        max_length = batch_layout.max_core_length + descriptor_count + fingerprint_count
         fused_inputs = smiles_tokens.new_zeros((batch_size, max_length, d_model))
-        padding_mask = torch.ones(
-            (batch_size, max_length), dtype=torch.bool, device=smiles_tokens.device
-        )
-        smiles_indices = torch.full(
-            (batch_size, smiles_width),
-            -1,
-            dtype=torch.long,
-            device=smiles_tokens.device,
-        )
-        atom_indices = torch.empty(
-            atom_tokens.shape[0], dtype=torch.long, device=smiles_tokens.device
-        )
-        bond_indices = torch.empty(
-            bond_tokens.shape[0], dtype=torch.long, device=smiles_tokens.device
-        )
-        descriptor_indices = torch.empty(
-            (batch_size, descriptor_count),
-            dtype=torch.long,
-            device=smiles_tokens.device,
-        )
-        fingerprint_indices = torch.empty(
-            (batch_size, fingerprint_count),
-            dtype=torch.long,
-            device=smiles_tokens.device,
-        )
-
+        positions = torch.arange(max_length, device=smiles_tokens.device)
+        padding_mask = positions[None, :] >= sequence_lengths[:, None]
         modality = self.modality_embedding.weight
-        for row, ((atom_start, atom_count), (bond_start, bond_count)) in enumerate(
-            zip(graph.atom_scopes, graph.bond_scopes, strict=True)
-        ):
-            role_type = (
-                self.role_embedding(roles[row])
-                if self.role_embedding is not None
-                else smiles_tokens.new_zeros(d_model)
-            )
-            cursor = 0
-            fused_inputs[row, cursor] = (
-                self.cls_token + modality[self.CLS_MODALITY] + role_type
-            )
-            cursor += 1
+        role_types = (
+            self.role_embedding(roles)
+            if self.role_embedding is not None
+            else smiles_tokens.new_zeros((batch_size, d_model))
+        )
+        rows = torch.arange(batch_size, device=smiles_tokens.device)
+        fused_inputs[:, 0] = self.cls_token + modality[self.CLS_MODALITY] + role_types
 
-            smiles_count = int(smiles_lengths[row].item())
-            smiles_slice = slice(cursor, cursor + smiles_count)
-            fused_inputs[row, smiles_slice] = (
-                smiles_tokens[row, :smiles_count]
-                + modality[self.SMILES_MODALITY]
-                + role_type
-            )
-            smiles_indices[row, :smiles_count] = torch.arange(
-                cursor, cursor + smiles_count, device=smiles_tokens.device
-            )
-            cursor += smiles_count
+        smiles_columns = torch.arange(smiles_width, device=smiles_tokens.device)
+        smiles_valid = smiles_columns[None, :] < smiles_lengths[:, None]
+        smiles_indices = torch.where(
+            smiles_valid,
+            1 + smiles_columns[None, :],
+            smiles_columns.new_full((batch_size, smiles_width), -1),
+        )
+        smiles_targets = smiles_indices.clamp_min(0)
+        smiles_values = (
+            smiles_tokens
+            + modality[self.SMILES_MODALITY]
+            + role_types[:, None, :]
+        ).masked_fill(~smiles_valid[..., None], 0.0)
+        fused_inputs.scatter_add_(
+            1,
+            smiles_targets[..., None].expand(-1, -1, d_model),
+            smiles_values,
+        )
+        fused_inputs[:, 0] = self.cls_token + modality[self.CLS_MODALITY] + role_types
 
-            atom_slice = slice(cursor, cursor + atom_count)
-            fused_inputs[row, atom_slice] = (
-                atom_tokens[atom_start : atom_start + atom_count]
-                + modality[self.GRAPH_MODALITY]
-                + role_type
-            )
-            atom_indices[atom_start : atom_start + atom_count] = torch.arange(
-                cursor, cursor + atom_count, device=smiles_tokens.device
-            )
-            cursor += atom_count
+        atom_rows = graph.atom_batch
+        atom_indices = (
+            1
+            + smiles_lengths[atom_rows]
+            + batch_layout.atom_local_indices
+        )
+        fused_inputs[atom_rows, atom_indices] = (
+            atom_tokens + modality[self.GRAPH_MODALITY] + role_types[atom_rows]
+        )
 
-            bond_slice = slice(cursor, cursor + bond_count)
-            fused_inputs[row, bond_slice] = (
-                bond_tokens[bond_start : bond_start + bond_count]
-                + modality[self.GRAPH_MODALITY]
-                + role_type
-            )
-            bond_indices[bond_start : bond_start + bond_count] = torch.arange(
-                cursor, cursor + bond_count, device=smiles_tokens.device
-            )
-            cursor += bond_count
+        bond_rows = graph.bond_batch
+        bond_indices = (
+            1
+            + smiles_lengths[bond_rows]
+            + atom_counts[bond_rows]
+            + batch_layout.bond_local_indices
+        )
+        fused_inputs[bond_rows, bond_indices] = (
+            bond_tokens + modality[self.GRAPH_MODALITY] + role_types[bond_rows]
+        )
 
-            descriptor_slice = slice(cursor, cursor + descriptor_count)
-            fused_inputs[row, descriptor_slice] = (
-                descriptor_tokens[row]
-                + modality[self.DESCRIPTOR_MODALITY]
-                + role_type
-            )
-            descriptor_indices[row] = torch.arange(
-                cursor, cursor + descriptor_count, device=smiles_tokens.device
-            )
-            cursor += descriptor_count
+        descriptor_start = 1 + smiles_lengths + atom_counts + bond_counts
+        descriptor_columns = torch.arange(
+            descriptor_count, device=smiles_tokens.device
+        )
+        descriptor_indices = descriptor_start[:, None] + descriptor_columns[None, :]
+        fused_inputs[rows[:, None], descriptor_indices] = (
+            descriptor_tokens
+            + modality[self.DESCRIPTOR_MODALITY]
+            + role_types[:, None, :]
+        )
 
-            fingerprint_slice = slice(cursor, cursor + fingerprint_count)
-            if fingerprint_count:
-                fused_inputs[row, fingerprint_slice] = (
-                    fingerprint_tokens[row]
-                    + modality[self.FINGERPRINT_MODALITY]
-                    + role_type
-                )
-                fingerprint_indices[row] = torch.arange(
-                    cursor, cursor + fingerprint_count, device=smiles_tokens.device
-                )
-            cursor += fingerprint_count
-            padding_mask[row, :cursor] = False
+        fingerprint_columns = torch.arange(
+            fingerprint_count, device=smiles_tokens.device
+        )
+        fingerprint_indices = (
+            descriptor_start[:, None]
+            + descriptor_count
+            + fingerprint_columns[None, :]
+        )
+        fused_inputs[rows[:, None], fingerprint_indices] = (
+            fingerprint_tokens
+            + modality[self.FINGERPRINT_MODALITY]
+            + role_types[:, None, :]
+        )
 
         return fused_inputs, FusionLayout(
             smiles_indices=smiles_indices,
@@ -225,6 +201,7 @@ class FusionTransformer(nn.Module):
         fingerprint_tokens: torch.Tensor,
         graph: PackedGraph,
         roles: torch.Tensor,
+        batch_layout: BatchFusionLayout,
     ) -> tuple[torch.Tensor, FusionLayout]:
         inputs, layout = self._assemble(
             smiles_tokens,
@@ -235,6 +212,7 @@ class FusionTransformer(nn.Module):
             fingerprint_tokens,
             graph,
             roles,
+            batch_layout,
         )
         return self._encode(inputs, layout.padding_mask), layout
 

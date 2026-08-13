@@ -37,20 +37,90 @@ class MaskPlan:
     fingerprint_loss_mask: dict[str, torch.Tensor]
     modality_dropped: torch.Tensor
 
-    def to(self, device: torch.device | str) -> "MaskPlan":
+    def to(
+        self, device: torch.device | str, *, non_blocking: bool = False
+    ) -> "MaskPlan":
         return MaskPlan(
-            smiles_labels=self.smiles_labels.to(device),
-            atom_mask=self.atom_mask.to(device),
-            bond_mask=self.bond_mask.to(device),
-            descriptor_indicator=self.descriptor_indicator.to(device),
-            descriptor_loss_mask=self.descriptor_loss_mask.to(device),
+            smiles_labels=self.smiles_labels.to(device, non_blocking=non_blocking),
+            atom_mask=self.atom_mask.to(device, non_blocking=non_blocking),
+            bond_mask=self.bond_mask.to(device, non_blocking=non_blocking),
+            descriptor_indicator=self.descriptor_indicator.to(
+                device, non_blocking=non_blocking
+            ),
+            descriptor_loss_mask=self.descriptor_loss_mask.to(
+                device, non_blocking=non_blocking
+            ),
             fingerprint_indicator={
-                name: value.to(device) for name, value in self.fingerprint_indicator.items()
+                name: value.to(device, non_blocking=non_blocking)
+                for name, value in self.fingerprint_indicator.items()
             },
             fingerprint_loss_mask={
-                name: value.to(device) for name, value in self.fingerprint_loss_mask.items()
+                name: value.to(device, non_blocking=non_blocking)
+                for name, value in self.fingerprint_loss_mask.items()
             },
-            modality_dropped=self.modality_dropped.to(device),
+            modality_dropped=self.modality_dropped.to(
+                device, non_blocking=non_blocking
+            ),
+        )
+
+    def pin_memory(self) -> "MaskPlan":
+        return MaskPlan(
+            smiles_labels=self.smiles_labels.pin_memory(),
+            atom_mask=self.atom_mask.pin_memory(),
+            bond_mask=self.bond_mask.pin_memory(),
+            descriptor_indicator=self.descriptor_indicator.pin_memory(),
+            descriptor_loss_mask=self.descriptor_loss_mask.pin_memory(),
+            fingerprint_indicator={
+                name: value.pin_memory()
+                for name, value in self.fingerprint_indicator.items()
+            },
+            fingerprint_loss_mask={
+                name: value.pin_memory()
+                for name, value in self.fingerprint_loss_mask.items()
+            },
+            modality_dropped=self.modality_dropped.pin_memory(),
+        )
+
+
+@dataclass(frozen=True)
+class BatchFusionLayout:
+    smiles_lengths: torch.Tensor
+    atom_counts: torch.Tensor
+    bond_counts: torch.Tensor
+    atom_local_indices: torch.Tensor
+    bond_local_indices: torch.Tensor
+    max_core_length: int
+    max_atom_count: int
+    max_bond_count: int
+
+    def to(
+        self, device: torch.device | str, *, non_blocking: bool = False
+    ) -> "BatchFusionLayout":
+        return BatchFusionLayout(
+            smiles_lengths=self.smiles_lengths.to(device, non_blocking=non_blocking),
+            atom_counts=self.atom_counts.to(device, non_blocking=non_blocking),
+            bond_counts=self.bond_counts.to(device, non_blocking=non_blocking),
+            atom_local_indices=self.atom_local_indices.to(
+                device, non_blocking=non_blocking
+            ),
+            bond_local_indices=self.bond_local_indices.to(
+                device, non_blocking=non_blocking
+            ),
+            max_core_length=self.max_core_length,
+            max_atom_count=self.max_atom_count,
+            max_bond_count=self.max_bond_count,
+        )
+
+    def pin_memory(self) -> "BatchFusionLayout":
+        return BatchFusionLayout(
+            smiles_lengths=self.smiles_lengths.pin_memory(),
+            atom_counts=self.atom_counts.pin_memory(),
+            bond_counts=self.bond_counts.pin_memory(),
+            atom_local_indices=self.atom_local_indices.pin_memory(),
+            bond_local_indices=self.bond_local_indices.pin_memory(),
+            max_core_length=self.max_core_length,
+            max_atom_count=self.max_atom_count,
+            max_bond_count=self.max_bond_count,
         )
 
 
@@ -64,19 +134,47 @@ class MultimodalBatch:
     fingerprints: FingerprintBatch
     roles: torch.Tensor
     sample_ids: tuple[str, ...]
+    fusion_layout: BatchFusionLayout
     masks: MaskPlan | None = None
 
-    def to(self, device: torch.device | str) -> "MultimodalBatch":
+    def to(
+        self, device: torch.device | str, *, non_blocking: bool = False
+    ) -> "MultimodalBatch":
         return MultimodalBatch(
-            token_ids=self.token_ids.to(device),
-            token_padding_mask=self.token_padding_mask.to(device),
-            graphs=self.graphs.to(device),
-            descriptors=self.descriptors.to(device),
-            descriptor_valid=self.descriptor_valid.to(device),
-            fingerprints=self.fingerprints.to(device),
-            roles=self.roles.to(device),
+            token_ids=self.token_ids.to(device, non_blocking=non_blocking),
+            token_padding_mask=self.token_padding_mask.to(
+                device, non_blocking=non_blocking
+            ),
+            graphs=self.graphs.to(device, non_blocking=non_blocking),
+            descriptors=self.descriptors.to(device, non_blocking=non_blocking),
+            descriptor_valid=self.descriptor_valid.to(
+                device, non_blocking=non_blocking
+            ),
+            fingerprints=self.fingerprints.to(device, non_blocking=non_blocking),
+            roles=self.roles.to(device, non_blocking=non_blocking),
             sample_ids=self.sample_ids,
-            masks=None if self.masks is None else self.masks.to(device),
+            fusion_layout=self.fusion_layout.to(
+                device, non_blocking=non_blocking
+            ),
+            masks=(
+                None
+                if self.masks is None
+                else self.masks.to(device, non_blocking=non_blocking)
+            ),
+        )
+
+    def pin_memory(self) -> "MultimodalBatch":
+        return MultimodalBatch(
+            token_ids=self.token_ids.pin_memory(),
+            token_padding_mask=self.token_padding_mask.pin_memory(),
+            graphs=self.graphs.pin_memory(),
+            descriptors=self.descriptors.pin_memory(),
+            descriptor_valid=self.descriptor_valid.pin_memory(),
+            fingerprints=self.fingerprints.pin_memory(),
+            roles=self.roles.pin_memory(),
+            sample_ids=self.sample_ids,
+            fusion_layout=self.fusion_layout.pin_memory(),
+            masks=None if self.masks is None else self.masks.pin_memory(),
         )
 
 
@@ -216,6 +314,25 @@ class PreparedCorpusDataset(Dataset):
                 return self._load_shard(shard)[int(entry["offset"])]
             index -= length
         raise IndexError(index)
+
+    def __getitems__(self, indices: list[int]) -> list[dict[str, Any]]:
+        resolved: list[tuple[int, int]] = []
+        for index in indices:
+            if index < 0:
+                index += len(self)
+            if index < 0 or index >= len(self):
+                raise IndexError(index)
+            for compact, length in zip(self._indices, self._lengths, strict=True):
+                if index < length:
+                    entry = compact[index]
+                    resolved.append((int(entry["shard_id"]), int(entry["offset"])))
+                    break
+                index -= length
+        loaded = {
+            shard_id: self._load_shard(self.shards[shard_id]["path"])
+            for shard_id in dict.fromkeys(shard_id for shard_id, _ in resolved)
+        }
+        return [loaded[shard_id][offset] for shard_id, offset in resolved]
 
 
 def graph_record_from_sample(sample: dict[str, Any]) -> GraphRecord:

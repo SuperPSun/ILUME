@@ -40,12 +40,11 @@ def test_formal_stage1_has_one_large_capacity_base_profile() -> None:
     assert base.data.include_augmentation is True
     assert base.loss.role_weights == (2.0, 2.0, 1.0)
     assert base.training.batch_size == 256
-    assert base.training.gradient_accumulation_steps == 1
     assert base.training.num_workers == 8
     assert base.training.epochs == 5
     assert base.training.learning_rate == pytest.approx(1.0e-4)
-    assert base.training.checkpoint_interval_steps == 1000
-    assert base.training.validation_interval_steps == 2000
+    assert base.training.compile is True
+    assert base.training.validation_interval_steps == 5000
     assert base.tokenizer.min_frequency == 1
     assert (
         base.preparation.workers,
@@ -157,6 +156,47 @@ def test_run_directory_ignores_only_named_execution_section(tmp_path, monkeypatc
         )
 
 
+def test_run_directory_allows_only_explicit_compile_switch_on_resume(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(outputs_module, "REPOSITORY_ROOT", tmp_path)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("training:\n  compile: true\n", encoding="utf-8")
+    original = {"training": {"epochs": 2, "compile": True}}
+    run = open_run_directory(
+        stage="stage1",
+        operation="train",
+        config_path="config.yaml",
+        config_payload=original,
+        output="outputs/train",
+        seed=42,
+    )
+    run.fail()
+    resumed = open_run_directory(
+        stage="stage1",
+        operation="train",
+        config_path="config.yaml",
+        config_payload={"training": {"epochs": 2, "compile": False}},
+        output="outputs/train",
+        seed=42,
+        resume="outputs/train/last.pt",
+        ignored_config_fields={"training.compile"},
+    )
+    assert resumed.metadata["attempt_id"] != run.metadata["attempt_id"]
+    assert resumed.metadata["resume"] == "outputs/train/last.pt"
+    with pytest.raises(ValueError, match="does not match"):
+        open_run_directory(
+            stage="stage1",
+            operation="train",
+            config_path="config.yaml",
+            config_payload={"training": {"epochs": 3, "compile": False}},
+            output="outputs/train",
+            seed=42,
+            resume="outputs/train/last.pt",
+            ignored_config_fields={"training.compile"},
+        )
+
+
 def test_data_identity_records_relative_hash_size_and_rows(tmp_path) -> None:
     source = tmp_path / "data" / "stage1" / "cation.csv"
     source.parent.mkdir(parents=True)
@@ -209,7 +249,7 @@ def _ddp_training_worker(
     config: PretrainConfig,
     output_dir: str,
     resume_from: str | None,
-    stop_after_first_step: bool,
+    stop_after_first_epoch: bool,
 ) -> None:
     torch.set_num_threads(1)
     dist.init_process_group(
@@ -243,7 +283,7 @@ def _ddp_training_worker(
         parameter.grad /= world_size
         assert parameter.grad.item() == pytest.approx(11.0 / 5.0)
 
-        if stop_after_first_step:
+        if stop_after_first_epoch:
             real_save = train_module._save_checkpoint
 
             class StopAfterCheckpoint(RuntimeError):
@@ -251,7 +291,7 @@ def _ddp_training_worker(
 
             def save_then_stop(paths, **kwargs):
                 real_save(paths, **kwargs)
-                if kwargs["global_step"] == 1 and kwargs["epoch_cursor"] > 0:
+                if kwargs["completed_epoch"] == 1:
                     raise StopAfterCheckpoint
 
             train_module._save_checkpoint = save_then_stop
@@ -280,7 +320,7 @@ def test_global_batch_must_be_divisible_by_world_size(tmp_path, monkeypatch) -> 
         run_training(config, output_dir=tmp_path)
 
 
-def test_two_rank_gloo_checkpoint_ownership_rng_and_resume(tmp_path, capsys) -> None:
+def test_two_rank_gloo_checkpoint_ownership_and_cross_world_resume(tmp_path, capsys) -> None:
     source = tmp_path / "stage1"
     source.mkdir()
     _write_smiles(source / "cation.csv", ["[Na+]", "[K+]", "C[NH3+]", "C[NH2+]C"])
@@ -316,7 +356,7 @@ def test_two_rank_gloo_checkpoint_ownership_rng_and_resume(tmp_path, capsys) -> 
             num_workers=0,
             device="cpu",
             amp_dtype="none",
-            checkpoint_interval_steps=1,
+            compile=False,
             validation_interval_steps=100,
             quick_validation_samples_per_role=1,
         ),
@@ -339,10 +379,11 @@ def test_two_rank_gloo_checkpoint_ownership_rng_and_resume(tmp_path, capsys) -> 
         join=True,
     )
     mid = torch.load(output / "last.pt", map_location="cpu", weights_only=False)
-    assert mid["world_size"] == 2
-    assert mid["global_step"] == 1
-    assert mid["epoch_cursor"] == 1
-    assert len(mid["rank_rng"]) == 2
+    assert mid["world_size_at_save"] == 2
+    assert mid["global_step"] == 3
+    assert mid["completed_epoch"] == 1
+    assert "rank_rng" not in mid
+    assert "epoch_cursor" not in mid
 
     mp.spawn(
         _ddp_training_worker,
@@ -360,8 +401,7 @@ def test_two_rank_gloo_checkpoint_ownership_rng_and_resume(tmp_path, capsys) -> 
     completed = torch.load(
         output / "last.pt", map_location="cpu", weights_only=False
     )
-    assert completed["completed_epochs"] == 1
-    assert len(completed["rank_rng"]) == 2
+    assert completed["completed_epoch"] == 1
     assert sorted(path.name for path in output.glob("*.pt")) == [
         "checkpoint_epoch_00001.pt",
         "last.pt",
@@ -369,14 +409,17 @@ def test_two_rank_gloo_checkpoint_ownership_rng_and_resume(tmp_path, capsys) -> 
     metric_steps = [
         json.loads(line)["global_step"]
         for line in (output / "metrics.jsonl").read_text().splitlines()
+        if json.loads(line).get("event") != "attempt_start"
     ]
-    assert metric_steps == [1, 2, 3]
+    assert metric_steps == [3]
 
-    with pytest.raises(ValueError, match="world_size"):
-        run_training(config, output_dir=output, resume_from=output / "last.pt")
+    assert run_training(
+        config, output_dir=output, resume_from=output / "last.pt",
+        attempt_id="single-rank-resume",
+    ) == []
 
 
-def test_stage1_checkpoint_cadence_last_and_mid_epoch_exact_resume(
+def test_stage1_epoch_checkpoint_resume_and_attempt_log_preservation(
     tmp_path, capsys, monkeypatch
 ) -> None:
     source = tmp_path / "stage1"
@@ -400,9 +443,9 @@ def test_stage1_checkpoint_cadence_last_and_mid_epoch_exact_resume(
             feedforward_dim=32, dropout=0.1,
         ),
         training=TrainingConfig(
-            batch_size=2, epochs=2, gradient_accumulation_steps=1,
+            batch_size=2, epochs=2,
             learning_rate=1.0e-3, num_workers=0, device="cpu",
-            amp_dtype="none", checkpoint_interval_steps=2,
+            amp_dtype="none", compile=False,
             validation_interval_steps=2, quick_validation_samples_per_role=1,
         ),
     )
@@ -416,9 +459,9 @@ def test_stage1_checkpoint_cadence_last_and_mid_epoch_exact_resume(
         return real_validate(*args, **kwargs)
 
     monkeypatch.setattr(train_module, "_validate", record_validation)
-    baseline = run_training(config, output_dir=baseline_output)
+    baseline = run_training(config, output_dir=baseline_output, attempt_id="baseline")
     monkeypatch.setattr(train_module, "_validate", real_validate)
-    assert [row["global_step"] for row in baseline] == [1, 2, 3, 4, 5, 6]
+    assert [row["global_step"] for row in baseline] == [2, 3, 4, 6]
     assert validation_calls == [True, False, True, False]
 
     real_save = train_module._save_checkpoint
@@ -426,39 +469,59 @@ def test_stage1_checkpoint_cadence_last_and_mid_epoch_exact_resume(
     class Interrupted(RuntimeError):
         pass
 
-    def interrupt_after_mid_epoch(paths, **kwargs):
+    def interrupt_after_epoch(paths, **kwargs):
         real_save(paths, **kwargs)
-        if kwargs["global_step"] == 2 and kwargs["epoch_cursor"] > 0:
+        if kwargs["completed_epoch"] == 1:
             raise Interrupted
 
-    monkeypatch.setattr(train_module, "_save_checkpoint", interrupt_after_mid_epoch)
+    monkeypatch.setattr(train_module, "_save_checkpoint", interrupt_after_epoch)
     with pytest.raises(Interrupted):
-        run_training(config, output_dir=output)
+        run_training(config, output_dir=output, attempt_id="attempt-1")
     monkeypatch.setattr(train_module, "_save_checkpoint", real_save)
 
     mid = torch.load(output / "last.pt", map_location="cpu", weights_only=False)
     assert mid["kind"] == STAGE1_CHECKPOINT_KIND
     assert mid["format_version"] == STAGE1_CHECKPOINT_VERSION
-    assert mid["epoch_index"] == 0
-    assert mid["epoch_cursor"] == 4
+    assert mid["completed_epoch"] == 1
+    assert mid["global_step"] == 3
+    assert set(mid).isdisjoint({"epoch_index", "epoch_cursor", "rank_rng", "micro_step"})
     with (output / "metrics.jsonl").open("a", encoding="utf-8") as handle:
         handle.write('{"global_step": 999, "loss": 0}\n')
 
-    rows = run_training(config, output_dir=output, resume_from=output / "last.pt")
-    assert [row["global_step"] for row in rows] == [3, 4, 5, 6]
-    assert rows == baseline[2:]
+    rows = run_training(
+        config, output_dir=output, resume_from=output / "last.pt",
+        attempt_id="attempt-2",
+    )
+    assert [row["global_step"] for row in rows] == [4, 6]
+    assert [row["loss"] for row in rows] == pytest.approx(
+        [row["loss"] for row in baseline[2:]]
+    )
     assert (output / "checkpoint_epoch_00001.pt").is_file()
     assert (output / "checkpoint_epoch_00002.pt").is_file()
     assert (output / "last.pt").is_file()
     last = torch.load(output / "last.pt", map_location="cpu", weights_only=False)
-    assert last["completed_epochs"] == 2
-    assert last["epoch_index"] == 2
-    assert last["epoch_cursor"] == 0
-    metric_steps = [
-        json.loads(line)["global_step"]
+    assert last["completed_epoch"] == 2
+    metric_rows = [
+        json.loads(line)
         for line in (output / "metrics.jsonl").read_text().splitlines()
     ]
-    assert metric_steps == [1, 2, 3, 4, 5, 6]
+    attempt_rows = [row for row in metric_rows if row.get("event") == "attempt_start"]
+    assert attempt_rows == [
+        {
+            "event": "attempt_start",
+            "attempt_id": "attempt-2",
+            "resumed_from_attempt_id": "attempt-1",
+            "completed_epoch": 1,
+            "global_step": 3,
+            "world_size": 1,
+            "compile": False,
+        }
+    ]
+    training_rows = [row for row in metric_rows if row.get("event") != "attempt_start"]
+    assert [row["global_step"] for row in training_rows] == [2, 3, 999, 4, 6]
+    assert [row.get("attempt_id") for row in training_rows] == [
+        "attempt-1", "attempt-1", None, "attempt-2", "attempt-2"
+    ]
 
     assert run_training(
         config, output_dir=output, resume_from=output / "last.pt"
@@ -469,6 +532,10 @@ def test_stage1_checkpoint_cadence_last_and_mid_epoch_exact_resume(
     assert run_training(
         changed_preparation, output_dir=output, resume_from=output / "last.pt"
     ) == []
+    changed_compile = replace(config, training=replace(config.training, compile=True))
+    assert run_training(
+        changed_compile, output_dir=output, resume_from=output / "last.pt"
+    ) == []
     changed_tokenizer = replace(
         config, tokenizer=replace(config.tokenizer, min_frequency=2)
     )
@@ -476,7 +543,7 @@ def test_stage1_checkpoint_cadence_last_and_mid_epoch_exact_resume(
         run_training(
             changed_tokenizer, output_dir=output, resume_from=output / "last.pt"
         )
-    for version in (2, 3):
+    for version in (1, 3):
         invalid = dict(last)
         invalid["format_version"] = version
         invalid.pop("kind")

@@ -32,6 +32,8 @@ python scripts/stage1/train.py \
   --output outputs/v1/stage1/base/train
 ```
 
+正式 Base 默认 `training.compile: true`，编译失败会明确终止且不会静默切换 eager；机器或环境不适合时，应在 YAML 中显式改为 `compile: false`。
+
 prepare 期间可查看同一输出目录下的 `performance.json`，其中记录本次 invocation 各 phase 的处理量、耗时、吞吐和复用状态；该文件不参与 corpus 或 checkpoint 身份。
 
 `training.batch_size: 256` 是跨所有 rank 的 global batch。四卡训练使用每卡 64：
@@ -42,7 +44,7 @@ torchrun --nproc-per-node=4 scripts/stage1/train.py \
   --output outputs/v1/stage1/base/train
 ```
 
-恢复训练需显式指定同一操作目录中的 checkpoint，并保持 checkpoint 保存时的 `world_size`：
+Stage 1 只从已完成 epoch 的 v2 checkpoint 恢复；中断的 epoch 会从头重跑。恢复仍需显式指定同一操作目录中的 checkpoint：
 
 ```bash
 python scripts/stage1/train.py \
@@ -51,11 +53,11 @@ python scripts/stage1/train.py \
   --resume outputs/v1/stage1/base/train/last.pt
 ```
 
-四卡 checkpoint 恢复时仍使用 `torchrun --nproc-per-node=4`，并在同一条命令末尾添加上述 `--resume` 参数。
+可以在 epoch 边界改变 GPU 数量；这会生成新的 execution attempt 并记录新的 `world_size`，恢复后的随机轨迹不保证与原运行一致。保持相同 GPU 数、compile 设置和软件/硬件环境时，新版训练器保证自身的 epoch-boundary 可复现性。
 
 ## Stage 2
 
-Stage 2 同样只保留一个正式 Base，并从 Stage 1 Base 的 v1 checkpoint 准备离线教师缓存：
+Stage 2 同样只保留一个正式 Base，并从 Stage 1 Base 的 v2 checkpoint 准备离线教师缓存：
 
 ```bash
 python scripts/stage2/prepare.py \

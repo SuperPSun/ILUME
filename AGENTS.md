@@ -4,7 +4,7 @@
 
 仓库重构不得改变现役数据筛选与 split、tokenizer、descriptor、fingerprint、masking、模型、loss、优化顺序、验证指标、早停和 Stage 1/2/3 数值训练行为。发现科研问题时单独记录，不在结构整理中顺手修改。
 
-Stage 1 现役合同以 ADR-0013/0014 为准：自然频率全量 epoch、cation/anion/molecule 的 element-level loss 权重 2/2/1、五模态等权、global batch 256、单一 Base、原生单卡/DDP、corpus kind/v2 与 checkpoint kind/v1。不得恢复 45/45/10 coverage sampler、augmentation multiplier、多容量正式配置或旧 artifact/checkpoint 兼容。
+Stage 1 现役合同以 ADR-0013/0014/0015 为准：自然频率全量 epoch、cation/anion/molecule 的 element-level loss 权重 2/2/1、五模态等权、global batch 256、单一 Base、原生单卡/DDP、corpus/checkpoint 既定 kind 与 `format_version=2`。只支持 epoch 边界恢复；不得恢复 45/45/10 coverage sampler、augmentation multiplier、多容量正式配置、mid-epoch cursor/RNG 恢复或旧 artifact/checkpoint 兼容。
 
 Stage 2 保持五任务、PairEncoder、任务内体系采样、部分标签 mask 与 10% 渐进解冻。Stage 3 保持 `il21`/`aux6` 双域的模型与 optimizer、scheduler、AMP、RNG、BN、早停和选优状态完全隔离；现役决定以 ADR-0011/0012 为准。
 
@@ -21,7 +21,7 @@ Stage 2 保持五任务、PairEncoder、任务内体系采样、部分标签 mas
 
 - 数据本体不进入 Git；prepare 自动写 `data/stage*/metadata.json`。
 - 每次操作必须冻结 `run_config.yaml`，并写公开安全的 `metadata.json` 和成功后的 `summary.json`；只有 reusable Stage 1 prepare 可在科研配置一致时刷新 `preparation` 执行参数。禁止用户名、hostname、私有绝对路径。
-- 新 train/evaluate 输出不可覆盖；resume 必须显式且严格校验阶段、fold/domain、有效配置、step/epoch/cycle、optimizer、scheduler、AMP、RNG、sampler/cursor。
+- 新 train/evaluate 输出不可覆盖；resume 必须显式且严格校验阶段、fold/domain、有效配置、step/epoch/cycle、optimizer、scheduler 与 AMP。Stage 1 仅从完整 epoch 恢复并允许改变 world size；Stage 2/3 继续严格校验各自 RNG 与 sampler/cursor 合同。
 - 保留 prepared artifact 自身的 SHA 和完整性校验；不得恢复跨阶段 checkpoint SHA lineage 强制绑定。
 - 周期 checkpoint 全部保留，`last.pt` 始终是最新完整恢复状态。
 

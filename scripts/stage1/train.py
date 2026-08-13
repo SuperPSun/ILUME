@@ -25,10 +25,12 @@ def main() -> None:
     config = load_config(args.config)
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    use_cuda = config.training.device == "cuda" or (
+        config.training.device == "auto" and torch.cuda.is_available()
+    )
+    if use_cuda:
+        torch.backends.cuda.matmul.fp32_precision = "tf32"
     if world_size > 1:
-        use_cuda = config.training.device == "cuda" or (
-            config.training.device == "auto" and torch.cuda.is_available()
-        )
         if use_cuda:
             torch.cuda.set_device(local_rank)
         dist.init_process_group(backend="nccl" if use_cuda else "gloo")
@@ -47,6 +49,12 @@ def main() -> None:
                     seed=config.data.seed,
                     resume=args.resume,
                     ignored_config_sections={"preparation"},
+                    ignored_config_fields={"training.compile"},
+                    details={
+                        "world_size": world_size,
+                        "amp_dtype": config.training.amp_dtype,
+                        "compile": config.training.compile,
+                    },
                 )
             except BaseException as error:
                 open_error = f"{type(error).__name__}: {error}"
@@ -60,6 +68,7 @@ def main() -> None:
         rows = run_training(
             config, output_dir=output_dir,
             resume_from=repository_path(args.resume) if args.resume else None,
+            attempt_id=run.metadata["attempt_id"] if run is not None else "worker",
         )
         if run is not None:
             run.complete(rows[-1] if rows else {"status": "already_complete"})

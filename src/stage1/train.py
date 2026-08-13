@@ -20,10 +20,8 @@ from common.io import atomic_torch_save, sha256_file
 from common.progress import ProgressReporter, loss_postfix
 from common.training import (
     canonical_json_sha256,
-    capture_rng_state,
     cosine_warmup,
     resolve_device,
-    restore_rng_state,
     seed_everything,
 )
 from .config import (
@@ -67,7 +65,7 @@ def _distributed_context() -> _DistributedContext:
 
 
 class _EpochSampler(Sampler[int]):
-    """Shard-local deterministic shuffle with rank partition and a consumed cursor."""
+    """Shard-local deterministic shuffle with an equal-length rank partition."""
 
     def __init__(
         self,
@@ -78,7 +76,6 @@ class _EpochSampler(Sampler[int]):
         rank: int = 0,
         world_size: int = 1,
         epoch: int = 0,
-        cursor: int = 0,
     ) -> None:
         if size <= 0:
             raise ValueError("Training dataset must not be empty")
@@ -92,9 +89,9 @@ class _EpochSampler(Sampler[int]):
         self.rank = rank
         self.world_size = world_size
         self.epoch = epoch
-        self.cursor = cursor
-        if not 0 <= cursor <= self.samples_per_rank:
-            raise ValueError("Sampler cursor is outside the rank partition")
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
 
     @property
     def padding(self) -> int:
@@ -105,7 +102,7 @@ class _EpochSampler(Sampler[int]):
         return (self.size + self.padding) // self.world_size
 
     def __len__(self) -> int:
-        return self.samples_per_rank - self.cursor
+        return self.samples_per_rank
 
     def _shard_seed(self, start: int, count: int) -> int:
         digest = hashlib.sha256(
@@ -129,12 +126,8 @@ class _EpochSampler(Sampler[int]):
         yield from prefix
 
     def __iter__(self) -> Iterator[int]:
-        consumed = 0
         for position, index in enumerate(self._global_indices()):
             if position % self.world_size != self.rank:
-                continue
-            if consumed < self.cursor:
-                consumed += 1
                 continue
             yield index
 
@@ -156,11 +149,14 @@ def _config_hash(config: PretrainConfig) -> str:
 
 def _loader_options(config: PretrainConfig, device: torch.device) -> dict[str, Any]:
     workers = config.training.num_workers
-    return {
+    options: dict[str, Any] = {
         "num_workers": workers,
         "pin_memory": device.type == "cuda",
         "persistent_workers": device.type == "cuda" and workers > 0,
     }
+    if workers > 0:
+        options["prefetch_factor"] = 2
+    return options
 
 
 def _loss_lambdas(config: PretrainConfig) -> dict[str, float]:
@@ -178,11 +174,19 @@ def _global_training_losses(
     context: _DistributedContext,
     config: PretrainConfig,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    names = tuple(output.loss_statistics)
+    sizes = [output.loss_statistics[name].denominators.numel() for name in names]
+    packed_denominators = torch.cat(
+        [output.loss_statistics[name].denominators.detach() for name in names]
+    )
+    if context.enabled:
+        dist.all_reduce(packed_denominators, op=dist.ReduceOp.SUM)
     losses: dict[str, torch.Tensor] = {}
-    for name, statistics in output.loss_statistics.items():
-        denominators = statistics.denominators.detach().clone()
-        if context.enabled:
-            dist.all_reduce(denominators, op=dist.ReduceOp.SUM)
+    offset = 0
+    for name, size in zip(names, sizes, strict=True):
+        statistics = output.loss_statistics[name]
+        denominators = packed_denominators[offset : offset + size]
+        offset += size
         value = (
             statistics.numerators
             / torch.where(
@@ -203,13 +207,26 @@ def _global_metric_losses(
     output: PretrainOutput,
     context: _DistributedContext,
 ) -> dict[str, float]:
+    names = tuple(output.loss_statistics)
+    sizes = [output.loss_statistics[name].numerators.numel() for name in names]
+    packed = torch.cat(
+        [
+            tensor
+            for name in names
+            for tensor in (
+                output.loss_statistics[name].numerators.detach(),
+                output.loss_statistics[name].denominators.detach(),
+            )
+        ]
+    )
+    if context.enabled:
+        dist.all_reduce(packed, op=dist.ReduceOp.SUM)
     result: dict[str, float] = {}
-    for name, statistics in output.loss_statistics.items():
-        numerators = statistics.numerators.detach().clone()
-        denominators = statistics.denominators.detach().clone()
-        if context.enabled:
-            dist.all_reduce(numerators, op=dist.ReduceOp.SUM)
-            dist.all_reduce(denominators, op=dist.ReduceOp.SUM)
+    offset = 0
+    for name, size in zip(names, sizes, strict=True):
+        numerators = packed[offset : offset + size]
+        denominators = packed[offset + size : offset + 2 * size]
+        offset += 2 * size
         result[name] = float(
             (
                 numerators
@@ -286,6 +303,26 @@ def _validation_metrics(
     return metrics
 
 
+def _reduce_accumulator(
+    accumulator: dict[str, dict[str, torch.Tensor]],
+    context: _DistributedContext,
+) -> None:
+    if not context.enabled:
+        return
+    entries = [
+        tensor
+        for name in sorted(accumulator)
+        for tensor in accumulator[name].values()
+    ]
+    sizes = [tensor.numel() for tensor in entries]
+    packed = torch.cat([tensor.reshape(-1) for tensor in entries])
+    dist.all_reduce(packed, op=dist.ReduceOp.SUM)
+    offset = 0
+    for target, size in zip(entries, sizes, strict=True):
+        target.copy_(packed[offset : offset + size].reshape_as(target))
+        offset += size
+
+
 def _quick_validation_indices(
     dataset: PreparedCorpusDataset, samples_per_role: int, seed: int
 ) -> list[int]:
@@ -299,62 +336,37 @@ def _quick_validation_indices(
     return selected
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def _validate(
     model: MultimodalPretrainModel,
-    dataset: PreparedCorpusDataset,
+    loader: DataLoader,
     vocabulary: SmilesTokenizer,
     config: PretrainConfig,
     device: torch.device,
+    context: _DistributedContext,
     *,
     quick: bool,
-    batch_size: int | None = None,
+    amp_enabled: bool,
+    amp_dtype: torch.dtype,
 ) -> dict[str, float]:
-    selected: PreparedCorpusDataset | Subset
-    if quick:
-        selected = Subset(
-            dataset,
-            _quick_validation_indices(
-                dataset,
-                config.training.quick_validation_samples_per_role,
-                config.data.seed + 200000,
-            ),
-        )
-    else:
-        selected = dataset
-    loader = DataLoader(
-        selected,
-        batch_size=batch_size or config.training.batch_size,
-        shuffle=False,
-        collate_fn=MultimodalPacker(vocabulary),
-        drop_last=False,
-        generator=torch.Generator().manual_seed(config.data.seed + 300000),
-        **_loader_options(config, device),
-    )
     masker = MultimodalMasker(vocabulary, config.masking, config.data.seed + 100000)
     accumulator = _empty_accumulator()
     model.eval()
     for batch_index, packed in enumerate(loader):
-        batch = masker.apply(packed, batch_index, max(1, len(loader)), evaluation=True).to(
-            device
+        batch = packed.to(device, non_blocking=device.type == "cuda")
+        batch = masker.apply(
+            batch, batch_index, max(1, len(loader)), evaluation=True
         )
-        output = model(batch)
+        with torch.autocast(
+            device_type=device.type,
+            dtype=amp_dtype,
+            enabled=amp_enabled,
+        ):
+            output = model(batch)
         _accumulate_statistics(accumulator, output.loss_statistics)
+    _reduce_accumulator(accumulator, context)
     model.train()
     return _validation_metrics(accumulator, config)
-
-
-def _capture_all_rank_rng(
-    context: _DistributedContext,
-) -> list[dict[str, Any]] | None:
-    local = capture_rng_state()
-    if not context.enabled:
-        return [local]
-    gathered: list[dict[str, Any]] | None = (
-        [None] * context.world_size if context.is_primary else None  # type: ignore[list-item]
-    )
-    dist.gather_object(local, gathered, dst=0)
-    return gathered
 
 
 def _checkpoint_payload(
@@ -363,14 +375,12 @@ def _checkpoint_payload(
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LRScheduler,
     scaler: torch.amp.GradScaler,
-    epoch_index: int,
-    epoch_cursor: int,
-    completed_epochs: int,
+    completed_epoch: int,
     global_step: int,
     steps_per_epoch: int,
     train_size: int,
-    world_size: int,
-    rank_rng: list[dict[str, Any]],
+    world_size_at_save: int,
+    attempt_id: str,
     config: PretrainConfig,
     config_hash: str,
     artifact_hash: str,
@@ -383,15 +393,12 @@ def _checkpoint_payload(
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict(),
         "scaler": scaler.state_dict(),
-        "epoch_index": epoch_index,
-        "epoch_cursor": epoch_cursor,
-        "completed_epochs": completed_epochs,
+        "completed_epoch": completed_epoch,
         "global_step": global_step,
-        "micro_step": global_step,
         "steps_per_epoch": steps_per_epoch,
         "train_size": train_size,
-        "world_size": world_size,
-        "rank_rng": rank_rng,
+        "world_size_at_save": world_size_at_save,
+        "attempt_id": attempt_id,
         "config": config.to_dict(),
         "config_hash": config_hash,
         "artifact_hash": artifact_hash,
@@ -407,9 +414,7 @@ def _save_checkpoint(
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LRScheduler,
     scaler: torch.amp.GradScaler,
-    epoch_index: int,
-    epoch_cursor: int,
-    completed_epochs: int,
+    completed_epoch: int,
     global_step: int,
     steps_per_epoch: int,
     train_size: int,
@@ -417,25 +422,21 @@ def _save_checkpoint(
     config_hash: str,
     artifact_hash: str,
     source_hashes: dict[str, str],
+    attempt_id: str,
 ) -> None:
-    rank_rng = _capture_all_rank_rng(context)
     if not context.is_primary:
         return
-    if rank_rng is None:
-        raise RuntimeError("Rank RNG collection failed")
     payload = _checkpoint_payload(
         model=model,
         optimizer=optimizer,
         scheduler=scheduler,
         scaler=scaler,
-        epoch_index=epoch_index,
-        epoch_cursor=epoch_cursor,
-        completed_epochs=completed_epochs,
+        completed_epoch=completed_epoch,
         global_step=global_step,
         steps_per_epoch=steps_per_epoch,
         train_size=train_size,
-        world_size=context.world_size,
-        rank_rng=rank_rng,
+        world_size_at_save=context.world_size,
+        attempt_id=attempt_id,
         config=config,
         config_hash=config_hash,
         artifact_hash=artifact_hash,
@@ -444,28 +445,9 @@ def _save_checkpoint(
     for path in paths:
         atomic_torch_save(path, payload)
 
-
-def _truncate_metrics(path: Path, global_step: int) -> None:
-    if not path.is_file():
-        return
-    retained: list[str] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        payload = json.loads(line)
-        if int(payload["global_step"]) <= global_step:
-            retained.append(json.dumps(payload, sort_keys=True))
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(
-        "".join(f"{line}\n" for line in retained), encoding="utf-8"
-    )
-    temporary.replace(path)
-
-
 def _load_checkpoint(
     path: Path,
     *,
-    context: _DistributedContext,
     config: PretrainConfig,
     config_hash: str,
     artifact_hash: str,
@@ -484,34 +466,17 @@ def _load_checkpoint(
     expected = {
         "config_hash": config_hash,
         "artifact_hash": artifact_hash,
-        "world_size": context.world_size,
         "train_size": train_size,
         "steps_per_epoch": steps_per_epoch,
     }
     for name, value in expected.items():
         if checkpoint.get(name) != value:
             raise ValueError(f"Checkpoint {name} does not match")
-    if int(checkpoint["micro_step"]) != int(checkpoint["global_step"]):
-        raise ValueError("Checkpoint micro_step does not match global_step")
-    epoch_index = int(checkpoint["epoch_index"])
-    epoch_cursor = int(checkpoint["epoch_cursor"])
-    completed_epochs = int(checkpoint["completed_epochs"])
-    if not 0 <= completed_epochs == epoch_index <= config.training.epochs:
+    completed_epoch = int(checkpoint["completed_epoch"])
+    if not 0 <= completed_epoch <= config.training.epochs:
         raise ValueError("Checkpoint epoch state is invalid")
-    samples_per_rank = math.ceil(train_size / context.world_size)
-    if not 0 <= epoch_cursor <= samples_per_rank:
-        raise ValueError("Checkpoint epoch cursor is invalid")
-    local_batch_size = config.training.batch_size // context.world_size
-    expected_step = epoch_index * steps_per_epoch + math.ceil(
-        epoch_cursor / local_batch_size
-    )
-    if int(checkpoint["global_step"]) != expected_step:
-        raise ValueError("Checkpoint global_step does not match epoch cursor")
-    if epoch_index == config.training.epochs and epoch_cursor != 0:
-        raise ValueError("Completed checkpoint has a nonzero epoch cursor")
-    rank_rng = checkpoint.get("rank_rng")
-    if not isinstance(rank_rng, list) or len(rank_rng) != context.world_size:
-        raise ValueError("Checkpoint rank RNG state does not match world_size")
+    if int(checkpoint["global_step"]) != completed_epoch * steps_per_epoch:
+        raise ValueError("Checkpoint global_step is not an epoch boundary")
     return checkpoint
 
 
@@ -520,10 +485,11 @@ def run_training(
     *,
     output_dir: str | Path,
     resume_from: str | Path | None = None,
+    attempt_id: str = "direct",
 ) -> list[dict[str, float | int | str]]:
     config.validate()
     context = _distributed_context()
-    seed_everything(config.data.seed + context.rank)
+    seed_everything(config.data.seed)
     if config.training.batch_size % context.world_size:
         raise ValueError("training.batch_size must be divisible by world_size")
     local_batch_size = config.training.batch_size // context.world_size
@@ -535,6 +501,8 @@ def run_training(
         device = torch.device("cuda", local_rank)
     else:
         device = requested_device
+    if device.type == "cuda":
+        torch.backends.cuda.matmul.fp32_precision = "tf32"
     artifact_dir = config.data.artifacts_dir
     artifact_metadata = json.loads(
         (artifact_dir / "metadata.json").read_text(encoding="utf-8")
@@ -549,13 +517,15 @@ def run_training(
     raw_model = MultimodalPretrainModel(
         config, vocabulary, train_dataset.descriptor_schema
     ).to(device)
+    if config.training.compile:
+        raw_model.compile()
     training_model: MultimodalPretrainModel | DistributedDataParallel
     if context.enabled:
         training_model = DistributedDataParallel(
             raw_model,
             device_ids=[device.index] if device.type == "cuda" else None,
             broadcast_buffers=False,
-            find_unused_parameters=True,
+            find_unused_parameters=False,
         )
     else:
         training_model = raw_model
@@ -586,14 +556,11 @@ def run_training(
     config_hash = _config_hash(config)
     artifact_hash = sha256_file(artifact_dir / "metadata.json")
     metrics_path = output_dir / "metrics.jsonl"
-    epoch_index = 0
-    epoch_cursor = 0
-    completed_epochs = 0
+    completed_epoch = 0
     global_step = 0
     if resume_from is not None:
         checkpoint = _load_checkpoint(
             Path(resume_from),
-            context=context,
             config=config,
             config_hash=config_hash,
             artifact_hash=artifact_hash,
@@ -604,15 +571,22 @@ def run_training(
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])
         scaler.load_state_dict(checkpoint["scaler"])
-        epoch_index = int(checkpoint["epoch_index"])
-        epoch_cursor = int(checkpoint["epoch_cursor"])
-        completed_epochs = int(checkpoint["completed_epochs"])
+        completed_epoch = int(checkpoint["completed_epoch"])
         global_step = int(checkpoint["global_step"])
-        restore_rng_state(checkpoint["rank_rng"][context.rank])
-        if context.is_primary:
-            _truncate_metrics(metrics_path, global_step)
     if context.enabled:
         dist.barrier()
+    if context.is_primary and resume_from is not None:
+        attempt_boundary = {
+            "event": "attempt_start",
+            "attempt_id": attempt_id,
+            "resumed_from_attempt_id": checkpoint.get("attempt_id"),
+            "completed_epoch": completed_epoch,
+            "global_step": global_step,
+            "world_size": context.world_size,
+            "compile": config.training.compile,
+        }
+        with metrics_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(attempt_boundary, sort_keys=True) + "\n")
 
     masker = MultimodalMasker(
         vocabulary, config.masking, config.data.seed + context.rank * 1000003
@@ -620,36 +594,62 @@ def run_training(
     reporter = ProgressReporter() if context.is_primary else None
     results: list[dict[str, float | int | str]] = []
     latest_valid_loss: float | None = None
-    raw_model.train()
-    optimizer.zero_grad(set_to_none=True)
-    while epoch_index < config.training.epochs:
-        sampler = _EpochSampler(
-            train_dataset.shard_ranges,
-            size=len(train_dataset),
-            seed=config.data.seed,
-            rank=context.rank,
-            world_size=context.world_size,
-            epoch=epoch_index,
-            cursor=epoch_cursor,
-        )
-        loader = DataLoader(
-            train_dataset,
+    sampler = _EpochSampler(
+        train_dataset.shard_ranges,
+        size=len(train_dataset),
+        seed=config.data.seed,
+        rank=context.rank,
+        world_size=context.world_size,
+    )
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=local_batch_size,
+        sampler=sampler,
+        collate_fn=MultimodalPacker(vocabulary),
+        drop_last=False,
+        generator=torch.Generator().manual_seed(
+            config.data.seed + context.rank * 1000003
+        ),
+        **_loader_options(config, device),
+    )
+    quick_indices = _quick_validation_indices(
+        valid_dataset,
+        config.training.quick_validation_samples_per_role,
+        config.data.seed + 200000,
+    )
+
+    def validation_loader(indices: list[int]) -> DataLoader:
+        selected = Subset(valid_dataset, indices[context.rank :: context.world_size])
+        return DataLoader(
+            selected,
             batch_size=local_batch_size,
-            sampler=sampler,
+            shuffle=False,
             collate_fn=MultimodalPacker(vocabulary),
             drop_last=False,
-            generator=torch.Generator().manual_seed(
-                config.data.seed + context.rank * 1000003 + epoch_index
-            ),
+            generator=torch.Generator().manual_seed(config.data.seed + 300000),
             **_loader_options(config, device),
         )
+
+    quick_loader = validation_loader(quick_indices)
+    full_loader = validation_loader(list(range(len(valid_dataset))))
+    raw_model.train()
+    optimizer.zero_grad(set_to_none=True)
+    while completed_epoch < config.training.epochs:
+        epoch_index = completed_epoch
+        sampler.set_epoch(epoch_index)
+        seed_everything(
+            config.data.seed
+            + epoch_index * 1000003
+            + context.rank * 1009
+            + context.world_size * 9176
+        )
         epoch_number = epoch_index + 1
-        completed_epoch_steps = math.ceil(epoch_cursor / local_batch_size)
+        completed_epoch_steps = 0
         description = f"Epoch {epoch_number}/{config.training.epochs}"
         progress_context = (
             reporter.bar(
                 total=steps_per_epoch,
-                initial=completed_epoch_steps,
+                initial=0,
                 desc=description,
                 unit="step",
             )
@@ -657,8 +657,9 @@ def run_training(
             else nullcontext(_SilentProgress())
         )
         with progress_context as progress:
-            for packed in loader:
-                batch = masker.apply(packed, global_step, total_steps).to(device)
+            for packed in train_loader:
+                batch = packed.to(device, non_blocking=device.type == "cuda")
+                batch = masker.apply(batch, global_step, total_steps)
                 with torch.autocast(
                     device_type=device.type,
                     dtype=amp_dtype,
@@ -667,10 +668,6 @@ def run_training(
                     output = training_model(batch)
                     training_loss, _ = _global_training_losses(
                         output, context, config
-                    )
-                if not torch.isfinite(training_loss):
-                    raise RuntimeError(
-                        f"Non-finite total loss at optimizer step {global_step}"
                     )
                 scaler.scale(training_loss).backward()
                 if config.training.max_grad_norm > 0:
@@ -683,53 +680,67 @@ def run_training(
                 optimizer.zero_grad(set_to_none=True)
                 scheduler.step()
                 global_step += 1
-                epoch_cursor += len(packed.sample_ids)
-
-                metric_losses = _global_metric_losses(output, context)
-                result: dict[str, float | int | str] = {
-                    "epoch": epoch_number,
-                    "epoch_step": completed_epoch_steps + 1,
-                    "global_step": global_step,
-                    "micro_step": global_step,
-                    "device": str(device),
-                    "loss": sum(
-                        _loss_lambdas(config)[name] * value
-                        for name, value in metric_losses.items()
-                    ),
-                    "learning_rate": optimizer.param_groups[0]["lr"],
-                    **{
-                        f"loss_{name}": value
-                        for name, value in metric_losses.items()
-                    },
-                }
                 completed_epoch_steps += 1
                 epoch_finished = completed_epoch_steps == steps_per_epoch
                 should_quick_validate = (
                     not epoch_finished
                     and global_step % config.training.validation_interval_steps == 0
                 )
+                should_log = (
+                    global_step % 10 == 0
+                    or should_quick_validate
+                    or epoch_finished
+                )
+                result: dict[str, float | int | str] | None = None
+                if should_log:
+                    metric_losses = _global_metric_losses(output, context)
+                    result = {
+                        "attempt_id": attempt_id,
+                        "epoch": epoch_number,
+                        "epoch_step": completed_epoch_steps,
+                        "global_step": global_step,
+                        "device": str(device),
+                        "loss": sum(
+                            _loss_lambdas(config)[name] * value
+                            for name, value in metric_losses.items()
+                        ),
+                        "learning_rate": optimizer.param_groups[0]["lr"],
+                        **{
+                            f"loss_{name}": value
+                            for name, value in metric_losses.items()
+                        },
+                    }
+                    if not all(
+                        math.isfinite(value)
+                        for key, value in result.items()
+                        if key == "loss" or key.startswith("loss_")
+                    ):
+                        raise RuntimeError(
+                            f"Non-finite loss detected at optimizer step {global_step}"
+                        )
                 if epoch_finished or should_quick_validate:
-                    if context.enabled:
-                        dist.barrier()
+                    if result is None:
+                        raise RuntimeError("Validation requires a metric result")
                     if context.is_primary:
                         progress.set_description_str("Validating")
-                        result.update(
-                            _validate(
-                                raw_model,
-                                valid_dataset,
-                                vocabulary,
-                                config,
-                                device,
-                                quick=not epoch_finished,
-                                batch_size=local_batch_size,
-                            )
+                    result.update(
+                        _validate(
+                            raw_model,
+                            full_loader if epoch_finished else quick_loader,
+                            vocabulary,
+                            config,
+                            device,
+                            context,
+                            quick=not epoch_finished,
+                            amp_enabled=amp_enabled,
+                            amp_dtype=amp_dtype,
                         )
+                    )
+                    if context.is_primary:
                         latest_valid_loss = float(result["valid_loss"])
                         progress.set_description_str(description)
-                    if context.enabled:
-                        dist.barrier()
 
-                if context.is_primary:
+                if context.is_primary and result is not None:
                     serialized = json.dumps(result, sort_keys=True)
                     reporter.emit_json(result)  # type: ignore[union-attr]
                     with metrics_path.open("a", encoding="utf-8") as handle:
@@ -745,41 +756,15 @@ def run_training(
                     )
                 progress.update(1)
 
-                interval_checkpoint = (
-                    not epoch_finished
-                    and global_step % config.training.checkpoint_interval_steps == 0
-                )
-                if interval_checkpoint:
-                    _save_checkpoint(
-                        (output_dir / "last.pt",),
-                        context=context,
-                        model=raw_model,
-                        optimizer=optimizer,
-                        scheduler=scheduler,
-                        scaler=scaler,
-                        epoch_index=epoch_index,
-                        epoch_cursor=epoch_cursor,
-                        completed_epochs=completed_epochs,
-                        global_step=global_step,
-                        steps_per_epoch=steps_per_epoch,
-                        train_size=len(train_dataset),
-                        config=config,
-                        config_hash=config_hash,
-                        artifact_hash=artifact_hash,
-                        source_hashes=artifact_metadata.get("source_hashes", {}),
-                    )
-
             if completed_epoch_steps != steps_per_epoch:
                 raise RuntimeError(
                     f"Epoch {epoch_number} stopped at optimizer step "
                     f"{completed_epoch_steps}; expected {steps_per_epoch}"
                 )
-        completed_epochs = epoch_number
-        epoch_index = completed_epochs
-        epoch_cursor = 0
+        completed_epoch = epoch_number
         _save_checkpoint(
             (
-                output_dir / f"checkpoint_epoch_{completed_epochs:05d}.pt",
+                output_dir / f"checkpoint_epoch_{completed_epoch:05d}.pt",
                 output_dir / "last.pt",
             ),
             context=context,
@@ -787,9 +772,7 @@ def run_training(
             optimizer=optimizer,
             scheduler=scheduler,
             scaler=scaler,
-            epoch_index=epoch_index,
-            epoch_cursor=epoch_cursor,
-            completed_epochs=completed_epochs,
+            completed_epoch=completed_epoch,
             global_step=global_step,
             steps_per_epoch=steps_per_epoch,
             train_size=len(train_dataset),
@@ -797,5 +780,6 @@ def run_training(
             config_hash=config_hash,
             artifact_hash=artifact_hash,
             source_hashes=artifact_metadata.get("source_hashes", {}),
+            attempt_id=attempt_id,
         )
     return results

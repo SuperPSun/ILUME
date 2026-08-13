@@ -132,7 +132,7 @@ def load_stage1_feature_inputs(
         checkpoint.get("kind") != STAGE1_CHECKPOINT_KIND
         or checkpoint.get("format_version") != STAGE1_CHECKPOINT_VERSION
     ):
-        raise ValueError("Stage 2 requires a Stage 1 pretraining checkpoint v1")
+        raise ValueError("Stage 2 requires a Stage 1 pretraining checkpoint v2")
     config = config_from_dict(checkpoint["config"])
     artifact_dir = Path(artifact_dir)
     artifact_hash = sha256_file(artifact_dir / "metadata.json")

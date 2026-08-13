@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import platform
 import subprocess
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -73,6 +74,7 @@ def _git_state() -> tuple[str | None, bool | None]:
 
 def _runtime_metadata() -> dict[str, Any]:
     commit, dirty = _git_state()
+    cuda_available = torch.cuda.is_available()
     return {
         "repository_commit": commit,
         "repository_dirty": dirty,
@@ -80,8 +82,39 @@ def _runtime_metadata() -> dict[str, Any]:
         "pytorch_version": torch.__version__,
         "cuda_version": torch.version.cuda,
         "rdkit_version": rdBase.rdkitVersion,
-        "gpu_model": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+        "gpu_model": torch.cuda.get_device_name(0) if cuda_available else None,
+        "gpu_capability": (
+            list(torch.cuda.get_device_capability(0)) if cuda_available else None
+        ),
+        "cudnn_version": torch.backends.cudnn.version(),
+        "float32_matmul_precision": (
+            torch.backends.cuda.matmul.fp32_precision if cuda_available else None
+        ),
+        "cuda_matmul_fp32_precision": (
+            torch.backends.cuda.matmul.fp32_precision if cuda_available else None
+        ),
+        "cudnn_conv_fp32_precision": (
+            torch.backends.cudnn.conv.fp32_precision if cuda_available else None
+        ),
+        "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
     }
+
+
+def _without_fields(payload: dict[str, Any], fields: set[str]) -> dict[str, Any]:
+    import copy
+
+    result = copy.deepcopy(payload)
+    for field in fields:
+        parts = field.split(".")
+        target: Any = result
+        for part in parts[:-1]:
+            if not isinstance(target, dict) or part not in target:
+                break
+            target = target[part]
+        else:
+            if isinstance(target, dict):
+                target.pop(parts[-1], None)
+    return result
 
 
 @dataclass
@@ -115,6 +148,7 @@ def open_run_directory(
     resume: str | Path | None = None,
     details: dict[str, Any] | None = None,
     ignored_config_sections: set[str] | None = None,
+    ignored_config_fields: set[str] | None = None,
 ) -> RunDirectory:
     _validate_public_paths(config_payload)
     root = repository_path(output)
@@ -134,12 +168,12 @@ def open_run_directory(
         if not isinstance(existing, dict):
             raise ValueError("Existing run_config.yaml must contain a mapping")
         ignored = ignored_config_sections or set()
-        existing_identity = {
+        existing_identity = _without_fields({
             key: value for key, value in existing.items() if key not in ignored
-        }
-        requested_identity = {
+        }, ignored_config_fields or set())
+        requested_identity = _without_fields({
             key: value for key, value in config_payload.items() if key not in ignored
-        }
+        }, ignored_config_fields or set())
         if existing_identity != requested_identity:
             raise ValueError("Existing run_config.yaml does not match the effective config")
         if reusable and existing != config_payload:
@@ -154,6 +188,7 @@ def open_run_directory(
         "config_path": repository_relative(config_path),
         "data_metadata": f"data/{stage}/metadata.json",
         "seed": seed,
+        "attempt_id": uuid.uuid4().hex,
         **_runtime_metadata(),
     }
     if resume is not None:

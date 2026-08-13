@@ -8,7 +8,12 @@ from typing import Any
 import torch
 
 from .config import MaskingConfig
-from .data import MaskPlan, MultimodalBatch, graph_record_from_sample
+from .data import (
+    BatchFusionLayout,
+    MaskPlan,
+    MultimodalBatch,
+    graph_record_from_sample,
+)
 from .fingerprints import FingerprintBatch
 from .graph import pack_graphs
 from .tokenizer import SPECIAL_TOKENS, SmilesTokenizer
@@ -68,19 +73,25 @@ def sample_modality_dropout(
     progress: float = 1.0,
     fingerprint_active: bool = True,
 ) -> torch.Tensor:
-    probabilities = _dropout_probabilities(config, progress)
+    probabilities = _dropout_probabilities(config, progress).to(generator.device)
     active = [SMILES_MODALITY, GRAPH_MODALITY, DESCRIPTOR_MODALITY]
     if fingerprint_active:
         active.append(FINGERPRINT_MODALITY)
-    dropped = torch.ones((batch_size, MODALITY_COUNT), dtype=torch.bool)
-    draws = torch.rand((batch_size, len(active)), generator=generator)
+    device = generator.device
+    dropped = torch.ones(
+        (batch_size, MODALITY_COUNT), dtype=torch.bool, device=device
+    )
+    draws = torch.rand(
+        (batch_size, len(active)), generator=generator, device=device
+    )
     dropped[:, active] = draws < probabilities[active]
-    for row in range(batch_size):
-        if bool(dropped[row, active].all()):
-            keep_index = int(
-                torch.randint(0, len(active), (1,), generator=generator).item()
-            )
-            dropped[row, active[keep_index]] = False
+    all_dropped = dropped[:, active].all(dim=1)
+    keep = torch.randint(
+        0, len(active), (batch_size,), generator=generator, device=device
+    )
+    rows = torch.arange(batch_size, device=device)[all_dropped]
+    active_tensor = torch.tensor(active, dtype=torch.long, device=device)
+    dropped[rows, active_tensor[keep[all_dropped]]] = False
     return dropped
 
 
@@ -144,6 +155,20 @@ class MultimodalPacker:
             token_padding_mask[row, :length] = False
 
         graphs = pack_graphs([graph_record_from_sample(sample) for sample in samples])
+        smiles_lengths = (~token_padding_mask).sum(dim=1)
+        atom_counts = torch.tensor(
+            [count for _, count in graphs.atom_scopes], dtype=torch.long
+        )
+        bond_counts = torch.tensor(
+            [count for _, count in graphs.bond_scopes], dtype=torch.long
+        )
+        atom_local_indices = torch.cat(
+            [torch.arange(count) for count in atom_counts.tolist()]
+        )
+        bond_local_indices = torch.cat(
+            [torch.arange(count) for count in bond_counts.tolist()]
+        )
+        core_lengths = 1 + smiles_lengths + atom_counts + bond_counts
         descriptors = torch.stack([sample["descriptors"] for sample in samples])
         descriptor_valid = torch.stack(
             [sample["descriptor_valid"] for sample in samples]
@@ -182,6 +207,16 @@ class MultimodalPacker:
                 [sample["role_id"] for sample in samples], dtype=torch.long
             ),
             sample_ids=tuple(sample["sample_id"] for sample in samples),
+            fusion_layout=BatchFusionLayout(
+                smiles_lengths=smiles_lengths,
+                atom_counts=atom_counts,
+                bond_counts=bond_counts,
+                atom_local_indices=atom_local_indices,
+                bond_local_indices=bond_local_indices,
+                max_core_length=int(core_lengths.max()),
+                max_atom_count=int(atom_counts.max()),
+                max_bond_count=int(bond_counts.max()),
+            ),
             masks=None,
         )
 
@@ -205,7 +240,9 @@ class MultimodalMasker:
         if total_steps <= 0:
             raise ValueError("total_steps must be positive")
         generator_seed = self.seed + (0 if evaluation else global_step)
-        generator = torch.Generator().manual_seed(generator_seed)
+        generator = torch.Generator(device=batch.token_ids.device).manual_seed(
+            generator_seed
+        )
         progress = min(1.0, max(0.0, global_step / total_steps))
         batch_size = batch.token_ids.shape[0]
         fingerprint_active = bool(batch.fingerprints.values)
@@ -225,102 +262,138 @@ class MultimodalMasker:
             fingerprint_active=fingerprint_active,
         )
 
-        ratios = {
-            "smiles": [self.config.smiles_ratio] * batch_size,
-            "atom": [self.config.atom_ratio] * batch_size,
-            "bond": [self.config.bond_ratio] * batch_size,
-            "descriptor": [self.config.descriptor_ratio] * batch_size,
-            "fingerprint": [self.config.fingerprint_ratio] * batch_size,
-        }
+        ratios = torch.tensor(
+            [
+                self.config.smiles_ratio,
+                self.config.atom_ratio,
+                self.config.bond_ratio,
+                self.config.descriptor_ratio,
+                self.config.fingerprint_ratio,
+            ],
+            dtype=torch.float32,
+            device=batch.token_ids.device,
+        )[None, :].expand(batch_size, -1).clone()
         if dropout_config.asymmetric_enabled:
             active_modalities = [SMILES_MODALITY, GRAPH_MODALITY, DESCRIPTOR_MODALITY]
             if fingerprint_active:
                 active_modalities.append(FINGERPRINT_MODALITY)
-            for row in range(batch_size):
-                if torch.rand((), generator=generator).item() >= self.config.asymmetric_probability:
-                    continue
-                available = [modality for modality in active_modalities if not dropped[row, modality]]
-                selected = available[
-                    int(torch.randint(0, len(available), (1,), generator=generator).item())
-                ]
-                if selected == SMILES_MODALITY:
-                    ratios["smiles"][row] = self.config.asymmetric_ratio
-                elif selected == GRAPH_MODALITY:
-                    ratios["atom"][row] = self.config.asymmetric_ratio
-                    ratios["bond"][row] = self.config.asymmetric_ratio
-                elif selected == DESCRIPTOR_MODALITY:
-                    ratios["descriptor"][row] = self.config.asymmetric_ratio
-                else:
-                    ratios["fingerprint"][row] = self.config.asymmetric_ratio
+            candidates = torch.tensor(
+                active_modalities, dtype=torch.long, device=batch.token_ids.device
+            )
+            available = ~dropped[:, candidates]
+            choice_scores = torch.rand(
+                available.shape, generator=generator, device=batch.token_ids.device
+            ).masked_fill(~available, -1.0)
+            selected = candidates[choice_scores.argmax(dim=1)]
+            asymmetric = torch.rand(
+                batch_size, generator=generator, device=batch.token_ids.device
+            ) < self.config.asymmetric_probability
+            boosted = torch.full(
+                (batch_size,),
+                self.config.asymmetric_ratio,
+                device=batch.token_ids.device,
+            )
+            for modality, columns in (
+                (SMILES_MODALITY, (0,)),
+                (GRAPH_MODALITY, (1, 2)),
+                (DESCRIPTOR_MODALITY, (3,)),
+                (FINGERPRINT_MODALITY, (4,)),
+            ):
+                rows = asymmetric & (selected == modality)
+                for column in columns:
+                    ratios[:, column] = torch.where(
+                        rows, boosted, ratios[:, column]
+                    )
 
         token_ids = batch.token_ids.clone()
         smiles_labels = torch.full_like(token_ids, -100)
-        for row in range(batch_size):
-            length = int((~batch.token_padding_mask[row]).sum().item())
-            positions = torch.arange(1, max(1, length - 1), dtype=torch.long)
-            corrupted, labels = mask_smiles_tokens(
-                token_ids[row],
-                positions,
-                ratios["smiles"][row],
-                self.vocabulary,
-                generator,
-                bool(dropped[row, SMILES_MODALITY]),
+        smiles_columns = torch.arange(token_ids.shape[1], device=token_ids.device)
+        smiles_eligible = (
+            (smiles_columns[None, :] >= 1)
+            & (smiles_columns[None, :] < batch.fusion_layout.smiles_lengths[:, None] - 1)
+        )
+        smiles_mask = _select_padded(
+            smiles_eligible,
+            ratios[:, 0],
+            dropped[:, SMILES_MODALITY],
+            generator,
+        )
+        smiles_labels[smiles_mask] = token_ids[smiles_mask]
+        decisions = torch.rand(
+            token_ids.shape, generator=generator, device=token_ids.device
+        )
+        replace_with_mask = smiles_mask & (
+            dropped[:, SMILES_MODALITY, None] | (decisions < 0.8)
+        )
+        replace_with_random = (
+            smiles_mask
+            & ~dropped[:, SMILES_MODALITY, None]
+            & (decisions >= 0.8)
+            & (decisions < 0.9)
+        )
+        token_ids[replace_with_mask] = self.vocabulary.mask_id
+        first_regular_token = len(SPECIAL_TOKENS)
+        if len(self.vocabulary.tokens) > first_regular_token:
+            random_ids = torch.randint(
+                first_regular_token,
+                len(self.vocabulary.tokens),
+                token_ids.shape,
+                generator=generator,
+                device=token_ids.device,
             )
-            token_ids[row] = corrupted
-            smiles_labels[row] = labels
+        else:
+            random_ids = torch.full_like(token_ids, self.vocabulary.unk_id)
+        token_ids[replace_with_random] = random_ids[replace_with_random]
 
-        atom_mask = torch.zeros(batch.graphs.atom_categorical.shape[0], dtype=torch.bool)
-        bond_mask = torch.zeros(batch.graphs.bond_categorical.shape[0], dtype=torch.bool)
-        for row, ((atom_start, atom_count), (bond_start, bond_count)) in enumerate(
-            zip(batch.graphs.atom_scopes, batch.graphs.bond_scopes, strict=True)
-        ):
-            atom_positions = torch.arange(atom_start, atom_start + atom_count)
-            bond_positions = torch.arange(bond_start, bond_start + bond_count)
-            if dropped[row, GRAPH_MODALITY]:
-                selected_atoms = atom_positions
-                selected_bonds = bond_positions
-            else:
-                selected_atoms = (
-                    atom_positions[:0]
-                    if atom_count <= 1
-                    else _sample_positions(atom_positions, ratios["atom"][row], generator)
-                )
-                selected_bonds = _sample_positions(
-                    bond_positions, ratios["bond"][row], generator
-                )
-            atom_mask[selected_atoms] = True
-            bond_mask[selected_bonds] = True
+        atom_grid = torch.arange(
+            batch.fusion_layout.max_atom_count, device=token_ids.device
+        )
+        atom_all = atom_grid[None, :] < batch.fusion_layout.atom_counts[:, None]
+        atom_eligible = atom_all & (batch.fusion_layout.atom_counts[:, None] > 1)
+        atom_padded = _select_padded(
+            atom_eligible,
+            ratios[:, 1],
+            torch.zeros_like(dropped[:, GRAPH_MODALITY]),
+            generator,
+        )
+        atom_padded |= dropped[:, GRAPH_MODALITY, None] & atom_all
+        atom_mask = atom_padded[
+            batch.graphs.atom_batch, batch.fusion_layout.atom_local_indices
+        ]
+
+        bond_grid = torch.arange(
+            batch.fusion_layout.max_bond_count, device=token_ids.device
+        )
+        bond_eligible = bond_grid[None, :] < batch.fusion_layout.bond_counts[:, None]
+        bond_padded = _select_padded(
+            bond_eligible,
+            ratios[:, 2],
+            dropped[:, GRAPH_MODALITY],
+            generator,
+        )
+        bond_mask = bond_padded[
+            batch.graphs.bond_batch, batch.fusion_layout.bond_local_indices
+        ]
 
         descriptor_indicator = ~batch.descriptor_valid
-        descriptor_loss_mask = torch.zeros_like(batch.descriptor_valid)
-        for row in range(batch_size):
-            valid_positions = torch.where(batch.descriptor_valid[row])[0]
-            selected = (
-                valid_positions
-                if dropped[row, DESCRIPTOR_MODALITY]
-                else _sample_positions(
-                    valid_positions, ratios["descriptor"][row], generator
-                )
-            )
-            descriptor_indicator[row, selected] = True
-            descriptor_loss_mask[row, selected] = True
+        descriptor_loss_mask = _select_padded(
+            batch.descriptor_valid,
+            ratios[:, 3],
+            dropped[:, DESCRIPTOR_MODALITY],
+            generator,
+        )
+        descriptor_indicator |= descriptor_loss_mask
 
         fingerprint_indicator: dict[str, torch.Tensor] = {}
         fingerprint_loss_mask: dict[str, torch.Tensor] = {}
         for family, valid in batch.fingerprints.valid.items():
-            indicator = ~valid
-            loss_mask = torch.zeros_like(valid)
-            for row in range(batch_size):
-                valid_positions = torch.where(valid[row])[0]
-                selected = (
-                    valid_positions
-                    if dropped[row, FINGERPRINT_MODALITY]
-                    else _sample_positions(
-                        valid_positions, ratios["fingerprint"][row], generator
-                    )
-                )
-                indicator[row, selected] = True
-                loss_mask[row, selected] = True
+            loss_mask = _select_padded(
+                valid,
+                ratios[:, 4],
+                dropped[:, FINGERPRINT_MODALITY],
+                generator,
+            )
+            indicator = ~valid | loss_mask
             fingerprint_indicator[family] = indicator
             fingerprint_loss_mask[family] = loss_mask
 
@@ -338,6 +411,33 @@ class MultimodalMasker:
                 modality_dropped=dropped,
             ),
         )
+
+
+def _select_padded(
+    eligible: torch.Tensor,
+    ratios: torch.Tensor,
+    drop_entire: torch.Tensor,
+    generator: torch.Generator,
+) -> torch.Tensor:
+    counts = eligible.sum(dim=1)
+    selected_counts = torch.ceil(counts * ratios).to(torch.long)
+    selected_counts = torch.where(
+        (counts > 0) & (ratios > 0), selected_counts.clamp_min(1), 0
+    )
+    selected_counts = torch.where(drop_entire, counts, selected_counts)
+    scores = torch.rand(
+        eligible.shape, generator=generator, device=eligible.device
+    ).masked_fill(~eligible, 2.0)
+    order = scores.argsort(dim=1)
+    ranks = torch.empty_like(order)
+    ranks.scatter_(
+        1,
+        order,
+        torch.arange(eligible.shape[1], device=eligible.device)[None, :].expand_as(
+            order
+        ),
+    )
+    return eligible & (ranks < selected_counts[:, None])
 
 
 @dataclass

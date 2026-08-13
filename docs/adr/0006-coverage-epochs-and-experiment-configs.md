@@ -2,7 +2,7 @@
 
 - 状态：Superseded by ADR-0013
 - 日期：2026-07-26
-- 取代说明：自然频率全量 epoch、单一 Base 与 checkpoint v1 现由 [ADR-0013](0013-stage1-full-corpus-ddp.md) 定义。以下内容作为历史决定保留。
+- 取代说明：自然频率全量 epoch 与单一 Base 现由 [ADR-0013](0013-stage1-full-corpus-ddp.md) 定义；checkpoint v2 由 [ADR-0015](0015-stage1-high-throughput-epoch-resume.md) 定义。以下内容作为历史决定保留。
 
 ## 决定
 

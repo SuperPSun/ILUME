@@ -4,7 +4,7 @@
 - 日期：2026-08-03
 - 部分取代：ADR-0009 已取代任务内行级采样、共享 IL 回归 trunk、立即训练 backbone 和完整 QM 标签假设；冻结教师与五任务总体设计仍有效。
 
-> 2026-08-12：下文 Stage 1 checkpoint v3 引用已由 [ADR-0013](0013-stage1-full-corpus-ddp.md) 的 kind/v1 合同取代；Stage 2 五任务与冻结教师决定不变。
+> 2026-08-13：下文 Stage 1 checkpoint v3 引用已由 [ADR-0015](0015-stage1-high-throughput-epoch-resume.md) 的 kind/v2 合同取代；Stage 2 五任务与冻结教师决定不变。
 
 ## 决定
 

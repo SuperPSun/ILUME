@@ -16,3 +16,4 @@
 - [ADR-0012：Stage 3 高吞吐与预算守恒执行合同](0012-stage3-throughput-and-budget.md)
 - [ADR-0013：Stage 1 大规模全量预训练协议](0013-stage1-full-corpus-ddp.md)
 - [ADR-0014：Stage 1 Prepare 并行化与 Corpus v2](0014-stage1-prepare-performance-and-corpus-v2.md)
+- [ADR-0015：Stage 1 高吞吐与 Epoch 边界恢复合同](0015-stage1-high-throughput-epoch-resume.md)

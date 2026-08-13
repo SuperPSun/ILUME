@@ -50,8 +50,22 @@ class FingerprintBatch:
     values: dict[str, torch.Tensor]
     valid: dict[str, torch.Tensor]
 
-    def to(self, device: torch.device | str) -> "FingerprintBatch":
+    def to(
+        self, device: torch.device | str, *, non_blocking: bool = False
+    ) -> "FingerprintBatch":
         return FingerprintBatch(
-            values={name: value.to(device) for name, value in self.values.items()},
-            valid={name: value.to(device) for name, value in self.valid.items()},
+            values={
+                name: value.to(device, non_blocking=non_blocking)
+                for name, value in self.values.items()
+            },
+            valid={
+                name: value.to(device, non_blocking=non_blocking)
+                for name, value in self.valid.items()
+            },
+        )
+
+    def pin_memory(self) -> "FingerprintBatch":
+        return FingerprintBatch(
+            values={name: value.pin_memory() for name, value in self.values.items()},
+            valid={name: value.pin_memory() for name, value in self.valid.items()},
         )

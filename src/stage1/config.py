@@ -7,7 +7,7 @@ from typing import Any
 import yaml
 
 
-STAGE1_CHECKPOINT_VERSION = 1
+STAGE1_CHECKPOINT_VERSION = 2
 STAGE1_CHECKPOINT_KIND = "ilume_stage1_pretraining"
 
 
@@ -104,7 +104,6 @@ class LossConfig:
 class TrainingConfig:
     batch_size: int = 256
     epochs: int = 5
-    gradient_accumulation_steps: int = 1
     learning_rate: float = 1.0e-4
     weight_decay: float = 0.01
     warmup_fraction: float = 0.05
@@ -112,8 +111,8 @@ class TrainingConfig:
     num_workers: int = 8
     device: str = "auto"
     amp_dtype: str = "bf16"
-    checkpoint_interval_steps: int = 1000
-    validation_interval_steps: int = 2000
+    compile: bool = True
+    validation_interval_steps: int = 5000
     quick_validation_samples_per_role: int = 256
 
 
@@ -204,16 +203,12 @@ class PretrainConfig:
                 raise ValueError(f"{name} must be between 0 and 1")
         if self.training.batch_size <= 0 or self.training.epochs <= 0:
             raise ValueError("training.batch_size and training.epochs must be positive")
-        if self.training.gradient_accumulation_steps <= 0:
-            raise ValueError("training.gradient_accumulation_steps must be positive")
-        if self.training.gradient_accumulation_steps != 1:
-            raise ValueError("Stage 1 requires gradient_accumulation_steps=1")
         if self.training.amp_dtype not in {"bf16", "fp16", "none"}:
             raise ValueError("training.amp_dtype must be bf16, fp16, or none")
+        if not isinstance(self.training.compile, bool):
+            raise ValueError("training.compile must be true or false")
         if not 0.0 <= self.training.warmup_fraction < 1.0:
             raise ValueError("training.warmup_fraction must be in [0, 1)")
-        if self.training.checkpoint_interval_steps <= 0:
-            raise ValueError("training.checkpoint_interval_steps must be positive")
         if self.training.validation_interval_steps <= 0:
             raise ValueError("training.validation_interval_steps must be positive")
         if self.training.quick_validation_samples_per_role <= 0:
@@ -240,6 +235,7 @@ class PretrainConfig:
     def experiment_dict(self) -> dict[str, Any]:
         payload = self.to_dict()
         payload.pop("preparation")
+        payload["training"].pop("compile")
         return payload
 
 
