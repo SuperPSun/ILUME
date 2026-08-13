@@ -49,6 +49,15 @@ class FingerprintConfig:
 
 
 @dataclass(frozen=True)
+class PreparationConfig:
+    workers: int = 1
+    catalog_batch_size: int = 10000
+    qc_batch_size: int = 2048
+    tokenizer_batch_size: int = 2048
+    descriptor_batch_size: int = 512
+
+
+@dataclass(frozen=True)
 class MaskingConfig:
     smiles_ratio: float = 0.15
     atom_ratio: float = 0.15
@@ -114,6 +123,7 @@ class PretrainConfig:
     tokenizer: TokenizerConfig = field(default_factory=TokenizerConfig)
     descriptor: DescriptorConfig = field(default_factory=DescriptorConfig)
     fingerprint: FingerprintConfig = field(default_factory=FingerprintConfig)
+    preparation: PreparationConfig = field(default_factory=PreparationConfig)
     masking: MaskingConfig = field(default_factory=MaskingConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     loss: LossConfig = field(default_factory=LossConfig)
@@ -156,6 +166,16 @@ class PretrainConfig:
                 "fingerprint layout is fixed to Morgan radius=2/2048 bits, "
                 "MACCS 167 bits, and 128-bit chunks"
             )
+        preparation_values = {
+            "preparation.workers": self.preparation.workers,
+            "preparation.catalog_batch_size": self.preparation.catalog_batch_size,
+            "preparation.qc_batch_size": self.preparation.qc_batch_size,
+            "preparation.tokenizer_batch_size": self.preparation.tokenizer_batch_size,
+            "preparation.descriptor_batch_size": self.preparation.descriptor_batch_size,
+        }
+        for name, value in preparation_values.items():
+            if value < 1:
+                raise ValueError(f"{name} must be positive")
         if len(self.loss.role_weights) != 3 or any(
             value <= 0 for value in self.loss.role_weights
         ):
@@ -217,12 +237,18 @@ class PretrainConfig:
 
         return convert(asdict(self))
 
+    def experiment_dict(self) -> dict[str, Any]:
+        payload = self.to_dict()
+        payload.pop("preparation")
+        return payload
+
 
 _SECTIONS: dict[str, type] = {
     "data": DataConfig,
     "tokenizer": TokenizerConfig,
     "descriptor": DescriptorConfig,
     "fingerprint": FingerprintConfig,
+    "preparation": PreparationConfig,
     "masking": MaskingConfig,
     "model": ModelConfig,
     "loss": LossConfig,

@@ -5,12 +5,14 @@ import hashlib
 import importlib.metadata
 import json
 import math
+import multiprocessing
 import random
 import re
 import sqlite3
-from collections import Counter
+from collections import Counter, deque
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 import numpy as np
 import torch
@@ -48,6 +50,134 @@ ROLE_SOURCE_FILES = {
     "neutral": "molecule.csv",
 }
 _EMPTY_JSON = "[]"
+
+
+def _batches(values: Iterable[Any], size: int) -> Iterator[list[Any]]:
+    batch: list[Any] = []
+    for value in values:
+        batch.append(value)
+        if len(batch) == size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
+
+
+def _ordered_batch_map(
+    worker: Callable[[Any], Any],
+    batches: Iterable[Any],
+    workers: int,
+) -> Iterator[Any]:
+    if workers == 1:
+        for batch in batches:
+            yield worker(batch)
+        return
+    iterator = iter(batches)
+    pending = deque()
+    with ProcessPoolExecutor(
+        max_workers=workers,
+        mp_context=multiprocessing.get_context("spawn"),
+    ) as executor:
+        for _ in range(2 * workers):
+            try:
+                pending.append(executor.submit(worker, next(iterator)))
+            except StopIteration:
+                break
+        while pending:
+            yield pending.popleft().result()
+            try:
+                pending.append(executor.submit(worker, next(iterator)))
+            except StopIteration:
+                pass
+
+
+def _canonicalize_augmentation_batch(
+    batch: list[tuple[int, str, tuple[str, ...], str]],
+) -> list[tuple[int, str, tuple[str, ...]]]:
+    results = []
+    for row_number, smiles, seed_values, context in batch:
+        try:
+            canonical = _canonicalize(smiles, f"{context}:{row_number}")
+            seeds = []
+            for seed in seed_values:
+                try:
+                    seeds.append(_canonicalize(seed, f"{context}:{row_number} seed"))
+                except ValueError:
+                    seeds.append(seed)
+            results.append((row_number, canonical, tuple(seeds)))
+        except BaseException as error:
+            raise RuntimeError(
+                f"catalog record row={row_number} smiles={smiles!r}: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+    return results
+
+
+def _entity_qc_batch(
+    batch: list[tuple[int, str]],
+) -> list[tuple[int, tuple[str, ...], tuple[str, ...], float]]:
+    results = []
+    for record_id, canonical_smiles in batch:
+        try:
+            inspected = inspect_entity_qc({"canonical_smiles": canonical_smiles})
+        except BaseException as error:
+            raise RuntimeError(
+                f"entity_qc record id={record_id} smiles={canonical_smiles!r}: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+        results.append(
+            (
+                record_id,
+                tuple(inspected.reasons),
+                inspected.unsupported_bond_types,
+                inspected.ipc,
+            )
+        )
+    return results
+
+
+def _ais_batch(
+    task: tuple[list[tuple[int, str, str]], int],
+) -> tuple[list[tuple[int, int, bool]], Counter[str]]:
+    batch, max_smiles_tokens = task
+    updates = []
+    counts: Counter[str] = Counter()
+    for record_id, canonical_smiles, split in batch:
+        try:
+            tokens = ais_tokenize(canonical_smiles)
+        except BaseException as error:
+            raise RuntimeError(
+                f"tokenizer record id={record_id} smiles={canonical_smiles!r}: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+        token_count = len(tokens) + 2
+        overlength = token_count > max_smiles_tokens
+        if split == "train" and not overlength:
+            counts.update(tokens)
+        updates.append((record_id, token_count, overlength))
+    return updates, counts
+
+
+def _descriptor_batch(
+    task: tuple[list[tuple[int, str]], tuple[str, ...]],
+) -> tuple[list[int], np.ndarray]:
+    batch, raw_names = task
+    rows = []
+    values = []
+    for descriptor_row, canonical_smiles in batch:
+        try:
+            mol = Chem.MolFromSmiles(canonical_smiles)
+            if mol is None:
+                raise RuntimeError("Canonical SMILES unexpectedly failed RDKit parsing")
+            value = calculate_descriptors(mol, raw_names)
+        except BaseException as error:
+            raise RuntimeError(
+                f"descriptors row={descriptor_row} smiles={canonical_smiles!r}: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+        rows.append(descriptor_row)
+        values.append(value)
+    return rows, np.asarray(values, dtype=np.float64)
 
 
 def preparation_source_paths(config: PretrainConfig | DataConfig) -> list[Path]:
@@ -227,76 +357,88 @@ def _empty_augmentation_stats(included: bool) -> dict[str, Any]:
 
 def _load_augmentation(
     connection: sqlite3.Connection,
-    config: DataConfig,
+    config: PretrainConfig,
     originals: dict[str, set[str]],
     validation: dict[str, set[str]],
     progress: Any,
 ) -> dict[str, dict[str, Any]]:
+    data_config = config.data
     audit: dict[str, dict[str, Any]] = {}
     for role, filename in ROLE_SOURCE_FILES.items():
-        stats = _empty_augmentation_stats(config.include_augmentation)
+        stats = _empty_augmentation_stats(data_config.include_augmentation)
         audit[role] = stats
-        if not config.include_augmentation:
+        if not data_config.include_augmentation:
             continue
-        path = config.stage1_dir / "augmentation" / filename
+        path = data_config.stage1_dir / "augmentation" / filename
         pending = 0
         with path.open(newline="", encoding="utf-8") as handle:
-            for row_number, row in enumerate(csv.DictReader(handle), start=2):
-                stats["source_rows"] += 1
-                smiles = (row.get("SMILES") or "").strip()
-                canonical = _canonicalize(smiles, f"{path}:{row_number}")
-                seeds: list[str] = []
-                for seed in _seed_values(
-                    (row.get("seed_smiles_list") or "").strip()
-                ):
-                    try:
-                        seeds.append(_canonicalize(seed, f"{path}:{row_number} seed"))
-                    except ValueError:
-                        seeds.append(seed)
-                if any(seed in validation[role] for seed in seeds):
-                    stats["excluded_valid_seed"] += 1
-                elif canonical in originals[role]:
-                    stats["excluded_overlap"] += 1
-                else:
-                    try:
-                        connection.execute(
-                            """
-                            INSERT INTO records(
-                                role, role_id, canonical_smiles, sources, split,
-                                is_augmented, seed_smiles, mix_key
-                            ) VALUES(?, ?, ?, ?, 'train', 1, ?, ?)
-                            """,
-                            (
-                                role,
-                                ROLE_TO_ID[role],
-                                canonical,
-                                json.dumps([f"augmentation/{path.stem}"]),
-                                json.dumps(sorted(set(seeds))),
-                                _mix_key(config.seed, "train", canonical),
-                            ),
-                        )
-                        stats["eligible"] += 1
-                        pending += 1
-                    except sqlite3.IntegrityError:
-                        stats["excluded_duplicate"] += 1
-                if pending >= 10000:
-                    connection.commit()
-                    pending = 0
-                progress.update(1)
+            reader = csv.DictReader(handle)
+
+            def inputs() -> Iterator[tuple[int, str, tuple[str, ...], str]]:
+                for row_number, row in enumerate(reader, start=2):
+                    yield (
+                        row_number,
+                        (row.get("SMILES") or "").strip(),
+                        _seed_values(
+                            (row.get("seed_smiles_list") or "").strip()
+                        ),
+                        str(path),
+                    )
+
+            batches = _batches(inputs(), config.preparation.catalog_batch_size)
+            for result_batch in _ordered_batch_map(
+                _canonicalize_augmentation_batch,
+                batches,
+                config.preparation.workers,
+            ):
+                for row_number, canonical, seeds_tuple in result_batch:
+                    del row_number
+                    seeds = list(seeds_tuple)
+                    stats["source_rows"] += 1
+                    if any(seed in validation[role] for seed in seeds):
+                        stats["excluded_valid_seed"] += 1
+                    elif canonical in originals[role]:
+                        stats["excluded_overlap"] += 1
+                    else:
+                        try:
+                            connection.execute(
+                                """
+                                INSERT INTO records(
+                                    role, role_id, canonical_smiles, sources, split,
+                                    is_augmented, seed_smiles, mix_key
+                                ) VALUES(?, ?, ?, ?, 'train', 1, ?, ?)
+                                """,
+                                (
+                                    role,
+                                    ROLE_TO_ID[role],
+                                    canonical,
+                                    json.dumps([f"augmentation/{path.stem}"]),
+                                    json.dumps(sorted(set(seeds))),
+                                    _mix_key(data_config.seed, "train", canonical),
+                                ),
+                            )
+                            stats["eligible"] += 1
+                            pending += 1
+                        except sqlite3.IntegrityError:
+                            stats["excluded_duplicate"] += 1
+                    if pending >= config.preparation.catalog_batch_size:
+                        connection.commit()
+                        pending = 0
+                    progress.update(1)
         connection.commit()
     return audit
 
 
 def _build_catalog(
     connection: sqlite3.Connection,
-    config: DataConfig,
+    config: PretrainConfig,
     source_row_count: int,
     reporter: ProgressReporter,
 ) -> dict[str, dict[str, Any]]:
     with reporter.bar(
         total=source_row_count, desc="Load/canonicalize", unit="row"
     ) as progress:
-        originals, validation = _load_originals(connection, config, progress)
+        originals, validation = _load_originals(connection, config.data, progress)
         audit = _load_augmentation(
             connection, config, originals, validation, progress
         )
@@ -355,15 +497,25 @@ def _run_qc_and_tokenizer(
     )
     with reporter.bar(total=total, desc="Entity QC", unit="entity") as progress:
         updates: list[tuple[str, str, str, int]] = []
-        for row in connection.execute("SELECT * FROM records ORDER BY id"):
-            inspected = inspect_entity_qc(_record_from_row(row))
-            updates.append(
+        inputs = (
+            (int(row["id"]), row["canonical_smiles"])
+            for row in connection.execute(
+                "SELECT id, canonical_smiles FROM records ORDER BY id"
+            )
+        )
+        for result_batch in _ordered_batch_map(
+            _entity_qc_batch,
+            _batches(inputs, config.preparation.qc_batch_size),
+            config.preparation.workers,
+        ):
+            updates.extend(
                 (
-                    json.dumps(inspected.reasons),
-                    json.dumps(inspected.unsupported_bond_types),
-                    repr(inspected.ipc),
-                    int(row["id"]),
+                    json.dumps(reasons),
+                    json.dumps(unsupported),
+                    repr(ipc),
+                    record_id,
                 )
+                for record_id, reasons, unsupported, ipc in result_batch
             )
             if len(updates) >= 10000:
                 connection.executemany(
@@ -375,7 +527,7 @@ def _run_qc_and_tokenizer(
                 )
                 connection.commit()
                 updates.clear()
-            progress.update(1)
+            progress.update(len(result_batch))
         if updates:
             connection.executemany(
                 """
@@ -400,20 +552,33 @@ def _run_qc_and_tokenizer(
             desc="AIS tokenization/QC",
             unit="entity",
         ) as progress:
-            for row in connection.execute(
-                """
-                SELECT id, canonical_smiles, split, reasons FROM records
-                WHERE reasons = '[]' ORDER BY id
-                """
+            inputs = (
+                (int(row["id"]), row["canonical_smiles"], row["split"])
+                for row in connection.execute(
+                    """
+                    SELECT id, canonical_smiles, split FROM records
+                    WHERE reasons = '[]' ORDER BY id
+                    """
+                )
+            )
+            tasks = (
+                (batch, config.data.max_smiles_tokens)
+                for batch in _batches(
+                    inputs, config.preparation.tokenizer_batch_size
+                )
+            )
+            for result_batch, local_counts in _ordered_batch_map(
+                _ais_batch, tasks, config.preparation.workers
             ):
-                tokens = ais_tokenize(row["canonical_smiles"])
-                token_count = len(tokens) + 2
-                reasons = json.loads(row["reasons"])
-                if token_count > config.data.max_smiles_tokens:
-                    reasons.append("smiles_overlength")
-                elif row["split"] == "train":
-                    counts.update(tokens)
-                updates.append((token_count, json.dumps(reasons), int(row["id"])))
+                counts.update(local_counts)
+                updates.extend(
+                    (
+                        token_count,
+                        json.dumps(["smiles_overlength"] if overlength else []),
+                        record_id,
+                    )
+                    for record_id, token_count, overlength in result_batch
+                )
                 if len(updates) >= 10000:
                     connection.executemany(
                         "UPDATE records SET token_count = ?, reasons = ? WHERE id = ?",
@@ -421,7 +586,7 @@ def _run_qc_and_tokenizer(
                     )
                     connection.commit()
                     updates.clear()
-                progress.update(1)
+                progress.update(len(result_batch))
             if updates:
                 connection.executemany(
                     "UPDATE records SET token_count = ?, reasons = ? WHERE id = ?",
@@ -687,6 +852,7 @@ def _descriptor_matrix(
     output_dir: Path,
     signature: str,
     reporter: ProgressReporter,
+    config: PretrainConfig,
 ) -> np.memmap:
     total = int(
         connection.execute(
@@ -721,22 +887,29 @@ def _descriptor_matrix(
         desc="Descriptors",
         unit="entity",
     ) as progress:
-        for row in connection.execute(
-            """
-            SELECT canonical_smiles, descriptor_row FROM records
-            WHERE reasons = '[]' AND descriptor_row >= ?
-            ORDER BY descriptor_row
-            """,
-            (completed,),
+        inputs = (
+            (int(row["descriptor_row"]), row["canonical_smiles"])
+            for row in connection.execute(
+                """
+                SELECT canonical_smiles, descriptor_row FROM records
+                WHERE reasons = '[]' AND descriptor_row >= ?
+                ORDER BY descriptor_row
+                """,
+                (completed,),
+            )
+        )
+        tasks = (
+            (batch, raw_names)
+            for batch in _batches(inputs, config.preparation.descriptor_batch_size)
+        )
+        durable_completed = completed
+        for descriptor_rows, values in _ordered_batch_map(
+            _descriptor_batch, tasks, config.preparation.workers
         ):
-            mol = Chem.MolFromSmiles(row["canonical_smiles"])
-            if mol is None:
-                raise RuntimeError("Canonical SMILES unexpectedly failed RDKit parsing")
-            descriptor_row = int(row["descriptor_row"])
-            matrix[descriptor_row] = calculate_descriptors(mol, raw_names)
-            completed = descriptor_row + 1
-            progress.update(1)
-            if completed % 10000 == 0 or completed == total:
+            matrix[descriptor_rows] = values
+            completed = descriptor_rows[-1] + 1
+            progress.update(len(descriptor_rows))
+            if completed - durable_completed >= 10000 or completed == total:
                 matrix.flush()
                 atomic_json(
                     state_path,
@@ -748,6 +921,7 @@ def _descriptor_matrix(
                         "descriptor_completed": completed,
                     },
                 )
+                durable_completed = completed
                 reporter.emit_json(
                     {
                         "event": "prepare_descriptors",
@@ -1020,7 +1194,7 @@ def prepare_corpus(config: PretrainConfig | DataConfig) -> dict[str, int]:
         connection = _connect_catalog(catalog_path)
         _create_catalog(connection, signature)
         augmentation_audit = _build_catalog(
-            connection, data_config, source_row_count, reporter
+            connection, config, source_row_count, reporter
         )
     else:
         augmentation_audit = _catalog_metadata(connection, "augmentation_audit")
@@ -1066,7 +1240,7 @@ def prepare_corpus(config: PretrainConfig | DataConfig) -> dict[str, int]:
     )
 
     raw_matrix = _descriptor_matrix(
-        connection, raw_names, output_dir, signature, reporter
+        connection, raw_names, output_dir, signature, reporter, config
     )
     train_count = int(
         connection.execute(

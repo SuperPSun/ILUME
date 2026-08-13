@@ -18,8 +18,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Prepare Stage 1 data.")
     parser.add_argument("--config", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--workers", type=int)
     args = parser.parse_args()
     config = load_config(args.config)
+    if args.workers is not None:
+        config = replace(
+            config,
+            preparation=replace(config.preparation, workers=args.workers),
+        )
+        config.validate()
     run = open_run_directory(
         stage="stage1", operation="prepare", config_path=args.config,
         config_payload=config.to_dict(), output=args.output, seed=config.data.seed,

@@ -45,6 +45,16 @@ def test_formal_stage1_has_one_large_capacity_base_profile() -> None:
     assert base.training.learning_rate == pytest.approx(1.0e-4)
     assert base.training.checkpoint_interval_steps == 1000
     assert base.training.validation_interval_steps == 2000
+    assert base.tokenizer.min_frequency == 1
+    assert (
+        base.preparation.workers,
+        base.preparation.catalog_batch_size,
+        base.preparation.qc_batch_size,
+        base.preparation.tokenizer_batch_size,
+        base.preparation.descriptor_batch_size,
+    ) == (16, 10000, 2048, 2048, 512)
+    assert "preparation" in base.to_dict()
+    assert "preparation" not in base.experiment_dict()
 
 
 def test_stage1_config_round_trip_and_rejects_legacy_fields() -> None:
@@ -63,6 +73,11 @@ def test_stage1_config_round_trip_and_rejects_legacy_fields() -> None:
     legacy.pop("smoke")
     with pytest.raises(ValueError, match="Unknown TrainingConfig fields"):
         config_from_dict(legacy)
+
+    invalid = config.to_dict()
+    invalid["preparation"]["workers"] = 0
+    with pytest.raises(ValueError, match="preparation.workers must be positive"):
+        config_from_dict(invalid)
 
 
 def test_run_directory_is_non_overwriting_self_describing_and_private(

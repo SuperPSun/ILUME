@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from rdkit import Chem
 
-from stage1.config import DataConfig, PretrainConfig
+from stage1.config import DataConfig, PreparationConfig, PretrainConfig
 import stage1.features as features_module
 import stage1.prepare as prepare_module
 from stage1.data import (
@@ -18,10 +18,14 @@ from stage1.data import (
 )
 from stage1.features import IPC_SQUARE_OVERFLOW_LIMIT, inspect_entity_qc
 from stage1.prepare import (
+    _descriptor_batch,
     _csv_data_row_count,
+    _entity_qc_batch,
+    _ordered_batch_map,
     preparation_source_paths,
     prepare_corpus,
 )
+from stage1.descriptors import rdkit_descriptor_names
 
 
 HEADER = [
@@ -318,6 +322,100 @@ def test_full_augmentation_ingestion_dedup_leakage_and_audit(tmp_path):
         if seed
     }
     assert valid_smiles.isdisjoint(augmented_seeds)
+
+
+def test_prepare_workers_preserve_artifact_semantics(tmp_path):
+    stage1 = tmp_path / "stage1"
+    augmentation = stage1 / "augmentation"
+    augmentation.mkdir(parents=True)
+    originals = {
+        "cation": [("[Na+]", 1), ("C[NH3+]", 1), ("[K+]", 1), ("C[NH2+]C", 1)],
+        "anion": [("[Cl-]", -1), ("C(=O)[O-]", -1), ("[Br-]", -1), ("C[S-]", -1)],
+        "molecule": [("CCO", 0), ("O", 0), ("N", 0), ("CC", 0)],
+    }
+    additions = {
+        "cation": [("CC[NH2+]C", 1, "unrelated")],
+        "anion": [("CC[S-]", -1, "unrelated")],
+        "molecule": [("CCC", 0, "unrelated")],
+    }
+    for role, rows in originals.items():
+        _write_role_csv(stage1 / f"{role}.csv", rows)
+        _write_role_csv(augmentation / f"{role}.csv", additions[role])
+
+    artifact_dirs = []
+    for workers in (1, 4):
+        artifacts = tmp_path / f"artifacts_{workers}"
+        prepare_corpus(
+            PretrainConfig(
+                data=DataConfig(
+                    stage1_dir=stage1,
+                    artifacts_dir=artifacts,
+                    valid_fraction=0.25,
+                    seed=11,
+                    include_augmentation=True,
+                    shard_size=3,
+                ),
+                preparation=PreparationConfig(
+                    workers=workers,
+                    catalog_batch_size=2,
+                    qc_batch_size=2,
+                    tokenizer_batch_size=2,
+                    descriptor_batch_size=2,
+                ),
+            )
+        )
+        artifact_dirs.append(artifacts)
+
+    left, right = artifact_dirs
+    for filename in (
+        "tokenizer.json",
+        "descriptor_schema.json",
+        "descriptor_scaler.json",
+        "manifest.csv",
+        "excluded_entities.csv",
+        "augmentation_audit.json",
+    ):
+        assert (left / filename).read_bytes() == (right / filename).read_bytes()
+    np.testing.assert_array_equal(
+        np.load(left / "train_index.npy"), np.load(right / "train_index.npy")
+    )
+    np.testing.assert_array_equal(
+        np.load(left / "valid_index.npy"), np.load(right / "valid_index.npy")
+    )
+    for split in ("train", "valid"):
+        left_dataset = PreparedCorpusDataset(left, split)
+        right_dataset = PreparedCorpusDataset(right, split)
+        assert len(left_dataset) == len(right_dataset)
+        for index in range(len(left_dataset)):
+            left_sample = left_dataset[index]
+            right_sample = right_dataset[index]
+            assert left_sample.keys() == right_sample.keys()
+            for key in left_sample:
+                if isinstance(left_sample[key], dict):
+                    assert left_sample[key].keys() == right_sample[key].keys()
+                    for name in left_sample[key]:
+                        assert np.array_equal(
+                            left_sample[key][name].numpy(),
+                            right_sample[key][name].numpy(),
+                        )
+                elif hasattr(left_sample[key], "numpy"):
+                    assert np.array_equal(
+                        left_sample[key].numpy(), right_sample[key].numpy()
+                    )
+                else:
+                    assert left_sample[key] == right_sample[key]
+
+
+def test_descriptor_workers_are_bitwise_equal_and_qc_errors_have_context():
+    task = ([(0, "CCO"), (1, "C[NH3+]")], rdkit_descriptor_names())
+    serial_rows, serial_values = _descriptor_batch(task)
+    parallel_rows, parallel_values = next(
+        _ordered_batch_map(_descriptor_batch, [task], workers=2)
+    )
+    assert serial_rows == parallel_rows
+    np.testing.assert_array_equal(serial_values, parallel_values)
+    with pytest.raises(RuntimeError, match=r"entity_qc record id=7 smiles='invalid'"):
+        _entity_qc_batch([(7, "invalid")])
 
 
 import numpy as np
