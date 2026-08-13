@@ -151,7 +151,7 @@ class _SilentProgress:
 
 
 def _config_hash(config: PretrainConfig) -> str:
-    return canonical_json_sha256(config.to_dict())
+    return canonical_json_sha256(config.experiment_dict())
 
 
 def _loader_options(config: PretrainConfig, device: torch.device) -> dict[str, Any]:
@@ -479,7 +479,7 @@ def _load_checkpoint(
     ):
         raise ValueError("Unsupported Stage 1 pretraining checkpoint")
     checkpoint_config = config_from_dict(checkpoint["config"])
-    if checkpoint_config.to_dict() != config.to_dict():
+    if checkpoint_config.experiment_dict() != config.experiment_dict():
         raise ValueError("Checkpoint config does not match the current config")
     expected = {
         "config_hash": config_hash,

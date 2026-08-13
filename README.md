@@ -14,12 +14,18 @@ python -m pip install -e ".[dev,tokenizers]"
 
 ## Stage 1
 
-Stage 1 只保留一个正式 Base。prepare 会消费三类 original；当 `include_augmentation: true` 时还会要求并全量处理三份 augmentation CSV。旧 corpus artifact 不兼容，必须重新 prepare：
+Stage 1 只保留一个正式 Base。prepare 会消费三类 original；当 `include_augmentation: true` 时还会要求并全量处理三份 augmentation CSV。正式 Base 默认使用 16 个 prepare worker；可用 `--workers` 临时覆盖。corpus v2 不兼容旧 artifact，必须重新 prepare：
 
 ```bash
 python scripts/stage1/prepare.py \
   --config configs/v1/stage1/base.yaml \
   --output outputs/v1/stage1/base/prepare
+
+# 临时覆盖 YAML 中的 preparation.workers
+python scripts/stage1/prepare.py \
+  --config configs/v1/stage1/base.yaml \
+  --output outputs/v1/stage1/base/prepare \
+  --workers 24
 
 python scripts/stage1/train.py \
   --config configs/v1/stage1/base.yaml \

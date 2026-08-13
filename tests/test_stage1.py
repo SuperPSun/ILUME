@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
 import hashlib
 import json
 
@@ -104,6 +105,58 @@ def test_run_directory_is_non_overwriting_self_describing_and_private(
         )
 
 
+def test_run_directory_ignores_only_named_execution_section(tmp_path, monkeypatch):
+    monkeypatch.setattr(outputs_module, "REPOSITORY_ROOT", tmp_path)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("preparation:\n  workers: 1\n", encoding="utf-8")
+    original = {"tokenizer": {"min_frequency": 1}, "preparation": {"workers": 1}}
+    run = open_run_directory(
+        stage="stage1",
+        operation="prepare",
+        config_path="config.yaml",
+        config_payload=original,
+        output="outputs/prepare",
+        seed=42,
+        reusable=True,
+        ignored_config_sections={"preparation"},
+    )
+    run.complete({"total": 1})
+    changed_workers = {
+        "tokenizer": {"min_frequency": 1},
+        "preparation": {"workers": 4},
+    }
+    open_run_directory(
+        stage="stage1",
+        operation="prepare",
+        config_path="config.yaml",
+        config_payload=changed_workers,
+        output="outputs/prepare",
+        seed=42,
+        reusable=True,
+        ignored_config_sections={"preparation"},
+    )
+    import yaml
+
+    assert yaml.safe_load(
+        (tmp_path / "outputs/prepare/run_config.yaml").read_text()
+    ) == changed_workers
+    changed_science = {
+        "tokenizer": {"min_frequency": 2},
+        "preparation": {"workers": 4},
+    }
+    with pytest.raises(ValueError, match="does not match"):
+        open_run_directory(
+            stage="stage1",
+            operation="prepare",
+            config_path="config.yaml",
+            config_payload=changed_science,
+            output="outputs/prepare",
+            seed=42,
+            reusable=True,
+            ignored_config_sections={"preparation"},
+        )
+
+
 def test_data_identity_records_relative_hash_size_and_rows(tmp_path) -> None:
     source = tmp_path / "data" / "stage1" / "cation.csv"
     source.parent.mkdir(parents=True)
@@ -128,6 +181,7 @@ from stage1.config import (
     DescriptorConfig,
     FingerprintConfig,
     ModelConfig,
+    PreparationConfig,
     PretrainConfig,
     TrainingConfig,
 )
@@ -409,6 +463,19 @@ def test_stage1_checkpoint_cadence_last_and_mid_epoch_exact_resume(
     assert run_training(
         config, output_dir=output, resume_from=output / "last.pt"
     ) == []
+    changed_preparation = replace(
+        config, preparation=PreparationConfig(workers=4)
+    )
+    assert run_training(
+        changed_preparation, output_dir=output, resume_from=output / "last.pt"
+    ) == []
+    changed_tokenizer = replace(
+        config, tokenizer=replace(config.tokenizer, min_frequency=2)
+    )
+    with pytest.raises(ValueError, match="Checkpoint config"):
+        run_training(
+            changed_tokenizer, output_dir=output, resume_from=output / "last.pt"
+        )
     for version in (2, 3):
         invalid = dict(last)
         invalid["format_version"] = version

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -31,11 +32,23 @@ def main() -> None:
         stage="stage1", operation="prepare", config_path=args.config,
         config_payload=config.to_dict(), output=args.output, seed=config.data.seed,
         reusable=True,
+        ignored_config_sections={"preparation"},
     )
     effective = replace(config, data=replace(config.data, artifacts_dir=run.artifacts))
     try:
-        write_data_identity(ROOT, "stage1", preparation_source_paths(effective))
-        run.complete(prepare_corpus(effective))
+        identity_started = time.perf_counter()
+        source_identity = write_data_identity(
+            ROOT, "stage1", preparation_source_paths(effective)
+        )
+        identity_elapsed = time.perf_counter() - identity_started
+        run.complete(
+            prepare_corpus(
+                effective,
+                source_identity=source_identity,
+                performance_path=run.root / "performance.json",
+                input_identity_elapsed_seconds=identity_elapsed,
+            )
+        )
     except BaseException:
         run.fail()
         raise

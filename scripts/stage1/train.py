@@ -46,6 +46,7 @@ def main() -> None:
                     output=args.output,
                     seed=config.data.seed,
                     resume=args.resume,
+                    ignored_config_sections={"preparation"},
                 )
             except BaseException as error:
                 open_error = f"{type(error).__name__}: {error}"

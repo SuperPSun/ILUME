@@ -114,6 +114,7 @@ def open_run_directory(
     reusable: bool = False,
     resume: str | Path | None = None,
     details: dict[str, Any] | None = None,
+    ignored_config_sections: set[str] | None = None,
 ) -> RunDirectory:
     _validate_public_paths(config_payload)
     root = repository_path(output)
@@ -130,8 +131,19 @@ def open_run_directory(
         import yaml
 
         existing = yaml.safe_load(snapshot.read_text(encoding="utf-8"))
-        if existing != config_payload:
+        if not isinstance(existing, dict):
+            raise ValueError("Existing run_config.yaml must contain a mapping")
+        ignored = ignored_config_sections or set()
+        existing_identity = {
+            key: value for key, value in existing.items() if key not in ignored
+        }
+        requested_identity = {
+            key: value for key, value in config_payload.items() if key not in ignored
+        }
+        if existing_identity != requested_identity:
             raise ValueError("Existing run_config.yaml does not match the effective config")
+        if reusable and existing != config_payload:
+            atomic_yaml(snapshot, config_payload)
     else:
         atomic_yaml(snapshot, config_payload)
     metadata: dict[str, Any] = {
@@ -150,4 +162,3 @@ def open_run_directory(
         metadata.update(details)
     atomic_json(root / "metadata.json", metadata)
     return RunDirectory(root=root, metadata=metadata)
-

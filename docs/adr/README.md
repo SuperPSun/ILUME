@@ -15,3 +15,4 @@
 - [ADR-0011：Stage 3 单阶段双域完全隔离](0011-stage3-single-stage-isolated-domains.md)
 - [ADR-0012：Stage 3 高吞吐与预算守恒执行合同](0012-stage3-throughput-and-budget.md)
 - [ADR-0013：Stage 1 大规模全量预训练协议](0013-stage1-full-corpus-ddp.md)
+- [ADR-0014：Stage 1 Prepare 并行化与 Corpus v2](0014-stage1-prepare-performance-and-corpus-v2.md)

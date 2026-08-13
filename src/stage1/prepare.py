@@ -9,6 +9,7 @@ import multiprocessing
 import random
 import re
 import sqlite3
+import time
 from collections import Counter, deque
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -89,6 +90,37 @@ def _ordered_batch_map(
                 pending.append(executor.submit(worker, next(iterator)))
             except StopIteration:
                 pass
+
+
+def _performance_phase(
+    processed: int, elapsed_seconds: float, reused: bool
+) -> dict[str, float | int | bool]:
+    return {
+        "processed": processed,
+        "elapsed_seconds": elapsed_seconds,
+        "items_per_second": (
+            processed / elapsed_seconds if elapsed_seconds > 0.0 else 0.0
+        ),
+        "reused": reused,
+    }
+
+
+def _write_performance(
+    path: Path | None,
+    config: PretrainConfig,
+    phases: dict[str, dict[str, float | int | bool]],
+    total_elapsed_seconds: float,
+) -> None:
+    if path is None:
+        return
+    atomic_json(
+        path,
+        {
+            "preparation": config.to_dict()["preparation"],
+            "phases": phases,
+            "total_elapsed_seconds": total_elapsed_seconds,
+        },
+    )
 
 
 def _canonicalize_augmentation_batch(
@@ -198,6 +230,68 @@ def _csv_data_row_count(path: Path) -> int:
         return sum(1 for _ in reader)
 
 
+def _source_measurements(
+    data_config: DataConfig,
+    source_paths: list[Path],
+    source_identity: dict[str, object] | None,
+) -> tuple[dict[str, str], int]:
+    if source_identity is None:
+        return (
+            {
+                str(path.relative_to(data_config.stage1_dir)): sha256_file(path)
+                for path in source_paths
+            },
+            sum(_csv_data_row_count(path) for path in source_paths),
+        )
+    if source_identity.get("schema_version") != 1:
+        raise ValueError("Unsupported Stage 1 source identity schema")
+    if source_identity.get("stage") != "stage1":
+        raise ValueError("Stage 1 source identity has the wrong stage")
+    files = source_identity.get("files")
+    if not isinstance(files, list) or len(files) != len(source_paths):
+        raise ValueError("Stage 1 source identity file set does not match the config")
+    remaining = list(files)
+    source_hashes: dict[str, str] = {}
+    source_row_count = 0
+    relatives = sorted(
+        (path.relative_to(data_config.stage1_dir) for path in source_paths),
+        key=lambda path: len(path.parts),
+        reverse=True,
+    )
+    for relative in relatives:
+        matches = [
+            item
+            for item in remaining
+            if isinstance(item, dict)
+            and tuple(Path(str(item.get("path", ""))).parts[-len(relative.parts) :])
+            == relative.parts
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                f"Stage 1 source identity does not uniquely identify {relative}"
+            )
+        item = matches[0]
+        digest = item.get("sha256")
+        rows = item.get("rows")
+        size = item.get("size")
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+            or not isinstance(rows, int)
+            or rows < 0
+            or not isinstance(size, int)
+            or size < 0
+        ):
+            raise ValueError(f"Invalid Stage 1 source identity entry for {relative}")
+        source_hashes[relative.as_posix()] = digest
+        source_row_count += rows
+        remaining.remove(item)
+    if remaining:
+        raise ValueError("Stage 1 source identity contains unexpected files")
+    return source_hashes, source_row_count
+
+
 def _canonicalize(smiles: str, context: str) -> str:
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
@@ -252,13 +346,22 @@ def _create_catalog(connection: sqlite3.Connection, signature: str) -> None:
             descriptor_row INTEGER,
             UNIQUE(role, canonical_smiles)
         );
-        CREATE INDEX records_split ON records(split);
-        CREATE INDEX records_mix ON records(split, mix_key, canonical_smiles);
         """
     )
     connection.execute(
         "INSERT INTO metadata(key, value) VALUES('signature', ?)",
         (json.dumps(signature),),
+    )
+    connection.commit()
+
+
+def _create_catalog_indexes(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE INDEX IF NOT EXISTS records_split ON records(split);
+        CREATE INDEX IF NOT EXISTS records_mix
+            ON records(split, mix_key, canonical_smiles);
+        """
     )
     connection.commit()
 
@@ -370,7 +473,6 @@ def _load_augmentation(
         if not data_config.include_augmentation:
             continue
         path = data_config.stage1_dir / "augmentation" / filename
-        pending = 0
         with path.open(newline="", encoding="utf-8") as handle:
             reader = csv.DictReader(handle)
 
@@ -391,6 +493,7 @@ def _load_augmentation(
                 batches,
                 config.preparation.workers,
             ):
+                insert_rows = []
                 for row_number, canonical, seeds_tuple in result_batch:
                     del row_number
                     seeds = list(seeds_tuple)
@@ -400,31 +503,31 @@ def _load_augmentation(
                     elif canonical in originals[role]:
                         stats["excluded_overlap"] += 1
                     else:
-                        try:
-                            connection.execute(
-                                """
-                                INSERT INTO records(
-                                    role, role_id, canonical_smiles, sources, split,
-                                    is_augmented, seed_smiles, mix_key
-                                ) VALUES(?, ?, ?, ?, 'train', 1, ?, ?)
-                                """,
-                                (
-                                    role,
-                                    ROLE_TO_ID[role],
-                                    canonical,
-                                    json.dumps([f"augmentation/{path.stem}"]),
-                                    json.dumps(sorted(set(seeds))),
-                                    _mix_key(data_config.seed, "train", canonical),
-                                ),
+                        insert_rows.append(
+                            (
+                                role,
+                                ROLE_TO_ID[role],
+                                canonical,
+                                json.dumps([f"augmentation/{path.stem}"]),
+                                json.dumps(sorted(set(seeds))),
+                                _mix_key(data_config.seed, "train", canonical),
                             )
-                            stats["eligible"] += 1
-                            pending += 1
-                        except sqlite3.IntegrityError:
-                            stats["excluded_duplicate"] += 1
-                    if pending >= config.preparation.catalog_batch_size:
-                        connection.commit()
-                        pending = 0
-                    progress.update(1)
+                        )
+                before = connection.total_changes
+                connection.executemany(
+                    """
+                    INSERT OR IGNORE INTO records(
+                        role, role_id, canonical_smiles, sources, split,
+                        is_augmented, seed_smiles, mix_key
+                    ) VALUES(?, ?, ?, ?, 'train', 1, ?, ?)
+                    """,
+                    insert_rows,
+                )
+                inserted = connection.total_changes - before
+                stats["eligible"] += inserted
+                stats["excluded_duplicate"] += len(insert_rows) - inserted
+                connection.commit()
+                progress.update(len(result_batch))
         connection.commit()
     return audit
 
@@ -442,6 +545,7 @@ def _build_catalog(
         audit = _load_augmentation(
             connection, config, originals, validation, progress
         )
+    _create_catalog_indexes(connection)
     _set_catalog_metadata(connection, "augmentation_audit", audit)
     _set_catalog_metadata(connection, "phase", "catalog")
     return audit
@@ -486,8 +590,9 @@ def _run_qc_and_tokenizer(
     connection: sqlite3.Connection,
     config: PretrainConfig,
     reporter: ProgressReporter,
-) -> SmilesTokenizer:
+) -> tuple[SmilesTokenizer, dict[str, dict[str, float | int | bool]]]:
     total = int(connection.execute("SELECT COUNT(*) FROM records").fetchone()[0])
+    entity_started = time.perf_counter()
     connection.execute(
         """
         UPDATE records SET reasons = '[]', unsupported_bond_types = '[]',
@@ -538,6 +643,8 @@ def _run_qc_and_tokenizer(
             )
             connection.commit()
 
+    entity_elapsed = time.perf_counter() - entity_started
+    tokenizer_started = time.perf_counter()
     if config.tokenizer.backend == "ais":
         _validate_role_splits(connection)
         retained = int(
@@ -705,7 +812,12 @@ def _run_qc_and_tokenizer(
         "ON records(reasons, token_count)"
     )
     connection.commit()
-    return tokenizer
+    return tokenizer, {
+        "entity_qc": _performance_phase(total, entity_elapsed, False),
+        "tokenizer": _performance_phase(
+            retained, time.perf_counter() - tokenizer_started, False
+        ),
+    }
 
 
 def _quality_control_summary(
@@ -853,7 +965,8 @@ def _descriptor_matrix(
     signature: str,
     reporter: ProgressReporter,
     config: PretrainConfig,
-) -> np.memmap:
+) -> tuple[np.memmap, dict[str, float | int | bool]]:
+    started = time.perf_counter()
     total = int(
         connection.execute(
             "SELECT COUNT(*) FROM records WHERE reasons = '[]'"
@@ -881,6 +994,7 @@ def _descriptor_matrix(
             path, mode="w+", dtype=np.float64, shape=(total, len(raw_names))
         )
         completed = 0
+    initial_completed = completed
     with reporter.bar(
         total=total,
         initial=completed,
@@ -930,7 +1044,11 @@ def _descriptor_matrix(
                     }
                 )
     matrix.flush()
-    return matrix
+    return matrix, _performance_phase(
+        total - initial_completed,
+        time.perf_counter() - started,
+        initial_completed == total,
+    )
 
 
 def _stage1_shard_sample(sample: dict[str, Any]) -> dict[str, Any]:
@@ -961,7 +1079,8 @@ def _write_shards(
     output_dir: Path,
     signature: str,
     reporter: ProgressReporter,
-) -> tuple[list[dict[str, Any]], int]:
+) -> tuple[list[dict[str, Any]], int, dict[str, float | int | bool]]:
+    started = time.perf_counter()
     shard_dir = output_dir / "shards"
     shard_dir.mkdir(parents=True, exist_ok=True)
     counts = {
@@ -977,6 +1096,7 @@ def _write_shards(
     shard_manifest: list[dict[str, Any]] = []
     unk_count = 0
     active_paths: set[Path] = set()
+    all_reused = True
     with reporter.bar(total=total_shards, desc="Shards", unit="shard") as progress:
         for split in ("train", "valid"):
             index_path = output_dir / f"{split}_index.npy"
@@ -1018,6 +1138,7 @@ def _write_shards(
                     ):
                         samples = existing["samples"]
                 reused = samples is not None
+                all_reused = all_reused and reused
                 if samples is None:
                     samples = [
                         _stage1_shard_sample(
@@ -1090,7 +1211,13 @@ def _write_shards(
             "shards": shard_manifest,
         },
     )
-    return shard_manifest, unk_count
+    return (
+        shard_manifest,
+        unk_count,
+        _performance_phase(
+            sum(counts.values()), time.perf_counter() - started, all_reused
+        ),
+    )
 
 
 def _tokenizer_statistics(
@@ -1156,7 +1283,15 @@ def _preparation_signature(
     )
 
 
-def prepare_corpus(config: PretrainConfig | DataConfig) -> dict[str, int]:
+def prepare_corpus(
+    config: PretrainConfig | DataConfig,
+    *,
+    source_identity: dict[str, object] | None = None,
+    performance_path: Path | None = None,
+    input_identity_elapsed_seconds: float = 0.0,
+) -> dict[str, int]:
+    prepare_started = time.perf_counter()
+    phases: dict[str, dict[str, float | int | bool]] = {}
     if isinstance(config, DataConfig):
         config = PretrainConfig(data=config)
     config.validate()
@@ -1172,12 +1307,30 @@ def prepare_corpus(config: PretrainConfig | DataConfig) -> dict[str, int]:
         )
 
     source_paths = preparation_source_paths(data_config)
+    identity_started = time.perf_counter()
     with reporter.status("Hash/count input files"):
-        source_hashes = {
-            str(path.relative_to(data_config.stage1_dir)): sha256_file(path)
-            for path in source_paths
-        }
-        source_row_count = sum(_csv_data_row_count(path) for path in source_paths)
+        source_hashes, source_row_count = _source_measurements(
+            data_config, source_paths, source_identity
+        )
+    identity_elapsed = (
+        input_identity_elapsed_seconds
+        if source_identity is not None
+        else time.perf_counter() - identity_started
+    )
+    phases["input_identity"] = _performance_phase(
+        source_row_count, identity_elapsed, False
+    )
+
+    def flush_performance() -> None:
+        _write_performance(
+            performance_path,
+            config,
+            phases,
+            time.perf_counter() - prepare_started
+            + (input_identity_elapsed_seconds if source_identity is not None else 0.0),
+        )
+
+    flush_performance()
     signature = _preparation_signature(config, source_hashes)
     metadata_path = output_dir / "metadata.json"
     if metadata_path.is_file():
@@ -1187,11 +1340,30 @@ def prepare_corpus(config: PretrainConfig | DataConfig) -> dict[str, int]:
             and existing.get("format_version") == CORPUS_FORMAT_VERSION
             and existing.get("preparation_signature") == signature
         ):
+            reused_started = time.perf_counter()
             PreparedCorpusDataset(output_dir, "train", data_config.shard_cache_size)
             PreparedCorpusDataset(output_dir, "valid", data_config.shard_cache_size)
-            return {key: int(value) for key, value in existing["summary"].items()}
+            summary = {
+                key: int(value) for key, value in existing["summary"].items()
+            }
+            total = summary["total"]
+            for name in (
+                "catalog",
+                "entity_qc",
+                "tokenizer",
+                "descriptors",
+                "descriptor_fit",
+                "shards",
+            ):
+                phases[name] = _performance_phase(total, 0.0, True)
+            phases["publication"] = _performance_phase(
+                total, time.perf_counter() - reused_started, True
+            )
+            flush_performance()
+            return summary
         metadata_path.unlink()
 
+    catalog_started = time.perf_counter()
     catalog_path = output_dir / ".prepare.sqlite"
     reuse_catalog = False
     if catalog_path.is_file():
@@ -1218,15 +1390,28 @@ def prepare_corpus(config: PretrainConfig | DataConfig) -> dict[str, int]:
         )
     else:
         augmentation_audit = _catalog_metadata(connection, "augmentation_audit")
+    catalog_count = int(
+        connection.execute("SELECT COUNT(*) FROM records").fetchone()[0]
+    )
+    phases["catalog"] = _performance_phase(
+        source_row_count if not reuse_catalog else catalog_count,
+        time.perf_counter() - catalog_started,
+        reuse_catalog,
+    )
+    flush_performance()
 
     phase = _catalog_metadata(connection, "phase")
     tokenizer_path = output_dir / "tokenizer.json"
     if phase == "catalog" or not tokenizer_path.is_file():
-        tokenizer = _run_qc_and_tokenizer(connection, config, reporter)
+        tokenizer, qc_phases = _run_qc_and_tokenizer(connection, config, reporter)
+        phases.update(qc_phases)
         tokenizer.save(tokenizer_path)
         _set_catalog_metadata(connection, "phase", "qc")
     else:
         tokenizer = SmilesTokenizer.load(tokenizer_path)
+        phases["entity_qc"] = _performance_phase(catalog_count, 0.0, True)
+        phases["tokenizer"] = _performance_phase(catalog_count, 0.0, True)
+    flush_performance()
 
     quality_control = _quality_control_summary(
         connection, tokenizer, data_config.max_smiles_tokens
@@ -1259,14 +1444,17 @@ def prepare_corpus(config: PretrainConfig | DataConfig) -> dict[str, int]:
         },
     )
 
-    raw_matrix = _descriptor_matrix(
+    raw_matrix, descriptor_performance = _descriptor_matrix(
         connection, raw_names, output_dir, signature, reporter, config
     )
+    phases["descriptors"] = descriptor_performance
+    flush_performance()
     train_count = int(
         connection.execute(
             "SELECT COUNT(*) FROM records WHERE reasons = '[]' AND split = 'train'"
         ).fetchone()[0]
     )
+    descriptor_fit_started = time.perf_counter()
     with reporter.status("Descriptor schema/scaler"):
         training_matrix = raw_matrix[:train_count]
         schema = DescriptorSchema.fit(
@@ -1298,8 +1486,12 @@ def prepare_corpus(config: PretrainConfig | DataConfig) -> dict[str, int]:
             )
         schema.save(output_dir / "descriptor_schema.json")
         standardizer.save(output_dir / "descriptor_scaler.json")
+    phases["descriptor_fit"] = _performance_phase(
+        train_count, time.perf_counter() - descriptor_fit_started, False
+    )
+    flush_performance()
 
-    _, unk_count = _write_shards(
+    _, unk_count, shard_performance = _write_shards(
         connection,
         raw_matrix,
         schema,
@@ -1310,6 +1502,9 @@ def prepare_corpus(config: PretrainConfig | DataConfig) -> dict[str, int]:
         signature,
         reporter,
     )
+    phases["shards"] = shard_performance
+    flush_performance()
+    publication_started = time.perf_counter()
     _write_manifest(output_dir / "manifest.csv", connection)
     summary = {
         "total": int(
@@ -1405,4 +1600,8 @@ def prepare_corpus(config: PretrainConfig | DataConfig) -> dict[str, int]:
     (output_dir / "corpus_index.json").unlink(missing_ok=True)
     (output_dir / "preparation_state.json").unlink(missing_ok=True)
     atomic_json(metadata_path, metadata)
+    phases["publication"] = _performance_phase(
+        summary["total"], time.perf_counter() - publication_started, False
+    )
+    flush_performance()
     return summary

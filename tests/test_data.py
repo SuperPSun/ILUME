@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 from collections import Counter
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -29,6 +30,7 @@ from stage1.prepare import (
     prepare_corpus,
 )
 from stage1.descriptors import rdkit_descriptor_names
+from common.data_identity import write_data_identity
 
 
 HEADER = [
@@ -465,6 +467,87 @@ def test_stage1_shard_fingerprint_uint8_preserves_every_bit():
     stored = compact["fingerprints"]["morgan"]
     assert stored.dtype == torch.uint8
     assert torch.equal(stored.float(), fingerprint)
+
+
+def test_prepare_reuses_source_identity_and_writes_performance(tmp_path, monkeypatch):
+    repository = tmp_path / "repository"
+    stage1 = repository / "data/stage1"
+    artifacts = repository / "outputs/prepare/artifacts"
+    performance_path = repository / "outputs/prepare/performance.json"
+    stage1.mkdir(parents=True)
+    for role, rows in {
+        "cation": [("[Na+]", 1), ("C[NH3+]", 1)],
+        "anion": [("[Cl-]", -1), ("C(=O)[O-]", -1)],
+        "molecule": [("CCO", 0), ("O", 0)],
+    }.items():
+        _write_role_csv(stage1 / f"{role}.csv", rows)
+    sources = [stage1 / name for name in ("cation.csv", "anion.csv", "molecule.csv")]
+    identity = write_data_identity(repository, "stage1", sources)
+    real_sha256 = prepare_module.sha256_file
+
+    def reject_source_rehash(path):
+        if Path(path) in sources:
+            raise AssertionError("source file was hashed twice")
+        return real_sha256(path)
+
+    monkeypatch.setattr(prepare_module, "sha256_file", reject_source_rehash)
+    monkeypatch.setattr(
+        prepare_module,
+        "_csv_data_row_count",
+        lambda path: (_ for _ in ()).throw(AssertionError("source rows counted twice")),
+    )
+    data_config = DataConfig(
+        stage1_dir=stage1,
+        artifacts_dir=artifacts,
+        valid_fraction=0.5,
+        shard_size=2,
+    )
+    prepare_corpus(
+        PretrainConfig(
+            data=data_config,
+            preparation=PreparationConfig(descriptor_batch_size=2),
+        ),
+        source_identity=identity,
+        performance_path=performance_path,
+        input_identity_elapsed_seconds=1.25,
+    )
+    performance = json.loads(performance_path.read_text(encoding="utf-8"))
+    assert set(performance["phases"]) == {
+        "input_identity",
+        "catalog",
+        "entity_qc",
+        "tokenizer",
+        "descriptors",
+        "descriptor_fit",
+        "shards",
+        "publication",
+    }
+    assert performance["preparation"]["descriptor_batch_size"] == 2
+    assert performance["phases"]["input_identity"]["processed"] == 6
+    assert performance["total_elapsed_seconds"] >= 1.25
+    metadata = json.loads((artifacts / "metadata.json").read_text())
+    assert "performance.json" not in metadata["artifact_hashes"]
+    prepare_corpus(
+        PretrainConfig(
+            data=data_config,
+            preparation=PreparationConfig(workers=2, descriptor_batch_size=3),
+        ),
+        source_identity=identity,
+        performance_path=performance_path,
+    )
+    reused = json.loads(performance_path.read_text(encoding="utf-8"))
+    assert reused["preparation"]["workers"] == 2
+    assert reused["preparation"]["descriptor_batch_size"] == 3
+    assert all(
+        phase["reused"]
+        for name, phase in reused["phases"].items()
+        if name != "input_identity"
+    )
+    invalid_identity = {**identity, "files": identity["files"][:-1]}
+    with pytest.raises(ValueError, match="file set does not match"):
+        prepare_corpus(
+            PretrainConfig(data=data_config), source_identity=invalid_identity
+        )
 
 
 import numpy as np
