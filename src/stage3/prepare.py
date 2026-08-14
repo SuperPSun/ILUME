@@ -13,7 +13,7 @@ from .config import Stage3Config
 from .data import STAGE3_ARTIFACT_VERSION, source_hashes
 
 
-STAGE2_OBJECT_CHECKPOINT_VERSION = 1
+STAGE2_OBJECT_CHECKPOINT_VERSION = 2
 STAGE2_OBJECT_CHECKPOINT_KIND = "ilume_stage2_object"
 STAGE3_MIGRATION_MESSAGE = "Stage 3 object contract migration pending"
 

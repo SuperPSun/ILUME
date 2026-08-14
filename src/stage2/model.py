@@ -251,6 +251,13 @@ class Stage2ObjectModel(nn.Module):
             if not name.startswith("backbone."):
                 yield parameter
 
+    def object_encoder_parameters(self) -> Iterator[nn.Parameter]:
+        yield from self.object_encoder.parameters()
+
+    def task_head_parameters(self) -> Iterator[nn.Parameter]:
+        yield from self.property_heads.parameters()
+        yield from self.transfer_head.parameters()
+
     def predict(
         self,
         task: str,
@@ -295,11 +302,39 @@ class Stage2ObjectModel(nn.Module):
         student_slots = student_unique[entity_positions]
         teacher_slots = teacher_embeddings[entity_positions]
         roles = entities.roles[entity_positions]
+        return self.forward_from_slots(
+            task,
+            student_slots,
+            roles,
+            conditions,
+            targets,
+            target_mask,
+            teacher_slots,
+            lambda_teacher=lambda_teacher,
+        )
+
+    def forward_from_slots(
+        self,
+        task: str,
+        student_slots: torch.Tensor,
+        roles: torch.Tensor,
+        conditions: torch.Tensor,
+        targets: torch.Tensor,
+        target_mask: torch.Tensor,
+        teacher_slots: torch.Tensor,
+        *,
+        lambda_teacher: float,
+        teacher_loss_is_zero: bool = False,
+    ) -> Stage2ForwardOutput:
         predictions = self.predict(task, student_slots, roles, conditions)
         property_loss = masked_smooth_l1_loss(
             predictions, targets, target_mask
         )
-        teacher_loss = torch.square(student_slots - teacher_slots).mean()
+        teacher_loss = (
+            predictions.new_zeros(())
+            if teacher_loss_is_zero
+            else torch.square(student_slots - teacher_slots).mean()
+        )
         total_loss = property_loss + lambda_teacher * teacher_loss
         return Stage2ForwardOutput(
             predictions=predictions,
@@ -315,12 +350,14 @@ def stage2_optimizer_groups(
     model: Stage2ObjectModel,
     *,
     backbone_learning_rate: float,
-    new_module_learning_rate: float,
+    object_encoder_learning_rate: float,
+    task_head_learning_rate: float,
     weight_decay: float,
 ) -> list[dict[str, Any]]:
     backbone = list(model.backbone_parameters())
-    new_modules = list(model.new_module_parameters())
-    if not backbone or not new_modules:
+    object_encoder = list(model.object_encoder_parameters())
+    task_heads = list(model.task_head_parameters())
+    if not backbone or not object_encoder or not task_heads:
         raise ValueError("Stage 2 optimizer groups cannot be empty")
     return [
         {
@@ -329,8 +366,13 @@ def stage2_optimizer_groups(
             "weight_decay": weight_decay,
         },
         {
-            "params": new_modules,
-            "lr": new_module_learning_rate,
+            "params": object_encoder,
+            "lr": object_encoder_learning_rate,
+            "weight_decay": weight_decay,
+        },
+        {
+            "params": task_heads,
+            "lr": task_head_learning_rate,
             "weight_decay": weight_decay,
         },
     ]

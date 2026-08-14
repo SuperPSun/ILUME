@@ -4,8 +4,11 @@ import csv
 import hashlib
 import json
 import math
+import multiprocessing as mp
+import os
 from array import array
 from collections import Counter
+from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Sequence
@@ -28,7 +31,7 @@ from stage1.descriptors import (
     rdkit_descriptor_names,
 )
 from stage1.masking import MultimodalPacker
-from stage1.model import load_stage1_model
+from stage1.model import LoadedStage1Model, load_stage1_model
 from common.io import atomic_json, atomic_torch_save, sha256_file
 from common.progress import ProgressReporter
 from common.training import canonical_json_sha256, resolve_device
@@ -39,6 +42,8 @@ from .data import (
     Stage2EntityDataset,
     Stage2TaskDataset,
 )
+from .model import RECONSTRUCTION_MODULES
+from .runtime import configure_stage2_math
 from stage1.tokenizer import SmilesTokenizer
 
 
@@ -173,10 +178,23 @@ class RunningStats:
 @dataclass(frozen=True)
 class CollectedStage2Data:
     entity_keys: tuple[tuple[str, str], ...]
+    rows: dict[str, dict[str, "StagedTaskRows"]]
     scalers: dict[str, Any]
     source_counts: dict[str, dict[str, dict[str, int]]]
     duplicate_rows: tuple[dict[str, Any], ...]
     missing_target_rows: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True)
+class StagedTaskRows:
+    entity_ids: array
+    conditions: array
+    targets: array
+    target_mask: array
+    source_rows: array
+
+    def __len__(self) -> int:
+        return len(self.source_rows)
 
 
 def _iter_rows(
@@ -204,7 +222,7 @@ def _collect_sources_and_scalers(
     reporter: ProgressReporter,
 ) -> CollectedStage2Data:
     canonical_cache: dict[str, str] = {}
-    entity_keys: set[tuple[str, str]] = set()
+    entity_key_ids: dict[tuple[str, str], int] = {}
     temperature_stats = RunningStats()
     target_stats = {
         column: RunningStats()
@@ -214,6 +232,7 @@ def _collect_sources_and_scalers(
     source_counts: dict[str, dict[str, dict[str, int]]] = {}
     duplicate_rows: list[dict[str, Any]] = []
     missing_target_rows: list[dict[str, Any]] = []
+    staged_rows: dict[str, dict[str, StagedTaskRows]] = {}
 
     with reporter.bar(
         total=len(STAGE2_TASKS) * 2,
@@ -224,7 +243,13 @@ def _collect_sources_and_scalers(
             spec = TASK_SPECS[task]
             train_keys: set[bytes] = set()
             source_counts[task] = {}
+            staged_rows[task] = {}
             for split in ("train", "valid"):
+                entity_values = array("q")
+                condition_values = array("f")
+                target_values = array("f")
+                target_mask_values = array("b")
+                source_rows = array("q")
                 seen_keys: set[bytes] = set()
                 detailed_seen: dict[tuple[str, ...], tuple[int, tuple[str, ...]]] = {}
                 counts: Counter[str] = Counter()
@@ -289,7 +314,18 @@ def _collect_sources_and_scalers(
                     for role, canonical in zip(
                         spec.entity_roles, canonical_entities, strict=True
                     ):
-                        entity_keys.add((role, canonical))
+                        key = (role, canonical)
+                        entity_id = entity_key_ids.get(key)
+                        if entity_id is None:
+                            entity_id = len(entity_key_ids)
+                            entity_key_ids[key] = entity_id
+                        entity_values.append(entity_id)
+                    condition_values.extend(conditions)
+                    target_values.extend(
+                        0.0 if value is None else value for value in targets
+                    )
+                    target_mask_values.extend(value is not None for value in targets)
+                    source_rows.append(row_number)
                     counts[source] += 1
                     input_parts = (
                         *canonical_entities,
@@ -331,6 +367,13 @@ def _collect_sources_and_scalers(
                             if value is not None:
                                 target_stats[column].update(value)
                 source_counts[task][split] = dict(sorted(counts.items()))
+                staged_rows[task][split] = StagedTaskRows(
+                    entity_ids=entity_values,
+                    conditions=condition_values,
+                    targets=target_values,
+                    target_mask=target_mask_values,
+                    source_rows=source_rows,
+                )
                 if split == "train":
                     train_keys = seen_keys
                 progress.update(1)
@@ -344,13 +387,24 @@ def _collect_sources_and_scalers(
                 + ", ".join(missing_train_targets)
             )
 
+        sorted_keys = tuple(
+            sorted(
+                entity_key_ids,
+                key=lambda value: (ROLE_TO_ID[value[0]], value[1]),
+            )
+        )
+        sorted_id_by_key = {key: index for index, key in enumerate(sorted_keys)}
+        remap = [None] * len(entity_key_ids)
+        for key, old_id in entity_key_ids.items():
+            remap[old_id] = sorted_id_by_key[key]
+        for task_rows in staged_rows.values():
+            for rows in task_rows.values():
+                for index, old_id in enumerate(rows.entity_ids):
+                    rows.entity_ids[index] = remap[old_id]
+
         return CollectedStage2Data(
-            entity_keys=tuple(
-                sorted(
-                    entity_keys,
-                    key=lambda value: (ROLE_TO_ID[value[0]], value[1]),
-                )
-            ),
+            entity_keys=sorted_keys,
+            rows=staged_rows,
             scalers={
                 "temperature_K": temperature_stats.to_dict(),
                 "targets": {
@@ -401,6 +455,176 @@ def _write_missing_target_audit(
     temporary.replace(path)
 
 
+@dataclass(frozen=True)
+class EntityFeatureResult:
+    candidate_id: int
+    role: str
+    canonical_smiles: str
+    sample: dict[str, Any] | None
+    exclusion: dict[str, Any] | None
+
+
+_ENTITY_WORKER_STATE: tuple[
+    PretrainConfig,
+    SmilesTokenizer,
+    DescriptorSchema,
+    DescriptorStandardizer,
+    tuple[str, ...],
+] | None = None
+
+
+def _initialize_entity_worker(
+    pretrain_config: PretrainConfig,
+    vocabulary: SmilesTokenizer,
+    schema: DescriptorSchema,
+    standardizer: DescriptorStandardizer,
+) -> None:
+    global _ENTITY_WORKER_STATE
+    for name in (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+    ):
+        os.environ[name] = "1"
+    torch.set_num_threads(1)
+    _ENTITY_WORKER_STATE = (
+        pretrain_config,
+        vocabulary,
+        schema,
+        standardizer,
+        tuple(rdkit_descriptor_names()),
+    )
+
+
+def _compute_entity_feature(
+    item: tuple[int, str, str],
+) -> EntityFeatureResult:
+    if _ENTITY_WORKER_STATE is None:
+        raise RuntimeError("Stage 2 entity worker was not initialized")
+    candidate_id, role, canonical_smiles = item
+    pretrain_config, vocabulary, schema, standardizer, raw_names = (
+        _ENTITY_WORKER_STATE
+    )
+    record = {
+        "sample_id": "pending",
+        "role": role,
+        "role_id": ROLE_TO_ID[role],
+        "canonical_smiles": canonical_smiles,
+        "sources": ("stage2",),
+        "split": "stage2",
+        "is_augmented": False,
+        "seed_smiles": (),
+    }
+    qc = inspect_entity_qc(record)
+    token_count = vocabulary.token_count(canonical_smiles)
+    if token_count > pretrain_config.data.max_smiles_tokens:
+        qc.reasons.append("smiles_overlength")
+    sample: dict[str, Any] | None = None
+    error_message = ""
+    if not qc.reasons:
+        try:
+            mol = Chem.MolFromSmiles(canonical_smiles)
+            if mol is None:
+                raise ValueError("RDKit parsing failed after canonicalization")
+            raw = calculate_descriptors(mol, raw_names)
+            sample = build_entity_sample(
+                record,
+                raw,
+                schema,
+                standardizer,
+                vocabulary,
+                pretrain_config,
+            )
+        except (RuntimeError, ValueError, OverflowError) as error:
+            qc.reasons.append("feature_error")
+            error_message = str(error)
+    exclusion = None
+    if sample is None:
+        exclusion = {
+            "role": role,
+            "canonical_smiles": canonical_smiles,
+            "exclusion_reasons": ";".join(qc.reasons),
+            "unsupported_bond_types": ";".join(qc.unsupported_bond_types),
+            "ipc": format(qc.ipc, ".17g"),
+            "token_count": token_count,
+            "max_smiles_tokens": pretrain_config.data.max_smiles_tokens,
+            "detail": error_message,
+        }
+    return EntityFeatureResult(
+        candidate_id=candidate_id,
+        role=role,
+        canonical_smiles=canonical_smiles,
+        sample=sample,
+        exclusion=exclusion,
+    )
+
+
+def _entity_feature_results(
+    config: Stage2Config,
+    collected: CollectedStage2Data,
+    pretrain_config: PretrainConfig,
+    vocabulary: SmilesTokenizer,
+    schema: DescriptorSchema,
+    standardizer: DescriptorStandardizer,
+) -> Iterator[EntityFeatureResult]:
+    inputs = (
+        (candidate_id, role, canonical_smiles)
+        for candidate_id, (role, canonical_smiles) in enumerate(
+            collected.entity_keys
+        )
+    )
+    workers = config.preparation.workers
+    if workers == 1:
+        _initialize_entity_worker(
+            pretrain_config, vocabulary, schema, standardizer
+        )
+        for item in inputs:
+            try:
+                yield _compute_entity_feature(item)
+            except BaseException as error:
+                candidate_id, role, canonical_smiles = item
+                raise RuntimeError(
+                    "Stage 2 entity worker failed for "
+                    f"candidate_id={candidate_id}, role={role}, "
+                    f"canonical_smiles={canonical_smiles}"
+                ) from error
+        return
+    context = mp.get_context("spawn")
+    with ProcessPoolExecutor(
+        max_workers=workers,
+        mp_context=context,
+        initializer=_initialize_entity_worker,
+        initargs=(pretrain_config, vocabulary, schema, standardizer),
+    ) as executor:
+        pending: list[tuple[tuple[int, str, str], Future[EntityFeatureResult]]] = []
+        iterator = iter(inputs)
+        for _ in range(workers * 2):
+            try:
+                item = next(iterator)
+            except StopIteration:
+                break
+            pending.append((item, executor.submit(_compute_entity_feature, item)))
+        while pending:
+            item, future = pending.pop(0)
+            try:
+                yield future.result()
+            except BaseException as error:
+                candidate_id, role, canonical_smiles = item
+                raise RuntimeError(
+                    "Stage 2 entity worker failed for "
+                    f"candidate_id={candidate_id}, role={role}, "
+                    f"canonical_smiles={canonical_smiles}"
+                ) from error
+            try:
+                next_item = next(iterator)
+            except StopIteration:
+                continue
+            pending.append(
+                (next_item, executor.submit(_compute_entity_feature, next_item))
+            )
+
+
 def _build_entity_shards(
     config: Stage2Config,
     collected: CollectedStage2Data,
@@ -409,17 +633,16 @@ def _build_entity_shards(
     schema: DescriptorSchema,
     standardizer: DescriptorStandardizer,
     reporter: ProgressReporter,
-) -> tuple[list[dict[str, Any]], dict[tuple[str, str], int], int]:
+) -> tuple[list[dict[str, Any]], list[int], int]:
     output_dir = config.data.artifacts_dir
     shard_dir = output_dir / "entities"
     shard_dir.mkdir(parents=True, exist_ok=True)
     entries: list[dict[str, Any]] = []
-    valid_ids: dict[tuple[str, str], int] = {}
+    retained_id_by_candidate = [-1] * len(collected.entity_keys)
     excluded_rows: list[dict[str, Any]] = []
     samples: list[dict[str, Any]] = []
     shard_number = 0
     active_paths: set[Path] = set()
-    raw_names = rdkit_descriptor_names()
 
     def flush() -> None:
         nonlocal samples, shard_number
@@ -455,61 +678,24 @@ def _build_entity_shards(
         desc="Stage 2 entity features",
         unit="entity",
     ) as progress:
-        for role, canonical_smiles in collected.entity_keys:
-            record = {
-                "sample_id": "pending",
-                "role": role,
-                "role_id": ROLE_TO_ID[role],
-                "canonical_smiles": canonical_smiles,
-                "sources": ("stage2",),
-                "split": "stage2",
-                "is_augmented": False,
-                "seed_smiles": (),
-            }
-            qc = inspect_entity_qc(record)
-            token_count = vocabulary.token_count(canonical_smiles)
-            if token_count > pretrain_config.data.max_smiles_tokens:
-                qc.reasons.append("smiles_overlength")
-            sample: dict[str, Any] | None = None
-            error_message = ""
-            if not qc.reasons:
-                try:
-                    mol = Chem.MolFromSmiles(canonical_smiles)
-                    if mol is None:
-                        raise ValueError("RDKit parsing failed after canonicalization")
-                    raw = calculate_descriptors(mol, raw_names)
-                    entity_id = len(entries) + len(samples)
-                    record["sample_id"] = f"stage2_entity_{entity_id:08d}"
-                    sample = build_entity_sample(
-                        record,
-                        raw,
-                        schema,
-                        standardizer,
-                        vocabulary,
-                        pretrain_config,
-                    )
-                except (RuntimeError, ValueError, OverflowError) as error:
-                    qc.reasons.append("feature_error")
-                    error_message = str(error)
-            if sample is None:
-                excluded_rows.append(
-                    {
-                        "role": role,
-                        "canonical_smiles": canonical_smiles,
-                        "exclusion_reasons": ";".join(qc.reasons),
-                        "unsupported_bond_types": ";".join(
-                            qc.unsupported_bond_types
-                        ),
-                        "ipc": format(qc.ipc, ".17g"),
-                        "token_count": token_count,
-                        "max_smiles_tokens": pretrain_config.data.max_smiles_tokens,
-                        "detail": error_message,
-                    }
-                )
+        for result in _entity_feature_results(
+            config,
+            collected,
+            pretrain_config,
+            vocabulary,
+            schema,
+            standardizer,
+        ):
+            if result.sample is None:
+                if result.exclusion is None:
+                    raise AssertionError("Excluded Stage 2 entity has no audit row")
+                excluded_rows.append(result.exclusion)
                 progress.update(1)
                 continue
-            valid_ids[(role, canonical_smiles)] = len(entries) + len(samples)
-            samples.append(sample)
+            retained_id = len(entries) + len(samples)
+            result.sample["sample_id"] = f"stage2_entity_{retained_id:08d}"
+            retained_id_by_candidate[result.candidate_id] = retained_id
+            samples.append(result.sample)
             if len(samples) >= config.data.entity_shard_size:
                 flush()
             progress.update(1)
@@ -536,21 +722,22 @@ def _build_entity_shards(
         writer.writeheader()
         writer.writerows(excluded_rows)
     temporary.replace(path)
-    return entries, valid_ids, len(excluded_rows)
+    return entries, retained_id_by_candidate, len(excluded_rows)
 
 
 def _write_task_tensors(
     config: Stage2Config,
-    valid_ids: dict[tuple[str, str], int],
+    collected: CollectedStage2Data,
+    retained_id_by_candidate: Sequence[int],
     scalers: dict[str, Any],
     reporter: ProgressReporter,
 ) -> tuple[dict[str, dict[str, int]], int]:
     output_dir = config.data.artifacts_dir
     task_dir = output_dir / "tasks"
     task_dir.mkdir(parents=True, exist_ok=True)
-    canonical_cache: dict[str, str] = {}
     row_counts: dict[str, dict[str, int]] = {}
     excluded_count = 0
+    retained_id_map = torch.tensor(retained_id_by_candidate, dtype=torch.long)
     excluded_path = output_dir / "excluded_rows.csv"
     excluded_temporary = excluded_path.with_suffix(".csv.tmp")
     with excluded_temporary.open("w", newline="", encoding="utf-8") as handle:
@@ -568,102 +755,78 @@ def _write_task_tensors(
                 spec = TASK_SPECS[task]
                 row_counts[task] = {}
                 for split in ("train", "valid"):
-                    entity_values = array("q")
-                    condition_values = array("f")
-                    target_values = array("f")
-                    target_mask_values = array("b")
-                    source_rows = array("q")
-                    retained = 0
-                    for row_number, row in _iter_rows(
-                        config.data.stage2_dir, task, split
-                    ):
-                        parsed_targets = tuple(
-                            _target_value(
-                                row[column],
-                                f"{task}/{split}:{row_number}/{column}",
-                                allow_missing=task == "simulated_qm_elec_hf",
-                            )
-                            for column in spec.target_columns
-                        )
-                        if all(value is None for value in parsed_targets):
-                            continue
-                        indices: list[int] = []
-                        missing = False
-                        for column, role in zip(
-                            spec.entity_columns, spec.entity_roles, strict=True
-                        ):
-                            raw = row[column].strip()
-                            canonical = canonical_cache.get(raw)
-                            if canonical is None:
-                                canonical = _canonicalize(
-                                    raw, f"{task}/{split}:{row_number}/{column}"
-                                )
-                                canonical_cache[raw] = canonical
-                            entity_id = valid_ids.get((role, canonical))
-                            if entity_id is None:
-                                missing = True
-                                break
-                            indices.append(entity_id)
-                        if missing:
-                            excluded_count += 1
-                            writer.writerow(
-                                {
-                                    "task": task,
-                                    "split": split,
-                                    "source_row": row_number,
-                                    "reason": "excluded_entity",
-                                }
-                            )
-                            continue
-                        entity_values.extend(indices)
-                        condition_values.extend(
-                            _finite_float(
-                                row[column],
-                                f"{task}/{split}:{row_number}/{column}",
-                            )
-                            for column in spec.condition_columns
-                        )
-                        target_values.extend(
-                            0.0 if value is None else value
-                            for value in parsed_targets
-                        )
-                        target_mask_values.extend(
-                            value is not None for value in parsed_targets
-                        )
-                        source_rows.append(row_number)
-                        retained += 1
-                    if retained == 0:
-                        raise ValueError(f"Stage 2 QC removed every row from {task}/{split}")
-                    entities = torch.tensor(entity_values, dtype=torch.long).reshape(
-                        retained, len(spec.entity_columns)
+                    staged = collected.rows[task][split]
+                    row_total = len(staged)
+                    candidate_entities = torch.tensor(
+                        staged.entity_ids, dtype=torch.long
+                    ).reshape(row_total, len(spec.entity_columns))
+                    entities = retained_id_map[candidate_entities]
+                    keep = (entities >= 0).all(dim=1)
+                    staged_source_rows = torch.tensor(
+                        staged.source_rows, dtype=torch.long
                     )
-                    conditions = torch.tensor(
-                        condition_values, dtype=torch.float32
-                    ).reshape(retained, len(spec.condition_columns))
-                    targets = torch.tensor(
-                        target_values, dtype=torch.float32
-                    ).reshape(retained, len(spec.target_columns))
+                    for row_number in staged_source_rows[~keep].tolist():
+                        excluded_count += 1
+                        writer.writerow(
+                            {
+                                "task": task,
+                                "split": split,
+                                "source_row": row_number,
+                                "reason": "excluded_entity",
+                            }
+                        )
+                    entities = entities[keep]
+                    raw_conditions = torch.tensor(
+                        staged.conditions, dtype=torch.float32
+                    ).reshape(row_total, len(spec.condition_columns))[keep]
+                    raw_targets = torch.tensor(
+                        staged.targets, dtype=torch.float32
+                    ).reshape(row_total, len(spec.target_columns))[keep]
                     target_mask = torch.tensor(
-                        target_mask_values, dtype=torch.bool
-                    ).reshape(retained, len(spec.target_columns))
-                    rows_tensor = torch.tensor(source_rows, dtype=torch.long)
+                        staged.target_mask, dtype=torch.bool
+                    ).reshape(row_total, len(spec.target_columns))[keep]
+                    rows_tensor = staged_source_rows[keep]
+                    retained = int(keep.sum())
+                    if retained == 0:
+                        raise ValueError(
+                            f"Stage 2 QC removed every row from {task}/{split}"
+                        )
+                    conditions = raw_conditions.clone()
+                    for column, name in enumerate(spec.condition_columns):
+                        stats = scalers[name]
+                        conditions[:, column] = (
+                            conditions[:, column] - float(stats["mean"])
+                        ) / float(stats["scale"])
+                    targets = raw_targets.clone()
+                    for column, name in enumerate(spec.target_columns):
+                        stats = scalers["targets"][name]
+                        standardized = (
+                            targets[:, column] - float(stats["mean"])
+                        ) / float(stats["scale"])
+                        targets[:, column] = torch.where(
+                            target_mask[:, column],
+                            standardized,
+                            torch.zeros_like(standardized),
+                        )
                     path = task_dir / f"{task}_{split}.pt"
+                    payload: dict[str, Any] = {
+                        "format_version": STAGE2_ARTIFACT_VERSION,
+                        "kind": STAGE2_ARTIFACT_KIND,
+                        "task": task,
+                        "split": split,
+                        "entity_indices": entities,
+                        "conditions": conditions,
+                        "targets": targets,
+                        "target_mask": target_mask,
+                        "source_rows": rows_tensor,
+                        "condition_columns": list(spec.condition_columns),
+                        "target_columns": list(spec.target_columns),
+                    }
+                    if split == "valid":
+                        payload["raw_targets"] = raw_targets
                     atomic_torch_save(
                         path,
-                        {
-                            "format_version": STAGE2_ARTIFACT_VERSION,
-                            "kind": STAGE2_ARTIFACT_KIND,
-                            "task": task,
-                            "split": split,
-                            "entity_indices": entities,
-                            "conditions": conditions,
-                            "targets": targets,
-                            "target_mask": target_mask,
-                            "source_rows": rows_tensor,
-                            "condition_columns": list(spec.condition_columns),
-                            "target_columns": list(spec.target_columns),
-                            "scalers": scalers,
-                        },
+                        payload,
                     )
                     row_counts[task][split] = retained
                     progress.update(1)
@@ -721,7 +884,7 @@ def prepare_stage2_data(
             and existing.get("kind") == STAGE2_ARTIFACT_KIND
             and existing.get("data_signature") == data_signature
         ):
-            Stage2EntityDataset(output_dir, config.data.shard_cache_size)
+            Stage2EntityDataset(output_dir)
             for task in STAGE2_TASKS:
                 for split in ("train", "valid"):
                     Stage2TaskDataset(output_dir, task, split)
@@ -746,7 +909,7 @@ def prepare_stage2_data(
         collected.missing_target_rows,
     )
     atomic_json(output_dir / "scalers.json", collected.scalers)
-    entries, valid_ids, excluded_entities = _build_entity_shards(
+    entries, retained_id_by_candidate, excluded_entities = _build_entity_shards(
         config,
         collected,
         pretrain_config,
@@ -757,7 +920,8 @@ def prepare_stage2_data(
     )
     row_counts, excluded_rows = _write_task_tensors(
         config,
-        valid_ids,
+        collected,
+        retained_id_by_candidate,
         collected.scalers,
         reporter,
     )
@@ -785,10 +949,32 @@ def prepare_stage2_data(
     ]
     shard_paths = sorted({entry["shard"] for entry in entries})
     artifact_files.extend(shard_paths)
+    artifact_hashes = {
+        relative: sha256_file(output_dir / relative)
+        for relative in artifact_files
+    }
+    entity_artifact_hash = _semantic_payload_sha256(
+        {
+            "entity_index": {
+                "format_version": STAGE2_ARTIFACT_VERSION,
+                "kind": STAGE2_ARTIFACT_KIND,
+                "entries": entries,
+            },
+            "entity_shards": [
+                torch.load(
+                    output_dir / relative,
+                    map_location="cpu",
+                    weights_only=False,
+                )
+                for relative in shard_paths
+            ],
+        }
+    )
     metadata = {
         "format_version": STAGE2_ARTIFACT_VERSION,
         "kind": STAGE2_ARTIFACT_KIND,
         "data_signature": data_signature,
+        "entity_artifact_hash": entity_artifact_hash,
         "pretrain_artifact_hash": artifact_hash,
         "feature_contract": feature_contract,
         "model_contract": model_contract,
@@ -797,6 +983,12 @@ def prepare_stage2_data(
         "rdkit_version": rdBase.rdkitVersion,
         "numpy_version": np.__version__,
         "torch_version": torch.__version__,
+        "preparation": config.to_dict()["preparation"],
+        "tensor_contract": {
+            "conditions": "train_normalized_float32",
+            "targets": "train_normalized_float32_masked_zero",
+            "validation_raw_targets": "float32",
+        },
         "tasks": {
             name: {
                 "entity_columns": list(spec.entity_columns),
@@ -823,10 +1015,7 @@ def prepare_stage2_data(
                 for row in collected.missing_target_rows
             ),
         },
-        "artifact_hashes": {
-            relative: sha256_file(output_dir / relative)
-            for relative in artifact_files
-        },
+        "artifact_hashes": artifact_hashes,
     }
     atomic_json(metadata_path, metadata)
     reporter.emit_json(
@@ -835,12 +1024,124 @@ def prepare_stage2_data(
     return metadata
 
 
-TEACHER_CACHE_VERSION = 1
+TEACHER_CACHE_VERSION = 2
 TEACHER_CACHE_KIND = "ilume_stage2_object_teacher"
+TEACHER_EXTRACTION_CONTRACT_VERSION = 1
 
 
-def teacher_cache_dir(config: Stage2Config) -> Path:
-    return config.data.artifacts_dir / "teachers"
+def _semantic_payload_sha256(payload: Any) -> str:
+    digest = hashlib.sha256()
+
+    def update(value: Any) -> None:
+        if isinstance(value, torch.Tensor):
+            tensor = value.detach().cpu().contiguous()
+            digest.update(b"tensor\0")
+            digest.update(str(tensor.dtype).encode())
+            digest.update(b"\0")
+            digest.update(json.dumps(list(tensor.shape)).encode())
+            digest.update(b"\0")
+            digest.update(
+                tensor.reshape(-1).contiguous().view(torch.uint8).numpy().tobytes()
+            )
+        elif isinstance(value, np.ndarray):
+            array_value = np.ascontiguousarray(value)
+            digest.update(b"ndarray\0")
+            digest.update(str(array_value.dtype).encode())
+            digest.update(b"\0")
+            digest.update(json.dumps(list(array_value.shape)).encode())
+            digest.update(b"\0")
+            digest.update(array_value.tobytes())
+        elif isinstance(value, dict):
+            digest.update(b"dict\0")
+            for key in sorted(value):
+                update(key)
+                update(value[key])
+        elif isinstance(value, (list, tuple)):
+            digest.update(b"list\0")
+            for item in value:
+                update(item)
+        elif isinstance(value, array):
+            digest.update(b"array\0")
+            digest.update(value.typecode.encode())
+            digest.update(b"\0")
+            digest.update(value.tobytes())
+        elif value is None:
+            digest.update(b"none\0")
+        elif isinstance(value, (str, int, float, bool)):
+            digest.update(type(value).__name__.encode())
+            digest.update(b"\0")
+            digest.update(repr(value).encode())
+            digest.update(b"\0")
+        else:
+            raise TypeError(
+                "Unsupported Stage 2 semantic hash value: "
+                f"{type(value).__name__}"
+            )
+
+    update(payload)
+    return digest.hexdigest()
+
+
+def _is_reconstruction_parameter(name: str) -> bool:
+    return any(
+        name == prefix or name.startswith(prefix + ".")
+        for prefix in RECONSTRUCTION_MODULES
+    )
+
+
+def stage1_encoding_state_hash(loaded: LoadedStage1Model) -> str:
+    digest = hashlib.sha256()
+    raw_config = loaded.config.to_dict()
+    semantic_config = {
+        "data": {
+            "max_smiles_tokens": raw_config["data"]["max_smiles_tokens"],
+        },
+        "descriptor": raw_config["descriptor"],
+        "fingerprint": raw_config["fingerprint"],
+        "model": raw_config["model"],
+    }
+    digest.update(
+        json.dumps(
+            semantic_config,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    )
+    for name, tensor in sorted(loaded.model.state_dict().items()):
+        if _is_reconstruction_parameter(name):
+            continue
+        value = tensor.detach().cpu().contiguous()
+        digest.update(name.encode())
+        digest.update(str(value.dtype).encode())
+        digest.update(str(tuple(value.shape)).encode())
+        digest.update(
+            value.reshape(-1).contiguous().view(torch.uint8).numpy().tobytes()
+        )
+    return digest.hexdigest()
+
+
+def teacher_cache_identity(
+    data_metadata: dict[str, Any],
+    loaded: LoadedStage1Model,
+    math_contract: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    payload = {
+        "extraction_contract_version": TEACHER_EXTRACTION_CONTRACT_VERSION,
+        "entity_artifact_hash": data_metadata["entity_artifact_hash"],
+        "encoding_state_hash": stage1_encoding_state_hash(loaded),
+        "model_contract": data_metadata["model_contract"],
+        "dtype": "float32",
+        "math_contract": math_contract,
+    }
+    return canonical_json_sha256(payload), payload
+
+
+def teacher_cache_dir(config: Stage2Config, identity: str) -> Path:
+    return config.data.artifacts_dir / "teachers" / identity
+
+
+def _checkpoint_relative_path(path: Path) -> str:
+    return os.path.relpath(path.resolve(), Path.cwd())
 
 
 def prepare_teacher_cache(
@@ -852,26 +1153,29 @@ def prepare_teacher_cache(
     reporter = reporter or ProgressReporter()
     data_metadata = prepare_stage2_data(config, reporter=reporter)
     device = resolve_device(config.training.device)
+    math_contract = configure_stage2_math(device)
     loaded = load_stage1_model(
         config.initialization.checkpoint,
         config.data.pretrain_artifacts_dir,
         device=device,
+        backbone_dropout=0.0,
     )
     if loaded.artifact_hash != data_metadata["pretrain_artifact_hash"]:
         raise ValueError("Teacher checkpoint does not match Stage 2 entity features")
-    output_dir = teacher_cache_dir(config)
+    identity, identity_payload = teacher_cache_identity(
+        data_metadata, loaded, math_contract
+    )
+    output_dir = teacher_cache_dir(config, identity)
     output_dir.mkdir(parents=True, exist_ok=True)
     metadata_path = output_dir / "metadata.json"
     embeddings_path = output_dir / "embeddings.pt"
-    data_metadata_hash = sha256_file(config.data.artifacts_dir / "metadata.json")
     if metadata_path.is_file() and embeddings_path.is_file():
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         if (
             metadata.get("format_version") == TEACHER_CACHE_VERSION
             and metadata.get("kind") == TEACHER_CACHE_KIND
-            and metadata.get("checkpoint") == str(config.initialization.checkpoint)
-            and metadata.get("data_metadata_hash") == data_metadata_hash
-            and metadata.get("model_contract") == data_metadata["model_contract"]
+            and metadata.get("identity") == identity
+            and metadata.get("identity_payload") == identity_payload
             and metadata.get("embeddings_hash") == sha256_file(embeddings_path)
         ):
             embeddings = torch.load(
@@ -883,25 +1187,39 @@ def prepare_teacher_cache(
                 int(metadata["entity_count"]),
                 int(metadata["embedding_dim"]),
             ):
-                return metadata
+                checkpoint = _checkpoint_relative_path(
+                    config.initialization.checkpoint
+                )
+                if metadata.get("checkpoint") != checkpoint:
+                    metadata["checkpoint"] = checkpoint
+                    atomic_json(metadata_path, metadata)
+                reporter.emit_json(
+                    {
+                        "event": "stage2_teacher_cache_reused",
+                        "identity": identity,
+                    }
+                )
+                return {**metadata, "cache_reused": True}
 
-    entity_dataset = Stage2EntityDataset(
-        config.data.artifacts_dir,
-        config.data.shard_cache_size,
-    )
+    entity_dataset = Stage2EntityDataset(config.data.artifacts_dir)
     packer = MultimodalPacker(loaded.vocabulary)
     embeddings = torch.empty(
         (len(entity_dataset), loaded.config.model.d_model),
         dtype=torch.float32,
     )
     loaded.model.eval()
-    with torch.no_grad(), reporter.bar(
+    with torch.inference_mode(), reporter.bar(
         total=len(entity_dataset),
         desc="Stage 2 teacher embeddings",
         unit="entity",
     ) as progress:
-        for start in range(0, len(entity_dataset), config.data.teacher_batch_size):
-            end = min(len(entity_dataset), start + config.data.teacher_batch_size)
+        for start in range(
+            0, len(entity_dataset), config.preparation.teacher_batch_size
+        ):
+            end = min(
+                len(entity_dataset),
+                start + config.preparation.teacher_batch_size,
+            )
             batch = packer(
                 [entity_dataset[index] for index in range(start, end)]
             ).to(device)
@@ -916,9 +1234,13 @@ def prepare_teacher_cache(
     metadata = {
         "format_version": TEACHER_CACHE_VERSION,
         "kind": TEACHER_CACHE_KIND,
-        "checkpoint": str(config.initialization.checkpoint),
+        "identity": identity,
+        "identity_payload": identity_payload,
+        "checkpoint": _checkpoint_relative_path(
+            config.initialization.checkpoint
+        ),
         "pretrain_artifact_hash": loaded.artifact_hash,
-        "data_metadata_hash": data_metadata_hash,
+        "entity_artifact_hash": data_metadata["entity_artifact_hash"],
         "entity_count": len(entity_dataset),
         "embedding_dim": loaded.config.model.d_model,
         "model_contract": data_metadata["model_contract"],
@@ -932,18 +1254,25 @@ def prepare_teacher_cache(
             "entity_count": len(entity_dataset),
             "embedding_dim": loaded.config.model.d_model,
             "checkpoint": str(config.initialization.checkpoint),
+            "identity": identity,
         }
     )
-    return metadata
+    return {**metadata, "cache_reused": False}
 
 
 def load_teacher_embeddings(
     config: Stage2Config,
+    loaded: LoadedStage1Model,
+    data_metadata: dict[str, Any],
+    math_contract: dict[str, Any],
     *,
     expected_count: int,
     expected_dim: int,
-) -> torch.Tensor:
-    output_dir = teacher_cache_dir(config)
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    identity, identity_payload = teacher_cache_identity(
+        data_metadata, loaded, math_contract
+    )
+    output_dir = teacher_cache_dir(config, identity)
     metadata_path = output_dir / "metadata.json"
     embeddings_path = output_dir / "embeddings.pt"
     if not metadata_path.is_file() or not embeddings_path.is_file():
@@ -956,17 +1285,10 @@ def load_teacher_embeddings(
         or metadata.get("kind") != TEACHER_CACHE_KIND
     ):
         raise ValueError("Unsupported Stage 2 teacher cache format")
-    if metadata.get("checkpoint") != str(config.initialization.checkpoint):
-        raise ValueError("Stage 2 teacher checkpoint path mismatch")
-    if metadata.get("data_metadata_hash") != sha256_file(
-        config.data.artifacts_dir / "metadata.json"
-    ):
-        raise ValueError("Stage 2 teacher cache does not match the data artifact")
-    data_metadata = json.loads(
-        (config.data.artifacts_dir / "metadata.json").read_text(encoding="utf-8")
-    )
-    if metadata.get("model_contract") != data_metadata.get("model_contract"):
-        raise ValueError("Stage 2 teacher model contract mismatch")
+    if metadata.get("identity") != identity:
+        raise ValueError("Stage 2 teacher cache identity mismatch")
+    if metadata.get("identity_payload") != identity_payload:
+        raise ValueError("Stage 2 teacher cache contract mismatch")
     if metadata.get("embeddings_hash") != sha256_file(embeddings_path):
         raise ValueError("Stage 2 teacher embedding hash mismatch")
     embeddings = torch.load(
@@ -978,4 +1300,4 @@ def load_teacher_embeddings(
         raise ValueError("Stage 2 teacher embedding shape mismatch")
     if embeddings.dtype != torch.float32 or not torch.isfinite(embeddings).all():
         raise ValueError("Stage 2 teacher embeddings must be finite FP32")
-    return embeddings
+    return embeddings, metadata

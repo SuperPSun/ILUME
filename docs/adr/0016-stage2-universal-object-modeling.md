@@ -1,8 +1,10 @@
 # ADR-0016：Stage 2 统一 ObjectEncoder 与全覆盖训练
 
-- 状态：Accepted
+- 状态：Partially superseded by ADR-0018
 - 日期：2026-08-13
 - 取代：ADR-0007 的任务调度、选模与 checkpoint 合同，以及 ADR-0009 的体系采样、双实体编码器和渐进解冻合同。
+
+> 2026-08-14：ObjectEncoder、五任务监督、逐行全覆盖、task compensation、QM mask 和五 epoch 协议继续有效；artifact/checkpoint、optimizer、冻结快路径与执行合同由 [ADR-0018](0018-stage2-object-v2-throughput.md) 取代。本文其余内容作为历史决定保留。
 
 ## 决定
 

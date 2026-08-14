@@ -57,7 +57,7 @@ python scripts/stage1/train.py \
 
 ## Stage 2
 
-Stage 2 只保留一个正式 Base，以共享 ObjectEncoder 建模 molecule 与 IL，并从 Stage 1 Base 的 v2 checkpoint 准备离线 entity teacher 缓存：
+Stage 2 只保留一个正式 Base，以共享 ObjectEncoder 建模 molecule 与 IL，并从 Stage 1 Base 的 v2 checkpoint 准备内容寻址的 FP32 entity teacher cache。Object v2 prepare 单次扫描 CSV，并行完成确定性的 entity feature/QC，直接发布 train-ready normalized tensor；train 启动时严格校验并 preload 全部 entity shard：
 
 ```bash
 python scripts/stage2/prepare.py \
@@ -69,11 +69,11 @@ python scripts/stage2/train.py \
   --output outputs/v1/stage2/base/train
 ```
 
-训练每个 epoch 完整覆盖五个任务的全部有效行，并在 full validation 后保存 `checkpoint_epoch_00001.pt` 至 `checkpoint_epoch_00005.pt`。只允许从完整 epoch 恢复，例如增加 `--resume outputs/v1/stage2/base/train/checkpoint_epoch_00003.pt`；不生成 `best.pt` 或 `last.pt`。
+训练每个 epoch 完整覆盖五个任务的全部有效行。第一 epoch 直接复用 GPU teacher embedding，不运行 packer 或 Stage 1 backbone；后四个 epoch 在 accumulation window 内跨任务去重，只执行一次 pack/backbone encode。CUDA 固定使用 TF32、pinned/non-blocking transfer 与 fused AdamW。每个 epoch 在 full validation 后保存 `checkpoint_epoch_00001.pt` 至 `checkpoint_epoch_00005.pt`。只允许从完整 Object v2 epoch 恢复，例如增加 `--resume outputs/v1/stage2/base/train/checkpoint_epoch_00003.pt`；不生成 `best.pt` 或 `last.pt`。旧 Object v1 artifact/cache/checkpoint 不迁移，必须重新 prepare。
 
 ## Stage 3
 
-Stage 3 到新 Stage 2 object v1 的表示迁移尚未完成。当前 `scripts/stage3/prepare.py` 会在写入 artifact 前明确拒绝运行；以下历史命令暂不可用于新 Stage 2 checkpoint，待 neutral-pair 与 single topology 合同另行确定后恢复：
+Stage 3 到新 Stage 2 object v2 的表示迁移尚未完成。当前 `scripts/stage3/prepare.py` 会在写入 artifact 前明确拒绝运行；以下历史命令暂不可用于新 Stage 2 checkpoint，待 neutral-pair 与 single topology 合同另行确定后恢复：
 
 ```bash
 python scripts/stage3/prepare.py \

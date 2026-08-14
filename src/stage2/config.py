@@ -24,9 +24,13 @@ class Stage2DataConfig:
     )
     artifacts_dir: Path = Path("outputs/v1/stage2/base/prepare/artifacts")
     entity_shard_size: int = 4096
-    shard_cache_size: int = 10
-    teacher_batch_size: int = 256
     seed: int = 42
+
+
+@dataclass(frozen=True)
+class Stage2PreparationConfig:
+    workers: int = 8
+    teacher_batch_size: int = 512
 
 
 @dataclass(frozen=True)
@@ -64,10 +68,14 @@ class Stage2TrainingConfig:
     epochs: int = 5
     backbone_frozen_epochs: int = 1
     backbone_learning_rate: float = 1.0e-5
-    stage2_new_module_learning_rate: float = 1.0e-4
+    object_encoder_learning_rate: float = 3.0e-5
+    task_head_learning_rate: float = 1.0e-4
     weight_decay: float = 0.01
     warmup_fraction: float = 0.05
     max_grad_norm: float = 1.0
+    packing_workers: int = 8
+    packing_prefetch_windows: int = 2
+    log_every_batches: int = 50
     device: str = "auto"
     amp_dtype: str = "bf16"
 
@@ -75,6 +83,9 @@ class Stage2TrainingConfig:
 @dataclass(frozen=True)
 class Stage2Config:
     data: Stage2DataConfig = field(default_factory=Stage2DataConfig)
+    preparation: Stage2PreparationConfig = field(
+        default_factory=Stage2PreparationConfig
+    )
     initialization: Stage2InitializationConfig = field(
         default_factory=Stage2InitializationConfig
     )
@@ -83,10 +94,12 @@ class Stage2Config:
     training: Stage2TrainingConfig = field(default_factory=Stage2TrainingConfig)
 
     def validate(self) -> None:
-        if self.data.entity_shard_size <= 0 or self.data.shard_cache_size <= 0:
-            raise ValueError("Stage 2 shard sizes must be positive")
-        if self.data.teacher_batch_size <= 0:
-            raise ValueError("data.teacher_batch_size must be positive")
+        if self.data.entity_shard_size <= 0:
+            raise ValueError("data.entity_shard_size must be positive")
+        if self.preparation.workers <= 0:
+            raise ValueError("preparation.workers must be positive")
+        if self.preparation.teacher_batch_size <= 0:
+            raise ValueError("preparation.teacher_batch_size must be positive")
         if self.model.object_layers <= 0 or self.model.object_ffn_dim <= 0:
             raise ValueError("Stage 2 ObjectEncoder dimensions must be positive")
         if not 0.0 <= self.model.dropout <= 1.0:
@@ -118,7 +131,8 @@ class Stage2Config:
             )
         if (
             training.backbone_learning_rate <= 0.0
-            or training.stage2_new_module_learning_rate <= 0.0
+            or training.object_encoder_learning_rate <= 0.0
+            or training.task_head_learning_rate <= 0.0
         ):
             raise ValueError("Stage 2 learning rates must be positive")
         if training.weight_decay < 0.0:
@@ -127,6 +141,12 @@ class Stage2Config:
             raise ValueError("training.warmup_fraction must be in [0, 1)")
         if training.max_grad_norm < 0.0:
             raise ValueError("training.max_grad_norm must be non-negative")
+        if training.packing_workers <= 0:
+            raise ValueError("training.packing_workers must be positive")
+        if training.packing_prefetch_windows <= 0:
+            raise ValueError("training.packing_prefetch_windows must be positive")
+        if training.log_every_batches <= 0:
+            raise ValueError("training.log_every_batches must be positive")
         if training.amp_dtype not in {"bf16", "fp16", "none"}:
             raise ValueError("training.amp_dtype must be bf16, fp16, or none")
 
@@ -142,9 +162,21 @@ class Stage2Config:
 
         return convert(asdict(self))
 
+    def experiment_dict(self) -> dict[str, Any]:
+        payload = self.to_dict()
+        payload.pop("preparation")
+        for field_name in (
+            "packing_workers",
+            "packing_prefetch_windows",
+            "log_every_batches",
+        ):
+            payload["training"].pop(field_name)
+        return payload
+
 
 _SECTIONS: dict[str, type] = {
     "data": Stage2DataConfig,
+    "preparation": Stage2PreparationConfig,
     "initialization": Stage2InitializationConfig,
     "model": Stage2ModelConfig,
     "loss": Stage2LossConfig,

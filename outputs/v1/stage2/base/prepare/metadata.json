@@ -2,12 +2,12 @@
   "schema_version": 1,
   "stage": "stage2",
   "operation": "prepare",
-  "status": "completed",
+  "status": "failed",
   "config_path": "configs/v1/stage2/base.yaml",
   "data_metadata": "data/stage2/metadata.json",
   "seed": 42,
-  "attempt_id": "e9cdf2324938419c9ba0fac407f5a389",
-  "repository_commit": "3ed6514811d464dbc0ae620cd77dad3e115b3ed7",
+  "attempt_id": "81c563832a0d454e90986f4c252bb56e",
+  "repository_commit": "4a0bedde5a608176e21a7d0b8eeddd6e51a7c82f",
   "repository_dirty": true,
   "python_version": "3.12.12",
   "pytorch_version": "2.9.0+cu128",
@@ -19,9 +19,22 @@
     9
   ],
   "cudnn_version": 91002,
-  "float32_matmul_precision": "none",
-  "cuda_matmul_fp32_precision": "none",
+  "float32_matmul_precision": "tf32",
+  "cuda_matmul_fp32_precision": "tf32",
   "cudnn_conv_fp32_precision": "tf32",
   "deterministic_algorithms": false,
-  "checkpoint": "outputs/v1/stage1/base/train/checkpoint_epoch_00005.pt"
+  "checkpoint": "outputs/v1/stage1/base/train/checkpoint_epoch_00005.pt",
+  "math_contract": {
+    "device_type": "cuda",
+    "torch_version": "2.9.0+cu128",
+    "cuda_version": "12.8",
+    "teacher_dtype": "float32",
+    "fp32_matmul_precision": "tf32",
+    "cudnn_conv_fp32_precision": "tf32",
+    "cuda_capability": [
+      8,
+      9
+    ]
+  },
+  "teacher_dtype": "float32"
 }
