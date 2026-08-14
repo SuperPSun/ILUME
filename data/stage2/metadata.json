@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "stage": "stage2",
+  "source_repository_commit": "710038891cbb007f8cf40803a6c34efc076db8d8",
+  "source_repository_dirty": false,
+  "files": [
+    {
+      "path": "data/stage2/density/train.csv",
+      "sha256": "8d7f6b003e6e8a4e63b893577682b88699428ac6737b421e69167afaca59bde1",
+      "size": 1639731,
+      "rows": 22160
+    },
+    {
+      "path": "data/stage2/density/valid.csv",
+      "sha256": "1e1889261c3b7d438134cae3757195e95dc0c29dcb683abd5f5c3027bb4917fc",
+      "size": 185978,
+      "rows": 2522
+    },
+    {
+      "path": "data/stage2/heat_capacity/train.csv",
+      "sha256": "bc0bbc48d888648af320c9bac48d0a19e32b4ec6966d7120c400d779bcc6d71d",
+      "size": 780638,
+      "rows": 10730
+    },
+    {
+      "path": "data/stage2/heat_capacity/valid.csv",
+      "sha256": "4ccf0ab0e378ab49bfe3b51fbdd670a688c2d4b70e2fa0f4b5abad3680b44ffb",
+      "size": 86520,
+      "rows": 1194
+    },
+    {
+      "path": "data/stage2/simulated_qm_elec_hf/train.csv",
+      "sha256": "236e3ceaf4169a28802e040161fd389eb616e404eebd38ea67c9131798bd19cb",
+      "size": 5137936,
+      "rows": 24543
+    },
+    {
+      "path": "data/stage2/simulated_qm_elec_hf/valid.csv",
+      "sha256": "b40f79f9448c5bcd568aad130abde513520e7b36f054ba8e145c1af5d66f70b0",
+      "size": 569003,
+      "rows": 2715
+    },
+    {
+      "path": "data/stage2/thermal_expansion/train.csv",
+      "sha256": "920ea0abe16671fba7feabd06995ac2e712ef001913a20519d4cc0f0d71bec8e",
+      "size": 835412,
+      "rows": 10865
+    },
+    {
+      "path": "data/stage2/thermal_expansion/valid.csv",
+      "sha256": "d5aab5f1d10ceb1305f061dfb33965e012fa72faa8d1931f74f5caf093ca017c",
+      "size": 89655,
+      "rows": 1170
+    },
+    {
+      "path": "data/stage2/transfer_organic/train.csv",
+      "sha256": "5571dc044951914964c007620b830cb4472e25f782e5387f961f5fb2ef2975f4",
+      "size": 43267810,
+      "rows": 899778
+    },
+    {
+      "path": "data/stage2/transfer_organic/valid.csv",
+      "sha256": "be37fb6bbc6afaa0b34edbefa90ae9d647d0d7e5375e8a6ebd3e8131ad05010b",
+      "size": 4824612,
+      "rows": 100222
+    }
+  ]
+}

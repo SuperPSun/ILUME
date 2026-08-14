@@ -1,0 +1,15 @@
+{
+  "format_version": 1,
+  "kind": "ilume_stage2_object_teacher",
+  "checkpoint": "outputs/v1/stage1/base/train/checkpoint_epoch_00005.pt",
+  "pretrain_artifact_hash": "aaba3d0bc9cea67d440baab8e2e61ed3c2e58c050862ff1334a99da49097621b",
+  "data_metadata_hash": "26e14b6ecb76d4738d9df9a0db6228f4089e492bff9f5e7ddf2b421a85e5a0f1",
+  "entity_count": 37488,
+  "embedding_dim": 512,
+  "model_contract": {
+    "d_model": 512,
+    "n_heads": 8
+  },
+  "dtype": "float32",
+  "embeddings_hash": "7bf657f0ec91759d7b27f2a61c4647b06e0204255bac682b4ffbd0832db9b8d7"
+}

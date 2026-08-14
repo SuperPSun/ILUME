@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "stage": "stage2",
+  "operation": "prepare",
+  "status": "completed",
+  "config_path": "configs/v1/stage2/base.yaml",
+  "data_metadata": "data/stage2/metadata.json",
+  "seed": 42,
+  "attempt_id": "0eabe054cd0341ee95c0c2564adcd43a",
+  "repository_commit": "0bf8fc7a975e5bbc7797dbd6b4ce25dd2613258d",
+  "repository_dirty": true,
+  "python_version": "3.12.12",
+  "pytorch_version": "2.9.0+cu128",
+  "cuda_version": "12.8",
+  "rdkit_version": "2025.09.5",
+  "gpu_model": "NVIDIA GeForce RTX 4090",
+  "gpu_capability": [
+    8,
+    9
+  ],
+  "cudnn_version": 91002,
+  "float32_matmul_precision": "none",
+  "cuda_matmul_fp32_precision": "none",
+  "cudnn_conv_fp32_precision": "tf32",
+  "deterministic_algorithms": false,
+  "checkpoint": "outputs/v1/stage1/base/train/checkpoint_epoch_00005.pt"
+}
