@@ -9,6 +9,7 @@ import os
 from array import array
 from collections import Counter
 from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Sequence
@@ -464,6 +465,58 @@ class EntityFeatureResult:
     exclusion: dict[str, Any] | None
 
 
+def _sample_to_ipc_payload(value: Any) -> Any:
+    if isinstance(value, torch.Tensor):
+        return np.array(
+            value.detach().cpu().contiguous().numpy(),
+            copy=True,
+            order="C",
+        )
+    if isinstance(value, np.ndarray):
+        return np.array(value, copy=True, order="C")
+    if isinstance(value, dict):
+        return {
+            key: _sample_to_ipc_payload(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, tuple):
+        return tuple(_sample_to_ipc_payload(item) for item in value)
+    if isinstance(value, list):
+        return [_sample_to_ipc_payload(item) for item in value]
+    return value
+
+
+def _sample_from_ipc_payload(value: Any) -> Any:
+    if isinstance(value, np.ndarray):
+        return torch.from_numpy(value)
+    if isinstance(value, dict):
+        return {
+            key: _sample_from_ipc_payload(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, tuple):
+        return tuple(_sample_from_ipc_payload(item) for item in value)
+    if isinstance(value, list):
+        return [_sample_from_ipc_payload(item) for item in value]
+    return value
+
+
+def _materialize_entity_feature(
+    result: EntityFeatureResult,
+) -> EntityFeatureResult:
+    return EntityFeatureResult(
+        candidate_id=result.candidate_id,
+        role=result.role,
+        canonical_smiles=result.canonical_smiles,
+        sample=(
+            None
+            if result.sample is None
+            else _sample_from_ipc_payload(result.sample)
+        ),
+        exclusion=result.exclusion,
+    )
+
+
 _ENTITY_WORKER_STATE: tuple[
     PretrainConfig,
     SmilesTokenizer,
@@ -497,7 +550,7 @@ def _initialize_entity_worker(
     )
 
 
-def _compute_entity_feature(
+def _build_entity_feature_result(
     item: tuple[int, str, str],
 ) -> EntityFeatureResult:
     if _ENTITY_WORKER_STATE is None:
@@ -560,6 +613,23 @@ def _compute_entity_feature(
     )
 
 
+def _compute_entity_feature(
+    item: tuple[int, str, str],
+) -> EntityFeatureResult:
+    result = _build_entity_feature_result(item)
+    return EntityFeatureResult(
+        candidate_id=result.candidate_id,
+        role=result.role,
+        canonical_smiles=result.canonical_smiles,
+        sample=(
+            None
+            if result.sample is None
+            else _sample_to_ipc_payload(result.sample)
+        ),
+        exclusion=result.exclusion,
+    )
+
+
 def _entity_feature_results(
     config: Stage2Config,
     collected: CollectedStage2Data,
@@ -581,7 +651,9 @@ def _entity_feature_results(
         )
         for item in inputs:
             try:
-                yield _compute_entity_feature(item)
+                yield _materialize_entity_feature(
+                    _compute_entity_feature(item)
+                )
             except BaseException as error:
                 candidate_id, role, canonical_smiles = item
                 raise RuntimeError(
@@ -608,7 +680,15 @@ def _entity_feature_results(
         while pending:
             item, future = pending.pop(0)
             try:
-                yield future.result()
+                result = future.result()
+            except BrokenProcessPool as error:
+                candidate_id, role, canonical_smiles = item
+                raise RuntimeError(
+                    "Stage 2 entity worker pool failed while awaiting "
+                    f"candidate_id={candidate_id}, role={role}, "
+                    f"canonical_smiles={canonical_smiles}; the awaiting "
+                    "candidate is not necessarily the process-pool failure cause"
+                ) from error
             except BaseException as error:
                 candidate_id, role, canonical_smiles = item
                 raise RuntimeError(
@@ -616,6 +696,7 @@ def _entity_feature_results(
                     f"candidate_id={candidate_id}, role={role}, "
                     f"canonical_smiles={canonical_smiles}"
                 ) from error
+            yield _materialize_entity_feature(result)
             try:
                 next_item = next(iterator)
             except StopIteration:

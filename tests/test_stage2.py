@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 import json
+import subprocess
+import sys
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -390,6 +392,195 @@ def test_stage2_entity_worker_failure_has_entity_context(
         match=r"candidate_id=0, role=.*canonical_smiles=",
     ):
         prepare_stage2_data(tiny_stage2_setup)
+
+
+def test_stage2_entity_transport_has_no_tensors_and_round_trips(
+    tiny_stage2_setup,
+):
+    pretrain_config, vocabulary, schema, standardizer, _ = (
+        load_stage1_feature_inputs(
+            tiny_stage2_setup.initialization.checkpoint,
+            tiny_stage2_setup.data.pretrain_artifacts_dir,
+        )
+    )
+    stage2_prepare._initialize_entity_worker(
+        pretrain_config, vocabulary, schema, standardizer
+    )
+    item = (106, "cation", "CCCCCCn1c[n+](C)cn1")
+    direct = stage2_prepare._build_entity_feature_result(item)
+    transported = stage2_prepare._compute_entity_feature(item)
+    materialized = stage2_prepare._materialize_entity_feature(transported)
+
+    def contains_tensor(value):
+        if isinstance(value, torch.Tensor):
+            return True
+        if isinstance(value, dict):
+            return any(contains_tensor(item) for item in value.values())
+        if isinstance(value, (list, tuple)):
+            return any(contains_tensor(item) for item in value)
+        return False
+
+    def assert_equal(left, right):
+        if isinstance(left, torch.Tensor):
+            assert isinstance(right, torch.Tensor)
+            assert right.dtype == left.dtype
+            assert right.shape == left.shape
+            assert torch.equal(right, left)
+        elif isinstance(left, dict):
+            assert right.keys() == left.keys()
+            for key in left:
+                assert_equal(left[key], right[key])
+        elif isinstance(left, (list, tuple)):
+            assert type(right) is type(left)
+            assert len(right) == len(left)
+            for left_item, right_item in zip(left, right, strict=True):
+                assert_equal(left_item, right_item)
+        else:
+            assert right == left
+
+    assert direct.sample is not None
+    assert transported.sample is not None
+    assert not contains_tensor(transported.sample)
+    assert materialized.sample is not None
+    assert_equal(direct.sample, materialized.sample)
+
+
+def test_stage2_entity_transport_does_not_accumulate_file_descriptors(
+    tiny_stage2_setup,
+):
+    code = r'''
+import os
+import resource
+import sys
+from pathlib import Path
+
+from stage1.features import load_stage1_feature_inputs
+from stage2.config import (
+    Stage2Config,
+    Stage2DataConfig,
+    Stage2InitializationConfig,
+    Stage2PreparationConfig,
+)
+from stage2.prepare import CollectedStage2Data, _entity_feature_results
+
+
+def main():
+    _, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    limit = 256 if hard == resource.RLIM_INFINITY else min(256, hard)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (limit, hard))
+    artifact_dir = Path(sys.argv[1])
+    checkpoint = Path(sys.argv[2])
+    config = Stage2Config(
+        data=Stage2DataConfig(pretrain_artifacts_dir=artifact_dir),
+        preparation=Stage2PreparationConfig(workers=8),
+        initialization=Stage2InitializationConfig(checkpoint=checkpoint),
+    )
+    pretrain, vocabulary, schema, standardizer, _ = (
+        load_stage1_feature_inputs(checkpoint, artifact_dir)
+    )
+    collected = CollectedStage2Data(
+        entity_keys=tuple(
+            ("cation", "CCCCCCn1c[n+](C)cn1") for _ in range(64)
+        ),
+        rows={},
+        scalers={},
+        source_counts={},
+        duplicate_rows=(),
+        missing_target_rows=(),
+    )
+    retained = []
+    baseline = len(os.listdir("/proc/self/fd"))
+    peak = baseline
+    for result in _entity_feature_results(
+        config,
+        collected,
+        pretrain,
+        vocabulary,
+        schema,
+        standardizer,
+    ):
+        retained.append(result)
+        peak = max(peak, len(os.listdir("/proc/self/fd")))
+    assert len(retained) == 64
+    assert peak - baseline < 80, (baseline, peak)
+
+
+if __name__ == "__main__":
+    main()
+'''
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            code,
+            str(tiny_stage2_setup.data.pretrain_artifacts_dir),
+            str(tiny_stage2_setup.initialization.checkpoint),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_stage2_broken_pool_does_not_blame_awaiting_candidate(
+    tiny_stage2_setup, monkeypatch
+):
+    class FailedFuture:
+        def result(self):
+            raise stage2_prepare.BrokenProcessPool("pool failed")
+
+    class FailedExecutor:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def submit(self, *_args, **_kwargs):
+            return FailedFuture()
+
+    monkeypatch.setattr(stage2_prepare, "ProcessPoolExecutor", FailedExecutor)
+    collected = stage2_prepare.CollectedStage2Data(
+        entity_keys=(("cation", "CCCCCCn1c[n+](C)cn1"),),
+        rows={},
+        scalers={},
+        source_counts={},
+        duplicate_rows=(),
+        missing_target_rows=(),
+    )
+    pretrain_config, vocabulary, schema, standardizer, _ = (
+        load_stage1_feature_inputs(
+            tiny_stage2_setup.initialization.checkpoint,
+            tiny_stage2_setup.data.pretrain_artifacts_dir,
+        )
+    )
+    config = replace(
+        tiny_stage2_setup,
+        preparation=replace(tiny_stage2_setup.preparation, workers=2),
+    )
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            r"pool failed while awaiting candidate_id=0.*"
+            r"not necessarily the process-pool failure cause"
+        ),
+    ):
+        list(
+            stage2_prepare._entity_feature_results(
+                config,
+                collected,
+                pretrain_config,
+                vocabulary,
+                schema,
+                standardizer,
+            )
+        )
 
 
 def test_qm_partial_targets_are_masked_audited_and_validated(
