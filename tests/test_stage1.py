@@ -39,11 +39,11 @@ def test_formal_stage1_has_one_large_capacity_base_profile() -> None:
     assert base.model.gradient_checkpointing is False
     assert base.data.include_augmentation is True
     assert base.loss.role_weights == (2.0, 2.0, 1.0)
-    assert base.training.batch_size == 256
+    assert base.training.batch_size == 128
     assert base.training.num_workers == 8
     assert base.training.epochs == 5
     assert base.training.learning_rate == pytest.approx(1.0e-4)
-    assert base.training.compile is True
+    assert base.training.compile is False
     assert base.training.validation_interval_steps == 5000
     assert base.tokenizer.min_frequency == 1
     assert (

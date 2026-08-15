@@ -102,7 +102,7 @@ class LossConfig:
 
 @dataclass(frozen=True)
 class TrainingConfig:
-    batch_size: int = 256
+    batch_size: int = 128
     epochs: int = 5
     learning_rate: float = 1.0e-4
     weight_decay: float = 0.01
@@ -111,7 +111,7 @@ class TrainingConfig:
     num_workers: int = 8
     device: str = "auto"
     amp_dtype: str = "bf16"
-    compile: bool = True
+    compile: bool = False
     validation_interval_steps: int = 5000
     quick_validation_samples_per_role: int = 256
 

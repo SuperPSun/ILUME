@@ -322,7 +322,7 @@ def tiny_stage3(tmp_path_factory: pytest.TempPathFactory) -> Stage3Config:
     stage2_checkpoint = root / "stage2.pt"
     torch.save(
         {
-            "format_version": 1,
+            "format_version": 2,
             "kind": "ilume_stage2_object",
             "model": stage2_model.state_dict(),
             "config": raw_stage2,
@@ -463,7 +463,7 @@ def test_stage3_registry_and_formal_configs_are_explicit() -> None:
 def test_stage3_rejects_object_checkpoint_before_migration(tmp_path) -> None:
     checkpoint = tmp_path / "stage2_object.pt"
     torch.save(
-        {"format_version": 1, "kind": "ilume_stage2_object"}, checkpoint
+        {"format_version": 2, "kind": "ilume_stage2_object"}, checkpoint
     )
     with pytest.raises(ValueError, match="object contract migration pending"):
         load_frozen_stage2(checkpoint)
