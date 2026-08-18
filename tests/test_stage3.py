@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import json
 import shutil
 from dataclasses import replace
@@ -26,13 +25,7 @@ from stage1.data import PreparedCorpusDataset
 from stage1.prepare import prepare_corpus
 from stage1.model import MultimodalPretrainModel
 from common.progress import ProgressReporter
-from stage2.config import (
-    Stage2Config,
-    Stage2DataConfig,
-    Stage2InitializationConfig,
-)
 from common.io import atomic_json, atomic_torch_save, sha256_file
-from stage2.model import Stage2ObjectModel
 from stage3.config import (
     AUX6_TASKS,
     IL21_TASKS,
@@ -87,15 +80,6 @@ def _write_csv(
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
-
-
-def _stage2_config_hash(raw: dict[str, object]) -> str:
-    payload = json.loads(json.dumps(raw))
-    return hashlib.sha256(
-        json.dumps(
-            payload, sort_keys=True, separators=(",", ":")
-        ).encode()
-    ).hexdigest()
 
 
 def _task_row(task: str, fold: int) -> dict[str, object]:
@@ -297,39 +281,11 @@ def tiny_stage3(tmp_path_factory: pytest.TempPathFactory) -> Stage3Config:
         },
         stage1_checkpoint,
     )
-    stage2_data = root / "stage2_data"
-    stage2_data.mkdir()
-    (stage2_data / "metadata.json").write_text(
-        '{"format_version": 2}\n', encoding="utf-8"
-    )
-    stage2_config = Stage2Config(
-        data=Stage2DataConfig(
-            stage2_dir=root / "unused",
-            pretrain_artifacts_dir=pretrain_dir,
-            artifacts_dir=stage2_data,
-        ),
-        initialization=Stage2InitializationConfig(
-            checkpoint=stage1_checkpoint
-        ),
-    )
-    stage2_model = Stage2ObjectModel(
-        backbone,
-        object_layers=stage2_config.model.object_layers,
-        object_ffn_dim=stage2_config.model.object_ffn_dim,
-        dropout=stage2_config.model.dropout,
-    )
-    raw_stage2 = stage2_config.to_dict()
     stage2_checkpoint = root / "stage2.pt"
     torch.save(
         {
-            "format_version": 2,
+            "format_version": 3,
             "kind": "ilume_stage2_object",
-            "model": stage2_model.state_dict(),
-            "config": raw_stage2,
-            "config_hash": _stage2_config_hash(raw_stage2),
-            "data_metadata_hash": sha256_file(
-                stage2_data / "metadata.json"
-            ),
             "pretrain_checkpoint_hash": sha256_file(stage1_checkpoint),
         },
         stage2_checkpoint,
@@ -463,10 +419,17 @@ def test_stage3_registry_and_formal_configs_are_explicit() -> None:
 def test_stage3_rejects_object_checkpoint_before_migration(tmp_path) -> None:
     checkpoint = tmp_path / "stage2_object.pt"
     torch.save(
-        {"format_version": 2, "kind": "ilume_stage2_object"}, checkpoint
+        {"format_version": 3, "kind": "ilume_stage2_object"}, checkpoint
     )
     with pytest.raises(ValueError, match="object contract migration pending"):
         load_frozen_stage2(checkpoint)
+
+    encoder = tmp_path / "stage2_encoder.pt"
+    torch.save(
+        {"format_version": 1, "kind": "ilume_stage2_encoder"}, encoder
+    )
+    with pytest.raises(ValueError, match="object contract migration pending"):
+        load_frozen_stage2(encoder)
 
 
 def test_stage3_scripts_configure_runtime_before_loading_operation() -> None:

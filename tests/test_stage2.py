@@ -2,1290 +2,344 @@ from __future__ import annotations
 
 import csv
 import json
-import subprocess
-import sys
-import time
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 import torch
-
-import stage2.prepare as stage2_prepare
-import stage2.train as stage2_train
+from rdkit import Chem
 
 from common.io import sha256_file
 from stage1.config import (
-    STAGE1_CHECKPOINT_KIND,
-    STAGE1_CHECKPOINT_VERSION,
-    DataConfig,
-    DescriptorConfig,
-    FingerprintConfig,
-    ModelConfig,
-    PretrainConfig,
+    STAGE1_CHECKPOINT_KIND, STAGE1_CHECKPOINT_VERSION, DataConfig,
+    DescriptorConfig, FingerprintConfig, ModelConfig, PretrainConfig,
 )
 from stage1.data import PreparedCorpusDataset
-from stage1.features import load_stage1_feature_inputs
-from stage1.model import load_stage1_model
-from stage1.prepare import prepare_corpus
 from stage1.masking import MultimodalPacker
-from stage1.model import MultimodalPretrainModel
+from stage1.model import MultimodalPretrainModel, load_stage1_model
+from stage1.prepare import prepare_corpus
+from stage1.tokenizer import SmilesTokenizer
+from stage2.atom_targets import (
+    StructureManifestEntry, map_partial_charges, parse_mol2,
+    verify_structure,
+)
 from stage2.config import (
-    Stage2Config,
-    Stage2DataConfig,
-    Stage2InitializationConfig,
-    Stage2PreparationConfig,
-    Stage2TrainingConfig,
-    load_stage2_config,
+    Stage2Config, Stage2DataConfig, Stage2InitializationConfig,
+    Stage2PreparationConfig, Stage2TrainingConfig,
 )
 from stage2.data import (
-    Stage2EntityDataset,
-    Stage2BatchDescriptor,
-    Stage2DeviceTaskData,
-    Stage2TaskDataset,
-    epoch_batch_schedule,
-    pack_stage2_window,
-    task_batch_counts,
+    Stage2BatchDescriptor, Stage2EntityDataset, Stage2TaskDataset,
+    epoch_batch_schedule, load_artifact_registry, pack_stage2_window,
 )
 from stage2.model import (
-    ObjectEncoder,
-    Stage2ObjectModel,
-    masked_smooth_l1_loss,
-    stage2_optimizer_groups,
+    ObjectEncoder, Stage2ObjectModel, masked_target_macro_smooth_l1_loss,
+    molecule_equal_smooth_l1_loss,
 )
-from stage2.prepare import (
-    load_teacher_embeddings,
-    prepare_stage2_data,
-    prepare_teacher_cache,
-    teacher_cache_dir,
-    teacher_cache_identity,
-)
+from stage2.prepare import prepare_stage2_data, prepare_teacher_cache
+from stage2.registry import load_stage2_registry
 from stage2.train import (
-    evaluate_stage2,
-    run_stage2_training,
+    load_stage2_encoder_artifact, run_stage2_training,
     task_compensation_scale,
 )
-from stage1.tokenizer import SmilesTokenizer
-from stage2.runtime import configure_stage2_math
+from stage3.prepare import STAGE3_MIGRATION_MESSAGE, load_frozen_stage2
 
 
-def _write_csv(path: Path, fieldnames, rows) -> None:
+TASKS = (
+    "simulation/density",
+    "simulation/heat_capacity",
+    "simulation/heat_of_vaporization",
+    "simulation/partial_atomic_charge",
+    "simulation/pbe_tzvp_anion_orbitals",
+    "simulation/pbe_tzvp_cation_orbitals",
+    "simulation/simulated_qm_elec_hf",
+    "simulation/thermal_expansion",
+    "simulation/transfer_organic",
+)
+
+
+def _write_csv(path: Path, fields, rows) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
 
 
-def _stage2_sources(root: Path) -> None:
-    _write_csv(
-        root / "density/train.csv",
-        ["cation", "anion", "temperature_K", "density_g/cm^3", "source_list"],
-        [
-            {
-                "cation": "[Na+]",
-                "anion": "[Cl-]",
-                "temperature_K": 298,
-                "density_g/cm^3": 1.0,
-                "source_list": "simulation",
-            },
-            {
-                "cation": "[Na+]",
-                "anion": "[Cl-]",
-                "temperature_K": 298,
-                "density_g/cm^3": 2.0,
-                "source_list": "simulation",
-            },
-        ],
-    )
-    _write_csv(
-        root / "density/valid.csv",
-        ["cation", "anion", "temperature_K", "density_g/cm^3", "source_list"],
-        [
-            {
-                "cation": "C[NH3+]",
-                "anion": "C(=O)[O-]",
-                "temperature_K": 310,
-                "density_g/cm^3": 100.0,
-                "source_list": "simulation",
-            }
-        ],
-    )
-    for task, target, train_value, valid_value in (
-        ("heat_capacity", "heat_capacity_J/mol/K", 200.0, 300.0),
-        ("thermal_expansion", "thermal_expansion_K^-1", 0.001, 0.002),
-    ):
-        fields = ["cation", "anion", "temperature_K", target, "source_list"]
-        _write_csv(
-            root / task / "train.csv",
-            fields,
-            [
-                {
-                    "cation": "[Na+]",
-                    "anion": "C(=O)[O-]",
-                    "temperature_K": 300,
-                    target: train_value,
-                    "source_list": "simulation",
-                }
-            ],
-        )
-        _write_csv(
-            root / task / "valid.csv",
-            fields,
-            [
-                {
-                    "cation": "C[NH3+]",
-                    "anion": "[Cl-]",
-                    "temperature_K": 310,
-                    target: valid_value,
-                    "source_list": "simulation",
-                }
-            ],
-        )
+def _write_mol2(path: Path, atoms: list[tuple[str, str, float]], bonds: list[tuple[int, int, str]]) -> None:
+    lines = ["@<TRIPOS>MOLECULE", "MOL", f"{len(atoms)} {len(bonds)} 1 0 0", "SMALL", "resp", "@<TRIPOS>ATOM"]
+    for index, (name, atom_type, charge) in enumerate(atoms, start=1):
+        lines.append(f"{index} {name} {index}.0 0.0 0.0 {atom_type} 1 MOL {charge}")
+    lines.append("@<TRIPOS>BOND")
+    for index, (first, second, kind) in enumerate(bonds, start=1):
+        lines.append(f"{index} {first} {second} {kind}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    qm_fields = [
-        "SMILES",
-        "ESP_max",
-        "ESP_min",
-        "ESP_std",
-        "ESP_pos_frac",
-        "Dipole",
-        "Quadrupole",
-        "q_max",
-        "q_min",
-        "q_std",
-        "q_pos_frac",
-        "gap_eV",
-        "source_list",
-    ]
-    qm_values = {
-        name: index + 0.5 for index, name in enumerate(qm_fields[1:-1])
+
+def _stage2_sources(data_root: Path) -> None:
+    root = data_root / "stage2"
+    il_tasks = (
+        ("density", "density_g/cm^3", 1.0, 100.0),
+        ("heat_capacity", "heat_capacity_J/mol/K", 200.0, 300.0),
+        ("heat_of_vaporization", "heat_of_vaporization_kJ/mol", 10.0, 11.0),
+        ("thermal_expansion", "thermal_expansion_K^-1", 0.001, 0.002),
+    )
+    for name, target, train_value, valid_value in il_tasks:
+        fields = ["cation", "anion", "temperature_K", target, "source_list"]
+        train = [{"cation": "[Na+]", "anion": "[Cl-]", "temperature_K": 298, target: train_value, "source_list": "simulation"}]
+        if name == "density":
+            train.append({"cation": "[Na+]", "anion": "[Cl-]", "temperature_K": 298, target: 2.0, "source_list": "simulation"})
+        valid = [{"cation": "C[NH3+]", "anion": "C(=O)[O-]", "temperature_K": 310, target: valid_value, "source_list": "simulation"}]
+        _write_csv(root / name / "train.csv", fields, train)
+        _write_csv(root / name / "valid.csv", fields, valid)
+    for name, column, train_smiles, valid_smiles in (
+        ("pbe_tzvp_cation_orbitals", "cation", "[Na+]", "C[NH3+]"),
+        ("pbe_tzvp_anion_orbitals", "anion", "[Cl-]", "C(=O)[O-]"),
+    ):
+        fields = [column, "HOMO_eV", "LUMO_eV", "source_list"]
+        _write_csv(root / name / "train.csv", fields, [{column: train_smiles, "HOMO_eV": -1.0, "LUMO_eV": 1.0, "source_list": "simulation"}])
+        _write_csv(root / name / "valid.csv", fields, [{column: valid_smiles, "HOMO_eV": -2.0, "LUMO_eV": 2.0, "source_list": "simulation"}])
+    qm_targets = ("ESP_max", "ESP_min", "ESP_std", "ESP_pos_frac", "Dipole", "Quadrupole", "q_max", "q_min", "q_std", "q_pos_frac", "gap_eV")
+    qm_fields = ["SMILES", *qm_targets, "source_list"]
+    _write_csv(root / "simulated_qm_elec_hf/train.csv", qm_fields, [{"SMILES": "CC", **{name: index + 0.5 for index, name in enumerate(qm_targets)}, "source_list": "simulation"}])
+    _write_csv(root / "simulated_qm_elec_hf/valid.csv", qm_fields, [{"SMILES": "CCC", **{name: index + 10.5 for index, name in enumerate(qm_targets)}, "source_list": "simulation"}])
+    transfer_fields = ["solute", "solvent", "transfer_organic_kcal/mol", "source_list"]
+    _write_csv(root / "transfer_organic/train.csv", transfer_fields, [{"solute": "CC", "solvent": "O", "transfer_organic_kcal/mol": -1.0, "source_list": "simulation"}])
+    _write_csv(root / "transfer_organic/valid.csv", transfer_fields, [{"solute": "CCC", "solvent": "O", "transfer_organic_kcal/mol": -2.0, "source_list": "simulation"}])
+
+    structure_root = root / "partial_atomic_charge/charge_20260514"
+    structure_root.mkdir(parents=True)
+    structures = {
+        "mol_train": ("CCO", [("C1", "c3", -0.1), ("C2", "c3", 0.2), ("O1", "os", -0.1)], [(1, 2, "1"), (2, 3, "1")]),
+        "mol_valid": ("O", [("O1", "os", -0.2)], []),
     }
-    _write_csv(
-        root / "simulated_qm_elec_hf/train.csv",
-        qm_fields,
-        [{"SMILES": "CC", **qm_values, "source_list": "simulation"}],
+    manifest = []
+    for mol_id, (_, atoms, bonds) in structures.items():
+        path = structure_root / f"{mol_id}.mol2"
+        _write_mol2(path, atoms, bonds)
+        manifest.append({"mol_id": mol_id, "relative_path": path.name, "format": "mol2", "size_bytes": path.stat().st_size, "sha256": sha256_file(path), "referenced_by_charge": "True"})
+    _write_csv(structure_root / "structure_manifest.csv", ["mol_id", "relative_path", "format", "size_bytes", "sha256", "referenced_by_charge"], manifest)
+    for split, mol_id in (("train", "mol_train"), ("valid", "mol_valid")):
+        _write_csv(root / "partial_atomic_charge" / f"{split}.csv", ["mol_id", "SMILES", "role", "formal_charge", "source_list"], [{"mol_id": mol_id, "SMILES": structures[mol_id][0], "role": "neutral", "formal_charge": 0, "source_list": "simulation"}])
+
+    fields = ["catalog_schema_version", "stage", "task_id", "task_kind", "target_level", "source_file", "target_columns", "identity_columns", "condition_columns", "system_type", "split_unit", "sample_unit", "simulation_method", "experiment_reference", "materialized_path", "label_source", "resource_manifest", "raw_rows", "rows", "unique_systems", "tier", "test_systems", "reserved_systems", "development_systems", "strategies", "repeats", "strategy_units"]
+    definitions = (
+        ("density", "object_property", "object", "density_g/cm^3", "cation;anion", "temperature_K", "il", "materialized_csv", ""),
+        ("heat_capacity", "object_property", "object", "heat_capacity_J/mol/K", "cation;anion", "temperature_K", "il", "materialized_csv", ""),
+        ("heat_of_vaporization", "object_property", "object", "heat_of_vaporization_kJ/mol", "cation;anion", "temperature_K", "il", "materialized_csv", ""),
+        ("partial_atomic_charge", "atom_property", "atom", "partial_atomic_charge", "SMILES", "", "molecule", "structure_resource", "stage2/partial_atomic_charge/charge_20260514/structure_manifest.csv"),
+        ("pbe_tzvp_anion_orbitals", "object_property", "object", "HOMO_eV;LUMO_eV", "anion", "", "anion", "materialized_csv", ""),
+        ("pbe_tzvp_cation_orbitals", "object_property", "object", "HOMO_eV;LUMO_eV", "cation", "", "cation", "materialized_csv", ""),
+        ("simulated_qm_elec_hf", "object_property", "object", ";".join(qm_targets), "SMILES", "", "molecule", "materialized_csv", ""),
+        ("thermal_expansion", "object_property", "object", "thermal_expansion_K^-1", "cation;anion", "temperature_K", "il", "materialized_csv", ""),
+        ("transfer_organic", "object_property", "object", "transfer_organic_kcal/mol", "solute;solvent", "", "solute_solvent", "materialized_csv", ""),
     )
-    _write_csv(
-        root / "simulated_qm_elec_hf/valid.csv",
-        qm_fields,
-        [
-            {
-                "SMILES": "CCC",
-                **{name: value + 10 for name, value in qm_values.items()},
-                "source_list": "simulation",
-            }
-        ],
-    )
-    transfer_fields = [
-        "solute",
-        "solvent",
-        "transfer_organic_kcal/mol",
-        "source_list",
-    ]
-    _write_csv(
-        root / "transfer_organic/train.csv",
-        transfer_fields,
-        [
-            {
-                "solute": "CC",
-                "solvent": "O",
-                "transfer_organic_kcal/mol": -1.0,
-                "source_list": "simulation",
-            }
-        ],
-    )
-    _write_csv(
-        root / "transfer_organic/valid.csv",
-        transfer_fields,
-        [
-            {
-                "solute": "CCC",
-                "solvent": "O",
-                "transfer_organic_kcal/mol": -2.0,
-                "source_list": "simulation",
-            }
-        ],
-    )
+    rows = []
+    for name, kind, level, targets, identities, conditions, system_type, label_source, resource_manifest in definitions:
+        row = {field: "" for field in fields}
+        row.update({"catalog_schema_version": 1, "stage": 2, "task_id": f"simulation/{name}", "task_kind": kind, "target_level": level, "source_file": f"simulation/{name}.csv", "target_columns": targets, "identity_columns": identities, "condition_columns": conditions, "system_type": system_type, "materialized_path": f"stage2/{name}", "label_source": label_source, "resource_manifest": resource_manifest})
+        rows.append(row)
+    _write_csv(data_root / "task_catalog.csv", fields, rows)
 
 
 @pytest.fixture
-def tiny_stage2_setup(tmp_path):
+def tiny_stage2_setup(tmp_path: Path) -> Stage2Config:
     stage1 = tmp_path / "stage1"
-    stage1.mkdir()
     _write_csv(stage1 / "cation.csv", ["SMILES"], [{"SMILES": "[Na+]"}, {"SMILES": "C[NH3+]"}])
     _write_csv(stage1 / "anion.csv", ["SMILES"], [{"SMILES": "[Cl-]"}, {"SMILES": "C(=O)[O-]"}])
-    _write_csv(
-        stage1 / "molecule.csv",
-        ["SMILES"],
-        [{"SMILES": value} for value in ("O", "CC", "CCC", "CCO")],
-    )
+    _write_csv(stage1 / "molecule.csv", ["SMILES"], [{"SMILES": value} for value in ("O", "CC", "CCC", "CCO")])
     corpus = tmp_path / "pretrain"
     pretrain = PretrainConfig(
-        data=DataConfig(
-            stage1_dir=stage1,
-            artifacts_dir=corpus,
-            valid_fraction=0.5,
-            max_smiles_tokens=64,
-            shard_size=4,
-        ),
+        data=DataConfig(stage1_dir=stage1, artifacts_dir=corpus, valid_fraction=0.5, max_smiles_tokens=64, shard_size=4),
         descriptor=DescriptorConfig(mode="full", token_count=8),
         fingerprint=FingerprintConfig(kind="both"),
-        model=ModelConfig(
-            d_model=16,
-            n_heads=4,
-            smiles_layers=1,
-            graph_depth=2,
-            descriptor_hidden_dim=32,
-            descriptor_blocks=1,
-            fusion_layers=1,
-            feedforward_dim=32,
-            dropout=0.0,
-        ),
+        model=ModelConfig(d_model=16, n_heads=4, smiles_layers=1, graph_depth=2, descriptor_hidden_dim=32, descriptor_blocks=1, fusion_layers=1, feedforward_dim=32, dropout=0.0),
     )
     prepare_corpus(pretrain)
     vocabulary = SmilesTokenizer.load(corpus / "tokenizer.json")
     dataset = PreparedCorpusDataset(corpus, "train")
-    model = MultimodalPretrainModel(
-        pretrain, vocabulary, dataset.descriptor_schema
-    )
+    model = MultimodalPretrainModel(pretrain, vocabulary, dataset.descriptor_schema)
     checkpoint = tmp_path / "checkpoint.pt"
-    torch.save(
-        {
-            "kind": STAGE1_CHECKPOINT_KIND,
-            "format_version": STAGE1_CHECKPOINT_VERSION,
-            "model": model.state_dict(),
-            "config": pretrain.to_dict(),
-            "artifact_hash": sha256_file(corpus / "metadata.json"),
-        },
-        checkpoint,
-    )
-    stage2 = tmp_path / "stage2"
-    _stage2_sources(stage2)
-    config = Stage2Config(
-        data=Stage2DataConfig(
-            stage2_dir=stage2,
-            pretrain_artifacts_dir=corpus,
-            artifacts_dir=tmp_path / "stage2_artifacts",
-            entity_shard_size=3,
-        ),
-        preparation=Stage2PreparationConfig(workers=1, teacher_batch_size=2),
+    torch.save({"kind": STAGE1_CHECKPOINT_KIND, "format_version": STAGE1_CHECKPOINT_VERSION, "model": model.state_dict(), "config": pretrain.to_dict(), "artifact_hash": sha256_file(corpus / "metadata.json")}, checkpoint)
+    _stage2_sources(tmp_path)
+    return Stage2Config(
+        data=Stage2DataConfig(data_root=tmp_path, task_catalog_path=tmp_path / "task_catalog.csv", pretrain_artifacts_dir=corpus, artifacts_dir=tmp_path / "stage2_artifacts", entity_shard_size=3),
+        preparation=Stage2PreparationConfig(workers=1, teacher_batch_size=4),
         initialization=Stage2InitializationConfig(checkpoint=checkpoint),
-        training=Stage2TrainingConfig(
-            batch_size=2,
-            gradient_accumulation_steps=1,
-            epochs=2,
-            backbone_frozen_epochs=1,
-            packing_workers=2,
-            packing_prefetch_windows=2,
-            log_every_batches=2,
-            device="cpu",
-            amp_dtype="none",
-        ),
-    )
-    return config
-
-
-def _load_teacher_for_test(config, loaded, entities, metadata, device="cpu"):
-    return load_teacher_embeddings(
-        config,
-        loaded,
-        metadata,
-        configure_stage2_math(torch.device(device)),
-        expected_count=len(entities),
-        expected_dim=loaded.config.model.d_model,
+        training=Stage2TrainingConfig(batch_size=2, epochs=2, backbone_frozen_epochs=1, packing_workers=2, packing_prefetch_windows=2, log_every_batches=3, device="cpu", amp_dtype="none"),
     )
 
 
-def test_stage2_loaders_reject_legacy_stage1_checkpoint(tiny_stage2_setup, tmp_path):
-    payload = torch.load(
-        tiny_stage2_setup.initialization.checkpoint,
-        map_location="cpu",
-        weights_only=False,
-    )
-    payload["format_version"] = 3
-    payload.pop("kind")
-    legacy = tmp_path / "legacy_stage1.pt"
-    torch.save(payload, legacy)
-    with pytest.raises(ValueError, match="checkpoint v2"):
-        load_stage1_model(
-            legacy,
-            tiny_stage2_setup.data.pretrain_artifacts_dir,
-        )
-    with pytest.raises(ValueError, match="checkpoint v2"):
-        load_stage1_feature_inputs(
-            legacy,
-            tiny_stage2_setup.data.pretrain_artifacts_dir,
-        )
+def test_registry_is_catalog_driven_and_model_independent(tiny_stage2_setup):
+    registry = load_stage2_registry(tiny_stage2_setup.data.task_catalog_path)
+    assert registry.task_ids == TASKS
+    original = registry.registry_hash
+    loaded = load_stage1_model(tiny_stage2_setup.initialization.checkpoint, tiny_stage2_setup.data.pretrain_artifacts_dir, backbone_dropout=0.0)
+    model = Stage2ObjectModel(loaded.model, registry, object_layers=1, object_ffn_dim=32, dropout=0.0)
+    assert registry.registry_hash == original
+    assert model.model_contract["d_model"] == 16
+    assert model.model_contract["tasks"]["simulation/partial_atomic_charge"]["head_family"] == "atom"
 
 
-def test_stage2_prepare_preserves_duplicates_and_uses_train_only_scalers(
-    tiny_stage2_setup,
-):
+def test_config_normalizes_relative_weights_and_rejects_accumulation(tiny_stage2_setup):
+    registry = load_stage2_registry(tiny_stage2_setup.data.task_catalog_path)
+    normalized = tiny_stage2_setup.normalized_task_weights(registry)
+    scaled = replace(tiny_stage2_setup, loss=replace(tiny_stage2_setup.loss, task_weights={key: value * 10 for key, value in tiny_stage2_setup.loss.task_weights.items()}))
+    assert scaled.normalized_task_weights(registry) == pytest.approx(normalized)
+    with pytest.raises(ValueError, match="gradient_accumulation_steps == 1"):
+        replace(tiny_stage2_setup, training=replace(tiny_stage2_setup.training, gradient_accumulation_steps=2)).validate()
+
+
+def test_prepare_v3_task_local_scalers_and_ragged_atoms(tiny_stage2_setup):
     metadata = prepare_stage2_data(tiny_stage2_setup)
-    assert metadata["summary"]["rows"]["density"]["train"] == 2
-    assert metadata["summary"]["duplicate_conditions"] == 1
-    density = metadata["scalers"]["targets"]["density_g/cm^3"]
+    assert metadata["format_version"] == 3
+    assert metadata["summary"]["rows"]["simulation/density"]["train"] == 2
+    density = metadata["scalers"]["simulation/density"]["targets"]["density_g/cm^3"]
     assert density["mean"] == pytest.approx(1.5)
     assert density["scale"] == pytest.approx(0.5)
-    duplicate_rows = list(
-        csv.DictReader(
-            (tiny_stage2_setup.data.artifacts_dir / "duplicate_conditions.csv").open()
-        )
+    atom = Stage2TaskDataset(tiny_stage2_setup.data.artifacts_dir, "simulation/partial_atomic_charge", "train")
+    assert atom.mol_ids == ("mol_train",)
+    assert atom.atom_target_offsets.tolist() == [0, 3]
+    assert metadata["scalers"]["simulation/partial_atomic_charge"]["targets"]["partial_atomic_charge"]["weighting"] == "molecule_equal"
+    audit = list(csv.DictReader((tiny_stage2_setup.data.artifacts_dir / "partial_charge_mapping_audit.csv").open()))
+    assert {row["status"] for row in audit} == {"mapped"}
+
+
+def test_partial_charge_duplicate_smiles_remain_distinct_molecules(tiny_stage2_setup):
+    root = tiny_stage2_setup.data.data_root / "stage2/partial_atomic_charge"
+    structure_root = root / "charge_20260514"
+    duplicate = structure_root / "mol_train_2.mol2"
+    _write_mol2(
+        duplicate,
+        [("C1", "c3", -0.2), ("C2", "c3", 0.3), ("O1", "os", -0.1)],
+        [(1, 2, "1"), (2, 3, "1")],
     )
-    assert len(duplicate_rows) == 1
-    assert duplicate_rows[0]["first_targets"] == "1"
-    assert duplicate_rows[0]["duplicate_targets"] == "2"
-    density_train = Stage2TaskDataset(
-        tiny_stage2_setup.data.artifacts_dir, "density", "train"
-    )
-    assert density_train.targets[:, 0].tolist() == pytest.approx([-1.0, 1.0])
-    assert density_train.raw_targets is None
+    manifest_path = structure_root / "structure_manifest.csv"
+    with manifest_path.open(newline="", encoding="utf-8") as handle:
+        manifest_rows = list(csv.DictReader(handle))
+    manifest_rows.append({"mol_id": "mol_train_2", "relative_path": duplicate.name, "format": "mol2", "size_bytes": duplicate.stat().st_size, "sha256": sha256_file(duplicate), "referenced_by_charge": "True"})
+    _write_csv(manifest_path, list(manifest_rows[0]), manifest_rows)
+    train_path = root / "train.csv"
+    with train_path.open(newline="", encoding="utf-8") as handle:
+        train_rows = list(csv.DictReader(handle))
+    train_rows.append({**train_rows[0], "mol_id": "mol_train_2"})
+    _write_csv(train_path, list(train_rows[0]), train_rows)
+
+    metadata = prepare_stage2_data(tiny_stage2_setup)
+    atom = Stage2TaskDataset(tiny_stage2_setup.data.artifacts_dir, "simulation/partial_atomic_charge", "train")
+    assert atom.mol_ids == ("mol_train", "mol_train_2")
+    assert atom.entity_indices[0].equal(atom.entity_indices[1])
+    assert atom.atom_target_offsets.tolist() == [0, 3, 6]
+    assert metadata["scalers"]["simulation/partial_atomic_charge"]["targets"]["partial_atomic_charge"]["count"] == 2
 
 
-def test_stage2_prepare_scans_each_csv_once(tiny_stage2_setup, monkeypatch):
-    calls: list[tuple[str, str]] = []
-    original = stage2_prepare._iter_rows
-
-    def tracked(stage2_dir, task, split):
-        calls.append((task, split))
-        yield from original(stage2_dir, task, split)
-
-    monkeypatch.setattr(stage2_prepare, "_iter_rows", tracked)
+def test_stage1_encode_states_uses_fused_atom_order(tiny_stage2_setup):
     prepare_stage2_data(tiny_stage2_setup)
-    assert sorted(calls) == sorted(
-        (task, split)
-        for task in tiny_stage2_setup.loss.task_weights
-        for split in ("train", "valid")
-    )
-
-
-def test_stage2_prepare_workers_preserve_artifact_content(
-    tiny_stage2_setup, tmp_path
-):
-    serial = prepare_stage2_data(tiny_stage2_setup)
-    parallel_config = replace(
-        tiny_stage2_setup,
-        data=replace(
-            tiny_stage2_setup.data,
-            artifacts_dir=tmp_path / "parallel_artifacts",
-        ),
-        preparation=replace(tiny_stage2_setup.preparation, workers=8),
-    )
-    parallel = prepare_stage2_data(parallel_config)
-    assert parallel["entity_artifact_hash"] == serial["entity_artifact_hash"]
-    for relative, digest in serial["artifact_hashes"].items():
-        if not relative.startswith("entities/"):
-            assert parallel["artifact_hashes"][relative] == digest
-    assert parallel["summary"] == serial["summary"]
-
-
-def test_stage2_entity_worker_failure_has_entity_context(
-    tiny_stage2_setup, monkeypatch
-):
-    def fail(_item):
-        raise RuntimeError("worker failure")
-
-    monkeypatch.setattr(stage2_prepare, "_compute_entity_feature", fail)
-    with pytest.raises(
-        RuntimeError,
-        match=r"candidate_id=0, role=.*canonical_smiles=",
-    ):
-        prepare_stage2_data(tiny_stage2_setup)
-
-
-def test_stage2_entity_transport_has_no_tensors_and_round_trips(
-    tiny_stage2_setup,
-):
-    pretrain_config, vocabulary, schema, standardizer, _ = (
-        load_stage1_feature_inputs(
-            tiny_stage2_setup.initialization.checkpoint,
-            tiny_stage2_setup.data.pretrain_artifacts_dir,
-        )
-    )
-    stage2_prepare._initialize_entity_worker(
-        pretrain_config, vocabulary, schema, standardizer
-    )
-    item = (106, "cation", "CCCCCCn1c[n+](C)cn1")
-    direct = stage2_prepare._build_entity_feature_result(item)
-    transported = stage2_prepare._compute_entity_feature(item)
-    materialized = stage2_prepare._materialize_entity_feature(transported)
-
-    def contains_tensor(value):
-        if isinstance(value, torch.Tensor):
-            return True
-        if isinstance(value, dict):
-            return any(contains_tensor(item) for item in value.values())
-        if isinstance(value, (list, tuple)):
-            return any(contains_tensor(item) for item in value)
-        return False
-
-    def assert_equal(left, right):
-        if isinstance(left, torch.Tensor):
-            assert isinstance(right, torch.Tensor)
-            assert right.dtype == left.dtype
-            assert right.shape == left.shape
-            assert torch.equal(right, left)
-        elif isinstance(left, dict):
-            assert right.keys() == left.keys()
-            for key in left:
-                assert_equal(left[key], right[key])
-        elif isinstance(left, (list, tuple)):
-            assert type(right) is type(left)
-            assert len(right) == len(left)
-            for left_item, right_item in zip(left, right, strict=True):
-                assert_equal(left_item, right_item)
-        else:
-            assert right == left
-
-    assert direct.sample is not None
-    assert transported.sample is not None
-    assert not contains_tensor(transported.sample)
-    assert materialized.sample is not None
-    assert_equal(direct.sample, materialized.sample)
-
-
-def test_stage2_entity_transport_does_not_accumulate_file_descriptors(
-    tiny_stage2_setup,
-):
-    code = r'''
-import os
-import resource
-import sys
-from pathlib import Path
-
-from stage1.features import load_stage1_feature_inputs
-from stage2.config import (
-    Stage2Config,
-    Stage2DataConfig,
-    Stage2InitializationConfig,
-    Stage2PreparationConfig,
-)
-from stage2.prepare import CollectedStage2Data, _entity_feature_results
-
-
-def main():
-    _, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-    limit = 256 if hard == resource.RLIM_INFINITY else min(256, hard)
-    resource.setrlimit(resource.RLIMIT_NOFILE, (limit, hard))
-    artifact_dir = Path(sys.argv[1])
-    checkpoint = Path(sys.argv[2])
-    config = Stage2Config(
-        data=Stage2DataConfig(pretrain_artifacts_dir=artifact_dir),
-        preparation=Stage2PreparationConfig(workers=8),
-        initialization=Stage2InitializationConfig(checkpoint=checkpoint),
-    )
-    pretrain, vocabulary, schema, standardizer, _ = (
-        load_stage1_feature_inputs(checkpoint, artifact_dir)
-    )
-    collected = CollectedStage2Data(
-        entity_keys=tuple(
-            ("cation", "CCCCCCn1c[n+](C)cn1") for _ in range(64)
-        ),
-        rows={},
-        scalers={},
-        source_counts={},
-        duplicate_rows=(),
-        missing_target_rows=(),
-    )
-    retained = []
-    baseline = len(os.listdir("/proc/self/fd"))
-    peak = baseline
-    for result in _entity_feature_results(
-        config,
-        collected,
-        pretrain,
-        vocabulary,
-        schema,
-        standardizer,
-    ):
-        retained.append(result)
-        peak = max(peak, len(os.listdir("/proc/self/fd")))
-    assert len(retained) == 64
-    assert peak - baseline < 80, (baseline, peak)
-
-
-if __name__ == "__main__":
-    main()
-'''
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            code,
-            str(tiny_stage2_setup.data.pretrain_artifacts_dir),
-            str(tiny_stage2_setup.initialization.checkpoint),
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    assert completed.returncode == 0, completed.stderr
-
-
-def test_stage2_broken_pool_does_not_blame_awaiting_candidate(
-    tiny_stage2_setup, monkeypatch
-):
-    class FailedFuture:
-        def result(self):
-            raise stage2_prepare.BrokenProcessPool("pool failed")
-
-    class FailedExecutor:
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def submit(self, *_args, **_kwargs):
-            return FailedFuture()
-
-    monkeypatch.setattr(stage2_prepare, "ProcessPoolExecutor", FailedExecutor)
-    collected = stage2_prepare.CollectedStage2Data(
-        entity_keys=(("cation", "CCCCCCn1c[n+](C)cn1"),),
-        rows={},
-        scalers={},
-        source_counts={},
-        duplicate_rows=(),
-        missing_target_rows=(),
-    )
-    pretrain_config, vocabulary, schema, standardizer, _ = (
-        load_stage1_feature_inputs(
-            tiny_stage2_setup.initialization.checkpoint,
-            tiny_stage2_setup.data.pretrain_artifacts_dir,
-        )
-    )
-    config = replace(
-        tiny_stage2_setup,
-        preparation=replace(tiny_stage2_setup.preparation, workers=2),
-    )
-    with pytest.raises(
-        RuntimeError,
-        match=(
-            r"pool failed while awaiting candidate_id=0.*"
-            r"not necessarily the process-pool failure cause"
-        ),
-    ):
-        list(
-            stage2_prepare._entity_feature_results(
-                config,
-                collected,
-                pretrain_config,
-                vocabulary,
-                schema,
-                standardizer,
-            )
-        )
-
-
-def test_qm_partial_targets_are_masked_audited_and_validated(
-    tiny_stage2_setup,
-):
-    root = tiny_stage2_setup.data.stage2_dir
-    qm_fields = [
-        "SMILES",
-        "ESP_max",
-        "ESP_min",
-        "ESP_std",
-        "ESP_pos_frac",
-        "Dipole",
-        "Quadrupole",
-        "q_max",
-        "q_min",
-        "q_std",
-        "q_pos_frac",
-        "gap_eV",
-        "source_list",
-    ]
-    targets = qm_fields[1:-1]
-    complete = {name: index + 0.5 for index, name in enumerate(targets)}
-    partial = {name: value + 1 for name, value in complete.items()}
-    partial["ESP_max"] = ""
-    partial["gap_eV"] = "NaN"
-    all_missing = {name: "NA" for name in targets}
-    _write_csv(
-        root / "simulated_qm_elec_hf/train.csv",
-        qm_fields,
-        [
-            {"SMILES": "CC", **complete, "source_list": "simulation"},
-            {"SMILES": "CCO", **partial, "source_list": "simulation"},
-            {"SMILES": "CO", **all_missing, "source_list": "simulation"},
-        ],
-    )
-    valid = {name: value + 10 for name, value in complete.items()}
-    valid["gap_eV"] = "null"
-    _write_csv(
-        root / "simulated_qm_elec_hf/valid.csv",
-        qm_fields,
-        [{"SMILES": "CCC", **valid, "source_list": "simulation"}],
-    )
-
-    prepare_teacher_cache(tiny_stage2_setup)
-    metadata = json.loads(
-        (tiny_stage2_setup.data.artifacts_dir / "metadata.json").read_text()
-    )
-    assert metadata["format_version"] == 2
-    assert metadata["kind"] == "ilume_stage2_object_data"
-    assert metadata["model_contract"] == {"d_model": 16, "n_heads": 4}
-    assert metadata["summary"]["partial_target_rows"] == 2
-    assert metadata["summary"]["all_target_missing_rows"] == 1
-    qm_train = Stage2TaskDataset(
-        tiny_stage2_setup.data.artifacts_dir,
-        "simulated_qm_elec_hf",
-        "train",
-    )
-    qm_valid = Stage2TaskDataset(
-        tiny_stage2_setup.data.artifacts_dir,
-        "simulated_qm_elec_hf",
-        "valid",
-    )
-    assert len(qm_train) == 2
-    assert qm_train.target_mask.sum(dim=1).tolist() == [11, 9]
-    assert not bool(qm_valid.target_mask[0, -1])
-    assert metadata["scalers"]["targets"]["gap_eV"]["count"] == 1
-    audit = list(
-        csv.DictReader(
-            (tiny_stage2_setup.data.artifacts_dir / "missing_targets.csv").open()
-        )
-    )
-    assert [row["action"] for row in audit].count("retained") == 2
-    assert [row["action"] for row in audit].count("excluded") == 1
-
-    loaded = load_stage1_model(
-        tiny_stage2_setup.initialization.checkpoint,
-        tiny_stage2_setup.data.pretrain_artifacts_dir,
-        backbone_dropout=0.0,
-    )
-    entity_dataset = Stage2EntityDataset(tiny_stage2_setup.data.artifacts_dir)
-    teacher, _ = _load_teacher_for_test(
-        tiny_stage2_setup, loaded, entity_dataset, metadata
-    )
-    valid_datasets = {
-        task: Stage2TaskDataset(
-            tiny_stage2_setup.data.artifacts_dir, task, "valid"
-        )
-        for task in tiny_stage2_setup.loss.task_weights
-    }
-    valid_device = {
-        task: Stage2DeviceTaskData.from_dataset(dataset, torch.device("cpu"))
-        for task, dataset in valid_datasets.items()
-    }
-    roles = torch.tensor(
-        [entry["role_id"] for entry in entity_dataset.entries], dtype=torch.long
-    )
-    metrics = evaluate_stage2(
-        Stage2ObjectModel(
-            loaded.model,
-            object_layers=1,
-            object_ffn_dim=32,
-            dropout=0.0,
-        ),
-        valid_datasets,
-        valid_device,
-        entity_dataset,
-        MultimodalPacker(loaded.vocabulary),
-        teacher,
-        roles,
-        metadata["scalers"],
-        tiny_stage2_setup,
-        torch.device("cpu"),
-        backbone_frozen=True,
-    )
-    prefix = "valid_simulated_qm_elec_hf_gap_eV"
-    assert metrics[f"{prefix}_count"] == 0
-    assert torch.isnan(torch.tensor(metrics[f"{prefix}_mae"]))
-    assert torch.isfinite(
-        torch.tensor(metrics["valid_simulated_qm_elec_hf_normalized_mae"])
-    )
-
-
-def test_qm_masked_loss_weights_available_labels_equally():
-    predictions = torch.tensor(
-        [[2.0, 2.0], [0.0, 2.0]],
-        requires_grad=True,
-    )
-    targets = torch.zeros_like(predictions)
-    mask = torch.tensor([[True, True], [False, True]])
-    loss = masked_smooth_l1_loss(predictions, targets, mask)
-
-    assert loss.item() == pytest.approx(1.5)
-    loss.backward()
-    assert predictions.grad[1, 0].item() == 0.0
-
-
-def test_qm_train_column_cannot_be_entirely_missing(tiny_stage2_setup):
-    path = (
-        tiny_stage2_setup.data.stage2_dir
-        / "simulated_qm_elec_hf/train.csv"
-    )
-    rows = list(csv.DictReader(path.open()))
-    rows[0]["gap_eV"] = "N/A"
-    _write_csv(path, tuple(rows[0]), rows)
-
-    with pytest.raises(ValueError, match="gap_eV"):
-        prepare_stage2_data(tiny_stage2_setup)
-
-
-def test_teacher_cache_and_object_model_freeze_boundary(tiny_stage2_setup):
-    prepare_teacher_cache(tiny_stage2_setup)
-    loaded = load_stage1_model(
-        tiny_stage2_setup.initialization.checkpoint,
-        tiny_stage2_setup.data.pretrain_artifacts_dir,
-        backbone_dropout=0.0,
-    )
+    loaded = load_stage1_model(tiny_stage2_setup.initialization.checkpoint, tiny_stage2_setup.data.pretrain_artifacts_dir, backbone_dropout=0.0)
     entities = Stage2EntityDataset(tiny_stage2_setup.data.artifacts_dir)
-    metadata = json.loads(
-        (tiny_stage2_setup.data.artifacts_dir / "metadata.json").read_text()
-    )
-    teacher, _ = _load_teacher_for_test(
-        tiny_stage2_setup, loaded, entities, metadata
-    )
-    task = Stage2TaskDataset(
-        tiny_stage2_setup.data.artifacts_dir, "density", "train"
-    )
-    descriptor = Stage2BatchDescriptor("density", torch.tensor([0, 1]))
-    packed = pack_stage2_window(
-        [descriptor],
-        {"density": task},
-        entities,
-        MultimodalPacker(loaded.vocabulary),
-        pin_memory=False,
-    )
-    model = Stage2ObjectModel(
-        loaded.model,
-        object_layers=1,
-        object_ffn_dim=32,
-        dropout=0.0,
-    )
-    model.eval()
-    model.set_backbone_trainable(False)
-    global_slots = task.entity_indices[descriptor.indices]
-    teacher_slots = teacher[global_slots]
-    roles = torch.tensor(
-        [entry["role_id"] for entry in entities.entries], dtype=torch.long
-    )[global_slots]
-    output = model.forward_from_slots(
-        "density",
-        teacher_slots,
-        roles,
-        task.conditions[descriptor.indices],
-        task.targets[descriptor.indices],
-        task.target_mask[descriptor.indices],
-        teacher_slots,
-        lambda_teacher=0.1,
-        teacher_loss_is_zero=True,
-    )
-    assert output.teacher_loss.item() == 0.0
-    output.total_loss.backward()
-    assert loaded.model.fusion.cls_token.grad is None
-    assert model.object_encoder.object_cls.grad is not None
-    assert model.property_heads["density"].layers[0].weight.grad is not None
-    assert loaded.model.smiles_head.bias.grad is None
-
-    model.zero_grad(set_to_none=True)
-    model.set_backbone_trainable(True)
-    unique_teacher = teacher[packed.unique_entity_ids]
-    output = model(
-        "density",
-        packed.entities,
-        packed.entity_positions[0],
-        task.conditions[descriptor.indices],
-        task.targets[descriptor.indices],
-        task.target_mask[descriptor.indices],
-        unique_teacher,
-        lambda_teacher=0.1,
-    )
-    output.total_loss.backward()
-    assert loaded.model.fusion.cls_token.grad is not None
-    assert loaded.model.smiles_head.bias.grad is None
+    batch = MultimodalPacker(loaded.vocabulary)([entities[0], entities[1]])
+    states = loaded.model.encode_states(batch)
+    assert torch.equal(states.entity_cls, loaded.model.encode(batch))
+    assert states.atom_states.shape[0] == batch.graphs.atom_batch.shape[0]
+    assert torch.equal(states.atom_batch, batch.graphs.atom_batch)
 
 
-def test_frozen_validation_never_calls_packer_or_backbone(
-    tiny_stage2_setup, monkeypatch
-):
-    prepare_teacher_cache(tiny_stage2_setup)
-    loaded = load_stage1_model(
-        tiny_stage2_setup.initialization.checkpoint,
-        tiny_stage2_setup.data.pretrain_artifacts_dir,
-        backbone_dropout=0.0,
-    )
-    entities = Stage2EntityDataset(tiny_stage2_setup.data.artifacts_dir)
-    metadata = json.loads(
-        (tiny_stage2_setup.data.artifacts_dir / "metadata.json").read_text()
-    )
-    teacher, _ = _load_teacher_for_test(
-        tiny_stage2_setup, loaded, entities, metadata
-    )
-    datasets = {
-        task: Stage2TaskDataset(
-            tiny_stage2_setup.data.artifacts_dir, task, "valid"
-        )
-        for task in tiny_stage2_setup.loss.task_weights
-    }
-    device_data = {
-        task: Stage2DeviceTaskData.from_dataset(dataset, torch.device("cpu"))
-        for task, dataset in datasets.items()
-    }
-    roles = torch.tensor(
-        [entry["role_id"] for entry in entities.entries], dtype=torch.long
-    )
-
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("frozen validation called the Stage 1 backbone")
-
-    monkeypatch.setattr(loaded.model, "encode", forbidden)
-    metrics = evaluate_stage2(
-        Stage2ObjectModel(
-            loaded.model, object_layers=1, object_ffn_dim=32, dropout=0.0
-        ),
-        datasets,
-        device_data,
-        entities,
-        None,
-        teacher,
-        roles,
-        metadata["scalers"],
-        tiny_stage2_setup,
-        torch.device("cpu"),
-        backbone_frozen=True,
-    )
-    assert all(
-        metrics[f"valid_{task}_teacher_mse"] == 0.0
-        for task in tiny_stage2_setup.loss.task_weights
-    )
+def test_mol2_typed_mapping_and_explicit_connectivity_fallback(tmp_path):
+    typed_path = tmp_path / "typed.mol2"
+    _write_mol2(typed_path, [("C1", "c3", 0.1), ("O1", "os", -0.1), ("H1", "h1", 0.0)], [(1, 2, "1"), (1, 3, "1")])
+    typed = map_partial_charges("CO", parse_mol2(typed_path))
+    assert typed.bond_match_mode == "typed"
+    assert typed.charges == pytest.approx((0.1, -0.1))
+    fallback_path = tmp_path / "fallback.mol2"
+    _write_mol2(fallback_path, [("C1", "c3", 0.1), ("O1", "os", -0.1)], [(1, 2, "du")])
+    fallback = map_partial_charges("CO", parse_mol2(fallback_path))
+    assert fallback.bond_match_mode == "connectivity_only"
+    assert fallback.unparsed_bond_types == ("du",)
+    symmetric_path = tmp_path / "symmetric.mol2"
+    _write_mol2(symmetric_path, [("C1", "c3", 0.2), ("C2", "c3", -0.2)], [(1, 2, "1")])
+    symmetric = map_partial_charges("CC", parse_mol2(symmetric_path))
+    assert symmetric.mapping_count == 2
+    assert symmetric.charges == pytest.approx((0.2, -0.2))
+    with pytest.raises(ValueError, match="hash mismatch"):
+        verify_structure(StructureManifestEntry("bad", typed_path, typed_path.stat().st_size, "0" * 64))
 
 
-def test_object_encoder_zero_init_roles_and_independent_heads(tiny_stage2_setup):
-    loaded = load_stage1_model(
-        tiny_stage2_setup.initialization.checkpoint,
-        tiny_stage2_setup.data.pretrain_artifacts_dir,
-        backbone_dropout=0.0,
-    )
-    model = Stage2ObjectModel(
-        loaded.model,
-        object_layers=1,
-        object_ffn_dim=32,
-        dropout=0.0,
-    )
-    d_model = loaded.config.model.d_model
-    values = torch.randn(3, 1, d_model)
-    neutral = torch.full((3, 1), 2, dtype=torch.long)
-    expected = model.object_encoder.output_normalization(values[:, 0])
-    assert torch.equal(model.encode_object(values, neutral), expected)
-    with pytest.raises(ValueError, match="neutral"):
-        model.encode_object(values, torch.zeros_like(neutral))
-    ions = torch.randn(3, 2, d_model)
-    roles = torch.tensor([[0, 1]]).expand(3, -1)
-    expected_il = model.object_encoder.output_normalization(ions.mean(dim=1))
-    assert torch.equal(model.encode_object(ions, roles), expected_il)
+def test_object_encoder_roles_dynamic_heads_and_losses(tiny_stage2_setup):
+    registry = load_stage2_registry(tiny_stage2_setup.data.task_catalog_path)
+    loaded = load_stage1_model(tiny_stage2_setup.initialization.checkpoint, tiny_stage2_setup.data.pretrain_artifacts_dir, backbone_dropout=0.0)
+    model = Stage2ObjectModel(loaded.model, registry, object_layers=1, object_ffn_dim=32, dropout=0.0)
+    values = torch.randn(2, 1, 16)
+    for role in range(3):
+        assert model.encode_object(values, torch.full((2, 1), role)).shape == (2, 16)
+    ions = torch.randn(2, 2, 16)
+    assert model.encode_object(ions, torch.tensor([[0, 1], [0, 1]])).shape == (2, 16)
     with pytest.raises(ValueError, match="ordered"):
-        model.encode_object(ions, roles.flip(1))
-    parameter_sets = [
-        {id(parameter) for parameter in model.property_heads[task].parameters()}
-        for task in ("simulated_qm_elec_hf", "density", "heat_capacity", "thermal_expansion")
-    ]
-    assert all(
-        left_parameters.isdisjoint(right_parameters)
-        for index, left_parameters in enumerate(parameter_sets)
-        for right_parameters in parameter_sets[index + 1 :]
-    )
-
-    calls = []
-    hook = model.object_encoder.register_forward_hook(
-        lambda _module, _inputs, _output: calls.append(1)
-    )
-    transfer_slots = torch.randn(3, 2, d_model)
-    transfer_roles = torch.full((3, 2), 2, dtype=torch.long)
-    prediction = model.predict(
-        "transfer_organic",
-        transfer_slots,
-        transfer_roles,
-        torch.empty(3, 0),
-    )
-    hook.remove()
-    assert prediction.shape == (3, 1)
-    assert len(calls) == 2
+        model.encode_object(ions, torch.tensor([[1, 0], [1, 0]]))
+    assert model.object_heads["simulation/pbe_tzvp_cation_orbitals"] is not model.object_heads["simulation/pbe_tzvp_anion_orbitals"]
+    predictions = torch.tensor([[2.0, 2.0], [0.0, 2.0]], requires_grad=True)
+    loss = masked_target_macro_smooth_l1_loss(predictions, torch.zeros_like(predictions), torch.tensor([[True, True], [False, True]]))
+    assert loss.item() == pytest.approx(1.5)
+    atom_loss = molecule_equal_smooth_l1_loss(torch.tensor([2.0, 2.0, 2.0]), torch.zeros(3), torch.ones(3, dtype=torch.bool), torch.tensor([0, 1, 3]))
+    assert atom_loss.item() == pytest.approx(1.5)
 
 
-def test_compatible_stage1_checkpoint_is_not_blocked_by_lineage_sha(
-    tiny_stage2_setup,
-) -> None:
-    checkpoint_path = tiny_stage2_setup.initialization.checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    checkpoint["artifact_hash"] = "historical-lineage-value"
-    torch.save(checkpoint, checkpoint_path)
-    loaded = load_stage1_model(
-        checkpoint_path,
-        tiny_stage2_setup.data.pretrain_artifacts_dir,
-        backbone_dropout=0.0,
-    )
-    assert loaded.model.config.model.d_model == 16
-
-
-def test_teacher_cache_identity_tracks_encoding_state_not_checkpoint_path(
-    tiny_stage2_setup, tmp_path
-) -> None:
-    first = prepare_teacher_cache(tiny_stage2_setup)
-    assert first["cache_reused"] is False
-    assert not Path(first["checkpoint"]).is_absolute()
-    original = torch.load(
-        tiny_stage2_setup.initialization.checkpoint,
-        map_location="cpu",
-        weights_only=False,
-    )
-    original["optimizer"] = {"ignored": True}
-    copied_checkpoint = tmp_path / "copied_checkpoint.pt"
-    torch.save(original, copied_checkpoint)
-    copied_config = replace(
-        tiny_stage2_setup,
-        initialization=Stage2InitializationConfig(checkpoint=copied_checkpoint),
-    )
-    copied = prepare_teacher_cache(copied_config)
-    assert copied["identity"] == first["identity"]
-    assert copied["cache_reused"] is True
-    assert teacher_cache_dir(copied_config, copied["identity"]).is_dir()
-
-    model_key = next(
-        name
-        for name in original["model"]
-        if name.startswith("smiles_encoder.")
-        and name != "smiles_encoder.token_embedding.weight"
-    )
-    changed_tensor = original["model"][model_key].clone()
-    changed_tensor.view(-1)[0] += 1.0
-    original["model"][model_key] = changed_tensor
-    changed_checkpoint = tmp_path / "changed_checkpoint.pt"
-    torch.save(original, changed_checkpoint)
-    changed_config = replace(
-        tiny_stage2_setup,
-        initialization=Stage2InitializationConfig(checkpoint=changed_checkpoint),
-    )
-    changed = prepare_teacher_cache(changed_config)
-    assert changed["identity"] != first["identity"]
-
-    loaded = load_stage1_model(
-        changed_config.initialization.checkpoint,
-        changed_config.data.pretrain_artifacts_dir,
-        backbone_dropout=0.0,
-    )
-    metadata = json.loads(
-        (changed_config.data.artifacts_dir / "metadata.json").read_text()
-    )
-    math_contract = configure_stage2_math(torch.device("cpu"))
-    base_identity, payload = teacher_cache_identity(
-        metadata, loaded, math_contract
-    )
-    changed_math = {**math_contract, "fp32_matmul_precision": "changed"}
-    assert teacher_cache_identity(metadata, loaded, changed_math)[0] != base_identity
-    changed_entities = {**metadata, "entity_artifact_hash": "changed"}
-    assert (
-        teacher_cache_identity(changed_entities, loaded, math_contract)[0]
-        != base_identity
-    )
-    assert payload["dtype"] == "float32"
-
-
-def test_teacher_cache_corruption_is_rejected(tiny_stage2_setup) -> None:
-    cache = prepare_teacher_cache(tiny_stage2_setup)
-    path = teacher_cache_dir(tiny_stage2_setup, cache["identity"]) / "embeddings.pt"
-    with path.open("ab") as handle:
-        handle.write(b"corrupt")
-    loaded = load_stage1_model(
-        tiny_stage2_setup.initialization.checkpoint,
-        tiny_stage2_setup.data.pretrain_artifacts_dir,
-        backbone_dropout=0.0,
-    )
-    entities = Stage2EntityDataset(tiny_stage2_setup.data.artifacts_dir)
-    metadata = json.loads(
-        (tiny_stage2_setup.data.artifacts_dir / "metadata.json").read_text()
-    )
-    with pytest.raises(ValueError, match="embedding hash mismatch"):
-        _load_teacher_for_test(
-            tiny_stage2_setup, loaded, entities, metadata
-        )
-
-
-def test_full_coverage_schedule_is_deterministic_and_complete(tiny_stage2_setup):
+def test_round_robin_schedule_is_complete_deterministic_and_no_cycle(tiny_stage2_setup):
     prepare_stage2_data(tiny_stage2_setup)
-    datasets = {
-        task: Stage2TaskDataset(tiny_stage2_setup.data.artifacts_dir, task, "train")
-        for task in tiny_stage2_setup.loss.task_weights
-    }
-    first = epoch_batch_schedule(datasets, 2, seed=42, epoch=1)
-    repeated = epoch_batch_schedule(datasets, 2, seed=42, epoch=1)
-    second = epoch_batch_schedule(datasets, 2, seed=42, epoch=2)
-    assert [(x.task, x.indices.tolist()) for x in first] == [
-        (x.task, x.indices.tolist()) for x in repeated
-    ]
-    assert [(x.task, x.indices.tolist()) for x in first] != [
-        (x.task, x.indices.tolist()) for x in second
-    ]
+    datasets = {task: Stage2TaskDataset(tiny_stage2_setup.data.artifacts_dir, task, "train") for task in TASKS}
+    first = epoch_batch_schedule(datasets, 1, seed=42, epoch=1)
+    second = epoch_batch_schedule(datasets, 1, seed=42, epoch=1)
+    assert [(item.task, item.indices.tolist()) for item in first] == [(item.task, item.indices.tolist()) for item in second]
     for task, dataset in datasets.items():
-        visited = torch.cat([x.indices for x in first if x.task == task])
-        assert sorted(visited.tolist()) == list(range(len(dataset)))
-    assert sum(task_batch_counts(datasets, 2).values()) == len(first)
+        observed = torch.cat([item.indices for item in first if item.task == task]).tolist()
+        assert sorted(observed) == list(range(len(dataset)))
+    assert len({item.task for item in first[:len(TASKS)]}) == len(TASKS)
 
 
-def test_window_packing_deduplicates_across_tasks(tiny_stage2_setup):
-    prepare_stage2_data(tiny_stage2_setup)
-    entities = Stage2EntityDataset(tiny_stage2_setup.data.artifacts_dir)
-    datasets = {
-        task: Stage2TaskDataset(
-            tiny_stage2_setup.data.artifacts_dir, task, "train"
+def test_task_compensation_only_scales_physics():
+    compensation = task_compensation_scale(0.25, 20, 4, 10)
+    physics = torch.tensor(2.0)
+    teacher = torch.tensor(3.0)
+    step = compensation * physics + 0.1 * teacher
+    assert step.item() == pytest.approx(4.3)
+
+
+def test_prepare_train_checkpoint_and_encoder_export(tiny_stage2_setup, tmp_path):
+    prepare_teacher_cache(tiny_stage2_setup)
+    legacy = tmp_path / "object_v2.pt"
+    torch.save({"kind": "ilume_stage2_object", "format_version": 2}, legacy)
+    with pytest.raises(ValueError, match="Object v2 is not migrated"):
+        run_stage2_training(
+            tiny_stage2_setup,
+            output_dir=tmp_path / "legacy_resume",
+            resume_from=legacy,
         )
-        for task in ("density", "heat_capacity")
-    }
-    descriptors = (
-        Stage2BatchDescriptor("density", torch.tensor([0])),
-        Stage2BatchDescriptor("heat_capacity", torch.tensor([0])),
-    )
-    packed = pack_stage2_window(
-        descriptors,
-        datasets,
-        entities,
-        MultimodalPacker(
-            load_stage1_model(
-                tiny_stage2_setup.initialization.checkpoint,
-                tiny_stage2_setup.data.pretrain_artifacts_dir,
-                backbone_dropout=0.0,
-            ).vocabulary
-        ),
-        pin_memory=False,
-    )
-    flattened = torch.cat(
-        [datasets[item.task].entity_indices[item.indices].flatten() for item in descriptors]
-    )
-    assert len(packed.unique_entity_ids) == len(set(flattened.tolist()))
-    for descriptor, positions in zip(
-        descriptors, packed.entity_positions, strict=True
-    ):
-        recovered = packed.unique_entity_ids[positions]
-        assert torch.equal(
-            recovered, datasets[descriptor.task].entity_indices[descriptor.indices]
-        )
+    output = tmp_path / "train"
+    run_stage2_training(tiny_stage2_setup, output_dir=output)
+    assert (output / "checkpoint_epoch_00001.pt").is_file()
+    final_checkpoint = torch.load(output / "checkpoint_epoch_00002.pt", map_location="cpu", weights_only=False)
+    assert final_checkpoint["format_version"] == 3
+    assert final_checkpoint["completed_epoch"] == 2
+    assert final_checkpoint["registry_hash"] == load_artifact_registry(tiny_stage2_setup.data.artifacts_dir).registry_hash
+    encoder_path = output / "stage2_encoder.pt"
+    encoder = load_stage2_encoder_artifact(encoder_path)
+    assert encoder["kind"] == "ilume_stage2_encoder"
+    assert not any("head" in key for key in encoder["stage1_backbone"])
+    assert set(encoder) >= {"stage1_backbone", "object_encoder", "model_contract", "state_hashes", "provenance"}
+    with pytest.raises(ValueError, match=STAGE3_MIGRATION_MESSAGE):
+        load_frozen_stage2(encoder_path)
 
-    loaded = load_stage1_model(
-        tiny_stage2_setup.initialization.checkpoint,
-        tiny_stage2_setup.data.pretrain_artifacts_dir,
-        backbone_dropout=0.0,
+    resume_output = tmp_path / "resume"
+    resume_output.mkdir()
+    rows = [json.loads(line) for line in (output / "metrics.jsonl").read_text(encoding="utf-8").splitlines()]
+    epoch_one = [row for row in rows if int(row.get("epoch", 0)) <= 1]
+    (resume_output / "metrics.jsonl").write_text(
+        "\n".join(json.dumps(row, sort_keys=True) for row in epoch_one) + "\n",
+        encoding="utf-8",
     )
-    model = Stage2ObjectModel(
-        loaded.model, object_layers=1, object_ffn_dim=32, dropout=0.0
-    )
-    device_data = {
-        task: Stage2DeviceTaskData.from_dataset(dataset, torch.device("cpu"))
-        for task, dataset in datasets.items()
-    }
-    teacher = torch.randn(len(entities), loaded.config.model.d_model)
-    calls = []
-    hook = model.backbone.fusion.register_forward_pre_hook(
-        lambda _module, _inputs: calls.append(1)
-    )
-    outputs = stage2_train._unfrozen_outputs(
-        model,
-        packed,
-        device_data,
-        teacher,
+    run_stage2_training(
         tiny_stage2_setup,
-        torch.device("cpu"),
+        output_dir=resume_output,
+        resume_from=output / "checkpoint_epoch_00001.pt",
     )
-    hook.remove()
-    assert len(outputs) == 2
-    assert calls == [1]
-
-
-def test_thread_prefetch_preserves_window_order(monkeypatch):
-    windows = [
-        (Stage2BatchDescriptor("density", torch.tensor([0])),),
-        (Stage2BatchDescriptor("heat_capacity", torch.tensor([0])),),
-    ]
-
-    def delayed(window, *_args, **_kwargs):
-        if window[0].task == "density":
-            time.sleep(0.05)
-        return window[0].task
-
-    monkeypatch.setattr(stage2_train, "pack_stage2_window", delayed)
-    yielded = list(
-        stage2_train._ordered_packed_windows(
-            windows,
-            {},
-            None,
-            None,
-            workers=2,
-            prefetch_windows=1,
-            pin_memory=False,
-        )
-    )
-    assert yielded == ["density", "heat_capacity"]
-
-
-def test_batch_size_aware_task_compensation_is_partition_invariant():
-    total_batches = 4
-    sizes = [256, 256, 256, 1]
-    scales = [
-        task_compensation_scale(0.25, total_batches, size, 769)
-        for size in sizes
-    ]
-    assert sum(scales) == pytest.approx(1.0)
-    assert scales[-1] == pytest.approx(scales[0] / 256)
-
-
-def test_formal_stage2_has_one_base_profile():
-    config_dir = Path("configs/v1/stage2")
-    assert sorted(path.name for path in config_dir.glob("*.yaml")) == ["base.yaml"]
-    config = load_stage2_config(config_dir / "base.yaml")
-    assert config.training.epochs == 5
-    assert config.training.backbone_frozen_epochs == 1
-    assert config.training.batch_size == 256
-    assert config.training.gradient_accumulation_steps == 1
-    assert config.preparation.workers == 8
-    assert config.preparation.teacher_batch_size == 512
-    assert config.training.object_encoder_learning_rate == pytest.approx(3.0e-5)
-    assert config.training.task_head_learning_rate == pytest.approx(1.0e-4)
-    assert config.training.packing_workers == 8
-    assert not hasattr(config.data, "shard_cache_size")
-    assert config.model.object_layers == 2
-    assert config.model.object_ffn_dim == 1024
-    assert not hasattr(config.model, "d_model")
-    assert not hasattr(config.model, "n_heads")
-    assert config.initialization.checkpoint == Path(
-        "outputs/v1/stage1/base/train/checkpoint_epoch_00005.pt"
-    )
-
-
-def test_stage2_trainer_saves_only_epoch_checkpoints_and_resumes(
-    tiny_stage2_setup, capsys
-):
-    config = tiny_stage2_setup
-    prepare_teacher_cache(config)
-    capsys.readouterr()
-    output = config.data.artifacts_dir.parent / "training"
-    first = run_stage2_training(config, output_dir=output)
-    capsys.readouterr()
-    intervals = [row for row in first if row["event"] == "stage2_train_interval"]
-    assert {row["backbone_trainable"] for row in intervals if row["epoch"] == 1} == {0}
-    assert {row["backbone_trainable"] for row in intervals if row["epoch"] == 2} == {1}
-    assert {row["backbone_learning_rate"] for row in intervals if row["epoch"] == 1} == {0.0}
-    assert any(
-        row["backbone_learning_rate"] > 0.0
-        for row in intervals
-        if row["epoch"] == 2
-    )
-    assert any(row["object_encoder_learning_rate"] > 0.0 for row in intervals)
-    assert any(row["task_head_learning_rate"] > 0.0 for row in intervals)
-    checkpoint = output / "checkpoint_epoch_00001.pt"
-    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
-    assert payload["format_version"] == 2
-    assert payload["kind"] == "ilume_stage2_object"
-    assert payload["completed_epoch"] == 1
-    assert len(payload["optimizer"]["param_groups"]) == 3
-    assert payload["optimizer_implementation"] == "single_tensor"
-    assert set(path.name for path in output.glob("*.pt")) == {
-        "checkpoint_epoch_00001.pt", "checkpoint_epoch_00002.pt"
-    }
-    (output / "checkpoint_epoch_00002.pt").unlink()
-    (output / "final_metrics.json").unlink()
-    resumed_config = replace(
-        config,
-        preparation=replace(config.preparation, workers=2),
-        training=replace(
-            config.training,
-            packing_workers=1,
-            packing_prefetch_windows=1,
-        ),
-    )
-    second = run_stage2_training(
-        resumed_config, output_dir=output, resume_from=checkpoint
-    )
-    capsys.readouterr()
-    expected = [
-        row for row in first
-        if row["epoch"] == 2 and row["event"] == "stage2_train_interval"
-    ]
-    resumed = [
-        row for row in second if row["event"] == "stage2_train_interval"
-    ]
-    assert len(resumed) == len(expected)
-    for actual, original in zip(resumed, expected, strict=True):
-        for key in original:
-            if key.endswith("loss_weighted"):
-                assert actual[key] == pytest.approx(original[key], abs=1.0e-7)
-    legacy_checkpoint = output / "legacy.pt"
-    payload["format_version"] = 1
-    torch.save(payload, legacy_checkpoint)
-    with pytest.raises(ValueError, match="Unsupported Stage 2 object"):
-        run_stage2_training(config, output_dir=output, resume_from=legacy_checkpoint)
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
-def test_stage2_cuda_minimal_forward_backward(tiny_stage2_setup):
-    config = replace(
-        tiny_stage2_setup,
-        training=replace(tiny_stage2_setup.training, device="cuda"),
-    )
-    prepare_teacher_cache(config)
-    loaded = load_stage1_model(
-        config.initialization.checkpoint,
-        config.data.pretrain_artifacts_dir,
-        device="cuda",
-        backbone_dropout=0.0,
-    )
-    entities = Stage2EntityDataset(config.data.artifacts_dir)
-    metadata = json.loads(
-        (config.data.artifacts_dir / "metadata.json").read_text()
-    )
-    teacher, teacher_metadata = _load_teacher_for_test(
-        config, loaded, entities, metadata, "cuda"
-    )
-    teacher = teacher.cuda()
-    assert teacher.dtype == torch.float32
-    dataset = Stage2TaskDataset(config.data.artifacts_dir, "density", "train")
-    descriptor = Stage2BatchDescriptor("density", torch.tensor([0, 1]))
-    packed = pack_stage2_window(
-        [descriptor],
-        {"density": dataset},
-        entities,
-        MultimodalPacker(loaded.vocabulary),
-        pin_memory=True,
-    )
-    assert packed.unique_entity_ids.is_pinned()
-    batch = packed.entities.to("cuda", non_blocking=True)
-    positions = packed.entity_positions[0].to("cuda", non_blocking=True)
-    unique_teacher = teacher[packed.unique_entity_ids.cuda()]
-    model = Stage2ObjectModel(
-        loaded.model, object_layers=1, object_ffn_dim=32, dropout=0.0
-    ).cuda()
-    optimizer = torch.optim.AdamW(
-        stage2_optimizer_groups(
-            model,
-            backbone_learning_rate=1.0e-5,
-            object_encoder_learning_rate=3.0e-5,
-            task_head_learning_rate=1.0e-4,
-            weight_decay=0.01,
-        ),
-        fused=True,
-    )
-    output = model(
-        "density",
-        batch,
-        positions,
-        dataset.conditions[descriptor.indices].cuda(),
-        dataset.targets[descriptor.indices].cuda(),
-        dataset.target_mask[descriptor.indices].cuda(),
-        unique_teacher,
-        lambda_teacher=0.1,
-    )
-    assert torch.isfinite(output.total_loss)
-    output.total_loss.backward()
-    assert model.backbone.fusion.cls_token.grad is not None
-    optimizer.step()
-    assert optimizer.defaults["fused"] is True
-    assert teacher_metadata["identity_payload"]["math_contract"][
-        "fp32_matmul_precision"
-    ] == "tf32"
+    resumed = torch.load(resume_output / "checkpoint_epoch_00002.pt", map_location="cpu", weights_only=False)
+    assert resumed["scheduler_geometry"]["gradient_accumulation_steps"] == 1
+    assert (resume_output / "stage2_encoder.pt").is_file()

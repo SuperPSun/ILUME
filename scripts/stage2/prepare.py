@@ -11,8 +11,9 @@ sys.path.insert(0, str(ROOT / "src"))
 from common.data_identity import write_data_identity
 from common.outputs import open_run_directory, repository_relative
 from common.training import resolve_device
-from stage2.config import STAGE2_TASKS, load_stage2_config
+from stage2.config import load_stage2_config
 from stage2.prepare import prepare_teacher_cache
+from stage2.registry import load_stage2_registry
 from stage2.runtime import configure_stage2_math
 
 
@@ -46,10 +47,16 @@ def main() -> None:
         },
     )
     effective = replace(config, data=replace(config.data, artifacts_dir=run.artifacts))
-    sources = [
-        effective.data.stage2_dir / task / f"{split}.csv"
-        for task in STAGE2_TASKS for split in ("train", "valid")
-    ]
+    registry = load_stage2_registry(effective.data.task_catalog_path)
+    sources = [effective.data.task_catalog_path]
+    for spec in registry.tasks:
+        sources.extend(
+            spec.dataset.split_path(effective.data.data_root, split)
+            for split in ("train", "valid")
+        )
+        manifest = spec.dataset.resource_manifest_path(effective.data.data_root)
+        if manifest is not None:
+            sources.append(manifest)
     try:
         write_data_identity(ROOT, "stage2", sources)
         run.complete(prepare_teacher_cache(effective))

@@ -7,7 +7,6 @@ import math
 import multiprocessing as mp
 import os
 from array import array
-from collections import Counter
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
@@ -36,90 +35,26 @@ from stage1.model import LoadedStage1Model, load_stage1_model
 from common.io import atomic_json, atomic_torch_save, sha256_file
 from common.progress import ProgressReporter
 from common.training import canonical_json_sha256, resolve_device
-from .config import STAGE2_TASKS, Stage2Config
+from .atom_targets import (
+    load_structure_manifest,
+    map_partial_charges,
+    parse_mol2,
+    verify_structure,
+)
+from .config import Stage2Config
 from .data import (
     STAGE2_ARTIFACT_KIND,
     STAGE2_ARTIFACT_VERSION,
     Stage2EntityDataset,
     Stage2TaskDataset,
 )
-from .model import RECONSTRUCTION_MODULES
+from .model import RECONSTRUCTION_MODULES, build_model_contract
+from .registry import Stage2Registry, TaskSpec, load_stage2_registry
 from .runtime import configure_stage2_math
 from stage1.tokenizer import SmilesTokenizer
 
 
-IL_TASKS = ("density", "heat_capacity", "thermal_expansion")
-QM_MISSING_MARKERS = frozenset({"", "nan", "na", "n/a", "null"})
-QM_TARGETS = (
-    "ESP_max",
-    "ESP_min",
-    "ESP_std",
-    "ESP_pos_frac",
-    "Dipole",
-    "Quadrupole",
-    "q_max",
-    "q_min",
-    "q_std",
-    "q_pos_frac",
-    "gap_eV",
-)
-
-
-@dataclass(frozen=True)
-class Stage2TaskSpec:
-    name: str
-    entity_columns: tuple[str, ...]
-    entity_roles: tuple[str, ...]
-    condition_columns: tuple[str, ...]
-    target_columns: tuple[str, ...]
-
-    @property
-    def fieldnames(self) -> tuple[str, ...]:
-        return (
-            *self.entity_columns,
-            *self.condition_columns,
-            *self.target_columns,
-            "source_list",
-        )
-
-
-TASK_SPECS: dict[str, Stage2TaskSpec] = {
-    "simulated_qm_elec_hf": Stage2TaskSpec(
-        "simulated_qm_elec_hf",
-        ("SMILES",),
-        ("neutral",),
-        (),
-        QM_TARGETS,
-    ),
-    "density": Stage2TaskSpec(
-        "density",
-        ("cation", "anion"),
-        ("cation", "anion"),
-        ("temperature_K",),
-        ("density_g/cm^3",),
-    ),
-    "heat_capacity": Stage2TaskSpec(
-        "heat_capacity",
-        ("cation", "anion"),
-        ("cation", "anion"),
-        ("temperature_K",),
-        ("heat_capacity_J/mol/K",),
-    ),
-    "thermal_expansion": Stage2TaskSpec(
-        "thermal_expansion",
-        ("cation", "anion"),
-        ("cation", "anion"),
-        ("temperature_K",),
-        ("thermal_expansion_K^-1",),
-    ),
-    "transfer_organic": Stage2TaskSpec(
-        "transfer_organic",
-        ("solute", "solvent"),
-        ("neutral", "neutral"),
-        (),
-        ("transfer_organic_kcal/mol",),
-    ),
-}
+MISSING_MARKERS = frozenset({"", "nan", "na", "n/a", "null"})
 
 
 def _canonicalize(smiles: str, context: str) -> str:
@@ -141,7 +76,7 @@ def _finite_float(raw: str, context: str) -> float:
 
 def _target_value(raw: str, context: str, *, allow_missing: bool) -> float | None:
     stripped = (raw or "").strip()
-    if allow_missing and stripped.lower() in QM_MISSING_MARKERS:
+    if allow_missing and stripped.lower() in MISSING_MARKERS:
         return None
     return _finite_float(stripped, context)
 
@@ -155,267 +90,182 @@ def _key_hash(parts: Sequence[str]) -> bytes:
 
 
 @dataclass
-class RunningStats:
-    count: int = 0
-    mean: float = 0.0
-    squared_deviations: float = 0.0
-
-    def update(self, value: float) -> None:
-        self.count += 1
-        delta = value - self.mean
-        self.mean += delta / self.count
-        self.squared_deviations += delta * (value - self.mean)
-
-    def to_dict(self) -> dict[str, float | int]:
-        variance = (
-            self.squared_deviations / self.count if self.count else 0.0
-        )
-        scale = math.sqrt(max(variance, 0.0))
-        if not math.isfinite(scale) or scale == 0.0:
-            scale = 1.0
-        return {"count": self.count, "mean": self.mean, "scale": scale}
-
-
-@dataclass(frozen=True)
-class CollectedStage2Data:
-    entity_keys: tuple[tuple[str, str], ...]
-    rows: dict[str, dict[str, "StagedTaskRows"]]
-    scalers: dict[str, Any]
-    source_counts: dict[str, dict[str, dict[str, int]]]
-    duplicate_rows: tuple[dict[str, Any], ...]
-    missing_target_rows: tuple[dict[str, Any], ...]
-
-
-@dataclass(frozen=True)
 class StagedTaskRows:
-    entity_ids: array
-    conditions: array
-    targets: array
-    target_mask: array
-    source_rows: array
+    entity_ids: list[list[int]]
+    conditions: list[list[float]]
+    targets: list[list[float]]
+    target_mask: list[list[bool]]
+    source_rows: list[int]
+    mol_ids: list[str]
+    atom_targets: list[list[float]]
 
     def __len__(self) -> int:
         return len(self.source_rows)
 
 
-def _iter_rows(
-    stage2_dir: Path,
-    task: str,
-    split: str,
-) -> Iterator[tuple[int, dict[str, str]]]:
-    spec = TASK_SPECS[task]
-    path = stage2_dir / task / f"{split}.csv"
+@dataclass(frozen=True)
+class CollectedStage2Data:
+    entity_keys: tuple[tuple[str, str], ...]
+    rows: dict[str, dict[str, StagedTaskRows]]
+    source_counts: dict[str, dict[str, dict[str, int]]]
+    duplicate_rows: tuple[dict[str, Any], ...]
+    missing_target_rows: tuple[dict[str, Any], ...]
+    mapping_audit: tuple[dict[str, Any], ...]
+
+
+def _role_for(canonical: str, policy: str, row: dict[str, str], context: str) -> str:
+    mol = Chem.MolFromSmiles(canonical)
+    if mol is None:
+        raise ValueError(f"Invalid canonical SMILES in {context}")
+    charge = sum(atom.GetFormalCharge() for atom in mol.GetAtoms())
+    inferred = "cation" if charge > 0 else ("anion" if charge < 0 else "neutral")
+    if policy == "formal_charge":
+        return inferred
+    if policy == "manifest":
+        role = row.get("role", "").strip()
+        try:
+            declared_charge = int(row.get("formal_charge", ""))
+        except ValueError as error:
+            raise ValueError(f"Invalid partial-charge formal_charge in {context}") from error
+        if role != inferred or declared_charge != charge:
+            raise ValueError(f"Partial-charge role/formal_charge mismatch in {context}")
+        return role
+    if policy not in ROLE_TO_ID or policy != inferred:
+        raise ValueError(f"Entity role mismatch in {context}: expected {policy}, got {inferred}")
+    return policy
+
+
+def _iter_rows(path: Path, expected: tuple[str, ...]) -> Iterator[tuple[int, dict[str, str]]]:
     if not path.is_file():
         raise FileNotFoundError(f"Missing Stage 2 source: {path}")
     with path.open(newline="", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
-        if tuple(reader.fieldnames or ()) != spec.fieldnames:
-            raise ValueError(
-                f"Unexpected Stage 2 columns in {path}: {reader.fieldnames}; "
-                f"expected {list(spec.fieldnames)}"
-            )
+        if tuple(reader.fieldnames or ()) != expected:
+            raise ValueError(f"Unexpected Stage 2 columns in {path}: {reader.fieldnames}; expected {list(expected)}")
         for row_number, row in enumerate(reader, start=2):
             yield row_number, row
 
 
-def _collect_sources_and_scalers(
-    config: Stage2Config,
-    reporter: ProgressReporter,
-) -> CollectedStage2Data:
+def _collect_sources(config: Stage2Config, registry: Stage2Registry, reporter: ProgressReporter) -> CollectedStage2Data:
     canonical_cache: dict[str, str] = {}
     entity_key_ids: dict[tuple[str, str], int] = {}
-    temperature_stats = RunningStats()
-    target_stats = {
-        column: RunningStats()
-        for spec in TASK_SPECS.values()
-        for column in spec.target_columns
-    }
+    staged: dict[str, dict[str, StagedTaskRows]] = {}
     source_counts: dict[str, dict[str, dict[str, int]]] = {}
     duplicate_rows: list[dict[str, Any]] = []
-    missing_target_rows: list[dict[str, Any]] = []
-    staged_rows: dict[str, dict[str, StagedTaskRows]] = {}
-
-    with reporter.bar(
-        total=len(STAGE2_TASKS) * 2,
-        desc="Stage 2 scan/scalers",
-        unit="file",
-    ) as progress:
-        for task in STAGE2_TASKS:
-            spec = TASK_SPECS[task]
+    missing_rows: list[dict[str, Any]] = []
+    mapping_audit: list[dict[str, Any]] = []
+    with reporter.bar(total=len(registry.tasks) * 2, desc="Stage 2 catalog scan", unit="file") as progress:
+        for spec in registry.tasks:
+            staged[spec.task_id] = {}
+            source_counts[spec.task_id] = {}
+            manifest = None
+            if spec.target_level == "atom":
+                manifest_path = spec.dataset.resource_manifest_path(config.data.data_root)
+                if manifest_path is None:
+                    raise ValueError("Atom task is missing a structure manifest")
+                manifest = load_structure_manifest(manifest_path)
             train_keys: set[bytes] = set()
-            source_counts[task] = {}
-            staged_rows[task] = {}
             for split in ("train", "valid"):
-                entity_values = array("q")
-                condition_values = array("f")
-                target_values = array("f")
-                target_mask_values = array("b")
-                source_rows = array("q")
-                seen_keys: set[bytes] = set()
-                detailed_seen: dict[tuple[str, ...], tuple[int, tuple[str, ...]]] = {}
-                counts: Counter[str] = Counter()
-                for row_number, row in _iter_rows(config.data.stage2_dir, task, split):
-                    canonical_entities: list[str] = []
-                    for column, role in zip(
-                        spec.entity_columns, spec.entity_roles, strict=True
-                    ):
+                values = StagedTaskRows([], [], [], [], [], [], [])
+                seen: set[bytes] = set()
+                detailed: dict[tuple[str, ...], tuple[int, tuple[str, ...]]] = {}
+                counts: dict[str, int] = {}
+                expected = (
+                    ("mol_id", *spec.entity_columns, "role", "formal_charge", "source_list")
+                    if spec.target_level == "atom"
+                    else (*spec.entity_columns, *spec.condition_columns, *spec.target_columns, "source_list")
+                )
+                for row_number, row in _iter_rows(spec.dataset.split_path(config.data.data_root, split), expected):
+                    canonicals: list[str] = []
+                    roles: list[str] = []
+                    for column, policy in zip(spec.entity_columns, spec.role_policy, strict=True):
                         raw = (row[column] or "").strip()
                         if not raw:
-                            raise ValueError(
-                                f"Empty {column} in {task}/{split}:{row_number}"
-                            )
+                            raise ValueError(f"Empty {column} in {spec.task_id}/{split}:{row_number}")
                         canonical = canonical_cache.get(raw)
                         if canonical is None:
-                            canonical = _canonicalize(
-                                raw, f"{task}/{split}:{row_number}/{column}"
-                            )
+                            canonical = _canonicalize(raw, f"{spec.task_id}/{split}:{row_number}/{column}")
                             canonical_cache[raw] = canonical
-                        canonical_entities.append(canonical)
-                    conditions = tuple(
-                        _finite_float(
-                            row[column], f"{task}/{split}:{row_number}/{column}"
-                        )
-                        for column in spec.condition_columns
-                    )
-                    targets = tuple(
-                        _target_value(
-                            row[column],
-                            f"{task}/{split}:{row_number}/{column}",
-                            allow_missing=task == "simulated_qm_elec_hf",
-                        )
-                        for column in spec.target_columns
-                    )
-                    source = (row["source_list"] or "").strip()
-                    if not source:
-                        raise ValueError(
-                            f"Empty source_list in {task}/{split}:{row_number}"
-                        )
-                    missing_columns = tuple(
-                        column
-                        for column, value in zip(
-                            spec.target_columns, targets, strict=True
-                        )
+                        canonicals.append(canonical)
+                        roles.append(_role_for(canonical, policy, row, f"{spec.task_id}/{split}:{row_number}"))
+                    conditions = [_finite_float(row[name], f"{spec.task_id}/{split}:{row_number}/{name}") for name in spec.condition_columns]
+                    allow_missing = config.loss.task_loss_modes.get(spec.task_id, "element_mean") == "masked_target_macro"
+                    targets = [] if spec.target_level == "atom" else [
+                        _target_value(row[name], f"{spec.task_id}/{split}:{row_number}/{name}", allow_missing=allow_missing)
+                        for name in spec.target_columns
+                    ]
+                    missing = [] if spec.target_level == "atom" else [
+                        name for name, value in zip(spec.target_columns, targets, strict=True)
                         if value is None
-                    )
-                    if missing_columns:
-                        all_missing = len(missing_columns) == len(spec.target_columns)
-                        missing_target_rows.append(
-                            {
-                                "task": task,
-                                "split": split,
-                                "source_row": row_number,
-                                "missing_columns": ";".join(missing_columns),
-                                "valid_target_count": len(spec.target_columns)
-                                - len(missing_columns),
-                                "action": "excluded" if all_missing else "retained",
-                            }
-                        )
+                    ]
+                    if missing:
+                        all_missing = len(missing) == len(spec.target_columns)
+                        missing_rows.append({"task": spec.task_id, "split": split, "source_row": row_number, "missing_columns": ";".join(missing), "valid_target_count": len(targets) - len(missing), "action": "excluded" if all_missing else "retained"})
                         if all_missing:
                             continue
-                    for role, canonical in zip(
-                        spec.entity_roles, canonical_entities, strict=True
-                    ):
-                        key = (role, canonical)
-                        entity_id = entity_key_ids.get(key)
-                        if entity_id is None:
-                            entity_id = len(entity_key_ids)
-                            entity_key_ids[key] = entity_id
-                        entity_values.append(entity_id)
-                    condition_values.extend(conditions)
-                    target_values.extend(
-                        0.0 if value is None else value for value in targets
-                    )
-                    target_mask_values.extend(value is not None for value in targets)
-                    source_rows.append(row_number)
-                    counts[source] += 1
+                    atom_targets: list[float] = []
+                    mol_id = ""
+                    if spec.target_level == "atom":
+                        mol_id = row["mol_id"].strip()
+                        entry = None if manifest is None else manifest.get(mol_id)
+                        audit = {"mol_id": mol_id, "canonical_smiles": canonicals[0], "structure_path": "" if entry is None else str(entry.path.relative_to(config.data.data_root.resolve())), "model_atom_count": Chem.MolFromSmiles(canonicals[0]).GetNumAtoms(), "structure_atom_count": 0, "mapped_atom_count": 0, "mapping_count": 0, "selected_mapping_rank": 0, "bond_match_mode": "", "unparsed_bond_types": "", "bond_fallback_reason": "", "status": "excluded", "reason": ""}
+                        try:
+                            if entry is None:
+                                raise ValueError("missing_structure_manifest_entry")
+                            verify_structure(entry)
+                            graph = parse_mol2(entry.path)
+                            result = map_partial_charges(canonicals[0], graph)
+                            atom_targets = list(result.charges)
+                            audit.update({"structure_atom_count": result.structure_atom_count, "mapped_atom_count": len(result.charges), "mapping_count": result.mapping_count, "selected_mapping_rank": result.selected_mapping_rank, "bond_match_mode": result.bond_match_mode, "unparsed_bond_types": ";".join(result.unparsed_bond_types), "bond_fallback_reason": result.bond_fallback_reason, "status": "mapped", "reason": ""})
+                        except (OSError, ValueError) as error:
+                            audit["reason"] = str(error)
+                            mapping_audit.append(audit)
+                            continue
+                        mapping_audit.append(audit)
                     input_parts = (
-                        *canonical_entities,
+                        *((mol_id,) if spec.target_level == "atom" else ()),
+                        *canonicals,
                         *(format(value, ".17g") for value in conditions),
                     )
                     hashed = _key_hash(input_parts)
                     if split == "valid" and hashed in train_keys:
-                        raise ValueError(
-                            f"Stage 2 train/valid input overlap in {task}: "
-                            + " | ".join(input_parts)
-                        )
-                    if task != "transfer_organic":
-                        previous = detailed_seen.get(input_parts)
-                        target_text = tuple(
-                            "missing" if value is None else format(value, ".17g")
-                            for value in targets
-                        )
-                        if previous is not None:
-                            duplicate_rows.append(
-                                {
-                                    "task": task,
-                                    "split": split,
-                                    "input_key": " | ".join(input_parts),
-                                    "first_row": previous[0],
-                                    "duplicate_row": row_number,
-                                    "first_targets": " | ".join(previous[1]),
-                                    "duplicate_targets": " | ".join(target_text),
-                                }
-                            )
-                        else:
-                            detailed_seen[input_parts] = (row_number, target_text)
-                    seen_keys.add(hashed)
-                    if split == "train":
-                        for value in conditions:
-                            temperature_stats.update(value)
-                        for column, value in zip(
-                            spec.target_columns, targets, strict=True
-                        ):
-                            if value is not None:
-                                target_stats[column].update(value)
-                source_counts[task][split] = dict(sorted(counts.items()))
-                staged_rows[task][split] = StagedTaskRows(
-                    entity_ids=entity_values,
-                    conditions=condition_values,
-                    targets=target_values,
-                    target_mask=target_mask_values,
-                    source_rows=source_rows,
-                )
+                        raise ValueError(f"Stage 2 train/valid input overlap in {spec.task_id}: " + " | ".join(input_parts))
+                    target_text = tuple("missing" if value is None else format(value, ".17g") for value in targets)
+                    if input_parts in detailed:
+                        previous = detailed[input_parts]
+                        duplicate_rows.append({"task": spec.task_id, "split": split, "input_key": " | ".join(input_parts), "first_row": previous[0], "duplicate_row": row_number, "first_targets": " | ".join(previous[1]), "duplicate_targets": " | ".join(target_text)})
+                    else:
+                        detailed[input_parts] = (row_number, target_text)
+                    ids: list[int] = []
+                    for role, canonical in zip(roles, canonicals, strict=True):
+                        key = (role, canonical)
+                        if key not in entity_key_ids:
+                            entity_key_ids[key] = len(entity_key_ids)
+                        ids.append(entity_key_ids[key])
+                    values.entity_ids.append(ids)
+                    values.conditions.append(conditions)
+                    values.targets.append([0.0 if value is None else value for value in targets])
+                    values.target_mask.append([value is not None for value in targets])
+                    values.source_rows.append(row_number)
+                    values.mol_ids.append(mol_id)
+                    values.atom_targets.append(atom_targets)
+                    source = row["source_list"].strip()
+                    if not source:
+                        raise ValueError(f"Empty source_list in {spec.task_id}/{split}:{row_number}")
+                    counts[source] = counts.get(source, 0) + 1
+                    seen.add(hashed)
+                staged[spec.task_id][split] = values
+                source_counts[spec.task_id][split] = dict(sorted(counts.items()))
                 if split == "train":
-                    train_keys = seen_keys
+                    train_keys = seen
                 progress.update(1)
-
-        missing_train_targets = [
-            name for name, stats in target_stats.items() if stats.count == 0
-        ]
-        if missing_train_targets:
-            raise ValueError(
-                "Stage 2 train split has no finite values for target columns: "
-                + ", ".join(missing_train_targets)
-            )
-
-        sorted_keys = tuple(
-            sorted(
-                entity_key_ids,
-                key=lambda value: (ROLE_TO_ID[value[0]], value[1]),
-            )
-        )
-        sorted_id_by_key = {key: index for index, key in enumerate(sorted_keys)}
-        remap = [None] * len(entity_key_ids)
-        for key, old_id in entity_key_ids.items():
-            remap[old_id] = sorted_id_by_key[key]
-        for task_rows in staged_rows.values():
-            for rows in task_rows.values():
-                for index, old_id in enumerate(rows.entity_ids):
-                    rows.entity_ids[index] = remap[old_id]
-
-        return CollectedStage2Data(
-            entity_keys=sorted_keys,
-            rows=staged_rows,
-            scalers={
-                "temperature_K": temperature_stats.to_dict(),
-                "targets": {
-                    name: stats.to_dict() for name, stats in target_stats.items()
-                },
-            },
-            source_counts=source_counts,
-            duplicate_rows=tuple(duplicate_rows),
-            missing_target_rows=tuple(missing_target_rows),
-        )
+    sorted_keys = tuple(sorted(entity_key_ids, key=lambda value: (ROLE_TO_ID[value[0]], value[1])))
+    sorted_ids = {key: index for index, key in enumerate(sorted_keys)}
+    remap = {old: sorted_ids[key] for key, old in entity_key_ids.items()}
+    for task_rows in staged.values():
+        for rows in task_rows.values():
+            rows.entity_ids[:] = [[remap[value] for value in row] for row in rows.entity_ids]
+    return CollectedStage2Data(sorted_keys, staged, source_counts, tuple(duplicate_rows), tuple(missing_rows), tuple(mapping_audit))
 
 
 def _write_duplicate_audit(path: Path, rows: Sequence[dict[str, Any]]) -> None:
@@ -806,306 +656,202 @@ def _build_entity_shards(
     return entries, retained_id_by_candidate, len(excluded_rows)
 
 
-def _write_task_tensors(
-    config: Stage2Config,
-    collected: CollectedStage2Data,
-    retained_id_by_candidate: Sequence[int],
-    scalers: dict[str, Any],
-    reporter: ProgressReporter,
-) -> tuple[dict[str, dict[str, int]], int]:
-    output_dir = config.data.artifacts_dir
-    task_dir = output_dir / "tasks"
-    task_dir.mkdir(parents=True, exist_ok=True)
-    row_counts: dict[str, dict[str, int]] = {}
-    excluded_count = 0
-    retained_id_map = torch.tensor(retained_id_by_candidate, dtype=torch.long)
-    excluded_path = output_dir / "excluded_rows.csv"
-    excluded_temporary = excluded_path.with_suffix(".csv.tmp")
-    with excluded_temporary.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=("task", "split", "source_row", "reason"),
-        )
+def _stats(values: Sequence[float]) -> dict[str, float | int]:
+    if not values:
+        raise ValueError("Stage 2 train scaler has no values")
+    array_value = np.asarray(values, dtype=np.float64)
+    scale = float(array_value.std())
+    return {"count": len(values), "mean": float(array_value.mean()), "scale": scale if math.isfinite(scale) and scale > 0 else 1.0}
+
+
+def _write_mapping_audit(path: Path, rows: Sequence[dict[str, Any]]) -> None:
+    fields = (
+        "mol_id", "canonical_smiles", "structure_path", "model_atom_count",
+        "structure_atom_count", "mapped_atom_count", "mapping_count",
+        "selected_mapping_rank", "bond_match_mode", "unparsed_bond_types",
+        "bond_fallback_reason", "status", "reason",
+    )
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
-        with reporter.bar(
-            total=len(STAGE2_TASKS) * 2,
-            desc="Stage 2 task tensors",
-            unit="file",
-        ) as progress:
-            for task in STAGE2_TASKS:
-                spec = TASK_SPECS[task]
-                row_counts[task] = {}
+        writer.writerows(rows)
+    temporary.replace(path)
+
+
+def _retained_rows(staged: StagedTaskRows, retained_map: torch.Tensor) -> tuple[torch.Tensor, list[int]]:
+    candidates = torch.tensor(staged.entity_ids, dtype=torch.long)
+    entities = retained_map[candidates]
+    indices = (entities >= 0).all(dim=1).nonzero(as_tuple=False).flatten().tolist()
+    return entities[indices], indices
+
+
+def _write_task_tensors(
+    config: Stage2Config, registry: Stage2Registry, collected: CollectedStage2Data,
+    retained_id_by_candidate: Sequence[int], reporter: ProgressReporter,
+) -> tuple[dict[str, dict[str, int]], int, dict[str, Any]]:
+    output_dir = config.data.artifacts_dir
+    retained_map = torch.tensor(retained_id_by_candidate, dtype=torch.long)
+    row_counts: dict[str, dict[str, int]] = {}
+    scalers: dict[str, Any] = {}
+    excluded_count = 0
+    excluded_path = output_dir / "excluded_rows.csv"
+    temporary = excluded_path.with_suffix(".csv.tmp")
+    with temporary.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=("task", "split", "source_row", "reason"))
+        writer.writeheader()
+        with reporter.bar(total=len(registry.tasks) * 2, desc="Stage 2 task tensors", unit="file") as progress:
+            for spec in registry.tasks:
+                train = collected.rows[spec.task_id]["train"]
+                _, train_keep = _retained_rows(train, retained_map)
+                if not train_keep:
+                    raise ValueError(f"Stage 2 QC removed every train row from {spec.task_id}")
+                condition_scalers = {
+                    name: _stats([train.conditions[index][column] for index in train_keep])
+                    for column, name in enumerate(spec.condition_columns)
+                }
+                if spec.target_level == "atom":
+                    molecules = [train.atom_targets[index] for index in train_keep]
+                    molecule_means = [sum(values) / len(values) for values in molecules]
+                    mean = sum(molecule_means) / len(molecule_means)
+                    second = sum(sum(value * value for value in values) / len(values) for values in molecules) / len(molecules)
+                    scale = math.sqrt(max(0.0, second - mean * mean))
+                    target_scalers = {spec.target_columns[0]: {"count": len(molecules), "atom_count": sum(map(len, molecules)), "weighting": "molecule_equal", "mean": mean, "scale": scale if scale > 0 and math.isfinite(scale) else 1.0}}
+                else:
+                    target_scalers = {}
+                    for column, name in enumerate(spec.target_columns):
+                        values = [train.targets[index][column] for index in train_keep if train.target_mask[index][column]]
+                        target_scalers[name] = _stats(values)
+                scalers[spec.task_id] = {"conditions": condition_scalers, "targets": target_scalers}
+                row_counts[spec.task_id] = {}
                 for split in ("train", "valid"):
-                    staged = collected.rows[task][split]
-                    row_total = len(staged)
-                    candidate_entities = torch.tensor(
-                        staged.entity_ids, dtype=torch.long
-                    ).reshape(row_total, len(spec.entity_columns))
-                    entities = retained_id_map[candidate_entities]
-                    keep = (entities >= 0).all(dim=1)
-                    staged_source_rows = torch.tensor(
-                        staged.source_rows, dtype=torch.long
-                    )
-                    for row_number in staged_source_rows[~keep].tolist():
-                        excluded_count += 1
-                        writer.writerow(
-                            {
-                                "task": task,
-                                "split": split,
-                                "source_row": row_number,
-                                "reason": "excluded_entity",
-                            }
-                        )
-                    entities = entities[keep]
-                    raw_conditions = torch.tensor(
-                        staged.conditions, dtype=torch.float32
-                    ).reshape(row_total, len(spec.condition_columns))[keep]
-                    raw_targets = torch.tensor(
-                        staged.targets, dtype=torch.float32
-                    ).reshape(row_total, len(spec.target_columns))[keep]
-                    target_mask = torch.tensor(
-                        staged.target_mask, dtype=torch.bool
-                    ).reshape(row_total, len(spec.target_columns))[keep]
-                    rows_tensor = staged_source_rows[keep]
-                    retained = int(keep.sum())
-                    if retained == 0:
-                        raise ValueError(
-                            f"Stage 2 QC removed every row from {task}/{split}"
-                        )
+                    staged = collected.rows[spec.task_id][split]
+                    entities, keep = _retained_rows(staged, retained_map)
+                    kept = set(keep)
+                    for index, row_number in enumerate(staged.source_rows):
+                        if index not in kept:
+                            excluded_count += 1
+                            writer.writerow({"task": spec.task_id, "split": split, "source_row": row_number, "reason": "excluded_entity"})
+                    if not keep:
+                        raise ValueError(f"Stage 2 QC removed every row from {spec.task_id}/{split}")
+                    raw_conditions = torch.tensor([staged.conditions[index] for index in keep], dtype=torch.float32).reshape(len(keep), len(spec.condition_columns))
                     conditions = raw_conditions.clone()
                     for column, name in enumerate(spec.condition_columns):
-                        stats = scalers[name]
-                        conditions[:, column] = (
-                            conditions[:, column] - float(stats["mean"])
-                        ) / float(stats["scale"])
-                    targets = raw_targets.clone()
-                    for column, name in enumerate(spec.target_columns):
-                        stats = scalers["targets"][name]
-                        standardized = (
-                            targets[:, column] - float(stats["mean"])
-                        ) / float(stats["scale"])
-                        targets[:, column] = torch.where(
-                            target_mask[:, column],
-                            standardized,
-                            torch.zeros_like(standardized),
-                        )
-                    path = task_dir / f"{task}_{split}.pt"
+                        stats = condition_scalers[name]
+                        conditions[:, column] = (conditions[:, column] - float(stats["mean"])) / float(stats["scale"])
                     payload: dict[str, Any] = {
-                        "format_version": STAGE2_ARTIFACT_VERSION,
-                        "kind": STAGE2_ARTIFACT_KIND,
-                        "task": task,
-                        "split": split,
-                        "entity_indices": entities,
+                        "format_version": STAGE2_ARTIFACT_VERSION, "kind": STAGE2_ARTIFACT_KIND,
+                        "task": spec.task_id, "split": split, "entity_indices": entities,
                         "conditions": conditions,
-                        "targets": targets,
-                        "target_mask": target_mask,
-                        "source_rows": rows_tensor,
-                        "condition_columns": list(spec.condition_columns),
-                        "target_columns": list(spec.target_columns),
+                        "source_rows": torch.tensor([staged.source_rows[index] for index in keep], dtype=torch.long),
+                        "condition_columns": list(spec.condition_columns), "target_columns": list(spec.target_columns),
                     }
-                    if split == "valid":
-                        payload["raw_targets"] = raw_targets
-                    atomic_torch_save(
-                        path,
-                        payload,
-                    )
-                    row_counts[task][split] = retained
+                    if spec.target_level == "object":
+                        raw_targets = torch.tensor([staged.targets[index] for index in keep], dtype=torch.float32)
+                        mask = torch.tensor([staged.target_mask[index] for index in keep], dtype=torch.bool)
+                        targets = raw_targets.clone()
+                        for column, name in enumerate(spec.target_columns):
+                            stats = target_scalers[name]
+                            normalized = (targets[:, column] - float(stats["mean"])) / float(stats["scale"])
+                            targets[:, column] = torch.where(mask[:, column], normalized, torch.zeros_like(normalized))
+                        payload.update({"targets": targets, "target_mask": mask})
+                        if split == "valid":
+                            payload["raw_targets"] = raw_targets
+                    else:
+                        raw_chunks = [staged.atom_targets[index] for index in keep]
+                        raw = torch.tensor([value for chunk in raw_chunks for value in chunk], dtype=torch.float32)
+                        offsets = [0]
+                        for chunk in raw_chunks:
+                            offsets.append(offsets[-1] + len(chunk))
+                        stats = target_scalers[spec.target_columns[0]]
+                        payload.update({
+                            "atom_target_values": (raw - float(stats["mean"])) / float(stats["scale"]),
+                            "atom_target_offsets": torch.tensor(offsets, dtype=torch.long),
+                            "atom_target_mask": torch.ones_like(raw, dtype=torch.bool),
+                            "mol_ids": [staged.mol_ids[index] for index in keep],
+                        })
+                        if split == "valid":
+                            payload["raw_atom_target_values"] = raw
+                    path = output_dir / "tasks" / spec.task_id / f"{split}.pt"
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    atomic_torch_save(path, payload)
+                    row_counts[spec.task_id][split] = len(keep)
                     progress.update(1)
-    excluded_temporary.replace(excluded_path)
-    return row_counts, excluded_count
+    temporary.replace(excluded_path)
+    return row_counts, excluded_count, scalers
 
 
-def prepare_stage2_data(
-    config: Stage2Config,
-    *,
-    reporter: ProgressReporter | None = None,
-) -> dict[str, Any]:
+def prepare_stage2_data(config: Stage2Config, *, reporter: ProgressReporter | None = None) -> dict[str, Any]:
     config.validate()
+    registry = load_stage2_registry(config.data.task_catalog_path)
+    config.validate_registry(registry)
     reporter = reporter or ProgressReporter()
     output_dir = config.data.artifacts_dir
     output_dir.mkdir(parents=True, exist_ok=True)
-    source_paths = [
-        config.data.stage2_dir / task / f"{split}.csv"
-        for task in STAGE2_TASKS
-        for split in ("train", "valid")
-    ]
+    source_paths = [config.data.task_catalog_path]
+    for spec in registry.tasks:
+        source_paths.extend(spec.dataset.split_path(config.data.data_root, split) for split in ("train", "valid"))
+        manifest = spec.dataset.resource_manifest_path(config.data.data_root)
+        if manifest is not None:
+            source_paths.append(manifest)
     source_hashes = {str(path): sha256_file(path) for path in source_paths}
-    (
-        pretrain_config,
-        vocabulary,
-        schema,
-        standardizer,
-        artifact_hash,
-    ) = load_stage1_feature_inputs(
-        config.initialization.checkpoint,
-        config.data.pretrain_artifacts_dir,
+    pretrain_config, vocabulary, schema, standardizer, artifact_hash = load_stage1_feature_inputs(config.initialization.checkpoint, config.data.pretrain_artifacts_dir)
+    feature_contract = {"artifact_hash": artifact_hash, "max_smiles_tokens": pretrain_config.data.max_smiles_tokens, "fingerprint": pretrain_config.to_dict()["fingerprint"]}
+    model_contract = build_model_contract(
+        pretrain_config.model.d_model, pretrain_config.model.n_heads, registry,
+        object_layers=config.model.object_layers, object_ffn_dim=config.model.object_ffn_dim, dropout=config.model.dropout,
     )
-    feature_contract = {
-        "artifact_hash": artifact_hash,
-        "max_smiles_tokens": pretrain_config.data.max_smiles_tokens,
-        "fingerprint": pretrain_config.to_dict()["fingerprint"],
-    }
-    model_contract = {
-        "d_model": pretrain_config.model.d_model,
-        "n_heads": pretrain_config.model.n_heads,
-    }
-    data_signature = canonical_json_sha256(
-        {
-            "source_hashes": source_hashes,
-            "feature_contract": feature_contract,
-            "model_contract": model_contract,
-            "entity_shard_size": config.data.entity_shard_size,
-        }
-    )
+    data_signature = canonical_json_sha256({"source_hashes": source_hashes, "feature_contract": feature_contract, "registry_hash": registry.registry_hash, "model_contract": model_contract, "entity_shard_size": config.data.entity_shard_size})
     metadata_path = output_dir / "metadata.json"
     if metadata_path.is_file():
         existing = json.loads(metadata_path.read_text(encoding="utf-8"))
-        if (
-            existing.get("format_version") == STAGE2_ARTIFACT_VERSION
-            and existing.get("kind") == STAGE2_ARTIFACT_KIND
-            and existing.get("data_signature") == data_signature
-        ):
+        if existing.get("format_version") == STAGE2_ARTIFACT_VERSION and existing.get("kind") == STAGE2_ARTIFACT_KIND and existing.get("data_signature") == data_signature:
             Stage2EntityDataset(output_dir)
-            for task in STAGE2_TASKS:
+            for task in registry.task_ids:
                 for split in ("train", "valid"):
                     Stage2TaskDataset(output_dir, task, split)
-            reporter.emit_json(
-                {
-                    "event": "stage2_data_reused",
-                    **existing["summary"],
-                }
-            )
+            reporter.emit_json({"event": "stage2_data_reused", **existing["summary"]})
             return existing
-
-    collected = _collect_sources_and_scalers(
-        config,
-        reporter,
-    )
-    _write_duplicate_audit(
-        output_dir / "duplicate_conditions.csv",
-        collected.duplicate_rows,
-    )
-    _write_missing_target_audit(
-        output_dir / "missing_targets.csv",
-        collected.missing_target_rows,
-    )
-    atomic_json(output_dir / "scalers.json", collected.scalers)
-    entries, retained_id_by_candidate, excluded_entities = _build_entity_shards(
-        config,
-        collected,
-        pretrain_config,
-        vocabulary,
-        schema,
-        standardizer,
-        reporter,
-    )
-    row_counts, excluded_rows = _write_task_tensors(
-        config,
-        collected,
-        retained_id_by_candidate,
-        collected.scalers,
-        reporter,
-    )
-    index_path = output_dir / "entity_index.json"
-    atomic_json(
-        index_path,
-        {
-            "format_version": STAGE2_ARTIFACT_VERSION,
-            "kind": STAGE2_ARTIFACT_KIND,
-            "entries": entries,
-        },
-    )
+    collected = _collect_sources(config, registry, reporter)
+    _write_duplicate_audit(output_dir / "duplicate_conditions.csv", collected.duplicate_rows)
+    _write_missing_target_audit(output_dir / "missing_targets.csv", collected.missing_target_rows)
+    _write_mapping_audit(output_dir / "partial_charge_mapping_audit.csv", collected.mapping_audit)
+    entries, retained_id_by_candidate, excluded_entities = _build_entity_shards(config, collected, pretrain_config, vocabulary, schema, standardizer, reporter)
+    row_counts, excluded_rows, scalers = _write_task_tensors(config, registry, collected, retained_id_by_candidate, reporter)
+    atomic_json(output_dir / "scalers.json", scalers)
+    atomic_json(output_dir / "entity_index.json", {"format_version": STAGE2_ARTIFACT_VERSION, "kind": STAGE2_ARTIFACT_KIND, "entries": entries})
     artifact_files = [
-        "entity_index.json",
-        "scalers.json",
-        "excluded_entities.csv",
-        "excluded_rows.csv",
-        "duplicate_conditions.csv",
-        "missing_targets.csv",
-        *[
-            f"tasks/{task}_{split}.pt"
-            for task in STAGE2_TASKS
-            for split in ("train", "valid")
-        ],
+        "entity_index.json", "scalers.json", "excluded_entities.csv", "excluded_rows.csv",
+        "duplicate_conditions.csv", "missing_targets.csv", "partial_charge_mapping_audit.csv",
+        *[f"tasks/{task}/{split}.pt" for task in registry.task_ids for split in ("train", "valid")],
     ]
     shard_paths = sorted({entry["shard"] for entry in entries})
     artifact_files.extend(shard_paths)
-    artifact_hashes = {
-        relative: sha256_file(output_dir / relative)
-        for relative in artifact_files
-    }
-    entity_artifact_hash = _semantic_payload_sha256(
-        {
-            "entity_index": {
-                "format_version": STAGE2_ARTIFACT_VERSION,
-                "kind": STAGE2_ARTIFACT_KIND,
-                "entries": entries,
-            },
-            "entity_shards": [
-                torch.load(
-                    output_dir / relative,
-                    map_location="cpu",
-                    weights_only=False,
-                )
-                for relative in shard_paths
-            ],
-        }
-    )
+    artifact_hashes = {relative: sha256_file(output_dir / relative) for relative in artifact_files}
+    entity_artifact_hash = _semantic_payload_sha256({
+        "entity_index": {"format_version": STAGE2_ARTIFACT_VERSION, "kind": STAGE2_ARTIFACT_KIND, "entries": entries},
+        "entity_shards": [torch.load(output_dir / relative, map_location="cpu", weights_only=False) for relative in shard_paths],
+    })
     metadata = {
-        "format_version": STAGE2_ARTIFACT_VERSION,
-        "kind": STAGE2_ARTIFACT_KIND,
-        "data_signature": data_signature,
-        "entity_artifact_hash": entity_artifact_hash,
-        "pretrain_artifact_hash": artifact_hash,
-        "feature_contract": feature_contract,
-        "model_contract": model_contract,
-        "source_hashes": source_hashes,
-        "source_counts": collected.source_counts,
-        "rdkit_version": rdBase.rdkitVersion,
-        "numpy_version": np.__version__,
-        "torch_version": torch.__version__,
+        "format_version": STAGE2_ARTIFACT_VERSION, "kind": STAGE2_ARTIFACT_KIND,
+        "data_signature": data_signature, "entity_artifact_hash": entity_artifact_hash,
+        "pretrain_artifact_hash": artifact_hash, "feature_contract": feature_contract,
+        "registry": registry.snapshot(), "registry_hash": registry.registry_hash,
+        "catalog_sha256": registry.catalog_sha256, "model_contract": model_contract,
+        "source_hashes": source_hashes, "source_counts": collected.source_counts,
+        "rdkit_version": rdBase.rdkitVersion, "numpy_version": np.__version__, "torch_version": torch.__version__,
         "preparation": config.to_dict()["preparation"],
-        "tensor_contract": {
-            "conditions": "train_normalized_float32",
-            "targets": "train_normalized_float32_masked_zero",
-            "validation_raw_targets": "float32",
-        },
-        "tasks": {
-            name: {
-                "entity_columns": list(spec.entity_columns),
-                "entity_roles": list(spec.entity_roles),
-                "condition_columns": list(spec.condition_columns),
-                "target_columns": list(spec.target_columns),
-            }
-            for name, spec in TASK_SPECS.items()
-        },
-        "scalers": collected.scalers,
-        "summary": {
-            "entities_selected": len(collected.entity_keys),
-            "entities_retained": len(entries),
-            "entities_excluded": excluded_entities,
-            "rows": row_counts,
-            "rows_excluded": excluded_rows,
-            "duplicate_conditions": len(collected.duplicate_rows),
-            "partial_target_rows": sum(
-                row["action"] == "retained"
-                for row in collected.missing_target_rows
-            ),
-            "all_target_missing_rows": sum(
-                row["action"] == "excluded"
-                for row in collected.missing_target_rows
-            ),
-        },
+        "tensor_contract": {"conditions": "task_train_normalized_float32", "object_targets": "task_train_normalized_float32_masked_zero", "atom_targets": "ragged_molecule_equal_train_normalized_float32", "validation_raw_targets": "float32"},
+        "scalers": scalers,
+        "summary": {"entities_selected": len(collected.entity_keys), "entities_retained": len(entries), "entities_excluded": excluded_entities, "rows": row_counts, "rows_excluded": excluded_rows, "duplicate_conditions": len(collected.duplicate_rows), "partial_target_rows": sum(row["action"] == "retained" for row in collected.missing_target_rows), "all_target_missing_rows": sum(row["action"] == "excluded" for row in collected.missing_target_rows), "atom_mappings": sum(row["status"] == "mapped" for row in collected.mapping_audit), "atom_mapping_exclusions": sum(row["status"] == "excluded" for row in collected.mapping_audit)},
         "artifact_hashes": artifact_hashes,
     }
     atomic_json(metadata_path, metadata)
-    reporter.emit_json(
-        {"event": "stage2_data_complete", **metadata["summary"]}
-    )
+    reporter.emit_json({"event": "stage2_data_complete", **metadata["summary"]})
     return metadata
 
 
-TEACHER_CACHE_VERSION = 2
+TEACHER_CACHE_VERSION = 3
 TEACHER_CACHE_KIND = "ilume_stage2_object_teacher"
 TEACHER_EXTRACTION_CONTRACT_VERSION = 1
 

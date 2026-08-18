@@ -1,8 +1,10 @@
 # ADR-0018：Stage 2 Object v2 Prepare/Train 高吞吐合同
 
-- 状态：Accepted
+- 状态：Superseded by ADR-0019
 - 日期：2026-08-14
 - 取代：ADR-0016 的 artifact/checkpoint、optimizer、冻结快路径与执行合同；ObjectEncoder、五任务监督、逐行全覆盖、task compensation、QM mask 和五 epoch 协议继续有效。
+
+> 2026-08-18：Object v2 的 artifact/cache/checkpoint、冻结快路径、accumulation window、loss 组合与任务调度由 [ADR-0019](0019-stage2-catalog-object-v3.md) 取代。本文作为历史决定保留。
 
 ## 决定
 

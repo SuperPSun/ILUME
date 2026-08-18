@@ -49,6 +49,13 @@ class PretrainOutput:
 
 
 @dataclass(frozen=True)
+class EncodedEntityStates:
+    entity_cls: torch.Tensor
+    atom_states: torch.Tensor
+    atom_batch: torch.Tensor
+
+
+@dataclass(frozen=True)
 class LossStatistics:
     numerators: torch.Tensor
     denominators: torch.Tensor
@@ -354,11 +361,11 @@ class MultimodalPretrainModel(nn.Module):
         )
         return fused, layout, family_slices
 
-    def encode(self, batch: MultimodalBatch) -> torch.Tensor:
-        """Encode complete, uncorrupted modalities into the fusion CLS state."""
+    def encode_states(self, batch: MultimodalBatch) -> EncodedEntityStates:
+        """Encode complete modalities into entity and fused atom states."""
         if batch.masks is not None:
-            raise ValueError("MultimodalPretrainModel.encode expects an unmasked batch")
-        fused, _, _ = self._encode_fused(
+            raise ValueError("MultimodalPretrainModel.encode_states expects an unmasked batch")
+        fused, layout, _ = self._encode_fused(
             batch,
             atom_mask=torch.zeros(
                 batch.graphs.atom_categorical.shape[0],
@@ -375,7 +382,17 @@ class MultimodalPretrainModel(nn.Module):
                 name: ~valid for name, valid in batch.fingerprints.valid.items()
             },
         )
-        return fused[:, 0]
+        return EncodedEntityStates(
+            entity_cls=fused[:, 0],
+            atom_states=gather_graph_tokens(
+                fused, layout.atom_indices, batch.graphs.atom_batch
+            ),
+            atom_batch=batch.graphs.atom_batch,
+        )
+
+    def encode(self, batch: MultimodalBatch) -> torch.Tensor:
+        """Encode complete, uncorrupted modalities into the fusion CLS state."""
+        return self.encode_states(batch).entity_cls
 
     def forward(self, batch: MultimodalBatch) -> PretrainOutput:
         if batch.masks is None:
