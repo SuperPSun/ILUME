@@ -7,6 +7,7 @@ import math
 import multiprocessing as mp
 import os
 from array import array
+from collections import deque
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
@@ -36,15 +37,16 @@ from common.io import atomic_json, atomic_torch_save, sha256_file
 from common.progress import ProgressReporter
 from common.training import canonical_json_sha256, resolve_device
 from .atom_targets import (
+    AtomMappingResult,
+    StructureManifestEntry,
+    load_verify_parse_and_map,
     load_structure_manifest,
-    map_partial_charges,
-    parse_mol2,
-    verify_structure,
 )
 from .config import Stage2Config
 from .data import (
     STAGE2_ARTIFACT_KIND,
     STAGE2_ARTIFACT_VERSION,
+    STAGE2_PREPARATION_CONTRACT_VERSION,
     Stage2EntityDataset,
     Stage2TaskDataset,
 )
@@ -113,12 +115,20 @@ class CollectedStage2Data:
     mapping_audit: tuple[dict[str, Any], ...]
 
 
-def _role_for(canonical: str, policy: str, row: dict[str, str], context: str) -> str:
-    mol = Chem.MolFromSmiles(canonical)
-    if mol is None:
-        raise ValueError(f"Invalid canonical SMILES in {context}")
-    charge = sum(atom.GetFormalCharge() for atom in mol.GetAtoms())
-    inferred = "cation" if charge > 0 else ("anion" if charge < 0 else "neutral")
+def _role_for(
+    canonical: str, policy: str, row: dict[str, str], context: str,
+    cache: dict[str, tuple[str, int, int]],
+) -> str:
+    cached = cache.get(canonical)
+    if cached is None:
+        mol = Chem.MolFromSmiles(canonical)
+        if mol is None:
+            raise ValueError(f"Invalid canonical SMILES in {context}")
+        charge = sum(atom.GetFormalCharge() for atom in mol.GetAtoms())
+        inferred = "cation" if charge > 0 else ("anion" if charge < 0 else "neutral")
+        cached = (inferred, charge, mol.GetNumAtoms())
+        cache[canonical] = cached
+    inferred, charge, _ = cached
     if policy == "formal_charge":
         return inferred
     if policy == "manifest":
@@ -135,6 +145,65 @@ def _role_for(canonical: str, policy: str, row: dict[str, str], context: str) ->
     return policy
 
 
+@dataclass(frozen=True)
+class AtomMappingWork:
+    row_number: int
+    entry: StructureManifestEntry
+    canonical_smiles: str
+
+
+@dataclass(frozen=True)
+class AtomMappingOutcome:
+    row_number: int
+    result: AtomMappingResult | None
+    error: str
+
+
+def _compute_atom_mapping(work: AtomMappingWork) -> AtomMappingOutcome:
+    try:
+        return AtomMappingOutcome(
+            work.row_number,
+            load_verify_parse_and_map(work.entry, work.canonical_smiles),
+            "",
+        )
+    except (OSError, ValueError) as error:
+        return AtomMappingOutcome(work.row_number, None, str(error))
+
+
+def _atom_mapping_results(
+    work_items: Sequence[AtomMappingWork], workers: int,
+) -> dict[int, AtomMappingOutcome]:
+    if workers == 1:
+        return {item.row_number: _compute_atom_mapping(item) for item in work_items}
+    context = mp.get_context("spawn")
+    results: dict[int, AtomMappingOutcome] = {}
+    with ProcessPoolExecutor(max_workers=workers, mp_context=context) as executor:
+        pending: deque[tuple[AtomMappingWork, Future[AtomMappingOutcome]]] = deque()
+        iterator = iter(work_items)
+        for _ in range(workers * 2):
+            try:
+                item = next(iterator)
+            except StopIteration:
+                break
+            pending.append((item, executor.submit(_compute_atom_mapping, item)))
+        while pending:
+            item, future = pending.popleft()
+            try:
+                results[item.row_number] = future.result()
+            except BrokenProcessPool as error:
+                raise RuntimeError(
+                    "Stage 2 atom-mapping pool failed while awaiting "
+                    f"source_row={item.row_number}; the awaiting row is not "
+                    "necessarily the process-pool failure cause"
+                ) from error
+            try:
+                next_item = next(iterator)
+            except StopIteration:
+                continue
+            pending.append((next_item, executor.submit(_compute_atom_mapping, next_item)))
+    return results
+
+
 def _iter_rows(path: Path, expected: tuple[str, ...]) -> Iterator[tuple[int, dict[str, str]]]:
     if not path.is_file():
         raise FileNotFoundError(f"Missing Stage 2 source: {path}")
@@ -148,6 +217,7 @@ def _iter_rows(path: Path, expected: tuple[str, ...]) -> Iterator[tuple[int, dic
 
 def _collect_sources(config: Stage2Config, registry: Stage2Registry, reporter: ProgressReporter) -> CollectedStage2Data:
     canonical_cache: dict[str, str] = {}
+    role_cache: dict[str, tuple[str, int, int]] = {}
     entity_key_ids: dict[tuple[str, str], int] = {}
     staged: dict[str, dict[str, StagedTaskRows]] = {}
     source_counts: dict[str, dict[str, dict[str, int]]] = {}
@@ -175,7 +245,29 @@ def _collect_sources(config: Stage2Config, registry: Stage2Registry, reporter: P
                     if spec.target_level == "atom"
                     else (*spec.entity_columns, *spec.condition_columns, *spec.target_columns, "source_list")
                 )
-                for row_number, row in _iter_rows(spec.dataset.split_path(config.data.data_root, split), expected):
+                source_rows = list(_iter_rows(spec.dataset.split_path(config.data.data_root, split), expected))
+                mapping_outcomes: dict[int, AtomMappingOutcome] = {}
+                if spec.target_level == "atom":
+                    work_items: list[AtomMappingWork] = []
+                    for row_number, row in source_rows:
+                        raw = (row[spec.entity_columns[0]] or "").strip()
+                        canonical = canonical_cache.get(raw)
+                        if canonical is None:
+                            canonical = _canonicalize(raw, f"{spec.task_id}/{split}:{row_number}")
+                            canonical_cache[raw] = canonical
+                        _role_for(canonical, spec.role_policy[0], row, f"{spec.task_id}/{split}:{row_number}", role_cache)
+                        mol_id = row["mol_id"].strip()
+                        entry = None if manifest is None else manifest.get(mol_id)
+                        if entry is None:
+                            mapping_outcomes[row_number] = AtomMappingOutcome(
+                                row_number, None, "missing_structure_manifest_entry"
+                            )
+                        else:
+                            work_items.append(AtomMappingWork(row_number, entry, canonical))
+                    mapping_outcomes.update(
+                        _atom_mapping_results(work_items, config.preparation.workers)
+                    )
+                for row_number, row in source_rows:
                     canonicals: list[str] = []
                     roles: list[str] = []
                     for column, policy in zip(spec.entity_columns, spec.role_policy, strict=True):
@@ -187,7 +279,7 @@ def _collect_sources(config: Stage2Config, registry: Stage2Registry, reporter: P
                             canonical = _canonicalize(raw, f"{spec.task_id}/{split}:{row_number}/{column}")
                             canonical_cache[raw] = canonical
                         canonicals.append(canonical)
-                        roles.append(_role_for(canonical, policy, row, f"{spec.task_id}/{split}:{row_number}"))
+                        roles.append(_role_for(canonical, policy, row, f"{spec.task_id}/{split}:{row_number}", role_cache))
                     conditions = [_finite_float(row[name], f"{spec.task_id}/{split}:{row_number}/{name}") for name in spec.condition_columns]
                     allow_missing = config.loss.task_loss_modes.get(spec.task_id, "element_mean") == "masked_target_macro"
                     targets = [] if spec.target_level == "atom" else [
@@ -208,17 +300,14 @@ def _collect_sources(config: Stage2Config, registry: Stage2Registry, reporter: P
                     if spec.target_level == "atom":
                         mol_id = row["mol_id"].strip()
                         entry = None if manifest is None else manifest.get(mol_id)
-                        audit = {"mol_id": mol_id, "canonical_smiles": canonicals[0], "structure_path": "" if entry is None else str(entry.path.relative_to(config.data.data_root.resolve())), "model_atom_count": Chem.MolFromSmiles(canonicals[0]).GetNumAtoms(), "structure_atom_count": 0, "mapped_atom_count": 0, "mapping_count": 0, "selected_mapping_rank": 0, "bond_match_mode": "", "unparsed_bond_types": "", "bond_fallback_reason": "", "status": "excluded", "reason": ""}
-                        try:
-                            if entry is None:
-                                raise ValueError("missing_structure_manifest_entry")
-                            verify_structure(entry)
-                            graph = parse_mol2(entry.path)
-                            result = map_partial_charges(canonicals[0], graph)
+                        audit = {"mol_id": mol_id, "canonical_smiles": canonicals[0], "structure_path": "" if entry is None else str(entry.path.relative_to(config.data.data_root.resolve())), "model_atom_count": role_cache[canonicals[0]][2], "structure_atom_count": 0, "mapped_atom_count": 0, "mapping_status": "", "mapping_count_lower_bound": 0, "selected_mapping_rank": 0, "bond_match_mode": "", "unparsed_bond_types": "", "bond_fallback_reason": "", "status": "excluded", "reason": ""}
+                        outcome = mapping_outcomes[row_number]
+                        if outcome.result is not None:
+                            result = outcome.result
                             atom_targets = list(result.charges)
-                            audit.update({"structure_atom_count": result.structure_atom_count, "mapped_atom_count": len(result.charges), "mapping_count": result.mapping_count, "selected_mapping_rank": result.selected_mapping_rank, "bond_match_mode": result.bond_match_mode, "unparsed_bond_types": ";".join(result.unparsed_bond_types), "bond_fallback_reason": result.bond_fallback_reason, "status": "mapped", "reason": ""})
-                        except (OSError, ValueError) as error:
-                            audit["reason"] = str(error)
+                            audit.update({"structure_atom_count": result.structure_atom_count, "mapped_atom_count": len(result.charges), "mapping_status": result.mapping_status, "mapping_count_lower_bound": result.mapping_count_lower_bound, "selected_mapping_rank": result.selected_mapping_rank, "bond_match_mode": result.bond_match_mode, "unparsed_bond_types": ";".join(result.unparsed_bond_types), "bond_fallback_reason": result.bond_fallback_reason, "status": "mapped", "reason": ""})
+                        else:
+                            audit["reason"] = outcome.error
                             mapping_audit.append(audit)
                             continue
                         mapping_audit.append(audit)
@@ -519,7 +608,7 @@ def _entity_feature_results(
         initializer=_initialize_entity_worker,
         initargs=(pretrain_config, vocabulary, schema, standardizer),
     ) as executor:
-        pending: list[tuple[tuple[int, str, str], Future[EntityFeatureResult]]] = []
+        pending: deque[tuple[tuple[int, str, str], Future[EntityFeatureResult]]] = deque()
         iterator = iter(inputs)
         for _ in range(workers * 2):
             try:
@@ -528,7 +617,7 @@ def _entity_feature_results(
                 break
             pending.append((item, executor.submit(_compute_entity_feature, item)))
         while pending:
-            item, future = pending.pop(0)
+            item, future = pending.popleft()
             try:
                 result = future.result()
             except BrokenProcessPool as error:
@@ -667,8 +756,8 @@ def _stats(values: Sequence[float]) -> dict[str, float | int]:
 def _write_mapping_audit(path: Path, rows: Sequence[dict[str, Any]]) -> None:
     fields = (
         "mol_id", "canonical_smiles", "structure_path", "model_atom_count",
-        "structure_atom_count", "mapped_atom_count", "mapping_count",
-        "selected_mapping_rank", "bond_match_mode", "unparsed_bond_types",
+        "structure_atom_count", "mapped_atom_count", "mapping_status",
+        "mapping_count_lower_bound", "selected_mapping_rank", "bond_match_mode", "unparsed_bond_types",
         "bond_fallback_reason", "status", "reason",
     )
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -801,11 +890,11 @@ def prepare_stage2_data(config: Stage2Config, *, reporter: ProgressReporter | No
         pretrain_config.model.d_model, pretrain_config.model.n_heads, registry,
         object_layers=config.model.object_layers, object_ffn_dim=config.model.object_ffn_dim, dropout=config.model.dropout,
     )
-    data_signature = canonical_json_sha256({"source_hashes": source_hashes, "feature_contract": feature_contract, "registry_hash": registry.registry_hash, "model_contract": model_contract, "entity_shard_size": config.data.entity_shard_size})
+    data_signature = canonical_json_sha256({"source_hashes": source_hashes, "feature_contract": feature_contract, "registry_hash": registry.registry_hash, "model_contract": model_contract, "entity_shard_size": config.data.entity_shard_size, "preparation_contract_version": STAGE2_PREPARATION_CONTRACT_VERSION})
     metadata_path = output_dir / "metadata.json"
     if metadata_path.is_file():
         existing = json.loads(metadata_path.read_text(encoding="utf-8"))
-        if existing.get("format_version") == STAGE2_ARTIFACT_VERSION and existing.get("kind") == STAGE2_ARTIFACT_KIND and existing.get("data_signature") == data_signature:
+        if existing.get("format_version") == STAGE2_ARTIFACT_VERSION and existing.get("kind") == STAGE2_ARTIFACT_KIND and existing.get("preparation_contract_version") == STAGE2_PREPARATION_CONTRACT_VERSION and existing.get("data_signature") == data_signature:
             Stage2EntityDataset(output_dir)
             for task in registry.task_ids:
                 for split in ("train", "valid"):
@@ -834,6 +923,7 @@ def prepare_stage2_data(config: Stage2Config, *, reporter: ProgressReporter | No
     })
     metadata = {
         "format_version": STAGE2_ARTIFACT_VERSION, "kind": STAGE2_ARTIFACT_KIND,
+        "preparation_contract_version": STAGE2_PREPARATION_CONTRACT_VERSION,
         "data_signature": data_signature, "entity_artifact_hash": entity_artifact_hash,
         "pretrain_artifact_hash": artifact_hash, "feature_contract": feature_contract,
         "registry": registry.snapshot(), "registry_hash": registry.registry_hash,

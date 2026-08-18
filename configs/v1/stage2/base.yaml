@@ -39,8 +39,9 @@ training:
   weight_decay: 0.01
   warmup_fraction: 0.05
   max_grad_norm: 1.0
-  packing_workers: 8
-  packing_prefetch_windows: 2
+  packing_workers: 4
+  packing_prefetch_batches: 4
+  cuda_prefetch_batches: 1
   log_every_batches: 50
   device: auto
   amp_dtype: bf16

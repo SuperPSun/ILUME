@@ -35,7 +35,8 @@ def test_typed_mapping_explicit_h_and_deterministic_automorphism(tmp_path: Path)
     result = map_partial_charges("CC", parse_mol2(path))
     assert result.bond_match_mode == "typed"
     assert result.unparsed_bond_types == ()
-    assert result.mapping_count == 2
+    assert result.mapping_status == "ambiguous"
+    assert result.mapping_count_lower_bound == 2
     assert result.charges == pytest.approx((0.2, -0.2))
 
 

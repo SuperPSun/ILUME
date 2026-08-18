@@ -6,7 +6,7 @@
 
 Stage 1 现役合同以 ADR-0013/0014/0015/0017 为准：自然频率全量 epoch、cation/anion/molecule 的 element-level loss 权重 2/2/1、五模态等权、global batch 128、默认 eager 执行、单一 Base、原生单卡/DDP、corpus/checkpoint 既定 kind 与 `format_version=2`。只支持 epoch 边界恢复；不得恢复 45/45/10 coverage sampler、augmentation multiplier、多容量正式配置、mid-epoch cursor/RNG 恢复或旧 artifact/checkpoint 兼容。
 
-Stage 2 现役合同以 ADR-0019 为准：九个 catalog task 共享 `ObjectEncoder`，registry 与 Stage 1 派生的 model contract 分离；保留 QM 部分标签 mask、entity teacher、逐行完整覆盖和只作用于 physics loss 的 task compensation。第一 epoch object/interaction 走 cached-CLS 快路径，atom task仍运行冻结 Stage 1 获取 fusion atom states；后四个 epoch 联合微调。Object v3 强制 `gradient_accumulation_steps == 1`，只支持完整 epoch checkpoint 恢复、三组 LR、固定 TF32/CUDA fused AdamW 和始终开启的 artifact 校验；partial charge 使用带显式 fallback audit 的 MOL2 graph mapping。旧 v2 不迁移，不恢复双实体编码器、体系采样、渐进解冻、early stopping、best/last 或 step checkpoint。Stage 3 保持 `il21`/`aux6` 双域的模型与训练状态完全隔离；现役决定以 ADR-0011/0012 为准。Stage 3 到 `stage2_encoder.pt` 的表示迁移尚未完成，prepare 必须在写 artifact 前明确拒绝 Object v3 checkpoint 与 encoder artifact。
+Stage 2 现役合同以 ADR-0019 和 `configs/v1/stage2/base.yaml` 为准：九个 catalog task 共享 `ObjectEncoder`，registry 与 Stage 1 派生的 model contract 分离；QM mask、entity teacher、逐行完整覆盖和只补偿 physics loss 的语义必须保持。Object v3 强制一个 batch 对应一个 optimizer step，只从完整 epoch 恢复；旧 v2 和缺少现役 efficiency contract 的开发期 v3 不迁移。不得恢复双实体编码器、体系采样、渐进解冻、early stopping、best/last、step checkpoint、PCGrad 或 accumulation window。Stage 3 仍以 ADR-0011/0012 为准；到 `stage2_encoder.pt` 的迁移尚未完成，prepare 必须在写 artifact 前拒绝 Object v3 checkpoint 与 encoder artifact。
 
 ## 结构与入口
 

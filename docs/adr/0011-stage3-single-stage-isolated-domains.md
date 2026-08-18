@@ -4,6 +4,8 @@
 - 日期：2026-08-05
 - 取代：ADR-0010 中的 Phase 1/Phase 2、27 项共享 HoME 与阶段扩展决定
 
+> 2026-08-18：双域模型与训练状态隔离继续有效；Stage 2 输入 loader 与 artifact 兼容性暂由 [ADR-0019](0019-stage2-catalog-object-v3.md) 阻断。Stage 3 在专门迁移完成前必须拒绝 Object v3 checkpoint 和 `stage2_encoder.pt`。
+
 ## 背景
 
 transfer organic、四个离子 HOMO/LUMO 和 charge 不涉及 IL 体系。若把这六项放入与 IL 任务共享的 HoME 或 optimizer block，它们会通过共享参数、BatchNorm、loss 归一化、调度或随机数状态改变 21 项 IL 任务的更新。Stage 3 的目标因此从“27 项共享多任务模型”调整为“一个命令协调两个完全隔离的训练域”。

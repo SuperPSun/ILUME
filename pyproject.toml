@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ilume-pretrain"
 version = "0.1.0"
-description = "Multimodal molecular pretraining and property-alignment training"
+description = "Multimodal molecular pretraining and physics representation training"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

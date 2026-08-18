@@ -71,8 +71,9 @@ class Stage2TrainingConfig:
     weight_decay: float = 0.01
     warmup_fraction: float = 0.05
     max_grad_norm: float = 1.0
-    packing_workers: int = 8
-    packing_prefetch_windows: int = 2
+    packing_workers: int = 4
+    packing_prefetch_batches: int = 4
+    cuda_prefetch_batches: int = 1
     log_every_batches: int = 50
     device: str = "auto"
     amp_dtype: str = "bf16"
@@ -117,8 +118,10 @@ class Stage2Config:
             raise ValueError("Invalid Stage 2 optimizer schedule")
         if training.max_grad_norm < 0:
             raise ValueError("training.max_grad_norm must be non-negative")
-        if training.packing_workers <= 0 or training.packing_prefetch_windows <= 0 or training.log_every_batches <= 0:
+        if training.packing_workers <= 0 or training.packing_prefetch_batches <= 0 or training.log_every_batches <= 0:
             raise ValueError("Stage 2 execution sizes must be positive")
+        if training.cuda_prefetch_batches != 1:
+            raise ValueError("Stage 2 Object v3 requires cuda_prefetch_batches == 1")
         if training.amp_dtype not in {"bf16", "fp16", "none"}:
             raise ValueError("training.amp_dtype must be bf16, fp16, or none")
 
@@ -152,7 +155,10 @@ class Stage2Config:
     def experiment_dict(self) -> dict[str, Any]:
         payload = self.to_dict()
         payload.pop("preparation")
-        for name in ("packing_workers", "packing_prefetch_windows", "log_every_batches"):
+        for name in (
+            "packing_workers", "packing_prefetch_batches",
+            "cuda_prefetch_batches", "log_every_batches",
+        ):
             payload["training"].pop(name)
         return payload
 

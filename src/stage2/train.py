@@ -6,6 +6,7 @@ import math
 import time
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import Any, Iterator, Sequence
 
@@ -21,9 +22,10 @@ from stage1.masking import MultimodalPacker
 from stage1.model import EncodedEntityStates, load_stage1_model
 from .config import Stage2Config, stage2_config_from_checkpoint_dict
 from .data import (
-    PackedStage2Window, Stage2BatchDescriptor, Stage2DeviceTaskData,
+    PackedStage2Batch, Stage2BatchDescriptor, Stage2DeviceTaskData,
     Stage2EntityDataset, Stage2TaskDataset, epoch_batch_schedule,
-    load_artifact_registry, pack_stage2_window, task_batch_counts,
+    load_artifact_registry, pack_stage2_batch, task_batch_counts,
+    validate_runtime_task_contract,
 )
 from .model import RECONSTRUCTION_MODULES, Stage2ForwardOutput, Stage2ObjectModel, stage2_optimizer_groups
 from .prepare import load_teacher_embeddings
@@ -66,28 +68,116 @@ def _scheduler_lambdas(config: Stage2Config, total_steps: int, unfreeze_step: in
     return backbone, modules, modules
 
 
-def _ordered_packed_windows(
-    windows: Sequence[tuple[Stage2BatchDescriptor, ...]], datasets: dict[str, Stage2TaskDataset],
-    entities: Stage2EntityDataset, packer: MultimodalPacker, *, workers: int,
-    prefetch_windows: int, pin_memory: bool,
-) -> Iterator[PackedStage2Window]:
-    capacity = max(1, workers * prefetch_windows)
+def _ordered_packed_batches(
+    descriptors: Sequence[Stage2BatchDescriptor], datasets: dict[str, Stage2TaskDataset],
+    entities: Stage2EntityDataset, packer: MultimodalPacker, registry: Stage2Registry,
+    *, backbone_trainable: bool, include_raw_atom_targets: bool,
+    workers: int, prefetch_batches: int, pin_memory: bool,
+) -> Iterator[PackedStage2Batch]:
+    capacity = max(1, prefetch_batches)
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="stage2-packer") as executor:
-        pending: deque[Future[PackedStage2Window]] = deque()
-        iterator = iter(windows)
+        pending: deque[Future[PackedStage2Batch]] = deque()
+        iterator = iter(descriptors)
+
+        def submit(descriptor: Stage2BatchDescriptor) -> Future[PackedStage2Batch]:
+            needs_entities = backbone_trainable or registry.by_id(descriptor.task).target_level == "atom"
+            return executor.submit(
+                pack_stage2_batch, descriptor, datasets, entities, packer,
+                needs_entities=needs_entities,
+                include_raw_atom_targets=include_raw_atom_targets,
+                pin_memory=pin_memory,
+            )
+
         for _ in range(capacity):
             try:
-                window = next(iterator)
+                descriptor = next(iterator)
             except StopIteration:
                 break
-            pending.append(executor.submit(pack_stage2_window, window, datasets, entities, packer, pin_memory=pin_memory))
+            pending.append(submit(descriptor))
         while pending:
             yield pending.popleft().result()
             try:
-                window = next(iterator)
+                descriptor = next(iterator)
             except StopIteration:
                 continue
-            pending.append(executor.submit(pack_stage2_window, window, datasets, entities, packer, pin_memory=pin_memory))
+            pending.append(submit(descriptor))
+
+
+def _record_stream(value: Any, stream: torch.cuda.Stream) -> None:
+    if isinstance(value, torch.Tensor):
+        if value.is_cuda:
+            value.record_stream(stream)
+    elif is_dataclass(value):
+        for field in fields(value):
+            _record_stream(getattr(value, field.name), stream)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _record_stream(item, stream)
+    elif isinstance(value, (tuple, list)):
+        for item in value:
+            _record_stream(item, stream)
+
+
+class CudaPackedBatchPrefetcher:
+    def __init__(self, batches: Iterator[PackedStage2Batch], device: torch.device) -> None:
+        if device.type != "cuda":
+            raise ValueError("CUDA packed-batch prefetch requires a CUDA device")
+        self._batches = batches
+        self._device = device
+        self._stream = torch.cuda.Stream(device=device)
+        self._next: PackedStage2Batch | None = None
+        self._event: torch.cuda.Event | None = None
+        self._closed = False
+        self._preload()
+
+    def _preload(self) -> None:
+        try:
+            batch = next(self._batches)
+        except StopIteration:
+            self._next = None
+            self._event = None
+            return
+        with torch.cuda.stream(self._stream):
+            self._next = batch.to(self._device, non_blocking=True)
+            event = torch.cuda.Event()
+            event.record(self._stream)
+            self._event = event
+
+    def __iter__(self) -> "CudaPackedBatchPrefetcher":
+        return self
+
+    def __next__(self) -> PackedStage2Batch:
+        if self._next is None or self._event is None:
+            raise StopIteration
+        current = self._next
+        event = self._event
+        consumer = torch.cuda.current_stream(self._device)
+        consumer.wait_event(event)
+        _record_stream(current, consumer)
+        self._preload()
+        return current
+
+    def close(self, *, failed: bool = False) -> None:
+        if self._closed:
+            return
+        if failed and self._next is not None:
+            self._stream.synchronize()
+        self._closed = True
+
+
+def _device_batches(
+    batches: Iterator[PackedStage2Batch], device: torch.device,
+) -> Iterator[PackedStage2Batch]:
+    if device.type != "cuda":
+        yield from batches
+        return
+    prefetcher = CudaPackedBatchPrefetcher(batches, device)
+    failed = True
+    try:
+        yield from prefetcher
+        failed = False
+    finally:
+        prefetcher.close(failed=failed)
 
 
 def _append_metric(path: Path, row: dict[str, Any]) -> None:
@@ -113,35 +203,18 @@ def _optimizer_implementation(device: torch.device) -> str:
     return "fused" if device.type == "cuda" else "single_tensor"
 
 
-def _descriptor_base(descriptor: Stage2BatchDescriptor, data: Stage2DeviceTaskData, device: torch.device) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    indices = descriptor.indices.to(device)
+def _descriptor_base(indices: torch.Tensor, data: Stage2DeviceTaskData) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     return indices, data.entity_indices[indices], data.conditions[indices]
 
 
-def _selected_atom_targets(data: Stage2DeviceTaskData, indices: torch.Tensor, *, raw: bool = False) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    values = data.raw_atom_target_values if raw else data.atom_target_values
-    if values is None or data.atom_target_offsets is None or data.atom_target_mask is None:
-        raise ValueError("Missing Stage 2 atom target tensors")
-    chunks: list[torch.Tensor] = []
-    masks: list[torch.Tensor] = []
-    offsets = [0]
-    for index in indices.tolist():
-        start = int(data.atom_target_offsets[index])
-        end = int(data.atom_target_offsets[index + 1])
-        chunks.append(values[start:end])
-        masks.append(data.atom_target_mask[start:end])
-        offsets.append(offsets[-1] + end - start)
-    return torch.cat(chunks), torch.cat(masks), torch.tensor(offsets, dtype=torch.long, device=values.device)
-
-
 def _batch_output(
-    model: Stage2ObjectModel, registry: Stage2Registry, descriptor: Stage2BatchDescriptor,
+    model: Stage2ObjectModel, registry: Stage2Registry, packed: PackedStage2Batch,
     task_data: Stage2DeviceTaskData, teacher_embeddings: torch.Tensor,
-    entity_roles: torch.Tensor, device: torch.device, config: Stage2Config,
-    *, packed: PackedStage2Window | None, backbone_trainable: bool,
+    entity_roles: torch.Tensor, config: Stage2Config, *, backbone_trainable: bool,
 ) -> Stage2ForwardOutput:
+    descriptor = packed.descriptor
     spec = registry.by_id(descriptor.task)
-    indices, global_slots, conditions = _descriptor_base(descriptor, task_data, device)
+    indices, global_slots, conditions = _descriptor_base(packed.row_indices, task_data)
     teacher_slots = teacher_embeddings[global_slots]
     loss_mode = config.loss.task_loss_modes.get(spec.task_id, "element_mean")
     if not backbone_trainable and spec.target_level == "object":
@@ -152,11 +225,11 @@ def _batch_output(
             task_data.targets[indices], task_data.target_mask[indices], teacher_slots,
             loss_mode=loss_mode, teacher_loss_is_zero=True,
         )
-    if packed is None:
+    if packed.entities is None or packed.unique_entity_ids is None or packed.entity_positions is None:
         raise AssertionError("Stage 2 batch requires packed entities")
-    entities = packed.entities.to(device, non_blocking=device.type == "cuda")
-    unique_ids = packed.unique_entity_ids.to(device, non_blocking=device.type == "cuda")
-    positions = packed.entity_positions[0].to(device, non_blocking=device.type == "cuda")
+    entities = packed.entities
+    unique_ids = packed.unique_entity_ids
+    positions = packed.entity_positions
     teacher_unique = teacher_embeddings[unique_ids]
     if spec.target_level == "object":
         if task_data.targets is None or task_data.target_mask is None:
@@ -168,11 +241,14 @@ def _batch_output(
             loss_mode=loss_mode,
         )
     states = model.encode_entity_states(entities)
-    targets, mask, offsets = _selected_atom_targets(task_data, indices)
+    if packed.atom_targets is None:
+        raise ValueError("Stage 2 atom batch is missing packed targets")
+    atom_targets = packed.atom_targets
     object_slots = teacher_unique[positions] if not backbone_trainable else states.entity_cls[positions]
     return model.forward_atom_from_states(
         spec.task_id, states, positions, entities.roles[positions], object_slots,
-        teacher_unique[positions], targets, mask, offsets,
+        teacher_unique[positions], atom_targets.values, atom_targets.mask,
+        atom_targets.atom_state_indices, atom_targets.atom_sample_indices,
         teacher_loss_is_zero=not backbone_trainable,
     )
 
@@ -203,6 +279,13 @@ def _save_epoch_checkpoint(path: Path, *, model: Stage2ObjectModel, optimizer: t
         "teacher_cache_identity": teacher_cache_identity, "task_rows": task_rows,
         "task_batches": task_batches, "normalized_task_weights": normalized_task_weights,
         "scheduler_geometry": scheduler_geometry,
+        "execution_contract_version": 2,
+        "execution_parameters": {
+            "packing_workers": config.training.packing_workers,
+            "packing_prefetch_batches": config.training.packing_prefetch_batches,
+            "cuda_prefetch_batches": config.training.cuda_prefetch_batches,
+            "log_every_batches": config.training.log_every_batches,
+        },
         "loss_modes": {task: config.loss.task_loss_modes.get(task, "element_mean") for task in registry.task_ids},
         "optimizer_implementation": optimizer_implementation, "math_contract": math_contract,
         "validation": validation,
@@ -273,25 +356,41 @@ def evaluate_stage2(
     for spec in registry.tasks:
         dataset = valid_datasets[spec.task_id]
         data = device_data[spec.task_id]
-        normalized_abs = 0.0
-        normalized_units = 0
-        raw_abs = [0.0] * len(spec.target_columns)
-        raw_squared = [0.0] * len(spec.target_columns)
-        raw_sum = [0.0] * len(spec.target_columns)
-        raw_sum_squared = [0.0] * len(spec.target_columns)
-        counts = [0] * len(spec.target_columns)
-        atom_raw_molecule_abs = 0.0
+        target_count = len(spec.target_columns)
+        normalized_abs = torch.zeros((), dtype=torch.float64, device=device)
+        normalized_units = torch.zeros((), dtype=torch.int64, device=device)
+        raw_abs = torch.zeros(target_count, dtype=torch.float64, device=device)
+        raw_squared = torch.zeros_like(raw_abs)
+        raw_sum = torch.zeros_like(raw_abs)
+        raw_sum_squared = torch.zeros_like(raw_abs)
+        counts = torch.zeros(target_count, dtype=torch.int64, device=device)
+        atom_raw_molecule_abs = torch.zeros((), dtype=torch.float64, device=device)
         atom_molecule_count = 0
-        teacher_sum = 0.0
+        teacher_sum = torch.zeros((), dtype=torch.float64, device=device)
         slot_count = 0
-        for start in range(0, len(dataset), config.training.batch_size):
-            descriptor = Stage2BatchDescriptor(spec.task_id, torch.arange(start, min(len(dataset), start + config.training.batch_size)))
-            needs_pack = not backbone_frozen or spec.target_level == "atom"
-            packed = pack_stage2_window((descriptor,), valid_datasets, entity_dataset, packer, pin_memory=device.type == "cuda") if needs_pack else None
-            output = _batch_output(model, registry, descriptor, data, teacher_embeddings, entity_roles, device, config, packed=packed, backbone_trainable=not backbone_frozen)
-            selected = descriptor.indices.to(device)
-            teacher_sum += float(output.teacher_loss) * int(selected.numel())
-            slot_count += int(selected.numel())
+        descriptors = [
+            Stage2BatchDescriptor(
+                spec.task_id,
+                torch.arange(start, min(len(dataset), start + config.training.batch_size)),
+            )
+            for start in range(0, len(dataset), config.training.batch_size)
+        ]
+        cpu_batches = _ordered_packed_batches(
+            descriptors, valid_datasets, entity_dataset, packer, registry,
+            backbone_trainable=not backbone_frozen, include_raw_atom_targets=True,
+            workers=config.training.packing_workers,
+            prefetch_batches=config.training.packing_prefetch_batches,
+            pin_memory=device.type == "cuda",
+        )
+        for packed in _device_batches(cpu_batches, device):
+            output = _batch_output(
+                model, registry, packed, data, teacher_embeddings, entity_roles,
+                config, backbone_trainable=not backbone_frozen,
+            )
+            selected = packed.row_indices
+            batch_rows = selected.numel()
+            teacher_sum += output.teacher_loss.double() * batch_rows
+            slot_count += batch_rows
             task_scalers = scalers[spec.task_id]["targets"]
             if spec.target_level == "object":
                 if data.targets is None or data.target_mask is None or data.raw_targets is None:
@@ -299,12 +398,16 @@ def evaluate_stage2(
                 mask = data.target_mask[selected]
                 normalized_diff = torch.abs(output.predictions - data.targets[selected])
                 if config.loss.task_loss_modes.get(spec.task_id, "element_mean") == "masked_target_macro":
-                    per_target = (normalized_diff * mask).sum(0) / mask.sum(0).clamp_min(1)
-                    normalized_abs += float(per_target[mask.sum(0) > 0].mean()) * int(selected.numel())
-                    normalized_units += int(selected.numel())
+                    target_counts = mask.sum(0)
+                    valid = target_counts > 0
+                    per_target = (normalized_diff * mask).sum(0) / target_counts.clamp_min(1)
+                    normalized_abs += (
+                        (per_target * valid).sum() / valid.sum().clamp_min(1)
+                    ).double() * batch_rows
+                    normalized_units += batch_rows
                 else:
-                    normalized_abs += float(normalized_diff[mask].sum())
-                    normalized_units += int(mask.sum())
+                    normalized_abs += (normalized_diff * mask).sum().double()
+                    normalized_units += mask.sum()
                 raw_prediction = output.predictions.clone()
                 for column, name in enumerate(spec.target_columns):
                     stats = task_scalers[name]
@@ -312,46 +415,73 @@ def evaluate_stage2(
                     selected_mask = mask[:, column]
                     target = data.raw_targets[selected, column][selected_mask].double()
                     difference = raw_prediction[:, column][selected_mask].double() - target
-                    raw_abs[column] += float(torch.abs(difference).sum())
-                    raw_squared[column] += float(torch.square(difference).sum())
-                    raw_sum[column] += float(target.sum())
-                    raw_sum_squared[column] += float(torch.square(target).sum())
-                    counts[column] += int(selected_mask.sum())
+                    raw_abs[column] += torch.abs(difference).sum()
+                    raw_squared[column] += torch.square(difference).sum()
+                    raw_sum[column] += target.sum()
+                    raw_sum_squared[column] += torch.square(target).sum()
+                    counts[column] += selected_mask.sum()
             else:
-                normalized_target, mask, offsets = _selected_atom_targets(data, selected)
-                raw_target, _, _ = _selected_atom_targets(data, selected, raw=True)
+                if packed.atom_targets is None or packed.atom_targets.raw_values is None:
+                    raise ValueError("Validation atom batch is missing raw targets")
+                atom = packed.atom_targets
+                normalized_target = atom.values
+                raw_target = atom.raw_values
+                mask = atom.mask
                 stats = task_scalers[spec.target_columns[0]]
                 raw_prediction = output.predictions * float(stats["scale"]) + float(stats["mean"])
                 difference = raw_prediction.double() - raw_target.double()
-                for first, end in zip(offsets[:-1].tolist(), offsets[1:].tolist(), strict=True):
-                    normalized_abs += float(torch.abs(output.predictions[first:end] - normalized_target[first:end])[mask[first:end]].mean())
-                    normalized_units += 1
-                    atom_raw_molecule_abs += float(torch.abs(difference[first:end])[mask[first:end]].mean())
-                    atom_molecule_count += 1
-                raw_abs[0] += float(torch.abs(difference[mask]).sum())
-                raw_squared[0] += float(torch.square(difference[mask]).sum())
-                raw_sum[0] += float(raw_target[mask].double().sum())
-                raw_sum_squared[0] += float(torch.square(raw_target[mask].double()).sum())
-                counts[0] += int(mask.sum())
-        score = normalized_abs / normalized_units
+                weights = mask.double()
+                batch_molecules = packed.entity_positions.shape[0] if packed.entity_positions is not None else 0
+                molecule_counts = torch.zeros(batch_molecules, dtype=torch.float64, device=device).index_add_(0, atom.atom_sample_indices, weights)
+                normalized_molecule_abs = torch.zeros_like(molecule_counts).index_add_(
+                    0, atom.atom_sample_indices,
+                    torch.abs(output.predictions - normalized_target).double() * weights,
+                ) / molecule_counts.clamp_min(1)
+                raw_molecule_abs = torch.zeros_like(molecule_counts).index_add_(
+                    0, atom.atom_sample_indices, torch.abs(difference) * weights,
+                ) / molecule_counts.clamp_min(1)
+                normalized_abs += normalized_molecule_abs.sum()
+                normalized_units += batch_molecules
+                atom_raw_molecule_abs += raw_molecule_abs.sum()
+                atom_molecule_count += batch_molecules
+                raw_abs[0] += (torch.abs(difference) * weights).sum()
+                raw_squared[0] += (torch.square(difference) * weights).sum()
+                raw_sum[0] += (raw_target.double() * weights).sum()
+                raw_sum_squared[0] += (torch.square(raw_target.double()) * weights).sum()
+                counts[0] += mask.sum()
+        materialized = torch.cat((
+            normalized_abs.reshape(1), normalized_units.double().reshape(1),
+            raw_abs, raw_squared, raw_sum, raw_sum_squared, counts.double(),
+            atom_raw_molecule_abs.reshape(1), teacher_sum.reshape(1),
+        )).cpu().tolist()
+        cursor = 0
+        normalized_abs_value, normalized_units_value = materialized[cursor:cursor + 2]
+        cursor += 2
+        raw_abs_values = materialized[cursor:cursor + target_count]; cursor += target_count
+        raw_squared_values = materialized[cursor:cursor + target_count]; cursor += target_count
+        raw_sum_values = materialized[cursor:cursor + target_count]; cursor += target_count
+        raw_sum_squared_values = materialized[cursor:cursor + target_count]; cursor += target_count
+        count_values = [int(value) for value in materialized[cursor:cursor + target_count]]; cursor += target_count
+        atom_raw_molecule_abs_value, teacher_sum_value = materialized[cursor:cursor + 2]
+        score = normalized_abs_value / normalized_units_value
         task_scores[spec.task_id] = score
         prefix = f"valid_{spec.task_id}"
         result[f"{prefix}_rows"] = len(dataset)
         result[f"{prefix}_normalized_mae"] = score
-        result[f"{prefix}_teacher_mse"] = teacher_sum / max(slot_count, 1)
+        result[f"{prefix}_teacher_mse"] = teacher_sum_value / max(slot_count, 1)
         if spec.target_level == "atom":
             result[f"{prefix}_molecule_macro_normalized_mae"] = score
-            result[f"{prefix}_molecule_macro_raw_mae"] = atom_raw_molecule_abs / atom_molecule_count
-            result[f"{prefix}_atom_micro_rmse"] = math.sqrt(raw_squared[0] / counts[0])
-            variance = raw_sum_squared[0] - raw_sum[0] ** 2 / counts[0]
-            result[f"{prefix}_atom_micro_r2"] = 1.0 - raw_squared[0] / variance if variance > 0 else float("nan")
+            result[f"{prefix}_molecule_macro_raw_mae"] = atom_raw_molecule_abs_value / atom_molecule_count
+            result[f"{prefix}_atom_micro_rmse"] = math.sqrt(raw_squared_values[0] / count_values[0])
+            variance = raw_sum_squared_values[0] - raw_sum_values[0] ** 2 / count_values[0]
+            result[f"{prefix}_atom_micro_r2"] = 1.0 - raw_squared_values[0] / variance if variance > 0 else float("nan")
         for column, name in enumerate(spec.target_columns):
-            count = counts[column]
+            count = count_values[column]
             result[f"{prefix}_{name}_count"] = count
-            result[f"{prefix}_{name}_mae"] = raw_abs[column] / count
-            result[f"{prefix}_{name}_rmse"] = math.sqrt(raw_squared[column] / count)
-            variance = raw_sum_squared[column] - raw_sum[column] ** 2 / count
-            result[f"{prefix}_{name}_r2"] = 1.0 - raw_squared[column] / variance if variance > 0 else float("nan")
+            result[f"{prefix}_{name}_mae"] = raw_abs_values[column] / count
+            result[f"{prefix}_{name}_rmse"] = math.sqrt(raw_squared_values[column] / count)
+            variance = raw_sum_squared_values[column] - raw_sum_values[column] ** 2 / count
+            result[f"{prefix}_{name}_r2"] = 1.0 - raw_squared_values[column] / variance if variance > 0 else float("nan")
     normalized_weights = config.normalized_task_weights(registry)
     result["valid_macro_normalized_mae"] = float(np.mean(list(task_scores.values())))
     result["valid_weighted_macro_normalized_mae"] = sum(normalized_weights[task] * score for task, score in task_scores.items())
@@ -376,8 +506,13 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
         raise ValueError("Stage 2 data artifact does not match model/registry")
     teacher_cpu, teacher_metadata = load_teacher_embeddings(config, loaded, data_metadata, math_contract, expected_count=len(entity_dataset), expected_dim=loaded.config.model.d_model)
     teacher_embeddings = teacher_cpu.to(device)
+    del teacher_cpu
     train_datasets = {task: Stage2TaskDataset(config.data.artifacts_dir, task, "train") for task in registry.task_ids}
     valid_datasets = {task: Stage2TaskDataset(config.data.artifacts_dir, task, "valid") for task in registry.task_ids}
+    for task in registry.task_ids:
+        mode = config.loss.task_loss_modes.get(task, "element_mean")
+        validate_runtime_task_contract(train_datasets[task], entity_dataset, loss_mode=mode)
+        validate_runtime_task_contract(valid_datasets[task], entity_dataset, loss_mode=mode)
     train_device = {task: Stage2DeviceTaskData.from_dataset(dataset, device) for task, dataset in train_datasets.items()}
     valid_device = {task: Stage2DeviceTaskData.from_dataset(dataset, device) for task, dataset in valid_datasets.items()}
     entity_roles = torch.tensor([int(entry["role_id"]) for entry in entity_dataset.entries], dtype=torch.long, device=device)
@@ -395,6 +530,9 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
     model.set_backbone_trainable(config.training.backbone_frozen_epochs == 0)
     optimizer_implementation = _optimizer_implementation(device)
     optimizer = torch.optim.AdamW(stage2_optimizer_groups(model, backbone_learning_rate=config.training.backbone_learning_rate, object_encoder_learning_rate=config.training.object_encoder_learning_rate, task_head_learning_rate=config.training.task_head_learning_rate, weight_decay=config.training.weight_decay), fused=device.type == "cuda", foreach=False if device.type != "cuda" else None)
+    clip_parameters = [
+        parameter for group in optimizer.param_groups for parameter in group["params"]
+    ]
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, _scheduler_lambdas(config, total_steps, unfreeze_step))
     fp16 = config.training.amp_dtype == "fp16" and device.type == "cuda"
     amp_enabled = config.training.amp_dtype != "none" and device.type == "cuda"
@@ -413,6 +551,8 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
         checkpoint = torch.load(Path(resume_from), map_location="cpu", weights_only=False)
         if checkpoint.get("format_version") != STAGE2_CHECKPOINT_VERSION or checkpoint.get("kind") != STAGE2_CHECKPOINT_KIND:
             raise ValueError("Unsupported Stage 2 object checkpoint; Object v2 is not migrated")
+        if checkpoint.get("execution_contract_version") != 2:
+            raise ValueError("Stage 2 checkpoint predates the Object v3 efficiency contract")
         checkpoint_config = stage2_config_from_checkpoint_dict(checkpoint["config"])
         if checkpoint_config.experiment_dict() != config.experiment_dict():
             raise ValueError("Stage 2 checkpoint experiment config does not match")
@@ -450,48 +590,75 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
         if not backbone_trainable:
             model.backbone.eval()
         schedule = epoch_batch_schedule(train_datasets, config.training.batch_size, seed=config.data.seed, epoch=epoch)
-        needs_pack = [descriptor for descriptor in schedule if backbone_trainable or registry.by_id(descriptor.task).target_level == "atom"]
-        packed_iterator = _ordered_packed_windows([(descriptor,) for descriptor in needs_pack], train_datasets, entity_dataset, packer, workers=config.training.packing_workers, prefetch_windows=config.training.packing_prefetch_windows, pin_memory=device.type == "cuda")
-        interval_values: dict[str, list[float]] = {}
+        cpu_batches = _ordered_packed_batches(
+            schedule, train_datasets, entity_dataset, packer, registry,
+            backbone_trainable=backbone_trainable, include_raw_atom_targets=False,
+            workers=config.training.packing_workers,
+            prefetch_batches=config.training.packing_prefetch_batches,
+            pin_memory=device.type == "cuda",
+        )
+        packed_iterator = _device_batches(cpu_batches, device)
+        interval_values: dict[str, list[torch.Tensor | int]] = {}
+        interval_finite = torch.ones((), dtype=torch.bool, device=device)
         interval_started = time.perf_counter()
         interval_batches = 0
         epoch_started = interval_started
         with reporter.bar(total=len(schedule), desc=f"Stage 2 object v3 epoch {epoch}", unit="batch") as progress:
-            for descriptor in schedule:
-                spec = registry.by_id(descriptor.task)
-                packed = next(packed_iterator) if backbone_trainable or spec.target_level == "atom" else None
+            for batch_number, packed in enumerate(packed_iterator, start=1):
+                descriptor = packed.descriptor
                 optimizer.zero_grad(set_to_none=True)
                 with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp_enabled):
-                    batch_output = _batch_output(model, registry, descriptor, train_device[descriptor.task], teacher_embeddings, entity_roles, device, config, packed=packed, backbone_trainable=backbone_trainable)
+                    batch_output = _batch_output(
+                        model, registry, packed, train_device[descriptor.task],
+                        teacher_embeddings, entity_roles, config,
+                        backbone_trainable=backbone_trainable,
+                    )
                     compensation = task_compensation_scale(normalized_weights[descriptor.task], total_epoch_batches, int(descriptor.indices.numel()), task_rows[descriptor.task])
                     loss = compensation * batch_output.physics_loss + config.loss.lambda_teacher * batch_output.teacher_loss
-                if not bool(torch.isfinite(loss.detach())):
-                    raise RuntimeError(f"Non-finite Stage 2 loss in epoch {epoch}")
+                interval_finite = interval_finite & torch.isfinite(loss.detach())
                 scaler.scale(loss).backward()
                 if config.training.max_grad_norm > 0:
                     scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_([parameter for group in optimizer.param_groups for parameter in group["params"] if parameter.requires_grad], config.training.max_grad_norm)
+                    torch.nn.utils.clip_grad_norm_(clip_parameters, config.training.max_grad_norm)
                 scaler.step(optimizer)
                 scaler.update()
                 scheduler.step()
                 global_step += 1
-                interval_values.setdefault(descriptor.task, [0.0, 0.0, 0.0, 0.0])
+                interval_values.setdefault(
+                    descriptor.task,
+                    [loss.new_zeros(()), loss.new_zeros(()), loss.new_zeros(()), 0],
+                )
                 values = interval_values[descriptor.task]
-                values[0] += float(batch_output.physics_loss.detach())
-                values[1] += float(batch_output.teacher_loss.detach())
-                values[2] += float(loss.detach())
-                values[3] += 1
+                values[0] = values[0] + batch_output.physics_loss.detach()  # type: ignore[operator]
+                values[1] = values[1] + batch_output.teacher_loss.detach()  # type: ignore[operator]
+                values[2] = values[2] + loss.detach()  # type: ignore[operator]
+                values[3] = int(values[3]) + 1
                 interval_batches += 1
                 progress.update(1)
-                if interval_batches >= config.training.log_every_batches or descriptor is schedule[-1]:
+                if interval_batches >= config.training.log_every_batches or batch_number == len(schedule):
+                    ordered_tasks = sorted(interval_values)
+                    device_values = torch.stack([
+                        value
+                        for task in ordered_tasks
+                        for value in interval_values[task][:3]
+                        if isinstance(value, torch.Tensor)
+                    ]).reshape(len(ordered_tasks), 3)
+                    materialized = torch.cat((
+                        interval_finite.to(torch.float32).reshape(1),
+                        device_values.flatten(),
+                    )).cpu()
+                    if not bool(materialized[0]):
+                        raise RuntimeError(f"Non-finite Stage 2 loss in epoch {epoch}")
                     row: dict[str, Any] = {"event": "stage2_train_interval", "epoch": epoch, "global_optimizer_step": global_step, "task_batches": interval_batches, "batches_per_second": interval_batches / max(time.perf_counter() - interval_started, 1e-12), "phase": "unfrozen" if backbone_trainable else "frozen", "backbone_learning_rate": optimizer.param_groups[0]["lr"], "object_encoder_learning_rate": optimizer.param_groups[1]["lr"], "task_head_learning_rate": optimizer.param_groups[2]["lr"]}
-                    for task, values in interval_values.items():
-                        row[f"{task}_loss_physics"] = values[0] / values[3]
-                        row[f"{task}_loss_teacher"] = values[1] / values[3]
-                        row[f"{task}_loss_step"] = values[2] / values[3]
+                    for task_index, task in enumerate(ordered_tasks):
+                        count = int(interval_values[task][3])
+                        row[f"{task}_loss_physics"] = float(materialized[1 + task_index * 3]) / count
+                        row[f"{task}_loss_teacher"] = float(materialized[2 + task_index * 3]) / count
+                        row[f"{task}_loss_step"] = float(materialized[3 + task_index * 3]) / count
                     _append_metric(metrics_path, row)
                     results.append(row)
                     interval_values = {}
+                    interval_finite = torch.ones((), dtype=torch.bool, device=device)
                     interval_batches = 0
                     interval_started = time.perf_counter()
         validation = evaluate_stage2(model, registry, valid_datasets, valid_device, entity_dataset, packer, teacher_embeddings, entity_roles, data_metadata["scalers"], config, device, backbone_frozen=not backbone_trainable)

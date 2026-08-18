@@ -69,13 +69,16 @@ class ObjectEncoder(nn.Module):
             raise ValueError("ObjectEncoder entity tensor contract mismatch")
         slots = entity_cls.shape[1]
         if slots == 1:
-            legal = torch.tensor(tuple(ROLE_TO_ID.values()), device=entity_roles.device)
-            if not bool(torch.isin(entity_roles, legal).all()):
+            if entity_roles.device.type == "cpu" and not bool(
+                torch.isin(entity_roles, torch.tensor(tuple(ROLE_TO_ID.values()))).all()
+            ):
                 raise ValueError("Single object has an invalid entity role")
             residual = entity_cls[:, 0]
         elif slots == 2:
-            expected = entity_roles.new_tensor([ROLE_TO_ID["cation"], ROLE_TO_ID["anion"]]).expand_as(entity_roles)
-            if not torch.equal(entity_roles, expected):
+            if entity_roles.device.type == "cpu" and not torch.equal(
+                entity_roles,
+                torch.tensor([ROLE_TO_ID["cation"], ROLE_TO_ID["anion"]]).expand_as(entity_roles),
+            ):
                 raise ValueError("Ionic-liquid object requires ordered cation and anion")
             residual = entity_cls.mean(dim=1)
         else:
@@ -148,29 +151,27 @@ def masked_target_macro_smooth_l1_loss(predictions: torch.Tensor, targets: torch
     values = F.smooth_l1_loss(predictions, targets, reduction="none")
     counts = mask.sum(dim=0)
     valid = counts > 0
-    if not bool(valid.any()):
-        raise ValueError("Stage 2 batch has no supervised targets")
     per_target = (values * mask.to(values.dtype)).sum(dim=0) / counts.clamp_min(1).to(values.dtype)
-    return per_target[valid].mean()
+    return (per_target * valid.to(per_target.dtype)).sum() / valid.sum().clamp_min(1)
 
 
 def element_mean_smooth_l1_loss(predictions: torch.Tensor, targets: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    if predictions.shape != targets.shape or mask.shape != targets.shape or not bool(mask.all()):
-        raise ValueError("element_mean requires complete target tensors")
+    if predictions.shape != targets.shape or mask.shape != targets.shape:
+        raise ValueError("element_mean target tensor contract mismatch")
     return F.smooth_l1_loss(predictions, targets, reduction="mean")
 
 
-def molecule_equal_smooth_l1_loss(predictions: torch.Tensor, targets: torch.Tensor, mask: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
+def molecule_equal_smooth_l1_loss(
+    predictions: torch.Tensor, targets: torch.Tensor, mask: torch.Tensor,
+    atom_sample_indices: torch.Tensor, molecule_count: int,
+) -> torch.Tensor:
     if predictions.shape != targets.shape or mask.shape != targets.shape:
         raise ValueError("Atom prediction/target shapes must match")
-    losses = F.smooth_l1_loss(predictions, targets, reduction="none")
-    molecule_losses: list[torch.Tensor] = []
-    for start, end in zip(offsets[:-1].tolist(), offsets[1:].tolist(), strict=True):
-        selected = mask[start:end]
-        if not bool(selected.any()):
-            raise ValueError("Atom sample has no supervised targets")
-        molecule_losses.append(losses[start:end][selected].mean())
-    return torch.stack(molecule_losses).mean()
+    weights = mask.to(predictions.dtype)
+    losses = F.smooth_l1_loss(predictions, targets, reduction="none") * weights
+    sums = predictions.new_zeros(molecule_count).index_add_(0, atom_sample_indices, losses)
+    counts = predictions.new_zeros(molecule_count).index_add_(0, atom_sample_indices, weights)
+    return (sums / counts.clamp_min(1)).mean()
 
 
 # Backward-compatible public name; Object v3 callers select the mode explicitly.
@@ -266,19 +267,24 @@ class Stage2ObjectModel(nn.Module):
         teacher = predictions.new_zeros(()) if teacher_loss_is_zero else torch.square(student_slots - teacher_slots).mean()
         return Stage2ForwardOutput(predictions, physics, teacher, student_slots, teacher_slots)
 
-    def forward_atom_from_states(self, task: str, states: EncodedEntityStates, entity_positions: torch.Tensor, roles: torch.Tensor, object_slots: torch.Tensor, teacher_slots: torch.Tensor, targets: torch.Tensor, target_mask: torch.Tensor, offsets: torch.Tensor, *, teacher_loss_is_zero: bool = False) -> Stage2ForwardOutput:
+    def forward_atom_from_states(
+        self, task: str, states: EncodedEntityStates, entity_positions: torch.Tensor,
+        roles: torch.Tensor, object_slots: torch.Tensor, teacher_slots: torch.Tensor,
+        targets: torch.Tensor, target_mask: torch.Tensor,
+        atom_state_indices: torch.Tensor, atom_sample_indices: torch.Tensor,
+        *, teacher_loss_is_zero: bool = False,
+    ) -> Stage2ForwardOutput:
         spec = self.specs[task]
         if spec.target_level != "atom" or entity_positions.shape[1] != 1:
             raise ValueError("Atom task requires one entity slot")
         objects = self.encode_object(object_slots, roles)
-        chunks: list[torch.Tensor] = []
-        for row, (start, end) in enumerate(zip(offsets[:-1].tolist(), offsets[1:].tolist(), strict=True)):
-            atoms = states.atom_states[states.atom_batch == int(entity_positions[row, 0])]
-            if len(atoms) != end - start:
-                raise ValueError("Stage 2 atom target count does not match Stage 1 graph atoms")
-            chunks.append(self.atom_heads[task](atoms, objects[row].expand_as(atoms)))
-        predictions = torch.cat(chunks)
-        physics = molecule_equal_smooth_l1_loss(predictions, targets, target_mask, offsets)
+        predictions = self.atom_heads[task](
+            states.atom_states[atom_state_indices], objects[atom_sample_indices]
+        )
+        physics = molecule_equal_smooth_l1_loss(
+            predictions, targets, target_mask, atom_sample_indices,
+            entity_positions.shape[0],
+        )
         teacher = predictions.new_zeros(()) if teacher_loss_is_zero else torch.square(object_slots - teacher_slots).mean()
         return Stage2ForwardOutput(predictions, physics, teacher, object_slots, teacher_slots)
 

@@ -45,7 +45,8 @@ def main() -> None:
         ignored_config_sections={"preparation"},
         ignored_config_fields={
             "training.packing_workers",
-            "training.packing_prefetch_windows",
+            "training.packing_prefetch_batches",
+            "training.cuda_prefetch_batches",
             "training.log_every_batches",
         },
     )

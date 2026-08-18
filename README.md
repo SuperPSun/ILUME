@@ -69,7 +69,7 @@ python scripts/stage2/train.py \
   --output outputs/v1/stage2/base/train
 ```
 
-训练每个 epoch 完整覆盖所有任务的全部有效行，并以 deterministic randomized round-robin 交替 task batch；Object v3 强制一个 batch 对应一个 optimizer step，不支持 gradient accumulation。第一 epoch 的 object/interaction task 直接复用 teacher CLS，不运行 Stage 1；atom task仍运行冻结 Stage 1 取得 fusion atom states。后四个 epoch联合微调。Task weight 归一化后只补偿 physics loss，teacher loss保持独立。CUDA 固定使用 TF32、pinned/non-blocking transfer 与 fused AdamW。每个 epoch full validation 后保存 `checkpoint_epoch_00001.pt` 至 `checkpoint_epoch_00005.pt`，epoch 5 后额外导出不含 physics heads 的 `stage2_encoder.pt`。只允许从完整 Object v3 epoch 恢复；不生成 `best.pt` 或 `last.pt`。旧 Object v2 artifact/cache/checkpoint 不迁移，必须重新 prepare。
+训练每个 epoch 完整覆盖所有任务的全部有效行，并以 deterministic randomized round-robin 交替 task batch；Object v3 强制一个 batch 对应一个 optimizer step，不支持 gradient accumulation。第一 epoch 的 object/interaction task 直接复用 teacher CLS，不运行 Stage 1；atom task仍运行冻结 Stage 1 取得 fusion atom states。后四个 epoch联合微调。Partial charge 只去重 Stage 1 entity forward，ObjectEncoder 与 AtomHead 按 molecule sample 向量化执行；atom target 全量保持 CPU resident。Task weight 归一化后只补偿 physics loss，teacher loss保持独立。Base 使用 4 个 ordered packing worker、包含 H2D 在内的 4 个逻辑预取名额，以及单 batch CUDA lookahead；transfer stream 通过 event 交接，不做逐 batch synchronize。CUDA 固定使用 TF32、pinned/non-blocking transfer 与 fused AdamW。每个 epoch full validation 后保存 `checkpoint_epoch_00001.pt` 至 `checkpoint_epoch_00005.pt`，epoch 5 后额外导出不含 physics heads 的 `stage2_encoder.pt`。只允许从完整 Object v3 epoch 恢复；不生成 `best.pt` 或 `last.pt`。旧 Object v2 以及缺少当前 preparation/execution contract 的开发期 v3 artifact/cache/checkpoint 不迁移，必须重新 prepare。
 
 ## Stage 3
 

@@ -40,7 +40,7 @@ def test_loss_reductions_and_teacher_independence() -> None:
     assert macro.item() == pytest.approx(1.5)
     molecule = molecule_equal_smooth_l1_loss(
         torch.tensor([2.0, 2.0, 2.0]), torch.zeros(3),
-        torch.ones(3, dtype=torch.bool), torch.tensor([0, 1, 3]),
+        torch.ones(3, dtype=torch.bool), torch.tensor([0, 1, 1]), 2,
     )
     assert molecule.item() == pytest.approx(1.5)
     compensation = task_compensation_scale(0.25, 20, 4, 10)

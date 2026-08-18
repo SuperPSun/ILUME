@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import math
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
 from typing import Iterator
 
@@ -45,7 +47,8 @@ class Mol2Graph:
 class AtomMappingResult:
     charges: tuple[float, ...]
     structure_atom_count: int
-    mapping_count: int
+    mapping_status: str
+    mapping_count_lower_bound: int
     selected_mapping_rank: int
     bond_match_mode: str
     unparsed_bond_types: tuple[str, ...]
@@ -78,14 +81,13 @@ def _element(atom_name: str, atom_type: str) -> str:
     raise ValueError(f"Unsupported MOL2 element: {atom_name}/{atom_type}")
 
 
-def parse_mol2(path: str | Path) -> Mol2Graph:
-    source = Path(path)
+def parse_mol2_text(text: str, *, source: str = "<memory>") -> Mol2Graph:
     atoms: list[Mol2Atom] = []
     bonds: list[Mol2Bond] = []
     section = ""
     seen_sections: set[str] = set()
     molecule_rows: list[tuple[int, str]] = []
-    for line_number, line in enumerate(source.read_text(encoding="utf-8").splitlines(), start=1):
+    for line_number, line in enumerate(text.splitlines(), start=1):
         if line.startswith("@<TRIPOS>"):
             section = line.removeprefix("@<TRIPOS>").strip().upper()
             seen_sections.add(section)
@@ -133,6 +135,11 @@ def parse_mol2(path: str | Path) -> Mol2Graph:
     if any(bond.first not in known or bond.second not in known or bond.first == bond.second for bond in bonds):
         raise ValueError(f"MOL2 contains an invalid bond reference: {source}")
     return Mol2Graph(tuple(atoms), tuple(bonds))
+
+
+def parse_mol2(path: str | Path) -> Mol2Graph:
+    source = Path(path)
+    return parse_mol2_text(source.read_text(encoding="utf-8"), source=str(source))
 
 
 def load_structure_manifest(path: str | Path) -> dict[str, StructureManifestEntry]:
@@ -218,7 +225,7 @@ def _mapping_candidates(
         ]
         for model_index in range(model_count)
     }
-    order = sorted(range(model_count), key=lambda index: (len(candidate_sets[index]), -len(model_adjacency[index]), index))
+    order = tuple(range(model_count))
     assignment = [-1] * model_count
     used: set[int] = set()
 
@@ -272,12 +279,12 @@ def map_partial_charges(canonical_smiles: str, structure: Mol2Graph) -> AtomMapp
     }))
     model_unparsed = any(_rdkit_bond_type(bond) is None for bond in model.GetBonds())
     typed = not unparsed and not model_unparsed
-    mappings = sorted(_mapping_candidates(model, structure, typed=typed))
+    mappings = list(islice(_mapping_candidates(model, structure, typed=typed), 2))
     fallback_reason = ""
     if typed and not mappings:
         typed = False
         fallback_reason = "typed_isomorphism_failed"
-        mappings = sorted(_mapping_candidates(model, structure, typed=False))
+        mappings = list(islice(_mapping_candidates(model, structure, typed=False), 2))
     if not mappings:
         raise ValueError("No graph isomorphism between Stage 1 and MOL2 atoms")
     selected = mappings[0]
@@ -285,7 +292,8 @@ def map_partial_charges(canonical_smiles: str, structure: Mol2Graph) -> AtomMapp
     return AtomMappingResult(
         charges=charges,
         structure_atom_count=len(structure.atoms),
-        mapping_count=len(mappings),
+        mapping_status="ambiguous" if len(mappings) > 1 else "unique",
+        mapping_count_lower_bound=min(len(mappings), 2),
         selected_mapping_rank=1,
         bond_match_mode="typed" if typed else "connectivity_only",
         unparsed_bond_types=unparsed,
@@ -298,7 +306,25 @@ def map_partial_charges(canonical_smiles: str, structure: Mol2Graph) -> AtomMapp
     )
 
 
+def load_verify_parse_and_map(
+    entry: StructureManifestEntry, canonical_smiles: str,
+) -> AtomMappingResult:
+    payload = entry.path.read_bytes()
+    if len(payload) != entry.size_bytes:
+        raise ValueError(f"MOL2 size mismatch: {entry.mol_id}")
+    if hashlib.sha256(payload).hexdigest() != entry.sha256:
+        raise ValueError(f"MOL2 hash mismatch: {entry.mol_id}")
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError(f"MOL2 is not valid UTF-8: {entry.mol_id}") from error
+    return map_partial_charges(
+        canonical_smiles, parse_mol2_text(text, source=str(entry.path))
+    )
+
+
 __all__ = [
     "AtomMappingResult", "Mol2Graph", "StructureManifestEntry",
-    "load_structure_manifest", "map_partial_charges", "parse_mol2", "verify_structure",
+    "load_structure_manifest", "load_verify_parse_and_map", "map_partial_charges",
+    "parse_mol2", "parse_mol2_text", "verify_structure",
 ]

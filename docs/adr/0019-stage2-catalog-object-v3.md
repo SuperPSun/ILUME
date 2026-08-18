@@ -20,10 +20,22 @@ Data artifact、teacher cache 和 checkpoint 统一为 v3，旧 v2 明确拒绝�
 
 CUDA 执行继续固定 TF32、fused AdamW、三组学习率、bf16、梯度裁剪和 full validation；不引入 PCGrad、MoE、curriculum、early stopping、best/last 或 step checkpoint。
 
+### Execution efficiency refinements
+
+执行优化不得改变 task batch membership、round-robin 顺序、loss、teacher 语义或 optimizer step 顺序。Stage 1 的 `encode()` 直接读取 fusion CLS，只有 `encode_states()` gather fusion atom states；两者仍拒绝 masked batch，并在 eval 下产生相同 entity CLS。
+
+Partial charge 的 CPU packer 只对 Stage 1 entity forward 去重。它发布 molecule offsets、sample-atom 到 unique Stage 1 atom 的 index，以及 sample-atom 到 molecule row 的 index；ObjectEncoder 按 molecule sample 批量运行，AtomHead 按全部 sample atom 单次运行。因此相同 entity 的多个 `mol_id` 共享 Stage 1 states，但不共享 ObjectEncoder/AtomHead 的 sample-level dropout。分子等权 loss 使用 device-side indexed reduction，不在 hot path 逐 molecule 切 ragged tensor。全量 atom target 保持 CPU resident，只有当前 batch 使用 pinned memory 传入 device。
+
+正式 Base 的 execution 参数为 `packing_workers=4`、`packing_prefetch_batches=4`、`cuda_prefetch_batches=1`。ordered CPU packer 的四个逻辑 batch 名额包含正在 H2D 的 batch；completion order 不改变 descriptor order。CUDA 只使用一个 dedicated transfer stream 和一个 lookahead batch，以 event 连接 default stream，不做 per-batch synchronize；CPU 路径完全旁路。训练 loss 与 finite flag 在 device 上累计，只在 logging interval 或 epoch 末一次 materialize；non-finite 最多延迟一个 interval 报错，并且该 epoch 不发布 checkpoint。Validation 复用相同 prefetch 路径及 device-side float64 accumulator，不建立 CLS 或 atom-state cache。
+
+Partial-charge mapping 使用 `spawn` ProcessPool，并保持最多 `2 * workers` 个 outstanding work item；每个 worker 只读取一次 MOL2 bytes，并完成 size/SHA、UTF-8、parse 与 mapping，返回纯 Python/NumPy payload。Parent 按 task、split、source row 顺序消费结果，随后才启动 entity feature pool。Graph DFS 固定按 model atom index 和升序 structure candidate 搜索；第一解即词典序最小解，探测到第二解即停止，并以 `unique|ambiguous` 和 `mapping_count_lower_bound=1|2` 审计。
+
+上述 execution 参数不进入 experiment hash，恢复时允许变化，但 checkpoint 记录实际值作为 provenance。`cuda_prefetch_batches` 目前只接受 1。Data/checkpoint 保持 format v3、encoder 保持 format v1；data signature 额外绑定 preparation contract version，缺少该合同的开发期 v3 artifact 必须重新 prepare。明确不引入 compile、gradient checkpointing、accumulation、batch autotune、OOM fallback、bucketing、多 batch GPU queue或异步 checkpoint。
+
 ## 理由
 
 Catalog、数据语义、模型派生维度和训练策略分层后，新增已有结构语义的 simulation task 不再要求修改 Python 白名单，也不会让同名 target 跨任务共享 scaler。Atom supervision 复用 Stage 1 已有 fusion representation，同时保持 reconstruction head 与未来 Stage 3 表示资产的边界。
 
 ## 后果
 
-正式运行前必须重新执行 Stage 2 prepare 与 teacher cache；所有 Object v2 artifact/cache/checkpoint 都不可复用。正式 Base 当前包含九个 Stage 2 simulation task。Stage 3 只能在后续专门迁移完成后消费 `stage2_encoder.pt`。
+正式运行前必须重新执行 Stage 2 prepare 与 teacher cache；所有 Object v2 artifact/cache/checkpoint，以及缺少当前 preparation/execution contract 的开发期 Object v3 输出，都不可复用。正式 Base 当前包含九个 Stage 2 simulation task。Stage 3 只能在后续专门迁移完成后消费 `stage2_encoder.pt`。

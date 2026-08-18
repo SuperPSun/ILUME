@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import random
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -14,17 +15,21 @@ from rdkit import rdBase
 from common.io import sha256_file
 from stage1.data import MultimodalBatch
 from stage1.masking import MultimodalPacker
+from stage1.features import ROLE_TO_ID
 from .registry import Stage2Registry
 
 
 STAGE2_ARTIFACT_VERSION = 3
 STAGE2_ARTIFACT_KIND = "ilume_stage2_object_data"
+STAGE2_PREPARATION_CONTRACT_VERSION = 2
 
 
 def _load_metadata(artifact_dir: Path) -> dict[str, Any]:
     metadata = json.loads((artifact_dir / "metadata.json").read_text(encoding="utf-8"))
     if metadata.get("format_version") != STAGE2_ARTIFACT_VERSION or metadata.get("kind") != STAGE2_ARTIFACT_KIND:
         raise ValueError("Unsupported Stage 2 object data artifact; rerun prepare for Object v3")
+    if metadata.get("preparation_contract_version") != STAGE2_PREPARATION_CONTRACT_VERSION:
+        raise ValueError("Stage 2 artifact predates the Object v3 efficiency contract; rerun prepare")
     return metadata
 
 
@@ -115,6 +120,8 @@ class Stage2TaskDataset:
                 raise ValueError("Stage 2 object target tensor contract mismatch")
             if split == "valid" and self.raw_targets is None:
                 raise ValueError("Stage 2 validation object targets require raw values")
+            if self.target_mask.dtype != torch.bool or not torch.isfinite(self.targets).all():
+                raise ValueError("Stage 2 normalized object targets/mask are invalid")
         else:
             if self.atom_target_values is None or self.atom_target_offsets is None or self.atom_target_mask is None:
                 raise ValueError("Stage 2 atom target tensor contract mismatch")
@@ -122,6 +129,18 @@ class Stage2TaskDataset:
                 raise ValueError("Stage 2 atom offsets shape mismatch")
             if int(self.atom_target_offsets[-1]) != len(self.atom_target_values) or self.atom_target_mask.shape != self.atom_target_values.shape:
                 raise ValueError("Stage 2 ragged atom target contract mismatch")
+            if self.atom_target_mask.dtype != torch.bool or not torch.isfinite(self.atom_target_values).all():
+                raise ValueError("Stage 2 normalized atom targets/mask are invalid")
+            if int(self.atom_target_offsets[0]) != 0 or not bool(
+                (self.atom_target_offsets[1:] >= self.atom_target_offsets[:-1]).all()
+            ):
+                raise ValueError("Stage 2 atom offsets must be ordered from zero")
+            for start, end in zip(
+                self.atom_target_offsets[:-1].tolist(),
+                self.atom_target_offsets[1:].tolist(), strict=True,
+            ):
+                if start == end or not bool(self.atom_target_mask[start:end].any()):
+                    raise ValueError("Stage 2 atom sample requires a supervised atom")
             if len(self.mol_ids) != len(self.entity_indices):
                 raise ValueError("Stage 2 atom mol_id count mismatch")
             if split == "valid" and self.raw_atom_target_values is None:
@@ -140,10 +159,6 @@ class Stage2DeviceTaskData:
     targets: torch.Tensor | None
     target_mask: torch.Tensor | None
     raw_targets: torch.Tensor | None
-    atom_target_values: torch.Tensor | None
-    atom_target_offsets: torch.Tensor | None
-    atom_target_mask: torch.Tensor | None
-    raw_atom_target_values: torch.Tensor | None
 
     @classmethod
     def from_dataset(cls, dataset: Stage2TaskDataset, device: torch.device) -> "Stage2DeviceTaskData":
@@ -151,8 +166,6 @@ class Stage2DeviceTaskData:
         return cls(
             entity_indices=dataset.entity_indices.to(device), conditions=dataset.conditions.to(device),
             targets=move(dataset.targets), target_mask=move(dataset.target_mask), raw_targets=move(dataset.raw_targets),
-            atom_target_values=move(dataset.atom_target_values), atom_target_offsets=move(dataset.atom_target_offsets),
-            atom_target_mask=move(dataset.atom_target_mask), raw_atom_target_values=move(dataset.raw_atom_target_values),
         )
 
 
@@ -163,43 +176,131 @@ class Stage2BatchDescriptor:
 
 
 @dataclass(frozen=True)
-class PackedStage2Window:
-    descriptors: tuple[Stage2BatchDescriptor, ...]
-    entities: MultimodalBatch
-    unique_entity_ids: torch.Tensor
-    entity_positions: tuple[torch.Tensor, ...]
+class PackedAtomTargets:
+    values: torch.Tensor
+    mask: torch.Tensor
+    raw_values: torch.Tensor | None
+    molecule_offsets: torch.Tensor
+    atom_state_indices: torch.Tensor
+    atom_sample_indices: torch.Tensor
 
-    def pin_memory(self) -> "PackedStage2Window":
-        return PackedStage2Window(
-            self.descriptors, self.entities.pin_memory(), self.unique_entity_ids.pin_memory(),
-            tuple(value.pin_memory() for value in self.entity_positions),
+    def pin_memory(self) -> "PackedAtomTargets":
+        return PackedAtomTargets(
+            self.values.pin_memory(), self.mask.pin_memory(),
+            None if self.raw_values is None else self.raw_values.pin_memory(),
+            self.molecule_offsets.pin_memory(), self.atom_state_indices.pin_memory(),
+            self.atom_sample_indices.pin_memory(),
+        )
+
+    def to(self, device: torch.device, *, non_blocking: bool) -> "PackedAtomTargets":
+        move = lambda value: None if value is None else value.to(device, non_blocking=non_blocking)
+        return PackedAtomTargets(
+            self.values.to(device, non_blocking=non_blocking),
+            self.mask.to(device, non_blocking=non_blocking), move(self.raw_values),
+            self.molecule_offsets.to(device, non_blocking=non_blocking),
+            self.atom_state_indices.to(device, non_blocking=non_blocking),
+            self.atom_sample_indices.to(device, non_blocking=non_blocking),
         )
 
 
-def pack_stage2_window(
-    descriptors: Sequence[Stage2BatchDescriptor], task_datasets: dict[str, Stage2TaskDataset],
-    entity_dataset: Stage2EntityDataset, packer: MultimodalPacker, *, pin_memory: bool,
-) -> PackedStage2Window:
-    window = tuple(descriptors)
-    if not window:
-        raise ValueError("Stage 2 packing window cannot be empty")
+@dataclass(frozen=True)
+class PackedStage2Batch:
+    descriptor: Stage2BatchDescriptor
+    row_indices: torch.Tensor
+    entities: MultimodalBatch | None
+    unique_entity_ids: torch.Tensor | None
+    entity_positions: torch.Tensor | None
+    atom_targets: PackedAtomTargets | None
+
+    def pin_memory(self) -> "PackedStage2Batch":
+        return PackedStage2Batch(
+            self.descriptor, self.row_indices.pin_memory(),
+            None if self.entities is None else self.entities.pin_memory(),
+            None if self.unique_entity_ids is None else self.unique_entity_ids.pin_memory(),
+            None if self.entity_positions is None else self.entity_positions.pin_memory(),
+            None if self.atom_targets is None else self.atom_targets.pin_memory(),
+        )
+
+    def to(self, device: torch.device, *, non_blocking: bool) -> "PackedStage2Batch":
+        return PackedStage2Batch(
+            self.descriptor, self.row_indices.to(device, non_blocking=non_blocking),
+            None if self.entities is None else self.entities.to(device, non_blocking=non_blocking),
+            None if self.unique_entity_ids is None else self.unique_entity_ids.to(device, non_blocking=non_blocking),
+            None if self.entity_positions is None else self.entity_positions.to(device, non_blocking=non_blocking),
+            None if self.atom_targets is None else self.atom_targets.to(device, non_blocking=non_blocking),
+        )
+
+
+def _pack_atom_targets(
+    dataset: Stage2TaskDataset, descriptor: Stage2BatchDescriptor,
+    entities: MultimodalBatch, entity_positions: torch.Tensor, *, include_raw: bool,
+) -> PackedAtomTargets:
+    if dataset.atom_target_values is None or dataset.atom_target_offsets is None or dataset.atom_target_mask is None:
+        raise ValueError("Missing Stage 2 atom target store")
+    if entity_positions.shape[1] != 1:
+        raise ValueError("Atom property batch requires one entity slot")
+    counts = torch.bincount(entities.graphs.atom_batch, minlength=len(entities.sample_ids))
+    unique_offsets = torch.cat((torch.zeros(1, dtype=torch.long), counts.cumsum(0)))
+    values: list[torch.Tensor] = []
+    masks: list[torch.Tensor] = []
+    raw_values: list[torch.Tensor] = []
+    state_indices: list[torch.Tensor] = []
+    lengths: list[int] = []
+    for sample_row, artifact_row in enumerate(descriptor.indices.tolist()):
+        target_start = int(dataset.atom_target_offsets[artifact_row])
+        target_end = int(dataset.atom_target_offsets[artifact_row + 1])
+        local_entity = int(entity_positions[sample_row, 0])
+        atom_start = int(unique_offsets[local_entity])
+        atom_end = int(unique_offsets[local_entity + 1])
+        if target_end - target_start != atom_end - atom_start:
+            raise ValueError("Stage 2 atom target count does not match packed Stage 1 atoms")
+        values.append(dataset.atom_target_values[target_start:target_end])
+        masks.append(dataset.atom_target_mask[target_start:target_end])
+        if include_raw:
+            if dataset.raw_atom_target_values is None:
+                raise ValueError("Stage 2 validation atom batch requires raw targets")
+            raw_values.append(dataset.raw_atom_target_values[target_start:target_end])
+        state_indices.append(torch.arange(atom_start, atom_end, dtype=torch.long))
+        lengths.append(target_end - target_start)
+    molecule_offsets = torch.cat((torch.zeros(1, dtype=torch.long), torch.tensor(lengths).cumsum(0)))
+    atom_sample_indices = torch.repeat_interleave(torch.arange(len(lengths)), torch.tensor(lengths))
+    return PackedAtomTargets(
+        torch.cat(values), torch.cat(masks), torch.cat(raw_values) if include_raw else None,
+        molecule_offsets, torch.cat(state_indices), atom_sample_indices,
+    )
+
+
+def pack_stage2_batch(
+    descriptor: Stage2BatchDescriptor, task_datasets: dict[str, Stage2TaskDataset],
+    entity_dataset: Stage2EntityDataset, packer: MultimodalPacker, *,
+    needs_entities: bool, include_raw_atom_targets: bool, pin_memory: bool,
+) -> PackedStage2Batch:
+    if not needs_entities:
+        result = PackedStage2Batch(descriptor, descriptor.indices, None, None, None, None)
+        return result.pin_memory() if pin_memory else result
+    dataset = task_datasets[descriptor.task]
     unique_ids: list[int] = []
     local_by_global: dict[int, int] = {}
-    positions: list[torch.Tensor] = []
-    for descriptor in window:
-        slots = task_datasets[descriptor.task].entity_indices[descriptor.indices]
-        local_values: list[int] = []
-        for value in slots.flatten().tolist():
-            if value not in local_by_global:
-                local_by_global[value] = len(unique_ids)
-                unique_ids.append(value)
-            local_values.append(local_by_global[value])
-        positions.append(torch.tensor(local_values, dtype=torch.long).reshape_as(slots))
+    slots = dataset.entity_indices[descriptor.indices]
+    local_values: list[int] = []
+    for value in slots.flatten().tolist():
+        if value not in local_by_global:
+            local_by_global[value] = len(unique_ids)
+            unique_ids.append(value)
+        local_values.append(local_by_global[value])
+    positions = torch.tensor(local_values, dtype=torch.long).reshape_as(slots)
     try:
         entities = packer([entity_dataset[index] for index in unique_ids])
     except BaseException as error:
-        raise RuntimeError(f"Stage 2 packer failed for tasks={','.join(value.task for value in window)}") from error
-    result = PackedStage2Window(window, entities, torch.tensor(unique_ids, dtype=torch.long), tuple(positions))
+        raise RuntimeError(f"Stage 2 packer failed for task={descriptor.task}") from error
+    atom_targets = (
+        _pack_atom_targets(dataset, descriptor, entities, positions, include_raw=include_raw_atom_targets)
+        if dataset.spec.target_level == "atom" else None
+    )
+    result = PackedStage2Batch(
+        descriptor, descriptor.indices, entities, torch.tensor(unique_ids, dtype=torch.long),
+        positions, atom_targets,
+    )
     return result.pin_memory() if pin_memory else result
 
 
@@ -207,6 +308,27 @@ def task_batch_counts(datasets: dict[str, Stage2TaskDataset], batch_size: int) -
     if batch_size <= 0:
         raise ValueError("Stage 2 batch size must be positive")
     return {task: math.ceil(len(dataset) / batch_size) for task, dataset in sorted(datasets.items())}
+
+
+def validate_runtime_task_contract(
+    dataset: Stage2TaskDataset, entity_dataset: Stage2EntityDataset,
+    *, loss_mode: str,
+) -> None:
+    expected_slots = 2 if dataset.spec.topology in {"ionic_liquid", "interaction"} else 1
+    if dataset.entity_indices.ndim != 2 or dataset.entity_indices.shape[1] != expected_slots:
+        raise ValueError(f"Stage 2 task topology mismatch: {dataset.task}/{dataset.split}")
+    role_ids = torch.tensor(
+        [int(entry["role_id"]) for entry in entity_dataset.entries], dtype=torch.long
+    )[dataset.entity_indices]
+    for slot, policy in enumerate(dataset.spec.role_policy):
+        if policy in ROLE_TO_ID and not bool((role_ids[:, slot] == ROLE_TO_ID[policy]).all()):
+            raise ValueError(f"Stage 2 task role mismatch: {dataset.task}/{dataset.split}")
+    if dataset.spec.target_level == "object":
+        assert dataset.target_mask is not None
+        if loss_mode == "element_mean" and not bool(dataset.target_mask.all()):
+            raise ValueError(f"Stage 2 element-mean task has missing targets: {dataset.task}/{dataset.split}")
+        if loss_mode == "masked_target_macro" and not bool(dataset.target_mask.any(dim=1).all()):
+            raise ValueError(f"Stage 2 masked task has an unsupervised row: {dataset.task}/{dataset.split}")
 
 
 def _seed(seed: int, epoch: int, task: str, purpose: str) -> int:
@@ -219,13 +341,16 @@ def epoch_batch_schedule(
 ) -> list[Stage2BatchDescriptor]:
     if epoch <= 0:
         raise ValueError("Stage 2 epoch must be positive")
-    queues: dict[str, list[Stage2BatchDescriptor]] = {}
+    queues: dict[str, deque[Stage2BatchDescriptor]] = {}
     for task, dataset in sorted(datasets.items()):
         if len(dataset) == 0:
             raise ValueError(f"Stage 2 training dataset is empty: {task}")
         generator = torch.Generator().manual_seed(_seed(seed, epoch, task, "samples"))
         order = torch.randperm(len(dataset), generator=generator)
-        queues[task] = [Stage2BatchDescriptor(task, order[start:start + batch_size]) for start in range(0, len(dataset), batch_size)]
+        queues[task] = deque(
+            Stage2BatchDescriptor(task, order[start:start + batch_size])
+            for start in range(0, len(dataset), batch_size)
+        )
     schedule: list[Stage2BatchDescriptor] = []
     round_index = 0
     while queues:
@@ -234,15 +359,16 @@ def epoch_batch_schedule(
         if len(active) > 1 and schedule and active[0] == schedule[-1].task:
             active = active[1:] + active[:1]
         for task in active:
-            schedule.append(queues[task].pop(0))
+            schedule.append(queues[task].popleft())
         queues = {task: queue for task, queue in queues.items() if queue}
         round_index += 1
     return schedule
 
 
 __all__ = [
-    "PackedStage2Window", "STAGE2_ARTIFACT_KIND", "STAGE2_ARTIFACT_VERSION",
+    "PackedAtomTargets", "PackedStage2Batch", "STAGE2_ARTIFACT_KIND", "STAGE2_ARTIFACT_VERSION",
+    "STAGE2_PREPARATION_CONTRACT_VERSION",
     "Stage2BatchDescriptor", "Stage2DeviceTaskData", "Stage2EntityDataset",
     "Stage2TaskDataset", "epoch_batch_schedule", "load_artifact_registry",
-    "pack_stage2_window", "task_batch_counts",
+    "pack_stage2_batch", "task_batch_counts", "validate_runtime_task_contract",
 ]
