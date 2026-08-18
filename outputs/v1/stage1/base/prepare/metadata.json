@@ -6,11 +6,21 @@
   "config_path": "configs/v1/stage1/base.yaml",
   "data_metadata": "data/stage1/metadata.json",
   "seed": 42,
-  "repository_commit": "457e9b4ef8d1337746a0692f1ec2329a54a8a633",
+  "attempt_id": "d375ffcf08cc4fcda4356c894be0e949",
+  "repository_commit": "6313e76f5c123463fd5c7db4ff22d9d12caa661b",
   "repository_dirty": true,
   "python_version": "3.12.12",
   "pytorch_version": "2.9.0+cu128",
   "cuda_version": "12.8",
   "rdkit_version": "2025.09.5",
-  "gpu_model": "NVIDIA GeForce RTX 4090"
+  "gpu_model": "NVIDIA GeForce RTX 4090",
+  "gpu_capability": [
+    8,
+    9
+  ],
+  "cudnn_version": 91002,
+  "float32_matmul_precision": "none",
+  "cuda_matmul_fp32_precision": "none",
+  "cudnn_conv_fp32_precision": "tf32",
+  "deterministic_algorithms": false
 }
