@@ -1,1 +1,1 @@
-"""Stage 2 universal molecule and ionic-liquid object modeling."""
+"""Catalog-driven Stage 2 physics representation training."""

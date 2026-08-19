@@ -1,5 +1,6 @@
 data:
-  stage2_dir: data/stage2
+  data_root: data
+  task_catalog_path: data/task_catalog.csv
   pretrain_artifacts_dir: outputs/v1/stage1/base/prepare/artifacts
   artifacts_dir: outputs/v1/stage2/base/prepare/artifacts
   entity_shard_size: 4096
@@ -16,11 +17,17 @@ model:
 loss:
   lambda_teacher: 0.10
   task_weights:
-    simulated_qm_elec_hf: 0.25
-    density: 0.25
-    heat_capacity: 0.20
-    thermal_expansion: 0.20
-    transfer_organic: 0.10
+    simulation/density: 1.0
+    simulation/heat_capacity: 0.8
+    simulation/heat_of_vaporization: 1.0
+    simulation/partial_atomic_charge: 1.0
+    simulation/pbe_tzvp_anion_orbitals: 1.0
+    simulation/pbe_tzvp_cation_orbitals: 1.0
+    simulation/simulated_qm_elec_hf: 1.0
+    simulation/thermal_expansion: 0.8
+    simulation/transfer_organic: 0.5
+  task_loss_modes:
+    simulation/simulated_qm_elec_hf: masked_target_macro
 training:
   batch_size: 256
   gradient_accumulation_steps: 1
@@ -32,8 +39,9 @@ training:
   weight_decay: 0.01
   warmup_fraction: 0.05
   max_grad_norm: 1.0
-  packing_workers: 8
-  packing_prefetch_windows: 2
+  packing_workers: 4
+  packing_prefetch_batches: 4
+  cuda_prefetch_batches: 1
   log_every_batches: 50
   device: auto
   amp_dtype: bf16

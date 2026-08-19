@@ -1,6 +1,6 @@
 # ILUME
 
-ILUME 以四模态掩码预训练（Stage 1）、五任务物性 Object 建模（Stage 2）和双域 27 任务训练（Stage 3）组成科研 pipeline。仓库按 Stage 组织代码；现役科研合同由正式 YAML 与 [ADR](docs/adr/README.md) 共同定义。
+ILUME 以四模态掩码预训练（Stage 1）、catalog 驱动的九任务 physics representation 训练（Stage 2）和双域 27 任务训练（Stage 3）组成科研 pipeline。仓库按 Stage 组织代码；现役科研合同由正式 YAML 与 [ADR](docs/adr/README.md) 共同定义。
 
 ## Installation
 
@@ -57,7 +57,7 @@ python scripts/stage1/train.py \
 
 ## Stage 2
 
-Stage 2 只保留一个正式 Base，以共享 ObjectEncoder 建模 molecule 与 IL，并从 Stage 1 Base 的 v2 checkpoint 准备内容寻址的 FP32 entity teacher cache。Object v2 prepare 单次扫描 CSV，并行完成确定性的 entity feature/QC，直接发布 train-ready normalized tensor；train 启动时严格校验并 preload 全部 entity shard：
+Stage 2 只保留一个正式 Base。Object v3 从 `task_catalog.csv` 动态加载九个 simulation task，以共享 ObjectEncoder 建模 single entity、ionic liquid 与 interaction，并从 Stage 1 Base 的 v2 checkpoint 准备内容寻址的 FP32 entity teacher cache。Prepared data只绑定数据、Stage 1 feature、registry与tensor contract；teacher cache只绑定Stage 1 encoder与entity artifact。ObjectEncoder layers、FFN或dropout变化不要求重新prepare或提取teacher，但不同模型配置仍不可互相resume。Prepare 发布 task-local normalized object/atom tensor；partial charge 通过可审计的 typed/fallback MOL2 graph mapping 对齐到 Stage 1 atom ordering：
 
 ```bash
 python scripts/stage2/prepare.py \
@@ -69,11 +69,13 @@ python scripts/stage2/train.py \
   --output outputs/v1/stage2/base/train
 ```
 
-训练每个 epoch 完整覆盖五个任务的全部有效行。第一 epoch 直接复用 GPU teacher embedding，不运行 packer 或 Stage 1 backbone；后四个 epoch 在 accumulation window 内跨任务去重，只执行一次 pack/backbone encode。CUDA 固定使用 TF32、pinned/non-blocking transfer 与 fused AdamW。每个 epoch 在 full validation 后保存 `checkpoint_epoch_00001.pt` 至 `checkpoint_epoch_00005.pt`。只允许从完整 Object v2 epoch 恢复，例如增加 `--resume outputs/v1/stage2/base/train/checkpoint_epoch_00003.pt`；不生成 `best.pt` 或 `last.pt`。旧 Object v1 artifact/cache/checkpoint 不迁移，必须重新 prepare。
+训练每个 epoch 完整覆盖所有任务的全部有效行，并以 deterministic randomized round-robin 交替 task batch；Object v3 强制一个 batch 对应一个 optimizer step，不支持 gradient accumulation。第一 epoch 的 object/interaction task 直接复用 teacher CLS，不运行 Stage 1；atom task仍运行冻结 Stage 1 取得 fusion atom states。后四个 epoch联合微调。Partial charge 只去重 Stage 1 entity forward，ObjectEncoder 与 AtomHead 按 molecule sample 向量化执行；atom target 全量保持 CPU resident。Task weight 归一化后只补偿 physics loss，teacher loss保持独立。Base 使用 4 个 ordered packing worker、包含 H2D 在内的 4 个逻辑预取名额，以及单 batch CUDA lookahead；transfer stream 通过 event 交接，不做逐 batch synchronize。CUDA 固定使用 TF32、pinned/non-blocking transfer 与 fused AdamW。每个 epoch full validation 后保存 `checkpoint_epoch_00001.pt` 至 `checkpoint_epoch_00005.pt`，epoch 5 后额外导出不含 physics heads 的 `stage2_encoder.pt`。只允许从完整 Object v3 epoch 恢复；不生成 `best.pt` 或 `last.pt`。旧 Object v2 以及缺少当前 preparation/extraction contract 的开发期 v3 artifact/cache/checkpoint 不迁移，必须重新 prepare。
+
+截至 2026-08-19，正式 Base 已在 `outputs/v1/stage2/base` 完成 preparation contract 3、teacher extraction contract 2 和五个 epoch 训练，并导出 `stage2_encoder.pt`。该次 prepare/train metadata 均记录 `repository_dirty: true`，因此产物可作为当前正式运行结果使用，但不得表述为由单一 clean commit 直接复现。
 
 ## Stage 3
 
-Stage 3 到新 Stage 2 object v2 的表示迁移尚未完成。当前 `scripts/stage3/prepare.py` 会在写入 artifact 前明确拒绝运行；以下历史命令暂不可用于新 Stage 2 checkpoint，待 neutral-pair 与 single topology 合同另行确定后恢复：
+Stage 3 到 Stage 2 Object v3 encoder artifact 的表示迁移尚未完成。当前 `scripts/stage3/prepare.py` 会在写入 artifact 前明确拒绝 Object v3 checkpoint 与 `stage2_encoder.pt`；以下历史命令暂不可用，待独立迁移完成后恢复：
 
 ```bash
 python scripts/stage3/prepare.py \

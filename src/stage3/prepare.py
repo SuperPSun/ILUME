@@ -13,8 +13,10 @@ from .config import Stage3Config
 from .data import STAGE3_ARTIFACT_VERSION, source_hashes
 
 
-STAGE2_OBJECT_CHECKPOINT_VERSION = 2
+STAGE2_OBJECT_CHECKPOINT_VERSION = 3
 STAGE2_OBJECT_CHECKPOINT_KIND = "ilume_stage2_object"
+STAGE2_ENCODER_VERSION = 1
+STAGE2_ENCODER_KIND = "ilume_stage2_encoder"
 STAGE3_MIGRATION_MESSAGE = "Stage 3 object contract migration pending"
 
 
@@ -30,6 +32,9 @@ def load_frozen_stage2(
     if (
         checkpoint.get("format_version") == STAGE2_OBJECT_CHECKPOINT_VERSION
         and checkpoint.get("kind") == STAGE2_OBJECT_CHECKPOINT_KIND
+    ) or (
+        checkpoint.get("format_version") == STAGE2_ENCODER_VERSION
+        and checkpoint.get("kind") == STAGE2_ENCODER_KIND
     ):
         raise ValueError(STAGE3_MIGRATION_MESSAGE)
     raise ValueError("Stage 3 rejects legacy Stage 2 checkpoints")
