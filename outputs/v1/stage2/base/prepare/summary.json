@@ -1,0 +1,193 @@
+{
+  "format_version": 3,
+  "kind": "ilume_stage2_object_teacher",
+  "identity": "63be621381bbab5517f9037c63a602a24ccaf5635b898f7b6c26db730cce4b83",
+  "identity_payload": {
+    "extraction_contract_version": 1,
+    "entity_artifact_hash": "3d109d16ea84a81d4fa133d8de27cfdc706b17347ca9c097fef0742f4795b075",
+    "encoding_state_hash": "4d2e84b8650fc9c4be56662e4751441f2e9ec9093097302807a9d818c7482d57",
+    "model_contract": {
+      "d_model": 512,
+      "n_heads": 8,
+      "object_encoder": {
+        "layers": 2,
+        "ffn_dim": 1024,
+        "dropout": 0.1
+      },
+      "role_to_id": {
+        "cation": 0,
+        "anion": 1,
+        "neutral": 2
+      },
+      "tasks": {
+        "simulation/density": {
+          "topology": "ionic_liquid",
+          "head_family": "object",
+          "condition_dim": 1,
+          "input_dim": 513,
+          "output_dim": 1
+        },
+        "simulation/heat_capacity": {
+          "topology": "ionic_liquid",
+          "head_family": "object",
+          "condition_dim": 1,
+          "input_dim": 513,
+          "output_dim": 1
+        },
+        "simulation/heat_of_vaporization": {
+          "topology": "ionic_liquid",
+          "head_family": "object",
+          "condition_dim": 1,
+          "input_dim": 513,
+          "output_dim": 1
+        },
+        "simulation/partial_atomic_charge": {
+          "topology": "single_entity",
+          "head_family": "atom",
+          "condition_dim": 0,
+          "input_dim": 512,
+          "output_dim": 1,
+          "atom_dim": 512,
+          "object_projection_dim": 512
+        },
+        "simulation/pbe_tzvp_anion_orbitals": {
+          "topology": "single_entity",
+          "head_family": "object",
+          "condition_dim": 0,
+          "input_dim": 512,
+          "output_dim": 2
+        },
+        "simulation/pbe_tzvp_cation_orbitals": {
+          "topology": "single_entity",
+          "head_family": "object",
+          "condition_dim": 0,
+          "input_dim": 512,
+          "output_dim": 2
+        },
+        "simulation/simulated_qm_elec_hf": {
+          "topology": "single_entity",
+          "head_family": "object",
+          "condition_dim": 0,
+          "input_dim": 512,
+          "output_dim": 11
+        },
+        "simulation/thermal_expansion": {
+          "topology": "ionic_liquid",
+          "head_family": "object",
+          "condition_dim": 1,
+          "input_dim": 513,
+          "output_dim": 1
+        },
+        "simulation/transfer_organic": {
+          "topology": "interaction",
+          "head_family": "interaction",
+          "condition_dim": 0,
+          "input_dim": 512,
+          "output_dim": 1
+        }
+      }
+    },
+    "dtype": "float32",
+    "math_contract": {
+      "device_type": "cuda",
+      "torch_version": "2.9.0+cu128",
+      "cuda_version": "12.8",
+      "teacher_dtype": "float32",
+      "fp32_matmul_precision": "tf32",
+      "cudnn_conv_fp32_precision": "tf32",
+      "cuda_capability": [
+        8,
+        9
+      ]
+    }
+  },
+  "checkpoint": "outputs/v1/stage1/base/train/checkpoint_epoch_00005.pt",
+  "pretrain_artifact_hash": "aaba3d0bc9cea67d440baab8e2e61ed3c2e58c050862ff1334a99da49097621b",
+  "entity_artifact_hash": "3d109d16ea84a81d4fa133d8de27cfdc706b17347ca9c097fef0742f4795b075",
+  "entity_count": 54143,
+  "embedding_dim": 512,
+  "model_contract": {
+    "d_model": 512,
+    "n_heads": 8,
+    "object_encoder": {
+      "layers": 2,
+      "ffn_dim": 1024,
+      "dropout": 0.1
+    },
+    "role_to_id": {
+      "cation": 0,
+      "anion": 1,
+      "neutral": 2
+    },
+    "tasks": {
+      "simulation/density": {
+        "topology": "ionic_liquid",
+        "head_family": "object",
+        "condition_dim": 1,
+        "input_dim": 513,
+        "output_dim": 1
+      },
+      "simulation/heat_capacity": {
+        "topology": "ionic_liquid",
+        "head_family": "object",
+        "condition_dim": 1,
+        "input_dim": 513,
+        "output_dim": 1
+      },
+      "simulation/heat_of_vaporization": {
+        "topology": "ionic_liquid",
+        "head_family": "object",
+        "condition_dim": 1,
+        "input_dim": 513,
+        "output_dim": 1
+      },
+      "simulation/partial_atomic_charge": {
+        "topology": "single_entity",
+        "head_family": "atom",
+        "condition_dim": 0,
+        "input_dim": 512,
+        "output_dim": 1,
+        "atom_dim": 512,
+        "object_projection_dim": 512
+      },
+      "simulation/pbe_tzvp_anion_orbitals": {
+        "topology": "single_entity",
+        "head_family": "object",
+        "condition_dim": 0,
+        "input_dim": 512,
+        "output_dim": 2
+      },
+      "simulation/pbe_tzvp_cation_orbitals": {
+        "topology": "single_entity",
+        "head_family": "object",
+        "condition_dim": 0,
+        "input_dim": 512,
+        "output_dim": 2
+      },
+      "simulation/simulated_qm_elec_hf": {
+        "topology": "single_entity",
+        "head_family": "object",
+        "condition_dim": 0,
+        "input_dim": 512,
+        "output_dim": 11
+      },
+      "simulation/thermal_expansion": {
+        "topology": "ionic_liquid",
+        "head_family": "object",
+        "condition_dim": 1,
+        "input_dim": 513,
+        "output_dim": 1
+      },
+      "simulation/transfer_organic": {
+        "topology": "interaction",
+        "head_family": "interaction",
+        "condition_dim": 0,
+        "input_dim": 512,
+        "output_dim": 1
+      }
+    }
+  },
+  "dtype": "float32",
+  "embeddings_hash": "0a2d5451a915b451821803ef08445ec4a222472eefd3a3e98565a476110a55e8",
+  "cache_reused": false
+}

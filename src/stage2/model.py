@@ -167,11 +167,14 @@ def molecule_equal_smooth_l1_loss(
 ) -> torch.Tensor:
     if predictions.shape != targets.shape or mask.shape != targets.shape:
         raise ValueError("Atom prediction/target shapes must match")
-    weights = mask.to(predictions.dtype)
-    losses = F.smooth_l1_loss(predictions, targets, reduction="none") * weights
-    sums = predictions.new_zeros(molecule_count).index_add_(0, atom_sample_indices, losses)
-    counts = predictions.new_zeros(molecule_count).index_add_(0, atom_sample_indices, weights)
-    return (sums / counts.clamp_min(1)).mean()
+    weights = mask.to(torch.float32)
+    losses = F.smooth_l1_loss(predictions, targets, reduction="none").to(torch.float32)
+    weighted_losses = losses * weights
+    sums = torch.zeros(
+        molecule_count, dtype=torch.float32, device=predictions.device,
+    ).index_add_(0, atom_sample_indices, weighted_losses)
+    counts = torch.zeros_like(sums).index_add_(0, atom_sample_indices, weights)
+    return (sums / counts.clamp_min(1.0)).mean()
 
 
 # Backward-compatible public name; Object v3 callers select the mode explicitly.

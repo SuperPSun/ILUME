@@ -45,3 +45,27 @@ def test_loss_reductions_and_teacher_independence() -> None:
     assert molecule.item() == pytest.approx(1.5)
     compensation = task_compensation_scale(0.25, 20, 4, 10)
     assert (compensation * torch.tensor(2.0) + 0.1 * torch.tensor(3.0)).item() == pytest.approx(4.3)
+
+
+def test_molecule_equal_loss_uses_fp32_reduction_for_bf16_predictions() -> None:
+    predictions = torch.tensor(
+        [2.0, 0.5, -2.0, 1.0, 3.0], dtype=torch.bfloat16, requires_grad=True,
+    )
+    targets = torch.zeros(5, dtype=torch.float32)
+    mask = torch.ones(5, dtype=torch.bool)
+    atom_sample_indices = torch.tensor([0, 0, 1, 1, 1])
+
+    loss = molecule_equal_smooth_l1_loss(
+        predictions, targets, mask, atom_sample_indices, molecule_count=2,
+    )
+    atom_losses = torch.nn.functional.smooth_l1_loss(
+        predictions.detach().float(), targets, reduction="none",
+    )
+    expected = torch.stack((atom_losses[:2].mean(), atom_losses[2:].mean())).mean()
+
+    assert loss.dtype == torch.float32
+    assert loss.item() == pytest.approx(expected.item())
+    loss.backward()
+    assert predictions.grad is not None
+    assert predictions.grad.dtype == torch.bfloat16
+    assert torch.isfinite(predictions.grad).all()

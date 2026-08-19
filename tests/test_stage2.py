@@ -535,6 +535,34 @@ def test_hot_paths_do_not_materialize_cuda_scalars_or_offsets():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_cuda_bf16_partial_charge_loss_uses_fp32_reduction():
+    predictions = torch.tensor(
+        [2.0, 0.5, -2.0, 1.0, 3.0],
+        dtype=torch.bfloat16,
+        device="cuda",
+        requires_grad=True,
+    )
+    targets = torch.zeros(5, dtype=torch.float32, device="cuda")
+    mask = torch.ones(5, dtype=torch.bool, device="cuda")
+    atom_sample_indices = torch.tensor([0, 0, 1, 1, 1], device="cuda")
+
+    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        loss = molecule_equal_smooth_l1_loss(
+            predictions, targets, mask, atom_sample_indices, molecule_count=2,
+        )
+    atom_losses = torch.nn.functional.smooth_l1_loss(
+        predictions.detach().float(), targets, reduction="none",
+    )
+    expected = torch.stack((atom_losses[:2].mean(), atom_losses[2:].mean())).mean()
+
+    assert loss.dtype == torch.float32
+    torch.testing.assert_close(loss, expected)
+    loss.backward()
+    assert predictions.grad is not None
+    assert torch.isfinite(predictions.grad).all()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_cuda_one_batch_prefetch_matches_synchronous_transfer():
     from stage2.data import PackedStage2Batch
     descriptors = [Stage2BatchDescriptor("task", torch.tensor([index])) for index in range(3)]
