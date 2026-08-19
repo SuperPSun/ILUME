@@ -16,7 +16,7 @@ Prepare 为每个任务建立 train-only condition/target scaler。普通 object
 
 每个 task 独立 shuffle 样本并组 batch；scheduler 每轮确定性打乱 active tasks，各发一个 batch，小任务耗尽后移除且不 cycle。每个 emitted batch 独立执行一次 optimizer step。归一化权重为 `w_t`、epoch batch 总数为 `M` 时，physics compensation 为 `w_t * M * batch_rows / task_rows`，总目标为 `compensation * physics_loss + lambda_teacher * teacher_loss`；teacher loss 不乘 task 权重或 compensation。
 
-Data artifact、teacher cache 和 checkpoint 统一为 v3，旧 v2 明确拒绝且不迁移。完整 epoch checkpoint 保存 registry、model contract、loss/scheduler geometry、optimizer、AMP 与 RNG；固定 epoch 5 为最终 checkpoint。成功保存 epoch 5 后原子导出 format v1 `stage2_encoder.pt`，只包含 Stage 1 encoding state、ObjectEncoder state、配置、内部 state hash 与 provenance，不包含 physics heads 或训练状态。Stage 3 迁移仍延期，并同时拒绝 Object v3 checkpoint 与 encoder artifact。
+Data artifact、teacher cache 和 checkpoint 统一为 v3，旧 v2 明确拒绝且不迁移。Prepared-data identity 只绑定 source、Stage 1 feature、registry、tensor 与 preparation contract，不包含 Stage 2 `model_contract`。Teacher cache identity 只绑定 entity artifact 与 Stage 1 encoder identity；后者由 encoding-only state、encoding config 与 feature artifact 决定。teacher 的 FP32 dtype 与 math contract 仅记录生成 provenance，不参与 cache identity。完整 epoch checkpoint 保存 registry、model contract、loss/scheduler geometry、optimizer、AMP 与 RNG；固定 epoch 5 为最终 checkpoint。成功保存 epoch 5 后原子导出 format v1 `stage2_encoder.pt`，只包含 Stage 1 encoding state、ObjectEncoder state、配置、内部 state hash 与 provenance，不包含 physics heads 或训练状态。Stage 3 迁移仍延期，并同时拒绝 Object v3 checkpoint 与 encoder artifact。
 
 CUDA 执行继续固定 TF32、fused AdamW、三组学习率、bf16、梯度裁剪和 full validation；不引入 PCGrad、MoE、curriculum、early stopping、best/last 或 step checkpoint。
 
@@ -32,10 +32,16 @@ Partial-charge mapping 使用 `spawn` ProcessPool，并保持最多 `2 * workers
 
 上述 execution 参数不进入 experiment hash，恢复时允许变化，但 checkpoint 记录实际值作为 provenance。`cuda_prefetch_batches` 目前只接受 1。Data/checkpoint 保持 format v3、encoder 保持 format v1；data signature 额外绑定 preparation contract version，缺少该合同的开发期 v3 artifact 必须重新 prepare。明确不引入 compile、gradient checkpointing、accumulation、batch autotune、OOM fallback、bucketing、多 batch GPU queue或异步 checkpoint。
 
+### Identity boundary refinements
+
+Stage 2 `model_contract` 只属于训练 checkpoint 与 encoder artifact。改变 ObjectEncoder layers、FFN 或 dropout 不使 prepared data 或 teacher cache 失效，但仍改变实验配置与 checkpoint model contract，因此不同模型配置不得互相 resume。Train 启动只用 prepared metadata 验证 Stage 1 feature artifact、registry、tensor contract与实际 dataset tensors，不再比较 data metadata 和当前 Stage 2 model contract。
+
+Teacher cache 的 Stage 1 encoder identity显式覆盖 encoding-only state hash、encoding API contract、实际encoder结构、descriptor schema、role mapping与Stage 1 feature artifact。设备、TF32/CUDA math contract和FP32输出dtype不参与identity，因此cache可跨兼容设备复用；metadata仍保留原生成环境，且不承诺跨硬件重新提取时bitwise一致。Preparation contract升级为3、teacher extraction contract升级为2；更早的开发期v3 artifact/cache不迁移或原地改写。
+
 ## 理由
 
 Catalog、数据语义、模型派生维度和训练策略分层后，新增已有结构语义的 simulation task 不再要求修改 Python 白名单，也不会让同名 target 跨任务共享 scaler。Atom supervision 复用 Stage 1 已有 fusion representation，同时保持 reconstruction head 与未来 Stage 3 表示资产的边界。
 
 ## 后果
 
-正式运行前必须重新执行 Stage 2 prepare 与 teacher cache；所有 Object v2 artifact/cache/checkpoint，以及缺少当前 preparation/execution contract 的开发期 Object v3 输出，都不可复用。正式 Base 当前包含九个 Stage 2 simulation task。Stage 3 只能在后续专门迁移完成后消费 `stage2_encoder.pt`。
+本 identity 边界启用后必须一次性重新执行 Stage 2 prepare 与 teacher cache；既有文件保留但不迁移。之后调整 ObjectEncoder layers、FFN 或 dropout 可直接复用 data 与 teacher。所有 Object v2 artifact/cache/checkpoint，以及缺少当前 preparation/execution contract 的开发期 Object v3 输出，都不可复用。正式 Base 当前包含九个 Stage 2 simulation task。Stage 3 只能在后续专门迁移完成后消费 `stage2_encoder.pt`。

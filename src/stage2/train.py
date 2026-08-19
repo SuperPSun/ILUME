@@ -501,10 +501,12 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
     model = Stage2ObjectModel(loaded.model, registry, object_layers=config.model.object_layers, object_ffn_dim=config.model.object_ffn_dim, dropout=config.model.dropout).to(device)
     entity_dataset = Stage2EntityDataset(config.data.artifacts_dir)
     metadata_path = config.data.artifacts_dir / "metadata.json"
-    data_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    if data_metadata.get("pretrain_artifact_hash") != loaded.artifact_hash or data_metadata.get("registry_hash") != registry.registry_hash or data_metadata.get("model_contract") != model.model_contract:
-        raise ValueError("Stage 2 data artifact does not match model/registry")
-    teacher_cpu, teacher_metadata = load_teacher_embeddings(config, loaded, data_metadata, math_contract, expected_count=len(entity_dataset), expected_dim=loaded.config.model.d_model)
+    data_metadata = entity_dataset.metadata
+    if data_metadata.get("pretrain_artifact_hash") != loaded.artifact_hash:
+        raise ValueError("Stage 2 data artifact does not match Stage 1 features")
+    if data_metadata.get("registry_hash") != registry.registry_hash:
+        raise ValueError("Stage 2 data artifact registry mismatch")
+    teacher_cpu, teacher_metadata = load_teacher_embeddings(config, loaded, data_metadata, expected_count=len(entity_dataset), expected_dim=loaded.config.model.d_model)
     teacher_embeddings = teacher_cpu.to(device)
     del teacher_cpu
     train_datasets = {task: Stage2TaskDataset(config.data.artifacts_dir, task, "train") for task in registry.task_ids}

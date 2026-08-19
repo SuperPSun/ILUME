@@ -33,7 +33,8 @@ from stage2.config import (
     Stage2PreparationConfig, Stage2TrainingConfig, stage2_config_from_dict,
 )
 from stage2.data import (
-    Stage2BatchDescriptor, Stage2DeviceTaskData, Stage2EntityDataset,
+    STAGE2_PREPARATION_CONTRACT_VERSION, Stage2BatchDescriptor,
+    Stage2DeviceTaskData, Stage2EntityDataset,
     Stage2TaskDataset, epoch_batch_schedule, load_artifact_registry,
     pack_stage2_batch,
 )
@@ -41,7 +42,10 @@ from stage2.model import (
     ObjectEncoder, Stage2ObjectModel, masked_target_macro_smooth_l1_loss,
     molecule_equal_smooth_l1_loss,
 )
-from stage2.prepare import prepare_stage2_data, prepare_teacher_cache
+from stage2.prepare import (
+    load_teacher_embeddings, prepare_stage2_data, prepare_teacher_cache,
+    stage1_encoder_identity, teacher_cache_identity,
+)
 from stage2.registry import load_stage2_registry
 from stage2.train import (
     _batch_output, _device_batches, _ordered_packed_batches,
@@ -224,6 +228,8 @@ def test_config_normalizes_relative_weights_and_rejects_accumulation(tiny_stage2
 def test_prepare_v3_task_local_scalers_and_ragged_atoms(tiny_stage2_setup):
     metadata = prepare_stage2_data(tiny_stage2_setup)
     assert metadata["format_version"] == 3
+    assert metadata["preparation_contract_version"] == STAGE2_PREPARATION_CONTRACT_VERSION
+    assert "model_contract" not in metadata
     assert metadata["summary"]["rows"]["simulation/density"]["train"] == 2
     density = metadata["scalers"]["simulation/density"]["targets"]["density_g/cm^3"]
     assert density["mean"] == pytest.approx(1.5)
@@ -234,6 +240,96 @@ def test_prepare_v3_task_local_scalers_and_ragged_atoms(tiny_stage2_setup):
     assert metadata["scalers"]["simulation/partial_atomic_charge"]["targets"]["partial_atomic_charge"]["weighting"] == "molecule_equal"
     audit = list(csv.DictReader((tiny_stage2_setup.data.artifacts_dir / "partial_charge_mapping_audit.csv").open()))
     assert {row["status"] for row in audit} == {"mapped"}
+
+
+def test_data_and_teacher_identity_ignore_stage2_model_contract(tiny_stage2_setup):
+    first_data = prepare_stage2_data(tiny_stage2_setup)
+    first_teacher = prepare_teacher_cache(tiny_stage2_setup)
+    changed = replace(
+        tiny_stage2_setup,
+        model=replace(
+            tiny_stage2_setup.model,
+            object_layers=tiny_stage2_setup.model.object_layers + 1,
+            object_ffn_dim=tiny_stage2_setup.model.object_ffn_dim * 2,
+            dropout=0.2,
+        ),
+    )
+
+    second_data = prepare_stage2_data(changed)
+    second_teacher = prepare_teacher_cache(changed)
+
+    assert second_data["data_signature"] == first_data["data_signature"]
+    assert "model_contract" not in second_data
+    assert second_teacher["identity"] == first_teacher["identity"]
+    assert second_teacher["cache_reused"] is True
+    assert "model_contract" not in second_teacher
+    assert set(second_teacher["identity_payload"]) == {
+        "extraction_contract_version", "entity_artifact_hash",
+        "stage1_encoder_identity",
+    }
+    assert second_teacher["dtype"] == "float32"
+    assert "math_contract" in second_teacher
+
+
+def test_teacher_identity_binds_stage1_encoding_contract_and_entity_data(tiny_stage2_setup):
+    data_metadata = prepare_stage2_data(tiny_stage2_setup)
+    loaded = load_stage1_model(
+        tiny_stage2_setup.initialization.checkpoint,
+        tiny_stage2_setup.data.pretrain_artifacts_dir,
+        backbone_dropout=0.0,
+    )
+    identity, payload = teacher_cache_identity(data_metadata, loaded)
+    changed_loaded = replace(
+        loaded,
+        config=replace(
+            loaded.config,
+            model=replace(loaded.config.model, n_heads=2),
+        ),
+    )
+    changed_identity, _ = teacher_cache_identity(data_metadata, changed_loaded)
+    changed_feature_identity, _ = teacher_cache_identity(
+        data_metadata, replace(loaded, artifact_hash="different"),
+    )
+    changed_data = dict(data_metadata)
+    changed_data["entity_artifact_hash"] = "different"
+    changed_entity_identity, _ = teacher_cache_identity(changed_data, loaded)
+
+    assert identity != changed_identity
+    assert identity != changed_feature_identity
+    assert identity != changed_entity_identity
+    assert payload["stage1_encoder_identity"] == stage1_encoder_identity(loaded)[0]
+
+    with torch.no_grad():
+        next(loaded.model.smiles_encoder.parameters()).add_(1.0)
+    changed_state_identity, _ = teacher_cache_identity(data_metadata, loaded)
+    assert identity != changed_state_identity
+
+
+def test_old_data_and_teacher_identity_contracts_are_rejected(tiny_stage2_setup):
+    prepare_teacher_cache(tiny_stage2_setup)
+    data_path = tiny_stage2_setup.data.artifacts_dir / "metadata.json"
+    data_metadata = json.loads(data_path.read_text(encoding="utf-8"))
+    loaded = load_stage1_model(
+        tiny_stage2_setup.initialization.checkpoint,
+        tiny_stage2_setup.data.pretrain_artifacts_dir,
+        backbone_dropout=0.0,
+    )
+    identity, _ = teacher_cache_identity(data_metadata, loaded)
+    teacher_path = tiny_stage2_setup.data.artifacts_dir / "teachers" / identity / "metadata.json"
+    teacher_metadata = json.loads(teacher_path.read_text(encoding="utf-8"))
+    teacher_metadata["identity_payload"]["extraction_contract_version"] = 1
+    teacher_path.write_text(json.dumps(teacher_metadata), encoding="utf-8")
+    with pytest.raises(ValueError, match="teacher cache contract mismatch"):
+        load_teacher_embeddings(
+            tiny_stage2_setup, loaded, data_metadata,
+            expected_count=teacher_metadata["entity_count"],
+            expected_dim=teacher_metadata["embedding_dim"],
+        )
+
+    data_metadata["preparation_contract_version"] = 2
+    data_path.write_text(json.dumps(data_metadata), encoding="utf-8")
+    with pytest.raises(ValueError, match="rerun prepare"):
+        Stage2EntityDataset(tiny_stage2_setup.data.artifacts_dir)
 
 
 def test_partial_charge_duplicate_smiles_remain_distinct_molecules(tiny_stage2_setup):
@@ -626,6 +722,11 @@ def test_prepare_train_checkpoint_and_encoder_export(tiny_stage2_setup, tmp_path
     assert final_checkpoint["format_version"] == 3
     assert final_checkpoint["completed_epoch"] == 2
     assert final_checkpoint["registry_hash"] == load_artifact_registry(tiny_stage2_setup.data.artifacts_dir).registry_hash
+    assert final_checkpoint["model_contract"]["object_encoder"] == {
+        "layers": tiny_stage2_setup.model.object_layers,
+        "ffn_dim": tiny_stage2_setup.model.object_ffn_dim,
+        "dropout": tiny_stage2_setup.model.dropout,
+    }
     encoder_path = output / "stage2_encoder.pt"
     encoder = load_stage2_encoder_artifact(encoder_path)
     assert encoder["kind"] == "ilume_stage2_encoder"
@@ -660,6 +761,20 @@ def test_prepare_train_checkpoint_and_encoder_export(tiny_stage2_setup, tmp_path
     resumed = torch.load(resume_output / "checkpoint_epoch_00002.pt", map_location="cpu", weights_only=False)
     assert resumed["scheduler_geometry"]["gradient_accumulation_steps"] == 1
     assert (resume_output / "stage2_encoder.pt").is_file()
+
+    changed_model = replace(
+        tiny_stage2_setup,
+        model=replace(
+            tiny_stage2_setup.model,
+            object_layers=tiny_stage2_setup.model.object_layers + 1,
+        ),
+    )
+    with pytest.raises(ValueError, match="experiment config does not match"):
+        run_stage2_training(
+            changed_model,
+            output_dir=tmp_path / "changed_model_resume",
+            resume_from=output / "checkpoint_epoch_00001.pt",
+        )
 
 
 def test_nonfinite_interval_fails_before_epoch_checkpoint(tiny_stage2_setup, tmp_path):

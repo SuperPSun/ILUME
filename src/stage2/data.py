@@ -21,7 +21,13 @@ from .registry import Stage2Registry
 
 STAGE2_ARTIFACT_VERSION = 3
 STAGE2_ARTIFACT_KIND = "ilume_stage2_object_data"
-STAGE2_PREPARATION_CONTRACT_VERSION = 2
+STAGE2_PREPARATION_CONTRACT_VERSION = 3
+STAGE2_TENSOR_CONTRACT = {
+    "conditions": "task_train_normalized_float32",
+    "object_targets": "task_train_normalized_float32_masked_zero",
+    "atom_targets": "ragged_molecule_equal_train_normalized_float32",
+    "validation_raw_targets": "float32",
+}
 
 
 def _load_metadata(artifact_dir: Path) -> dict[str, Any]:
@@ -29,7 +35,9 @@ def _load_metadata(artifact_dir: Path) -> dict[str, Any]:
     if metadata.get("format_version") != STAGE2_ARTIFACT_VERSION or metadata.get("kind") != STAGE2_ARTIFACT_KIND:
         raise ValueError("Unsupported Stage 2 object data artifact; rerun prepare for Object v3")
     if metadata.get("preparation_contract_version") != STAGE2_PREPARATION_CONTRACT_VERSION:
-        raise ValueError("Stage 2 artifact predates the Object v3 efficiency contract; rerun prepare")
+        raise ValueError("Stage 2 artifact predates the current Object v3 preparation contract; rerun prepare")
+    if metadata.get("tensor_contract") != STAGE2_TENSOR_CONTRACT:
+        raise ValueError("Stage 2 artifact tensor contract mismatch; rerun prepare")
     return metadata
 
 
@@ -368,6 +376,7 @@ def epoch_batch_schedule(
 __all__ = [
     "PackedAtomTargets", "PackedStage2Batch", "STAGE2_ARTIFACT_KIND", "STAGE2_ARTIFACT_VERSION",
     "STAGE2_PREPARATION_CONTRACT_VERSION",
+    "STAGE2_TENSOR_CONTRACT",
     "Stage2BatchDescriptor", "Stage2DeviceTaskData", "Stage2EntityDataset",
     "Stage2TaskDataset", "epoch_batch_schedule", "load_artifact_registry",
     "pack_stage2_batch", "task_batch_counts", "validate_runtime_task_contract",
