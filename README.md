@@ -71,6 +71,8 @@ python scripts/stage2/train.py \
 
 训练每个 epoch 完整覆盖所有任务的全部有效行，并以 deterministic randomized round-robin 交替 task batch；Object v3 强制一个 batch 对应一个 optimizer step，不支持 gradient accumulation。第一 epoch 的 object/interaction task 直接复用 teacher CLS，不运行 Stage 1；atom task仍运行冻结 Stage 1 取得 fusion atom states。后四个 epoch联合微调。Partial charge 只去重 Stage 1 entity forward，ObjectEncoder 与 AtomHead 按 molecule sample 向量化执行；atom target 全量保持 CPU resident。Task weight 归一化后只补偿 physics loss，teacher loss保持独立。Base 使用 4 个 ordered packing worker、包含 H2D 在内的 4 个逻辑预取名额，以及单 batch CUDA lookahead；transfer stream 通过 event 交接，不做逐 batch synchronize。CUDA 固定使用 TF32、pinned/non-blocking transfer 与 fused AdamW。每个 epoch full validation 后保存 `checkpoint_epoch_00001.pt` 至 `checkpoint_epoch_00005.pt`，epoch 5 后额外导出不含 physics heads 的 `stage2_encoder.pt`。只允许从完整 Object v3 epoch 恢复；不生成 `best.pt` 或 `last.pt`。旧 Object v2 以及缺少当前 preparation/extraction contract 的开发期 v3 artifact/cache/checkpoint 不迁移，必须重新 prepare。
 
+截至 2026-08-19，正式 Base 已在 `outputs/v1/stage2/base` 完成 preparation contract 3、teacher extraction contract 2 和五个 epoch 训练，并导出 `stage2_encoder.pt`。该次 prepare/train metadata 均记录 `repository_dirty: true`，因此产物可作为当前正式运行结果使用，但不得表述为由单一 clean commit 直接复现。
+
 ## Stage 3
 
 Stage 3 到 Stage 2 Object v3 encoder artifact 的表示迁移尚未完成。当前 `scripts/stage3/prepare.py` 会在写入 artifact 前明确拒绝 Object v3 checkpoint 与 `stage2_encoder.pt`；以下历史命令暂不可用，待独立迁移完成后恢复：

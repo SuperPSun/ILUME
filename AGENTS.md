@@ -20,7 +20,7 @@ Stage 2 现役合同以 ADR-0019 和 `configs/v1/stage2/base.yaml` 为准：九�
 ## 数据、输出与恢复
 
 - 数据本体不进入 Git；prepare 自动写 `data/stage*/metadata.json`。
-- 每次操作必须冻结 `run_config.yaml`，并写公开安全的 `metadata.json` 和成功后的 `summary.json`；只有 reusable Stage 1 prepare 可在科研配置一致时刷新 `preparation` 执行参数。禁止用户名、hostname、私有绝对路径。
+- 每次操作必须冻结 `run_config.yaml`，并写公开安全的 `metadata.json` 和成功后的 `summary.json`；reusable Stage 1/2 prepare 可在各自数据身份不变时刷新允许忽略的执行或模型配置，Stage 2 的具体边界以 ADR-0019 为准。禁止用户名、hostname、私有绝对路径。
 - 新 train/evaluate 输出不可覆盖；resume 必须显式且严格校验阶段、fold/domain、有效配置、step/epoch/cycle、optimizer、scheduler 与 AMP。Stage 1 仅从完整 epoch 恢复并允许改变 world size；Stage 2 严格校验 Object v3 的完整 epoch、registry、model contract、RNG、数据、teacher、任务规模、数学精度与 optimizer implementation 合同；Stage 3 继续严格校验其 RNG 与 sampler/cursor 合同。
 - 保留 prepared artifact 自身的 SHA 和完整性校验；不得恢复跨阶段 checkpoint SHA lineage 强制绑定。
 - 周期 checkpoint 全部保留。Stage 1/3 以 `last.pt` 表示最新完整恢复状态；Stage 2 只保存不可覆盖的 `checkpoint_epoch_XXXXX.pt`，最终模型固定为 epoch 5。
