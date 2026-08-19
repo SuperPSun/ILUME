@@ -2,7 +2,7 @@
   "schema_version": 1,
   "stage": "stage2",
   "operation": "train",
-  "status": "running",
+  "status": "completed",
   "config_path": "configs/v1/stage2/base.yaml",
   "data_metadata": "data/stage2/metadata.json",
   "seed": 42,
