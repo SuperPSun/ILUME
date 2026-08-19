@@ -118,7 +118,7 @@ _SYSTEM_SEMANTICS: dict[str, tuple[Topology, tuple[str, ...]]] = {
     "cation": ("single_entity", ("cation",)),
     "anion": ("single_entity", ("anion",)),
     "il": ("ionic_liquid", ("cation", "anion")),
-    "solute_solvent": ("interaction", ("neutral", "neutral")),
+    "solute_solvent": ("interaction", ("formal_charge", "formal_charge")),
 }
 
 
