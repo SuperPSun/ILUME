@@ -38,15 +38,8 @@ def main() -> None:
             config, args.fold, output_dir=run.root,
             resume_from=repository_path(args.resume) if args.resume else None,
         )
-        final_by_domain = {
-            domain: next(
-                row for row in reversed(rows) if row["domain"] == domain
-            )
-            for domain in config.active_domains
-            if any(row["domain"] == domain for row in rows)
-        }
         run.complete(
-            {"fold": args.fold, "domains": final_by_domain}
+            {"fold": args.fold, "final_epoch": rows[-1]}
             if rows else {"status": "already_complete", "fold": args.fold}
         )
     except BaseException:

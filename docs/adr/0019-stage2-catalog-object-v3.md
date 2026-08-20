@@ -44,4 +44,4 @@ Catalog、数据语义、模型派生维度和训练策略分层后，新增已�
 
 ## 后果
 
-本 identity 边界首次启用时需要一次性重新执行 Stage 2 prepare 与 teacher cache；正式 Base 已于 2026-08-19 完成该刷新。之后调整 ObjectEncoder layers、FFN 或 dropout 可直接复用 data 与 teacher。所有 Object v2 artifact/cache/checkpoint，以及缺少当前 preparation/execution contract 的开发期 Object v3 输出，都不可复用。正式 Base 当前包含九个 Stage 2 simulation task。Stage 3 只能在后续专门迁移完成后消费 `stage2_encoder.pt`。
+本 identity 边界首次启用时需要一次性重新执行 Stage 2 prepare 与 teacher cache；正式 Base 已于 2026-08-19 完成该刷新。之后调整 ObjectEncoder layers、FFN 或 dropout 可直接复用 data 与 teacher。所有 Object v2 artifact/cache/checkpoint，以及缺少当前 preparation/execution contract 的开发期 Object v3 输出，都不可复用。正式 Base 当前包含九个 Stage 2 simulation task。Stage 3 的后续迁移决定见 [ADR-0020](0020-stage3-v1-sparse-home-pcgrad.md)。

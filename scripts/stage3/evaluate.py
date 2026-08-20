@@ -17,6 +17,9 @@ def main() -> None:
     parser.add_argument("--checkpoint-dir", required=True)
     parser.add_argument("--split", required=True, choices=("valid", "test"))
     parser.add_argument("--ensemble-folds", action="store_true")
+    parser.add_argument("--fold", type=int)
+    parser.add_argument("--checkpoint-epoch", type=int)
+    parser.add_argument("--tasks", nargs="+")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     config = load_stage3_config(args.config)
@@ -30,12 +33,18 @@ def main() -> None:
             "checkpoint_dir": repository_relative(args.checkpoint_dir),
             "split": args.split,
             "ensemble_folds": args.ensemble_folds,
+            "fold": args.fold,
+            "checkpoint_epoch": args.checkpoint_epoch,
+            "tasks": args.tasks,
         },
     )
     try:
         result = evaluate_checkpoints(
             config, repository_path(args.checkpoint_dir), split=args.split,
             ensemble_folds=args.ensemble_folds,
+            checkpoint_epoch=args.checkpoint_epoch,
+            task_subset=args.tasks,
+            fold=args.fold,
         )
         run.complete(result)
     except BaseException:

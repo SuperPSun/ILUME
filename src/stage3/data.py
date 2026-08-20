@@ -1,156 +1,305 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
 import torch
 from rdkit import Chem
 
 from common.io import sha256_file
 from common.training import canonical_json_sha256
-from .config import STAGE3_TASKS, Stage3Config
+from .config import Stage3Config
 
 
-STAGE3_ARTIFACT_VERSION = 2
-LATE_SOLUTE_TASKS = ("experiment/solvation", "experiment/transfer")
-CONDITION_COLUMNS = (
-    "temperature_K",
-    "pressure_kPa",
-    "frequency_MHz",
-    "wavelength_nm",
-)
-PHASE_TOKENS = {"<missing>": 0, "<unk>": 1, "solid": 2, "liquid": 3, "gas": 4}
+STAGE3_ARTIFACT_VERSION = 1
+STAGE3_ARTIFACT_KIND = "ilume_stage3_sparse_data"
+OBJECT_ENCODING_CONTRACT_VERSION = 1
 MISSING_MARKERS = frozenset({"", "nan", "na", "n/a", "null", "none", "missing"})
 
 
+def _parts(value: str) -> tuple[str, ...]:
+    return tuple(part.strip() for part in value.split(";") if part.strip())
+
+
 @dataclass(frozen=True)
-class Stage3TaskSpec:
-    task: str
-    entity_columns: tuple[str, ...]
-    entity_roles: tuple[str, ...]
-    target: str
+class CatalogTaskFact:
+    task_id: str
+    target_column: str
+    identity_columns: tuple[str, ...]
     condition_columns: tuple[str, ...]
-    topology: str
+    system_type: str
+    materialized_path: str
+    split_strategies: tuple[str, ...]
+    catalog_schema_version: int
+    provenance: dict[str, str]
+
+
+@dataclass(frozen=True)
+class ResolvedTaskSpec:
+    task_id: str
+    target_column: str
+    identity_columns: tuple[str, ...]
+    condition_columns: tuple[str, ...]
+    system_type: str
+    materialized_path: str
+    split_strategy: str
+    cv_repeat: int
     meta_group: str
-    fold_strategy: str
+    partner_mode: str
+    primary_slots: tuple[str, ...]
+    partner_slots: tuple[str, ...]
+    enabled: bool
+    task_weight: float
+    catalog_schema_version: int
+    provenance: dict[str, str]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ResolvedGroupSpec:
+    group_id: str
+    enabled: bool
+    group_weight: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, order=True)
+class ObjectKey:
+    topology: str
+    slots: tuple[tuple[str, str], ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"topology": self.topology, "slots": [list(slot) for slot in self.slots]}
 
     @property
-    def uses_solute(self) -> bool:
-        return self.task in LATE_SOLUTE_TASKS
+    def identity(self) -> str:
+        return canonical_json_sha256(self.to_dict())
 
 
-def _spec(
-    task: str,
-    target: str,
-    group: str,
-    *,
-    conditions: tuple[str, ...] = (),
-    entities: tuple[str, ...] = ("cation", "anion"),
-    roles: tuple[str, ...] = ("cation", "anion"),
-    topology: str = "il",
-    fold: str = "IL",
-) -> Stage3TaskSpec:
-    return Stage3TaskSpec(task, entities, roles, target, conditions, topology, group, fold)
+def sanitize_task(task_id: str) -> str:
+    return task_id.replace("/", "__")
 
 
-TASK_REGISTRY: dict[str, Stage3TaskSpec] = {
-    spec.task: spec
-    for spec in (
-        _spec("experiment/density", "density_g/cm^3", "thermodynamic", conditions=("temperature_K", "pressure_kPa")),
-        _spec("experiment/dynamic_relative_permittivity", "dynamic_relative_permittivity_unitless", "electrical", conditions=("temperature_K", "pressure_kPa", "frequency_MHz")),
-        _spec("experiment/electrical_conductivity", "electrical_conductivity_S/m_log10", "transport", conditions=("temperature_K", "pressure_kPa")),
-        _spec("experiment/equilibrium_pressure", "pressure_kPa_log10", "phase", conditions=("temperature_K",)),
-        _spec("experiment/glass_transition_temperature", "glass_transition_temperature_K", "phase"),
-        _spec("experiment/heat_capacity", "heat_capacity_J/mol/K", "thermodynamic", conditions=("temperature_K", "pressure_kPa")),
-        _spec("experiment/isobaric_coefficient_of_volume_expansion", "isobaric_coefficient_of_volume_expansion_K^-1", "thermodynamic", conditions=("temperature_K", "pressure_kPa")),
-        _spec("experiment/melting_point", "melting_point_K", "phase"),
-        _spec("experiment/pec50", "pEC50", "biological"),
-        _spec("experiment/refractive_index", "refractive_index_unitless", "optical", conditions=("temperature_K", "pressure_kPa", "wavelength_nm")),
-        _spec("experiment/self_diffusion_coefficient", "self_diffusion_coefficient_10^-9*m^2/s_log10", "transport", conditions=("temperature_K", "pressure_kPa")),
-        _spec("experiment/solvation", "solvation_kcal/mol", "solvation", conditions=("temperature_K",), entities=("cation", "anion", "solute"), roles=("cation", "anion", "neutral"), topology="il_solute"),
-        _spec("experiment/speed_of_sound", "speed_of_sound_m/s", "transport", conditions=("temperature_K", "pressure_kPa")),
-        _spec("experiment/static_relative_permittivity", "static_relative_permittivity_unitless", "electrical", conditions=("temperature_K", "pressure_kPa")),
-        _spec("experiment/surface_tension", "surface_tension_mN/m", "interfacial", conditions=("temperature_K",)),
-        _spec("experiment/thermal_conductivity", "thermal_conductivity_W/m/K", "transport", conditions=("temperature_K", "pressure_kPa")),
-        _spec("experiment/thermal_decomposition_temperature", "thermal_decomposition_temperature_K", "phase"),
-        _spec("experiment/transfer", "transfer_kcal/mol", "solvation", conditions=("temperature_K",), entities=("cation", "anion", "solute"), roles=("cation", "anion", "neutral"), topology="il_solute"),
-        _spec("experiment/viscosity", "viscosity_mPa*s_log10", "transport", conditions=("temperature_K", "pressure_kPa")),
-        _spec("experiment/x_co2", "x_CO2_unitless", "solubility", conditions=("temperature_K", "pressure_kPa")),
-        _spec("simulation/heat_of_vaporization", "heat_of_vaporization_kJ/mol", "thermodynamic", conditions=("temperature_K",)),
-        _spec("experiment/transfer_organic", "transfer_organic_kcal/mol", "solvation", conditions=("temperature_K",), entities=("solute", "solvent"), roles=("neutral", "neutral"), topology="neutral_pair", fold="solute-solvent"),
-        _spec("simulation/cation_homo", "cation_HOMO_eV", "quantum", entities=("cation",), roles=("cation",), topology="single", fold="random"),
-        _spec("simulation/cation_lumo", "cation_LUMO_eV", "quantum", entities=("cation",), roles=("cation",), topology="single", fold="random"),
-        _spec("simulation/anion_homo", "anion_HOMO_eV", "quantum", entities=("anion",), roles=("anion",), topology="single", fold="random"),
-        _spec("simulation/anion_lumo", "anion_LUMO_eV", "quantum", entities=("anion",), roles=("anion",), topology="single", fold="random"),
-        _spec("simulation/charge", "charge", "quantum", entities=("SMILES",), roles=("neutral",), topology="single", fold="random"),
+def canonicalize_smiles(raw: str, context: str) -> str:
+    molecule = Chem.MolFromSmiles((raw or "").strip())
+    if molecule is None:
+        raise ValueError(f"Invalid SMILES in {context}: {raw}")
+    return Chem.MolToSmiles(molecule, canonical=True, isomericSmiles=True)
+
+
+def finite_float(raw: str | None, context: str) -> float:
+    if (raw or "").strip().lower() in MISSING_MARKERS:
+        raise ValueError(f"Missing Stage 3 value in {context}")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"Non-numeric Stage 3 value in {context}: {raw}") from error
+    if not math.isfinite(value):
+        raise ValueError(f"Non-finite Stage 3 value in {context}: {raw}")
+    return value
+
+
+def load_task_catalog(path: str | Path) -> dict[str, CatalogTaskFact]:
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Missing Stage 3 task catalog: {path}")
+    result: dict[str, CatalogTaskFact] = {}
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        required = {
+            "catalog_schema_version", "stage", "task_id", "target_columns",
+            "identity_columns", "condition_columns", "system_type",
+            "materialized_path", "strategies",
+        }
+        missing = required - set(reader.fieldnames or ())
+        if missing:
+            raise ValueError(f"Stage 3 catalog missing columns: {sorted(missing)}")
+        for row_number, row in enumerate(reader, start=2):
+            if int(row["stage"]) != 3:
+                continue
+            task_id = row["task_id"].strip()
+            if task_id in result:
+                raise ValueError(f"Duplicate Stage 3 catalog task: {task_id}")
+            targets = _parts(row["target_columns"])
+            if len(targets) != 1:
+                raise ValueError(f"Stage 3 task must have one scalar target: {task_id}")
+            identities = _parts(row["identity_columns"])
+            if not identities:
+                raise ValueError(f"Stage 3 task has no identity columns: {task_id}")
+            strategies = tuple(value.replace("-", "_") for value in _parts(row["strategies"]))
+            if not strategies:
+                raise ValueError(f"Stage 3 task has no split strategies: {task_id}")
+            provenance = {
+                key: row.get(key, "")
+                for key in (
+                    "source_file", "task_kind", "target_level", "split_unit",
+                    "sample_unit", "experiment_reference", "label_source",
+                    "resource_manifest",
+                )
+                if row.get(key, "")
+            }
+            try:
+                schema_version = int(row["catalog_schema_version"])
+            except ValueError as error:
+                raise ValueError(
+                    f"Invalid catalog schema version at row {row_number}"
+                ) from error
+            result[task_id] = CatalogTaskFact(
+                task_id=task_id,
+                target_column=targets[0],
+                identity_columns=identities,
+                condition_columns=_parts(row["condition_columns"]),
+                system_type=row["system_type"].strip(),
+                materialized_path=row["materialized_path"].strip(),
+                split_strategies=strategies,
+                catalog_schema_version=schema_version,
+                provenance=provenance,
+            )
+    return result
+
+
+def _default_strategy(fact: CatalogTaskFact) -> str:
+    if "il" in fact.split_strategies:
+        return "il"
+    topology = fact.system_type.replace("-", "_")
+    if topology in fact.split_strategies:
+        return topology
+    raise ValueError(
+        f"Stage 3 task has no IL or topology split strategy: {fact.task_id}"
     )
+
+
+def resolve_task_registry(config: Stage3Config) -> dict[str, ResolvedTaskSpec]:
+    config.validate()
+    catalog = load_task_catalog(config.data.task_catalog)
+    configured = set(config.tasks)
+    missing = configured - set(catalog)
+    if missing:
+        raise ValueError("Stage 3 tasks missing from catalog: " + ", ".join(sorted(missing)))
+    unknown_overrides = set(config.data.split_strategies) - configured
+    unknown_repeats = set(config.data.cv_repeats) - configured
+    if unknown_overrides or unknown_repeats:
+        raise ValueError("Stage 3 split configuration references unknown tasks")
+    resolved: dict[str, ResolvedTaskSpec] = {}
+    for task_id, task in config.tasks.items():
+        fact = catalog[task_id]
+        strategy = config.data.split_strategies.get(task_id, _default_strategy(fact))
+        strategy = strategy.replace("-", "_")
+        if strategy not in fact.split_strategies:
+            raise ValueError(f"Illegal split strategy for {task_id}: {strategy}")
+        configured_slots = task.primary_slots + task.partner_slots
+        if configured_slots != fact.identity_columns:
+            raise ValueError(
+                f"Stage 3 slot/catalog mismatch for {task_id}: "
+                f"{configured_slots} != {fact.identity_columns}"
+            )
+        if fact.system_type not in {"il", "il_solute", "solute_solvent"}:
+            raise ValueError(
+                f"Unsupported Stage 3 topology for {task_id}: {fact.system_type}"
+            )
+        resolved[task_id] = ResolvedTaskSpec(
+            task_id=task_id,
+            target_column=fact.target_column,
+            identity_columns=fact.identity_columns,
+            condition_columns=fact.condition_columns,
+            system_type=fact.system_type,
+            materialized_path=fact.materialized_path,
+            split_strategy=strategy,
+            cv_repeat=config.data.cv_repeats.get(task_id, config.data.cv_repeat),
+            meta_group=task.meta_group,
+            partner_mode=task.partner_mode,
+            primary_slots=task.primary_slots,
+            partner_slots=task.partner_slots,
+            enabled=task.enabled,
+            task_weight=task.task_weight,
+            catalog_schema_version=fact.catalog_schema_version,
+            provenance=fact.provenance,
+        )
+    return resolved
+
+
+def resolve_group_registry(config: Stage3Config) -> dict[str, ResolvedGroupSpec]:
+    config.validate()
+    return {
+        group_id: ResolvedGroupSpec(
+            group_id=group_id,
+            enabled=spec.enabled,
+            group_weight=spec.group_weight,
+        )
+        for group_id, spec in config.groups.items()
+    }
+
+
+_STRATEGY_DIRECTORIES = {
+    "il": "IL",
+    "il_solute": "IL-solute",
+    "solute_solvent": "solute-solvent",
 }
 
-if set(STAGE3_TASKS) != set(TASK_REGISTRY):
-    raise RuntimeError("Stage 3 registry is incomplete")
+
+def task_root(config: Stage3Config, spec: ResolvedTaskSpec) -> Path:
+    relative = Path(spec.materialized_path)
+    if relative.parts and relative.parts[0] == "stage3":
+        relative = Path(*relative.parts[1:])
+    return config.data.stage3_dir / relative
 
 
-def sanitize_task(task: str) -> str:
-    return task.replace("/", "__")
-
-
-def canonicalize(smiles: str, context: str) -> str:
-    molecule = Chem.MolFromSmiles((smiles or "").strip())
-    if molecule is None:
-        raise ValueError(f"Invalid SMILES in {context}: {smiles}")
-    return Chem.MolToSmiles(molecule, canonical=True)
-
-
-def source_path(config: Stage3Config, task: str, fold: int) -> Path:
+def source_path(config: Stage3Config, spec: ResolvedTaskSpec, fold: int) -> Path:
     if fold not in range(1, 6):
         raise ValueError("Stage 3 fold must be in 1..5")
-    spec = TASK_REGISTRY[task]
-    root = config.data.stage3_dir / task / spec.fold_strategy
+    directory = _STRATEGY_DIRECTORIES.get(
+        spec.split_strategy, spec.split_strategy.replace("_", "-")
+    )
+    root = task_root(config, spec) / directory
     direct = root / f"fold{fold}.csv"
-    if direct.is_file():
+    repeated = root / f"cv{spec.cv_repeat}" / f"fold{fold}.csv"
+    if spec.cv_repeat == 1 and direct.is_file():
         return direct
-    repeated = root / "cv1" / f"fold{fold}.csv"
     if repeated.is_file():
         return repeated
-    return direct
+    raise FileNotFoundError(
+        f"Missing Stage 3 split for {spec.task_id}: {direct} or {repeated}"
+    )
 
 
-def iter_source_rows(
-    config: Stage3Config, task: str, folds: Sequence[int]
+def test_path(config: Stage3Config, spec: ResolvedTaskSpec) -> Path:
+    return task_root(config, spec) / "test.csv"
+
+
+def iter_rows(
+    config: Stage3Config,
+    spec: ResolvedTaskSpec,
+    folds: Sequence[int] | None,
 ) -> Iterator[tuple[int, int, dict[str, str]]]:
-    for fold in folds:
-        path = source_path(config, task, fold)
+    paths = (
+        [(0, test_path(config, spec))]
+        if folds is None
+        else [(fold, source_path(config, spec, fold)) for fold in folds]
+    )
+    required = set(spec.identity_columns) | set(spec.condition_columns) | {
+        spec.target_column
+    }
+    for fold, path in paths:
         if not path.is_file():
+            if folds is None:
+                return
             raise FileNotFoundError(f"Missing Stage 3 source: {path}")
         with path.open(newline="", encoding="utf-8-sig") as handle:
             reader = csv.DictReader(handle)
-            required = set(TASK_REGISTRY[task].entity_columns) | set(TASK_REGISTRY[task].condition_columns) | {TASK_REGISTRY[task].target}
             missing = required - set(reader.fieldnames or ())
             if missing:
                 raise ValueError(f"Missing Stage 3 columns in {path}: {sorted(missing)}")
             for row_number, row in enumerate(reader, start=2):
                 yield fold, row_number, row
-
-
-def iter_test_rows(
-    config: Stage3Config, task: str
-) -> Iterator[tuple[int, int, dict[str, str]]]:
-    path = config.data.stage3_dir / task / "test.csv"
-    if not path.is_file():
-        return
-    with path.open(newline="", encoding="utf-8-sig") as handle:
-        reader = csv.DictReader(handle)
-        spec = TASK_REGISTRY[task]
-        required = set(spec.entity_columns) | set(spec.condition_columns) | {spec.target}
-        missing = required - set(reader.fieldnames or ())
-        if missing:
-            raise ValueError(f"Missing Stage 3 columns in {path}: {sorted(missing)}")
-        for row_number, row in enumerate(reader, start=2):
-            yield 0, row_number, row
 
 
 @dataclass
@@ -165,261 +314,200 @@ class RunningStats:
         self.mean += delta / self.count
         self.m2 += delta * (value - self.mean)
 
-    def to_dict(self) -> dict[str, float | int]:
-        scale = math.sqrt(max(self.m2 / self.count, 0.0)) if self.count else 1.0
-        if not math.isfinite(scale) or scale == 0.0:
-            scale = 1.0
-        return {"count": self.count, "mean": self.mean, "scale": scale}
+    def finish(self, *, target: bool, context: str) -> dict[str, float | int | bool]:
+        if self.count == 0:
+            raise ValueError(f"No Stage 3 training values for {context}")
+        scale = math.sqrt(max(self.m2 / self.count, 0.0))
+        constant = not math.isfinite(scale) or scale == 0.0
+        if target and constant:
+            raise ValueError(f"Stage 3 target has zero variance: {context}")
+        return {
+            "count": self.count,
+            "mean": self.mean,
+            "scale": 1.0 if constant else scale,
+            "constant": constant,
+        }
 
 
-def finite_float(raw: str, context: str) -> float:
-    try:
-        value = float(raw)
-    except (TypeError, ValueError) as error:
-        raise ValueError(f"Non-numeric Stage 3 value in {context}: {raw}") from error
-    if not math.isfinite(value):
-        raise ValueError(f"Non-finite Stage 3 value in {context}: {raw}")
-    return value
-
-
-def _is_missing(raw: str | None) -> bool:
-    return (raw or "").strip().lower() in MISSING_MARKERS
-
-
-def fit_fold_scalers(
+def fit_normalization(
     config: Stage3Config,
+    registry: Mapping[str, ResolvedTaskSpec],
     held_out_fold: int,
-    tasks: Sequence[str],
 ) -> dict[str, Any]:
     train_folds = tuple(fold for fold in range(1, 6) if fold != held_out_fold)
-    task_scalers: dict[str, Any] = {}
-    for task in tasks:
-        spec = TASK_REGISTRY[task]
-        conditions = {name: RunningStats() for name in CONDITION_COLUMNS}
+    result: dict[str, Any] = {}
+    for task_id, spec in registry.items():
+        conditions = {name: RunningStats() for name in spec.condition_columns}
         target = RunningStats()
-        for fold, row_number, row in iter_source_rows(config, task, train_folds):
-            try:
-                parsed_conditions = {
-                    name: None
-                    if _is_missing(row.get(name))
-                    else finite_float(row[name], f"{task}/fold{fold}:{row_number}/{name}")
-                    for name in spec.condition_columns
-                }
-                parsed_target = finite_float(row[spec.target], f"{task}/fold{fold}:{row_number}/{spec.target}")
-            except ValueError:
-                continue
-            for name, value in parsed_conditions.items():
-                if value is not None:
-                    conditions[name].update(value)
-            target.update(parsed_target)
-        if target.count == 0:
-            raise ValueError(f"Stage 3 task has no training target: {task}")
-        task_scalers[task] = {
-            "conditions": {name: stats.to_dict() for name, stats in conditions.items()},
-            "target": target.to_dict(),
-            "target_transform": "identity",
+        for fold, row_number, row in iter_rows(config, spec, train_folds):
+            for name, stats in conditions.items():
+                stats.update(finite_float(row.get(name), f"{task_id}/fold{fold}:{row_number}/{name}"))
+            target.update(
+                finite_float(
+                    row.get(spec.target_column),
+                    f"{task_id}/fold{fold}:{row_number}/{spec.target_column}",
+                )
+            )
+        result[task_id] = {
+            "conditions": {
+                name: stats.finish(target=False, context=f"{task_id}/{name}")
+                for name, stats in conditions.items()
+            },
+            "target": target.finish(target=True, context=f"{task_id}/target"),
         }
-    return task_scalers
+    return result
 
 
-def collect_entity_keys_with_audit(
-    config: Stage3Config,
-    tasks: Sequence[str],
-) -> tuple[tuple[tuple[str, str], ...], tuple[dict[str, Any], ...]]:
-    keys: set[tuple[str, str]] = set()
-    cache: dict[str, str] = {}
-    excluded: list[dict[str, Any]] = []
-    for task in tasks:
-        spec = TASK_REGISTRY[task]
-        for fold, row_number, row in iter_source_rows(config, task, range(1, 6)):
-            for column, role in zip(spec.entity_columns, spec.entity_roles, strict=True):
-                raw = row[column]
-                canonical = cache.get(raw)
-                if canonical is None:
-                    try:
-                        canonical = canonicalize(raw, f"{task}/fold{fold}:{row_number}/{column}")
-                    except ValueError as error:
-                        excluded.append({"task": task, "fold": fold, "source_row": row_number, "column": column, "smiles": raw, "reason": str(error)})
-                        continue
-                    cache[raw] = canonical
-                keys.add((role, canonical))
-        for _, row_number, row in iter_test_rows(config, task):
-            for column, role in zip(spec.entity_columns, spec.entity_roles, strict=True):
-                raw = row[column]
-                canonical = cache.get(raw)
-                if canonical is None:
-                    try:
-                        canonical = canonicalize(raw, f"{task}/test:{row_number}/{column}")
-                    except ValueError as error:
-                        excluded.append({"task": task, "fold": 0, "source_row": row_number, "column": column, "smiles": raw, "reason": str(error)})
-                        continue
-                    cache[raw] = canonical
-                keys.add((role, canonical))
-    role_order = {"cation": 0, "anion": 1, "neutral": 2}
-    return (
-        tuple(sorted(keys, key=lambda item: (role_order[item[0]], item[1]))),
-        tuple(excluded),
+def _role(slot: str) -> str:
+    return slot if slot in {"cation", "anion"} else "neutral"
+
+
+def object_key_from_row(
+    task_id: str,
+    row_number: int,
+    row: Mapping[str, str],
+    slots: Sequence[str],
+) -> ObjectKey:
+    ordered = tuple(
+        (
+            _role(slot),
+            canonicalize_smiles(row.get(slot, ""), f"{task_id}:{row_number}/{slot}"),
+        )
+        for slot in slots
     )
+    topology = "il" if tuple(slots) == ("cation", "anion") else "molecule"
+    if topology == "molecule" and len(slots) != 1:
+        raise ValueError(f"Unsupported Stage 3 object slots for {task_id}: {slots}")
+    return ObjectKey(topology, ordered)
 
 
-def collect_entity_keys(
-    config: Stage3Config, tasks: Sequence[str]
-) -> tuple[tuple[str, str], ...]:
-    return collect_entity_keys_with_audit(config, tasks)[0]
-
-
-def _system_key(spec: Stage3TaskSpec, entity_ids: Sequence[int]) -> tuple[int, ...]:
-    if spec.topology == "il":
-        return tuple(entity_ids[:2])
-    return tuple(entity_ids)
+def collect_object_keys(
+    config: Stage3Config, registry: Mapping[str, ResolvedTaskSpec]
+) -> tuple[ObjectKey, ...]:
+    keys: set[ObjectKey] = set()
+    for task_id, spec in registry.items():
+        for _, row_number, row in iter_rows(config, spec, range(1, 6)):
+            keys.add(object_key_from_row(task_id, row_number, row, spec.primary_slots))
+            if spec.partner_slots:
+                keys.add(object_key_from_row(task_id, row_number, row, spec.partner_slots))
+        for _, row_number, row in iter_rows(config, spec, None):
+            keys.add(object_key_from_row(task_id, row_number, row, spec.primary_slots))
+            if spec.partner_slots:
+                keys.add(object_key_from_row(task_id, row_number, row, spec.partner_slots))
+    return tuple(sorted(keys))
 
 
 def build_task_payload(
     config: Stage3Config,
-    task: str,
+    spec: ResolvedTaskSpec,
     held_out_fold: int,
     split: str,
-    entity_ids: dict[tuple[str, str], int],
-    scalers: dict[str, Any],
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    object_ids: Mapping[ObjectKey, int],
+    normalization: Mapping[str, Any],
+) -> dict[str, Any]:
     if split not in {"train", "valid", "test"}:
         raise ValueError("Stage 3 split must be train, valid, or test")
-    spec = TASK_REGISTRY[task]
-    folds = tuple(fold for fold in range(1, 6) if fold != held_out_fold) if split == "train" else (held_out_fold,)
+    folds: Sequence[int] | None
+    if split == "train":
+        folds = tuple(fold for fold in range(1, 6) if fold != held_out_fold)
+    elif split == "valid":
+        folds = (held_out_fold,)
+    else:
+        folds = None
     rows: list[dict[str, Any]] = []
-    excluded: list[dict[str, Any]] = []
-    cache: dict[str, str] = {}
-    scaler = scalers[task]
-    iterator = iter_test_rows(config, task) if split == "test" else iter_source_rows(config, task, folds)
-    for source_fold, row_number, row in iterator:
-        ids: list[int] = []
-        reason = ""
-        for column, role in zip(spec.entity_columns, spec.entity_roles, strict=True):
-            raw = row[column]
-            canonical = cache.get(raw)
-            if canonical is None:
-                try:
-                    canonical = canonicalize(raw, f"{task}/fold{source_fold}:{row_number}/{column}")
-                except ValueError:
-                    reason = f"invalid_smiles:{column}:{raw}"
-                    break
-                cache[raw] = canonical
-            entity_id = entity_ids.get((role, canonical))
-            if entity_id is None:
-                reason = f"excluded_entity:{role}:{canonical}"
-                break
-            ids.append(entity_id)
-        if reason:
-            excluded.append({"task": task, "fold": source_fold, "source_row": row_number, "reason": reason})
-            continue
-        values: list[float] = []
-        presence: list[float] = []
-        try:
-            for name in CONDITION_COLUMNS:
-                raw = (row.get(name) or "").strip() if name in spec.condition_columns else ""
-                if not _is_missing(raw):
-                    numeric = finite_float(raw, f"{task}/fold{source_fold}:{row_number}/{name}")
-                    stats = scaler["conditions"][name]
-                    values.append((numeric - stats["mean"]) / stats["scale"])
-                    presence.append(1.0)
-                else:
-                    values.append(0.0)
-                    presence.append(0.0)
-            target = finite_float(row[spec.target], f"{task}/fold{source_fold}:{row_number}/{spec.target}")
-        except ValueError as error:
-            excluded.append({"task": task, "fold": source_fold, "source_row": row_number, "reason": str(error)})
-            continue
-        phase_raw = row.get("phase")
-        phase = "<missing>" if _is_missing(phase_raw) else str(phase_raw).strip().lower()
-        phase_id = PHASE_TOKENS.get(phase, PHASE_TOKENS["<unk>"])
-        target_stats = scaler["target"]
+    stats = normalization[spec.task_id]
+    for source_fold, row_number, row in iter_rows(config, spec, folds):
+        primary = object_key_from_row(
+            spec.task_id, row_number, row, spec.primary_slots
+        )
+        partner = (
+            object_key_from_row(spec.task_id, row_number, row, spec.partner_slots)
+            if spec.partner_slots
+            else None
+        )
+        conditions = [
+            (
+                finite_float(
+                    row.get(name),
+                    f"{spec.task_id}/fold{source_fold}:{row_number}/{name}",
+                )
+                - float(stats["conditions"][name]["mean"])
+            )
+            / float(stats["conditions"][name]["scale"])
+            for name in spec.condition_columns
+        ]
+        raw_target = finite_float(
+            row.get(spec.target_column),
+            f"{spec.task_id}/fold{source_fold}:{row_number}/{spec.target_column}",
+        )
+        target_stats = stats["target"]
         rows.append(
             {
-                "entity_ids": ids,
-                "conditions": values + presence,
-                "phase_id": phase_id,
-                "target": (target - target_stats["mean"]) / target_stats["scale"],
-                "raw_target": target,
+                "primary": object_ids[primary],
+                "partner": -1 if partner is None else object_ids[partner],
+                "conditions": conditions,
+                "target": (raw_target - target_stats["mean"]) / target_stats["scale"],
+                "raw_target": raw_target,
                 "source_fold": source_fold,
                 "source_row": row_number,
-                "system": _system_key(spec, ids),
             }
         )
     if not rows and split != "test":
-        raise ValueError(f"No retained Stage 3 rows for {task}/{split}/fold{held_out_fold}")
-    systems: dict[tuple[int, ...], list[int]] = {}
-    for index, row in enumerate(rows):
-        systems.setdefault(row["system"], []).append(index)
-    sorted_systems = sorted(systems)
-    offsets = [0]
-    system_rows: list[int] = []
-    for key in sorted_systems:
-        system_rows.extend(systems[key])
-        offsets.append(len(system_rows))
-    payload = {
+        raise ValueError(f"No Stage 3 observations for {spec.task_id}/{split}")
+    return {
         "format_version": STAGE3_ARTIFACT_VERSION,
-        "task": task,
-        "split": split,
+        "kind": STAGE3_ARTIFACT_KIND,
+        "task_id": spec.task_id,
         "fold": held_out_fold,
-        "entity_ids": torch.tensor([row["entity_ids"] for row in rows], dtype=torch.long).reshape(len(rows), len(spec.entity_columns)),
-        "conditions": torch.tensor([row["conditions"] for row in rows], dtype=torch.float32).reshape(len(rows), 8),
-        "phase_ids": torch.tensor([row["phase_id"] for row in rows], dtype=torch.long),
+        "split": split,
+        "primary_object_ids": torch.tensor(
+            [row["primary"] for row in rows], dtype=torch.long
+        ),
+        "partner_object_ids": torch.tensor(
+            [row["partner"] for row in rows], dtype=torch.long
+        ),
+        "conditions": torch.tensor(
+            [row["conditions"] for row in rows], dtype=torch.float32
+        ).reshape(len(rows), len(spec.condition_columns)),
         "targets": torch.tensor([row["target"] for row in rows], dtype=torch.float32),
-        "raw_targets": torch.tensor([row["raw_target"] for row in rows], dtype=torch.float32),
-        "source_folds": torch.tensor([row["source_fold"] for row in rows], dtype=torch.int8),
-        "source_rows": torch.tensor([row["source_row"] for row in rows], dtype=torch.long),
-        "system_offsets": torch.tensor(offsets, dtype=torch.long),
-        "system_rows": torch.tensor(system_rows, dtype=torch.long),
-        "system_keys": [list(key) for key in sorted_systems],
+        "raw_targets": torch.tensor(
+            [row["raw_target"] for row in rows], dtype=torch.float32
+        ),
+        "source_folds": torch.tensor(
+            [row["source_fold"] for row in rows], dtype=torch.int8
+        ),
+        "source_rows": torch.tensor(
+            [row["source_row"] for row in rows], dtype=torch.long
+        ),
     }
-    return payload, excluded
 
 
 class Stage3TaskDataset:
-    def __init__(
-        self,
-        artifact_dir: str | Path,
-        domain: str,
-        fold: int,
-        task: str,
-        split: str,
-    ) -> None:
+    def __init__(self, artifact_dir: str | Path, fold: int, task_id: str, split: str):
         self.artifact_dir = Path(artifact_dir)
-        self.domain = domain
-        self.fold = fold
-        self.task = task
-        self.split = split
-        metadata_path = self.artifact_dir / domain / "metadata.json"
+        metadata_path = self.artifact_dir / "metadata.json"
         self.metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         if (
             self.metadata.get("format_version") != STAGE3_ARTIFACT_VERSION
-            or self.metadata.get("kind") != "ilume_stage3_data"
+            or self.metadata.get("kind") != STAGE3_ARTIFACT_KIND
         ):
-            raise ValueError("Unsupported Stage 3 artifact format")
-        if self.metadata.get("domain") != domain:
-            raise ValueError("Stage 3 artifact domain mismatch")
-        if task not in self.metadata.get("tasks", ()):
-            raise ValueError(f"Task {task} is not registered in domain {domain}")
-        self.scalers = json.loads(
-            (self.artifact_dir / domain / "scalers.json").read_text(encoding="utf-8")
-        )
-        scaler_path = self.artifact_dir / domain / "scalers.json"
-        if self.metadata.get("artifact_hashes", {}).get("scalers.json") != sha256_file(scaler_path):
-            raise ValueError("Stage 3 artifact hash mismatch: scalers.json")
-        relative = f"folds/fold{fold}/{sanitize_task(task)}_{split}.pt"
-        path = self.artifact_dir / domain / relative
-        expected = self.metadata["artifact_hashes"].get(relative)
-        if expected is None or sha256_file(path) != expected:
+            raise ValueError("Unsupported Stage 3 sparse artifact")
+        relative = f"folds/fold{fold}/{sanitize_task(task_id)}_{split}.pt"
+        path = self.artifact_dir / relative
+        if self.metadata.get("artifact_hashes", {}).get(relative) != sha256_file(path):
             raise ValueError(f"Stage 3 artifact hash mismatch: {relative}")
         payload = torch.load(path, map_location="cpu", weights_only=True)
-        if payload.get("format_version") != STAGE3_ARTIFACT_VERSION:
-            raise ValueError("Unsupported Stage 3 task payload")
         if (
-            payload.get("task") != task
+            payload.get("format_version") != STAGE3_ARTIFACT_VERSION
+            or payload.get("kind") != STAGE3_ARTIFACT_KIND
+            or payload.get("task_id") != task_id
             or payload.get("fold") != fold
             or payload.get("split") != split
         ):
-            raise ValueError("Stage 3 task payload identity mismatch")
+            raise ValueError("Stage 3 task artifact identity mismatch")
+        self.fold = fold
+        self.task_id = task_id
+        self.split = split
         for name, value in payload.items():
             setattr(self, name, value)
 
@@ -427,71 +515,87 @@ class Stage3TaskDataset:
         return int(self.targets.shape[0])
 
 
-class SystemCursor:
-    def __init__(self, offsets: torch.Tensor, rows: torch.Tensor, *, seed: int) -> None:
-        if len(offsets) < 2:
-            raise ValueError("Stage 3 system cursor requires at least one system")
-        self.offsets = offsets.clone()
-        self.rows = rows.clone()
-        self.generator = torch.Generator().manual_seed(seed)
-        self.system_order = torch.randperm(len(offsets) - 1, generator=self.generator)
-        self.system_position = 0
-        self.row_orders: dict[int, torch.Tensor] = {}
-        self.row_positions: dict[int, int] = {}
-
-    def _next_system(self) -> int:
-        if self.system_position == len(self.system_order):
-            self.system_order = torch.randperm(len(self.offsets) - 1, generator=self.generator)
-            self.system_position = 0
-        value = int(self.system_order[self.system_position])
-        self.system_position += 1
-        return value
-
-    def _next_row(self, system: int) -> int:
-        start, end = int(self.offsets[system]), int(self.offsets[system + 1])
-        count = end - start
-        position = self.row_positions.get(system, count)
-        if position == count:
-            self.row_orders[system] = torch.randperm(count, generator=self.generator)
-            position = 0
-        result = int(self.rows[start + int(self.row_orders[system][position])])
-        self.row_positions[system] = position + 1
-        return result
-
-    def next_indices(self, count: int) -> torch.Tensor:
-        return torch.tensor([self._next_row(self._next_system()) for _ in range(count)], dtype=torch.long)
-
-    def state_dict(self) -> dict[str, Any]:
-        return {
-            "generator": self.generator.get_state(),
-            "system_order": self.system_order.clone(),
-            "system_position": self.system_position,
-            "row_orders": {key: value.clone() for key, value in self.row_orders.items()},
-            "row_positions": dict(self.row_positions),
-        }
-
-    def load_state_dict(self, state: dict[str, Any]) -> None:
-        self.generator.set_state(state["generator"])
-        self.system_order = state["system_order"].clone()
-        self.system_position = int(state["system_position"])
-        self.row_orders = {int(key): value.clone() for key, value in state["row_orders"].items()}
-        self.row_positions = {int(key): int(value) for key, value in state["row_positions"].items()}
-
-
 def source_hashes(
-    config: Stage3Config, tasks: Sequence[str]
+    config: Stage3Config, registry: Mapping[str, ResolvedTaskSpec]
 ) -> dict[str, str]:
-    hashes = {
-        str(source_path(config, task, fold).relative_to(config.data.stage3_dir)): sha256_file(source_path(config, task, fold))
-        for task in tasks
-        for fold in range(1, 6)
+    result = {str(config.data.task_catalog): sha256_file(config.data.task_catalog)}
+    for spec in registry.values():
+        for fold in range(1, 6):
+            path = source_path(config, spec, fold)
+            result[str(path)] = sha256_file(path)
+        path = test_path(config, spec)
+        if path.is_file():
+            result[str(path)] = sha256_file(path)
+    return result
+
+
+def stable_seed(seed: int, *parts: object) -> int:
+    digest = hashlib.sha256(str(seed).encode())
+    for part in parts:
+        digest.update(b"\0")
+        digest.update(str(part).encode())
+    return int.from_bytes(digest.digest()[:8], "big") % (2**63 - 1)
+
+
+def resolve_batch_allocation(
+    counts: Mapping[str, int], composite_batch_size: int, virtual_min_size: int
+) -> dict[str, int]:
+    if not counts or any(value <= 0 for value in counts.values()):
+        raise ValueError("Stage 3 task counts must be positive")
+    if len(counts) > composite_batch_size:
+        raise ValueError("Stage 3 active tasks exceed composite batch size")
+    virtual = {task: max(count, virtual_min_size) for task, count in counts.items()}
+    total = sum(virtual.values())
+    allocation = {
+        task: max(1, math.floor(composite_batch_size * size / total))
+        for task, size in virtual.items()
     }
-    for task in tasks:
-        test_path = config.data.stage3_dir / task / "test.csv"
-        if test_path.is_file():
-            hashes[str(test_path.relative_to(config.data.stage3_dir))] = sha256_file(test_path)
-    return hashes
+    while sum(allocation.values()) < composite_batch_size:
+        for task in sorted(counts, key=lambda name: (-counts[name], name)):
+            allocation[task] += 1
+            if sum(allocation.values()) == composite_batch_size:
+                break
+    while sum(allocation.values()) > composite_batch_size:
+        changed = False
+        for task in sorted(counts, key=lambda name: (counts[name], name)):
+            if allocation[task] > 1:
+                allocation[task] -= 1
+                changed = True
+                if sum(allocation.values()) == composite_batch_size:
+                    break
+        if not changed:
+            raise ValueError("Unable to resolve Stage 3 batch allocation")
+    return allocation
 
 
-def signature(payload: Any) -> str:
-    return canonical_json_sha256(payload)
+def composite_steps_per_epoch(
+    counts: Mapping[str, int], allocation: Mapping[str, int], virtual_min_size: int
+) -> int:
+    if set(counts) != set(allocation):
+        raise ValueError("Stage 3 count/allocation tasks differ")
+    return max(
+        math.ceil(max(counts[task], virtual_min_size) / allocation[task])
+        for task in counts
+    )
+
+
+def balanced_virtual_indices(
+    real_size: int,
+    required_size: int,
+    *,
+    seed: int,
+    epoch: int,
+    task_id: str,
+) -> torch.Tensor:
+    if real_size <= 0 or required_size <= 0:
+        raise ValueError("Stage 3 virtual sequence sizes must be positive")
+    generator = torch.Generator().manual_seed(
+        stable_seed(seed, "virtual", epoch, task_id)
+    )
+    chunks: list[torch.Tensor] = []
+    remaining = required_size
+    while remaining > 0:
+        order = torch.randperm(real_size, generator=generator)
+        chunks.append(order[:remaining])
+        remaining -= min(real_size, remaining)
+    return torch.cat(chunks)

@@ -1,102 +1,157 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Iterable, Mapping
 
 import torch
 from torch import nn
 
-from .config import AUX6_TASKS, IL21_TASKS, Stage3Config
-from .data import PHASE_TOKENS, TASK_REGISTRY, sanitize_task
+from .config import Stage3ModelConfig
+from .data import ResolvedTaskSpec, sanitize_task
+
+
+@dataclass(frozen=True, order=True)
+class Ownership:
+    scope: str
+    owner_id: str | None = None
+
+    @property
+    def label(self) -> str:
+        return self.scope if self.owner_id is None else f"{self.scope}:{self.owner_id}"
+
+
+GLOBAL = Ownership("GLOBAL")
+
+
+def group_owner(group_id: str) -> Ownership:
+    return Ownership("GROUP", group_id)
+
+
+def private_owner(task_id: str) -> Ownership:
+    return Ownership("PRIVATE", task_id)
+
+
+def _activation(name: str) -> nn.Module:
+    if name == "silu":
+        return nn.SiLU()
+    if name == "gelu":
+        return nn.GELU()
+    raise ValueError(f"Unsupported Stage 3 activation: {name}")
+
+
+def _width(d_model: int, ratio: float) -> int:
+    return max(1, round(d_model * ratio))
 
 
 class Expert(nn.Module):
-    def __init__(self, d_model: int) -> None:
+    def __init__(
+        self,
+        d_model: int,
+        *,
+        hidden_ratio: float,
+        dropout: float,
+        activation: str,
+    ) -> None:
         super().__init__()
+        hidden = _width(d_model, hidden_ratio)
         self.layers = nn.Sequential(
-            nn.Linear(d_model, 2 * d_model),
-            nn.SiLU(),
-            nn.Linear(2 * d_model, d_model),
-            nn.BatchNorm1d(d_model),
-            nn.SiLU(),
+            nn.Linear(d_model, hidden),
+            _activation(activation),
+            nn.Dropout(dropout),
+            nn.Linear(hidden, d_model),
+            _activation(activation),
         )
 
     def forward(self, values: torch.Tensor) -> torch.Tensor:
         return self.layers(values)
 
 
-class FeatureGate(nn.Module):
-    def __init__(self, d_model: int) -> None:
+class ConditionFiLM(nn.Module):
+    def __init__(
+        self,
+        condition_width: int,
+        d_model: int,
+        *,
+        hidden_ratio: float,
+        dropout: float,
+        activation: str,
+    ) -> None:
         super().__init__()
-        rank = max(1, d_model // 2)
-        self.down = nn.ModuleList(
-            [nn.Linear(d_model, rank, bias=False) for _ in range(2)]
+        hidden = _width(d_model, hidden_ratio)
+        self.network = nn.Sequential(
+            nn.Linear(condition_width, hidden),
+            _activation(activation),
+            nn.Dropout(dropout),
+            nn.Linear(hidden, 2 * d_model),
         )
-        self.up = nn.ModuleList(
-            [nn.Linear(rank, d_model, bias=False) for _ in range(2)]
-        )
-        self.mix = nn.Linear(d_model, 2)
-        for layer in self.up:
-            nn.init.zeros_(layer.weight)
+        final = self.network[-1]
+        assert isinstance(final, nn.Linear)
+        nn.init.zeros_(final.weight)
+        nn.init.zeros_(final.bias)
+        self.normalization = nn.LayerNorm(d_model)
 
-    def forward(self, values: torch.Tensor) -> torch.Tensor:
-        weights = torch.softmax(self.mix(values), dim=-1)
-        residual = sum(
-            weights[:, index : index + 1]
-            * up(torch.nn.functional.silu(down(values)))
-            for index, (down, up) in enumerate(
-                zip(self.down, self.up, strict=True)
-            )
-        )
-        return values + residual
+    def forward(self, values: torch.Tensor, conditions: torch.Tensor) -> torch.Tensor:
+        gamma, beta = self.network(conditions).chunk(2, dim=-1)
+        return self.normalization(values * (1.0 + gamma) + beta)
 
 
-class SoluteInteraction(nn.Module):
-    def __init__(self, d_model: int) -> None:
+class PartnerInteraction(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        *,
+        hidden_ratio: float,
+        dropout: float,
+        activation: str,
+    ) -> None:
         super().__init__()
-        self.project = nn.Sequential(
-            nn.Linear(4 * d_model, 2 * d_model),
-            nn.SiLU(),
-            nn.Linear(2 * d_model, d_model),
+        hidden = _width(d_model, hidden_ratio)
+        self.phi = nn.Sequential(
+            nn.Linear(4 * d_model, hidden),
+            _activation(activation),
+            nn.Dropout(dropout),
+            nn.Linear(hidden, d_model),
         )
         self.normalization = nn.LayerNorm(d_model)
 
-    def forward(
-        self, group: torch.Tensor, solute: torch.Tensor
-    ) -> torch.Tensor:
+    def forward(self, primary: torch.Tensor, partner: torch.Tensor) -> torch.Tensor:
         interaction = torch.cat(
-            (group, solute, torch.abs(group - solute), group * solute),
+            (primary, partner, torch.abs(primary - partner), primary * partner),
             dim=-1,
         )
-        return self.normalization(group + self.project(interaction))
+        return self.normalization(primary + self.phi(interaction))
 
 
-class ConditionFusion(nn.Module):
-    def __init__(self, d_model: int) -> None:
-        super().__init__()
-        self.condition = nn.Linear(8, d_model)
-        self.phase = nn.Embedding(len(PHASE_TOKENS), d_model)
-        self.normalization = nn.LayerNorm(d_model)
-
-    def forward(
+class TaskTower(nn.Module):
+    def __init__(
         self,
-        base: torch.Tensor,
-        conditions: torch.Tensor,
-        phase_ids: torch.Tensor,
-    ) -> torch.Tensor:
-        return self.normalization(
-            base + self.condition(conditions) + self.phase(phase_ids)
+        d_model: int,
+        *,
+        hidden_ratio: float,
+        dropout: float,
+        activation: str,
+    ) -> None:
+        super().__init__()
+        hidden = _width(d_model, hidden_ratio)
+        self.layers = nn.Sequential(
+            nn.Linear(d_model, hidden),
+            _activation(activation),
+            nn.Dropout(dropout),
+            nn.Linear(hidden, 1),
         )
+
+    def forward(self, values: torch.Tensor) -> torch.Tensor:
+        return self.layers(values).squeeze(-1)
 
 
 def _mixture(
-    experts: nn.ModuleList,
+    experts: Iterable[nn.Module],
     values: torch.Tensor,
     logits: torch.Tensor,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor]:
+    weights = torch.softmax(logits, dim=-1)
     outputs = torch.stack([expert(values) for expert in experts], dim=1)
-    return (
-        torch.softmax(logits, dim=-1).unsqueeze(-1) * outputs
-    ).sum(dim=1)
+    return (weights.unsqueeze(-1) * outputs).sum(dim=1), weights
 
 
 @dataclass(frozen=True)
@@ -105,349 +160,224 @@ class Stage3ForwardOutput:
     diagnostics: dict[str, torch.Tensor]
 
 
-class IL21Model(nn.Module):
-    def __init__(self, config: Stage3Config, d_model: int) -> None:
-        super().__init__()
-        self.config = config
-        self.tasks = IL21_TASKS
-        self.groups = tuple(
-            sorted({TASK_REGISTRY[task].meta_group for task in self.tasks})
-        )
-        self.condition_fusion = ConditionFusion(d_model)
-        self.solute_project = nn.Sequential(
-            nn.Linear(d_model, d_model), nn.LayerNorm(d_model)
-        )
-        self.solute_interaction = SoluteInteraction(d_model)
-        if config.model.architecture == "shared_bottom":
-            self.shared_bottom = nn.Sequential(
-                Expert(d_model), nn.Dropout(config.model.dropout)
-            )
-        elif config.model.architecture == "mmoe":
-            expert_count = (
-                config.model.global_experts + config.model.group_experts
-            )
-            self.mmoe_experts = nn.ModuleList(
-                [Expert(d_model) for _ in range(expert_count)]
-            )
-            self.mmoe_gates = nn.ModuleDict(
-                {
-                    sanitize_task(task): nn.Linear(d_model, expert_count)
-                    for task in self.tasks
-                }
-            )
-        else:
-            self.l1_global = nn.ModuleList(
-                [Expert(d_model) for _ in range(config.model.global_experts)]
-            )
-            self.l1_global_gate = nn.Linear(
-                d_model, config.model.global_experts
-            )
-            self.l1_groups = nn.ModuleDict(
-                {
-                    group: nn.ModuleList(
-                        [
-                            Expert(d_model)
-                            for _ in range(config.model.group_experts)
-                        ]
-                    )
-                    for group in self.groups
-                }
-            )
-            self.l1_group_gates = nn.ModuleDict(
-                {
-                    group: nn.Linear(d_model, config.model.group_experts)
-                    for group in self.groups
-                }
-            )
-            self.l2_global = nn.ModuleList(
-                [Expert(d_model) for _ in range(config.model.global_experts)]
-            )
-            self.l2_group = nn.ModuleDict(
-                {
-                    group: nn.ModuleList(
-                        [
-                            Expert(d_model)
-                            for _ in range(config.model.group_experts)
-                        ]
-                    )
-                    for group in self.groups
-                }
-            )
-            self.private = nn.ModuleDict(
-                {
-                    sanitize_task(task): nn.ModuleList(
-                        [
-                            Expert(d_model)
-                            for _ in range(config.model.private_experts)
-                        ]
-                    )
-                    for task in self.tasks
-                }
-            )
-            self.task_gates = nn.ModuleDict(
-                {
-                    sanitize_task(task): nn.Linear(
-                        d_model
-                        * (3 if TASK_REGISTRY[task].uses_solute else 2),
-                        config.model.global_experts
-                        + config.model.group_experts
-                        + config.model.private_experts,
-                    )
-                    for task in self.tasks
-                }
-            )
-            self.feature_gates = nn.ModuleDict(
-                {
-                    sanitize_task(task): FeatureGate(d_model)
-                    for task in self.tasks
-                }
-            )
-            self.self_gates = nn.ModuleDict(
-                {
-                    sanitize_task(task): nn.Linear(d_model, d_model)
-                    for task in self.tasks
-                }
-            )
-        self.towers = nn.ModuleDict(
-            {
-                sanitize_task(task): nn.Sequential(
-                    nn.Linear(d_model, d_model),
-                    nn.SiLU(),
-                    nn.Dropout(config.model.dropout),
-                    nn.Linear(d_model, 1),
-                )
-                for task in self.tasks
-            }
-        )
-
-    def _home(
-        self,
-        task: str,
-        values: torch.Tensor,
-        solute_cls: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        spec = TASK_REGISTRY[task]
-        key = sanitize_task(task)
-        group = spec.meta_group
-        projected_solute = (
-            self.solute_project(solute_cls)
-            if solute_cls is not None
-            else None
-        )
-        l1_values = values
-        if spec.uses_solute and self.config.model.solute_injection == "early":
-            if projected_solute is None:
-                raise ValueError(f"Stage 3 task requires solute CLS: {task}")
-            l1_values = self.solute_interaction(values, projected_solute)
-        z_shared = _mixture(
-            self.l1_global,
-            l1_values,
-            self.l1_global_gate(l1_values),
-        )
-        z_group = _mixture(
-            self.l1_groups[group],
-            l1_values,
-            self.l1_group_gates[group](l1_values),
-        )
-        local_input = z_group
-        if spec.uses_solute and self.config.model.solute_injection == "late":
-            if projected_solute is None:
-                raise ValueError(f"Stage 3 task requires solute CLS: {task}")
-            local_input = self.solute_interaction(z_group, projected_solute)
-        elif not spec.uses_solute and solute_cls is not None:
-            raise ValueError(
-                f"Direct Stage 3 task must not receive solute CLS: {task}"
-            )
-        global_outputs = torch.stack(
-            [expert(z_shared) for expert in self.l2_global], dim=1
-        )
-        local_outputs = torch.stack(
-            [expert(local_input) for expert in self.l2_group[group]], dim=1
-        )
-        private_outputs = torch.stack(
-            [expert(local_input) for expert in self.private[key]], dim=1
-        )
-        gate_inputs = [z_shared, local_input]
-        if spec.uses_solute:
-            gate_inputs.append(projected_solute)
-        logits = self.task_gates[key](torch.cat(gate_inputs, dim=-1))
-        expert_outputs = torch.cat(
-            (global_outputs, local_outputs, private_outputs), dim=1
-        )
-        mixed = (
-            torch.softmax(logits, dim=-1).unsqueeze(-1) * expert_outputs
-        ).sum(dim=1)
-        if self.config.model.feature_gate:
-            mixed = self.feature_gates[key](mixed)
-        if self.config.model.self_gate:
-            mixed = mixed * torch.sigmoid(self.self_gates[key](mixed))
-        return mixed, {
-            "first_layer_shared": z_shared,
-            "first_layer_group": z_group,
-            "second_layer_global": global_outputs,
-            "second_layer_local": local_outputs,
-            "second_layer_private": private_outputs,
-            "task_gate": torch.softmax(logits, dim=-1),
-        }
-
-    def forward(
-        self,
-        task: str,
-        base_embedding: torch.Tensor,
-        conditions: torch.Tensor,
-        phase_ids: torch.Tensor,
-        *,
-        solute_cls: torch.Tensor | None = None,
-    ) -> Stage3ForwardOutput:
-        if task not in self.tasks:
-            raise ValueError(f"Inactive IL21 task: {task}")
-        values = self.condition_fusion(
-            base_embedding, conditions, phase_ids
-        )
-        architecture = self.config.model.architecture
-        if architecture == "home":
-            representation, diagnostics = self._home(
-                task, values, solute_cls
-            )
-        else:
-            spec = TASK_REGISTRY[task]
-            projected_solute = None
-            if spec.uses_solute and solute_cls is None:
-                raise ValueError(
-                    f"Stage 3 task requires solute CLS: {task}"
-                )
-            if spec.uses_solute:
-                projected_solute = self.solute_project(solute_cls)
-            elif solute_cls is not None:
-                raise ValueError(
-                    f"Direct Stage 3 task must not receive solute CLS: {task}"
-                )
-            if (
-                spec.uses_solute
-                and self.config.model.solute_injection == "early"
-            ):
-                values = self.solute_interaction(values, projected_solute)
-            if architecture == "shared_bottom":
-                representation = self.shared_bottom(values)
-                diagnostics = {"shared_bottom": representation}
-            else:
-                logits = self.mmoe_gates[sanitize_task(task)](values)
-                representation = _mixture(
-                    self.mmoe_experts, values, logits
-                )
-                diagnostics = {"task_gate": torch.softmax(logits, dim=-1)}
-            if (
-                spec.uses_solute
-                and self.config.model.solute_injection == "late"
-            ):
-                representation = self.solute_interaction(
-                    representation, projected_solute
-                )
-        predictions = self.towers[sanitize_task(task)](
-            representation
-        ).squeeze(-1)
-        return Stage3ForwardOutput(predictions, diagnostics)
-
-
-class IndependentTaskHead(nn.Module):
-    def __init__(self, d_model: int, dropout: float) -> None:
-        super().__init__()
-        self.adapter = nn.Linear(d_model, d_model)
-        self.condition = nn.Linear(8, d_model)
-        self.phase = nn.Embedding(len(PHASE_TOKENS), d_model)
-        self.normalization = nn.LayerNorm(d_model)
-        self.expert = Expert(d_model)
-        self.tower = nn.Sequential(
-            nn.Linear(d_model, d_model),
-            nn.SiLU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_model, 1),
-        )
-
-    def forward(
-        self,
-        base_embedding: torch.Tensor,
-        conditions: torch.Tensor,
-        phase_ids: torch.Tensor,
-    ) -> torch.Tensor:
-        values = self.normalization(
-            self.adapter(base_embedding)
-            + self.condition(conditions)
-            + self.phase(phase_ids)
-        )
-        return self.tower(self.expert(values)).squeeze(-1)
-
-
-class Aux6Model(nn.Module):
-    def __init__(self, d_model: int, dropout: float) -> None:
-        super().__init__()
-        self.tasks = AUX6_TASKS
-        self.heads = nn.ModuleDict(
-            {
-                sanitize_task(task): IndependentTaskHead(d_model, dropout)
-                for task in self.tasks
-            }
-        )
-
-    def forward(
-        self,
-        task: str,
-        base_embedding: torch.Tensor,
-        conditions: torch.Tensor,
-        phase_ids: torch.Tensor,
-        *,
-        solute_cls: torch.Tensor | None = None,
-    ) -> Stage3ForwardOutput:
-        if task not in self.tasks:
-            raise ValueError(f"Inactive Aux6 task: {task}")
-        if solute_cls is not None:
-            raise ValueError("Aux6 independent heads do not accept solute CLS")
-        predictions = self.heads[sanitize_task(task)](
-            base_embedding, conditions, phase_ids
-        )
-        return Stage3ForwardOutput(predictions, {})
-
-
-class Stage3MultiDomainModel(nn.Module):
+class Stage3SparseModel(nn.Module):
     def __init__(
         self,
-        config: Stage3Config,
+        model_config: Stage3ModelConfig,
+        task_specs: Mapping[str, ResolvedTaskSpec],
         d_model: int,
-        *,
-        seed: int,
     ) -> None:
         super().__init__()
-        self.config = config
+        self.model_config = model_config
+        self.task_specs = dict(task_specs)
         self.d_model = d_model
-        self.active_domains = config.active_domains
-        if "il21" in self.active_domains:
-            with torch.random.fork_rng(devices=[]):
-                torch.manual_seed(seed + 11000)
-                self.il21 = IL21Model(config, d_model)
-        if "aux6" in self.active_domains:
-            with torch.random.fork_rng(devices=[]):
-                torch.manual_seed(seed + 22000)
-                self.aux6 = Aux6Model(d_model, config.model.dropout)
+        self.groups = tuple(
+            sorted({spec.meta_group for spec in self.task_specs.values() if spec.enabled})
+        )
+        self._ownership_by_parameter: dict[nn.Parameter, Ownership] = {}
 
-    def domain_module(self, domain: str) -> nn.Module:
-        if domain not in self.active_domains:
-            raise ValueError(f"Inactive Stage 3 domain: {domain}")
-        return getattr(self, domain)
+        expert_kwargs = {
+            "hidden_ratio": model_config.expert_hidden_ratio,
+            "dropout": model_config.dropout,
+            "activation": model_config.activation,
+        }
+        self.l1_global_experts = nn.ModuleList(
+            [Expert(d_model, **expert_kwargs) for _ in range(model_config.global_experts)]
+        )
+        self.l1_global_gate = nn.Linear(d_model, model_config.global_experts)
+        self.l2_global_experts = nn.ModuleList(
+            [Expert(d_model, **expert_kwargs) for _ in range(model_config.global_experts)]
+        )
+        self._own_modules(
+            GLOBAL,
+            self.l1_global_experts,
+            self.l1_global_gate,
+            self.l2_global_experts,
+        )
+
+        self.l1_group_experts = nn.ModuleDict()
+        self.l1_group_gates = nn.ModuleDict()
+        self.l1_group_normalizations = nn.ModuleDict()
+        self.l2_group_experts = nn.ModuleDict()
+        self.interactions = nn.ModuleDict()
+        partner_groups = {
+            spec.meta_group
+            for spec in self.task_specs.values()
+            if spec.enabled and spec.partner_mode == "interaction"
+        }
+        for group in self.groups:
+            self.l1_group_experts[group] = nn.ModuleList(
+                [Expert(d_model, **expert_kwargs) for _ in range(model_config.group_experts)]
+            )
+            self.l1_group_gates[group] = nn.Linear(d_model, model_config.group_experts)
+            self.l1_group_normalizations[group] = nn.LayerNorm(d_model)
+            self.l2_group_experts[group] = nn.ModuleList(
+                [Expert(d_model, **expert_kwargs) for _ in range(model_config.group_experts)]
+            )
+            modules: list[nn.Module] = [
+                self.l1_group_experts[group],
+                self.l1_group_gates[group],
+                self.l1_group_normalizations[group],
+                self.l2_group_experts[group],
+            ]
+            if group in partner_groups:
+                self.interactions[group] = PartnerInteraction(
+                    d_model,
+                    hidden_ratio=model_config.interaction_hidden_ratio,
+                    dropout=model_config.dropout,
+                    activation=model_config.activation,
+                )
+                modules.append(self.interactions[group])
+            self._own_modules(group_owner(group), *modules)
+
+        self.private_experts = nn.ModuleDict()
+        self.task_gates = nn.ModuleDict()
+        self.condition_films = nn.ModuleDict()
+        self.task_normalizations = nn.ModuleDict()
+        self.towers = nn.ModuleDict()
+        candidate_count = (
+            model_config.global_experts
+            + model_config.group_experts
+            + model_config.private_experts
+        )
+        for task_id, spec in self.task_specs.items():
+            if not spec.enabled:
+                continue
+            key = sanitize_task(task_id)
+            self.private_experts[key] = nn.ModuleList(
+                [Expert(d_model, **expert_kwargs) for _ in range(model_config.private_experts)]
+            )
+            self.task_gates[key] = nn.Linear(2 * d_model, candidate_count)
+            if spec.condition_columns:
+                self.condition_films[key] = ConditionFiLM(
+                    len(spec.condition_columns),
+                    d_model,
+                    hidden_ratio=model_config.film_hidden_ratio,
+                    dropout=model_config.dropout,
+                    activation=model_config.activation,
+                )
+            self.task_normalizations[key] = (
+                nn.LayerNorm(d_model) if model_config.l2_residual else nn.Identity()
+            )
+            self.towers[key] = TaskTower(
+                d_model,
+                hidden_ratio=model_config.tower_hidden_ratio,
+                dropout=model_config.dropout,
+                activation=model_config.activation,
+            )
+            modules = [
+                self.private_experts[key],
+                self.task_gates[key],
+                self.task_normalizations[key],
+                self.towers[key],
+            ]
+            if key in self.condition_films:
+                modules.append(self.condition_films[key])
+            self._own_modules(private_owner(task_id), *modules)
+        self._validate_ownership()
+
+    def _own_modules(self, owner: Ownership, *modules: nn.Module) -> None:
+        for module in modules:
+            for parameter in module.parameters():
+                existing = self._ownership_by_parameter.get(parameter)
+                if existing is not None and existing != owner:
+                    raise RuntimeError(
+                        f"Stage 3 parameter has multiple owners: {existing} and {owner}"
+                    )
+                self._ownership_by_parameter[parameter] = owner
+
+    def _validate_ownership(self) -> None:
+        missing = [
+            name
+            for name, parameter in self.named_parameters()
+            if parameter not in self._ownership_by_parameter
+        ]
+        if missing:
+            raise RuntimeError("Stage 3 parameters lack ownership: " + ", ".join(missing))
+
+    def parameter_ownership(self) -> dict[nn.Parameter, Ownership]:
+        return dict(self._ownership_by_parameter)
+
+    def ownership_manifest(self) -> dict[str, str]:
+        return {
+            name: self._ownership_by_parameter[parameter].label
+            for name, parameter in self.named_parameters()
+        }
+
+    def parameters_for_owner(self, owner: Ownership) -> tuple[nn.Parameter, ...]:
+        return tuple(
+            parameter
+            for parameter, candidate in self._ownership_by_parameter.items()
+            if candidate == owner
+        )
 
     def forward(
         self,
-        task: str,
-        base_embedding: torch.Tensor,
+        task_id: str,
+        primary_embedding: torch.Tensor,
         conditions: torch.Tensor,
-        phase_ids: torch.Tensor,
         *,
-        solute_cls: torch.Tensor | None = None,
+        partner_embedding: torch.Tensor | None = None,
     ) -> Stage3ForwardOutput:
-        domain = "il21" if task in IL21_TASKS else "aux6"
-        return self.domain_module(domain)(
-            task,
-            base_embedding,
-            conditions,
-            phase_ids,
-            solute_cls=solute_cls,
+        spec = self.task_specs.get(task_id)
+        if spec is None or not spec.enabled:
+            raise ValueError(f"Inactive Stage 3 task: {task_id}")
+        key = sanitize_task(task_id)
+        z_global, l1_global_weights = _mixture(
+            self.l1_global_experts,
+            primary_embedding,
+            self.l1_global_gate(primary_embedding),
+        )
+        z_group_delta, l1_group_weights = _mixture(
+            self.l1_group_experts[spec.meta_group],
+            primary_embedding,
+            self.l1_group_gates[spec.meta_group](primary_embedding),
+        )
+        local = self.l1_group_normalizations[spec.meta_group](
+            primary_embedding + z_group_delta
+        )
+        if spec.condition_columns:
+            if conditions.shape[-1] != len(spec.condition_columns):
+                raise ValueError(f"Stage 3 condition width mismatch: {task_id}")
+            local = self.condition_films[key](local, conditions)
+        elif conditions.shape[-1] != 0:
+            raise ValueError(f"Condition-free Stage 3 task received conditions: {task_id}")
+        if spec.partner_mode == "interaction":
+            if partner_embedding is None:
+                raise ValueError(f"Stage 3 task requires partner embedding: {task_id}")
+            local = self.interactions[spec.meta_group](local, partner_embedding)
+        elif partner_embedding is not None:
+            raise ValueError(f"Stage 3 task must not receive partner embedding: {task_id}")
+
+        global_outputs = torch.stack(
+            [expert(z_global) for expert in self.l2_global_experts], dim=1
+        )
+        group_outputs = torch.stack(
+            [expert(local) for expert in self.l2_group_experts[spec.meta_group]], dim=1
+        )
+        private_outputs = torch.stack(
+            [expert(local) for expert in self.private_experts[key]], dim=1
+        )
+        task_gate = torch.softmax(
+            self.task_gates[key](torch.cat((z_global, local), dim=-1)), dim=-1
+        )
+        candidates = torch.cat((global_outputs, group_outputs, private_outputs), dim=1)
+        mixed = (task_gate.unsqueeze(-1) * candidates).sum(dim=1)
+        representation = (
+            self.task_normalizations[key](local + mixed)
+            if self.model_config.l2_residual
+            else mixed
+        )
+        return Stage3ForwardOutput(
+            predictions=self.towers[key](representation),
+            diagnostics={
+                "z_global": z_global,
+                "z_group": z_group_delta,
+                "l1_global_gate": l1_global_weights,
+                "l1_group_gate": l1_group_weights,
+                "task_gate": task_gate,
+                "l2_global_candidates": global_outputs,
+                "l2_group_candidates": group_outputs,
+                "l2_private_candidates": private_outputs,
+            },
         )

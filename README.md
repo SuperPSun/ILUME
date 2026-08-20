@@ -1,6 +1,6 @@
 # ILUME
 
-ILUME 以四模态掩码预训练（Stage 1）、catalog 驱动的九任务 physics representation 训练（Stage 2）和双域 27 任务训练（Stage 3）组成科研 pipeline。仓库按 Stage 组织代码；现役科研合同由正式 YAML 与 [ADR](docs/adr/README.md) 共同定义。
+ILUME 以四模态掩码预训练（Stage 1）、catalog 驱动的九任务 physics representation 训练（Stage 2）和 sparse-label 21 任务训练（Stage 3）组成科研 pipeline。仓库按 Stage 组织代码；现役科研合同由正式 YAML 与 [ADR](docs/adr/README.md) 共同定义。
 
 ## Installation
 
@@ -75,40 +75,42 @@ python scripts/stage2/train.py \
 
 ## Stage 3
 
-Stage 3 到 Stage 2 Object v3 encoder artifact 的表示迁移尚未完成。当前 `scripts/stage3/prepare.py` 会在写入 artifact 前明确拒绝 Object v3 checkpoint 与 `stage2_encoder.pt`；以下历史命令暂不可用，待独立迁移完成后恢复：
+Stage 3 v1 从 catalog 解析 21 个 scalar observation task 和 6 个 meta-group。prepare 通过公开 frozen Object v3 checkpoint loader 建立内容寻址的 FP32 object cache；train/evaluate 只读完整 artifact，不加载 Stage 2。每个任务保留独立 dataset，按 task-local fold 拟合 normalization，并使用固定 composite allocation 与 ownership-aware hierarchical PCGrad：GLOBAL、GROUP block 始终独立投影，PRIVATE 不参与投影。
+
+正式 Base 仅支持单进程单 CUDA GPU，默认 BF16；设备不支持时直接失败。测试可显式使用 CPU 与 `amp_dtype: none`。当前已生成 Stage 3 CSV 仍有 catalog 声明 condition 的缺失值，正式 prepare 会按合同拒绝，需先由 ILUME-Data 发布 condition 完整的新产物。
 
 ```bash
 python scripts/stage3/prepare.py \
-  --config configs/v1/stage3/reference.yaml \
-  --output outputs/v1/stage3/reference/prepare
+  --config configs/v1/stage3/base.yaml \
+  --output outputs/v1/stage3/base/prepare
 
 python scripts/stage3/train.py \
-  --config configs/v1/stage3/reference.yaml \
+  --config configs/v1/stage3/base.yaml \
   --fold 1 \
-  --output outputs/v1/stage3/reference/checkpoints/fold1
+  --output outputs/v1/stage3/base/train/fold1
 ```
 
 验证集汇总和 test ensemble：
 
 ```bash
 python scripts/stage3/evaluate.py \
-  --config configs/v1/stage3/reference.yaml \
-  --checkpoint-dir outputs/v1/stage3/reference/checkpoints \
-  --split valid \
-  --output outputs/v1/stage3/reference/evaluate_valid
+  --config configs/v1/stage3/base.yaml \
+  --checkpoint-dir outputs/v1/stage3/base/train/fold1 \
+  --split valid --fold 1 --checkpoint-epoch 100 \
+  --output outputs/v1/stage3/base/evaluate_valid_fold1
 
 python scripts/stage3/evaluate.py \
-  --config configs/v1/stage3/reference.yaml \
-  --checkpoint-dir outputs/v1/stage3/reference/checkpoints \
-  --split test --ensemble-folds \
-  --output outputs/v1/stage3/reference/evaluate_test
+  --config configs/v1/stage3/base.yaml \
+  --checkpoint-dir outputs/v1/stage3/base/train \
+  --split test --ensemble-folds --checkpoint-epoch 100 \
+  --output outputs/v1/stage3/base/evaluate_test
 ```
 
 ## Outputs
 
 `--output` 是一次操作的独立目录。新训练和 evaluate 拒绝覆盖已有目录；只有显式 `--resume` 可继续训练。Prepare 保留可校验的幂等复用。
 
-每个操作目录包含 Git 可跟踪的 `run_config.yaml`、`metadata.json` 和成功后生成的 `summary.json`。Prepare payload 位于 `artifacts/` 子目录；checkpoint、metrics JSONL、日志和 tensor 默认不进入 Git。所有阶段保留全部周期 checkpoint；Stage 1/3 用 `last.pt` 表示最新完整恢复状态，Stage 2 直接通过最新的完整 epoch checkpoint 恢复。
+每个操作目录包含 Git 可跟踪的 `run_config.yaml`、`metadata.json` 和成功后生成的 `summary.json`。Prepare payload 位于 `artifacts/` 子目录；checkpoint、metrics JSONL、日志和 tensor 默认不进入 Git。Stage 1 用 `last.pt` 表示最新完整恢复状态；Stage 2 直接通过最新的完整 epoch checkpoint 恢复；Stage 3 Base 默认只保存 epoch 10、20、…、100 的完整 checkpoint，不生成 best/last。
 
 ## Tests
 

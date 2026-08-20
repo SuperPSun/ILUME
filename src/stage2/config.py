@@ -21,6 +21,9 @@ DEFAULT_TASK_WEIGHTS = {
     "simulation/transfer_organic": 0.5,
 }
 
+STAGE2_CHECKPOINT_VERSION = 3
+STAGE2_CHECKPOINT_KIND = "ilume_stage2_object"
+
 
 @dataclass(frozen=True)
 class Stage2DataConfig:

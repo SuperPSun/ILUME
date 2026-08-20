@@ -1,172 +1,189 @@
 from __future__ import annotations
 
-import json
+import math
+from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 import torch
 
 from common.io import sha256_file
-from common.training import resolve_device
-from .config import DOMAIN_TASKS, Stage3Config
+from common.training import canonical_json_sha256, resolve_device
+from .config import Stage3Config
 from .data import Stage3TaskDataset
-from .model import Stage3MultiDomainModel
-from .prepare import load_frozen_embeddings
-from .train import (
-    STAGE3_CHECKPOINT_VERSION,
-    STAGE3_DOMAIN_MODEL_KIND,
-    STAGE3_MODEL_KIND,
-    FrozenRepresentationStore,
-)
+from .model import Stage3SparseModel
+from .prepare import load_prepared_stage3
+from .train import STAGE3_CHECKPOINT_KIND, STAGE3_CHECKPOINT_VERSION, regression_metrics
+
+
+def _checkpoint_path(root: Path, fold: int, epoch: int) -> Path:
+    filename = f"checkpoint_epoch_{epoch:05d}.pt"
+    nested = root / f"fold{fold}" / filename
+    return nested if nested.is_file() else root / filename
+
+
+def _load_model(
+    config: Stage3Config,
+    prepared: Mapping[str, Any],
+    checkpoint_path: Path,
+    fold: int,
+    epoch: int,
+    device: torch.device,
+) -> tuple[Stage3SparseModel, dict[str, Any]]:
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    expected = {
+        "kind": STAGE3_CHECKPOINT_KIND,
+        "format_version": STAGE3_CHECKPOINT_VERSION,
+        "stage": "stage3",
+        "fold": fold,
+        "completed_epoch": epoch,
+        "stage2_checkpoint_sha256": prepared["metadata"]["stage2_checkpoint_sha256"],
+        "resolved_registry": {
+            task_id: spec.to_dict() for task_id, spec in prepared["registry"].items()
+        },
+    }
+    for key, value in expected.items():
+        if checkpoint.get(key) != value:
+            raise ValueError(f"Stage 3 evaluation checkpoint mismatch: {key}")
+    plan = checkpoint.get("resolved_training_plan")
+    if not isinstance(plan, dict) or checkpoint.get(
+        "resolved_training_plan_hash"
+    ) != canonical_json_sha256(plan):
+        raise ValueError("Stage 3 checkpoint resolved plan hash mismatch")
+    if any(
+        plan.get("model", {}).get(name) != value
+        for name, value in asdict(config.model).items()
+    ):
+        raise ValueError("Stage 3 checkpoint model config mismatch")
+    if plan.get("data", {}).get("source_hashes") != prepared["metadata"]["source_hashes"]:
+        raise ValueError("Stage 3 checkpoint data provenance mismatch")
+    if plan.get("data", {}).get("artifact_metadata_sha256") != sha256_file(
+        config.data.artifacts_dir / "metadata.json"
+    ):
+        raise ValueError("Stage 3 checkpoint artifact identity mismatch")
+    if plan.get("normalization_hash") != canonical_json_sha256(
+        checkpoint.get("normalization")
+    ):
+        raise ValueError("Stage 3 checkpoint normalization mismatch")
+    d_model = int(prepared["objects"]["embeddings"].shape[1])
+    model = Stage3SparseModel(config.model, prepared["registry"], d_model)
+    if checkpoint.get("ownership_manifest") != model.ownership_manifest():
+        raise ValueError("Stage 3 checkpoint ownership mismatch")
+    model.load_state_dict(checkpoint["model"], strict=True)
+    return model.to(device).eval(), checkpoint
 
 
 @torch.no_grad()
 def _predict(
-    model: Stage3MultiDomainModel,
-    domain: str,
+    model: Stage3SparseModel,
+    task_id: str,
     dataset: Stage3TaskDataset,
-    store: FrozenRepresentationStore,
+    embeddings: torch.Tensor,
+    normalization: Mapping[str, Any],
     config: Stage3Config,
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    predictions: list[torch.Tensor] = []
-    batch_size = config.domain_training(domain).batch_size
-    store.prepare_dataset(dataset)
-    for start in range(0, len(dataset), batch_size):
-        indices = torch.arange(
-            start,
-            min(len(dataset), start + batch_size),
-            device=store.device,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    normalized_predictions: list[torch.Tensor] = []
+    target_stats = normalization["target"]
+    for start in range(0, len(dataset), config.training.microbatch_size):
+        indices = torch.arange(start, min(len(dataset), start + config.training.microbatch_size))
+        primary = embeddings[dataset.primary_object_ids[indices]].to(device)
+        partner_ids = dataset.partner_object_ids[indices]
+        partner = (
+            embeddings[partner_ids].to(device)
+            if len(partner_ids) and bool((partner_ids >= 0).all())
+            else None
         )
-        base, conditions, phase_ids, _, solute = store.batch(
-            dataset.task, dataset, indices, device
-        )
-        predictions.append(
-            model(
-                dataset.task,
-                base,
-                conditions,
-                phase_ids,
-                solute_cls=solute,
+        conditions = dataset.conditions[indices].to(device)
+        with torch.autocast(
+            device_type=device.type,
+            dtype=torch.bfloat16,
+            enabled=config.training.amp_dtype == "bf16",
+        ):
+            prediction = model(
+                task_id, primary, conditions, partner_embedding=partner
             ).predictions
-        )
+        if not torch.isfinite(prediction).all():
+            raise RuntimeError(f"Non-finite Stage 3 evaluation prediction: {task_id}")
+        normalized_predictions.append(prediction.float().cpu())
     normalized = (
-        torch.cat(predictions).float().cpu()
-        if predictions
-        else torch.empty(0)
+        torch.cat(normalized_predictions) if normalized_predictions else torch.empty(0)
     )
-    stats = dataset.scalers[f"fold{dataset.fold}"][dataset.task]["target"]
-    raw = normalized * float(stats["scale"]) + float(stats["mean"])
-    return raw, dataset.raw_targets.float()
+    raw_predictions = normalized * float(target_stats["scale"]) + float(
+        target_stats["mean"]
+    )
+    normalized_targets = (
+        dataset.raw_targets.float() - float(target_stats["mean"])
+    ) / float(target_stats["scale"])
+    return normalized, raw_predictions, normalized_targets
 
 
-def _metrics(
-    predictions: torch.Tensor, targets: torch.Tensor
-) -> dict[str, float | int]:
-    count = len(targets)
-    delta = predictions - targets
-    denominator = float(torch.square(targets - targets.mean()).sum())
+def _raw_ensemble_metrics(
+    predictions: torch.Tensor, targets: torch.Tensor, scale: float
+) -> dict[str, Any]:
+    delta = predictions.double() - targets.double()
+    count = int(targets.numel())
+    if count == 0:
+        return {"count": 0, "reason": "no_samples"}
+    denominator = float((targets.double() - targets.double().mean()).square().sum())
+    prediction_std = float(predictions.double().std(unbiased=False)) if count else 0.0
+    target_std = float(targets.double().std(unbiased=False)) if count else 0.0
+    pearson = (
+        float(torch.corrcoef(torch.stack((predictions.double(), targets.double())))[0, 1])
+        if count >= 2 and prediction_std > 0 and target_std > 0
+        else float("nan")
+    )
     return {
         "count": count,
         "mae": float(delta.abs().mean()),
         "rmse": float(delta.square().mean().sqrt()),
         "r2": (
             float("nan")
-            if denominator == 0.0
+            if denominator == 0
             else 1.0 - float(delta.square().sum()) / denominator
         ),
-    }
-
-
-def _validate_domain_contract(
-    checkpoint_contract: dict[str, Any],
-    metadata: dict[str, Any],
-    artifact_root: Path,
-    domain: str,
-    checkpoint_path: Path,
-) -> None:
-    expected = {
-        "data_metadata_hash": sha256_file(
-            artifact_root / domain / "metadata.json"
+        "r2_reason": "constant_target" if denominator == 0 else None,
+        "pearson_r": pearson,
+        "pearson_reason": (
+            "insufficient_or_constant_samples" if math.isnan(pearson) else None
         ),
-        "source_hashes": metadata["source_hashes"],
+        "normalized_mae": float(delta.abs().mean()) / scale,
+        "normalized_rmse": float(delta.square().mean().sqrt()) / scale,
     }
-    for key, value in expected.items():
-        if checkpoint_contract.get(key) != value:
-            raise ValueError(
-                f"Stage 3 checkpoint {domain}.{key} mismatch: "
-                f"{checkpoint_path}"
-            )
 
 
-def _load_fold_model(
-    config: Stage3Config,
-    checkpoint_dir: Path,
-    fold: int,
-    metadata: dict[str, dict[str, Any]],
-    d_model: int,
-    device: torch.device,
-) -> tuple[Stage3MultiDomainModel, dict[str, float]]:
-    combined = len(config.active_domains) > 1
-    filename = "best.pt" if combined else f"best_{config.active_domains[0]}.pt"
-    checkpoint_path = checkpoint_dir / f"fold{fold}" / filename
-    checkpoint = torch.load(
-        checkpoint_path, map_location="cpu", weights_only=False
-    )
-    if checkpoint.get("format_version") != STAGE3_CHECKPOINT_VERSION:
-        raise ValueError(
-            f"Unsupported Stage 3 v2 model checkpoint: {checkpoint_path}"
-        )
-    if checkpoint.get("fold") != fold:
-        raise ValueError(
-            f"Stage 3 checkpoint fold mismatch: {checkpoint_path}"
-        )
-    model = Stage3MultiDomainModel(
-        config, d_model, seed=config.data.seed + fold
-    )
-    if combined:
-        if (
-            checkpoint.get("kind") != STAGE3_MODEL_KIND
-            or tuple(checkpoint.get("active_domains", ()))
-            != config.active_domains
-        ):
-            raise ValueError(
-                f"Expected combined Stage 3 v2 best.pt: {checkpoint_path}"
-            )
-        model.load_state_dict(checkpoint["model"], strict=True)
-        metrics = {
-            domain: float(checkpoint["domain_best_metrics"][domain])
-            for domain in config.active_domains
+def _macro(
+    per_task: Mapping[str, Mapping[str, Any]], registry: Mapping[str, Any]
+) -> dict[str, Any]:
+    result: dict[str, Any] = {"macro_task_equal": {}, "macro_group_equal": {}}
+    metrics = ("mae", "rmse", "r2", "pearson_r", "normalized_mae", "normalized_rmse")
+    for metric in metrics:
+        valid = {
+            task: float(values[metric])
+            for task, values in per_task.items()
+            if metric in values and math.isfinite(float(values[metric]))
         }
-        contracts = checkpoint["domains"]
-    else:
-        domain = config.active_domains[0]
-        if (
-            checkpoint.get("kind") != STAGE3_DOMAIN_MODEL_KIND
-            or checkpoint.get("domain") != domain
-        ):
-            raise ValueError(
-                f"Expected Stage 3 v2 best_{domain}.pt: {checkpoint_path}"
-            )
-        model.domain_module(domain).load_state_dict(
-            checkpoint["model"], strict=True
-        )
-        metrics = {domain: float(checkpoint["best_metric"])}
-        contracts = {
-            domain: {
-                "data_metadata_hash": checkpoint["data_metadata_hash"],
-                "source_hashes": checkpoint["source_hashes"],
-            }
+        result["macro_task_equal"][metric] = {
+            "value": sum(valid.values()) / len(valid) if valid else float("nan"),
+            "valid_tasks": len(valid),
+            "total_tasks": len(per_task),
         }
-    for domain in config.active_domains:
-        _validate_domain_contract(
-            contracts[domain],
-            metadata[domain],
-            config.data.artifacts_dir,
-            domain,
-            checkpoint_path,
-        )
-    return model.to(device).eval(), metrics
+        grouped = []
+        groups = sorted({registry[task].meta_group for task in per_task})
+        for group in groups:
+            values = [
+                value
+                for task, value in valid.items()
+                if registry[task].meta_group == group
+            ]
+            if values:
+                grouped.append(sum(values) / len(values))
+        result["macro_group_equal"][metric] = {
+            "value": sum(grouped) / len(grouped) if grouped else float("nan"),
+            "valid_groups": len(grouped),
+            "total_groups": len(groups),
+        }
+    return result
 
 
 def evaluate_checkpoints(
@@ -175,146 +192,98 @@ def evaluate_checkpoints(
     *,
     split: str,
     ensemble_folds: bool,
+    checkpoint_epoch: int | None = None,
+    task_subset: Sequence[str] | None = None,
+    fold: int | None = None,
 ) -> dict[str, Any]:
     if split not in {"valid", "test"}:
         raise ValueError("Stage 3 evaluation split must be valid or test")
     if split == "test" and not ensemble_folds:
-        raise ValueError(
-            "Fixed Stage 3 test evaluation requires --ensemble-folds"
-        )
+        raise ValueError("Stage 3 test evaluation requires five-fold ensemble")
+    if split == "valid" and (fold not in range(1, 6) or ensemble_folds):
+        raise ValueError("Stage 3 validation requires exactly one --fold")
     device = resolve_device(config.training.device)
-    loaded = {
-        domain: load_frozen_embeddings(config, domain)
-        for domain in config.active_domains
-    }
-    dimensions = {
-        int(metadata["embedding_dim"])
-        for _, metadata in loaded.values()
-    }
-    if len(dimensions) != 1:
-        raise ValueError("Stage 3 domain embedding dimensions do not match")
-    d_model = dimensions.pop()
-    stores = {
-        domain: FrozenRepresentationStore(
-            payload,
-            device=device,
-            resident=(
-                config.training.resident_data and device.type == "cuda"
-            ),
-        )
-        for domain, (payload, _) in loaded.items()
-    }
-    metadata = {
-        domain: domain_metadata
-        for domain, (_, domain_metadata) in loaded.items()
-    }
-    checkpoint_dir = Path(checkpoint_dir)
-    per_task_predictions: dict[str, list[torch.Tensor]] = {
-        task: [] for task in config.tasks
-    }
-    targets: dict[str, torch.Tensor] = {}
-    folds: list[dict[str, Any]] = []
-    for fold in range(1, 6):
-        model, best_metrics = _load_fold_model(
-            config,
-            checkpoint_dir,
-            fold,
-            metadata,
-            d_model,
-            device,
-        )
-        fold_metrics: dict[str, Any] = {
-            "fold": fold,
-            "domain_best_macro_normalized_mae": best_metrics,
-        }
-        for domain in config.active_domains:
-            for task in DOMAIN_TASKS[domain]:
-                dataset = Stage3TaskDataset(
-                    config.data.artifacts_dir,
-                    domain,
-                    fold,
-                    task,
-                    split,
-                )
-                if len(dataset) == 0:
-                    continue
-                prediction, target = _predict(
-                    model,
-                    domain,
-                    dataset,
-                    stores[domain],
-                    config,
-                    device,
-                )
-                if split == "valid":
-                    fold_metrics[task] = _metrics(prediction, target)
-                else:
-                    if task in targets and not torch.equal(
-                        targets[task], target
-                    ):
-                        raise ValueError(
-                            "Stage 3 fixed test rows differ across fold "
-                            f"artifacts: {task}"
-                        )
-                    targets[task] = target
-                    per_task_predictions[task].append(prediction)
-        folds.append(fold_metrics)
-    if split == "valid":
-        domain_summary: dict[str, Any] = {}
-        for domain in config.active_domains:
-            values = torch.tensor(
-                [
-                    row["domain_best_macro_normalized_mae"][domain]
-                    for row in folds
-                ],
-                dtype=torch.float64,
-            )
-            domain_summary[domain] = {
-                "macro_normalized_mae_mean": float(values.mean()),
-                "macro_normalized_mae_std": float(
-                    values.std(unbiased=False)
-                ),
-            }
-        task_summary: dict[str, Any] = {}
-        for task in config.tasks:
-            task_rows = [row[task] for row in folds if task in row]
-            if not task_rows:
-                continue
-            task_summary[task] = {}
-            for metric in ("mae", "rmse", "r2"):
-                values = torch.tensor(
-                    [float(row[metric]) for row in task_rows],
-                    dtype=torch.float64,
-                )
-                task_summary[task][f"{metric}_mean"] = float(values.mean())
-                task_summary[task][f"{metric}_std"] = float(
-                    values.std(unbiased=False)
-                )
-        return {
-            "split": "valid",
-            "folds": folds,
-            "domains": domain_summary,
-            "tasks": task_summary,
-        }
-    tasks: dict[str, Any] = {}
-    for task, predictions in per_task_predictions.items():
-        if predictions:
-            tasks[task] = _metrics(
-                torch.stack(predictions).mean(dim=0), targets[task]
-            )
-    return {"split": "test", "ensemble_folds": 5, "tasks": tasks}
-
-
-def write_evaluation(
-    result: dict[str, Any], output: str | Path | None = None
-) -> None:
-    serialized = (
-        json.dumps(result, ensure_ascii=False, indent=2, allow_nan=True) + "\n"
+    if config.training.amp_dtype == "bf16" and (
+        device.type != "cuda" or not torch.cuda.is_bf16_supported()
+    ):
+        raise RuntimeError("Stage 3 BF16 evaluation requires capable CUDA")
+    prepared = load_prepared_stage3(config)
+    enabled = tuple(
+        task for task, spec in prepared["registry"].items() if spec.enabled
     )
-    print(serialized, end="")
-    if output is not None:
-        path = Path(output)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(path.suffix + ".tmp")
-        temporary.write_text(serialized, encoding="utf-8")
-        temporary.replace(path)
+    tasks = tuple(task_subset) if task_subset is not None else enabled
+    if not tasks or set(tasks) - set(enabled):
+        raise ValueError("Stage 3 evaluation task subset is invalid")
+    epoch = config.training.epochs if checkpoint_epoch is None else checkpoint_epoch
+    if epoch <= 0:
+        raise ValueError("Stage 3 checkpoint epoch must be positive")
+    folds = range(1, 6) if split == "test" else (fold,)
+    root = Path(checkpoint_dir)
+    embeddings = prepared["objects"]["embeddings"].float()
+    fold_results: dict[str, Any] = {}
+    ensemble_predictions: dict[str, list[torch.Tensor]] = {task: [] for task in tasks}
+    raw_targets: dict[str, torch.Tensor] = {}
+    normalizations: dict[str, list[dict[str, Any]]] = {task: [] for task in tasks}
+    for current_fold in folds:
+        assert current_fold is not None
+        path = _checkpoint_path(root, current_fold, epoch)
+        if not path.is_file():
+            raise FileNotFoundError(f"Missing Stage 3 checkpoint: {path}")
+        model, checkpoint = _load_model(
+            config, prepared, path, current_fold, epoch, device
+        )
+        per_task: dict[str, Any] = {}
+        for task in tasks:
+            dataset = Stage3TaskDataset(
+                config.data.artifacts_dir, current_fold, task, split
+            )
+            normalization = checkpoint["normalization"][task]
+            normalized, raw, normalized_targets = _predict(
+                model, task, dataset, embeddings, normalization, config, device
+            )
+            per_task[task] = regression_metrics(
+                normalized, normalized_targets, normalization
+            )
+            ensemble_predictions[task].append(raw)
+            normalizations[task].append(normalization)
+            if task in raw_targets and not torch.equal(
+                raw_targets[task], dataset.raw_targets
+            ):
+                raise ValueError(
+                    f"Stage 3 test target order differs across folds: {task}"
+                )
+            raw_targets[task] = dataset.raw_targets.float()
+        fold_results[f"fold{current_fold}"] = {
+            "tasks": per_task,
+            **_macro(per_task, prepared["registry"]),
+        }
+    if split == "valid":
+        return {
+            "split": split,
+            "checkpoint_epoch": epoch,
+            **next(iter(fold_results.values())),
+        }
+    ensemble = {
+        task: _raw_ensemble_metrics(
+            torch.stack(predictions).mean(dim=0),
+            raw_targets[task],
+            sum(
+                float(item["target"]["scale"])
+                for item in normalizations[task]
+            )
+            / len(normalizations[task]),
+        )
+        for task, predictions in ensemble_predictions.items()
+    }
+    return {
+        "split": split,
+        "checkpoint_epoch": epoch,
+        "folds": fold_results,
+        "ensemble": {
+            "tasks": ensemble,
+            **_macro(ensemble, prepared["registry"]),
+        },
+    }
+
+
+__all__ = ["evaluate_checkpoints"]

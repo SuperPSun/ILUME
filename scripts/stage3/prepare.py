@@ -20,25 +20,22 @@ def main() -> None:
     args = parser.parse_args()
     config = load_stage3_config(args.config)
     configure_process_runtime(config)
-    from stage3.data import source_path
+    from stage3.data import resolve_task_registry, source_hashes
     from stage3.prepare import prepare_stage3
 
     run = open_run_directory(
         stage="stage3", operation="prepare", config_path=args.config,
         config_payload=config.to_dict(), output=args.output, seed=config.data.seed,
-        reusable=True,
+        reusable=False,
         details={"checkpoint": repository_relative(config.initialization.stage2_checkpoint)},
     )
     effective = replace(config, data=replace(config.data, artifacts_dir=run.artifacts))
-    sources = [source_path(effective, task, fold) for task in effective.tasks for fold in range(1, 6)]
-    sources.extend(
-        path for task in effective.tasks
-        if (path := effective.data.stage3_dir / task / "test.csv").is_file()
-    )
+    registry = resolve_task_registry(effective)
+    sources = [Path(path) for path in source_hashes(effective, registry)]
     try:
         write_data_identity(ROOT, "stage3", sources)
         result = prepare_stage3(effective)
-        run.complete({domain: value["summary"] for domain, value in result.items()})
+        run.complete(result)
     except BaseException:
         run.fail()
         raise
