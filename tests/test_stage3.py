@@ -11,8 +11,7 @@ from unittest.mock import patch
 import pytest
 import torch
 
-from common.io import sha256_file
-from common.training import canonical_json_sha256
+from common.identity import IDENTITY_CONTRACT_VERSION, semantic_identity, tensor_state_hash
 from stage3.config import (
     BASE_GROUP_TASKS,
     Stage3Config,
@@ -47,6 +46,12 @@ from stage3.train import (
     checkpoint_epochs,
     compute_task_gradient,
     run_stage3_training,
+)
+from stage3.identity import build_stage3_training_identity, metadata_identity
+
+
+TEST_ENCODER_IDENTITY = semantic_identity(
+    "stage2.encoder", {"contract_version": 1, "test": True}
 )
 
 
@@ -125,7 +130,7 @@ def _tiny_config(tmp_path: Path) -> Stage3Config:
         preparation=Stage3PreparationConfig(
             encoding_batch_size=2, cache_dir=tmp_path / "cache"
         ),
-        initialization=Stage3InitializationConfig(stage2_checkpoint=checkpoint),
+        initialization=Stage3InitializationConfig(stage2_encoder=checkpoint),
         model=Stage3ModelConfig(
             global_experts=1, group_experts=1, private_experts=1,
             dropout=0.0, expert_hidden_ratio=1.0,
@@ -153,13 +158,17 @@ def _tiny_config(tmp_path: Path) -> Stage3Config:
 
 
 @pytest.fixture()
-def tiny_prepared(tmp_path: Path) -> Stage3Config:
+def tiny_prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Stage3Config:
     config = _tiny_config(tmp_path)
+    monkeypatch.setattr(
+        "stage3.prepare.load_stage2_encoder_identity",
+        lambda path: TEST_ENCODER_IDENTITY,
+    )
 
     def fake_materialize(config, object_keys, reporter=None):
         del reporter
         values = torch.arange(len(object_keys) * 4, dtype=torch.float32).reshape(-1, 4) / 10
-        return values, sha256_file(config.initialization.stage2_checkpoint), {
+        return values, TEST_ENCODER_IDENTITY, {
             "hits": 0, "misses": len(object_keys)
         }
 
@@ -236,12 +245,15 @@ def test_cache_hit_miss_and_corruption(tmp_path: Path) -> None:
     )
 
     class Encoder:
-        checkpoint_hash = sha256_file(config.initialization.stage2_checkpoint)
+        encoder_identity = TEST_ENCODER_IDENTITY
 
         def encode(self, specs):
             return torch.ones(len(specs), 4)
 
-    with patch("stage3.prepare.load_frozen_object_encoder", return_value=Encoder()) as load:
+    with patch(
+        "stage3.prepare.load_stage2_encoder_identity",
+        return_value=TEST_ENCODER_IDENTITY,
+    ), patch("stage3.prepare.load_frozen_object_encoder", return_value=Encoder()) as load:
         first, _, audit = materialize_object_embeddings(config, keys)
         second, _, second_audit = materialize_object_embeddings(config, keys)
     assert torch.equal(first, second)
@@ -251,7 +263,11 @@ def test_cache_hit_miss_and_corruption(tmp_path: Path) -> None:
     cache_file = next(config.preparation.cache_dir.rglob("*.pt"))
     cache_file.write_bytes(b"corrupt")
     with pytest.raises(ValueError, match="Corrupt Stage 3 object cache"):
-        materialize_object_embeddings(config, keys)
+        with patch(
+            "stage3.prepare.load_stage2_encoder_identity",
+            return_value=TEST_ENCODER_IDENTITY,
+        ):
+            materialize_object_embeddings(config, keys)
 
 
 def test_model_has_unified_task_gate_and_no_l2_global_gate(tiny_prepared: Stage3Config) -> None:
@@ -370,22 +386,46 @@ def test_pcgrad_keeps_global_and_group_as_separate_blocks(
     assert torch.equal(result.gradients[private], gradients["experiment/a"][private])
 
 
-def _plugin_checkpoint(path: Path, model: Stage3SparseModel, stage2_sha: str) -> None:
-    plan = {"model": asdict(model.model_config)}
+def _plugin_checkpoint(
+    path: Path, model: Stage3SparseModel, stage2_encoder_identity: str
+) -> None:
+    plan = {
+        "fold": 1,
+        "active_tasks": list(model.task_specs),
+        "resolved_registry": {
+            task: spec.to_dict() for task, spec in model.task_specs.items()
+        },
+        "groups": {},
+        "data": {},
+        "model": asdict(model.model_config),
+        "optimizer": {},
+        "scheduler": {},
+        "math": {},
+        "stage2_encoder_identity": stage2_encoder_identity,
+        "prepared_identity": "test-prepared",
+        "normalization_hash": "test-normalization",
+        "ownership_manifest": model.ownership_manifest(),
+        "plugin": {"mode": "scratch", "loaded_parameters": []},
+        "trainable_parameters": sorted(name for name, _ in model.named_parameters()),
+        "frozen_parameters": [],
+    }
+    model_state = model.state_dict()
     torch.save(
         {
+            "identity_contract_version": IDENTITY_CONTRACT_VERSION,
             "kind": STAGE3_CHECKPOINT_KIND,
             "format_version": STAGE3_CHECKPOINT_VERSION,
             "stage": "stage3",
-            "stage2_checkpoint_sha256": stage2_sha,
+            "stage2_encoder_identity": stage2_encoder_identity,
             "resolved_registry": {
                 task: spec.to_dict() for task, spec in model.task_specs.items()
             },
             "ownership_manifest": model.ownership_manifest(),
-            "model": model.state_dict(),
+            "model": model_state,
+            "model_state_hash": tensor_state_hash("stage3.model-state", model_state),
             "normalization": {task: {} for task in model.task_specs},
             "resolved_training_plan": plan,
-            "resolved_training_plan_hash": canonical_json_sha256(plan),
+            "training_identity": build_stage3_training_identity(plan),
         },
         path,
     )
@@ -396,15 +436,19 @@ def test_plugin_defaults_and_explicit_adaptation(tiny_prepared: Stage3Config) ->
     source_registry = {task: registry[task] for task in ("experiment/a", "experiment/b")}
     source_model = Stage3SparseModel(tiny_prepared.model, source_registry, 4)
     checkpoint = tiny_prepared.data.artifacts_dir.parent / "plugin.pt"
-    stage2_sha = sha256_file(tiny_prepared.initialization.stage2_checkpoint)
-    _plugin_checkpoint(checkpoint, source_model, stage2_sha)
+    stage2_identity = metadata_identity(
+        json.loads((tiny_prepared.data.artifacts_dir / "metadata.json").read_text()),
+        "stage2_encoder",
+        context="test Stage 3 artifact",
+    )["hash"]
+    _plugin_checkpoint(checkpoint, source_model, stage2_identity)
     target = Stage3SparseModel(tiny_prepared.model, registry, 4)
     plugin = Stage3PluginConfig(checkpoint=checkpoint)
     config = replace(
         tiny_prepared,
         initialization=replace(tiny_prepared.initialization, plugin=plugin),
     )
-    _load_plugin(config, target, stage2_sha)
+    _load_plugin(config, target, stage2_identity)
     assert not any(parameter.requires_grad for parameter in target.parameters_for_owner(GLOBAL))
     assert not any(parameter.requires_grad for parameter in target.parameters_for_owner(group_owner("g1")))
     assert all(parameter.requires_grad for parameter in target.parameters_for_owner(group_owner("g2")))
@@ -421,7 +465,7 @@ def test_plugin_defaults_and_explicit_adaptation(tiny_prepared: Stage3Config) ->
         tiny_prepared,
         initialization=replace(tiny_prepared.initialization, plugin=adapted),
     )
-    _load_plugin(adapted_config, adapted_model, stage2_sha)
+    _load_plugin(adapted_config, adapted_model, stage2_identity)
     assert all(parameter.requires_grad for parameter in adapted_model.parameters_for_owner(GLOBAL))
     assert all(parameter.requires_grad for parameter in adapted_model.parameters_for_owner(group_owner("g1")))
     assert all(parameter.requires_grad for parameter in adapted_model.parameters_for_owner(private_owner("experiment/a")))
@@ -471,8 +515,8 @@ def test_stage3_scripts_configure_runtime_before_loading_operation() -> None:
     root = Path(__file__).resolve().parents[1]
     operations = {
         "prepare.py": "from stage3.prepare import prepare_stage3",
-        "train.py": "from stage3.train import run_stage3_training",
-        "evaluate.py": "from stage3.evaluate import evaluate_checkpoints",
+        "train.py": "from stage3.train import ",
+        "evaluate.py": "from stage3.evaluate import (",
     }
     for filename, operation_import in operations.items():
         source = (root / "scripts" / "stage3" / filename).read_text()

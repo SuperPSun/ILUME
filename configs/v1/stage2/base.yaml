@@ -5,6 +5,8 @@ data:
   artifacts_dir: outputs/v1/stage2/base/prepare/artifacts
   entity_shard_size: 4096
   seed: 42
+  target_materialization_modes:
+    simulation/simulated_qm_elec_hf: allow_partial_drop_all_missing
 preparation:
   workers: 8
   teacher_batch_size: 512

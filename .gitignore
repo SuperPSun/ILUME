@@ -22,6 +22,7 @@ __pycache__/
 !/outputs/**/run_config.yaml
 !/outputs/**/metadata.json
 !/outputs/**/summary.json
+!/outputs/**/attempts.jsonl
 /outputs/**/artifacts/
 
 # Historical and local research payloads

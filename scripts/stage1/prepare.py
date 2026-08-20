@@ -13,6 +13,7 @@ from common.data_identity import write_data_identity
 from common.outputs import open_run_directory
 from stage1.config import load_config
 from stage1.prepare import prepare_corpus, preparation_source_paths
+from stage1.identity import build_stage1_corpus_identity
 
 
 def main() -> None:
@@ -28,19 +29,23 @@ def main() -> None:
             preparation=replace(config.preparation, workers=args.workers),
         )
         config.validate()
+    identity_started = time.perf_counter()
+    sources = preparation_source_paths(config)
+    source_identity = write_data_identity(
+        ROOT,
+        "stage1",
+        {f"source_{index:05d}": path for index, path in enumerate(sources)},
+    )
+    corpus_identity = build_stage1_corpus_identity(config, source_identity)
+    identity_elapsed = time.perf_counter() - identity_started
     run = open_run_directory(
         stage="stage1", operation="prepare", config_path=args.config,
-        config_payload=config.to_dict(), output=args.output, seed=config.data.seed,
+        config_payload=config.to_dict(), semantic_identity=corpus_identity,
+        output=args.output, seed=config.data.seed,
         reusable=True,
-        ignored_config_sections={"preparation"},
     )
     effective = replace(config, data=replace(config.data, artifacts_dir=run.artifacts))
     try:
-        identity_started = time.perf_counter()
-        source_identity = write_data_identity(
-            ROOT, "stage1", preparation_source_paths(effective)
-        )
-        identity_elapsed = time.perf_counter() - identity_started
         run.complete(
             prepare_corpus(
                 effective,

@@ -5,6 +5,8 @@
 - 取代：ADR-0016 的固定任务、head routing 与 batch 调度合同，以及 ADR-0018 的 data/cache/checkpoint 版本、冻结快路径、loss 组合和 accumulation-window 合同。
 
 > 2026-08-20：本文关于“Stage 3 迁移延期并拒绝 Object v3”的决定已由 [ADR-0020](0020-stage3-v1-sparse-home-pcgrad.md) 取代；其余 Stage 2 Object v3 合同继续有效。
+>
+> 2026-08-20：本文分散的 identity、lineage 与 audit 规则已由 [ADR-0021](0021-identity-audit-contract-v1.md) 取代；物理格式版本与科研训练合同不变。
 
 ## 决定
 

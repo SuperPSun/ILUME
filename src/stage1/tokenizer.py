@@ -312,7 +312,13 @@ class SmilesTokenizer:
         return len(self._tokenize(smiles)) + 2
 
     def save(self, path: str | Path) -> None:
-        payload = {
+        Path(path).write_text(
+            json.dumps(self.to_payload(), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    def to_payload(self) -> dict[str, object]:
+        return {
             "format_version": 2,
             "backend": self.backend,
             "tokens": list(self.tokens),
@@ -322,24 +328,24 @@ class SmilesTokenizer:
             "min_frequency": self.min_frequency,
             "backend_version": self.backend_version,
         }
-        Path(path).write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
 
     @classmethod
     def load(cls, path: str | Path) -> "SmilesTokenizer":
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        return cls.from_payload(json.loads(Path(path).read_text(encoding="utf-8")))
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, object]) -> "SmilesTokenizer":
         if payload.get("format_version") == 1:
-            return cls(tuple(payload["tokens"]), backend="ais")
+            return cls(tuple(payload["tokens"]), backend="ais")  # type: ignore[arg-type]
         if payload.get("format_version") != 2:
             raise ValueError("Unsupported tokenizer artifact format")
         return cls(
-            tokens=tuple(payload["tokens"]),
-            backend=payload["backend"],
-            state=payload.get("state"),
-            vocabulary_budget=payload.get("vocabulary_budget"),
-            min_frequency=payload.get("min_frequency"),
-            backend_version=payload.get("backend_version"),
+            tokens=tuple(payload["tokens"]),  # type: ignore[arg-type]
+            backend=str(payload["backend"]),
+            state=payload.get("state"),  # type: ignore[arg-type]
+            vocabulary_budget=payload.get("vocabulary_budget"),  # type: ignore[arg-type]
+            min_frequency=payload.get("min_frequency"),  # type: ignore[arg-type]
+            backend_version=payload.get("backend_version"),  # type: ignore[arg-type]
         )
 
 

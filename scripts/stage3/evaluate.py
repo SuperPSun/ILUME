@@ -24,11 +24,26 @@ def main() -> None:
     args = parser.parse_args()
     config = load_stage3_config(args.config)
     configure_process_runtime(config)
-    from stage3.evaluate import evaluate_checkpoints
+    from stage3.evaluate import (
+        evaluate_checkpoints,
+        resolve_stage3_evaluation_identity,
+    )
+
+    checkpoint_dir = repository_path(args.checkpoint_dir)
+    evaluation_identity = resolve_stage3_evaluation_identity(
+        config,
+        checkpoint_dir,
+        split=args.split,
+        ensemble_folds=args.ensemble_folds,
+        checkpoint_epoch=args.checkpoint_epoch,
+        task_subset=args.tasks,
+        fold=args.fold,
+    )
 
     run = open_run_directory(
         stage="stage3", operation="evaluate", config_path=args.config,
         config_payload=config.to_dict(), output=args.output, seed=config.data.seed,
+        semantic_identity=evaluation_identity,
         details={
             "checkpoint_dir": repository_relative(args.checkpoint_dir),
             "split": args.split,
@@ -40,11 +55,12 @@ def main() -> None:
     )
     try:
         result = evaluate_checkpoints(
-            config, repository_path(args.checkpoint_dir), split=args.split,
+            config, checkpoint_dir, split=args.split,
             ensemble_folds=args.ensemble_folds,
             checkpoint_epoch=args.checkpoint_epoch,
             task_subset=args.tasks,
             fold=args.fold,
+            expected_evaluation_identity=evaluation_identity,
         )
         run.complete(result)
     except BaseException:

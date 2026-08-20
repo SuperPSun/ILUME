@@ -14,6 +14,11 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from common.identity import (
+    IDENTITY_CONTRACT_VERSION,
+    require_compatible_identity,
+    tensor_state_hash,
+)
 from common.io import atomic_json, atomic_torch_save, sha256_file
 from common.progress import ProgressReporter
 from common.training import canonical_json_sha256, capture_rng_state, cosine_warmup, resolve_device, restore_rng_state, seed_everything
@@ -33,9 +38,20 @@ from .data import (
     validate_runtime_task_contract,
 )
 from .model import RECONSTRUCTION_MODULES, Stage2ForwardOutput, Stage2ObjectModel, stage2_optimizer_groups
-from .prepare import load_teacher_embeddings
+from .prepare import (
+    load_teacher_embeddings,
+    stage1_encoder_identity,
+    teacher_cache_dir,
+    teacher_cache_identity,
+)
 from .registry import Stage2Registry
 from .runtime import configure_stage2_math
+from .identity import (
+    build_stage2_encoder_identity,
+    build_stage2_training_identity,
+    metadata_identity,
+)
+from stage1.identity import metadata_identity as stage1_metadata_identity
 
 
 STAGE2_ENCODER_VERSION = 1
@@ -44,6 +60,62 @@ STAGE2_ENCODER_KIND = "ilume_stage2_encoder"
 
 def _config_hash(config: Stage2Config) -> str:
     return canonical_json_sha256(config.experiment_dict())
+
+
+def resolve_stage2_training_identity(config: Stage2Config) -> dict[str, Any]:
+    config.validate()
+    runtime_device = resolve_device(config.training.device)
+    math_contract = configure_stage2_math(runtime_device)
+    loaded = load_stage1_model(
+        config.initialization.checkpoint,
+        config.data.pretrain_artifacts_dir,
+        device="cpu",
+        backbone_dropout=0.0,
+    )
+    registry = load_artifact_registry(config.data.artifacts_dir)
+    config.validate_registry(registry)
+    model = Stage2ObjectModel(
+        loaded.model,
+        registry,
+        object_layers=config.model.object_layers,
+        object_ffn_dim=config.model.object_ffn_dim,
+        dropout=config.model.dropout,
+    )
+    data_metadata = json.loads(
+        (config.data.artifacts_dir / "metadata.json").read_text(encoding="utf-8")
+    )
+    teacher_identity = teacher_cache_identity(data_metadata, loaded)
+    teacher_metadata = json.loads(
+        (
+            teacher_cache_dir(config, teacher_identity["hash"])
+            / "metadata.json"
+        ).read_text(encoding="utf-8")
+    )
+    stored_teacher = dict(
+        metadata_identity(
+            teacher_metadata, "teacher", context="Stage 2 teacher cache"
+        )
+    )
+    require_compatible_identity(
+        teacher_identity,
+        stored_teacher,
+        context="Stage 2 training teacher",
+    )
+    return build_stage2_training_identity(
+        config,
+        data_identity=dict(
+            metadata_identity(
+                data_metadata, "data", context="Stage 2 data artifact"
+            )
+        ),
+        teacher_identity=stored_teacher,
+        stage1_encoder_identity=stage1_encoder_identity(loaded),
+        registry=registry,
+        model_contract=model.model_contract,
+        normalized_task_weights=config.normalized_task_weights(registry),
+        math_contract=math_contract,
+        optimizer_implementation=_optimizer_implementation(runtime_device),
+    )
 
 
 def task_compensation_scale(task_weight: float, total_epoch_batches: int, batch_rows: int, task_rows: int) -> float:
@@ -257,28 +329,23 @@ def _batch_output(
 
 
 def _state_hash(state: dict[str, torch.Tensor]) -> str:
-    digest = hashlib.sha256()
-    for name, tensor in sorted(state.items()):
-        value = tensor.detach().cpu().contiguous()
-        digest.update(name.encode())
-        digest.update(str(value.dtype).encode())
-        digest.update(str(tuple(value.shape)).encode())
-        digest.update(value.view(torch.uint8).numpy().tobytes())
-    return digest.hexdigest()
+    return tensor_state_hash("stage2.encoder-state", state)
 
 
-def _save_epoch_checkpoint(path: Path, *, model: Stage2ObjectModel, optimizer: torch.optim.Optimizer, scheduler: torch.optim.lr_scheduler.LRScheduler, scaler: torch.amp.GradScaler, completed_epoch: int, global_optimizer_step: int, config: Stage2Config, registry: Stage2Registry, normalized_task_weights: dict[str, float], data_metadata_hash: str, teacher_embeddings_hash: str, teacher_cache_identity: str, task_rows: dict[str, int], task_batches: dict[str, int], scheduler_geometry: dict[str, int], validation: dict[str, Any], optimizer_implementation: str, math_contract: dict[str, Any]) -> None:
+def _save_epoch_checkpoint(path: Path, *, model: Stage2ObjectModel, optimizer: torch.optim.Optimizer, scheduler: torch.optim.lr_scheduler.LRScheduler, scaler: torch.amp.GradScaler, completed_epoch: int, global_optimizer_step: int, config: Stage2Config, registry: Stage2Registry, normalized_task_weights: dict[str, float], training_identity: dict[str, Any], data_identity: dict[str, Any], teacher_embeddings_hash: str, teacher_cache_identity: dict[str, Any], task_rows: dict[str, int], task_batches: dict[str, int], scheduler_geometry: dict[str, int], validation: dict[str, Any], optimizer_implementation: str, math_contract: dict[str, Any]) -> None:
     if path.exists():
         raise FileExistsError(f"Stage 2 checkpoint already exists: {path}")
     atomic_torch_save(path, {
         "format_version": STAGE2_CHECKPOINT_VERSION, "kind": STAGE2_CHECKPOINT_KIND,
+        "identity_contract_version": IDENTITY_CONTRACT_VERSION,
         "model": model.state_dict(), "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(),
         "scaler": scaler.state_dict(), "completed_epoch": completed_epoch,
         "global_optimizer_step": global_optimizer_step, "rng": capture_rng_state(),
         "config": config.to_dict(), "config_hash": _config_hash(config),
         "registry": registry.snapshot(), "registry_hash": registry.registry_hash,
         "catalog_sha256": registry.catalog_sha256, "model_contract": model.model_contract,
-        "data_metadata_hash": data_metadata_hash, "teacher_embeddings_hash": teacher_embeddings_hash,
+        "training_identity": training_identity, "data_identity": data_identity,
+        "teacher_embeddings_hash": teacher_embeddings_hash,
         "teacher_cache_identity": teacher_cache_identity, "task_rows": task_rows,
         "task_batches": task_batches, "normalized_task_weights": normalized_task_weights,
         "scheduler_geometry": scheduler_geometry,
@@ -295,7 +362,7 @@ def _save_epoch_checkpoint(path: Path, *, model: Stage2ObjectModel, optimizer: t
     })
 
 
-def _export_encoder(path: Path, *, model: Stage2ObjectModel, config: Stage2Config, registry: Stage2Registry, checkpoint_path: Path, data_metadata_hash: str) -> None:
+def _export_encoder(path: Path, *, model: Stage2ObjectModel, config: Stage2Config, registry: Stage2Registry, checkpoint_path: Path, data_identity: dict[str, Any]) -> None:
     if path.exists():
         raise FileExistsError(f"Stage 2 encoder artifact already exists: {path}")
     stage1_state = {
@@ -304,17 +371,75 @@ def _export_encoder(path: Path, *, model: Stage2ObjectModel, config: Stage2Confi
         if not any(name == prefix or name.startswith(prefix + ".") for prefix in RECONSTRUCTION_MODULES)
     }
     object_state = {name: tensor.detach().cpu() for name, tensor in model.object_encoder.state_dict().items()}
+    feature_metadata = json.loads(
+        (config.data.pretrain_artifacts_dir / "metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    feature_identity = dict(
+        stage1_metadata_identity(
+            feature_metadata, "feature", context="Stage 1 feature artifact"
+        )
+    )
+    feature_artifacts = {
+        name: json.loads(
+            (config.data.pretrain_artifacts_dir / name).read_text(encoding="utf-8")
+        )
+        for name in (
+            "tokenizer.json",
+            "descriptor_schema.json",
+            "descriptor_scaler.json",
+        )
+    }
+    stage1_state_hash = _state_hash(stage1_state)
+    object_state_hash = _state_hash(object_state)
+    stage1_model_config = model.backbone.config.to_dict()["model"]
+    stage1_contract = {
+        "encoding_api": "encode-states-v1",
+        "model": {
+            name: stage1_model_config[name]
+            for name in (
+                "d_model",
+                "n_heads",
+                "smiles_layers",
+                "graph_depth",
+                "descriptor_hidden_dim",
+                "descriptor_blocks",
+                "fusion_layers",
+                "feedforward_dim",
+                "dropout",
+                "role_embedding",
+                "gradient_checkpointing",
+            )
+        },
+        "feature_generation_contract": feature_metadata[
+            "feature_generation_contract"
+        ],
+    }
+    encoder_identity = build_stage2_encoder_identity(
+        stage1_feature_identity=feature_identity,
+        stage1_encoding_contract=stage1_contract,
+        stage1_state_hash=stage1_state_hash,
+        object_encoder_contract=model.model_contract["object_encoder"],
+        object_encoder_state_hash=object_state_hash,
+        role_to_id=ROLE_TO_ID,
+    )
     atomic_torch_save(path, {
         "kind": STAGE2_ENCODER_KIND, "format_version": STAGE2_ENCODER_VERSION,
+        "identity_contract_version": IDENTITY_CONTRACT_VERSION,
+        "semantic_identity": encoder_identity,
         "stage1_backbone": stage1_state, "object_encoder": object_state,
         "stage1_config": model.backbone.config.to_dict(),
+        "stage1_feature_identity": feature_identity,
+        "stage1_encoding_contract": stage1_contract,
+        "feature_artifacts": feature_artifacts,
         "object_encoder_config": model.model_contract["object_encoder"],
         "role_to_id": dict(ROLE_TO_ID), "model_contract": model.model_contract,
-        "state_hashes": {"stage1_backbone": _state_hash(stage1_state), "object_encoder": _state_hash(object_state)},
+        "state_hashes": {"stage1_backbone": stage1_state_hash, "object_encoder": object_state_hash},
         "provenance": {
             "stage1_checkpoint_hash": sha256_file(config.initialization.checkpoint),
             "stage2_checkpoint_hash": sha256_file(checkpoint_path),
-            "stage2_data_hash": data_metadata_hash,
+            "stage2_data_identity": data_identity["hash"],
             "task_catalog_hash": registry.catalog_sha256,
             "registry_hash": registry.registry_hash,
             "config_hash": _config_hash(config),
@@ -326,6 +451,10 @@ def load_stage2_encoder_artifact(path: str | Path) -> dict[str, Any]:
     payload = torch.load(Path(path), map_location="cpu", weights_only=False)
     if payload.get("kind") != STAGE2_ENCODER_KIND or payload.get("format_version") != STAGE2_ENCODER_VERSION:
         raise ValueError("Unsupported Stage 2 encoder artifact")
+    if payload.get("identity_contract_version") != IDENTITY_CONTRACT_VERSION:
+        raise ValueError(
+            "Stage 2 encoder predates identity contract v1; retrain Stage 2"
+        )
     stage1_state = payload.get("stage1_backbone")
     object_state = payload.get("object_encoder")
     if not isinstance(stage1_state, dict) or not isinstance(object_state, dict):
@@ -335,11 +464,24 @@ def load_stage2_encoder_artifact(path: str | Path) -> dict[str, Any]:
         raise ValueError("Stage 2 encoder Stage 1 state hash mismatch")
     if expected_hashes.get("object_encoder") != _state_hash(object_state):
         raise ValueError("Stage 2 encoder ObjectEncoder state hash mismatch")
-    required = {"stage1_config", "object_encoder_config", "role_to_id", "model_contract", "provenance"}
+    required = {"stage1_config", "stage1_feature_identity", "stage1_encoding_contract", "feature_artifacts", "object_encoder_config", "role_to_id", "model_contract", "provenance", "semantic_identity"}
     if not required.issubset(payload):
         raise ValueError("Stage 2 encoder artifact contract is incomplete")
     if payload["role_to_id"] != dict(ROLE_TO_ID):
         raise ValueError("Stage 2 encoder role mapping mismatch")
+    expected_identity = build_stage2_encoder_identity(
+        stage1_feature_identity=payload["stage1_feature_identity"],
+        stage1_encoding_contract=payload["stage1_encoding_contract"],
+        stage1_state_hash=expected_hashes["stage1_backbone"],
+        object_encoder_contract=payload["object_encoder_config"],
+        object_encoder_state_hash=expected_hashes["object_encoder"],
+        role_to_id=payload["role_to_id"],
+    )
+    require_compatible_identity(
+        expected_identity,
+        payload["semantic_identity"],
+        context="Stage 2 encoder artifact",
+    )
     return payload
 
 
@@ -493,7 +635,7 @@ def evaluate_stage2(
     return result
 
 
-def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_from: str | Path | None = None) -> list[dict[str, Any]]:
+def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_from: str | Path | None = None, expected_training_identity: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     config.validate()
     seed_everything(config.data.seed)
     device = resolve_device(config.training.device)
@@ -534,6 +676,32 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
     packer = MultimodalPacker(loaded.vocabulary)
     model.set_backbone_trainable(config.training.backbone_frozen_epochs == 0)
     optimizer_implementation = _optimizer_implementation(device)
+    data_identity = dict(
+        metadata_identity(data_metadata, "data", context="Stage 2 data artifact")
+    )
+    teacher_identity = dict(
+        metadata_identity(
+            teacher_metadata, "teacher", context="Stage 2 teacher cache"
+        )
+    )
+    initial_stage1_encoder_identity = stage1_encoder_identity(loaded)
+    training_identity = build_stage2_training_identity(
+        config,
+        data_identity=data_identity,
+        teacher_identity=teacher_identity,
+        stage1_encoder_identity=initial_stage1_encoder_identity,
+        registry=registry,
+        model_contract=model.model_contract,
+        normalized_task_weights=normalized_weights,
+        math_contract=math_contract,
+        optimizer_implementation=optimizer_implementation,
+    )
+    if expected_training_identity is not None:
+        require_compatible_identity(
+            training_identity,
+            expected_training_identity,
+            context="Stage 2 script/trainer",
+        )
     optimizer = torch.optim.AdamW(stage2_optimizer_groups(model, backbone_learning_rate=config.training.backbone_learning_rate, object_encoder_learning_rate=config.training.object_encoder_learning_rate, task_head_learning_rate=config.training.task_head_learning_rate, weight_decay=config.training.weight_decay), fused=device.type == "cuda", foreach=False if device.type != "cuda" else None)
     clip_parameters = [
         parameter for group in optimizer.param_groups for parameter in group["params"]
@@ -546,7 +714,6 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     metrics_path = output / "metrics.jsonl"
-    data_metadata_hash = sha256_file(metadata_path)
     completed_epoch = 0
     global_step = 0
     if resume_from is None:
@@ -556,16 +723,25 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
         checkpoint = torch.load(Path(resume_from), map_location="cpu", weights_only=False)
         if checkpoint.get("format_version") != STAGE2_CHECKPOINT_VERSION or checkpoint.get("kind") != STAGE2_CHECKPOINT_KIND:
             raise ValueError("Unsupported Stage 2 object checkpoint; Object v2 is not migrated")
+        if checkpoint.get("identity_contract_version") != IDENTITY_CONTRACT_VERSION:
+            raise ValueError(
+                "Stage 2 checkpoint predates identity contract v1; retrain Stage 2"
+            )
         if checkpoint.get("execution_contract_version") != 2:
             raise ValueError("Stage 2 checkpoint predates the Object v3 efficiency contract")
-        checkpoint_config = stage2_config_from_checkpoint_dict(checkpoint["config"])
-        if checkpoint_config.experiment_dict() != config.experiment_dict():
-            raise ValueError("Stage 2 checkpoint experiment config does not match")
+        checkpoint_identity = checkpoint.get("training_identity")
+        if not isinstance(checkpoint_identity, dict):
+            raise ValueError("Stage 2 checkpoint has no training identity")
+        require_compatible_identity(
+            training_identity,
+            checkpoint_identity,
+            context="Stage 2 resume",
+        )
         expected = {
-            "config_hash": _config_hash(config), "registry_hash": registry.registry_hash,
-            "model_contract": model.model_contract, "data_metadata_hash": data_metadata_hash,
+            "registry_hash": registry.registry_hash,
+            "model_contract": model.model_contract,
             "teacher_embeddings_hash": teacher_metadata["embeddings_hash"],
-            "teacher_cache_identity": teacher_metadata["identity"], "task_rows": task_rows,
+            "teacher_cache_identity": teacher_identity, "task_rows": task_rows,
             "task_batches": task_batches, "normalized_task_weights": normalized_weights,
             "scheduler_geometry": scheduler_geometry,
             "optimizer_implementation": optimizer_implementation, "math_contract": math_contract,
@@ -671,9 +847,9 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
         _append_metric(metrics_path, validation)
         reporter.emit_json(validation)
         checkpoint_path = output / f"checkpoint_epoch_{epoch:05d}.pt"
-        _save_epoch_checkpoint(checkpoint_path, model=model, optimizer=optimizer, scheduler=scheduler, scaler=scaler, completed_epoch=epoch, global_optimizer_step=global_step, config=config, registry=registry, normalized_task_weights=normalized_weights, data_metadata_hash=data_metadata_hash, teacher_embeddings_hash=teacher_metadata["embeddings_hash"], teacher_cache_identity=teacher_metadata["identity"], task_rows=task_rows, task_batches=task_batches, scheduler_geometry=scheduler_geometry, validation=validation, optimizer_implementation=optimizer_implementation, math_contract=math_contract)
+        _save_epoch_checkpoint(checkpoint_path, model=model, optimizer=optimizer, scheduler=scheduler, scaler=scaler, completed_epoch=epoch, global_optimizer_step=global_step, config=config, registry=registry, normalized_task_weights=normalized_weights, training_identity=training_identity, data_identity=data_identity, teacher_embeddings_hash=teacher_metadata["embeddings_hash"], teacher_cache_identity=teacher_identity, task_rows=task_rows, task_batches=task_batches, scheduler_geometry=scheduler_geometry, validation=validation, optimizer_implementation=optimizer_implementation, math_contract=math_contract)
         if epoch == config.training.epochs:
-            _export_encoder(output / "stage2_encoder.pt", model=model, config=config, registry=registry, checkpoint_path=checkpoint_path, data_metadata_hash=data_metadata_hash)
+            _export_encoder(output / "stage2_encoder.pt", model=model, config=config, registry=registry, checkpoint_path=checkpoint_path, data_identity=data_identity)
         checkpoint_row = {"event": "stage2_checkpoint_complete", "epoch": epoch, "global_optimizer_step": global_step}
         _append_metric(metrics_path, checkpoint_row)
         results.extend((validation, checkpoint_row))
@@ -685,5 +861,6 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
 
 __all__ = [
     "STAGE2_CHECKPOINT_KIND", "STAGE2_CHECKPOINT_VERSION", "evaluate_stage2",
-    "load_stage2_encoder_artifact", "run_stage2_training", "task_compensation_scale",
+    "load_stage2_encoder_artifact", "resolve_stage2_training_identity",
+    "run_stage2_training", "task_compensation_scale",
 ]

@@ -5,6 +5,7 @@ import inspect
 import json
 import threading
 import time
+import copy
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +16,8 @@ import torch
 from rdkit import Chem
 
 from common.io import sha256_file
+from common.identity import IDENTITY_CONTRACT_VERSION
+from stage1.identity import metadata_identity
 from stage1.config import (
     STAGE1_CHECKPOINT_KIND, STAGE1_CHECKPOINT_VERSION, DataConfig,
     DescriptorConfig, FingerprintConfig, ModelConfig, PretrainConfig,
@@ -189,10 +192,30 @@ def tiny_stage2_setup(tmp_path: Path) -> Stage2Config:
     dataset = PreparedCorpusDataset(corpus, "train")
     model = MultimodalPretrainModel(pretrain, vocabulary, dataset.descriptor_schema)
     checkpoint = tmp_path / "checkpoint.pt"
-    torch.save({"kind": STAGE1_CHECKPOINT_KIND, "format_version": STAGE1_CHECKPOINT_VERSION, "model": model.state_dict(), "config": pretrain.to_dict(), "artifact_hash": sha256_file(corpus / "metadata.json")}, checkpoint)
+    corpus_metadata = json.loads((corpus / "metadata.json").read_text())
+    torch.save({
+        "identity_contract_version": IDENTITY_CONTRACT_VERSION,
+        "kind": STAGE1_CHECKPOINT_KIND,
+        "format_version": STAGE1_CHECKPOINT_VERSION,
+        "model": model.state_dict(),
+        "config": pretrain.to_dict(),
+        "corpus_identity": dict(metadata_identity(
+            corpus_metadata, "corpus", context="test Stage 1 corpus"
+        )),
+    }, checkpoint)
     _stage2_sources(tmp_path)
     return Stage2Config(
-        data=Stage2DataConfig(data_root=tmp_path, task_catalog_path=tmp_path / "task_catalog.csv", pretrain_artifacts_dir=corpus, artifacts_dir=tmp_path / "stage2_artifacts", entity_shard_size=3),
+        data=Stage2DataConfig(
+            data_root=tmp_path,
+            task_catalog_path=tmp_path / "task_catalog.csv",
+            pretrain_artifacts_dir=corpus,
+            artifacts_dir=tmp_path / "stage2_artifacts",
+            entity_shard_size=3,
+            target_materialization_modes={
+                "simulation/simulated_qm_elec_hf":
+                    "allow_partial_drop_all_missing"
+            },
+        ),
         preparation=Stage2PreparationConfig(workers=1, teacher_batch_size=4),
         initialization=Stage2InitializationConfig(checkpoint=checkpoint),
         training=Stage2TrainingConfig(batch_size=2, epochs=2, backbone_frozen_epochs=1, packing_workers=2, packing_prefetch_batches=2, cuda_prefetch_batches=1, log_every_batches=3, device="cpu", amp_dtype="none"),
@@ -263,8 +286,9 @@ def test_data_and_teacher_identity_ignore_stage2_model_contract(tiny_stage2_setu
     assert second_teacher["identity"] == first_teacher["identity"]
     assert second_teacher["cache_reused"] is True
     assert "model_contract" not in second_teacher
-    assert set(second_teacher["identity_payload"]) == {
-        "extraction_contract_version", "entity_artifact_hash",
+    teacher_identity = second_teacher["semantic"]["identities"]["teacher"]
+    assert set(teacher_identity["payload"]) == {
+        "extraction_contract_version", "entity_identity",
         "stage1_encoder_identity",
     }
     assert second_teacher["dtype"] == "float32"
@@ -278,7 +302,7 @@ def test_teacher_identity_binds_stage1_encoding_contract_and_entity_data(tiny_st
         tiny_stage2_setup.data.pretrain_artifacts_dir,
         backbone_dropout=0.0,
     )
-    identity, payload = teacher_cache_identity(data_metadata, loaded)
+    identity = teacher_cache_identity(data_metadata, loaded)
     changed_loaded = replace(
         loaded,
         config=replace(
@@ -286,22 +310,22 @@ def test_teacher_identity_binds_stage1_encoding_contract_and_entity_data(tiny_st
             model=replace(loaded.config.model, n_heads=2),
         ),
     )
-    changed_identity, _ = teacher_cache_identity(data_metadata, changed_loaded)
-    changed_feature_identity, _ = teacher_cache_identity(
+    changed_identity = teacher_cache_identity(data_metadata, changed_loaded)
+    changed_feature_identity = teacher_cache_identity(
         data_metadata, replace(loaded, artifact_hash="different"),
     )
-    changed_data = dict(data_metadata)
-    changed_data["entity_artifact_hash"] = "different"
-    changed_entity_identity, _ = teacher_cache_identity(changed_data, loaded)
+    changed_data = copy.deepcopy(data_metadata)
+    changed_data["semantic"]["identities"]["entity"]["hash"] = "different"
+    changed_entity_identity = teacher_cache_identity(changed_data, loaded)
 
     assert identity != changed_identity
     assert identity != changed_feature_identity
     assert identity != changed_entity_identity
-    assert payload["stage1_encoder_identity"] == stage1_encoder_identity(loaded)[0]
+    assert identity["payload"]["stage1_encoder_identity"] == stage1_encoder_identity(loaded)["hash"]
 
     with torch.no_grad():
         next(loaded.model.smiles_encoder.parameters()).add_(1.0)
-    changed_state_identity, _ = teacher_cache_identity(data_metadata, loaded)
+    changed_state_identity = teacher_cache_identity(data_metadata, loaded)
     assert identity != changed_state_identity
 
 
@@ -314,12 +338,12 @@ def test_old_data_and_teacher_identity_contracts_are_rejected(tiny_stage2_setup)
         tiny_stage2_setup.data.pretrain_artifacts_dir,
         backbone_dropout=0.0,
     )
-    identity, _ = teacher_cache_identity(data_metadata, loaded)
-    teacher_path = tiny_stage2_setup.data.artifacts_dir / "teachers" / identity / "metadata.json"
+    identity = teacher_cache_identity(data_metadata, loaded)
+    teacher_path = tiny_stage2_setup.data.artifacts_dir / "teachers" / identity["hash"] / "metadata.json"
     teacher_metadata = json.loads(teacher_path.read_text(encoding="utf-8"))
-    teacher_metadata["identity_payload"]["extraction_contract_version"] = 1
+    teacher_metadata["semantic"]["identities"]["teacher"]["payload"]["extraction_contract_version"] = 1
     teacher_path.write_text(json.dumps(teacher_metadata), encoding="utf-8")
-    with pytest.raises(ValueError, match="teacher cache contract mismatch"):
+    with pytest.raises(ValueError, match="identity self-hash mismatch"):
         load_teacher_embeddings(
             tiny_stage2_setup, loaded, data_metadata,
             expected_count=teacher_metadata["entity_count"],
@@ -727,11 +751,15 @@ def test_prepare_train_checkpoint_and_encoder_export(tiny_stage2_setup, tmp_path
         "ffn_dim": tiny_stage2_setup.model.object_ffn_dim,
         "dropout": tiny_stage2_setup.model.dropout,
     }
-    frozen = load_frozen_object_encoder(
-        output / "checkpoint_epoch_00002.pt", device="cpu"
+    encoder_path = output / "stage2_encoder.pt"
+    frozen = load_frozen_object_encoder(encoder_path, device="cpu")
+    assert not frozen.backbone.training
+    assert not frozen.object_encoder.training
+    assert not any(
+        parameter.requires_grad
+        for module in (frozen.backbone, frozen.object_encoder)
+        for parameter in module.parameters()
     )
-    assert not frozen.model.training
-    assert not any(parameter.requires_grad for parameter in frozen.model.parameters())
     encoded = frozen.encode(
         (
             FrozenObjectSpec("molecule", (("neutral", "CC"),)),
@@ -744,7 +772,6 @@ def test_prepare_train_checkpoint_and_encoder_export(tiny_stage2_setup, tmp_path
         (FrozenObjectSpec("il", (("cation", "[Na+]"), ("anion", "[Cl-]"))),)
     )
     assert il_encoded.shape == (1, 16)
-    encoder_path = output / "stage2_encoder.pt"
     encoder = load_stage2_encoder_artifact(encoder_path)
     assert encoder["kind"] == "ilume_stage2_encoder"
     assert not any("head" in key for key in encoder["stage1_backbone"])
@@ -783,7 +810,7 @@ def test_prepare_train_checkpoint_and_encoder_export(tiny_stage2_setup, tmp_path
             object_layers=tiny_stage2_setup.model.object_layers + 1,
         ),
     )
-    with pytest.raises(ValueError, match="experiment config does not match"):
+    with pytest.raises(ValueError, match="semantic identity mismatch"):
         run_stage2_training(
             changed_model,
             output_dir=tmp_path / "changed_model_resume",

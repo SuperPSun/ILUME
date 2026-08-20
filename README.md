@@ -71,11 +71,11 @@ python scripts/stage2/train.py \
 
 训练每个 epoch 完整覆盖所有任务的全部有效行，并以 deterministic randomized round-robin 交替 task batch；Object v3 强制一个 batch 对应一个 optimizer step，不支持 gradient accumulation。第一 epoch 的 object/interaction task 直接复用 teacher CLS，不运行 Stage 1；atom task仍运行冻结 Stage 1 取得 fusion atom states。后四个 epoch联合微调。Partial charge 只去重 Stage 1 entity forward，ObjectEncoder 与 AtomHead 按 molecule sample 向量化执行；atom target 全量保持 CPU resident。Task weight 归一化后只补偿 physics loss，teacher loss保持独立。Base 使用 4 个 ordered packing worker、包含 H2D 在内的 4 个逻辑预取名额，以及单 batch CUDA lookahead；transfer stream 通过 event 交接，不做逐 batch synchronize。CUDA 固定使用 TF32、pinned/non-blocking transfer 与 fused AdamW。每个 epoch full validation 后保存 `checkpoint_epoch_00001.pt` 至 `checkpoint_epoch_00005.pt`，epoch 5 后额外导出不含 physics heads 的 `stage2_encoder.pt`。只允许从完整 Object v3 epoch 恢复；不生成 `best.pt` 或 `last.pt`。旧 Object v2 以及缺少当前 preparation/extraction contract 的开发期 v3 artifact/cache/checkpoint 不迁移，必须重新 prepare。
 
-截至 2026-08-19，正式 Base 已在 `outputs/v1/stage2/base` 完成 preparation contract 3、teacher extraction contract 2 和五个 epoch 训练，并导出 `stage2_encoder.pt`。该次 prepare/train metadata 均记录 `repository_dirty: true`，因此产物可作为当前正式运行结果使用，但不得表述为由单一 clean commit 直接复现。
+截至 2026-08-19 的正式 Base 产物缺少 ADR-0021 identity contract v1 block，升级后不再兼容，必须按 Stage 1 → Stage 2 → Stage 3 顺序重新生成。归档旧正式输出前先做精确清单并等待单独确认。
 
 ## Stage 3
 
-Stage 3 v1 从 catalog 解析 21 个 scalar observation task 和 6 个 meta-group。prepare 通过公开 frozen Object v3 checkpoint loader 建立内容寻址的 FP32 object cache；train/evaluate 只读完整 artifact，不加载 Stage 2。每个任务保留独立 dataset，按 task-local fold 拟合 normalization，并使用固定 composite allocation 与 ownership-aware hierarchical PCGrad：GLOBAL、GROUP block 始终独立投影，PRIVATE 不参与投影。
+Stage 3 v1 从 catalog 解析 21 个 scalar observation task 和 6 个 meta-group。prepare 通过自包含 `stage2_encoder.pt` 建立按 encoder semantic identity 内容寻址的 FP32 object cache；train/evaluate 只读完整 Stage 3 artifact，不反向定位 Stage 1 或加载完整 Stage 2 checkpoint。每个任务保留独立 dataset，按 task-local fold 拟合 normalization，并使用固定 composite allocation 与 ownership-aware hierarchical PCGrad：GLOBAL、GROUP block 始终独立投影，PRIVATE 不参与投影。
 
 正式 Base 仅支持单进程单 CUDA GPU，默认 BF16；设备不支持时直接失败。测试可显式使用 CPU 与 `amp_dtype: none`。截至 2026-08-20，当前五折 CSV 中有 6 个任务同时包含有值和缺失的 `pressure_kPa`，缺失合计 50,300 行，并非这些任务整列都没有压力。正式 prepare 会按合同拒绝；需先由 ILUME-Data 逐行补齐，或在确认压力不是该任务合法条件后同步修改 catalog `condition_columns`，Stage 3 不负责填充或删行。
 
@@ -110,7 +110,7 @@ python scripts/stage3/evaluate.py \
 
 `--output` 是一次操作的独立目录。新训练和 evaluate 拒绝覆盖已有目录；只有显式 `--resume` 可继续训练。Stage 1/2 prepare 按各自 artifact 身份合同支持受控复用；Stage 3 prepare 拒绝已有输出目录，只能发布到新的空输出。
 
-每个操作目录包含 Git 可跟踪的 `run_config.yaml`、`metadata.json` 和成功后生成的 `summary.json`。Prepare payload 位于 `artifacts/` 子目录；checkpoint、metrics JSONL、日志和 tensor 默认不进入 Git。Stage 1 用 `last.pt` 表示最新完整恢复状态；Stage 2 直接通过最新的完整 epoch checkpoint 恢复；Stage 3 Base 默认只保存 epoch 10、20、…、100 的完整 checkpoint，不生成 best/last。
+每个操作目录包含 Git 可跟踪的 `run_config.yaml`、`metadata.json`、逐 attempt 追加的 `attempts.jsonl` 和成功后生成的 `summary.json`。Prepare payload 位于 `artifacts/` 子目录；checkpoint、训练 metrics JSONL、日志和 tensor 默认不进入 Git。Stage 1 用 `last.pt` 表示最新完整恢复状态；Stage 2 直接通过最新的完整 epoch checkpoint 恢复；Stage 3 Base 默认只保存 epoch 10、20、…、100 的完整 checkpoint，不生成 best/last。
 
 ## Tests
 

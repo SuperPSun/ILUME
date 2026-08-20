@@ -8,14 +8,13 @@ from typing import Any
 
 import numpy as np
 import torch
-from rdkit import rdBase
 from torch.utils.data import Dataset
 
+from common.identity import IDENTITY_CONTRACT_VERSION
 from common.io import sha256_file
-from .descriptors import DescriptorSchema, DescriptorStandardizer, rdkit_descriptor_names
+from .descriptors import DescriptorSchema, DescriptorStandardizer
 from .fingerprints import FingerprintBatch
 from .graph import GraphRecord, PackedGraph
-from .tokenizer import tokenizer_backend_version
 
 
 CORPUS_FORMAT_VERSION = 2
@@ -204,22 +203,18 @@ class PreparedCorpusDataset(Dataset):
                 "Unsupported Stage 1 corpus artifact version; "
                 "rerun scripts/stage1/prepare.py to create corpus v2"
             )
+        if self.metadata.get("identity_contract_version") != IDENTITY_CONTRACT_VERSION:
+            raise ValueError(
+                "Stage 1 corpus predates identity contract v1; regenerate the corpus"
+            )
         artifact_hashes = self.metadata.get("artifact_hashes")
         if not isinstance(artifact_hashes, dict) or not artifact_hashes:
             raise ValueError("Corpus artifact hashes are missing; rerun scripts/stage1/prepare.py")
         for filename, expected_hash in artifact_hashes.items():
             if sha256_file(path / filename) != expected_hash:
                 raise ValueError(f"Artifact hash mismatch: {filename}")
-        if self.metadata.get("rdkit_version") != rdBase.rdkitVersion:
-            raise ValueError("RDKit version does not match the prepared corpus")
-        expected_tokenizer_version = tokenizer_backend_version(
-            self.metadata["tokenizer_backend"]
-        )
-        if self.metadata.get("tokenizer_backend_version") != expected_tokenizer_version:
-            raise ValueError("Tokenizer backend version does not match the corpus")
-        current_names = rdkit_descriptor_names()
         self.descriptor_schema = DescriptorSchema.load(
-            path / "descriptor_schema.json", expected_raw_names=current_names
+            path / "descriptor_schema.json"
         )
         DescriptorStandardizer.load(
             path / "descriptor_scaler.json",

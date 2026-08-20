@@ -12,7 +12,7 @@ from common.outputs import open_run_directory, repository_path, repository_relat
 from common.training import resolve_device
 from stage2.config import load_stage2_config
 from stage2.runtime import configure_stage2_math
-from stage2.train import run_stage2_training
+from stage2.train import resolve_stage2_training_identity, run_stage2_training
 
 
 def main() -> None:
@@ -24,9 +24,11 @@ def main() -> None:
     config = load_stage2_config(args.config)
     device = resolve_device(config.training.device)
     math_contract = configure_stage2_math(device)
+    training_identity = resolve_stage2_training_identity(config)
     run = open_run_directory(
         stage="stage2", operation="train", config_path=args.config,
-        config_payload=config.to_dict(), output=args.output, seed=config.data.seed,
+        config_payload=config.to_dict(), semantic_identity=training_identity,
+        output=args.output, seed=config.data.seed,
         resume=args.resume,
         details={
             "checkpoint": repository_relative(config.initialization.checkpoint),
@@ -42,18 +44,12 @@ def main() -> None:
                 "validation": "inference_mode",
             },
         },
-        ignored_config_sections={"preparation"},
-        ignored_config_fields={
-            "training.packing_workers",
-            "training.packing_prefetch_batches",
-            "training.cuda_prefetch_batches",
-            "training.log_every_batches",
-        },
     )
     try:
         run_stage2_training(
             config, output_dir=run.root,
             resume_from=repository_path(args.resume) if args.resume else None,
+            expected_training_identity=training_identity,
         )
         summary = json.loads((run.root / "final_metrics.json").read_text(encoding="utf-8"))
         run.complete(summary)

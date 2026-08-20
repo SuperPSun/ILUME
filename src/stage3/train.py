@@ -12,7 +12,12 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from common.io import atomic_json, atomic_torch_save, sha256_file
+from common.identity import (
+    IDENTITY_CONTRACT_VERSION,
+    require_compatible_identity,
+    tensor_state_hash,
+)
+from common.io import atomic_json, atomic_torch_save
 from common.training import (
     canonical_json_sha256,
     capture_rng_state,
@@ -32,6 +37,10 @@ from .data import (
 from .model import GLOBAL, Ownership, Stage3SparseModel, group_owner, private_owner
 from .pcgrad import GradientMap, HierarchicalPCGradResult, hierarchical_pcgrad
 from .prepare import load_prepared_stage3
+from .identity import (
+    build_stage3_training_identity,
+    metadata_identity,
+)
 
 
 STAGE3_CHECKPOINT_VERSION = 1
@@ -95,7 +104,7 @@ def _scope_matches(scope: str, ownership: str) -> bool:
 def _load_plugin(
     config: Stage3Config,
     model: Stage3SparseModel,
-    stage2_sha: str,
+    stage2_encoder_identity: str,
     *,
     fold: int | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
@@ -111,17 +120,23 @@ def _load_plugin(
         or source.get("stage") != "stage3"
     ):
         raise ValueError("Plugin requires a Stage 3 v1 sparse checkpoint")
-    if source.get("stage2_checkpoint_sha256") != stage2_sha:
-        raise ValueError("Plugin source and target Stage 2 checkpoints differ")
+    if source.get("identity_contract_version") != IDENTITY_CONTRACT_VERSION:
+        raise ValueError("Plugin checkpoint predates identity contract v1; retrain it")
+    if source.get("stage2_encoder_identity") != stage2_encoder_identity:
+        raise ValueError("Plugin source and target Stage 2 encoder identities differ")
     if fold is not None and source.get("fold") != fold:
         raise ValueError("Plugin source and target fold differ")
     source_plan = source.get("resolved_training_plan")
-    if (
-        not isinstance(source_plan, dict)
-        or source.get("resolved_training_plan_hash")
-        != canonical_json_sha256(source_plan)
-    ):
-        raise ValueError("Plugin checkpoint resolved plan is invalid")
+    if not isinstance(source_plan, dict):
+        raise ValueError("Plugin checkpoint lacks its resolved plan")
+    source_training_identity = source.get("training_identity")
+    if not isinstance(source_training_identity, Mapping):
+        raise ValueError("Plugin checkpoint lacks its training identity")
+    require_compatible_identity(
+        source_training_identity,
+        build_stage3_training_identity(source_plan),
+        context="Stage 3 plugin source training identity",
+    )
     source_model_config = source_plan.get("model")
     if not isinstance(source_model_config, dict) or any(
         source_model_config.get(name) != value
@@ -150,6 +165,10 @@ def _load_plugin(
     source_state = source.get("model")
     if not isinstance(source_state, dict):
         raise ValueError("Plugin checkpoint lacks model state")
+    if source.get("model_state_hash") != tensor_state_hash(
+        "stage3.model-state", source_state
+    ):
+        raise ValueError("Plugin checkpoint model state hash mismatch")
     selected_names = {
         name
         for name, owner in source_manifest.items()
@@ -197,7 +216,8 @@ def _load_plugin(
             parameter.requires_grad_(True)
     return source, {
         "mode": "plugin",
-        "source_checkpoint": str(plugin.checkpoint),
+        "source_training_identity": source_training_identity["hash"],
+        "source_model_state_hash": source["model_state_hash"],
         "load_scopes": list(plugin.load_scopes),
         "adaptation": {
             "global": adaptation.global_scope,
@@ -292,12 +312,6 @@ def build_resolved_training_plan(
             "replication_ratios": {
                 task: steps * allocation[task] / counts[task] for task in active_tasks
             },
-            "source_hashes": prepared["metadata"]["source_hashes"],
-            "catalog_sha256": prepared["metadata"]["catalog_sha256"],
-            "artifact_metadata_sha256": sha256_file(
-                config.data.artifacts_dir / "metadata.json"
-            ),
-            "artifact_hashes": prepared["metadata"]["artifact_hashes"],
         },
         "model": {**asdict(config.model), "resolved_widths": _resolved_widths(model.d_model, config)},
         "optimizer": {
@@ -316,7 +330,12 @@ def build_resolved_training_plan(
             "microbatch_size": config.training.microbatch_size,
             "pcgrad": "hierarchical_ownership_blocks_v1",
         },
-        "stage2_checkpoint_sha256": prepared["metadata"]["stage2_checkpoint_sha256"],
+        "stage2_encoder_identity": metadata_identity(
+            prepared["metadata"], "stage2_encoder", context="Stage 3 prepared artifact"
+        )["hash"],
+        "prepared_identity": metadata_identity(
+            prepared["metadata"], "prepared", context="Stage 3 prepared artifact"
+        )["hash"],
         "normalization_hash": canonical_json_sha256(normalizations),
         "ownership_manifest": model.ownership_manifest(),
         "plugin": dict(plugin_plan),
@@ -328,6 +347,13 @@ def build_resolved_training_plan(
             for name, parameter in model.named_parameters()
             if not parameter.requires_grad
         ),
+        "execution": {
+            "checkpoint_interval_epochs": config.training.checkpoint_interval_epochs,
+            "device": config.training.device,
+            "cpu_threads": config.training.cpu_threads,
+            "cpu_interop_threads": config.training.cpu_interop_threads,
+            "debug_pcgrad_traces": config.training.debug_pcgrad_traces,
+        },
     }
 
 
@@ -543,17 +569,20 @@ def _checkpoint_payload(
     pcgrad_rng: random.Random,
     task_order_rng: random.Random,
 ) -> dict[str, Any]:
+    model_state = model.state_dict()
     return {
+        "identity_contract_version": IDENTITY_CONTRACT_VERSION,
         "format_version": STAGE3_CHECKPOINT_VERSION, "kind": STAGE3_CHECKPOINT_KIND,
         "stage": "stage3",
         "config": config.to_dict(), "fold": fold, "completed_epoch": epoch,
-        "global_step": global_step, "model": model.state_dict(),
+        "global_step": global_step, "model": model_state,
+        "model_state_hash": tensor_state_hash("stage3.model-state", model_state),
         "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(),
         "rng": capture_rng_state(), "pcgrad_rng": pcgrad_rng.getstate(),
         "task_order_rng": task_order_rng.getstate(),
-        "stage2_checkpoint_sha256": plan["stage2_checkpoint_sha256"],
+        "stage2_encoder_identity": plan["stage2_encoder_identity"],
+        "training_identity": build_stage3_training_identity(plan),
         "resolved_registry": plan["resolved_registry"], "resolved_training_plan": dict(plan),
-        "resolved_training_plan_hash": canonical_json_sha256(plan),
         "normalization": dict(normalizations),
         "ownership_manifest": model.ownership_manifest(),
         "data_provenance": plan["data"], "math_contract": plan["math"],
@@ -567,6 +596,7 @@ def run_stage3_training(
     *,
     output_dir: str | Path,
     resume_from: str | Path | None = None,
+    expected_training_identity: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     if fold not in range(1, 6):
         raise ValueError("Stage 3 fold must be in 1..5")
@@ -583,7 +613,12 @@ def run_stage3_training(
     registry = prepared["registry"]
     model = Stage3SparseModel(config.model, registry, d_model).to(device)
     source, plugin_plan = _load_plugin(
-        config, model, prepared["metadata"]["stage2_checkpoint_sha256"], fold=fold
+        config,
+        model,
+        metadata_identity(
+            prepared["metadata"], "stage2_encoder", context="Stage 3 prepared artifact"
+        )["hash"],
+        fold=fold,
     )
     enabled = tuple(task for task, spec in registry.items() if spec.enabled)
     active = _active_tasks(config, enabled, source.get("resolved_registry") if source else None)
@@ -595,6 +630,13 @@ def run_stage3_training(
         config, fold, model, train_data, active, prepared, plugin_plan,
         normalizations,
     )
+    training_identity = build_stage3_training_identity(plan)
+    if expected_training_identity is not None:
+        require_compatible_identity(
+            expected_training_identity,
+            training_identity,
+            context="Stage 3 run-directory training identity",
+        )
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     if resume_from is None and (
@@ -605,10 +647,12 @@ def run_stage3_training(
         raise FileExistsError("Stage 3 training output already contains run state")
     plan_path = output / "resolved_training_plan.json"
     if plan_path.exists():
-        if canonical_json_sha256(
-            json.loads(plan_path.read_text(encoding="utf-8"))
-        ) != canonical_json_sha256(plan):
-            raise ValueError("Existing resolved Stage 3 training plan differs")
+        existing_plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        require_compatible_identity(
+            build_stage3_training_identity(existing_plan),
+            training_identity,
+            context="Existing Stage 3 resolved training plan",
+        )
     else:
         atomic_json(plan_path, plan)
     optimizer = _optimizer(model, config)
@@ -626,15 +670,30 @@ def run_stage3_training(
     if resume_from is not None:
         checkpoint = torch.load(resume_from, map_location="cpu", weights_only=False)
         expected = {
+            "identity_contract_version": IDENTITY_CONTRACT_VERSION,
             "kind": STAGE3_CHECKPOINT_KIND, "format_version": STAGE3_CHECKPOINT_VERSION,
             "stage": "stage3",
-            "fold": fold, "resolved_training_plan_hash": canonical_json_sha256(plan),
+            "fold": fold,
             "ownership_manifest": model.ownership_manifest(),
-            "stage2_checkpoint_sha256": plan["stage2_checkpoint_sha256"],
+            "stage2_encoder_identity": plan["stage2_encoder_identity"],
         }
         for key, value in expected.items():
             if checkpoint.get(key) != value:
                 raise ValueError(f"Stage 3 resume contract mismatch: {key}")
+        checkpoint_identity = checkpoint.get("training_identity")
+        if not isinstance(checkpoint_identity, Mapping):
+            raise ValueError(
+                "Stage 3 checkpoint predates identity contract v1; retrain it"
+            )
+        require_compatible_identity(
+            training_identity,
+            checkpoint_identity,
+            context="Stage 3 resume training identity",
+        )
+        if checkpoint.get("model_state_hash") != tensor_state_hash(
+            "stage3.model-state", checkpoint["model"]
+        ):
+            raise ValueError("Stage 3 resume model state hash mismatch")
         model.load_state_dict(checkpoint["model"], strict=True)
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])
@@ -762,6 +821,46 @@ def run_stage3_training(
     return rows
 
 
+def resolve_stage3_training_identity(
+    config: Stage3Config, fold: int
+) -> dict[str, Any]:
+    """Resolve the exact semantic identity used by ``run_stage3_training``."""
+    if fold not in range(1, 6):
+        raise ValueError("Stage 3 fold must be in 1..5")
+    prepared = load_prepared_stage3(config)
+    d_model = int(prepared["objects"]["embeddings"].shape[1])
+    model = Stage3SparseModel(config.model, prepared["registry"], d_model)
+    encoder_identity = metadata_identity(
+        prepared["metadata"], "stage2_encoder", context="Stage 3 prepared artifact"
+    )["hash"]
+    source, plugin_plan = _load_plugin(
+        config, model, encoder_identity, fold=fold
+    )
+    enabled = tuple(
+        task for task, spec in prepared["registry"].items() if spec.enabled
+    )
+    active = _active_tasks(
+        config, enabled, source.get("resolved_registry") if source else None
+    )
+    _validate_adaptation(config, model, active)
+    datasets = {
+        task: Stage3TaskDataset(config.data.artifacts_dir, fold, task, "train")
+        for task in active
+    }
+    normalizations = _normalization_for_run(prepared, fold, source)
+    plan = build_resolved_training_plan(
+        config,
+        fold,
+        model,
+        datasets,
+        active,
+        prepared,
+        plugin_plan,
+        normalizations,
+    )
+    return build_stage3_training_identity(plan)
+
+
 __all__ = [
     "STAGE3_CHECKPOINT_KIND",
     "STAGE3_CHECKPOINT_VERSION",
@@ -769,6 +868,7 @@ __all__ = [
     "checkpoint_epochs",
     "compute_task_gradient",
     "regression_metrics",
+    "resolve_stage3_training_identity",
     "run_stage3_training",
     "validate_tasks",
 ]
