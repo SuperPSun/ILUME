@@ -4,6 +4,8 @@
 - 日期：2026-08-18
 - 取代：ADR-0016 的固定任务、head routing 与 batch 调度合同，以及 ADR-0018 的 data/cache/checkpoint 版本、冻结快路径、loss 组合和 accumulation-window 合同。
 
+> 2026-08-20：本文关于“Stage 3 迁移延期并拒绝 Object v3”的决定已由 [ADR-0020](0020-stage3-v1-sparse-home-pcgrad.md) 取代；其余 Stage 2 Object v3 合同继续有效。
+
 ## 决定
 
 Stage 2 的任务集合由 ILUME-Data `task_catalog.csv` 中 `catalog_schema_version=1`、`stage=2` 的记录唯一决定。Registry 保存规范化的 catalog 事实与纯数据语义，并按完整 `task_id` 字典序固定任务顺序；Python 不再维护任务白名单。`registry_hash` 不包含 Stage 1 维度或 head 派生参数，这些参数单独进入 `model_contract`。配置只定义训练策略：正的 task weight 必须精确覆盖 registry，并在运行时归一化；`gradient_accumulation_steps` 字段保留但必须等于 1。

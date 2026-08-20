@@ -77,7 +77,7 @@ python scripts/stage2/train.py \
 
 Stage 3 v1 从 catalog 解析 21 个 scalar observation task 和 6 个 meta-group。prepare 通过公开 frozen Object v3 checkpoint loader 建立内容寻址的 FP32 object cache；train/evaluate 只读完整 artifact，不加载 Stage 2。每个任务保留独立 dataset，按 task-local fold 拟合 normalization，并使用固定 composite allocation 与 ownership-aware hierarchical PCGrad：GLOBAL、GROUP block 始终独立投影，PRIVATE 不参与投影。
 
-正式 Base 仅支持单进程单 CUDA GPU，默认 BF16；设备不支持时直接失败。测试可显式使用 CPU 与 `amp_dtype: none`。当前已生成 Stage 3 CSV 仍有 catalog 声明 condition 的缺失值，正式 prepare 会按合同拒绝，需先由 ILUME-Data 发布 condition 完整的新产物。
+正式 Base 仅支持单进程单 CUDA GPU，默认 BF16；设备不支持时直接失败。测试可显式使用 CPU 与 `amp_dtype: none`。截至 2026-08-20，当前五折 CSV 中有 6 个任务同时包含有值和缺失的 `pressure_kPa`，缺失合计 50,300 行，并非这些任务整列都没有压力。正式 prepare 会按合同拒绝；需先由 ILUME-Data 逐行补齐，或在确认压力不是该任务合法条件后同步修改 catalog `condition_columns`，Stage 3 不负责填充或删行。
 
 ```bash
 python scripts/stage3/prepare.py \
@@ -108,7 +108,7 @@ python scripts/stage3/evaluate.py \
 
 ## Outputs
 
-`--output` 是一次操作的独立目录。新训练和 evaluate 拒绝覆盖已有目录；只有显式 `--resume` 可继续训练。Prepare 保留可校验的幂等复用。
+`--output` 是一次操作的独立目录。新训练和 evaluate 拒绝覆盖已有目录；只有显式 `--resume` 可继续训练。Stage 1/2 prepare 按各自 artifact 身份合同支持受控复用；Stage 3 prepare 拒绝已有输出目录，只能发布到新的空输出。
 
 每个操作目录包含 Git 可跟踪的 `run_config.yaml`、`metadata.json` 和成功后生成的 `summary.json`。Prepare payload 位于 `artifacts/` 子目录；checkpoint、metrics JSONL、日志和 tensor 默认不进入 Git。Stage 1 用 `last.pt` 表示最新完整恢复状态；Stage 2 直接通过最新的完整 epoch checkpoint 恢复；Stage 3 Base 默认只保存 epoch 10、20、…、100 的完整 checkpoint，不生成 best/last。
 
