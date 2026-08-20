@@ -5,54 +5,113 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml
 import torch
+import yaml
 
 
-IL21_TASKS = (
-    "experiment/density",
-    "experiment/dynamic_relative_permittivity",
-    "experiment/electrical_conductivity",
-    "experiment/equilibrium_pressure",
-    "experiment/glass_transition_temperature",
-    "experiment/heat_capacity",
-    "experiment/isobaric_coefficient_of_volume_expansion",
-    "experiment/melting_point",
-    "experiment/pec50",
-    "experiment/refractive_index",
-    "experiment/self_diffusion_coefficient",
-    "experiment/speed_of_sound",
-    "experiment/static_relative_permittivity",
-    "experiment/surface_tension",
-    "experiment/thermal_conductivity",
-    "experiment/thermal_decomposition_temperature",
-    "experiment/viscosity",
-    "experiment/x_co2",
-    "simulation/heat_of_vaporization",
-    "experiment/solvation",
-    "experiment/transfer",
-)
-AUX6_TASKS = (
-    "experiment/transfer_organic",
-    "simulation/cation_homo",
-    "simulation/cation_lumo",
-    "simulation/anion_homo",
-    "simulation/anion_lumo",
-    "simulation/charge",
-)
-STAGE3_TASKS = IL21_TASKS + AUX6_TASKS
-DOMAIN_TASKS = {"il21": IL21_TASKS, "aux6": AUX6_TASKS}
-DOMAIN_NAMES = tuple(DOMAIN_TASKS)
+BASE_GROUP_TASKS: dict[str, tuple[str, ...]] = {
+    "transport": (
+        "experiment/electrical_conductivity",
+        "experiment/self_diffusion_coefficient",
+        "experiment/viscosity",
+        "experiment/thermal_conductivity",
+    ),
+    "thermophysical": (
+        "experiment/density",
+        "experiment/heat_capacity",
+        "experiment/isobaric_coefficient_of_volume_expansion",
+        "experiment/speed_of_sound",
+        "experiment/surface_tension",
+    ),
+    "phase_stability": (
+        "experiment/equilibrium_pressure",
+        "experiment/glass_transition_temperature",
+        "experiment/melting_point",
+        "experiment/thermal_decomposition_temperature",
+    ),
+    "dielectric_optical": (
+        "experiment/dynamic_relative_permittivity",
+        "experiment/static_relative_permittivity",
+        "experiment/refractive_index",
+    ),
+    "solvation": (
+        "experiment/solvation",
+        "experiment/transfer",
+        "experiment/transfer_organic",
+        "experiment/x_co2",
+    ),
+    "biological": ("experiment/pec50",),
+}
+
+
+@dataclass(frozen=True)
+class Stage3TaskConfig:
+    meta_group: str
+    partner_mode: str = "none"
+    primary_slots: tuple[str, ...] = ("cation", "anion")
+    partner_slots: tuple[str, ...] = ()
+    enabled: bool = True
+    task_weight: float = 1.0
+    model_overrides: dict[str, Any] = field(default_factory=dict)
+
+
+def _base_task_registry() -> dict[str, Stage3TaskConfig]:
+    result: dict[str, Stage3TaskConfig] = {}
+    for group, tasks in BASE_GROUP_TASKS.items():
+        for task_id in tasks:
+            if task_id in {"experiment/solvation", "experiment/transfer"}:
+                primary = ("cation", "anion")
+                partner = ("solute",)
+                partner_mode = "interaction"
+            elif task_id == "experiment/transfer_organic":
+                primary = ("solute",)
+                partner = ("solvent",)
+                partner_mode = "interaction"
+            else:
+                primary = ("cation", "anion")
+                partner = ()
+                partner_mode = "none"
+            result[task_id] = Stage3TaskConfig(
+                meta_group=group,
+                partner_mode=partner_mode,
+                primary_slots=primary,
+                partner_slots=partner,
+            )
+    return result
 
 
 @dataclass(frozen=True)
 class Stage3DataConfig:
     stage3_dir: Path = Path("data/stage3")
-    artifacts_dir: Path = Path(
-        "outputs/v1/stage3/reference/prepare/artifacts"
-    )
-    entity_batch_size: int = 256
+    task_catalog: Path = Path("data/task_catalog.csv")
+    artifacts_dir: Path = Path("outputs/v1/stage3/base/prepare/artifacts")
+    split_policy: str = "prefer_il"
+    split_strategies: dict[str, str] = field(default_factory=dict)
+    cv_repeat: int = 1
+    cv_repeats: dict[str, int] = field(default_factory=dict)
     seed: int = 42
+
+
+@dataclass(frozen=True)
+class Stage3PreparationConfig:
+    encoding_batch_size: int = 256
+    cache_dir: Path = Path("outputs/v1/stage3/base/prepare/object_cache")
+
+
+@dataclass(frozen=True)
+class Stage3PluginAdaptationConfig:
+    global_scope: bool = False
+    groups: tuple[str, ...] = ()
+    private_tasks: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Stage3PluginConfig:
+    checkpoint: Path
+    load_scopes: tuple[str, ...] = ("GLOBAL", "GROUP:*", "PRIVATE:*")
+    adaptation: Stage3PluginAdaptationConfig = field(
+        default_factory=Stage3PluginAdaptationConfig
+    )
 
 
 @dataclass(frozen=True)
@@ -60,152 +119,168 @@ class Stage3InitializationConfig:
     stage2_checkpoint: Path = Path(
         "outputs/v1/stage2/base/train/checkpoint_epoch_00005.pt"
     )
+    plugin: Stage3PluginConfig | None = None
 
 
 @dataclass(frozen=True)
 class Stage3ModelConfig:
-    architecture: str = "home"
     global_experts: int = 2
     group_experts: int = 2
     private_experts: int = 1
     dropout: float = 0.10
-    feature_gate: bool = True
-    self_gate: bool = True
-    solute_injection: str = "late"
+    activation: str = "silu"
+    expert_hidden_ratio: float = 2.0
+    interaction_hidden_ratio: float = 2.0
+    film_hidden_ratio: float = 1.0
+    tower_hidden_ratio: float = 1.0
+    l2_residual: bool = True
 
 
 @dataclass(frozen=True)
-class Stage3DomainTrainingConfig:
-    batch_size: int = 64
-    max_blocks: int = 10000
-    learning_rate: float = 3.0e-4
-    weight_decay: float = 1.0e-4
-    warmup_fraction: float = 0.10
-    max_grad_norm: float = 1.0
-    amp_dtype: str = "bf16"
-    validation_interval_blocks: int = 100
-    early_stopping_patience: int = 10
-    early_stopping_min_delta: float = 1.0e-4
-    backward_mode: str = "per_task"
+class Stage3GroupConfig:
+    enabled: bool = True
+    group_weight: float = 1.0
+
+
+def _base_groups() -> dict[str, Stage3GroupConfig]:
+    return {name: Stage3GroupConfig() for name in BASE_GROUP_TASKS}
 
 
 @dataclass(frozen=True)
 class Stage3TrainingConfig:
-    il21: Stage3DomainTrainingConfig = field(
-        default_factory=Stage3DomainTrainingConfig
-    )
-    aux6: Stage3DomainTrainingConfig = field(
-        default_factory=Stage3DomainTrainingConfig
-    )
-    device: str = "auto"
+    composite_batch_size: int = 2048
+    microbatch_size: int = 128
+    virtual_min_size: int = 1000
+    epochs: int = 100
+    learning_rate: float = 3.0e-4
+    weight_decay: float = 1.0e-2
+    betas: tuple[float, float] = (0.9, 0.999)
+    eps: float = 1.0e-8
+    warmup_ratio: float = 0.05
+    min_lr_ratio: float = 0.05
+    max_grad_norm: float = 1.0
+    smooth_l1_beta: float = 1.0
+    amp_dtype: str = "bf16"
+    optimizer_implementation: str = "single_tensor"
+    active_tasks: str | tuple[str, ...] = "auto"
+    checkpoint_interval_epochs: int = 10
+    device: str = "cuda"
     cpu_threads: int = 4
     cpu_interop_threads: int = 1
-    resident_data: bool = True
-    save_every_n_cycles: int | None = 25
+    debug_pcgrad_traces: bool = False
 
 
 @dataclass(frozen=True)
 class Stage3Config:
-    active_domains: tuple[str, ...] = DOMAIN_NAMES
     data: Stage3DataConfig = field(default_factory=Stage3DataConfig)
+    preparation: Stage3PreparationConfig = field(default_factory=Stage3PreparationConfig)
     initialization: Stage3InitializationConfig = field(
         default_factory=Stage3InitializationConfig
     )
     model: Stage3ModelConfig = field(default_factory=Stage3ModelConfig)
+    groups: dict[str, Stage3GroupConfig] = field(default_factory=_base_groups)
+    tasks: dict[str, Stage3TaskConfig] = field(default_factory=_base_task_registry)
     training: Stage3TrainingConfig = field(default_factory=Stage3TrainingConfig)
 
-    @property
-    def tasks(self) -> tuple[str, ...]:
-        return tuple(
-            task
-            for domain in self.active_domains
-            for task in DOMAIN_TASKS[domain]
-        )
-
-    def tasks_for_domain(self, domain: str) -> tuple[str, ...]:
-        if domain not in self.active_domains:
-            raise ValueError(f"Inactive Stage 3 domain: {domain}")
-        return DOMAIN_TASKS[domain]
-
-    def domain_training(self, domain: str) -> Stage3DomainTrainingConfig:
-        if domain not in self.active_domains:
-            raise ValueError(f"Inactive Stage 3 domain: {domain}")
-        return getattr(self.training, domain)
-
     def validate(self) -> None:
-        if not self.active_domains:
-            raise ValueError("Stage 3 requires at least one active domain")
-        if len(set(self.active_domains)) != len(self.active_domains):
-            raise ValueError("Stage 3 active_domains cannot contain duplicates")
-        if any(domain not in DOMAIN_NAMES for domain in self.active_domains):
-            raise ValueError("Stage 3 active_domains must contain il21 and/or aux6")
-        if tuple(
-            domain for domain in DOMAIN_NAMES if domain in self.active_domains
-        ) != self.active_domains:
-            raise ValueError("Stage 3 active_domains must use canonical order")
-        if self.data.entity_batch_size <= 0:
-            raise ValueError("data.entity_batch_size must be positive")
-        if self.model.architecture not in {"home", "shared_bottom", "mmoe"}:
-            raise ValueError(
-                "model.architecture must be home, shared_bottom, or mmoe"
-            )
-        if self.model.solute_injection not in {"late", "early"}:
-            raise ValueError("model.solute_injection must be late or early")
-        for name in ("global_experts", "group_experts", "private_experts"):
-            if getattr(self.model, name) <= 0:
-                raise ValueError(f"model.{name} must be positive")
-        if not 0.0 <= self.model.dropout < 1.0:
-            raise ValueError("model.dropout must be in [0, 1)")
-        for domain in self.active_domains:
-            training = self.domain_training(domain)
-            for name in (
-                "batch_size",
-                "max_blocks",
-                "validation_interval_blocks",
-                "early_stopping_patience",
-            ):
-                if getattr(training, name) <= 0:
-                    raise ValueError(f"training.{domain}.{name} must be positive")
-            if training.batch_size < 2:
-                raise ValueError(
-                    f"training.{domain}.batch_size must be at least 2 for BatchNorm"
-                )
-            if training.learning_rate <= 0.0 or training.weight_decay < 0.0:
-                raise ValueError(
-                    f"training.{domain} learning rate must be positive and "
-                    "weight decay non-negative"
-                )
-            if not 0.0 <= training.warmup_fraction < 1.0:
-                raise ValueError(
-                    f"training.{domain}.warmup_fraction must be in [0, 1)"
-                )
-            if training.max_grad_norm < 0.0:
-                raise ValueError(
-                    f"training.{domain}.max_grad_norm must be non-negative"
-                )
-            if training.amp_dtype not in {"bf16", "fp16", "none"}:
-                raise ValueError(
-                    f"training.{domain}.amp_dtype must be bf16, fp16, or none"
-                )
-            if training.backward_mode not in {"per_task", "domain"}:
-                raise ValueError(
-                    f"training.{domain}.backward_mode must be per_task or domain"
-                )
-            if training.early_stopping_min_delta < 0.0:
-                raise ValueError(
-                    f"training.{domain}.early_stopping_min_delta must be non-negative"
-                )
-        if (
-            self.training.save_every_n_cycles is not None
-            and self.training.save_every_n_cycles < 0
+        if self.data.split_policy != "prefer_il":
+            raise ValueError("data.split_policy must be prefer_il")
+        if self.data.cv_repeat <= 0 or any(
+            value <= 0 for value in self.data.cv_repeats.values()
         ):
-            raise ValueError("training.save_every_n_cycles cannot be negative")
-        if self.training.cpu_threads <= 0:
-            raise ValueError("training.cpu_threads must be positive")
-        if self.training.cpu_interop_threads <= 0:
-            raise ValueError("training.cpu_interop_threads must be positive")
-        if not isinstance(self.training.resident_data, bool):
-            raise ValueError("training.resident_data must be a boolean")
+            raise ValueError("Stage 3 cv repeats must be positive")
+        if self.preparation.encoding_batch_size <= 0:
+            raise ValueError("preparation.encoding_batch_size must be positive")
+        if not self.groups or not self.tasks:
+            raise ValueError("Stage 3 requires groups and tasks")
+        if any(group.group_weight <= 0 for group in self.groups.values()):
+            raise ValueError("Stage 3 group weights must be positive")
+        for task_id, task in self.tasks.items():
+            if not task_id or "." in task_id:
+                raise ValueError(f"Invalid Stage 3 task id: {task_id}")
+            if task.meta_group not in self.groups:
+                raise ValueError(f"Unknown meta-group for {task_id}: {task.meta_group}")
+            if task.partner_mode not in {"none", "interaction"}:
+                raise ValueError(f"Invalid partner_mode for {task_id}")
+            if not task.primary_slots:
+                raise ValueError(f"Stage 3 task requires primary slots: {task_id}")
+            if task.partner_mode == "none" and task.partner_slots:
+                raise ValueError(f"Non-partner task has partner slots: {task_id}")
+            if task.partner_mode == "interaction" and not task.partner_slots:
+                raise ValueError(f"Partner task has no partner slots: {task_id}")
+            if task.task_weight <= 0:
+                raise ValueError(f"Stage 3 task weight must be positive: {task_id}")
+            if task.model_overrides:
+                raise ValueError(
+                    f"Stage 3 v1 has no task model overrides yet: {task_id}"
+                )
+        enabled_tasks = [task for task in self.tasks.values() if task.enabled]
+        if not enabled_tasks:
+            raise ValueError("Stage 3 requires at least one enabled task")
+        if any(not self.groups[task.meta_group].enabled for task in enabled_tasks):
+            raise ValueError("Enabled task cannot belong to a disabled group")
+        model = self.model
+        for name in ("global_experts", "group_experts", "private_experts"):
+            if getattr(model, name) <= 0:
+                raise ValueError(f"model.{name} must be positive")
+        if not 0.0 <= model.dropout < 1.0:
+            raise ValueError("model.dropout must be in [0, 1)")
+        if model.activation not in {"silu", "gelu"}:
+            raise ValueError("model.activation must be silu or gelu")
+        for name in (
+            "expert_hidden_ratio", "interaction_hidden_ratio",
+            "film_hidden_ratio", "tower_hidden_ratio",
+        ):
+            if getattr(model, name) <= 0:
+                raise ValueError(f"model.{name} must be positive")
+        training = self.training
+        for name in (
+            "composite_batch_size", "microbatch_size", "virtual_min_size",
+            "epochs", "checkpoint_interval_epochs", "cpu_threads",
+            "cpu_interop_threads",
+        ):
+            if getattr(training, name) <= 0:
+                raise ValueError(f"training.{name} must be positive")
+        if training.microbatch_size > training.composite_batch_size:
+            raise ValueError("microbatch_size exceeds composite_batch_size")
+        if training.learning_rate <= 0 or training.weight_decay < 0:
+            raise ValueError("Stage 3 optimizer values are invalid")
+        if len(training.betas) != 2 or not all(0 <= x < 1 for x in training.betas):
+            raise ValueError("training.betas must contain two values in [0, 1)")
+        if training.eps <= 0 or training.max_grad_norm < 0:
+            raise ValueError("Stage 3 eps/grad norm values are invalid")
+        if not 0 <= training.warmup_ratio < 1:
+            raise ValueError("training.warmup_ratio must be in [0, 1)")
+        if not 0 < training.min_lr_ratio <= 1:
+            raise ValueError("training.min_lr_ratio must be in (0, 1]")
+        if training.smooth_l1_beta <= 0:
+            raise ValueError("training.smooth_l1_beta must be positive")
+        if training.amp_dtype not in {"bf16", "none"}:
+            raise ValueError("training.amp_dtype must be bf16 or none")
+        if training.optimizer_implementation != "single_tensor":
+            raise ValueError(
+                "training.optimizer_implementation must be single_tensor"
+            )
+        if isinstance(training.active_tasks, tuple):
+            unknown = set(training.active_tasks) - set(self.tasks)
+            if unknown:
+                raise ValueError(
+                    "Unknown active Stage 3 tasks: " + ", ".join(sorted(unknown))
+                )
+        elif training.active_tasks not in {"auto", "auto_new"}:
+            raise ValueError("training.active_tasks must be auto, auto_new, or a list")
+        plugin = self.initialization.plugin
+        if plugin is not None:
+            if not plugin.load_scopes:
+                raise ValueError("Plugin load_scopes cannot be empty")
+            if set(plugin.adaptation.groups) - set(self.groups) or set(
+                plugin.adaptation.private_tasks
+            ) - set(self.tasks):
+                raise ValueError("Plugin adaptation references unknown scopes")
+
+    @property
+    def enabled_task_ids(self) -> tuple[str, ...]:
+        return tuple(task_id for task_id, spec in self.tasks.items() if spec.enabled)
 
     def to_dict(self) -> dict[str, Any]:
         def convert(value: Any) -> Any:
@@ -213,72 +288,107 @@ class Stage3Config:
                 return str(value)
             if isinstance(value, dict):
                 return {key: convert(item) for key, item in value.items()}
-            if isinstance(value, (list, tuple)):
+            if isinstance(value, tuple):
                 return [convert(item) for item in value]
             return value
 
-        return convert(asdict(self))
+        payload = convert(asdict(self))
+        plugin = payload["initialization"].get("plugin")
+        if plugin is not None:
+            adaptation = plugin["adaptation"]
+            adaptation["global"] = adaptation.pop("global_scope")
+        return payload
 
 
-def _construct(
-    section_type: type, values: dict[str, Any] | None, *, legacy: bool = False
-) -> Any:
-    values = dict(values or {})
-    if section_type is Stage3TrainingConfig and legacy:
-        for key in ("keep_last_checkpoints", "output_dir", "resume_from"):
-            values.pop(key, None)
-    unknown = set(values) - set(section_type.__dataclass_fields__)
+def _construct_dataclass(cls: type, raw: dict[str, Any] | None) -> Any:
+    values = dict(raw or {})
+    unknown = set(values) - set(cls.__dataclass_fields__)
     if unknown:
         raise ValueError(
-            f"Unknown {section_type.__name__} fields: "
-            + ", ".join(sorted(unknown))
+            f"Unknown {cls.__name__} fields: " + ", ".join(sorted(unknown))
         )
-    if section_type is Stage3DataConfig:
-        for key in ("stage3_dir", "artifacts_dir"):
-            if key in values:
-                values[key] = Path(values[key])
-    elif section_type is Stage3InitializationConfig:
-        if "stage2_checkpoint" in values:
-            values["stage2_checkpoint"] = Path(values["stage2_checkpoint"])
-    elif section_type is Stage3TrainingConfig:
-        for domain in DOMAIN_NAMES:
-            if domain in values:
-                values[domain] = _construct(
-                    Stage3DomainTrainingConfig, values[domain], legacy=legacy
-                )
-    return section_type(**values)
+    return cls(**values)
 
 
-def _parse_stage3_config(raw: dict[str, Any], *, legacy: bool) -> Stage3Config:
-    sections = {
-        "data": Stage3DataConfig,
-        "initialization": Stage3InitializationConfig,
-        "model": Stage3ModelConfig,
-        "training": Stage3TrainingConfig,
+def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
+    allowed = {
+        "data", "preparation", "initialization", "model", "groups", "tasks", "training"
     }
-    unknown = set(raw) - ({"active_domains"} | set(sections))
+    unknown = set(raw) - allowed
     if unknown:
-        raise ValueError(
-            "Unknown Stage 3 config sections: " + ", ".join(sorted(unknown))
+        raise ValueError("Unknown Stage 3 config sections: " + ", ".join(sorted(unknown)))
+    data_raw = dict(raw.get("data") or {})
+    for name in ("stage3_dir", "task_catalog", "artifacts_dir"):
+        if name in data_raw:
+            data_raw[name] = Path(data_raw[name])
+    preparation_raw = dict(raw.get("preparation") or {})
+    if "cache_dir" in preparation_raw:
+        preparation_raw["cache_dir"] = Path(preparation_raw["cache_dir"])
+    initialization_raw = dict(raw.get("initialization") or {})
+    if "stage2_checkpoint" in initialization_raw:
+        initialization_raw["stage2_checkpoint"] = Path(
+            initialization_raw["stage2_checkpoint"]
         )
-    active_domains = tuple(raw.get("active_domains", DOMAIN_NAMES))
+    plugin_raw = initialization_raw.get("plugin")
+    if plugin_raw is not None:
+        plugin_values = dict(plugin_raw)
+        plugin_values["checkpoint"] = Path(plugin_values["checkpoint"])
+        if "load_scopes" in plugin_values:
+            plugin_values["load_scopes"] = tuple(plugin_values["load_scopes"])
+        adaptation_values = dict(plugin_values.get("adaptation") or {})
+        if "global" in adaptation_values:
+            adaptation_values["global_scope"] = adaptation_values.pop("global")
+        for name in ("groups", "private_tasks"):
+            if name in adaptation_values:
+                adaptation_values[name] = tuple(adaptation_values[name])
+        plugin_values["adaptation"] = _construct_dataclass(
+            Stage3PluginAdaptationConfig, adaptation_values
+        )
+        initialization_raw["plugin"] = _construct_dataclass(
+            Stage3PluginConfig, plugin_values
+        )
+    groups_raw = raw.get("groups")
+    groups = _base_groups() if groups_raw is None else {
+        name: _construct_dataclass(Stage3GroupConfig, value)
+        for name, value in groups_raw.items()
+    }
+    tasks_raw = raw.get("tasks")
+    tasks = _base_task_registry() if tasks_raw is None else {
+        task_id: _construct_dataclass(
+            Stage3TaskConfig,
+            {
+                **value,
+                **{
+                    name: tuple(value[name])
+                    for name in ("primary_slots", "partner_slots")
+                    if name in value
+                },
+            },
+        )
+        for task_id, value in tasks_raw.items()
+    }
+    training_raw = dict(raw.get("training") or {})
+    if "betas" in training_raw:
+        training_raw["betas"] = tuple(training_raw["betas"])
+    if isinstance(training_raw.get("active_tasks"), list):
+        training_raw["active_tasks"] = tuple(training_raw["active_tasks"])
     config = Stage3Config(
-        active_domains=active_domains,
-        **{
-            name: _construct(section, raw.get(name), legacy=legacy)
-            for name, section in sections.items()
-        },
+        data=_construct_dataclass(Stage3DataConfig, data_raw),
+        preparation=_construct_dataclass(Stage3PreparationConfig, preparation_raw),
+        initialization=_construct_dataclass(
+            Stage3InitializationConfig, initialization_raw
+        ),
+        model=_construct_dataclass(Stage3ModelConfig, raw.get("model")),
+        groups=groups,
+        tasks=tasks,
+        training=_construct_dataclass(Stage3TrainingConfig, training_raw),
     )
     config.validate()
     return config
 
 
-def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
-    return _parse_stage3_config(raw, legacy=False)
-
-
-def _stage3_config_from_checkpoint_dict(raw: dict[str, Any]) -> Stage3Config:
-    return _parse_stage3_config(raw, legacy=True)
+def stage3_config_from_checkpoint_dict(raw: dict[str, Any]) -> Stage3Config:
+    return stage3_config_from_dict(raw)
 
 
 def load_stage3_config(path: str | Path) -> Stage3Config:
@@ -290,23 +400,15 @@ def load_stage3_config(path: str | Path) -> Stage3Config:
 
 
 def configure_process_runtime(config: Stage3Config) -> None:
-    """Apply Stage 3 CPU thread limits before any parallel tensor work."""
-
     threads = config.training.cpu_threads
     interop_threads = config.training.cpu_interop_threads
-    value = str(threads)
-    for name in (
-        "OMP_NUM_THREADS",
-        "MKL_NUM_THREADS",
-        "OPENBLAS_NUM_THREADS",
-    ):
-        os.environ[name] = value
+    for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+        os.environ[name] = str(threads)
     torch.set_num_threads(threads)
     if torch.get_num_interop_threads() != interop_threads:
         try:
             torch.set_num_interop_threads(interop_threads)
         except RuntimeError as error:
             raise RuntimeError(
-                "Stage 3 inter-op threads must be configured before "
-                "parallel PyTorch work starts"
+                "Stage 3 inter-op threads must be configured before parallel work"
             ) from error

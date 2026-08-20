@@ -51,7 +51,7 @@ from stage2.train import (
     _batch_output, _device_batches, _ordered_packed_batches,
     load_stage2_encoder_artifact, run_stage2_training, task_compensation_scale,
 )
-from stage3.prepare import STAGE3_MIGRATION_MESSAGE, load_frozen_stage2
+from stage2 import FrozenObjectSpec, load_frozen_object_encoder
 
 
 TASKS = (
@@ -727,14 +727,28 @@ def test_prepare_train_checkpoint_and_encoder_export(tiny_stage2_setup, tmp_path
         "ffn_dim": tiny_stage2_setup.model.object_ffn_dim,
         "dropout": tiny_stage2_setup.model.dropout,
     }
+    frozen = load_frozen_object_encoder(
+        output / "checkpoint_epoch_00002.pt", device="cpu"
+    )
+    assert not frozen.model.training
+    assert not any(parameter.requires_grad for parameter in frozen.model.parameters())
+    encoded = frozen.encode(
+        (
+            FrozenObjectSpec("molecule", (("neutral", "CC"),)),
+            FrozenObjectSpec("molecule", (("neutral", "O"),)),
+        )
+    )
+    assert encoded.shape == (2, 16)
+    assert encoded.dtype == torch.float32
+    il_encoded = frozen.encode(
+        (FrozenObjectSpec("il", (("cation", "[Na+]"), ("anion", "[Cl-]"))),)
+    )
+    assert il_encoded.shape == (1, 16)
     encoder_path = output / "stage2_encoder.pt"
     encoder = load_stage2_encoder_artifact(encoder_path)
     assert encoder["kind"] == "ilume_stage2_encoder"
     assert not any("head" in key for key in encoder["stage1_backbone"])
     assert set(encoder) >= {"stage1_backbone", "object_encoder", "model_contract", "state_hashes", "provenance"}
-    with pytest.raises(ValueError, match=STAGE3_MIGRATION_MESSAGE):
-        load_frozen_stage2(encoder_path)
-
     resume_output = tmp_path / "resume"
     resume_output.mkdir()
     rows = [json.loads(line) for line in (output / "metrics.jsonl").read_text(encoding="utf-8").splitlines()]

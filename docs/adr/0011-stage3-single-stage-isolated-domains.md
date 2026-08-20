@@ -1,6 +1,6 @@
 # ADR-0011：Stage 3 单阶段双域完全隔离
 
-- 状态：Accepted
+- 状态：Superseded by ADR-0020
 - 日期：2026-08-05
 - 取代：ADR-0010 中的 Phase 1/Phase 2、27 项共享 HoME 与阶段扩展决定
 

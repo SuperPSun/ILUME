@@ -20,7 +20,12 @@ from common.training import canonical_json_sha256, capture_rng_state, cosine_war
 from stage1.features import ROLE_TO_ID
 from stage1.masking import MultimodalPacker
 from stage1.model import EncodedEntityStates, load_stage1_model
-from .config import Stage2Config, stage2_config_from_checkpoint_dict
+from .config import (
+    STAGE2_CHECKPOINT_KIND,
+    STAGE2_CHECKPOINT_VERSION,
+    Stage2Config,
+    stage2_config_from_checkpoint_dict,
+)
 from .data import (
     PackedStage2Batch, Stage2BatchDescriptor, Stage2DeviceTaskData,
     Stage2EntityDataset, Stage2TaskDataset, epoch_batch_schedule,
@@ -33,8 +38,6 @@ from .registry import Stage2Registry
 from .runtime import configure_stage2_math
 
 
-STAGE2_CHECKPOINT_VERSION = 3
-STAGE2_CHECKPOINT_KIND = "ilume_stage2_object"
 STAGE2_ENCODER_VERSION = 1
 STAGE2_ENCODER_KIND = "ilume_stage2_encoder"
 

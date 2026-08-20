@@ -2,79 +2,55 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import shutil
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
-from typing import Any
 from unittest.mock import patch
 
 import pytest
 import torch
-from rdkit import rdBase
 
-from stage1.config import (
-    STAGE1_CHECKPOINT_KIND,
-    STAGE1_CHECKPOINT_VERSION,
-    DataConfig,
-    DescriptorConfig,
-    FingerprintConfig,
-    ModelConfig,
-    PretrainConfig,
-)
-from stage1.data import PreparedCorpusDataset
-from stage1.prepare import prepare_corpus
-from stage1.model import MultimodalPretrainModel
-from common.progress import ProgressReporter
-from common.io import atomic_json, atomic_torch_save, sha256_file
+from common.io import sha256_file
+from common.training import canonical_json_sha256
 from stage3.config import (
-    AUX6_TASKS,
-    IL21_TASKS,
-    STAGE3_TASKS,
+    BASE_GROUP_TASKS,
     Stage3Config,
     Stage3DataConfig,
-    Stage3DomainTrainingConfig,
+    Stage3GroupConfig,
     Stage3InitializationConfig,
     Stage3ModelConfig,
+    Stage3PluginAdaptationConfig,
+    Stage3PluginConfig,
+    Stage3PreparationConfig,
+    Stage3TaskConfig,
     Stage3TrainingConfig,
     load_stage3_config,
 )
 from stage3.data import (
-    STAGE3_ARTIFACT_VERSION,
-    TASK_REGISTRY,
+    ObjectKey,
+    ResolvedTaskSpec,
     Stage3TaskDataset,
-    SystemCursor,
-    build_task_payload,
-    collect_entity_keys,
-    fit_fold_scalers,
-    sanitize_task,
-    source_hashes,
+    balanced_virtual_indices,
+    composite_steps_per_epoch,
+    resolve_batch_allocation,
+    resolve_task_registry,
 )
+from stage3.model import GLOBAL, Stage3SparseModel, group_owner, private_owner
+from stage3.pcgrad import hierarchical_pcgrad
+from stage3.prepare import materialize_object_embeddings, prepare_stage3
 from stage3.evaluate import evaluate_checkpoints
-from stage3.model import (
-    Expert,
-    Stage3MultiDomainModel,
-)
-from stage3.prepare import (
-    load_frozen_stage2,
-    load_frozen_embeddings,
-    prepare_stage3,
-)
 from stage3.train import (
+    STAGE3_CHECKPOINT_KIND,
     STAGE3_CHECKPOINT_VERSION,
-    STAGE3_DOMAIN_MODEL_KIND,
-    STAGE3_MODEL_KIND,
-    STAGE3_TRAINING_KIND,
-    _build_runtime,
-    _load_training_checkpoint,
-    _train_domain_block,
+    _load_plugin,
+    checkpoint_epochs,
+    compute_task_gradient,
     run_stage3_training,
 )
-from stage1.tokenizer import SmilesTokenizer
 
 
-def _write_csv(
-    path: Path, fields: list[str], rows: list[dict[str, object]]
-) -> None:
+def _write_csv(path: Path, fields: list[str], rows: list[dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
@@ -82,354 +58,413 @@ def _write_csv(
         writer.writerows(rows)
 
 
-def _task_row(task: str, fold: int) -> dict[str, object]:
-    spec = TASK_REGISTRY[task]
-    cations = ("[Na+]", "[K+]", "[Li+]", "[Rb+]", "[Cs+]")
-    anions = (
-        "[Cl-]",
-        "[Br-]",
-        "[F-]",
-        "[I-]",
-        "O=[N+]([O-])[O-]",
-    )
-    solutes = ("C", "CC", "CCC", "CCCC", "CCCCC")
-    solvents = ("O", "CO", "CCO", "CCCO", "CCCCO")
-    row: dict[str, object] = {
-        "temperature_K": 290 + fold,
-        "pressure_kPa": 100 + fold,
-        "frequency_MHz": 10 + fold,
-        "wavelength_nm": 500 + fold,
-        spec.target: fold + len(task) / 100,
-        "source_list": "test",
+def _catalog_row(
+    task: str,
+    target: str,
+    identities: str,
+    conditions: str,
+    system_type: str,
+    strategies: str,
+) -> dict[str, object]:
+    return {
+        "catalog_schema_version": 1,
+        "stage": 3,
+        "task_id": task,
+        "target_columns": target,
+        "identity_columns": identities,
+        "condition_columns": conditions,
+        "system_type": system_type,
+        "materialized_path": f"stage3/{task}",
+        "strategies": strategies,
     }
-    for column, role in zip(
-        spec.entity_columns, spec.entity_roles, strict=True
+
+
+def _tiny_config(tmp_path: Path) -> Stage3Config:
+    catalog = tmp_path / "task_catalog.csv"
+    rows = [
+        _catalog_row("experiment/a", "a", "cation;anion", "", "il", "random;il;cation"),
+        _catalog_row("experiment/b", "b", "cation;anion", "temperature_K", "il", "il;anion"),
+        _catalog_row(
+            "experiment/c", "c", "solute;solvent", "temperature_K",
+            "solute_solvent", "random;solute_solvent;solute;solvent",
+        ),
+    ]
+    _write_csv(catalog, list(rows[0]), rows)
+    stage3 = tmp_path / "stage3"
+    for task, directory, fields in (
+        ("experiment/a", "IL", ["cation", "anion", "a"]),
+        ("experiment/b", "IL", ["cation", "anion", "temperature_K", "b"]),
+        ("experiment/c", "solute-solvent", ["solute", "solvent", "temperature_K", "c"]),
     ):
-        if column == "cation":
-            row[column] = cations[fold - 1]
-        elif column == "anion":
-            row[column] = anions[fold - 1]
-        elif column in {"solute", "SMILES"}:
-            row[column] = solutes[fold - 1]
-        elif column == "solvent":
-            row[column] = solvents[fold - 1]
-        elif role == "cation":
-            row[column] = cations[fold - 1]
-        elif role == "anion":
-            row[column] = anions[fold - 1]
-        else:
-            row[column] = solutes[fold - 1]
-    return row
-
-
-def _prepare_frozen_stage3_test_artifacts(config: Stage3Config) -> None:
-    for domain in config.active_domains:
-        tasks = config.tasks_for_domain(domain)
-        root = config.data.artifacts_dir / domain
-        keys = collect_entity_keys(config, tasks)
-        entity_ids = {key: index for index, key in enumerate(keys)}
-        generator = torch.Generator().manual_seed(config.data.seed + len(tasks))
-        entities = torch.randn(len(keys), 16, generator=generator)
-        scaler_payload = {}
-        il_keys = set()
-        neutral_keys = set()
-        artifact_files = []
         for fold in range(1, 6):
-            scalers = fit_fold_scalers(config, fold, tasks)
-            scaler_payload[f"fold{fold}"] = scalers
-            fold_root = root / "folds" / f"fold{fold}"
-            fold_root.mkdir(parents=True, exist_ok=True)
-            for task in tasks:
-                for split in ("train", "valid", "test"):
-                    payload, _ = build_task_payload(
-                        config, task, fold, split, entity_ids, scalers
-                    )
-                    relative = f"folds/fold{fold}/{sanitize_task(task)}_{split}.pt"
-                    atomic_torch_save(root / relative, payload)
-                    artifact_files.append(relative)
-                    rows = payload["entity_ids"]
-                    topology = TASK_REGISTRY[task].topology
-                    if topology in {"il", "il_solute"}:
-                        il_keys.update(tuple(map(int, row[:2])) for row in rows)
-                    elif topology == "neutral_pair":
-                        neutral_keys.update(tuple(map(int, row[:2])) for row in rows)
-
-        def object_values(keys_to_encode):
-            ordered = sorted(keys_to_encode)
-            index = torch.tensor(ordered, dtype=torch.long).reshape(len(ordered), 2)
-            return index, entities[index].mean(dim=1)
-
-        il_index, il_values = object_values(il_keys)
-        neutral_index, neutral_values = object_values(neutral_keys)
-        root.mkdir(parents=True, exist_ok=True)
-        atomic_torch_save(
-            root / "frozen_embeddings.pt",
-            {
-                "format_version": STAGE3_ARTIFACT_VERSION,
-                "entity_embeddings": entities,
-                "il_pair_keys": il_index,
-                "il_pair_embeddings": il_values,
-                "neutral_pair_keys": neutral_index,
-                "neutral_pair_embeddings": neutral_values,
-            },
-        )
-        atomic_json(root / "scalers.json", scaler_payload)
-        artifact_files.extend(["frozen_embeddings.pt", "scalers.json"])
-        atomic_json(
-            root / "metadata.json",
-            {
-                "format_version": STAGE3_ARTIFACT_VERSION,
-                "kind": "ilume_stage3_data",
-                "domain": domain,
-                "tasks": list(tasks),
-                "embedding_dim": 16,
-                "rdkit_version": rdBase.rdkitVersion,
-                "source_hashes": source_hashes(config, tasks),
-                "provenance": {
-                    "stage2_checkpoint": str(
-                        config.initialization.stage2_checkpoint
-                    )
-                },
-                "artifact_hashes": {
-                    relative: sha256_file(root / relative)
-                    for relative in artifact_files
-                },
-            },
-        )
-
-
-@pytest.fixture(scope="module")
-def tiny_stage3(tmp_path_factory: pytest.TempPathFactory) -> Stage3Config:
-    root = tmp_path_factory.mktemp("stage3")
-    stage1 = root / "stage1"
-    _write_csv(
-        stage1 / "cation.csv",
-        ["SMILES"],
-        [
-            {"SMILES": value}
-            for value in ("[Na+]", "[K+]", "[Li+]", "[Rb+]", "[Cs+]")
-        ],
-    )
-    _write_csv(
-        stage1 / "anion.csv",
-        ["SMILES"],
-        [
-            {"SMILES": value}
-            for value in (
-                "[Cl-]",
-                "[Br-]",
-                "[F-]",
-                "[I-]",
-                "O=[N+]([O-])[O-]",
-            )
-        ],
-    )
-    neutral = (
-        "C",
-        "CC",
-        "CCC",
-        "CCCC",
-        "CCCCC",
-        "O",
-        "CO",
-        "CCO",
-        "CCCO",
-        "CCCCO",
-    )
-    _write_csv(
-        stage1 / "molecule.csv",
-        ["SMILES"],
-        [{"SMILES": value} for value in neutral],
-    )
-    pretrain_dir = root / "pretrain"
-    pretrain = PretrainConfig(
-        data=DataConfig(
-            stage1_dir=stage1,
-            artifacts_dir=pretrain_dir,
-            valid_fraction=0.2,
-            max_smiles_tokens=64,
-            shard_size=8,
-        ),
-        descriptor=DescriptorConfig(mode="full", token_count=8),
-        fingerprint=FingerprintConfig(kind="both"),
-        model=ModelConfig(
-            d_model=16,
-            n_heads=4,
-            smiles_layers=1,
-            graph_depth=2,
-            descriptor_hidden_dim=32,
-            descriptor_blocks=1,
-            fusion_layers=1,
-            feedforward_dim=32,
-            dropout=0.0,
-        ),
-    )
-    prepare_corpus(pretrain)
-    vocabulary = SmilesTokenizer.load(pretrain_dir / "tokenizer.json")
-    dataset = PreparedCorpusDataset(pretrain_dir, "train")
-    backbone = MultimodalPretrainModel(
-        pretrain, vocabulary, dataset.descriptor_schema
-    )
-    stage1_checkpoint = root / "stage1.pt"
-    torch.save(
-        {
-            "kind": STAGE1_CHECKPOINT_KIND,
-            "format_version": STAGE1_CHECKPOINT_VERSION,
-            "model": backbone.state_dict(),
-            "config": pretrain.to_dict(),
-            "artifact_hash": sha256_file(pretrain_dir / "metadata.json"),
-        },
-        stage1_checkpoint,
-    )
-    stage2_checkpoint = root / "stage2.pt"
-    torch.save(
-        {
-            "format_version": 3,
-            "kind": "ilume_stage2_object",
-            "pretrain_checkpoint_hash": sha256_file(stage1_checkpoint),
-        },
-        stage2_checkpoint,
-    )
-    stage3_dir = root / "stage3_data"
-    for task, spec in TASK_REGISTRY.items():
-        fields = list(spec.entity_columns) + [
-            "temperature_K",
-            "pressure_kPa",
-            "frequency_MHz",
-            "wavelength_nm",
-            spec.target,
-            "source_list",
-        ]
-        for fold in range(1, 6):
-            _write_csv(
-                stage3_dir
-                / task
-                / spec.fold_strategy
-                / f"fold{fold}.csv",
-                fields,
-                [_task_row(task, fold)],
-            )
-        _write_csv(
-            stage3_dir / task / "test.csv",
-            fields,
-            [_task_row(task, 1)],
-        )
-    domain_training = Stage3DomainTrainingConfig(
-        batch_size=2,
-        max_blocks=3,
-        learning_rate=3.0e-4,
-        weight_decay=1.0e-4,
-        warmup_fraction=0.1,
-        max_grad_norm=1.0,
-        amp_dtype="none",
-        validation_interval_blocks=1,
-        early_stopping_patience=5,
-        early_stopping_min_delta=1.0e-4,
-        backward_mode="domain",
-    )
-    aux_training = replace(
-        domain_training,
-        early_stopping_patience=1,
-        early_stopping_min_delta=1.0e9,
-    )
-    config = Stage3Config(
+            if task == "experiment/c":
+                data = [
+                    {"solute": "C", "solvent": "O", "temperature_K": 290 + fold, "c": fold},
+                    {"solute": "CC", "solvent": "CO", "temperature_K": 300 + fold, "c": fold + 0.5},
+                ]
+            else:
+                target = task.rsplit("/", 1)[1]
+                data = [
+                    {"cation": "[Na+]", "anion": "[Cl-]", target: fold},
+                    {"cation": "[K+]", "anion": "[Br-]", target: fold + 0.5},
+                ]
+                if task == "experiment/b":
+                    data[0]["temperature_K"] = 290 + fold
+                    data[1]["temperature_K"] = 300 + fold
+            _write_csv(stage3 / task / directory / f"fold{fold}.csv", fields, data)
+        _write_csv(stage3 / task / "test.csv", fields, data)
+    checkpoint = tmp_path / "stage2.pt"
+    checkpoint.write_bytes(b"stage2-object-v3-test")
+    return Stage3Config(
         data=Stage3DataConfig(
-            stage3_dir=stage3_dir,
-            artifacts_dir=root / "artifacts",
-            entity_batch_size=4,
-            seed=7,
+            stage3_dir=stage3,
+            task_catalog=catalog,
+            artifacts_dir=tmp_path / "artifacts",
+            seed=13,
         ),
-        initialization=Stage3InitializationConfig(
-            stage2_checkpoint=stage2_checkpoint
+        preparation=Stage3PreparationConfig(
+            encoding_batch_size=2, cache_dir=tmp_path / "cache"
         ),
-        model=Stage3ModelConfig(dropout=0.2),
+        initialization=Stage3InitializationConfig(stage2_checkpoint=checkpoint),
+        model=Stage3ModelConfig(
+            global_experts=1, group_experts=1, private_experts=1,
+            dropout=0.0, expert_hidden_ratio=1.0,
+            interaction_hidden_ratio=1.0, film_hidden_ratio=1.0,
+            tower_hidden_ratio=1.0,
+        ),
+        groups={
+            "g1": Stage3GroupConfig(),
+            "g2": Stage3GroupConfig(),
+        },
+        tasks={
+            "experiment/a": Stage3TaskConfig(meta_group="g1"),
+            "experiment/b": Stage3TaskConfig(meta_group="g1"),
+            "experiment/c": Stage3TaskConfig(
+                meta_group="g2", partner_mode="interaction",
+                primary_slots=("solute",), partner_slots=("solvent",),
+            ),
+        },
         training=Stage3TrainingConfig(
-            il21=domain_training,
-            aux6=aux_training,
-            device="cpu",
-            save_every_n_cycles=1,
+            composite_batch_size=8, microbatch_size=2, virtual_min_size=4,
+            epochs=2, checkpoint_interval_epochs=1, amp_dtype="none",
+            device="cpu", cpu_threads=1, cpu_interop_threads=1,
         ),
     )
-    _prepare_frozen_stage3_test_artifacts(config)
+
+
+@pytest.fixture()
+def tiny_prepared(tmp_path: Path) -> Stage3Config:
+    config = _tiny_config(tmp_path)
+
+    def fake_materialize(config, object_keys, reporter=None):
+        del reporter
+        values = torch.arange(len(object_keys) * 4, dtype=torch.float32).reshape(-1, 4) / 10
+        return values, sha256_file(config.initialization.stage2_checkpoint), {
+            "hits": 0, "misses": len(object_keys)
+        }
+
+    with patch("stage3.prepare.materialize_object_embeddings", side_effect=fake_materialize):
+        summary = prepare_stage3(config)
+    assert summary["task_count"] == 3
     return config
 
 
-@pytest.fixture(scope="module")
-def trained_stage3(
-    tiny_stage3: Stage3Config,
-) -> tuple[Stage3Config, list[dict[str, Any]]]:
-    rows = run_stage3_training(
-        tiny_stage3, 1,
-        output_dir=tiny_stage3.data.artifacts_dir.parent / "combined_train",
-        reporter=ProgressReporter(interactive=False),
+def test_base_registry_and_config_defaults_are_explicit() -> None:
+    config = load_stage3_config("configs/v1/stage3/base.yaml")
+    assert sum(map(len, BASE_GROUP_TASKS.values())) == 21
+    assert len(config.tasks) == 21
+    assert len(config.groups) == 6
+    assert config.data.split_policy == "prefer_il"
+    assert config.training.checkpoint_interval_epochs == 10
+    assert config.model.dropout == 0.10
+    assert config.model.expert_hidden_ratio == 2.0
+    assert checkpoint_epochs(100, 10) == tuple(range(10, 101, 10))
+    assert checkpoint_epochs(23, 10) == (10, 20, 23)
+
+
+def test_registry_catalog_precedence_split_and_topology(tmp_path: Path) -> None:
+    config = _tiny_config(tmp_path)
+    registry = resolve_task_registry(config)
+    assert registry["experiment/a"].split_strategy == "il"
+    assert registry["experiment/c"].split_strategy == "solute_solvent"
+    assert registry["experiment/c"].primary_slots == ("solute",)
+    assert registry["experiment/c"].partner_slots == ("solvent",)
+    override = replace(
+        config,
+        data=replace(config.data, split_strategies={"experiment/a": "random"}),
     )
-    return tiny_stage3, rows
-
-
-def _assert_nested_equal(left: Any, right: Any) -> None:
-    if isinstance(left, torch.Tensor):
-        assert isinstance(right, torch.Tensor)
-        assert torch.equal(left, right)
-    elif isinstance(left, dict):
-        assert isinstance(right, dict)
-        assert left.keys() == right.keys()
-        for key in left:
-            _assert_nested_equal(left[key], right[key])
-    elif isinstance(left, (list, tuple)):
-        assert isinstance(right, type(left))
-        assert len(left) == len(right)
-        for first, second in zip(left, right, strict=True):
-            _assert_nested_equal(first, second)
-    else:
-        assert left == right
-
-
-def test_stage3_registry_and_formal_configs_are_explicit() -> None:
-    assert len(IL21_TASKS) == 21
-    assert len(AUX6_TASKS) == 6
-    assert len(STAGE3_TASKS) == 27
-    assert set(STAGE3_TASKS) == set(TASK_REGISTRY)
-    home = load_stage3_config("configs/v1/stage3/reference.yaml")
-    assert home.active_domains == ("il21", "aux6")
-    assert home.data.artifacts_dir == Path(
-        "outputs/v1/stage3/reference/prepare/artifacts"
+    assert resolve_task_registry(override)["experiment/a"].split_strategy == "random"
+    illegal = replace(
+        config,
+        data=replace(config.data, split_strategies={"experiment/a": "solvent"}),
     )
-    assert home.initialization.stage2_checkpoint == Path(
-        "outputs/v1/stage2/base/train/checkpoint_epoch_00005.pt"
+    with pytest.raises(ValueError, match="Illegal split strategy"):
+        resolve_task_registry(illegal)
+    missing_repeat = replace(
+        config,
+        data=replace(config.data, cv_repeats={"experiment/a": 2}),
     )
-    assert home.model.global_experts == home.model.group_experts == 2
-    assert home.model.private_experts == 1
-    assert home.training.cpu_threads == 4
-    assert home.training.cpu_interop_threads == 1
-    assert home.training.resident_data
-    assert home.training.il21.batch_size == 128
-    assert home.training.il21.max_blocks == 5000
-    assert home.training.il21.validation_interval_blocks == 50
-    assert home.training.aux6.batch_size == 256
-    assert home.training.aux6.max_blocks == 2500
-    assert home.training.aux6.validation_interval_blocks == 25
-    for domain in home.active_domains:
-        training = home.domain_training(domain)
-        assert training.backward_mode == "domain"
-        assert training.batch_size * training.max_blocks == 640000
-        assert training.batch_size * training.validation_interval_blocks == 6400
-    assert home.training.save_every_n_cycles == 25
+    with pytest.raises(FileNotFoundError, match="Missing Stage 3 split"):
+        from stage3.data import source_path
+
+        source_path(
+            missing_repeat,
+            resolve_task_registry(missing_repeat)["experiment/a"],
+            1,
+        )
 
 
-def test_stage3_rejects_object_checkpoint_before_migration(tmp_path) -> None:
-    checkpoint = tmp_path / "stage2_object.pt"
+def test_condition_missing_fails_before_frozen_encoding(tmp_path: Path) -> None:
+    config = _tiny_config(tmp_path)
+    path = config.data.stage3_dir / "experiment/b" / "IL" / "fold1.csv"
+    rows = [
+        {"cation": "[Na+]", "anion": "[Cl-]", "temperature_K": "", "b": 1},
+        {"cation": "[K+]", "anion": "[Br-]", "temperature_K": 300, "b": 2},
+    ]
+    _write_csv(path, list(rows[0]), rows)
+    with patch("stage3.prepare.materialize_object_embeddings") as encode:
+        with pytest.raises(ValueError, match="Missing Stage 3 value"):
+            prepare_stage3(config)
+    encode.assert_not_called()
+
+
+def test_cache_hit_miss_and_corruption(tmp_path: Path) -> None:
+    config = _tiny_config(tmp_path)
+    keys = (
+        ObjectKey("il", (("cation", "[Na+]"), ("anion", "[Cl-]"))),
+        ObjectKey("molecule", (("neutral", "C"),)),
+    )
+
+    class Encoder:
+        checkpoint_hash = sha256_file(config.initialization.stage2_checkpoint)
+
+        def encode(self, specs):
+            return torch.ones(len(specs), 4)
+
+    with patch("stage3.prepare.load_frozen_object_encoder", return_value=Encoder()) as load:
+        first, _, audit = materialize_object_embeddings(config, keys)
+        second, _, second_audit = materialize_object_embeddings(config, keys)
+    assert torch.equal(first, second)
+    assert audit == {"hits": 0, "misses": 2}
+    assert second_audit == {"hits": 2, "misses": 0}
+    assert load.call_count == 1
+    cache_file = next(config.preparation.cache_dir.rglob("*.pt"))
+    cache_file.write_bytes(b"corrupt")
+    with pytest.raises(ValueError, match="Corrupt Stage 3 object cache"):
+        materialize_object_embeddings(config, keys)
+
+
+def test_model_has_unified_task_gate_and_no_l2_global_gate(tiny_prepared: Stage3Config) -> None:
+    registry = resolve_task_registry(tiny_prepared)
+    model = Stage3SparseModel(tiny_prepared.model, registry, 4)
+    names = tuple(model.state_dict())
+    assert any("l1_global_gate" in name for name in names)
+    assert not hasattr(model, "l2_global_gate")
+    assert not any("l2_global_gate" in name for name in names)
+    assert set(model.parameter_ownership()) == set(model.parameters())
+    assert len(model.condition_films) == 2
+    final = model.condition_films["experiment__b"].network[-1]
+    assert torch.count_nonzero(final.weight) == 0
+    result = model(
+        "experiment/c", torch.randn(2, 4), torch.randn(2, 1),
+        partner_embedding=torch.randn(2, 4),
+    )
+    assert result.diagnostics["task_gate"].shape[-1] == 3
+    assert torch.allclose(result.diagnostics["task_gate"].sum(-1), torch.ones(2))
+
+
+def test_ownership_is_complete_and_isolated(tiny_prepared: Stage3Config) -> None:
+    model = Stage3SparseModel(tiny_prepared.model, resolve_task_registry(tiny_prepared), 4)
+    ownership = model.parameter_ownership()
+    assert all(owner.scope in {"GLOBAL", "GROUP", "PRIVATE"} for owner in ownership.values())
+    assert set(model.parameters_for_owner(private_owner("experiment/a"))).isdisjoint(
+        model.parameters_for_owner(private_owner("experiment/b"))
+    )
+    assert set(model.parameters_for_owner(group_owner("g1"))).isdisjoint(
+        model.parameters_for_owner(group_owner("g2"))
+    )
+    assert model.parameters_for_owner(GLOBAL)
+
+
+def test_virtual_allocation_and_replication_are_exact() -> None:
+    counts = {"a": 2, "b": 20, "c": 3}
+    allocation = resolve_batch_allocation(counts, 8, 10)
+    assert sum(allocation.values()) == 8
+    assert allocation == {"a": 2, "b": 4, "c": 2}
+    steps = composite_steps_per_epoch(counts, allocation, 10)
+    assert steps == 5
+    first = balanced_virtual_indices(3, 20, seed=7, epoch=2, task_id="a")
+    second = balanced_virtual_indices(3, 20, seed=7, epoch=2, task_id="a")
+    assert torch.equal(first, second)
+    frequencies = torch.bincount(first, minlength=3)
+    assert int(frequencies.max() - frequencies.min()) <= 1
+
+
+def test_microbatch_accumulation_matches_full_task_batch(tiny_prepared: Stage3Config) -> None:
+    registry = resolve_task_registry(tiny_prepared)
+    dataset = Stage3TaskDataset(tiny_prepared.data.artifacts_dir, 1, "experiment/a", "train")
+    embeddings = torch.load(
+        tiny_prepared.data.artifacts_dir / "object_embeddings.pt",
+        map_location="cpu", weights_only=True,
+    )["embeddings"]
+    normalization = json.loads(
+        (tiny_prepared.data.artifacts_dir / "normalization.json").read_text()
+    )["fold1"]["experiment/a"]
+    indices = torch.arange(len(dataset))
+    first = Stage3SparseModel(tiny_prepared.model, registry, 4)
+    second = Stage3SparseModel(tiny_prepared.model, registry, 4)
+    second.load_state_dict(first.state_dict())
+    micro = replace(tiny_prepared, training=replace(tiny_prepared.training, microbatch_size=1))
+    full = replace(tiny_prepared, training=replace(tiny_prepared.training, microbatch_size=len(dataset)))
+    gradients_micro, _ = compute_task_gradient(
+        first, "experiment/a", dataset, indices, embeddings, normalization,
+        micro, torch.device("cpu"),
+    )
+    gradients_full, _ = compute_task_gradient(
+        second, "experiment/a", dataset, indices, embeddings, normalization,
+        full, torch.device("cpu"),
+    )
+    first_named = dict(first.named_parameters())
+    second_named = dict(second.named_parameters())
+    for name in first_named:
+        left = gradients_micro.get(first_named[name])
+        right = gradients_full.get(second_named[name])
+        assert (left is None) == (right is None)
+        if left is not None:
+            assert torch.allclose(left, right, atol=1e-6, rtol=1e-5)
+
+
+def test_pcgrad_keeps_global_and_group_as_separate_blocks(
+    tiny_prepared: Stage3Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stage3.pcgrad as module
+
+    registry = resolve_task_registry(tiny_prepared)
+    model = Stage3SparseModel(tiny_prepared.model, registry, 4)
+    gradients = {}
+    for task in ("experiment/a", "experiment/b", "experiment/c"):
+        owners = (GLOBAL, group_owner(registry[task].meta_group), private_owner(task))
+        gradients[task] = {
+            parameter: torch.ones_like(parameter, dtype=torch.float32)
+            for owner in owners
+            for parameter in model.parameters_for_owner(owner)
+        }
+    calls: list[set[torch.nn.Parameter]] = []
+    original = module.pcgrad_block
+
+    def wrapped(raw, parameters, rng):
+        calls.append(set(parameters))
+        return original(raw, parameters, rng)
+
+    monkeypatch.setattr(module, "pcgrad_block", wrapped)
+    result = hierarchical_pcgrad(
+        model, gradients, registry, {"g1": 1.0, "g2": 1.0},
+        __import__("random").Random(3),
+    )
+    global_parameters = set(model.parameters_for_owner(GLOBAL))
+    group_parameters = set(model.parameters_for_owner(group_owner("g1")))
+    assert global_parameters in calls
+    assert group_parameters in calls
+    assert global_parameters | group_parameters not in calls
+    private = model.parameters_for_owner(private_owner("experiment/a"))[0]
+    assert torch.equal(result.gradients[private], gradients["experiment/a"][private])
+
+
+def _plugin_checkpoint(path: Path, model: Stage3SparseModel, stage2_sha: str) -> None:
+    plan = {"model": asdict(model.model_config)}
     torch.save(
-        {"format_version": 3, "kind": "ilume_stage2_object"}, checkpoint
+        {
+            "kind": STAGE3_CHECKPOINT_KIND,
+            "format_version": STAGE3_CHECKPOINT_VERSION,
+            "stage": "stage3",
+            "stage2_checkpoint_sha256": stage2_sha,
+            "resolved_registry": {
+                task: spec.to_dict() for task, spec in model.task_specs.items()
+            },
+            "ownership_manifest": model.ownership_manifest(),
+            "model": model.state_dict(),
+            "normalization": {task: {} for task in model.task_specs},
+            "resolved_training_plan": plan,
+            "resolved_training_plan_hash": canonical_json_sha256(plan),
+        },
+        path,
     )
-    with pytest.raises(ValueError, match="object contract migration pending"):
-        load_frozen_stage2(checkpoint)
 
-    encoder = tmp_path / "stage2_encoder.pt"
-    torch.save(
-        {"format_version": 1, "kind": "ilume_stage2_encoder"}, encoder
+
+def test_plugin_defaults_and_explicit_adaptation(tiny_prepared: Stage3Config) -> None:
+    registry = resolve_task_registry(tiny_prepared)
+    source_registry = {task: registry[task] for task in ("experiment/a", "experiment/b")}
+    source_model = Stage3SparseModel(tiny_prepared.model, source_registry, 4)
+    checkpoint = tiny_prepared.data.artifacts_dir.parent / "plugin.pt"
+    stage2_sha = sha256_file(tiny_prepared.initialization.stage2_checkpoint)
+    _plugin_checkpoint(checkpoint, source_model, stage2_sha)
+    target = Stage3SparseModel(tiny_prepared.model, registry, 4)
+    plugin = Stage3PluginConfig(checkpoint=checkpoint)
+    config = replace(
+        tiny_prepared,
+        initialization=replace(tiny_prepared.initialization, plugin=plugin),
     )
-    with pytest.raises(ValueError, match="object contract migration pending"):
-        load_frozen_stage2(encoder)
+    _load_plugin(config, target, stage2_sha)
+    assert not any(parameter.requires_grad for parameter in target.parameters_for_owner(GLOBAL))
+    assert not any(parameter.requires_grad for parameter in target.parameters_for_owner(group_owner("g1")))
+    assert all(parameter.requires_grad for parameter in target.parameters_for_owner(group_owner("g2")))
+    assert all(parameter.requires_grad for parameter in target.parameters_for_owner(private_owner("experiment/c")))
+
+    adapted_model = Stage3SparseModel(tiny_prepared.model, registry, 4)
+    adapted = replace(
+        plugin,
+        adaptation=Stage3PluginAdaptationConfig(
+            global_scope=True, groups=("g1",), private_tasks=("experiment/a",)
+        ),
+    )
+    adapted_config = replace(
+        tiny_prepared,
+        initialization=replace(tiny_prepared.initialization, plugin=adapted),
+    )
+    _load_plugin(adapted_config, adapted_model, stage2_sha)
+    assert all(parameter.requires_grad for parameter in adapted_model.parameters_for_owner(GLOBAL))
+    assert all(parameter.requires_grad for parameter in adapted_model.parameters_for_owner(group_owner("g1")))
+    assert all(parameter.requires_grad for parameter in adapted_model.parameters_for_owner(private_owner("experiment/a")))
+
+
+def test_short_training_checkpoint_and_resume_are_exact(tiny_prepared: Stage3Config) -> None:
+    continuous = tiny_prepared.data.artifacts_dir.parent / "continuous"
+    rows = run_stage3_training(tiny_prepared, 1, output_dir=continuous)
+    assert [row["epoch"] for row in rows] == [1, 2]
+    assert sorted(path.name for path in continuous.glob("checkpoint_*.pt")) == [
+        "checkpoint_epoch_00001.pt", "checkpoint_epoch_00002.pt"
+    ]
+    resumed = tiny_prepared.data.artifacts_dir.parent / "resumed"
+    resumed.mkdir()
+    shutil.copy(continuous / "resolved_training_plan.json", resumed)
+    first_metric = (continuous / "metrics.jsonl").read_text().splitlines()[0]
+    (resumed / "metrics.jsonl").write_text(first_metric + "\n")
+    first_diag = (continuous / "diagnostics.jsonl").read_text().splitlines()[0]
+    (resumed / "diagnostics.jsonl").write_text(first_diag + "\n")
+    resumed_rows = run_stage3_training(
+        tiny_prepared, 1, output_dir=resumed,
+        resume_from=continuous / "checkpoint_epoch_00001.pt",
+    )
+    assert [row["epoch"] for row in resumed_rows] == [2]
+    expected = torch.load(
+        continuous / "checkpoint_epoch_00002.pt", map_location="cpu", weights_only=False
+    )["model"]
+    actual = torch.load(
+        resumed / "checkpoint_epoch_00002.pt", map_location="cpu", weights_only=False
+    )["model"]
+    assert expected.keys() == actual.keys()
+    assert all(torch.equal(expected[name], actual[name]) for name in expected)
+    evaluation = evaluate_checkpoints(
+        tiny_prepared,
+        continuous,
+        split="valid",
+        ensemble_folds=False,
+        checkpoint_epoch=2,
+        task_subset=("experiment/a",),
+        fold=1,
+    )
+    assert evaluation["checkpoint_epoch"] == 2
+    assert set(evaluation["tasks"]) == {"experiment/a"}
 
 
 def test_stage3_scripts_configure_runtime_before_loading_operation() -> None:
@@ -440,420 +475,7 @@ def test_stage3_scripts_configure_runtime_before_loading_operation() -> None:
         "evaluate.py": "from stage3.evaluate import evaluate_checkpoints",
     }
     for filename, operation_import in operations.items():
-        source = (root / "scripts" / "stage3" / filename).read_text(
-            encoding="utf-8"
-        )
+        source = (root / "scripts" / "stage3" / filename).read_text()
         assert source.index("configure_process_runtime(config)") < source.index(
             operation_import
         )
-
-
-def test_late_solute_is_invisible_to_first_layer_and_global_experts() -> None:
-    config = Stage3Config(model=Stage3ModelConfig(dropout=0.0))
-    model = Stage3MultiDomainModel(config, 16, seed=3).il21.eval()
-    base = torch.randn(3, 16)
-    conditions = torch.randn(3, 8)
-    phase = torch.zeros(3, dtype=torch.long)
-    solute_a = torch.randn(3, 16, requires_grad=True)
-    solute_b = torch.randn(3, 16)
-    first = model(
-        "experiment/solvation",
-        base,
-        conditions,
-        phase,
-        solute_cls=solute_a,
-    )
-    second = model(
-        "experiment/solvation",
-        base,
-        conditions,
-        phase,
-        solute_cls=solute_b,
-    )
-    for key in (
-        "first_layer_shared",
-        "first_layer_group",
-        "second_layer_global",
-    ):
-        assert torch.equal(first.diagnostics[key], second.diagnostics[key])
-    assert not torch.equal(
-        first.diagnostics["second_layer_local"],
-        second.diagnostics["second_layer_local"],
-    )
-    assert not torch.equal(
-        first.diagnostics["task_gate"], second.diagnostics["task_gate"]
-    )
-    first.predictions.sum().backward()
-    assert float(solute_a.grad.abs().sum()) > 0.0
-    with pytest.raises(ValueError, match="must not receive solute"):
-        model(
-            "experiment/pec50",
-            base,
-            conditions,
-            phase,
-            solute_cls=solute_b,
-        )
-
-
-def test_aux_heads_and_backward_are_fully_isolated() -> None:
-    config = Stage3Config(model=Stage3ModelConfig(dropout=0.0))
-    model = Stage3MultiDomainModel(config, 16, seed=5).train()
-    parameter_sets = [
-        {id(parameter) for parameter in model.aux6.heads[sanitize_task(task)].parameters()}
-        for task in AUX6_TASKS
-    ]
-    for index, first in enumerate(parameter_sets):
-        for second in parameter_sets[index + 1 :]:
-            assert first.isdisjoint(second)
-    base = torch.randn(3, 16)
-    conditions = torch.randn(3, 8)
-    phase = torch.zeros(3, dtype=torch.long)
-    model.il21(
-        "experiment/density", base, conditions, phase
-    ).predictions.sum().backward()
-    il_state = {
-        name: value.detach().clone()
-        for name, value in model.il21.state_dict().items()
-    }
-    il_gradients = {
-        name: (
-            None if parameter.grad is None else parameter.grad.detach().clone()
-        )
-        for name, parameter in model.il21.named_parameters()
-    }
-    model.aux6(
-        "simulation/charge", base, conditions, phase
-    ).predictions.sum().backward()
-    for name, value in model.il21.state_dict().items():
-        assert torch.equal(value, il_state[name])
-    for name, parameter in model.il21.named_parameters():
-        expected = il_gradients[name]
-        if expected is None:
-            assert parameter.grad is None
-        else:
-            assert torch.equal(parameter.grad, expected)
-
-
-def test_expert_and_system_cursor_contracts() -> None:
-    expert = Expert(8)
-    assert isinstance(expert.layers[0], torch.nn.Linear)
-    assert expert.layers[0].in_features == 8
-    assert expert.layers[0].out_features == 16
-    assert isinstance(expert.layers[3], torch.nn.BatchNorm1d)
-    cursor = SystemCursor(
-        torch.tensor([0, 3, 5]), torch.arange(5), seed=11
-    )
-    cursor.next_indices(7)
-    state = cursor.state_dict()
-    expected = cursor.next_indices(9)
-    restored = SystemCursor(
-        torch.tensor([0, 3, 5]), torch.arange(5), seed=11
-    )
-    restored.load_state_dict(state)
-    assert torch.equal(restored.next_indices(9), expected)
-
-
-def test_domain_mode_calls_backward_once(
-    tiny_stage3: Stage3Config,
-) -> None:
-    config = replace(tiny_stage3, active_domains=("il21",))
-    device = torch.device("cpu")
-    model = Stage3MultiDomainModel(config, 16, seed=13)
-    runtime = _build_runtime(config, "il21", 1, model, device)
-    original = torch.autograd.backward
-    with patch("torch.autograd.backward", wraps=original) as backward:
-        _train_domain_block(
-            config=config,
-            model=model,
-            runtime=runtime,
-            device=device,
-        )
-    assert backward.call_count == 1
-
-
-def test_stage3_existing_artifacts_remain_loadable_while_prepare_is_deferred(
-    tiny_stage3: Stage3Config,
-) -> None:
-    il_scalers = fit_fold_scalers(tiny_stage3, 1, IL21_TASKS)
-    aux_scalers = fit_fold_scalers(tiny_stage3, 1, AUX6_TASKS)
-    assert il_scalers["experiment/density"]["target"]["count"] == 4
-    assert aux_scalers["simulation/charge"]["target"]["count"] == 4
-    for domain, tasks in (("il21", IL21_TASKS), ("aux6", AUX6_TASKS)):
-        root = tiny_stage3.data.artifacts_dir / domain
-        metadata = json.loads((root / "metadata.json").read_text())
-        assert metadata["format_version"] == 2
-        assert metadata["domain"] == domain
-        assert tuple(metadata["tasks"]) == tasks
-        assert (root / "frozen_embeddings.pt").is_file()
-        assert (root / "scalers.json").is_file()
-    with pytest.raises(ValueError, match="object contract migration pending"):
-        prepare_stage3(
-            tiny_stage3, reporter=ProgressReporter(interactive=False)
-        )
-    train = Stage3TaskDataset(
-        tiny_stage3.data.artifacts_dir,
-        "il21",
-        1,
-        "experiment/solvation",
-        "train",
-    )
-    valid = Stage3TaskDataset(
-        tiny_stage3.data.artifacts_dir,
-        "il21",
-        1,
-        "experiment/solvation",
-        "valid",
-    )
-    train_pairs = {
-        tuple(map(int, row[:2])) for row in train.entity_ids.tolist()
-    }
-    valid_pairs = {
-        tuple(map(int, row[:2])) for row in valid.entity_ids.tolist()
-    }
-    assert train_pairs.isdisjoint(valid_pairs)
-
-
-def test_combined_aux_activity_cannot_change_il_training_or_resume(
-    trained_stage3: tuple[Stage3Config, list[dict[str, Any]]],
-) -> None:
-    tiny_stage3, combined_rows = trained_stage3
-    reporter = ProgressReporter(interactive=False)
-    assert [row["domain"] for row in combined_rows] == [
-        "il21",
-        "aux6",
-        "il21",
-        "aux6",
-        "il21",
-    ]
-    assert combined_rows[-1]["block"] == 3
-    assert combined_rows[3]["stopped"] == 1
-    il_only = replace(
-        tiny_stage3,
-        active_domains=("il21",),
-    )
-    combined_output = tiny_stage3.data.artifacts_dir.parent / "combined_train"
-    il_output = tiny_stage3.data.artifacts_dir.parent / "il_only"
-    il_rows = run_stage3_training(
-        il_only, 1, output_dir=il_output, reporter=reporter
-    )
-    assert not (il_output / "best.pt").exists()
-    combined_il_rows = [
-        row for row in combined_rows if row["domain"] == "il21"
-    ]
-    _assert_nested_equal(combined_il_rows, il_rows)
-
-    combined_final_path = (
-        combined_output / "checkpoint_cycle_00000003.pt"
-    )
-    il_final_path = (
-        il_output / "checkpoint_cycle_00000003.pt"
-    )
-    combined_final = torch.load(
-        combined_final_path, map_location="cpu", weights_only=False
-    )
-    il_final = torch.load(
-        il_final_path, map_location="cpu", weights_only=False
-    )
-    assert combined_final["kind"] == STAGE3_TRAINING_KIND
-    assert combined_final["format_version"] == STAGE3_CHECKPOINT_VERSION
-    combined_il_model = {
-        key: value
-        for key, value in combined_final["model"].items()
-        if key.startswith("il21.")
-    }
-    _assert_nested_equal(combined_il_model, il_final["model"])
-    _assert_nested_equal(
-        combined_final["domains"]["il21"],
-        il_final["domains"]["il21"],
-    )
-
-    original_final = combined_final
-    resume_checkpoint = (
-        combined_output / "checkpoint_cycle_00000001.pt"
-    )
-    replay_rows = run_stage3_training(
-        tiny_stage3, 1, output_dir=combined_output,
-        resume_from=resume_checkpoint, reporter=reporter,
-    )
-    expected_replay = [
-        row
-        for row in combined_rows
-        if row["block"] >= 2
-    ]
-    _assert_nested_equal(replay_rows, expected_replay)
-    replay_final = torch.load(
-        combined_final_path, map_location="cpu", weights_only=False
-    )
-    _assert_nested_equal(replay_final, original_final)
-    metric_rows = [
-        json.loads(line)
-        for line in (
-            combined_output / "metrics.jsonl"
-        ).read_text(encoding="utf-8").splitlines()
-    ]
-    assert [
-        row["block"] for row in metric_rows if row["domain"] == "il21"
-    ] == [1, 2, 3]
-    assert [
-        row["block"] for row in metric_rows if row["domain"] == "aux6"
-    ] == [1, 2]
-
-
-def test_domain_bests_are_assembled_and_evaluation_runs(
-    trained_stage3: tuple[Stage3Config, list[dict[str, Any]]],
-) -> None:
-    tiny_stage3, _ = trained_stage3
-    output = tiny_stage3.data.artifacts_dir.parent / "combined_train"
-    combined = torch.load(
-        output / "best.pt", map_location="cpu", weights_only=False
-    )
-    assert combined["kind"] == STAGE3_MODEL_KIND
-    assert combined["active_domains"] == ["il21", "aux6"]
-    for domain in ("il21", "aux6"):
-        domain_best = torch.load(
-            output / f"best_{domain}.pt",
-            map_location="cpu",
-            weights_only=False,
-        )
-        assert domain_best["kind"] == STAGE3_DOMAIN_MODEL_KIND
-        for key, value in domain_best["model"].items():
-            assert torch.equal(combined["model"][f"{domain}.{key}"], value)
-    checkpoint_root = output.parent / "evaluation_folds"
-    for fold in range(1, 6):
-        fold_dir = checkpoint_root / f"fold{fold}"
-        fold_dir.mkdir(parents=True)
-        payload = dict(combined)
-        payload["fold"] = fold
-        torch.save(payload, fold_dir / "best.pt")
-    result = evaluate_checkpoints(
-        tiny_stage3,
-        checkpoint_root,
-        split="test",
-        ensemble_folds=True,
-    )
-    assert result["ensemble_folds"] == 5
-    assert set(result["tasks"]) == set(STAGE3_TASKS)
-    il_checkpoint_root = output.parent / "il_evaluation_folds"
-    il_best = torch.load(
-        output / "best_il21.pt", map_location="cpu", weights_only=False
-    )
-    il_config = replace(tiny_stage3, active_domains=("il21",))
-    for fold in range(1, 6):
-        fold_dir = il_checkpoint_root / f"fold{fold}"
-        fold_dir.mkdir(parents=True)
-        payload = dict(il_best)
-        payload["fold"] = fold
-        torch.save(payload, fold_dir / "best_il21.pt")
-    il_result = evaluate_checkpoints(
-        il_config,
-        il_checkpoint_root,
-        split="test",
-        ensemble_folds=True,
-    )
-    assert set(il_result["tasks"]) == set(IL21_TASKS)
-
-
-def test_stage3_v1_and_evaluation_checkpoints_are_not_resumable(
-    tmp_path: Path,
-) -> None:
-    v1 = tmp_path / "v1.pt"
-    torch.save(
-        {"format_version": 1, "kind": STAGE3_TRAINING_KIND}, v1
-    )
-    with pytest.raises(ValueError, match="v2 training checkpoint"):
-        _load_training_checkpoint(v1)
-    evaluation = tmp_path / "best.pt"
-    torch.save(
-        {"format_version": 2, "kind": STAGE3_MODEL_KIND}, evaluation
-    )
-    with pytest.raises(ValueError, match="v2 training checkpoint"):
-        _load_training_checkpoint(evaluation)
-
-
-def test_stage3_frozen_cache_hash_mismatch_is_rejected(
-    tiny_stage3: Stage3Config, tmp_path: Path
-) -> None:
-    copied = tmp_path / "artifacts"
-    shutil.copytree(tiny_stage3.data.artifacts_dir, copied)
-    config = replace(
-        tiny_stage3,
-        data=replace(tiny_stage3.data, artifacts_dir=copied),
-    )
-    path = copied / "aux6" / "frozen_embeddings.pt"
-    with path.open("ab") as handle:
-        handle.write(b"corrupt")
-    with pytest.raises(ValueError, match="embedding hash mismatch"):
-        load_frozen_embeddings(config, "aux6")
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
-def test_aux_cuda_amp_overflow_cannot_change_il_runtime(
-    tiny_stage3: Stage3Config,
-) -> None:
-    fp16 = replace(
-        tiny_stage3,
-        training=replace(
-            tiny_stage3.training,
-            il21=replace(tiny_stage3.training.il21, amp_dtype="fp16"),
-            aux6=replace(tiny_stage3.training.aux6, amp_dtype="fp16"),
-            device="cuda",
-        ),
-    )
-    device = torch.device("cuda")
-    model = Stage3MultiDomainModel(fp16, 16, seed=9).to(device)
-    il_runtime = _build_runtime(fp16, "il21", 1, model, device)
-    aux_runtime = _build_runtime(fp16, "aux6", 1, model, device)
-    assert il_runtime.store.device.type == "cuda"
-    assert aux_runtime.store.device.type == "cuda"
-    assert il_runtime.store.entity.device.type == "cuda"
-    view = il_runtime.store.view_for(
-        il_runtime.train["experiment/solvation"]
-    )
-    assert view.base_indices.device.type == "cuda"
-    assert view.conditions.device.type == "cuda"
-    assert view.targets.device.type == "cuda"
-    assert view.solute_indices is not None
-    assert view.solute_indices.device.type == "cuda"
-    assert il_runtime.cursors["experiment/solvation"].offsets.device.type == "cpu"
-    il_snapshot = {
-        "model": {
-            name: value.detach().clone()
-            for name, value in model.il21.state_dict().items()
-        },
-        "optimizer": il_runtime.optimizer.state_dict(),
-        "scheduler": il_runtime.scheduler.state_dict(),
-        "scaler": il_runtime.scaler.state_dict(),
-        "cursors": {
-            task: cursor.state_dict()
-            for task, cursor in il_runtime.cursors.items()
-        },
-        "task_order_rng": il_runtime.task_order_rng.getstate(),
-        "torch_rng": il_runtime.torch_rng.state_dict(),
-        "block": il_runtime.block,
-        "micro_step": il_runtime.micro_step,
-    }
-    initial_aux_scale = aux_runtime.scaler.get_scale()
-    aux_runtime.store.entity.fill_(1.0e30)
-    aux_runtime.store.neutral.fill_(1.0e30)
-    _train_domain_block(
-        config=fp16,
-        model=model,
-        runtime=aux_runtime,
-        device=device,
-    )
-    assert aux_runtime.scaler.get_scale() < initial_aux_scale
-    current_il = {
-        "model": model.il21.state_dict(),
-        "optimizer": il_runtime.optimizer.state_dict(),
-        "scheduler": il_runtime.scheduler.state_dict(),
-        "scaler": il_runtime.scaler.state_dict(),
-        "cursors": {
-            task: cursor.state_dict()
-            for task, cursor in il_runtime.cursors.items()
-        },
-        "task_order_rng": il_runtime.task_order_rng.getstate(),
-        "torch_rng": il_runtime.torch_rng.state_dict(),
-        "block": il_runtime.block,
-        "micro_step": il_runtime.micro_step,
-    }
-    _assert_nested_equal(current_il, il_snapshot)
