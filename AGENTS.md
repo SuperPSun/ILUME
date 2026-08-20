@@ -4,9 +4,9 @@
 
 仓库重构不得改变现役数据筛选与 split、tokenizer、descriptor、fingerprint、masking、模型、loss、优化顺序、验证指标、早停和 Stage 1/2/3 数值训练行为。发现科研问题时单独记录，不在结构整理中顺手修改。
 
-Stage 1 现役合同以 ADR-0013/0014/0015/0017 为准：自然频率全量 epoch、cation/anion/molecule 的 element-level loss 权重 2/2/1、五模态等权、global batch 128、默认 eager 执行、单一 Base、原生单卡/DDP、corpus/checkpoint 既定 kind 与 `format_version=2`。只支持 epoch 边界恢复；不得恢复 45/45/10 coverage sampler、augmentation multiplier、多容量正式配置、mid-epoch cursor/RNG 恢复或旧 artifact/checkpoint 兼容。
+Stage 1 现役合同以 ADR-0013/0014/0015/0017 为准，identity/audit 边界以 ADR-0021 为准：自然频率全量 epoch、cation/anion/molecule 的 element-level loss 权重 2/2/1、五模态等权、global batch 128、默认 eager 执行、单一 Base、原生单卡/DDP、corpus/checkpoint 既定 kind 与 `format_version=2`。只支持 epoch 边界恢复；不得恢复 45/45/10 coverage sampler、augmentation multiplier、多容量正式配置、mid-epoch cursor/RNG 恢复或旧 artifact/checkpoint 兼容。
 
-Stage 2 现役合同以 ADR-0019 和 `configs/v1/stage2/base.yaml` 为准：九个 catalog task 共享 `ObjectEncoder`，registry 与 Stage 1 派生的 model contract 分离；prepared data不绑定Stage 2 model contract，teacher cache只绑定Stage 1 encoder与entity artifact，model contract只属于训练checkpoint与encoder artifact。QM mask、entity teacher、逐行完整覆盖和只补偿 physics loss 的语义必须保持。Object v3 强制一个 batch 对应一个 optimizer step，只从完整 epoch 恢复；旧 v2 和缺少现役 preparation/extraction contract 的开发期 v3 不迁移。不得恢复双实体编码器、体系采样、渐进解冻、early stopping、best/last、step checkpoint、PCGrad 或 accumulation window。Stage 3 现役合同以 ADR-0020 为准：21 个 sparse-label observation task、6 个 meta-group、冻结 Stage 2 Object v3 表示、动态 HoME、ownership-aware hierarchical PCGrad 和完整 epoch checkpoint；ADR-0010～0012 仅为历史。
+Stage 2 现役合同以 ADR-0019 和 `configs/v1/stage2/base.yaml` 为准，identity/audit 边界以 ADR-0021 为准：九个 catalog task 共享 `ObjectEncoder`，registry 与 Stage 1 派生的 model contract 分离；prepared data不绑定Stage 2 model contract，teacher cache只绑定Stage 1 encoder与entity artifact，model contract只属于训练checkpoint与encoder artifact。QM mask、entity teacher、逐行完整覆盖和只补偿 physics loss 的语义必须保持。Object v3 强制一个 batch 对应一个 optimizer step，只从完整 epoch 恢复；旧 v2 和缺少现役 preparation/extraction contract 的开发期 v3 不迁移。不得恢复双实体编码器、体系采样、渐进解冻、early stopping、best/last、step checkpoint、PCGrad 或 accumulation window。Stage 3 现役合同以 ADR-0020 为准、identity/audit 边界以 ADR-0021 为准：21 个 sparse-label observation task、6 个 meta-group、冻结 Stage 2 Object v3 表示、动态 HoME、ownership-aware hierarchical PCGrad 和完整 epoch checkpoint；ADR-0010～0012 仅为历史。
 
 ## 结构与入口
 
@@ -22,7 +22,7 @@ Stage 2 现役合同以 ADR-0019 和 `configs/v1/stage2/base.yaml` 为准：九�
 - 数据本体不进入 Git；prepare 自动写 `data/stage*/metadata.json`。
 - 每次操作必须冻结 `run_config.yaml`，并写公开安全的 `metadata.json` 和成功后的 `summary.json`；reusable Stage 1/2 prepare 可在各自数据身份不变时刷新允许忽略的执行或模型配置，Stage 2 的具体边界以 ADR-0019 为准。禁止用户名、hostname、私有绝对路径。
 - 新 train/evaluate 输出不可覆盖；resume 必须显式且严格校验阶段、fold、有效配置、step/epoch、optimizer、scheduler 与 AMP。Stage 1 仅从完整 epoch 恢复并允许改变 world size；Stage 2 严格校验 Object v3 的完整 epoch、registry、model contract、RNG、数据、teacher、任务规模、数学精度与 optimizer implementation 合同；Stage 3 严格校验 resolved plan、ownership、Stage 2 SHA、数据与 normalization，并由 seed/epoch/task 重建 virtual sampler。
-- 保留 prepared artifact 自身的 SHA 和完整性校验。除 ADR-0020 明确要求的 Stage 3 frozen Stage 2 source SHA 绑定外，不得恢复其他跨阶段 checkpoint SHA lineage 强制绑定。
+- 保留 prepared artifact 自身的 SHA 和完整性校验。跨 Stage 只绑定 ADR-0021 定义的 semantic identity 与必要 state hash，不绑定完整 checkpoint SHA。
 - 周期 checkpoint 全部保留。Stage 1 以 `last.pt` 表示最新完整恢复状态；Stage 2 只保存不可覆盖的 `checkpoint_epoch_XXXXX.pt`，最终模型固定为 epoch 5。Stage 3 按 YAML interval 保存不可覆盖的完整 epoch checkpoint，Base 默认每 10 epoch 保存并固定以 epoch 100 为最终模型，不生成 `best.pt` 或 `last.pt`。
 
 ## 验证与清理

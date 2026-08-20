@@ -15,6 +15,7 @@ from stage1.config import (
 )
 import common.outputs as outputs_module
 from common.data_identity import write_data_identity
+from common.identity import semantic_identity
 from common.outputs import open_run_directory
 
 
@@ -87,37 +88,47 @@ def test_run_directory_is_non_overwriting_self_describing_and_private(
     config_path = tmp_path / "config.yaml"
     config_path.write_text("data:\n  seed: 42\n", encoding="utf-8")
     payload = {"data": {"stage1_dir": "data/stage1", "seed": 42}}
+    identity = semantic_identity("test.run", {"seed": 42})
     run = open_run_directory(
         stage="stage1", operation="train", config_path="config.yaml",
-        config_payload=payload, output="outputs/run", seed=42,
+        config_payload=payload, semantic_identity=identity,
+        output="outputs/run", seed=42,
     )
     run.complete({"loss": 1.0})
     assert (run.root / "run_config.yaml").is_file()
     metadata = json.loads((run.root / "metadata.json").read_text())
     assert metadata["status"] == "completed"
-    assert metadata["config_path"] == "config.yaml"
+    assert metadata["locator"]["config_path"] == "config.yaml"
     assert not any(str(tmp_path) in str(value) for value in metadata.values())
+    attempts = [
+        json.loads(line)
+        for line in (run.root / "attempts.jsonl").read_text().splitlines()
+    ]
+    assert [row["event"] for row in attempts] == ["started", "completed"]
+    assert attempts[0]["attempt_id"] == attempts[1]["attempt_id"]
     with pytest.raises(FileExistsError):
         open_run_directory(
             stage="stage1", operation="train", config_path="config.yaml",
-            config_payload=payload, output="outputs/run", seed=42,
+            config_payload=payload, semantic_identity=identity,
+            output="outputs/run", seed=42,
         )
 
 
-def test_run_directory_ignores_only_named_execution_section(tmp_path, monkeypatch):
+def test_run_directory_reuses_by_semantic_identity_only(tmp_path, monkeypatch):
     monkeypatch.setattr(outputs_module, "REPOSITORY_ROOT", tmp_path)
     config_path = tmp_path / "config.yaml"
     config_path.write_text("preparation:\n  workers: 1\n", encoding="utf-8")
     original = {"tokenizer": {"min_frequency": 1}, "preparation": {"workers": 1}}
+    identity = semantic_identity("test.prepare", {"min_frequency": 1})
     run = open_run_directory(
         stage="stage1",
         operation="prepare",
         config_path="config.yaml",
         config_payload=original,
+        semantic_identity=identity,
         output="outputs/prepare",
         seed=42,
         reusable=True,
-        ignored_config_sections={"preparation"},
     )
     run.complete({"total": 1})
     changed_workers = {
@@ -129,10 +140,10 @@ def test_run_directory_ignores_only_named_execution_section(tmp_path, monkeypatc
         operation="prepare",
         config_path="config.yaml",
         config_payload=changed_workers,
+        semantic_identity=identity,
         output="outputs/prepare",
         seed=42,
         reusable=True,
-        ignored_config_sections={"preparation"},
     )
     import yaml
 
@@ -143,31 +154,35 @@ def test_run_directory_ignores_only_named_execution_section(tmp_path, monkeypatc
         "tokenizer": {"min_frequency": 2},
         "preparation": {"workers": 4},
     }
-    with pytest.raises(ValueError, match="does not match"):
+    with pytest.raises(ValueError, match="semantic identity mismatch"):
         open_run_directory(
             stage="stage1",
             operation="prepare",
             config_path="config.yaml",
             config_payload=changed_science,
+            semantic_identity=semantic_identity(
+                "test.prepare", {"min_frequency": 2}
+            ),
             output="outputs/prepare",
             seed=42,
             reusable=True,
-            ignored_config_sections={"preparation"},
         )
 
 
-def test_run_directory_allows_only_explicit_compile_switch_on_resume(
+def test_run_directory_allows_execution_change_but_rejects_semantic_change_on_resume(
     tmp_path, monkeypatch
 ) -> None:
     monkeypatch.setattr(outputs_module, "REPOSITORY_ROOT", tmp_path)
     config_path = tmp_path / "config.yaml"
     config_path.write_text("training:\n  compile: true\n", encoding="utf-8")
     original = {"training": {"epochs": 2, "compile": True}}
+    identity = semantic_identity("test.train", {"epochs": 2})
     run = open_run_directory(
         stage="stage1",
         operation="train",
         config_path="config.yaml",
         config_payload=original,
+        semantic_identity=identity,
         output="outputs/train",
         seed=42,
     )
@@ -177,23 +192,23 @@ def test_run_directory_allows_only_explicit_compile_switch_on_resume(
         operation="train",
         config_path="config.yaml",
         config_payload={"training": {"epochs": 2, "compile": False}},
+        semantic_identity=identity,
         output="outputs/train",
         seed=42,
         resume="outputs/train/last.pt",
-        ignored_config_fields={"training.compile"},
     )
     assert resumed.metadata["attempt_id"] != run.metadata["attempt_id"]
-    assert resumed.metadata["resume"] == "outputs/train/last.pt"
-    with pytest.raises(ValueError, match="does not match"):
+    assert resumed.metadata["locator"]["resume"] == "outputs/train/last.pt"
+    with pytest.raises(ValueError, match="semantic identity mismatch"):
         open_run_directory(
             stage="stage1",
             operation="train",
             config_path="config.yaml",
             config_payload={"training": {"epochs": 3, "compile": False}},
+            semantic_identity=semantic_identity("test.train", {"epochs": 3}),
             output="outputs/train",
             seed=42,
             resume="outputs/train/last.pt",
-            ignored_config_fields={"training.compile"},
         )
 
 
@@ -202,12 +217,14 @@ def test_data_identity_records_relative_hash_size_and_rows(tmp_path) -> None:
     source.parent.mkdir(parents=True)
     source.write_text("SMILES\n[Na+]\nC[NH3+]\n", encoding="utf-8")
     identity = write_data_identity(tmp_path, "stage1", [source])
-    record = identity["files"][0]
-    assert record["path"] == "data/stage1/cation.csv"
-    assert record["rows"] == 2
+    logical_id = next(iter(identity["locator"]["files"]))
+    assert identity["locator"]["files"][logical_id] == "data/stage1/cation.csv"
+    source_payload = identity["semantic"]["identities"]["source"]["payload"]
+    assert source_payload["sources"][logical_id]["rows"] == 2
+    record = identity["integrity"]["files"][logical_id]
     assert record["size"] == source.stat().st_size
     assert record["sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
-    assert identity["source_repository_commit"] is None
+    assert identity["provenance"]["source_repository_commit"] is None
 
 import csv
 
@@ -539,10 +556,14 @@ def test_stage1_epoch_checkpoint_resume_and_attempt_log_preservation(
     changed_tokenizer = replace(
         config, tokenizer=replace(config.tokenizer, min_frequency=2)
     )
-    with pytest.raises(ValueError, match="Checkpoint config"):
-        run_training(
-            changed_tokenizer, output_dir=output, resume_from=output / "last.pt"
-        )
+    assert run_training(
+        changed_tokenizer, output_dir=output, resume_from=output / "last.pt"
+    ) == []
+    changed_model = replace(
+        config, model=replace(config.model, dropout=0.2)
+    )
+    with pytest.raises(ValueError, match="semantic identity mismatch"):
+        run_training(changed_model, output_dir=output, resume_from=output / "last.pt")
     for version in (1, 3):
         invalid = dict(last)
         invalid["format_version"] = version

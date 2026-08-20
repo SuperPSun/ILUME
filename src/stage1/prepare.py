@@ -20,6 +20,7 @@ import torch
 from rdkit import Chem, rdBase
 
 from common.io import atomic_json, sha256_file
+from common.identity import IDENTITY_CONTRACT_VERSION, semantic_identity
 from common.progress import ProgressReporter
 from common.training import canonical_json_sha256
 from .config import DataConfig, PretrainConfig
@@ -41,6 +42,12 @@ from .features import (
     ROLE_TO_ID,
     build_entity_sample,
     inspect_entity_qc,
+)
+from .identity import (
+    build_stage1_corpus_identity,
+    build_stage1_feature_identity,
+    build_stage1_sampler_layout_identity,
+    feature_generation_contract,
 )
 from .tokenizer import SmilesTokenizer, ais_tokenize
 
@@ -234,24 +241,41 @@ def _source_measurements(
     data_config: DataConfig,
     source_paths: list[Path],
     source_identity: dict[str, object] | None,
-) -> tuple[dict[str, str], int]:
+) -> tuple[dict[str, dict[str, Any]], int]:
     if source_identity is None:
-        return (
-            {
-                str(path.relative_to(data_config.stage1_dir)): sha256_file(path)
-                for path in source_paths
-            },
-            sum(_csv_data_row_count(path) for path in source_paths),
-        )
-    if source_identity.get("schema_version") != 1:
+        measurements = {
+            str(path.relative_to(data_config.stage1_dir)): {
+                "sha256": sha256_file(path),
+                "size": path.stat().st_size,
+                "rows": _csv_data_row_count(path),
+            }
+            for path in source_paths
+        }
+        return measurements, sum(int(item["rows"]) for item in measurements.values())
+    if source_identity.get("schema_version") != 2:
         raise ValueError("Unsupported Stage 1 source identity schema")
     if source_identity.get("stage") != "stage1":
         raise ValueError("Stage 1 source identity has the wrong stage")
-    files = source_identity.get("files")
-    if not isinstance(files, list) or len(files) != len(source_paths):
+    locator = source_identity.get("locator", {}).get("files", {})
+    integrity = source_identity.get("integrity", {}).get("files", {})
+    semantic_sources = (
+        source_identity.get("semantic", {})
+        .get("identities", {})
+        .get("source", {})
+        .get("payload", {})
+        .get("sources", {})
+    )
+    if (
+        not isinstance(locator, dict)
+        or not isinstance(integrity, dict)
+        or not isinstance(semantic_sources, dict)
+        or set(locator) != set(integrity)
+        or set(locator) != set(semantic_sources)
+        or len(locator) != len(source_paths)
+    ):
         raise ValueError("Stage 1 source identity file set does not match the config")
-    remaining = list(files)
-    source_hashes: dict[str, str] = {}
+    remaining = set(locator)
+    measurements: dict[str, dict[str, Any]] = {}
     source_row_count = 0
     relatives = sorted(
         (path.relative_to(data_config.stage1_dir) for path in source_paths),
@@ -259,18 +283,15 @@ def _source_measurements(
         reverse=True,
     )
     for relative in relatives:
-        matches = [
-            item
-            for item in remaining
-            if isinstance(item, dict)
-            and tuple(Path(str(item.get("path", ""))).parts[-len(relative.parts) :])
-            == relative.parts
-        ]
+        matches = [logical_id for logical_id in remaining if tuple(
+            Path(str(locator[logical_id])).parts[-len(relative.parts) :]
+        ) == relative.parts]
         if len(matches) != 1:
             raise ValueError(
                 f"Stage 1 source identity does not uniquely identify {relative}"
             )
-        item = matches[0]
+        logical_id = matches[0]
+        item = semantic_sources[logical_id]
         digest = item.get("sha256")
         rows = item.get("rows")
         size = item.get("size")
@@ -284,12 +305,16 @@ def _source_measurements(
             or size < 0
         ):
             raise ValueError(f"Invalid Stage 1 source identity entry for {relative}")
-        source_hashes[relative.as_posix()] = digest
+        measurements[relative.as_posix()] = {
+            "sha256": digest,
+            "size": size,
+            "rows": rows,
+        }
         source_row_count += rows
-        remaining.remove(item)
+        remaining.remove(logical_id)
     if remaining:
         raise ValueError("Stage 1 source identity contains unexpected files")
-    return source_hashes, source_row_count
+    return measurements, source_row_count
 
 
 def _canonicalize(smiles: str, context: str) -> str:
@@ -1263,22 +1288,13 @@ def _tokenizer_statistics(
 
 
 def _preparation_signature(
-    config: PretrainConfig, source_hashes: dict[str, str]
+    corpus_identity: dict[str, Any], shard_size: int
 ) -> str:
-    payload = config.to_dict()
-    payload["data"].pop("artifacts_dir", None)
-    payload["data"].pop("shard_cache_size", None)
     return canonical_json_sha256(
         {
-            "signature_version": 1,
-            "kind": CORPUS_KIND,
-            "format_version": CORPUS_FORMAT_VERSION,
-            "rdkit_version": rdBase.rdkitVersion,
-            "data": payload["data"],
-            "tokenizer": payload["tokenizer"],
-            "descriptor": payload["descriptor"],
-            "fingerprint": payload["fingerprint"],
-            "source_hashes": source_hashes,
+            "signature_version": 2,
+            "corpus_identity": corpus_identity["hash"],
+            "shard_size": shard_size,
         }
     )
 
@@ -1309,9 +1325,13 @@ def prepare_corpus(
     source_paths = preparation_source_paths(data_config)
     identity_started = time.perf_counter()
     with reporter.status("Hash/count input files"):
-        source_hashes, source_row_count = _source_measurements(
+        source_measurements, source_row_count = _source_measurements(
             data_config, source_paths, source_identity
         )
+    source_hashes = {
+        relative: str(item["sha256"])
+        for relative, item in source_measurements.items()
+    }
     identity_elapsed = (
         input_identity_elapsed_seconds
         if source_identity is not None
@@ -1320,6 +1340,38 @@ def prepare_corpus(
     phases["input_identity"] = _performance_phase(
         source_row_count, identity_elapsed, False
     )
+    if source_identity is None:
+        locator = {
+            relative: relative for relative in sorted(source_measurements)
+        }
+        source_identity = {
+            "schema_version": 2,
+            "identity_contract_version": IDENTITY_CONTRACT_VERSION,
+            "stage": "stage1",
+            "locator": {"files": locator},
+            "semantic": {
+                "identities": {
+                    "source": semantic_identity(
+                        "stage1.source-data",
+                        {
+                            "stage": "stage1",
+                            "sources": source_measurements,
+                        },
+                    )
+                }
+            },
+            "integrity": {
+                "files": {
+                    relative: {
+                        "sha256": item["sha256"],
+                        "size": item["size"],
+                    }
+                    for relative, item in sorted(source_measurements.items())
+                }
+            },
+            "provenance": {},
+        }
+    corpus_identity = build_stage1_corpus_identity(config, source_identity)
 
     def flush_performance() -> None:
         _write_performance(
@@ -1331,10 +1383,14 @@ def prepare_corpus(
         )
 
     flush_performance()
-    signature = _preparation_signature(config, source_hashes)
+    signature = _preparation_signature(corpus_identity, data_config.shard_size)
     metadata_path = output_dir / "metadata.json"
     if metadata_path.is_file():
         existing = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if existing.get("identity_contract_version") != IDENTITY_CONTRACT_VERSION:
+            raise ValueError(
+                "Stage 1 corpus predates identity contract v1; archive it and regenerate"
+            )
         if (
             existing.get("kind") == CORPUS_KIND
             and existing.get("format_version") == CORPUS_FORMAT_VERSION
@@ -1552,7 +1608,11 @@ def prepare_corpus(
     shard_manifest = json.loads(
         (output_dir / "shard_manifest.json").read_text(encoding="utf-8")
     )["shards"]
+    sampler_layout_identity = build_stage1_sampler_layout_identity(
+        shard_manifest, shard_size=data_config.shard_size
+    )
     metadata = {
+        "identity_contract_version": IDENTITY_CONTRACT_VERSION,
         "kind": CORPUS_KIND,
         "format_version": CORPUS_FORMAT_VERSION,
         "preparation_signature": signature,
@@ -1570,6 +1630,8 @@ def prepare_corpus(
         "max_smiles_tokens": data_config.max_smiles_tokens,
         "tokenizer_statistics": _tokenizer_statistics(connection, unk_count),
         "fingerprint_kind": config.fingerprint.kind,
+        "fingerprint_contract": config.to_dict()["fingerprint"],
+        "feature_generation_contract": feature_generation_contract(config),
         "role_source_files": ROLE_SOURCE_FILES,
         "ignored_stage1_files": [
             "simulation_mol.csv",
@@ -1593,6 +1655,40 @@ def prepare_corpus(
             for filename in artifact_files
         },
     }
+    feature_identity = build_stage1_feature_identity(output_dir, metadata)
+    all_integrity = {
+        **{
+            filename: {
+                "sha256": metadata["artifact_hashes"][filename],
+                "size": (output_dir / filename).stat().st_size,
+            }
+            for filename in artifact_files
+        },
+        **{
+            item["path"]: {
+                "sha256": item["sha256"],
+                "size": (output_dir / item["path"]).stat().st_size,
+            }
+            for item in shard_manifest
+        },
+    }
+    metadata.update(
+        {
+            "locator": {"files": {name: name for name in all_integrity}},
+            "semantic": {
+                "identities": {
+                    "corpus": corpus_identity,
+                    "sampler_layout": sampler_layout_identity,
+                    "feature": feature_identity,
+                }
+            },
+            "integrity": {"files": all_integrity},
+            "provenance": {
+                "rdkit_version": metadata["rdkit_version"],
+                "atom_in_smiles_version": metadata["atom_in_smiles_version"],
+            },
+        }
+    )
     connection.close()
     for suffix in ("", "-wal", "-shm"):
         Path(str(catalog_path) + suffix).unlink(missing_ok=True)

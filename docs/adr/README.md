@@ -22,3 +22,4 @@
 - [ADR-0018：Stage 2 Object v2 Prepare/Train 高吞吐合同（已由 ADR-0019 取代）](0018-stage2-object-v2-throughput.md)
 - [ADR-0019：Stage 2 Catalog 驱动的 Object v3 Physics Trainer](0019-stage2-catalog-object-v3.md)
 - [ADR-0020：Stage 3 v1 sparse-label 动态 HoME 与分块 PCGrad](0020-stage3-v1-sparse-home-pcgrad.md)
+- [ADR-0021：Identity / Audit Contract v1](0021-identity-audit-contract-v1.md)

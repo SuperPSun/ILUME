@@ -302,7 +302,13 @@ class DescriptorSchema:
         return values[..., list(self.retained_indices)]
 
     def save(self, path: str | Path) -> None:
-        payload = {
+        Path(path).write_text(
+            json.dumps(self.to_payload(), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    def to_payload(self) -> dict[str, object]:
+        return {
             "format_version": 2,
             "raw_names": list(self.raw_names),
             "retained_indices": list(self.retained_indices),
@@ -317,9 +323,6 @@ class DescriptorSchema:
             "token_count": self.token_count,
             "correlation_threshold": self.correlation_threshold,
         }
-        Path(path).write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
 
     @classmethod
     def load(
@@ -327,23 +330,33 @@ class DescriptorSchema:
         path: str | Path,
         expected_raw_names: Sequence[str] | None = None,
     ) -> "DescriptorSchema":
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        return cls.from_payload(
+            json.loads(Path(path).read_text(encoding="utf-8")),
+            expected_raw_names=expected_raw_names,
+        )
+
+    @classmethod
+    def from_payload(
+        cls,
+        payload: dict[str, object],
+        expected_raw_names: Sequence[str] | None = None,
+    ) -> "DescriptorSchema":
         if payload.get("format_version") != 2:
             raise ValueError("Unsupported descriptor schema artifact format")
-        raw_names = tuple(payload["raw_names"])
+        raw_names = tuple(payload["raw_names"])  # type: ignore[arg-type]
         if expected_raw_names is not None and raw_names != tuple(expected_raw_names):
             raise ValueError("RDKit descriptor names/order do not match the schema")
         return cls(
             raw_names=raw_names,
-            retained_indices=tuple(payload["retained_indices"]),
-            removal_reasons=dict(payload["removal_reasons"]),
-            correlation_clusters=tuple(tuple(item) for item in payload["correlation_clusters"]),
-            cluster_representatives=tuple(payload["cluster_representatives"]),
-            semantic_mapping_version=payload["semantic_mapping_version"],
-            raw_semantic_groups=tuple(payload["raw_semantic_groups"]),
-            group_names=tuple(payload["group_names"]),
-            group_indices=tuple(tuple(item) for item in payload["group_indices"]),
-            mode=payload["mode"],
+            retained_indices=tuple(payload["retained_indices"]),  # type: ignore[arg-type]
+            removal_reasons=dict(payload["removal_reasons"]),  # type: ignore[arg-type]
+            correlation_clusters=tuple(tuple(item) for item in payload["correlation_clusters"]),  # type: ignore[union-attr]
+            cluster_representatives=tuple(payload["cluster_representatives"]),  # type: ignore[arg-type]
+            semantic_mapping_version=str(payload["semantic_mapping_version"]),
+            raw_semantic_groups=tuple(payload["raw_semantic_groups"]),  # type: ignore[arg-type]
+            group_names=tuple(payload["group_names"]),  # type: ignore[arg-type]
+            group_indices=tuple(tuple(item) for item in payload["group_indices"]),  # type: ignore[union-attr]
+            mode=str(payload["mode"]),
             token_count=int(payload["token_count"]),
             correlation_threshold=float(payload["correlation_threshold"]),
         )
@@ -444,16 +457,19 @@ class DescriptorStandardizer:
         return values * self.scales + self.means
 
     def save(self, path: str | Path) -> None:
-        payload = {
+        Path(path).write_text(
+            json.dumps(self.to_payload(), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    def to_payload(self) -> dict[str, object]:
+        return {
             "format_version": 1,
             "names": list(self.names),
             "means": self.means.tolist(),
             "scales": self.scales.tolist(),
             "finite_counts": self.finite_counts.tolist(),
         }
-        Path(path).write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
 
     @classmethod
     def load(
@@ -461,10 +477,20 @@ class DescriptorStandardizer:
         path: str | Path,
         expected_names: Sequence[str] | None = None,
     ) -> "DescriptorStandardizer":
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        return cls.from_payload(
+            json.loads(Path(path).read_text(encoding="utf-8")),
+            expected_names=expected_names,
+        )
+
+    @classmethod
+    def from_payload(
+        cls,
+        payload: dict[str, object],
+        expected_names: Sequence[str] | None = None,
+    ) -> "DescriptorStandardizer":
         if payload.get("format_version") != 1:
             raise ValueError("Unsupported descriptor scaler artifact format")
-        names = tuple(payload["names"])
+        names = tuple(payload["names"])  # type: ignore[arg-type]
         if expected_names is not None and names != tuple(expected_names):
             raise ValueError("RDKit descriptor names/order do not match the artifact")
         return cls(

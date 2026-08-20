@@ -116,8 +116,8 @@ class Stage3PluginConfig:
 
 @dataclass(frozen=True)
 class Stage3InitializationConfig:
-    stage2_checkpoint: Path = Path(
-        "outputs/v1/stage2/base/train/checkpoint_epoch_00005.pt"
+    stage2_encoder: Path = Path(
+        "outputs/v1/stage2/base/train/stage2_encoder.pt"
     )
     plugin: Stage3PluginConfig | None = None
 
@@ -325,9 +325,9 @@ def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
     if "cache_dir" in preparation_raw:
         preparation_raw["cache_dir"] = Path(preparation_raw["cache_dir"])
     initialization_raw = dict(raw.get("initialization") or {})
-    if "stage2_checkpoint" in initialization_raw:
-        initialization_raw["stage2_checkpoint"] = Path(
-            initialization_raw["stage2_checkpoint"]
+    if "stage2_encoder" in initialization_raw:
+        initialization_raw["stage2_encoder"] = Path(
+            initialization_raw["stage2_encoder"]
         )
     plugin_raw = initialization_raw.get("plugin")
     if plugin_raw is not None:

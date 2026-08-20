@@ -562,7 +562,10 @@ def test_prepare_reuses_source_identity_and_writes_performance(tmp_path, monkeyp
         for name, phase in reused["phases"].items()
         if name != "input_identity"
     )
-    invalid_identity = {**identity, "files": identity["files"][:-1]}
+    invalid_identity = json.loads(json.dumps(identity))
+    invalid_identity["locator"]["files"].pop(
+        next(iter(invalid_identity["locator"]["files"]))
+    )
     with pytest.raises(ValueError, match="file set does not match"):
         prepare_corpus(
             PretrainConfig(data=data_config), source_identity=invalid_identity

@@ -4,6 +4,8 @@
 - 日期：2026-08-20
 - 取代：ADR-0010、ADR-0011、ADR-0012 的全部现役 Stage 3 决定
 
+> 2026-08-20：本文的 Stage 2 checkpoint SHA、plugin lineage、run resume 与 evaluation identity 规则已由 [ADR-0021](0021-identity-audit-contract-v1.md) 取代；模型、采样、PCGrad 与数值训练合同不变。
+
 ## 背景
 
 旧 Stage 3 将任务固定拆成 `il21` 与 `aux6`，依赖固定 condition/phase 表示、BatchNorm expert、早停和 best checkpoint，且尚未迁移到 Stage 2 Object v3。新数据合同由 `task_catalog.csv` 给出 scalar target、identity、condition、topology、物化路径和合法 split；consumer 不应复制这些事实，也不能将 sparse observation 拼成 dense target table。

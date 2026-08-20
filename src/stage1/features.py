@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -9,7 +10,7 @@ import torch
 from rdkit import Chem
 from rdkit.Chem import Descriptors
 
-from common.io import sha256_file
+from common.identity import require_compatible_identity
 from .config import (
     STAGE1_CHECKPOINT_KIND,
     STAGE1_CHECKPOINT_VERSION,
@@ -20,6 +21,10 @@ from .descriptors import DescriptorSchema, DescriptorStandardizer, rdkit_descrip
 from .fingerprints import calculate_fingerprints
 from .graph import featurize_mol
 from .tokenizer import SmilesTokenizer
+from .identity import (
+    metadata_identity,
+    validate_feature_generation_runtime,
+)
 
 
 ROLE_TO_ID = {"cation": 0, "anion": 1, "neutral": 2}
@@ -135,9 +140,26 @@ def load_stage1_feature_inputs(
         raise ValueError("Stage 2 requires a Stage 1 pretraining checkpoint v2")
     config = config_from_dict(checkpoint["config"])
     artifact_dir = Path(artifact_dir)
-    artifact_hash = sha256_file(artifact_dir / "metadata.json")
-    if checkpoint.get("artifact_hash") != artifact_hash:
-        raise ValueError("Stage 1 checkpoint and preprocessing artifact do not match")
+    metadata = json.loads(
+        (artifact_dir / "metadata.json").read_text(encoding="utf-8")
+    )
+    corpus_identity = metadata_identity(
+        metadata, "corpus", context="Stage 1 corpus"
+    )
+    checkpoint_corpus = checkpoint.get("corpus_identity")
+    if not isinstance(checkpoint_corpus, dict):
+        raise ValueError(
+            "Stage 1 checkpoint predates identity contract v1; retrain Stage 1"
+        )
+    require_compatible_identity(
+        corpus_identity,
+        checkpoint_corpus,
+        context="Stage 1 checkpoint/corpus",
+    )
+    validate_feature_generation_runtime(metadata)
+    feature_identity = metadata_identity(
+        metadata, "feature", context="Stage 1 corpus"
+    )
     del checkpoint
     schema = DescriptorSchema.load(
         artifact_dir / "descriptor_schema.json",
@@ -148,7 +170,7 @@ def load_stage1_feature_inputs(
         expected_names=schema.selected_names,
     )
     vocabulary = SmilesTokenizer.load(artifact_dir / "tokenizer.json")
-    return config, vocabulary, schema, standardizer, artifact_hash
+    return config, vocabulary, schema, standardizer, str(feature_identity["hash"])
 
 
 __all__ = [

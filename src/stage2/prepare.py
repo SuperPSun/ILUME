@@ -33,6 +33,13 @@ from stage1.descriptors import (
 )
 from stage1.masking import MultimodalPacker
 from stage1.model import LoadedStage1Model, load_stage1_model
+from common.identity import (
+    IDENTITY_CONTRACT_VERSION,
+    require_compatible_identity,
+    semantic_hash,
+    semantic_identity,
+    tensor_state_hash,
+)
 from common.io import atomic_json, atomic_torch_save, sha256_file
 from common.progress import ProgressReporter
 from common.training import canonical_json_sha256, resolve_device
@@ -54,6 +61,14 @@ from .data import (
 from .model import RECONSTRUCTION_MODULES
 from .registry import Stage2Registry, TaskSpec, load_stage2_registry
 from .runtime import configure_stage2_math
+from .identity import (
+    build_stage2_data_identity,
+    metadata_identity,
+)
+from stage1.identity import (
+    build_stage1_encoder_identity,
+    metadata_identity as stage1_metadata_identity,
+)
 from stage1.tokenizer import SmilesTokenizer
 
 
@@ -282,7 +297,9 @@ def _collect_sources(config: Stage2Config, registry: Stage2Registry, reporter: P
                         canonicals.append(canonical)
                         roles.append(_role_for(canonical, policy, row, f"{spec.task_id}/{split}:{row_number}", role_cache))
                     conditions = [_finite_float(row[name], f"{spec.task_id}/{split}:{row_number}/{name}") for name in spec.condition_columns]
-                    allow_missing = config.loss.task_loss_modes.get(spec.task_id, "element_mean") == "masked_target_macro"
+                    allow_missing = config.data.target_materialization_modes.get(
+                        spec.task_id, "require_complete"
+                    ) == "allow_partial_drop_all_missing"
                     targets = [] if spec.target_level == "atom" else [
                         _target_value(row[name], f"{spec.task_id}/{split}:{row_number}/{name}", allow_missing=allow_missing)
                         for name in spec.target_columns
@@ -886,18 +903,27 @@ def prepare_stage2_data(config: Stage2Config, *, reporter: ProgressReporter | No
             source_paths.append(manifest)
     source_hashes = {str(path): sha256_file(path) for path in source_paths}
     pretrain_config, vocabulary, schema, standardizer, artifact_hash = load_stage1_feature_inputs(config.initialization.checkpoint, config.data.pretrain_artifacts_dir)
-    feature_contract = {"artifact_hash": artifact_hash, "max_smiles_tokens": pretrain_config.data.max_smiles_tokens, "fingerprint": pretrain_config.to_dict()["fingerprint"]}
-    data_signature = canonical_json_sha256({
-        "source_hashes": source_hashes,
-        "feature_contract": feature_contract,
-        "registry_hash": registry.registry_hash,
-        "tensor_contract": STAGE2_TENSOR_CONTRACT,
-        "entity_shard_size": config.data.entity_shard_size,
-        "preparation_contract_version": STAGE2_PREPARATION_CONTRACT_VERSION,
-    })
+    stage1_metadata = json.loads(
+        (config.data.pretrain_artifacts_dir / "metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    feature_identity = dict(
+        stage1_metadata_identity(
+            stage1_metadata, "feature", context="Stage 1 feature artifact"
+        )
+    )
+    if artifact_hash != feature_identity["hash"]:
+        raise ValueError("Stage 1 feature identity changed during Stage 2 prepare")
+    data_identity = build_stage2_data_identity(config, registry, feature_identity)
+    data_signature = data_identity["hash"]
     metadata_path = output_dir / "metadata.json"
     if metadata_path.is_file():
         existing = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if existing.get("identity_contract_version") != IDENTITY_CONTRACT_VERSION:
+            raise ValueError(
+                "Stage 2 data predates identity contract v1; archive it and regenerate"
+            )
         if existing.get("format_version") == STAGE2_ARTIFACT_VERSION and existing.get("kind") == STAGE2_ARTIFACT_KIND and existing.get("preparation_contract_version") == STAGE2_PREPARATION_CONTRACT_VERSION and existing.get("data_signature") == data_signature:
             Stage2EntityDataset(output_dir)
             for task in registry.task_ids:
@@ -921,15 +947,24 @@ def prepare_stage2_data(config: Stage2Config, *, reporter: ProgressReporter | No
     shard_paths = sorted({entry["shard"] for entry in entries})
     artifact_files.extend(shard_paths)
     artifact_hashes = {relative: sha256_file(output_dir / relative) for relative in artifact_files}
-    entity_artifact_hash = _semantic_payload_sha256({
+    entity_artifact_hash = semantic_hash("stage2.entity-materialization", {
         "entity_index": {"format_version": STAGE2_ARTIFACT_VERSION, "kind": STAGE2_ARTIFACT_KIND, "entries": entries},
         "entity_shards": [torch.load(output_dir / relative, map_location="cpu", weights_only=False) for relative in shard_paths],
     })
+    entity_identity = semantic_identity(
+        "stage2.entity-artifact",
+        {
+            "data_identity": data_identity["hash"],
+            "materialization_hash": entity_artifact_hash,
+        },
+    )
     metadata = {
+        "identity_contract_version": IDENTITY_CONTRACT_VERSION,
         "format_version": STAGE2_ARTIFACT_VERSION, "kind": STAGE2_ARTIFACT_KIND,
         "preparation_contract_version": STAGE2_PREPARATION_CONTRACT_VERSION,
         "data_signature": data_signature, "entity_artifact_hash": entity_artifact_hash,
-        "pretrain_artifact_hash": artifact_hash, "feature_contract": feature_contract,
+        "stage1_feature_identity": feature_identity,
+        "pretrain_artifact_hash": artifact_hash,
         "registry": registry.snapshot(), "registry_hash": registry.registry_hash,
         "catalog_sha256": registry.catalog_sha256,
         "source_hashes": source_hashes, "source_counts": collected.source_counts,
@@ -940,6 +975,34 @@ def prepare_stage2_data(config: Stage2Config, *, reporter: ProgressReporter | No
         "summary": {"entities_selected": len(collected.entity_keys), "entities_retained": len(entries), "entities_excluded": excluded_entities, "rows": row_counts, "rows_excluded": excluded_rows, "duplicate_conditions": len(collected.duplicate_rows), "partial_target_rows": sum(row["action"] == "retained" for row in collected.missing_target_rows), "all_target_missing_rows": sum(row["action"] == "excluded" for row in collected.missing_target_rows), "atom_mappings": sum(row["status"] == "mapped" for row in collected.mapping_audit), "atom_mapping_exclusions": sum(row["status"] == "excluded" for row in collected.mapping_audit)},
         "artifact_hashes": artifact_hashes,
     }
+    metadata.update(
+        {
+            "locator": {
+                "files": {relative: relative for relative in artifact_hashes}
+            },
+            "semantic": {
+                "identities": {
+                    "data": data_identity,
+                    "entity": entity_identity,
+                }
+            },
+            "integrity": {
+                "files": {
+                    relative: {
+                        "sha256": digest,
+                        "size": (output_dir / relative).stat().st_size,
+                    }
+                    for relative, digest in artifact_hashes.items()
+                }
+            },
+            "provenance": {
+                "rdkit_version": rdBase.rdkitVersion,
+                "numpy_version": np.__version__,
+                "torch_version": torch.__version__,
+                "preparation": config.to_dict()["preparation"],
+            },
+        }
+    )
     atomic_json(metadata_path, metadata)
     reporter.emit_json({"event": "stage2_data_complete", **metadata["summary"]})
     return metadata
@@ -951,59 +1014,6 @@ TEACHER_EXTRACTION_CONTRACT_VERSION = 2
 STAGE1_ENCODING_CONTRACT_VERSION = 1
 
 
-def _semantic_payload_sha256(payload: Any) -> str:
-    digest = hashlib.sha256()
-
-    def update(value: Any) -> None:
-        if isinstance(value, torch.Tensor):
-            tensor = value.detach().cpu().contiguous()
-            digest.update(b"tensor\0")
-            digest.update(str(tensor.dtype).encode())
-            digest.update(b"\0")
-            digest.update(json.dumps(list(tensor.shape)).encode())
-            digest.update(b"\0")
-            digest.update(
-                tensor.reshape(-1).contiguous().view(torch.uint8).numpy().tobytes()
-            )
-        elif isinstance(value, np.ndarray):
-            array_value = np.ascontiguousarray(value)
-            digest.update(b"ndarray\0")
-            digest.update(str(array_value.dtype).encode())
-            digest.update(b"\0")
-            digest.update(json.dumps(list(array_value.shape)).encode())
-            digest.update(b"\0")
-            digest.update(array_value.tobytes())
-        elif isinstance(value, dict):
-            digest.update(b"dict\0")
-            for key in sorted(value):
-                update(key)
-                update(value[key])
-        elif isinstance(value, (list, tuple)):
-            digest.update(b"list\0")
-            for item in value:
-                update(item)
-        elif isinstance(value, array):
-            digest.update(b"array\0")
-            digest.update(value.typecode.encode())
-            digest.update(b"\0")
-            digest.update(value.tobytes())
-        elif value is None:
-            digest.update(b"none\0")
-        elif isinstance(value, (str, int, float, bool)):
-            digest.update(type(value).__name__.encode())
-            digest.update(b"\0")
-            digest.update(repr(value).encode())
-            digest.update(b"\0")
-        else:
-            raise TypeError(
-                "Unsupported Stage 2 semantic hash value: "
-                f"{type(value).__name__}"
-            )
-
-    update(payload)
-    return digest.hexdigest()
-
-
 def _is_reconstruction_parameter(name: str) -> bool:
     return any(
         name == prefix or name.startswith(prefix + ".")
@@ -1012,18 +1022,14 @@ def _is_reconstruction_parameter(name: str) -> bool:
 
 
 def stage1_encoding_state_hash(loaded: LoadedStage1Model) -> str:
-    digest = hashlib.sha256()
-    for name, tensor in sorted(loaded.model.state_dict().items()):
-        if _is_reconstruction_parameter(name):
-            continue
-        value = tensor.detach().cpu().contiguous()
-        digest.update(name.encode())
-        digest.update(str(value.dtype).encode())
-        digest.update(str(tuple(value.shape)).encode())
-        digest.update(
-            value.reshape(-1).contiguous().view(torch.uint8).numpy().tobytes()
-        )
-    return digest.hexdigest()
+    return tensor_state_hash(
+        "stage1.encoding-state",
+        {
+            name: tensor
+            for name, tensor in loaded.model.state_dict().items()
+            if not _is_reconstruction_parameter(name)
+        },
+    )
 
 
 def stage1_encoding_contract(loaded: LoadedStage1Model) -> dict[str, Any]:
@@ -1059,26 +1065,30 @@ def stage1_encoding_contract(loaded: LoadedStage1Model) -> dict[str, Any]:
 
 def stage1_encoder_identity(
     loaded: LoadedStage1Model,
-) -> tuple[str, dict[str, Any]]:
-    payload = {
-        "feature_artifact_hash": loaded.artifact_hash,
-        "encoding_contract": stage1_encoding_contract(loaded),
-        "encoding_state_hash": stage1_encoding_state_hash(loaded),
-    }
-    return canonical_json_sha256(payload), payload
+) -> dict[str, Any]:
+    return build_stage1_encoder_identity(
+        model=loaded.model,
+        config=loaded.config,
+        feature_identity={"hash": loaded.artifact_hash},
+    )
 
 
 def teacher_cache_identity(
     data_metadata: dict[str, Any],
     loaded: LoadedStage1Model,
-) -> tuple[str, dict[str, Any]]:
-    encoder_identity, _ = stage1_encoder_identity(loaded)
-    payload = {
-        "extraction_contract_version": TEACHER_EXTRACTION_CONTRACT_VERSION,
-        "entity_artifact_hash": data_metadata["entity_artifact_hash"],
-        "stage1_encoder_identity": encoder_identity,
-    }
-    return canonical_json_sha256(payload), payload
+) -> dict[str, Any]:
+    encoder_identity = stage1_encoder_identity(loaded)
+    entity_identity = metadata_identity(
+        data_metadata, "entity", context="Stage 2 data artifact"
+    )
+    return semantic_identity(
+        "stage2.teacher-cache",
+        {
+            "extraction_contract_version": TEACHER_EXTRACTION_CONTRACT_VERSION,
+            "entity_identity": entity_identity["hash"],
+            "stage1_encoder_identity": encoder_identity["hash"],
+        },
+    )
 
 
 def teacher_cache_dir(config: Stage2Config, identity: str) -> Path:
@@ -1107,8 +1117,8 @@ def prepare_teacher_cache(
     )
     if loaded.artifact_hash != data_metadata["pretrain_artifact_hash"]:
         raise ValueError("Teacher checkpoint does not match Stage 2 entity features")
-    identity, identity_payload = teacher_cache_identity(data_metadata, loaded)
-    output_dir = teacher_cache_dir(config, identity)
+    identity = teacher_cache_identity(data_metadata, loaded)
+    output_dir = teacher_cache_dir(config, identity["hash"])
     output_dir.mkdir(parents=True, exist_ok=True)
     metadata_path = output_dir / "metadata.json"
     embeddings_path = output_dir / "embeddings.pt"
@@ -1117,10 +1127,18 @@ def prepare_teacher_cache(
         if (
             metadata.get("format_version") == TEACHER_CACHE_VERSION
             and metadata.get("kind") == TEACHER_CACHE_KIND
-            and metadata.get("identity") == identity
-            and metadata.get("identity_payload") == identity_payload
+            and metadata.get("identity_contract_version")
+            == IDENTITY_CONTRACT_VERSION
             and metadata.get("embeddings_hash") == sha256_file(embeddings_path)
         ):
+            existing_identity = metadata_identity(
+                metadata, "teacher", context="Stage 2 teacher cache"
+            )
+            require_compatible_identity(
+                identity,
+                existing_identity,
+                context="Stage 2 teacher cache reuse",
+            )
             embeddings = torch.load(
                 embeddings_path,
                 map_location="cpu",
@@ -1139,7 +1157,7 @@ def prepare_teacher_cache(
                 reporter.emit_json(
                     {
                         "event": "stage2_teacher_cache_reused",
-                        "identity": identity,
+                        "identity": identity["hash"],
                     }
                 )
                 return {**metadata, "cache_reused": True}
@@ -1174,24 +1192,46 @@ def prepare_teacher_cache(
             embeddings[start:end] = encoded
             progress.update(end - start)
     atomic_torch_save(embeddings_path, embeddings)
-    encoder_identity, encoder_identity_payload = stage1_encoder_identity(loaded)
+    encoder_identity = stage1_encoder_identity(loaded)
+    embedding_digest = sha256_file(embeddings_path)
     metadata = {
+        "identity_contract_version": IDENTITY_CONTRACT_VERSION,
         "format_version": TEACHER_CACHE_VERSION,
         "kind": TEACHER_CACHE_KIND,
-        "identity": identity,
-        "identity_payload": identity_payload,
+        "identity": identity["hash"],
         "checkpoint": _checkpoint_relative_path(
             config.initialization.checkpoint
         ),
         "pretrain_artifact_hash": loaded.artifact_hash,
         "entity_artifact_hash": data_metadata["entity_artifact_hash"],
         "stage1_encoder_identity": encoder_identity,
-        "stage1_encoder_identity_payload": encoder_identity_payload,
         "entity_count": len(entity_dataset),
         "embedding_dim": loaded.config.model.d_model,
         "dtype": "float32",
         "math_contract": math_contract,
-        "embeddings_hash": sha256_file(embeddings_path),
+        "embeddings_hash": embedding_digest,
+        "locator": {"files": {"embeddings": "embeddings.pt"}},
+        "semantic": {
+            "identities": {
+                "teacher": identity,
+                "stage1_encoder": encoder_identity,
+            }
+        },
+        "integrity": {
+            "files": {
+                "embeddings": {
+                    "sha256": embedding_digest,
+                    "size": embeddings_path.stat().st_size,
+                }
+            }
+        },
+        "provenance": {
+            "checkpoint": _checkpoint_relative_path(
+                config.initialization.checkpoint
+            ),
+            "math_contract": math_contract,
+            "teacher_batch_size": config.preparation.teacher_batch_size,
+        },
     }
     atomic_json(metadata_path, metadata)
     reporter.emit_json(
@@ -1200,7 +1240,7 @@ def prepare_teacher_cache(
             "entity_count": len(entity_dataset),
             "embedding_dim": loaded.config.model.d_model,
             "checkpoint": str(config.initialization.checkpoint),
-            "identity": identity,
+            "identity": identity["hash"],
         }
     )
     return {**metadata, "cache_reused": False}
@@ -1214,8 +1254,8 @@ def load_teacher_embeddings(
     expected_count: int,
     expected_dim: int,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
-    identity, identity_payload = teacher_cache_identity(data_metadata, loaded)
-    output_dir = teacher_cache_dir(config, identity)
+    identity = teacher_cache_identity(data_metadata, loaded)
+    output_dir = teacher_cache_dir(config, identity["hash"])
     metadata_path = output_dir / "metadata.json"
     embeddings_path = output_dir / "embeddings.pt"
     if not metadata_path.is_file() or not embeddings_path.is_file():
@@ -1228,10 +1268,15 @@ def load_teacher_embeddings(
         or metadata.get("kind") != TEACHER_CACHE_KIND
     ):
         raise ValueError("Unsupported Stage 2 teacher cache format")
-    if metadata.get("identity") != identity:
-        raise ValueError("Stage 2 teacher cache identity mismatch")
-    if metadata.get("identity_payload") != identity_payload:
-        raise ValueError("Stage 2 teacher cache contract mismatch")
+    if metadata.get("identity_contract_version") != IDENTITY_CONTRACT_VERSION:
+        raise ValueError(
+            "Stage 2 teacher cache predates identity contract v1; regenerate it"
+        )
+    require_compatible_identity(
+        identity,
+        metadata_identity(metadata, "teacher", context="Stage 2 teacher cache"),
+        context="Stage 2 teacher cache",
+    )
     if metadata.get("embeddings_hash") != sha256_file(embeddings_path):
         raise ValueError("Stage 2 teacher embedding hash mismatch")
     embeddings = torch.load(

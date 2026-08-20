@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Any, Sequence
 
 import torch
-from rdkit import rdBase
 
+from common.identity import IDENTITY_CONTRACT_VERSION
 from common.io import sha256_file
 from stage1.data import MultimodalBatch
 from stage1.masking import MultimodalPacker
@@ -36,6 +36,10 @@ def _load_metadata(artifact_dir: Path) -> dict[str, Any]:
         raise ValueError("Unsupported Stage 2 object data artifact; rerun prepare for Object v3")
     if metadata.get("preparation_contract_version") != STAGE2_PREPARATION_CONTRACT_VERSION:
         raise ValueError("Stage 2 artifact predates the current Object v3 preparation contract; rerun prepare")
+    if metadata.get("identity_contract_version") != IDENTITY_CONTRACT_VERSION:
+        raise ValueError(
+            "Stage 2 artifact predates identity contract v1; regenerate it"
+        )
     if metadata.get("tensor_contract") != STAGE2_TENSOR_CONTRACT:
         raise ValueError("Stage 2 artifact tensor contract mismatch; rerun prepare")
     return metadata
@@ -61,8 +65,6 @@ class Stage2EntityDataset:
     def __init__(self, artifact_dir: str | Path) -> None:
         self.artifact_dir = Path(artifact_dir)
         self.metadata = _load_metadata(self.artifact_dir)
-        if self.metadata.get("rdkit_version") != rdBase.rdkitVersion:
-            raise ValueError("RDKit version does not match the Stage 2 artifact")
         path = _verify_artifact_file(self.artifact_dir, self.metadata, "entity_index.json")
         payload = json.loads(path.read_text(encoding="utf-8"))
         if payload.get("format_version") != STAGE2_ARTIFACT_VERSION or payload.get("kind") != STAGE2_ARTIFACT_KIND:

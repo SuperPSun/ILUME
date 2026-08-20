@@ -20,16 +20,19 @@ def main() -> None:
     args = parser.parse_args()
     config = load_stage3_config(args.config)
     configure_process_runtime(config)
-    from stage3.train import run_stage3_training
+    from stage3.train import resolve_stage3_training_identity, run_stage3_training
+
+    training_identity = resolve_stage3_training_identity(config, args.fold)
 
     run = open_run_directory(
         stage="stage3", operation="train", config_path=args.config,
         config_payload=config.to_dict(), output=args.output, seed=config.data.seed,
+        semantic_identity=training_identity,
         resume=args.resume,
         details={
             "fold": args.fold,
-            "checkpoint": repository_relative(
-                config.initialization.stage2_checkpoint
+            "stage2_encoder": repository_relative(
+                config.initialization.stage2_encoder
             ),
         },
     )
@@ -37,6 +40,7 @@ def main() -> None:
         rows = run_stage3_training(
             config, args.fold, output_dir=run.root,
             resume_from=repository_path(args.resume) if args.resume else None,
+            expected_training_identity=training_identity,
         )
         run.complete(
             {"fold": args.fold, "final_epoch": rows[-1]}

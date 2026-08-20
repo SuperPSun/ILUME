@@ -33,6 +33,9 @@ class Stage2DataConfig:
     artifacts_dir: Path = Path("outputs/v1/stage2/base/prepare/artifacts")
     entity_shard_size: int = 4096
     seed: int = 42
+    target_materialization_modes: dict[str, str] = field(
+        default_factory=dict
+    )
 
 
 @dataclass(frozen=True)
@@ -96,6 +99,11 @@ class Stage2Config:
             raise ValueError("data.task_catalog_path must be contained by data.data_root")
         if self.data.entity_shard_size <= 0:
             raise ValueError("data.entity_shard_size must be positive")
+        if any(
+            mode not in {"require_complete", "allow_partial_drop_all_missing"}
+            for mode in self.data.target_materialization_modes.values()
+        ):
+            raise ValueError("Unsupported Stage 2 target materialization mode")
         if self.preparation.workers <= 0 or self.preparation.teacher_batch_size <= 0:
             raise ValueError("Stage 2 preparation sizes must be positive")
         if self.model.object_layers <= 0 or self.model.object_ffn_dim <= 0:
@@ -134,10 +142,24 @@ class Stage2Config:
             raise ValueError("loss.task_weights must exactly match the Stage 2 registry")
         if not set(self.loss.task_loss_modes).issubset(expected):
             raise ValueError("loss.task_loss_modes contains an unknown Stage 2 task")
+        if not set(self.data.target_materialization_modes).issubset(expected):
+            raise ValueError(
+                "data.target_materialization_modes contains an unknown Stage 2 task"
+            )
         for task in registry.tasks:
             mode = self.loss.task_loss_modes.get(task.task_id, "element_mean")
+            materialization = self.data.target_materialization_modes.get(
+                task.task_id, "require_complete"
+            )
             if mode == "masked_target_macro" and task.target_level != "object":
                 raise ValueError("masked_target_macro requires an object target")
+            if materialization == "allow_partial_drop_all_missing" and (
+                task.target_level != "object" or mode != "masked_target_macro"
+            ):
+                raise ValueError(
+                    "Partial target materialization requires an object task with "
+                    "masked_target_macro loss"
+                )
 
     def normalized_task_weights(self, registry: Stage2Registry) -> dict[str, float]:
         self.validate_registry(registry)

@@ -11,7 +11,7 @@ preparation:
   encoding_batch_size: 256
   cache_dir: outputs/v1/stage3/base/prepare/object_cache
 initialization:
-  stage2_checkpoint: outputs/v1/stage2/base/train/checkpoint_epoch_00005.pt
+  stage2_encoder: outputs/v1/stage2/base/train/stage2_encoder.pt
   plugin: null
 model:
   global_experts: 2

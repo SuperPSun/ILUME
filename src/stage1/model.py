@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -7,7 +8,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from common.io import sha256_file
+from common.identity import require_compatible_identity
 from .config import (
     STAGE1_CHECKPOINT_KIND,
     STAGE1_CHECKPOINT_VERSION,
@@ -37,6 +38,7 @@ from .graph import (
     BOND_FEATURE_NAMES,
 )
 from .tokenizer import SmilesTokenizer
+from .identity import metadata_identity, validate_feature_generation_runtime
 
 
 @dataclass(frozen=True)
@@ -567,7 +569,26 @@ def load_stage1_model(
     ):
         raise ValueError("Stage 2 requires a Stage 1 pretraining checkpoint v2")
     config = config_from_dict(checkpoint["config"])
-    artifact_hash = sha256_file(artifact_dir / "metadata.json")
+    metadata = json.loads(
+        (artifact_dir / "metadata.json").read_text(encoding="utf-8")
+    )
+    corpus_identity = metadata_identity(
+        metadata, "corpus", context="Stage 1 corpus"
+    )
+    checkpoint_corpus = checkpoint.get("corpus_identity")
+    if not isinstance(checkpoint_corpus, dict):
+        raise ValueError(
+            "Stage 1 checkpoint predates identity contract v1; retrain Stage 1"
+        )
+    require_compatible_identity(
+        corpus_identity,
+        checkpoint_corpus,
+        context="Stage 1 checkpoint/corpus",
+    )
+    validate_feature_generation_runtime(metadata)
+    artifact_hash = str(
+        metadata_identity(metadata, "feature", context="Stage 1 corpus")["hash"]
+    )
     if backbone_dropout is not None:
         config = replace(
             config,

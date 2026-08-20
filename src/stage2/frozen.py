@@ -8,24 +8,30 @@ import numpy as np
 import torch
 from rdkit import Chem
 
+from common.identity import (
+    IDENTITY_CONTRACT_VERSION,
+    require_compatible_identity,
+    tensor_state_hash,
+)
 from common.io import sha256_file
-from common.training import canonical_json_sha256
-from stage1.descriptors import calculate_descriptors, rdkit_descriptor_names
-from stage1.features import (
-    ROLE_TO_ID,
-    build_entity_sample,
-    inspect_entity_qc,
-    load_stage1_feature_inputs,
+from stage1.config import config_from_dict
+from stage1.descriptors import (
+    DescriptorSchema,
+    DescriptorStandardizer,
+    calculate_descriptors,
+    rdkit_descriptor_names,
 )
+from stage1.features import ROLE_TO_ID, build_entity_sample, inspect_entity_qc
+from stage1.identity import validate_feature_generation_runtime
 from stage1.masking import MultimodalPacker
-from stage1.model import load_stage1_model
-from .config import (
-    STAGE2_CHECKPOINT_KIND,
-    STAGE2_CHECKPOINT_VERSION,
-    stage2_config_from_checkpoint_dict,
-)
-from .model import Stage2ObjectModel
-from .registry import Stage2Registry
+from stage1.model import MultimodalPretrainModel
+from stage1.tokenizer import SmilesTokenizer
+from .identity import build_stage2_encoder_identity
+from .model import ObjectEncoder, RECONSTRUCTION_MODULES
+
+
+STAGE2_ENCODER_VERSION = 1
+STAGE2_ENCODER_KIND = "ilume_stage2_encoder"
 
 
 @dataclass(frozen=True)
@@ -36,19 +42,19 @@ class FrozenObjectSpec:
 
 @dataclass
 class FrozenStage2ObjectEncoder:
-    model: Stage2ObjectModel
+    backbone: MultimodalPretrainModel
+    object_encoder: ObjectEncoder
     packer: MultimodalPacker
     pretrain_config: Any
-    descriptor_schema: Any
-    descriptor_standardizer: Any
-    checkpoint_hash: str
-    checkpoint_kind: str
-    checkpoint_version: int
+    descriptor_schema: DescriptorSchema
+    descriptor_standardizer: DescriptorStandardizer
+    encoder_identity: dict[str, Any]
+    artifact_hash: str
     device: torch.device
 
     @property
     def embedding_dim(self) -> int:
-        return int(self.model.model_contract["d_model"])
+        return int(self.pretrain_config.model.d_model)
 
     def _sample(self, role: str, canonical_smiles: str) -> dict[str, Any]:
         if role not in ROLE_TO_ID:
@@ -64,12 +70,13 @@ class FrozenStage2ObjectEncoder:
             "seed_smiles": (),
         }
         qc = inspect_entity_qc(record)
-        token_count = self.packer.vocabulary.token_count(canonical_smiles)
-        if token_count > self.pretrain_config.data.max_smiles_tokens:
+        if self.packer.vocabulary.token_count(canonical_smiles) > (
+            self.pretrain_config.data.max_smiles_tokens
+        ):
             qc.reasons.append("smiles_overlength")
         if qc.reasons:
             raise ValueError(
-                f"Stage 3 object is incompatible with Stage 2 features: "
+                "Stage 3 object is incompatible with Stage 2 features: "
                 f"{role}/{canonical_smiles}: {','.join(qc.reasons)}"
             )
         molecule = Chem.MolFromSmiles(canonical_smiles)
@@ -96,13 +103,14 @@ class FrozenStage2ObjectEncoder:
         expected_topology = "molecule" if slot_count == 1 else "il"
         if any(item.topology != expected_topology for item in objects):
             raise ValueError("Frozen Stage 2 object topology/slot mismatch")
-        samples = [
-            self._sample(role, smiles)
-            for item in objects
-            for role, smiles in item.slots
-        ]
-        packed = self.packer(samples).to(self.device)
-        entity_cls = self.model.encode_entities(packed).reshape(
+        packed = self.packer(
+            [
+                self._sample(role, smiles)
+                for item in objects
+                for role, smiles in item.slots
+            ]
+        ).to(self.device)
+        entity_cls = self.backbone.encode(packed).reshape(
             len(objects), slot_count, self.embedding_dim
         )
         roles = torch.tensor(
@@ -110,86 +118,136 @@ class FrozenStage2ObjectEncoder:
             dtype=torch.long,
             device=self.device,
         ).reshape(len(objects), slot_count)
-        values = self.model.encode_object(entity_cls, roles).float().cpu()
+        values = self.object_encoder(entity_cls, roles).float().cpu()
         if not torch.isfinite(values).all():
             raise RuntimeError("Frozen Stage 2 produced non-finite object embeddings")
         return values
 
 
+def _load_payload(path: Path) -> dict[str, Any]:
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    if (
+        payload.get("kind") != STAGE2_ENCODER_KIND
+        or payload.get("format_version") != STAGE2_ENCODER_VERSION
+    ):
+        raise ValueError("Stage 3 requires a Stage 2 encoder artifact v1")
+    if payload.get("identity_contract_version") != IDENTITY_CONTRACT_VERSION:
+        raise ValueError(
+            "Stage 2 encoder predates identity contract v1; retrain Stage 2"
+        )
+    required = {
+        "semantic_identity",
+        "stage1_backbone",
+        "object_encoder",
+        "stage1_config",
+        "stage1_feature_identity",
+        "stage1_encoding_contract",
+        "feature_artifacts",
+        "object_encoder_config",
+        "role_to_id",
+        "state_hashes",
+    }
+    if not required.issubset(payload):
+        raise ValueError("Stage 2 encoder artifact contract is incomplete")
+    state_hashes = {
+        "stage1_backbone": tensor_state_hash(
+            "stage2.encoder-state", payload["stage1_backbone"]
+        ),
+        "object_encoder": tensor_state_hash(
+            "stage2.encoder-state", payload["object_encoder"]
+        ),
+    }
+    if payload["state_hashes"] != state_hashes:
+        raise ValueError("Stage 2 encoder state integrity mismatch")
+    expected = build_stage2_encoder_identity(
+        stage1_feature_identity=payload["stage1_feature_identity"],
+        stage1_encoding_contract=payload["stage1_encoding_contract"],
+        stage1_state_hash=state_hashes["stage1_backbone"],
+        object_encoder_contract=payload["object_encoder_config"],
+        object_encoder_state_hash=state_hashes["object_encoder"],
+        role_to_id=payload["role_to_id"],
+    )
+    require_compatible_identity(
+        expected,
+        payload["semantic_identity"],
+        context="Stage 2 encoder artifact",
+    )
+    if payload["role_to_id"] != ROLE_TO_ID:
+        raise ValueError("Stage 2 encoder role mapping mismatch")
+    return payload
+
+
 def load_frozen_object_encoder(
-    checkpoint_path: str | Path,
+    encoder_path: str | Path,
     *,
     device: torch.device | str = "cpu",
 ) -> FrozenStage2ObjectEncoder:
-    checkpoint_path = Path(checkpoint_path)
-    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    if (
-        checkpoint.get("format_version") != STAGE2_CHECKPOINT_VERSION
-        or checkpoint.get("kind") != STAGE2_CHECKPOINT_KIND
-    ):
-        raise ValueError("Stage 3 requires a Stage 2 Object v3 checkpoint")
-    config = stage2_config_from_checkpoint_dict(checkpoint["config"])
-    if checkpoint.get("config_hash") != canonical_json_sha256(
-        config.experiment_dict()
-    ):
-        raise ValueError("Frozen Stage 2 checkpoint config hash mismatch")
-    registry = Stage2Registry.from_snapshot(
-        checkpoint["registry"],
-        registry_hash=checkpoint["registry_hash"],
-        catalog_sha256=checkpoint["catalog_sha256"],
+    path = Path(encoder_path)
+    payload = _load_payload(path)
+    config = config_from_dict(payload["stage1_config"])
+    feature_artifacts = payload["feature_artifacts"]
+    validate_feature_generation_runtime(
+        {
+            "feature_generation_contract": payload["stage1_encoding_contract"][
+                "feature_generation_contract"
+            ]
+        }
     )
-    config.validate_registry(registry)
+    vocabulary = SmilesTokenizer.from_payload(feature_artifacts["tokenizer.json"])
+    schema = DescriptorSchema.from_payload(
+        feature_artifacts["descriptor_schema.json"],
+        expected_raw_names=rdkit_descriptor_names(),
+    )
+    standardizer = DescriptorStandardizer.from_payload(
+        feature_artifacts["descriptor_scaler.json"],
+        expected_names=schema.selected_names,
+    )
     target_device = torch.device(device)
-    loaded = load_stage1_model(
-        config.initialization.checkpoint,
-        config.data.pretrain_artifacts_dir,
-        device=target_device,
-        backbone_dropout=0.0,
+    backbone = MultimodalPretrainModel(config, vocabulary, schema)
+    missing, unexpected = backbone.load_state_dict(
+        payload["stage1_backbone"], strict=False
     )
-    model = Stage2ObjectModel(
-        loaded.model,
-        registry,
-        object_layers=config.model.object_layers,
-        object_ffn_dim=config.model.object_ffn_dim,
-        dropout=config.model.dropout,
-    )
-    if checkpoint.get("model_contract") != model.model_contract:
-        raise ValueError("Frozen Stage 2 checkpoint model contract mismatch")
-    data_metadata = config.data.artifacts_dir / "metadata.json"
-    if (
-        not data_metadata.is_file()
-        or checkpoint.get("data_metadata_hash") != sha256_file(data_metadata)
-    ):
-        raise ValueError("Frozen Stage 2 checkpoint data artifact mismatch")
-    if checkpoint.get("normalized_task_weights") != config.normalized_task_weights(registry):
-        raise ValueError("Frozen Stage 2 checkpoint normalized task weights mismatch")
-    completed_epoch = checkpoint.get("completed_epoch")
-    if not isinstance(completed_epoch, int) or not 1 <= completed_epoch <= config.training.epochs:
-        raise ValueError("Frozen Stage 2 checkpoint epoch is invalid")
-    for required in ("optimizer", "scheduler", "rng", "optimizer_implementation", "math_contract"):
-        if required not in checkpoint:
-            raise ValueError(f"Frozen Stage 2 checkpoint lacks {required}")
-    model.load_state_dict(checkpoint["model"], strict=True)
-    model.to(target_device).eval()
-    for parameter in model.parameters():
-        parameter.requires_grad_(False)
-    pretrain_config, vocabulary, schema, standardizer, artifact_hash = (
-        load_stage1_feature_inputs(
-            config.initialization.checkpoint,
-            config.data.pretrain_artifacts_dir,
+    if unexpected or any(
+        not any(
+            name == prefix or name.startswith(prefix + ".")
+            for prefix in RECONSTRUCTION_MODULES
         )
+        for name in missing
+    ):
+        raise ValueError("Stage 2 encoder Stage 1 state contract mismatch")
+    object_config = payload["object_encoder_config"]
+    object_encoder = ObjectEncoder(
+        config.model.d_model,
+        config.model.n_heads,
+        num_layers=int(object_config["layers"]),
+        feedforward_dim=int(object_config["ffn_dim"]),
+        dropout=float(object_config["dropout"]),
     )
-    if artifact_hash != loaded.artifact_hash:
-        raise ValueError("Frozen Stage 2 feature artifact identity mismatch")
-    del checkpoint
+    object_encoder.load_state_dict(payload["object_encoder"], strict=True)
+    backbone.to(target_device).eval()
+    object_encoder.to(target_device).eval()
+    for parameter in [*backbone.parameters(), *object_encoder.parameters()]:
+        parameter.requires_grad_(False)
     return FrozenStage2ObjectEncoder(
-        model=model,
+        backbone=backbone,
+        object_encoder=object_encoder,
         packer=MultimodalPacker(vocabulary),
-        pretrain_config=pretrain_config,
+        pretrain_config=config,
         descriptor_schema=schema,
         descriptor_standardizer=standardizer,
-        checkpoint_hash=sha256_file(checkpoint_path),
-        checkpoint_kind=STAGE2_CHECKPOINT_KIND,
-        checkpoint_version=STAGE2_CHECKPOINT_VERSION,
+        encoder_identity=payload["semantic_identity"],
+        artifact_hash=sha256_file(path),
         device=target_device,
     )
+
+
+def load_stage2_encoder_identity(path: str | Path) -> dict[str, Any]:
+    return dict(_load_payload(Path(path))["semantic_identity"])
+
+
+__all__ = [
+    "FrozenObjectSpec",
+    "FrozenStage2ObjectEncoder",
+    "load_frozen_object_encoder",
+    "load_stage2_encoder_identity",
+]

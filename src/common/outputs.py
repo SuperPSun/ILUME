@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import platform
+import json
 import subprocess
 import uuid
 from dataclasses import dataclass
@@ -11,6 +12,11 @@ import torch
 from rdkit import rdBase
 
 from .io import atomic_json, atomic_yaml
+from .identity import (
+    IDENTITY_CONTRACT_VERSION,
+    require_compatible_identity,
+    validate_semantic_identity,
+)
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -100,27 +106,19 @@ def _runtime_metadata() -> dict[str, Any]:
     }
 
 
-def _without_fields(payload: dict[str, Any], fields: set[str]) -> dict[str, Any]:
-    import copy
-
-    result = copy.deepcopy(payload)
-    for field in fields:
-        parts = field.split(".")
-        target: Any = result
-        for part in parts[:-1]:
-            if not isinstance(target, dict) or part not in target:
-                break
-            target = target[part]
-        else:
-            if isinstance(target, dict):
-                target.pop(parts[-1], None)
-    return result
-
-
 @dataclass
 class RunDirectory:
     root: Path
     metadata: dict[str, Any]
+
+    def _append_attempt(self, event: str, **details: Any) -> None:
+        row = {
+            "event": event,
+            "attempt_id": self.metadata["attempt_id"],
+            **details,
+        }
+        with (self.root / "attempts.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
 
     @property
     def artifacts(self) -> Path:
@@ -130,10 +128,12 @@ class RunDirectory:
         atomic_json(self.root / "summary.json", summary)
         self.metadata["status"] = "completed"
         atomic_json(self.root / "metadata.json", self.metadata)
+        self._append_attempt("completed")
 
     def fail(self) -> None:
         self.metadata["status"] = "failed"
         atomic_json(self.root / "metadata.json", self.metadata)
+        self._append_attempt("failed")
 
 
 def open_run_directory(
@@ -142,15 +142,15 @@ def open_run_directory(
     operation: str,
     config_path: str | Path,
     config_payload: dict[str, Any],
+    semantic_identity: dict[str, Any],
     output: str | Path,
     seed: int,
     reusable: bool = False,
     resume: str | Path | None = None,
     details: dict[str, Any] | None = None,
-    ignored_config_sections: set[str] | None = None,
-    ignored_config_fields: set[str] | None = None,
 ) -> RunDirectory:
     _validate_public_paths(config_payload)
+    validate_semantic_identity(semantic_identity)
     root = repository_path(output)
     snapshot = root / "run_config.yaml"
     if resume is not None:
@@ -162,38 +162,60 @@ def open_run_directory(
         raise FileExistsError(f"Existing prepare output has no run_config.yaml: {repository_relative(root)}")
     root.mkdir(parents=True, exist_ok=True)
     if snapshot.is_file():
-        import yaml
-
-        existing = yaml.safe_load(snapshot.read_text(encoding="utf-8"))
-        if not isinstance(existing, dict):
-            raise ValueError("Existing run_config.yaml must contain a mapping")
-        ignored = ignored_config_sections or set()
-        existing_identity = _without_fields({
-            key: value for key, value in existing.items() if key not in ignored
-        }, ignored_config_fields or set())
-        requested_identity = _without_fields({
-            key: value for key, value in config_payload.items() if key not in ignored
-        }, ignored_config_fields or set())
-        if existing_identity != requested_identity:
-            raise ValueError("Existing run_config.yaml does not match the effective config")
-        if reusable and existing != config_payload:
-            atomic_yaml(snapshot, config_payload)
+        metadata_path = root / "metadata.json"
+        if not metadata_path.is_file():
+            raise ValueError("Existing run output has no metadata.json")
+        previous = json.loads(metadata_path.read_text(encoding="utf-8"))
+        existing_identity = previous.get("semantic_identity")
+        if not isinstance(existing_identity, dict):
+            raise ValueError(
+                "Existing run predates identity contract v1; regenerate the run"
+            )
+        require_compatible_identity(
+            semantic_identity,
+            existing_identity,
+            context=f"Existing {stage}/{operation} run",
+        )
+        atomic_yaml(snapshot, config_payload)
     else:
         atomic_yaml(snapshot, config_payload)
+    previous_attempts = 0
+    previous_metadata = root / "metadata.json"
+    if previous_metadata.is_file():
+        previous_attempts = int(
+            json.loads(previous_metadata.read_text(encoding="utf-8")).get(
+                "attempt_count", 0
+            )
+        )
+    runtime = _runtime_metadata()
+    attempt_id = uuid.uuid4().hex
     metadata: dict[str, Any] = {
         "schema_version": 1,
+        "identity_contract_version": IDENTITY_CONTRACT_VERSION,
         "stage": stage,
         "operation": operation,
         "status": "running",
-        "config_path": repository_relative(config_path),
+        "locator": {
+            "config_path": repository_relative(config_path),
+            "output": repository_relative(root),
+        },
         "data_metadata": f"data/{stage}/metadata.json",
         "seed": seed,
-        "attempt_id": uuid.uuid4().hex,
-        **_runtime_metadata(),
+        "attempt_id": attempt_id,
+        "attempt_count": previous_attempts + 1,
+        "semantic_identity": semantic_identity,
+        "provenance": runtime,
     }
     if resume is not None:
-        metadata["resume"] = repository_relative(resume)
+        metadata["locator"]["resume"] = repository_relative(resume)
     if details:
-        metadata.update(details)
+        metadata["provenance"].update(details)
     atomic_json(root / "metadata.json", metadata)
-    return RunDirectory(root=root, metadata=metadata)
+    run = RunDirectory(root=root, metadata=metadata)
+    run._append_attempt(
+        "started",
+        semantic_identity=semantic_identity,
+        locator=metadata["locator"],
+        provenance=metadata["provenance"],
+    )
+    return run

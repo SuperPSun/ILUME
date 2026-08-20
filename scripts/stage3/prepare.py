@@ -20,14 +20,23 @@ def main() -> None:
     args = parser.parse_args()
     config = load_stage3_config(args.config)
     configure_process_runtime(config)
-    from stage3.data import resolve_task_registry, source_hashes
+    from stage3.data import collect_object_keys, resolve_task_registry, source_hashes
+    from stage3.identity import resolve_stage3_prepared_identity
     from stage3.prepare import prepare_stage3
 
+    registry = resolve_task_registry(config)
+    objects = collect_object_keys(config, registry)
+    prepared_identity = resolve_stage3_prepared_identity(config, registry, objects)
     run = open_run_directory(
         stage="stage3", operation="prepare", config_path=args.config,
         config_payload=config.to_dict(), output=args.output, seed=config.data.seed,
+        semantic_identity=prepared_identity,
         reusable=False,
-        details={"checkpoint": repository_relative(config.initialization.stage2_checkpoint)},
+        details={
+            "stage2_encoder": repository_relative(
+                config.initialization.stage2_encoder
+            )
+        },
     )
     effective = replace(config, data=replace(config.data, artifacts_dir=run.artifacts))
     registry = resolve_task_registry(effective)

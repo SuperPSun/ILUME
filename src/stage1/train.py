@@ -16,7 +16,8 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, Sampler, Subset
 
-from common.io import atomic_torch_save, sha256_file
+from common.identity import IDENTITY_CONTRACT_VERSION, require_compatible_identity
+from common.io import atomic_torch_save
 from common.progress import ProgressReporter, loss_postfix
 from common.training import (
     canonical_json_sha256,
@@ -34,6 +35,10 @@ from .data import PreparedCorpusDataset
 from .masking import MultimodalMasker, MultimodalPacker
 from .model import LossStatistics, MultimodalPretrainModel, PretrainOutput
 from .tokenizer import SmilesTokenizer
+from .identity import (
+    build_stage1_training_identity,
+    metadata_identity,
+)
 
 
 ROLE_NAMES = ("cation", "anion", "molecule")
@@ -382,13 +387,15 @@ def _checkpoint_payload(
     world_size_at_save: int,
     attempt_id: str,
     config: PretrainConfig,
-    config_hash: str,
-    artifact_hash: str,
+    training_identity: dict[str, Any],
+    corpus_identity: dict[str, Any],
+    sampler_layout_identity: dict[str, Any],
     source_hashes: dict[str, str],
 ) -> dict[str, Any]:
     return {
         "kind": STAGE1_CHECKPOINT_KIND,
         "format_version": STAGE1_CHECKPOINT_VERSION,
+        "identity_contract_version": IDENTITY_CONTRACT_VERSION,
         "model": model.state_dict(),
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict(),
@@ -400,8 +407,9 @@ def _checkpoint_payload(
         "world_size_at_save": world_size_at_save,
         "attempt_id": attempt_id,
         "config": config.to_dict(),
-        "config_hash": config_hash,
-        "artifact_hash": artifact_hash,
+        "training_identity": training_identity,
+        "corpus_identity": corpus_identity,
+        "sampler_layout_identity": sampler_layout_identity,
         "source_hashes": source_hashes,
     }
 
@@ -419,8 +427,9 @@ def _save_checkpoint(
     steps_per_epoch: int,
     train_size: int,
     config: PretrainConfig,
-    config_hash: str,
-    artifact_hash: str,
+    training_identity: dict[str, Any],
+    corpus_identity: dict[str, Any],
+    sampler_layout_identity: dict[str, Any],
     source_hashes: dict[str, str],
     attempt_id: str,
 ) -> None:
@@ -438,8 +447,9 @@ def _save_checkpoint(
         world_size_at_save=context.world_size,
         attempt_id=attempt_id,
         config=config,
-        config_hash=config_hash,
-        artifact_hash=artifact_hash,
+        training_identity=training_identity,
+        corpus_identity=corpus_identity,
+        sampler_layout_identity=sampler_layout_identity,
         source_hashes=source_hashes,
     )
     for path in paths:
@@ -449,8 +459,7 @@ def _load_checkpoint(
     path: Path,
     *,
     config: PretrainConfig,
-    config_hash: str,
-    artifact_hash: str,
+    training_identity: dict[str, Any],
     train_size: int,
     steps_per_epoch: int,
 ) -> dict[str, Any]:
@@ -460,12 +469,17 @@ def _load_checkpoint(
         or checkpoint.get("format_version") != STAGE1_CHECKPOINT_VERSION
     ):
         raise ValueError("Unsupported Stage 1 pretraining checkpoint")
-    checkpoint_config = config_from_dict(checkpoint["config"])
-    if checkpoint_config.experiment_dict() != config.experiment_dict():
-        raise ValueError("Checkpoint config does not match the current config")
+    checkpoint_identity = checkpoint.get("training_identity")
+    if not isinstance(checkpoint_identity, dict):
+        raise ValueError(
+            "Stage 1 checkpoint predates identity contract v1; retrain Stage 1"
+        )
+    require_compatible_identity(
+        training_identity,
+        checkpoint_identity,
+        context="Stage 1 resume",
+    )
     expected = {
-        "config_hash": config_hash,
-        "artifact_hash": artifact_hash,
         "train_size": train_size,
         "steps_per_epoch": steps_per_epoch,
     }
@@ -506,6 +520,17 @@ def run_training(
     artifact_dir = config.data.artifacts_dir
     artifact_metadata = json.loads(
         (artifact_dir / "metadata.json").read_text(encoding="utf-8")
+    )
+    corpus_identity = dict(
+        metadata_identity(artifact_metadata, "corpus", context="Stage 1 corpus")
+    )
+    sampler_layout_identity = dict(
+        metadata_identity(
+            artifact_metadata, "sampler_layout", context="Stage 1 corpus"
+        )
+    )
+    training_identity = build_stage1_training_identity(
+        config, corpus_identity, sampler_layout_identity
     )
     train_dataset = PreparedCorpusDataset(
         artifact_dir, "train", config.data.shard_cache_size
@@ -553,8 +578,6 @@ def run_training(
         output_dir.mkdir(parents=True, exist_ok=True)
     if context.enabled:
         dist.barrier()
-    config_hash = _config_hash(config)
-    artifact_hash = sha256_file(artifact_dir / "metadata.json")
     metrics_path = output_dir / "metrics.jsonl"
     completed_epoch = 0
     global_step = 0
@@ -562,8 +585,7 @@ def run_training(
         checkpoint = _load_checkpoint(
             Path(resume_from),
             config=config,
-            config_hash=config_hash,
-            artifact_hash=artifact_hash,
+            training_identity=training_identity,
             train_size=len(train_dataset),
             steps_per_epoch=steps_per_epoch,
         )
@@ -777,8 +799,9 @@ def run_training(
             steps_per_epoch=steps_per_epoch,
             train_size=len(train_dataset),
             config=config,
-            config_hash=config_hash,
-            artifact_hash=artifact_hash,
+            training_identity=training_identity,
+            corpus_identity=corpus_identity,
+            sampler_layout_identity=sampler_layout_identity,
             source_hashes=artifact_metadata.get("source_hashes", {}),
             attempt_id=attempt_id,
         )

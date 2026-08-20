@@ -7,12 +7,16 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import torch
-from rdkit import rdBase
 
+from common.identity import IDENTITY_CONTRACT_VERSION, require_compatible_identity
 from common.io import atomic_json, atomic_torch_save, sha256_file
 from common.progress import ProgressReporter
 from common.training import canonical_json_sha256, resolve_device
-from stage2 import FrozenObjectSpec, load_frozen_object_encoder
+from stage2 import (
+    FrozenObjectSpec,
+    load_frozen_object_encoder,
+    load_stage2_encoder_identity,
+)
 from .config import Stage3Config
 from .data import (
     OBJECT_ENCODING_CONTRACT_VERSION,
@@ -27,26 +31,30 @@ from .data import (
     sanitize_task,
     source_hashes,
 )
+from .identity import build_stage3_prepared_identity, metadata_identity
 
 
-def _cache_identity(stage2_sha: str, key: ObjectKey) -> dict[str, Any]:
+def _cache_identity(
+    stage2_encoder_identity: Mapping[str, Any], key: ObjectKey
+) -> dict[str, Any]:
     return {
         "encoding_contract_version": OBJECT_ENCODING_CONTRACT_VERSION,
-        "stage2_checkpoint_sha256": stage2_sha,
-        "rdkit_version": rdBase.rdkitVersion,
+        "stage2_encoder_identity": stage2_encoder_identity["hash"],
         "object": key.to_dict(),
     }
 
 
-def _cache_paths(cache_dir: Path, stage2_sha: str, key: ObjectKey) -> tuple[Path, Path]:
-    root = cache_dir / stage2_sha
+def _cache_paths(cache_dir: Path, encoder_hash: str, key: ObjectKey) -> tuple[Path, Path]:
+    root = cache_dir / encoder_hash
     return root / f"{key.identity}.pt", root / f"{key.identity}.json"
 
 
 def _load_cache_entry(
-    cache_dir: Path, stage2_sha: str, key: ObjectKey
+    cache_dir: Path, stage2_encoder_identity: Mapping[str, Any], key: ObjectKey
 ) -> torch.Tensor | None:
-    path, audit_path = _cache_paths(cache_dir, stage2_sha, key)
+    path, audit_path = _cache_paths(
+        cache_dir, str(stage2_encoder_identity["hash"]), key
+    )
     if not path.exists() and not audit_path.exists():
         return None
     if not path.is_file() or not audit_path.is_file():
@@ -55,7 +63,7 @@ def _load_cache_entry(
     if audit.get("sha256") != sha256_file(path):
         raise ValueError(f"Corrupt Stage 3 object cache entry: {key.identity}")
     payload = torch.load(path, map_location="cpu", weights_only=True)
-    if payload.get("identity") != _cache_identity(stage2_sha, key):
+    if payload.get("identity") != _cache_identity(stage2_encoder_identity, key):
         raise ValueError(f"Stage 3 object cache identity mismatch: {key.identity}")
     embedding = payload.get("embedding")
     if (
@@ -70,16 +78,18 @@ def _load_cache_entry(
 
 def _save_cache_entry(
     cache_dir: Path,
-    stage2_sha: str,
+    stage2_encoder_identity: Mapping[str, Any],
     key: ObjectKey,
     embedding: torch.Tensor,
 ) -> None:
-    path, audit_path = _cache_paths(cache_dir, stage2_sha, key)
+    path, audit_path = _cache_paths(
+        cache_dir, str(stage2_encoder_identity["hash"]), key
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_torch_save(
         path,
         {
-            "identity": _cache_identity(stage2_sha, key),
+            "identity": _cache_identity(stage2_encoder_identity, key),
             "embedding": embedding.detach().cpu().float().contiguous(),
         },
     )
@@ -91,14 +101,16 @@ def materialize_object_embeddings(
     object_keys: Sequence[ObjectKey],
     *,
     reporter: ProgressReporter | None = None,
-) -> tuple[torch.Tensor, str, dict[str, int]]:
-    checkpoint = config.initialization.stage2_checkpoint
-    stage2_sha = sha256_file(checkpoint)
+) -> tuple[torch.Tensor, dict[str, Any], dict[str, int]]:
+    encoder_path = config.initialization.stage2_encoder
+    stage2_identity = load_stage2_encoder_identity(encoder_path)
     embeddings: list[torch.Tensor | None] = [None] * len(object_keys)
     misses: dict[str, list[int]] = {}
     cache_hits = 0
     for index, key in enumerate(object_keys):
-        cached = _load_cache_entry(config.preparation.cache_dir, stage2_sha, key)
+        cached = _load_cache_entry(
+            config.preparation.cache_dir, stage2_identity, key
+        )
         if cached is None:
             misses.setdefault(key.topology, []).append(index)
         else:
@@ -106,9 +118,12 @@ def materialize_object_embeddings(
             cache_hits += 1
     if misses:
         device = resolve_device(config.training.device)
-        encoder = load_frozen_object_encoder(checkpoint, device=device)
-        if encoder.checkpoint_hash != stage2_sha:
-            raise ValueError("Stage 2 checkpoint changed during Stage 3 prepare")
+        encoder = load_frozen_object_encoder(encoder_path, device=device)
+        require_compatible_identity(
+            stage2_identity,
+            encoder.encoder_identity,
+            context="Stage 2 encoder changed during Stage 3 prepare",
+        )
         bar = (reporter or ProgressReporter()).bar(
             total=sum(len(indices) for indices in misses.values()),
             desc="Stage3 object cache",
@@ -132,7 +147,7 @@ def materialize_object_embeddings(
                         embeddings[index] = value
                         _save_cache_entry(
                             config.preparation.cache_dir,
-                            stage2_sha,
+                            stage2_identity,
                             object_keys[index],
                             value,
                         )
@@ -144,7 +159,7 @@ def materialize_object_embeddings(
     matrix = torch.stack([value for value in embeddings if value is not None])
     if matrix.ndim != 2:
         raise ValueError("Stage 3 object embedding matrix must be rank two")
-    return matrix.float(), stage2_sha, {
+    return matrix.float(), stage2_identity, {
         "hits": cache_hits,
         "misses": len(object_keys) - cache_hits,
     }
@@ -156,7 +171,7 @@ def _stage_artifacts(
     registry: Mapping[str, ResolvedTaskSpec],
     objects: Sequence[ObjectKey],
     embeddings: torch.Tensor,
-    stage2_sha: str,
+    stage2_encoder_identity: Mapping[str, Any],
     source_digests: Mapping[str, str],
 ) -> dict[str, Any]:
     object_ids = {key: index for index, key in enumerate(objects)}
@@ -166,7 +181,7 @@ def _stage_artifacts(
             "format_version": STAGE3_ARTIFACT_VERSION,
             "kind": STAGE3_ARTIFACT_KIND,
             "encoding_contract_version": OBJECT_ENCODING_CONTRACT_VERSION,
-            "stage2_checkpoint_sha256": stage2_sha,
+            "stage2_encoder_identity": stage2_encoder_identity,
             "objects": [key.to_dict() for key in objects],
             "embeddings": embeddings,
         },
@@ -201,19 +216,46 @@ def _stage_artifacts(
         for path in sorted(staging.rglob("*"))
         if path.is_file()
     }
+    prepared_identity = build_stage3_prepared_identity(
+        config,
+        registry,
+        objects,
+        all_normalization,
+        stage2_encoder_identity,
+    )
     metadata = {
+        "identity_contract_version": IDENTITY_CONTRACT_VERSION,
         "format_version": STAGE3_ARTIFACT_VERSION,
         "kind": STAGE3_ARTIFACT_KIND,
         "encoding_contract_version": OBJECT_ENCODING_CONTRACT_VERSION,
-        "stage2_checkpoint_sha256": stage2_sha,
+        "stage2_encoder_identity": stage2_encoder_identity,
         "registry_hash": canonical_json_sha256(registry_payload),
         "catalog_sha256": source_digests[str(config.data.task_catalog)],
         "source_hashes": dict(source_digests),
-        "rdkit_version": rdBase.rdkitVersion,
         "object_count": len(objects),
         "embedding_dim": int(embeddings.shape[1]),
         "counts": counts,
         "artifact_hashes": artifact_hashes,
+        "locator": {"files": {name: name for name in artifact_hashes}},
+        "semantic": {
+            "identities": {
+                "prepared": prepared_identity,
+                "stage2_encoder": dict(stage2_encoder_identity),
+            }
+        },
+        "integrity": {
+            "files": {
+                name: {
+                    "sha256": digest,
+                    "size": (staging / name).stat().st_size,
+                }
+                for name, digest in artifact_hashes.items()
+            }
+        },
+        "provenance": {
+            "stage2_encoder": str(config.initialization.stage2_encoder),
+            "encoding_batch_size": config.preparation.encoding_batch_size,
+        },
     }
     atomic_json(staging / "metadata.json", metadata)
     return metadata
@@ -233,14 +275,15 @@ def prepare_stage3(
     for fold in range(1, 6):
         fit_normalization(config, registry, fold)
     objects = collect_object_keys(config, registry)
-    embeddings, stage2_sha, cache = materialize_object_embeddings(
+    embeddings, stage2_encoder_identity, cache = materialize_object_embeddings(
         config, objects, reporter=reporter
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix="stage3-artifacts-", dir=destination.parent))
     try:
         metadata = _stage_artifacts(
-            staging, config, registry, objects, embeddings, stage2_sha, source_digests
+            staging, config, registry, objects, embeddings,
+            stage2_encoder_identity, source_digests
         )
         staging.replace(destination)
     except BaseException:
@@ -252,7 +295,7 @@ def prepare_stage3(
         "task_count": len(registry),
         "object_count": len(objects),
         "embedding_dim": metadata["embedding_dim"],
-        "stage2_checkpoint_sha256": stage2_sha,
+        "stage2_encoder_identity": stage2_encoder_identity["hash"],
         "cache": cache,
     }
 
@@ -265,8 +308,10 @@ def load_prepared_stage3(config: Stage3Config) -> dict[str, Any]:
         or metadata.get("kind") != STAGE3_ARTIFACT_KIND
     ):
         raise ValueError("Unsupported Stage 3 sparse artifact")
-    if metadata.get("rdkit_version") != rdBase.rdkitVersion:
-        raise ValueError("Stage 3 artifact RDKit version mismatch")
+    if metadata.get("identity_contract_version") != IDENTITY_CONTRACT_VERSION:
+        raise ValueError(
+            "Stage 3 artifact predates identity contract v1; regenerate it"
+        )
     registry = resolve_task_registry(config)
     registry_payload = {
         task_id: spec.to_dict() for task_id, spec in registry.items()
@@ -275,9 +320,17 @@ def load_prepared_stage3(config: Stage3Config) -> dict[str, Any]:
         raise ValueError("Stage 3 artifact registry mismatch")
     if metadata.get("source_hashes") != source_hashes(config, registry):
         raise ValueError("Stage 3 artifact source hash mismatch")
-    expected_stage2_sha = sha256_file(config.initialization.stage2_checkpoint)
-    if metadata.get("stage2_checkpoint_sha256") != expected_stage2_sha:
-        raise ValueError("Stage 3 artifact Stage 2 checkpoint mismatch")
+    expected_stage2_identity = load_stage2_encoder_identity(
+        config.initialization.stage2_encoder
+    )
+    stored_stage2_identity = metadata.get("stage2_encoder_identity")
+    if not isinstance(stored_stage2_identity, dict):
+        raise ValueError("Stage 3 artifact lacks Stage 2 encoder identity")
+    require_compatible_identity(
+        expected_stage2_identity,
+        stored_stage2_identity,
+        context="Stage 3 artifact Stage 2 encoder",
+    )
     for relative, digest in metadata.get("artifact_hashes", {}).items():
         path = root / relative
         if not path.is_file() or sha256_file(path) != digest:
@@ -287,11 +340,29 @@ def load_prepared_stage3(config: Stage3Config) -> dict[str, Any]:
     )
     if (
         objects.get("kind") != STAGE3_ARTIFACT_KIND
-        or objects.get("stage2_checkpoint_sha256") != expected_stage2_sha
+        or objects.get("stage2_encoder_identity") != expected_stage2_identity
     ):
         raise ValueError("Stage 3 object embedding identity mismatch")
     normalization = json.loads(
         (root / "normalization.json").read_text(encoding="utf-8")
+    )
+    expected_prepared_identity = build_stage3_prepared_identity(
+        config,
+        registry,
+        tuple(
+            ObjectKey(
+                topology=item["topology"],
+                slots=tuple(tuple(slot) for slot in item["slots"]),
+            )
+            for item in objects["objects"]
+        ),
+        normalization,
+        expected_stage2_identity,
+    )
+    require_compatible_identity(
+        expected_prepared_identity,
+        metadata_identity(metadata, "prepared", context="Stage 3 artifact"),
+        context="Stage 3 prepared artifact",
     )
     return {
         "metadata": metadata,

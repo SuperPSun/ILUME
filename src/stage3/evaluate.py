@@ -1,19 +1,27 @@
 from __future__ import annotations
 
 import math
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import torch
 
-from common.io import sha256_file
+from common.identity import (
+    IDENTITY_CONTRACT_VERSION,
+    require_compatible_identity,
+    tensor_state_hash,
+)
 from common.training import canonical_json_sha256, resolve_device
 from .config import Stage3Config
 from .data import Stage3TaskDataset
 from .model import Stage3SparseModel
 from .prepare import load_prepared_stage3
 from .train import STAGE3_CHECKPOINT_KIND, STAGE3_CHECKPOINT_VERSION, regression_metrics
+from .identity import (
+    build_stage3_evaluation_identity,
+    build_stage3_training_identity,
+    metadata_identity,
+)
 
 
 def _checkpoint_path(root: Path, fold: int, epoch: int) -> Path:
@@ -32,12 +40,15 @@ def _load_model(
 ) -> tuple[Stage3SparseModel, dict[str, Any]]:
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     expected = {
+        "identity_contract_version": IDENTITY_CONTRACT_VERSION,
         "kind": STAGE3_CHECKPOINT_KIND,
         "format_version": STAGE3_CHECKPOINT_VERSION,
         "stage": "stage3",
         "fold": fold,
         "completed_epoch": epoch,
-        "stage2_checkpoint_sha256": prepared["metadata"]["stage2_checkpoint_sha256"],
+        "stage2_encoder_identity": metadata_identity(
+            prepared["metadata"], "stage2_encoder", context="Stage 3 prepared artifact"
+        )["hash"],
         "resolved_registry": {
             task_id: spec.to_dict() for task_id, spec in prepared["registry"].items()
         },
@@ -46,21 +57,20 @@ def _load_model(
         if checkpoint.get(key) != value:
             raise ValueError(f"Stage 3 evaluation checkpoint mismatch: {key}")
     plan = checkpoint.get("resolved_training_plan")
-    if not isinstance(plan, dict) or checkpoint.get(
-        "resolved_training_plan_hash"
-    ) != canonical_json_sha256(plan):
-        raise ValueError("Stage 3 checkpoint resolved plan hash mismatch")
-    if any(
-        plan.get("model", {}).get(name) != value
-        for name, value in asdict(config.model).items()
-    ):
-        raise ValueError("Stage 3 checkpoint model config mismatch")
-    if plan.get("data", {}).get("source_hashes") != prepared["metadata"]["source_hashes"]:
-        raise ValueError("Stage 3 checkpoint data provenance mismatch")
-    if plan.get("data", {}).get("artifact_metadata_sha256") != sha256_file(
-        config.data.artifacts_dir / "metadata.json"
-    ):
-        raise ValueError("Stage 3 checkpoint artifact identity mismatch")
+    if not isinstance(plan, dict):
+        raise ValueError("Stage 3 checkpoint lacks its resolved training plan")
+    training_identity = checkpoint.get("training_identity")
+    if not isinstance(training_identity, Mapping):
+        raise ValueError("Stage 3 checkpoint predates identity contract v1; retrain it")
+    require_compatible_identity(
+        training_identity,
+        build_stage3_training_identity(plan),
+        context="Stage 3 evaluation checkpoint training identity",
+    )
+    if plan.get("prepared_identity") != metadata_identity(
+        prepared["metadata"], "prepared", context="Stage 3 prepared artifact"
+    )["hash"]:
+        raise ValueError("Stage 3 checkpoint prepared-data identity mismatch")
     if plan.get("normalization_hash") != canonical_json_sha256(
         checkpoint.get("normalization")
     ):
@@ -69,6 +79,10 @@ def _load_model(
     model = Stage3SparseModel(config.model, prepared["registry"], d_model)
     if checkpoint.get("ownership_manifest") != model.ownership_manifest():
         raise ValueError("Stage 3 checkpoint ownership mismatch")
+    if checkpoint.get("model_state_hash") != tensor_state_hash(
+        "stage3.model-state", checkpoint["model"]
+    ):
+        raise ValueError("Stage 3 evaluation checkpoint model state hash mismatch")
     model.load_state_dict(checkpoint["model"], strict=True)
     return model.to(device).eval(), checkpoint
 
@@ -195,6 +209,7 @@ def evaluate_checkpoints(
     checkpoint_epoch: int | None = None,
     task_subset: Sequence[str] | None = None,
     fold: int | None = None,
+    expected_evaluation_identity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if split not in {"valid", "test"}:
         raise ValueError("Stage 3 evaluation split must be valid or test")
@@ -224,6 +239,8 @@ def evaluate_checkpoints(
     ensemble_predictions: dict[str, list[torch.Tensor]] = {task: [] for task in tasks}
     raw_targets: dict[str, torch.Tensor] = {}
     normalizations: dict[str, list[dict[str, Any]]] = {task: [] for task in tasks}
+    checkpoint_identities: list[Mapping[str, Any]] = []
+    model_state_hashes: list[str] = []
     for current_fold in folds:
         assert current_fold is not None
         path = _checkpoint_path(root, current_fold, epoch)
@@ -232,6 +249,8 @@ def evaluate_checkpoints(
         model, checkpoint = _load_model(
             config, prepared, path, current_fold, epoch, device
         )
+        checkpoint_identities.append(checkpoint["training_identity"])
+        model_state_hashes.append(checkpoint["model_state_hash"])
         per_task: dict[str, Any] = {}
         for task in tasks:
             dataset = Stage3TaskDataset(
@@ -257,6 +276,24 @@ def evaluate_checkpoints(
             "tasks": per_task,
             **_macro(per_task, prepared["registry"]),
         }
+    evaluation_identity = build_stage3_evaluation_identity(
+        prepared_identity=metadata_identity(
+            prepared["metadata"], "prepared", context="Stage 3 prepared artifact"
+        ),
+        checkpoint_identities=checkpoint_identities,
+        model_state_hashes=model_state_hashes,
+        split=split,
+        fold=fold,
+        checkpoint_epoch=epoch,
+        tasks=tasks,
+        ensemble_folds=ensemble_folds,
+    )
+    if expected_evaluation_identity is not None:
+        require_compatible_identity(
+            expected_evaluation_identity,
+            evaluation_identity,
+            context="Stage 3 run-directory evaluation identity",
+        )
     if split == "valid":
         return {
             "split": split,
@@ -286,4 +323,58 @@ def evaluate_checkpoints(
     }
 
 
-__all__ = ["evaluate_checkpoints"]
+def resolve_stage3_evaluation_identity(
+    config: Stage3Config,
+    checkpoint_dir: str | Path,
+    *,
+    split: str,
+    ensemble_folds: bool,
+    checkpoint_epoch: int | None = None,
+    task_subset: Sequence[str] | None = None,
+    fold: int | None = None,
+) -> dict[str, Any]:
+    """Resolve and validate the semantic identity of an evaluation request."""
+    if split not in {"valid", "test"}:
+        raise ValueError("Stage 3 evaluation split must be valid or test")
+    if split == "test" and not ensemble_folds:
+        raise ValueError("Stage 3 test evaluation requires five-fold ensemble")
+    if split == "valid" and (fold not in range(1, 6) or ensemble_folds):
+        raise ValueError("Stage 3 validation requires exactly one --fold")
+    prepared = load_prepared_stage3(config)
+    enabled = tuple(
+        task for task, spec in prepared["registry"].items() if spec.enabled
+    )
+    tasks = tuple(task_subset) if task_subset is not None else enabled
+    if not tasks or set(tasks) - set(enabled):
+        raise ValueError("Stage 3 evaluation task subset is invalid")
+    epoch = config.training.epochs if checkpoint_epoch is None else checkpoint_epoch
+    if epoch <= 0:
+        raise ValueError("Stage 3 checkpoint epoch must be positive")
+    folds = range(1, 6) if split == "test" else (fold,)
+    identities: list[Mapping[str, Any]] = []
+    state_hashes: list[str] = []
+    for current_fold in folds:
+        assert current_fold is not None
+        path = _checkpoint_path(Path(checkpoint_dir), current_fold, epoch)
+        if not path.is_file():
+            raise FileNotFoundError(f"Missing Stage 3 checkpoint: {path}")
+        _, checkpoint = _load_model(
+            config, prepared, path, current_fold, epoch, torch.device("cpu")
+        )
+        identities.append(checkpoint["training_identity"])
+        state_hashes.append(checkpoint["model_state_hash"])
+    return build_stage3_evaluation_identity(
+        prepared_identity=metadata_identity(
+            prepared["metadata"], "prepared", context="Stage 3 prepared artifact"
+        ),
+        checkpoint_identities=identities,
+        model_state_hashes=state_hashes,
+        split=split,
+        fold=fold,
+        checkpoint_epoch=epoch,
+        tasks=tasks,
+        ensemble_folds=ensemble_folds,
+    )
+
+
+__all__ = ["evaluate_checkpoints", "resolve_stage3_evaluation_identity"]
