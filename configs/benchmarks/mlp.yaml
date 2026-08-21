@@ -1,0 +1,36 @@
+name: mlp
+seed: 42
+data:
+  data_root: data
+  task_catalog: data/task_catalog.csv
+  stage3_authority_config: configs/v1/stage3/base.yaml
+  feature_cache: outputs/benchmarks/cache/features.sqlite3
+features:
+  kind: rdkit_2d
+  radius: 2
+  n_bits: 2048
+model:
+  hidden_dims: [512, 256, 128]
+  dropout: 0.1
+training:
+  optimizer: adamw
+  learning_rate: 1.0e-3
+  weight_decay: 1.0e-4
+  batch_size: 128
+  max_epochs: 200
+  early_stopping_patience: 20
+  loss: normalized_mse
+  selection_metric: raw_target_macro_mae
+  device: cuda
+  precision: fp32
+stage3:
+  enabled: true
+  tasks: all
+  folds: [1, 2, 3, 4, 5]
+stage2_physics:
+  enabled: true
+  tasks:
+    - simulation/heat_of_vaporization
+    - simulation/pbe_tzvp_cation_orbitals
+    - simulation/pbe_tzvp_anion_orbitals
+

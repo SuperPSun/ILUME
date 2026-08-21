@@ -79,6 +79,20 @@ Stage 3 v1 从 catalog 解析 21 个 scalar observation task 和 6 个 meta-grou
 
 正式 Base 仅支持单进程单 CUDA GPU，默认 BF16；设备不支持时直接失败。测试可显式使用 CPU 与 `amp_dtype: none`。截至 2026-08-20，当前五折 CSV 中有 6 个任务同时包含有值和缺失的 `pressure_kPa`，缺失合计 50,300 行，并非这些任务整列都没有压力。正式 prepare 会按合同拒绝；需先由 ILUME-Data 逐行补齐，或在确认压力不是该任务合法条件后同步修改 catalog `condition_columns`，Stage 3 不负责填充或删行。
 
+## Baselines
+
+MLP（RDKit 2D descriptors）与 ECFP4-XGBoost 对比基线位于 `benchmarks/`，由 [ADR-0022](docs/adr/0022-mlp-ecfp-xgboost-baselines.md) 定义。安装与单任务运行示例：
+
+```bash
+pip install -e ".[benchmarks]"
+python scripts/benchmarks/train.py \
+  --config configs/benchmarks/mlp.yaml \
+  --benchmark stage3 --task experiment/density --fold 1 \
+  --output outputs/benchmarks/mlp/stage3/experiment__density/fold1/attempt-001
+```
+
+批量入口为 `python scripts/benchmarks/sweep.py --config configs/benchmarks/mlp.yaml --output outputs/benchmarks/mlp`。它顺序执行并保留逐 job 状态；当前 Stage 3 缺失压力修复前，完整 21-task sweep 会按现役 condition 合同失败。正式训练与评估仍由用户显式运行。
+
 ```bash
 python scripts/stage3/prepare.py \
   --config configs/v1/stage3/base.yaml \

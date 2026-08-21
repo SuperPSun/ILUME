@@ -10,12 +10,13 @@ Stage 2 现役合同以 ADR-0019 和 `configs/v1/stage2/base.yaml` 为准，iden
 
 ## 结构与入口
 
-- 实现只位于 `src/common`、`src/stage1`、`src/stage2`、`src/stage3`。
+- 现役 Stage 实现只位于 `src/common`、`src/stage1`、`src/stage2`、`src/stage3`；论文对比 baseline 独立位于顶层 `benchmarks/`，不得被 Stage 1/2/3 导入。
 - `common` 只接收至少两个 Stage 实际复用的原子功能；禁止建立 `utils.py`。
 - Stage 可以导入其他 Stage 的公开 contract，但 `src/stageN` 禁止从其他 Stage 导入 `_private_symbol` 或使用 `import *`。
-- 唯一运行入口是 `scripts/stage{1,2,3}/*.py`；不恢复 console CLI、shell runner、smoke 或 matrix runner。
+- 唯一运行入口是 `scripts/stage{1,2,3}/*.py` 与 `scripts/benchmarks/*.py`；不恢复 console CLI、shell runner、smoke 或 matrix runner。
 - 科研参数与 prepare 执行参数都写入完整自包含 YAML；`preparation` 不进入实验身份。正式 v1 配置位于 `configs/v1`；首次真实消融时再建立 `configs/experiments/<stage>`。
 - `--output`、`--resume`、Stage 3 fold 和 evaluation selector 是运行参数，不进入科研 config schema。
+- Baseline 以 ADR-0022 为准，只复用现役 registry、split、canonical SMILES、condition/target 与评估口径；不得改变或被解释为 Stage 1/2/3 数值训练合同。Baseline v1 不支持 resume，失败由 sweep 在新 attempt 目录完整重跑。
 
 ## 数据、输出与恢复
 
