@@ -1,44 +1,91 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "identity_contract_version": 1,
   "stage": "stage1",
-  "source_repository_commit": "5262cf8d5ae9a2f38309893aea1ce719df159b9f",
-  "source_repository_dirty": false,
-  "files": [
-    {
-      "path": "data/stage1/anion.csv",
-      "sha256": "a970bf44d0b97885dfce2d5fa8e56d2f3987979c05034ad1908719f797666937",
-      "size": 1009665,
-      "rows": 14737
-    },
-    {
-      "path": "data/stage1/augmentation/anion.csv",
-      "sha256": "fdafed6e01db69d3fca44ba3bd34f5fd45b9eed8fc285575e19234f26ae1e7bd",
-      "size": 202661050,
-      "rows": 1542503
-    },
-    {
-      "path": "data/stage1/augmentation/cation.csv",
-      "sha256": "02a68f2408622619678885d26c3de6edef552ab3cfb7e2bce101a9b996814ed4",
-      "size": 260807916,
-      "rows": 2255321
-    },
-    {
-      "path": "data/stage1/augmentation/molecule.csv",
-      "sha256": "4cf89ad8478b7cd7732a3a4c3feba1bad6d3d08161424084cf9357015328d43f",
-      "size": 187512048,
-      "rows": 1451740
-    },
-    {
-      "path": "data/stage1/cation.csv",
-      "sha256": "ff7fe4b201f89874a3ed203d63feaae85051e296692df1c46cb1ffb0969419fa",
-      "size": 765087,
-      "rows": 13109
-    },
-    {
-      "path": "data/stage1/molecule.csv",
-      "sha256": "3d4b9a0326b1b94674abb14b32ea57b9bf4e483880b35a8ca5d4447469942b7b",
-      "size": 1740170,
-      "rows": 29759
+  "locator": {
+    "files": {
+      "source_00000": "data/stage1/cation.csv",
+      "source_00001": "data/stage1/anion.csv",
+      "source_00002": "data/stage1/molecule.csv",
+      "source_00003": "data/stage1/augmentation/cation.csv",
+      "source_00004": "data/stage1/augmentation/anion.csv",
+      "source_00005": "data/stage1/augmentation/molecule.csv"
     }
-  ]
+  },
+  "semantic": {
+    "identities": {
+      "source": {
+        "identity_contract_version": 1,
+        "type": "stage1.source-data",
+        "payload": {
+          "stage": "stage1",
+          "sources": {
+            "source_00000": {
+              "sha256": "ff7fe4b201f89874a3ed203d63feaae85051e296692df1c46cb1ffb0969419fa",
+              "size": 765087,
+              "rows": 13109
+            },
+            "source_00001": {
+              "sha256": "a970bf44d0b97885dfce2d5fa8e56d2f3987979c05034ad1908719f797666937",
+              "size": 1009665,
+              "rows": 14737
+            },
+            "source_00002": {
+              "sha256": "3d4b9a0326b1b94674abb14b32ea57b9bf4e483880b35a8ca5d4447469942b7b",
+              "size": 1740170,
+              "rows": 29759
+            },
+            "source_00003": {
+              "sha256": "02a68f2408622619678885d26c3de6edef552ab3cfb7e2bce101a9b996814ed4",
+              "size": 260807916,
+              "rows": 2255321
+            },
+            "source_00004": {
+              "sha256": "fdafed6e01db69d3fca44ba3bd34f5fd45b9eed8fc285575e19234f26ae1e7bd",
+              "size": 202661050,
+              "rows": 1542503
+            },
+            "source_00005": {
+              "sha256": "4cf89ad8478b7cd7732a3a4c3feba1bad6d3d08161424084cf9357015328d43f",
+              "size": 187512048,
+              "rows": 1451740
+            }
+          }
+        },
+        "hash": "4ffedd70a349e378b8dc6f4e0ce02be46ada93f7bf891f02b270fba2082863da"
+      }
+    }
+  },
+  "integrity": {
+    "files": {
+      "source_00000": {
+        "sha256": "ff7fe4b201f89874a3ed203d63feaae85051e296692df1c46cb1ffb0969419fa",
+        "size": 765087
+      },
+      "source_00001": {
+        "sha256": "a970bf44d0b97885dfce2d5fa8e56d2f3987979c05034ad1908719f797666937",
+        "size": 1009665
+      },
+      "source_00002": {
+        "sha256": "3d4b9a0326b1b94674abb14b32ea57b9bf4e483880b35a8ca5d4447469942b7b",
+        "size": 1740170
+      },
+      "source_00003": {
+        "sha256": "02a68f2408622619678885d26c3de6edef552ab3cfb7e2bce101a9b996814ed4",
+        "size": 260807916
+      },
+      "source_00004": {
+        "sha256": "fdafed6e01db69d3fca44ba3bd34f5fd45b9eed8fc285575e19234f26ae1e7bd",
+        "size": 202661050
+      },
+      "source_00005": {
+        "sha256": "4cf89ad8478b7cd7732a3a4c3feba1bad6d3d08161424084cf9357015328d43f",
+        "size": 187512048
+      }
+    }
+  },
+  "provenance": {
+    "source_repository_commit": "ab7ca69dd7d3987b1a515162f14855e963871b9c",
+    "source_repository_dirty": false
+  }
 }
