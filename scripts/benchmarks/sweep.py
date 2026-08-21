@@ -146,14 +146,14 @@ class _SweepState:
             self.progress.set_postfix(self.progress_counts)
             self.progress.update(1)
 
-    def set_progress_description(self, *, benchmark: str, task: str, fold: int | None) -> None:
-        if self.progress is None:
-            return
-        with self.lock:
-            suffix = f" fold{fold}" if fold is not None else ""
-            self.progress.set_description(
-                f"{self.model_name or 'benchmark'} {benchmark} {task}{suffix}"
-            )
+    def set_progress_description(
+        self,
+        *,
+        benchmark: str,
+        task: str,
+        fold: int | None,
+    ) -> None:
+        return
 
 
 def _run(
@@ -272,11 +272,16 @@ def _build_jobs(
     return jobs, ensembles
 
 
-def _subprocess_env(device: str | None) -> dict[str, str] | None:
-    if device is None:
-        return None
+def _subprocess_env(device: str | None) -> dict[str, str]:
     environment = os.environ.copy()
-    environment["CUDA_VISIBLE_DEVICES"] = device.split(":", 1)[1]
+
+    # Child train/evaluate processes should stay quiet.
+    # The sweep process owns the global progress bar.
+    environment["ILUME_DISABLE_PROGRESS"] = "1"
+
+    if device is not None:
+        environment["CUDA_VISIBLE_DEVICES"] = device.split(":", 1)[1]
+
     return environment
 
 

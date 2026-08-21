@@ -12,6 +12,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from common.progress import ProgressReporter
 from common.identity import (
     IDENTITY_CONTRACT_VERSION,
     require_compatible_identity,
@@ -726,98 +727,150 @@ def run_stage3_training(
     counts = plan["data"]["N_t"]
     allocation = plan["data"]["B_t"]
     steps_per_epoch = plan["data"]["K"]
-    group_weights = {group: config.groups[group].group_weight for group in config.groups}
-    for epoch in range(start_epoch, config.training.epochs + 1):
-        model.train()
-        sequences = {
-            task: balanced_virtual_indices(
-                counts[task], steps_per_epoch * allocation[task],
-                seed=config.data.seed, epoch=epoch, task_id=task,
+    group_weights = {
+        group: config.groups[group].group_weight
+        for group in config.groups
+    }
+
+    total_steps = config.training.epochs * steps_per_epoch
+    completed_steps = (start_epoch - 1) * steps_per_epoch
+
+    progress = ProgressReporter().bar(
+        total=total_steps,
+        initial=completed_steps,
+        desc=f"Stage3 fold{fold}",
+        unit="step",
+    )
+
+    try:
+        for epoch in range(start_epoch, config.training.epochs + 1):
+            progress.set_description(
+                f"Stage3 fold{fold} epoch {epoch}/{config.training.epochs}"
             )
-            for task in active
-        }
-        epoch_loss = {task: 0.0 for task in active}
-        latest_pcgrad: HierarchicalPCGradResult | None = None
-        pre_norm = post_norm = 0.0
-        for step in range(steps_per_epoch):
-            order = list(active)
-            task_order_rng.shuffle(order)
-            task_gradients: dict[str, GradientMap] = {}
-            for task in order:
-                begin = step * allocation[task]
-                indices = sequences[task][begin : begin + allocation[task]]
-                gradient, loss = compute_task_gradient(
-                    model, task, train_data[task], indices, embedding_matrix,
-                    normalizations[task], config, device,
+            model.train()
+            sequences = {
+                task: balanced_virtual_indices(
+                    counts[task], steps_per_epoch * allocation[task],
+                    seed=config.data.seed, epoch=epoch, task_id=task,
                 )
-                task_gradients[task] = gradient
-                epoch_loss[task] += loss
-            latest_pcgrad = hierarchical_pcgrad(
-                model, task_gradients, registry, group_weights, pcgrad_rng
-            )
-            optimizer.zero_grad(set_to_none=True)
-            for parameter, gradient in latest_pcgrad.gradients.items():
-                if parameter.requires_grad:
-                    parameter.grad = gradient.to(parameter.device, dtype=parameter.dtype)
-            trainable = [parameter for parameter in model.parameters() if parameter.requires_grad]
-            pre_norm = float(
-                torch.nn.utils.clip_grad_norm_(
-                    trainable, float("inf"), error_if_nonfinite=True
+                for task in active
+            }
+            epoch_loss = {task: 0.0 for task in active}
+            latest_pcgrad: HierarchicalPCGradResult | None = None
+            pre_norm = post_norm = 0.0
+            for step in range(steps_per_epoch):
+                order = list(active)
+                task_order_rng.shuffle(order)
+                task_gradients: dict[str, GradientMap] = {}
+                for task in order:
+                    begin = step * allocation[task]
+                    indices = sequences[task][begin : begin + allocation[task]]
+                    gradient, loss = compute_task_gradient(
+                        model, task, train_data[task], indices, embedding_matrix,
+                        normalizations[task], config, device,
+                    )
+                    task_gradients[task] = gradient
+                    epoch_loss[task] += loss
+                latest_pcgrad = hierarchical_pcgrad(
+                    model, task_gradients, registry, group_weights, pcgrad_rng
                 )
-            )
-            if config.training.max_grad_norm > 0:
-                torch.nn.utils.clip_grad_norm_(
-                    trainable,
-                    config.training.max_grad_norm,
-                    error_if_nonfinite=True,
+                optimizer.zero_grad(set_to_none=True)
+                for parameter, gradient in latest_pcgrad.gradients.items():
+                    if parameter.requires_grad:
+                        parameter.grad = gradient.to(parameter.device, dtype=parameter.dtype)
+                trainable = [parameter for parameter in model.parameters() if parameter.requires_grad]
+                pre_norm = float(
+                    torch.nn.utils.clip_grad_norm_(
+                        trainable, float("inf"), error_if_nonfinite=True
+                    )
                 )
-            post_norm = min(pre_norm, config.training.max_grad_norm) if config.training.max_grad_norm > 0 else pre_norm
-            optimizer.step()
-            scheduler.step()
-            global_step += 1
-        validation = validate_tasks(
-            model, valid_data, embedding_matrix, normalizations, config, device
-        )
-        row = {
-            "epoch": epoch, "global_step": global_step,
-            "learning_rate": optimizer.param_groups[0]["lr"],
-            "training_loss": {task: epoch_loss[task] / steps_per_epoch for task in active},
-            "validation": validation,
-        }
-        _append_jsonl(metrics_path, row)
-        rows.append(row)
-        assert latest_pcgrad is not None
-        groups = sorted({registry[task].meta_group for task in active})
-        _append_jsonl(
-            diagnostics_path,
-            {
-                "epoch": epoch,
-                "task_level_global": _pair_matrix(list(active), latest_pcgrad.task_global),
-                "task_level_group": _pair_matrix(list(active), latest_pcgrad.task_group),
-                "group_level_global": _pair_matrix(groups, latest_pcgrad.group_global),
-                "task_gradient_norms": latest_pcgrad.task_norms,
-                "task_global_norms": latest_pcgrad.task_global_norms,
-                "task_group_norms": latest_pcgrad.task_group_norms,
-                "private_norms": latest_pcgrad.private_norms,
-                "group_global_norms": latest_pcgrad.group_global_norms,
-                "assembled_owner_norms": latest_pcgrad.assembled_owner_norms,
-                "clip_pre_norm": pre_norm, "clip_post_norm": post_norm,
-            },
-        )
-        if epoch in checkpoint_epochs(
-            config.training.epochs, config.training.checkpoint_interval_epochs
-        ):
-            path = output / f"checkpoint_epoch_{epoch:05d}.pt"
-            if path.exists():
-                raise FileExistsError(f"Stage 3 checkpoint already exists: {path}")
-            atomic_torch_save(
-                path,
-                _checkpoint_payload(
-                    config, fold, epoch, global_step, model, optimizer,
-                    scheduler, plan, normalizations, pcgrad_rng,
-                    task_order_rng,
-                ),
+                if config.training.max_grad_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(
+                        trainable,
+                        config.training.max_grad_norm,
+                        error_if_nonfinite=True,
+                    )
+                post_norm = min(pre_norm, config.training.max_grad_norm) if config.training.max_grad_norm > 0 else pre_norm
+                optimizer.step()
+                scheduler.step()
+                global_step += 1
+
+                mean_train_loss = sum(epoch_loss.values()) / (
+                    len(active) * (step + 1)
+                )
+
+                progress.set_postfix(
+                    {
+                        "lr": f"{optimizer.param_groups[0]['lr']:.2e}",
+                        "loss": f"{mean_train_loss:.4f}",
+                    }
+                )
+                progress.update(1)
+            validation = validate_tasks(
+                model,
+                valid_data,
+                embedding_matrix,
+                normalizations,
+                config,
+                device,
             )
+
+            val_mae = validation["macro_task_equal"]["mae"]["value"]
+
+            mean_epoch_loss = sum(
+                epoch_loss[task] / steps_per_epoch
+                for task in active
+            ) / len(active)
+
+            progress.set_postfix(
+                {
+                    "lr": f"{optimizer.param_groups[0]['lr']:.2e}",
+                    "loss": f"{mean_epoch_loss:.4f}",
+                    "val_mae": f"{val_mae:.4f}",
+                }
+            )
+            row = {
+                "epoch": epoch, "global_step": global_step,
+                "learning_rate": optimizer.param_groups[0]["lr"],
+                "training_loss": {task: epoch_loss[task] / steps_per_epoch for task in active},
+                "validation": validation,
+            }
+            _append_jsonl(metrics_path, row)
+            rows.append(row)
+            assert latest_pcgrad is not None
+            groups = sorted({registry[task].meta_group for task in active})
+            _append_jsonl(
+                diagnostics_path,
+                {
+                    "epoch": epoch,
+                    "task_level_global": _pair_matrix(list(active), latest_pcgrad.task_global),
+                    "task_level_group": _pair_matrix(list(active), latest_pcgrad.task_group),
+                    "group_level_global": _pair_matrix(groups, latest_pcgrad.group_global),
+                    "task_gradient_norms": latest_pcgrad.task_norms,
+                    "task_global_norms": latest_pcgrad.task_global_norms,
+                    "task_group_norms": latest_pcgrad.task_group_norms,
+                    "private_norms": latest_pcgrad.private_norms,
+                    "group_global_norms": latest_pcgrad.group_global_norms,
+                    "assembled_owner_norms": latest_pcgrad.assembled_owner_norms,
+                    "clip_pre_norm": pre_norm, "clip_post_norm": post_norm,
+                },
+            )
+            if epoch in checkpoint_epochs(
+                config.training.epochs, config.training.checkpoint_interval_epochs
+            ):
+                path = output / f"checkpoint_epoch_{epoch:05d}.pt"
+                if path.exists():
+                    raise FileExistsError(f"Stage 3 checkpoint already exists: {path}")
+                atomic_torch_save(
+                    path,
+                    _checkpoint_payload(
+                        config, fold, epoch, global_step, model, optimizer,
+                        scheduler, plan, normalizations, pcgrad_rng,
+                        task_order_rng,
+                    ),
+                )
+    finally:
+        progress.close()
     return rows
 
 

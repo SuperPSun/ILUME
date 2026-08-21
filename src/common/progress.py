@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import os
 from contextlib import contextmanager
 from typing import Any, Iterator
 
@@ -40,9 +41,11 @@ class ProgressReporter:
     """TTY-aware progress bars with JSON fallback for redirected output."""
 
     def __init__(self, interactive: bool | None = None) -> None:
+        disabled = os.environ.get("ILUME_DISABLE_PROGRESS") == "1"
+
         self.interactive = (
             sys.stderr.isatty() if interactive is None else interactive
-        )
+        ) and not disabled
 
     def bar(
         self,
