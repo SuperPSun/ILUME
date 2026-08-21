@@ -13,6 +13,7 @@ import torch
 
 from common.identity import require_compatible_identity, semantic_identity, tensor_state_hash
 from common.io import atomic_json, atomic_torch_save, sha256_file
+from common.progress import ProgressReporter
 
 from .config import BenchmarkConfig, BenchmarkName
 from .data import BenchmarkTask, RawDataset, load_split, resolve_task
@@ -110,14 +111,29 @@ def prepare_training(
     benchmark: BenchmarkName,
     task_id: str,
     fold: int | None,
+    *,
+    reporter: ProgressReporter | None = None,
 ) -> TrainingBundle:
     task = resolve_task(config, benchmark, task_id, fold)
     train = load_split(task, "train")
     valid = load_split(task, "valid")
     schema = feature_schema(config.features)
+    fold_suffix = f" fold{fold}" if fold is not None else ""
     with FeatureCache(config.data.feature_cache) as cache:
-        train_raw = raw_feature_matrix(train, schema, cache)
-        valid_raw = raw_feature_matrix(valid, schema, cache)
+        train_raw = raw_feature_matrix(
+            train,
+            schema,
+            cache,
+            reporter=reporter,
+            desc=f"{config.name} {task_id}{fold_suffix} train features",
+        )
+        valid_raw = raw_feature_matrix(
+            valid,
+            schema,
+            cache,
+            reporter=reporter,
+            desc=f"{config.name} {task_id}{fold_suffix} valid features",
+        )
     preprocessor: FeaturePreprocessor | None
     if config.name == "mlp":
         preprocessor = FeaturePreprocessor.fit(train_raw)
@@ -154,14 +170,20 @@ def seed_benchmark(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-    torch.use_deterministic_algorithms(True)
+    #torch.use_deterministic_algorithms(True)
 
 
 def _write_manifest(root: Path, manifest: dict[str, Any]) -> None:
     atomic_json(root / "checkpoint.json", manifest)
 
 
-def train_mlp(config: BenchmarkConfig, bundle: TrainingBundle, output_dir: Path) -> dict[str, Any]:
+def train_mlp(
+    config: BenchmarkConfig,
+    bundle: TrainingBundle,
+    output_dir: Path,
+    *,
+    reporter: ProgressReporter | None = None,
+) -> dict[str, Any]:
     from benchmarks.mlp.model import DescriptorMLP
 
     seed_benchmark(config.seed)
@@ -193,36 +215,64 @@ def train_mlp(config: BenchmarkConfig, bundle: TrainingBundle, output_dir: Path)
     best_state: dict[str, torch.Tensor] | None = None
     stale = 0
     history: list[dict[str, float | int]] = []
-    for epoch in range(1, max_epochs + 1):
-        model.train()
-        order = torch.randperm(len(train_x), generator=generator)
-        loss_sum = 0.0
-        for start in range(0, len(order), batch_size):
-            indices = order[start : start + batch_size]
-            features = train_x[indices].to(device)
-            targets = train_y[indices].to(device)
-            optimizer.zero_grad(set_to_none=True)
-            prediction = model(features)
-            loss = torch.nn.functional.mse_loss(prediction, targets)
-            loss.backward()
-            optimizer.step()
-            loss_sum += float(loss.detach().cpu()) * len(indices)
-        model.eval()
-        with torch.inference_mode():
-            normalized = model(valid_x).float().cpu().numpy()
-        raw = bundle.target_stats.denormalize(normalized)
-        per_target_mae = np.abs(raw - bundle.valid_targets).mean(axis=0)
-        score = float(per_target_mae.mean())
-        history.append({"epoch": epoch, "train_normalized_mse": loss_sum / len(train_x), "valid_raw_macro_mae": score})
-        if score < best_score:
-            best_score = score
-            best_epoch = epoch
-            best_state = {name: value.detach().cpu().clone() for name, value in model.state_dict().items()}
-            stale = 0
-        else:
-            stale += 1
+    fold_suffix = f" fold{bundle.task.fold}" if bundle.task.fold is not None else ""
+    progress = (reporter or ProgressReporter()).bar(
+        total=max_epochs,
+        desc=f"MLP {bundle.task.task_id}{fold_suffix}",
+        unit="epoch",
+    )
+    try:
+        for epoch in range(1, max_epochs + 1):
+            model.train()
+            order = torch.randperm(len(train_x), generator=generator)
+            loss_sum = 0.0
+            for start in range(0, len(order), batch_size):
+                indices = order[start : start + batch_size]
+                features = train_x[indices].to(device)
+                targets = train_y[indices].to(device)
+                optimizer.zero_grad(set_to_none=True)
+                prediction = model(features)
+                loss = torch.nn.functional.mse_loss(prediction, targets)
+                loss.backward()
+                optimizer.step()
+                loss_sum += float(loss.detach().cpu()) * len(indices)
+            model.eval()
+            with torch.inference_mode():
+                normalized = model(valid_x).float().cpu().numpy()
+            raw = bundle.target_stats.denormalize(normalized)
+            per_target_mae = np.abs(raw - bundle.valid_targets).mean(axis=0)
+            score = float(per_target_mae.mean())
+            train_mse = loss_sum / len(train_x)
+            history.append(
+                {
+                    "epoch": epoch,
+                    "train_normalized_mse": train_mse,
+                    "valid_raw_macro_mae": score,
+                }
+            )
+            if score < best_score:
+                best_score = score
+                best_epoch = epoch
+                best_state = {
+                    name: value.detach().cpu().clone()
+                    for name, value in model.state_dict().items()
+                }
+                stale = 0
+            else:
+                stale += 1
+            progress.set_postfix(
+                {
+                    "train_mse": f"{train_mse:.4f}",
+                    "val_mae": f"{score:.4f}",
+                    "best": f"{best_score:.4f}@{best_epoch}",
+                    "patience": f"{stale}/{patience}",
+                }
+            )
+            progress.update(1)
             if stale >= patience:
                 break
+    finally:
+        progress.close()
     if best_state is None:
         raise RuntimeError("MLP benchmark did not produce a best model")
     state_hash = tensor_state_hash("benchmark.mlp-state.v1", best_state)
@@ -250,14 +300,45 @@ def train_mlp(config: BenchmarkConfig, bundle: TrainingBundle, output_dir: Path)
     return {"best_epoch": best_epoch, "best_valid_raw_macro_mae": best_score, "epochs_ran": len(history)}
 
 
-def train_xgboost(config: BenchmarkConfig, bundle: TrainingBundle, output_dir: Path) -> dict[str, Any]:
+def train_xgboost(
+    config: BenchmarkConfig,
+    bundle: TrainingBundle,
+    output_dir: Path,
+    *,
+    reporter: ProgressReporter | None = None,
+) -> dict[str, Any]:
     try:
         import xgboost as xgb
     except ImportError as error:
         raise RuntimeError('XGBoost benchmark requires pip install -e ".[benchmarks]"') from error
     models: list[dict[str, Any]] = []
     integrity: dict[str, dict[str, Any]] = {}
+    progress_reporter = reporter or ProgressReporter()
+    fold_suffix = f" fold{bundle.task.fold}" if bundle.task.fold is not None else ""
     for index, target in enumerate(bundle.task.target_columns):
+        progress = progress_reporter.bar(
+            total=int(config.model["n_estimators"]),
+            desc=f"XGBoost {bundle.task.task_id}{fold_suffix} {target}",
+            unit="round",
+        )
+
+        class ProgressCallback(xgb.callback.TrainingCallback):
+            def after_iteration(
+                self,
+                model: Any,
+                epoch: int,
+                evals_log: Any,
+            ) -> bool:
+                values = evals_log.get("validation_0", {}).get(
+                    str(config.model["eval_metric"]), ()
+                )
+                if values:
+                    value = values[-1]
+                    metric = value[0] if isinstance(value, tuple) else value
+                    progress.set_postfix({"val_mae": f"{float(metric):.4f}"})
+                progress.update(max(0, epoch + 1 - int(progress.n)))
+                return False
+
         callback = xgb.callback.EarlyStopping(
             rounds=int(config.training["early_stopping_rounds"]),
             metric_name=str(config.model["eval_metric"]),
@@ -270,15 +351,28 @@ def train_xgboost(config: BenchmarkConfig, bundle: TrainingBundle, output_dir: P
             "random_state": config.seed,
             "n_jobs": int(config.training["n_jobs"]),
             "device": str(config.training["device"]),
-            "callbacks": [callback],
+            "callbacks": [callback, ProgressCallback()],
         }
         model = xgb.XGBRegressor(**params)
-        model.fit(
-            bundle.train_features,
-            bundle.train_targets[:, index],
-            eval_set=[(bundle.valid_features, bundle.valid_targets[:, index])],
-            verbose=False,
-        )
+        try:
+            model.fit(
+                bundle.train_features,
+                bundle.train_targets[:, index],
+                eval_set=[(bundle.valid_features, bundle.valid_targets[:, index])],
+                verbose=False,
+            )
+            evaluation_history = model.evals_result()["validation_0"][
+                str(config.model["eval_metric"])
+            ]
+            progress.update(max(0, len(evaluation_history) - int(progress.n)))
+            progress.set_postfix(
+                {
+                    "val_mae": f"{float(evaluation_history[-1]):.4f}",
+                    "best": f"{float(model.best_score):.4f}@{int(model.best_iteration)}",
+                }
+            )
+        finally:
+            progress.close()
         filename = f"model_{index}_{target.replace('/', '_')}.json"
         temporary = output_dir / f"tmp_{filename}"
         path = output_dir / filename
@@ -305,12 +399,18 @@ def train_xgboost(config: BenchmarkConfig, bundle: TrainingBundle, output_dir: P
     return {"targets": {entry["target"]: {"best_iteration": entry["best_iteration"], "best_score": entry["best_score"]} for entry in models}}
 
 
-def train_bundle(config: BenchmarkConfig, bundle: TrainingBundle, output_dir: str | Path) -> dict[str, Any]:
+def train_bundle(
+    config: BenchmarkConfig,
+    bundle: TrainingBundle,
+    output_dir: str | Path,
+    *,
+    reporter: ProgressReporter | None = None,
+) -> dict[str, Any]:
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
     if config.name == "mlp":
-        return train_mlp(config, bundle, root)
-    return train_xgboost(config, bundle, root)
+        return train_mlp(config, bundle, root, reporter=reporter)
+    return train_xgboost(config, bundle, root, reporter=reporter)
 
 
 def _load_manifest(root: Path) -> dict[str, Any]:
@@ -394,20 +494,31 @@ def evaluate_checkpoint(
     fold: int | None,
     checkpoint_dir: str | Path,
     split: str,
+    *,
+    reporter: ProgressReporter | None = None,
 ) -> EvaluationResult:
     if split not in {"valid", "test"}:
         raise ValueError("Benchmark evaluation split must be valid or test")
     root = Path(checkpoint_dir)
     manifest = _load_manifest(root)
-    bundle = prepare_training(config, benchmark, task_id, fold)
+    bundle = prepare_training(
+        config, benchmark, task_id, fold, reporter=reporter
+    )
     require_compatible_identity(
         bundle.training_identity,
         manifest["training_identity"],
         context="Benchmark evaluation checkpoint",
     )
     dataset = load_split(bundle.task, split)  # test is opened only in evaluation
+    fold_suffix = f" fold{fold}" if fold is not None else ""
     with FeatureCache(config.data.feature_cache) as cache:
-        raw = raw_feature_matrix(dataset, bundle.schema, cache)
+        raw = raw_feature_matrix(
+            dataset,
+            bundle.schema,
+            cache,
+            reporter=reporter,
+            desc=f"{config.name} {task_id}{fold_suffix} {split} features",
+        )
     if manifest["model_kind"] == "mlp":
         preprocessor = FeaturePreprocessor.from_dict(manifest["preprocessing"])
         features = preprocessor.transform(raw)

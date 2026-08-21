@@ -16,6 +16,7 @@ from benchmarks.common.data import resolve_task
 from common.identity import semantic_identity
 from common.io import sha256_file
 from common.outputs import open_run_directory, repository_path, repository_relative
+from common.progress import ProgressReporter
 
 
 def _latest_completed(root: Path) -> Path:
@@ -63,6 +64,7 @@ def main() -> None:
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     config = load_benchmark_config(args.config)
+    reporter = ProgressReporter()
     if args.benchmark == "stage3" and args.split == "test":
         if not args.ensemble_folds or args.fold is not None or not args.checkpoint_dir or args.checkpoint:
             raise ValueError("Stage 3 test requires --checkpoint-dir and --ensemble-folds only")
@@ -119,6 +121,7 @@ def main() -> None:
                 config, args.benchmark, args.task,
                 fold if args.ensemble_folds else selector_fold,
                 checkpoint, args.split,
+                reporter=reporter,
             )
             for fold, checkpoint in zip(
                 config.stage3.folds if args.ensemble_folds else (selector_fold,),

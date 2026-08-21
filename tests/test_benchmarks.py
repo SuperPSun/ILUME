@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import subprocess
 import sqlite3
 import sys
@@ -29,6 +30,7 @@ from benchmarks.common.features import (
     raw_feature_matrix,
 )
 from benchmarks.common.metrics import mean_sample_std, regression_metrics
+from scripts.benchmarks.sweep import _run as run_sweep_job
 
 
 CATALOG_FIELDS = (
@@ -37,6 +39,47 @@ CATALOG_FIELDS = (
     "system_type", "simulation_method", "materialized_path", "label_source",
     "resource_manifest", "strategies",
 )
+
+
+class RecordingBar:
+    def __init__(self, *, total: int, desc: str, unit: str, initial: int = 0):
+        self.total = total
+        self.desc = desc
+        self.unit = unit
+        self.n = initial
+        self.postfixes: list[dict[str, object]] = []
+        self.descriptions = [desc]
+        self.closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+    def update(self, amount: int) -> None:
+        self.n += amount
+
+    def set_postfix(self, values: dict[str, object]) -> None:
+        self.postfixes.append(dict(values))
+
+    def set_description(self, value: str) -> None:
+        self.descriptions.append(value)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class RecordingReporter:
+    def __init__(self):
+        self.bars: list[RecordingBar] = []
+
+    def bar(
+        self, *, total: int, desc: str, unit: str, initial: int = 0
+    ) -> RecordingBar:
+        bar = RecordingBar(total=total, desc=desc, unit=unit, initial=initial)
+        self.bars.append(bar)
+        return bar
 
 
 def _write_csv(path: Path, fields: list[str], rows: list[dict[str, object]]) -> None:
@@ -220,9 +263,13 @@ def test_formal_configs_and_registry_resolution(tmp_path: Path) -> None:
     assert orbital.slots == ("cation",) and orbital.target_columns == ("HOMO_eV", "LUMO_eV")
     missing_test = resolve_task(config, "stage3", "experiment/self_diffusion_coefficient", 1)
     empty = load_split(missing_test, "test")
+    reporter = RecordingReporter()
     with FeatureCache(tmp_path / "empty-cache.sqlite3") as cache:
-        matrix = raw_feature_matrix(empty, feature_schema(config.features), cache)
+        matrix = raw_feature_matrix(
+            empty, feature_schema(config.features), cache, reporter=reporter
+        )
     assert matrix.shape == (0, 2 * 217 + 2)
+    assert reporter.bars == []
 
 
 def test_preprocessor_uses_train_mask_median_and_population_zscore() -> None:
@@ -253,8 +300,21 @@ def test_training_prepare_does_not_open_test_and_conditions_fail_strictly(tmp_pa
     config = _tiny_config(tmp_path)
     test_path = tmp_path / "stage2/tiny/test.csv"
     test_path.unlink()
-    bundle = prepare_training(config, "stage2_physics", "simulation/tiny", None)
+    reporter = RecordingReporter()
+    bundle = prepare_training(
+        config,
+        "stage2_physics",
+        "simulation/tiny",
+        None,
+        reporter=reporter,
+    )
     assert bundle.train_features.shape[0] == 4
+    assert [(bar.total, bar.n, bar.closed) for bar in reporter.bars] == [
+        (4, 4, True),
+        (2, 2, True),
+    ]
+    assert "train features" in reporter.bars[0].desc
+    assert "valid features" in reporter.bars[1].desc
     with pytest.raises(FileNotFoundError, match="Missing benchmark source"):
         load_split(bundle.task, "test")
     valid_path = tmp_path / "stage2/tiny/valid.csv"
@@ -269,11 +329,41 @@ def test_mlp_train_checkpoint_and_test_evaluation(tmp_path: Path) -> None:
     config = _tiny_config(tmp_path, targets="left;right")
     bundle = prepare_training(config, "stage2_physics", "simulation/tiny", None)
     output = tmp_path / "mlp_run"
-    summary = train_bundle(config, bundle, output)
+    reporter = RecordingReporter()
+    summary = train_bundle(config, bundle, output, reporter=reporter)
+    reference_output = tmp_path / "mlp_reference"
+    reference_summary = train_bundle(config, bundle, reference_output)
+    assert summary == reference_summary
+    assert json.loads((output / "checkpoint.json").read_text(encoding="utf-8"))[
+        "model_state_hash"
+    ] == json.loads(
+        (reference_output / "checkpoint.json").read_text(encoding="utf-8")
+    )["model_state_hash"]
     assert 1 <= summary["best_epoch"] <= 4
-    result = evaluate_checkpoint(config, "stage2_physics", "simulation/tiny", None, output, "test")
+    assert len(reporter.bars) == 1
+    assert reporter.bars[0].n == summary["epochs_ran"]
+    assert reporter.bars[0].closed
+    assert set(reporter.bars[0].postfixes[-1]) == {
+        "train_mse", "val_mae", "best", "patience"
+    }
+    evaluation_reporter = RecordingReporter()
+    result = evaluate_checkpoint(
+        config,
+        "stage2_physics",
+        "simulation/tiny",
+        None,
+        output,
+        "test",
+        reporter=evaluation_reporter,
+    )
     assert result.predictions.shape == (2, 2)
     assert set(result.metrics) == {"left", "right"}
+    assert [(bar.total, bar.n, bar.closed) for bar in evaluation_reporter.bars] == [
+        (4, 4, True),
+        (2, 2, True),
+        (2, 2, True),
+    ]
+    assert "test features" in evaluation_reporter.bars[-1].desc
     assert "normalized_mae" not in result.metrics["left"]
 
 
@@ -294,9 +384,15 @@ def test_xgboost_uses_independent_models_and_best_iteration(tmp_path: Path) -> N
     config = _tiny_config(tmp_path, name="ecfp_xgboost", targets="left;right")
     bundle = prepare_training(config, "stage2_physics", "simulation/tiny", None)
     output = tmp_path / "xgb_run"
-    summary = train_bundle(config, bundle, output)
+    reporter = RecordingReporter()
+    summary = train_bundle(config, bundle, output, reporter=reporter)
+    reference_summary = train_bundle(config, bundle, tmp_path / "xgb_reference")
+    assert summary == reference_summary
     assert set(summary["targets"]) == {"left", "right"}
     assert len(list(output.glob("model_*.json"))) == 2
+    assert len(reporter.bars) == 2
+    assert all(0 < bar.n <= bar.total and bar.closed for bar in reporter.bars)
+    assert all("best" in bar.postfixes[-1] for bar in reporter.bars)
     result = evaluate_checkpoint(config, "stage2_physics", "simulation/tiny", None, output, "test")
     assert result.predictions.shape == (2, 2)
 
@@ -357,3 +453,59 @@ def test_sweep_preserves_preinitialization_failures_as_new_attempts() -> None:
         attempts = working / "sweep/stage2_physics/simulation__tiny/train"
         assert (attempts / "attempt-001/sweep_failure.json").is_file()
         assert (attempts / "attempt-002/sweep_failure.json").is_file()
+
+
+def test_sweep_training_progress_counts_success_failure_and_completed_skip(
+) -> None:
+    repository_root = Path(__file__).resolve().parents[1]
+    with tempfile.TemporaryDirectory(
+        prefix="pytest-benchmark-progress-", dir=repository_root / "outputs"
+    ) as temporary:
+        working = Path(temporary)
+        rows: list[dict[str, object]] = []
+        status_path = working / "status.tsv"
+        reporter = RecordingReporter()
+        progress = reporter.bar(total=3, desc="sweep", unit="train-job")
+        counts = {"done": 0, "failed": 0}
+        common = {
+            "rows": rows,
+            "status_path": status_path,
+            "operation": "train",
+            "benchmark": "stage2_physics",
+            "task": "simulation/tiny",
+            "fold": None,
+            "required": "checkpoint.json",
+            "progress": progress,
+            "model_name": "mlp",
+            "progress_counts": counts,
+        }
+        success = run_sweep_job(
+            **common,
+            root=working / "success",
+            command=[sys.executable, "-c", "pass"],
+        )
+        assert success is not None
+        failed = run_sweep_job(
+            **common,
+            root=working / "failure",
+            command=[sys.executable, "-c", "raise SystemExit(7)"],
+        )
+        assert failed is None
+        completed = working / "completed/attempt-001"
+        completed.mkdir(parents=True)
+        (completed / "checkpoint.json").write_text("{}", encoding="utf-8")
+        (completed / "metadata.json").write_text(
+            '{"status": "completed"}\n', encoding="utf-8"
+        )
+        skipped = run_sweep_job(
+            **common,
+            root=working / "completed",
+            command=[sys.executable, "-c", "raise AssertionError('must not run')"],
+        )
+        assert skipped == completed
+        assert progress.n == 3
+        assert counts == {"done": 2, "failed": 1}
+        assert progress.postfixes[-1] == counts
+        assert [row["status"] for row in rows] == [
+            "OK", "FAILED", "SKIPPED_COMPLETED"
+        ]

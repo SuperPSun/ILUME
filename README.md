@@ -91,7 +91,7 @@ python scripts/benchmarks/train.py \
   --output outputs/benchmarks/mlp/stage3/experiment__density/fold1/attempt-001
 ```
 
-批量入口为 `python scripts/benchmarks/sweep.py --config configs/benchmarks/mlp.yaml --output outputs/benchmarks/mlp`。它顺序执行并保留逐 job 状态；当前 Stage 3 缺失压力修复前，完整 21-task sweep 会按现役 condition 合同失败。正式训练与评估仍由用户显式运行。
+批量入口为 `python scripts/benchmarks/sweep.py --config configs/benchmarks/mlp.yaml --output outputs/benchmarks/mlp`。它顺序执行并保留逐 job 状态；直接运行与 sweep 在交互终端显示 feature、epoch/boosting round 和训练 job 的 tqdm 进度，重定向到非 TTY 时保持静默。当前 Stage 3 缺失压力修复前，完整 21-task sweep 会按现役 condition 合同失败。正式训练与评估仍由用户显式运行。
 
 ```bash
 python scripts/stage3/prepare.py \

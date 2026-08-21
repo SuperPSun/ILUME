@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from benchmarks.common.config import load_benchmark_config
 from benchmarks.common.engine import prepare_training, train_bundle
 from common.outputs import open_run_directory
+from common.progress import ProgressReporter
 
 
 def main() -> None:
@@ -22,7 +23,10 @@ def main() -> None:
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     config = load_benchmark_config(args.config)
-    bundle = prepare_training(config, args.benchmark, args.task, args.fold)
+    reporter = ProgressReporter()
+    bundle = prepare_training(
+        config, args.benchmark, args.task, args.fold, reporter=reporter
+    )
     run = open_run_directory(
         stage="benchmark",
         operation="train",
@@ -35,7 +39,7 @@ def main() -> None:
         details={"benchmark": args.benchmark, "task": args.task, "fold": args.fold},
     )
     try:
-        result = train_bundle(config, bundle, run.root)
+        result = train_bundle(config, bundle, run.root, reporter=reporter)
         run.complete({"benchmark": args.benchmark, "task": args.task, "fold": args.fold, **result})
     except BaseException:
         run.fail()
@@ -44,4 +48,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

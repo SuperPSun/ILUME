@@ -14,6 +14,7 @@ from rdkit.Chem import rdFingerprintGenerator
 from rdkit import rdBase
 
 from common.training import canonical_json_sha256
+from common.progress import ProgressReporter
 from stage1.descriptors import calculate_descriptors, rdkit_descriptor_names
 
 from .config import FeatureConfig
@@ -139,16 +140,36 @@ def component_feature(smiles: str, schema: FeatureSchema, cache: FeatureCache) -
     return value
 
 
-def raw_feature_matrix(dataset: RawDataset, schema: FeatureSchema, cache: FeatureCache) -> np.ndarray:
+def raw_feature_matrix(
+    dataset: RawDataset,
+    schema: FeatureSchema,
+    cache: FeatureCache,
+    *,
+    reporter: ProgressReporter | None = None,
+    desc: str = "Benchmark features",
+) -> np.ndarray:
     if not len(dataset):
         return np.empty(
             (0, dataset.component_count * schema.component_width + dataset.conditions.shape[1]),
             dtype=np.float64,
         )
-    rows = [
-        np.concatenate([*(component_feature(smiles, schema, cache) for smiles in components), dataset.conditions[index]])
-        for index, components in enumerate(dataset.components)
-    ]
+    rows: list[np.ndarray] = []
+    progress = (reporter or ProgressReporter()).bar(
+        total=len(dataset), desc=desc, unit="row"
+    )
+    try:
+        for index, components in enumerate(dataset.components):
+            rows.append(
+                np.concatenate(
+                    [
+                        *(component_feature(smiles, schema, cache) for smiles in components),
+                        dataset.conditions[index],
+                    ]
+                )
+            )
+            progress.update(1)
+    finally:
+        progress.close()
     return np.asarray(rows, dtype=np.float64)
 
 

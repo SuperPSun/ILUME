@@ -18,6 +18,7 @@ from benchmarks.common.metrics import macro_normalized_mae, mean_sample_std
 from common.identity import semantic_identity
 from common.io import atomic_json
 from common.outputs import open_run_directory, repository_path, repository_relative
+from common.progress import ProgressReporter
 
 
 FIELDS = ("operation", "benchmark", "task", "fold", "attempt", "status", "exit_code", "output")
@@ -64,11 +65,34 @@ def _write_status(path: Path, rows: list[dict[str, Any]]) -> None:
     temporary.replace(path)
 
 
-def _run(rows: list[dict[str, Any]], status_path: Path, *, operation: str, benchmark: str, task: str, fold: int | None, root: Path, required: str, command: list[str]) -> Path | None:
+def _run(
+    rows: list[dict[str, Any]],
+    status_path: Path,
+    *,
+    operation: str,
+    benchmark: str,
+    task: str,
+    fold: int | None,
+    root: Path,
+    required: str,
+    command: list[str],
+    progress: Any | None = None,
+    model_name: str | None = None,
+    progress_counts: dict[str, int] | None = None,
+) -> Path | None:
+    if progress is not None:
+        fold_suffix = f" fold{fold}" if fold is not None else ""
+        progress.set_description(
+            f"{model_name or 'benchmark'} {benchmark} {task}{fold_suffix}"
+        )
     completed = _latest_completed(root, required)
     if completed is not None:
         rows.append({"operation": operation, "benchmark": benchmark, "task": task, "fold": "" if fold is None else fold, "attempt": completed.name, "status": "SKIPPED_COMPLETED", "exit_code": 0, "output": repository_relative(completed)})
         _write_status(status_path, rows)
+        if progress is not None and progress_counts is not None:
+            progress_counts["done"] += 1
+            progress.set_postfix(progress_counts)
+            progress.update(1)
         return completed
     number, output = _next_attempt(root)
     result = subprocess.run([*command, "--output", repository_relative(output)], cwd=ROOT, check=False)
@@ -81,6 +105,13 @@ def _run(rows: list[dict[str, Any]], status_path: Path, *, operation: str, bench
         )
     rows.append({"operation": operation, "benchmark": benchmark, "task": task, "fold": "" if fold is None else fold, "attempt": f"attempt-{number:03d}", "status": status, "exit_code": result.returncode, "output": repository_relative(output)})
     _write_status(status_path, rows)
+    if progress is not None and progress_counts is not None:
+        if result.returncode == 0:
+            progress_counts["done"] += 1
+        else:
+            progress_counts["failed"] += 1
+        progress.set_postfix(progress_counts)
+        progress.update(1)
     return output if result.returncode == 0 else None
 
 
@@ -138,8 +169,19 @@ def main() -> None:
     status_path = root / "status.tsv"
     train_script = ROOT / "scripts/benchmarks/train.py"
     evaluate_script = ROOT / "scripts/benchmarks/evaluate.py"
+    stage3_tasks = configured_tasks(config, "stage3")
+    stage2_tasks = configured_tasks(config, "stage2_physics")
+    training_job_total = (
+        len(stage3_tasks) * len(config.stage3.folds) + len(stage2_tasks)
+    )
+    sweep_progress = ProgressReporter().bar(
+        total=training_job_total,
+        desc=f"{config.name} sweep",
+        unit="train-job",
+    )
+    progress_counts = {"done": 0, "failed": 0}
     failures = 0
-    for task in configured_tasks(config, "stage3"):
+    for task in stage3_tasks:
         task_root = root / "stage3" / _sanitize(task)
         checkpoints: dict[int, Path] = {}
         for fold in config.stage3.folds:
@@ -147,6 +189,8 @@ def main() -> None:
                 rows, status_path, operation="train", benchmark="stage3", task=task, fold=fold,
                 root=task_root / f"fold{fold}", required="checkpoint.json",
                 command=[sys.executable, str(train_script), "--config", args.config, "--benchmark", "stage3", "--task", task, "--fold", str(fold)],
+                progress=sweep_progress, model_name=config.name,
+                progress_counts=progress_counts,
             )
             if checkpoint is None:
                 failures += 1
@@ -165,12 +209,14 @@ def main() -> None:
                 command=[sys.executable, str(evaluate_script), "--config", args.config, "--benchmark", "stage3", "--task", task, "--split", "test", "--ensemble-folds", "--checkpoint-dir", repository_relative(task_root)],
             ) is None:
                 failures += 1
-    for task in configured_tasks(config, "stage2_physics"):
+    for task in stage2_tasks:
         task_root = root / "stage2_physics" / _sanitize(task)
         checkpoint = _run(
             rows, status_path, operation="train", benchmark="stage2_physics", task=task, fold=None,
             root=task_root / "train", required="checkpoint.json",
             command=[sys.executable, str(train_script), "--config", args.config, "--benchmark", "stage2_physics", "--task", task],
+            progress=sweep_progress, model_name=config.name,
+            progress_counts=progress_counts,
         )
         if checkpoint is None:
             failures += 1
@@ -181,6 +227,7 @@ def main() -> None:
             command=[sys.executable, str(evaluate_script), "--config", args.config, "--benchmark", "stage2_physics", "--task", task, "--split", "test", "--checkpoint", repository_relative(checkpoint)],
         ) is None:
             failures += 1
+    sweep_progress.close()
     summary = _aggregate(root, config)
     summary["jobs"] = {"total": len(rows), "failed": failures}
     if failures:
