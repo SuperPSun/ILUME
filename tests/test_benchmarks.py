@@ -6,6 +6,9 @@ import subprocess
 import sqlite3
 import sys
 import tempfile
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -30,7 +33,16 @@ from benchmarks.common.features import (
     raw_feature_matrix,
 )
 from benchmarks.common.metrics import mean_sample_std, regression_metrics
-from scripts.benchmarks.sweep import _run as run_sweep_job
+import scripts.benchmarks.sweep as sweep_module
+from scripts.benchmarks.sweep import (
+    _JobResult,
+    _SweepState,
+    _build_jobs,
+    _parse_devices,
+    _run as run_sweep_job,
+    _schedule,
+    _subprocess_env,
+)
 
 
 CATALOG_FIELDS = (
@@ -296,6 +308,30 @@ def test_feature_cache_is_content_addressed_and_detects_corruption(tmp_path: Pat
             component_feature("CCO", schema, cache)
 
 
+def test_feature_cache_supports_concurrent_first_writers(tmp_path: Path) -> None:
+    cache_path = tmp_path / "concurrent-features.sqlite3"
+    schema = feature_schema(_tiny_config(tmp_path).features)
+    barrier = threading.Barrier(8)
+
+    def writer(index: int) -> None:
+        barrier.wait()
+        with FeatureCache(cache_path) as cache:
+            cache.put(
+                f"C{index}",
+                schema,
+                np.full(schema.component_width, index, dtype=np.float64),
+            )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(writer, index) for index in range(8)]
+        for future in futures:
+            future.result()
+
+    with sqlite3.connect(cache_path) as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert connection.execute("SELECT COUNT(*) FROM features").fetchone()[0] == 8
+
+
 def test_training_prepare_does_not_open_test_and_conditions_fail_strictly(tmp_path: Path) -> None:
     config = _tiny_config(tmp_path)
     test_path = tmp_path / "stage2/tiny/test.csv"
@@ -466,18 +502,20 @@ def test_sweep_training_progress_counts_success_failure_and_completed_skip(
         status_path = working / "status.tsv"
         reporter = RecordingReporter()
         progress = reporter.bar(total=3, desc="sweep", unit="train-job")
-        counts = {"done": 0, "failed": 0}
+        state = _SweepState(
+            rows=rows,
+            status_path=status_path,
+            progress=progress,
+            model_name="mlp",
+        )
         common = {
-            "rows": rows,
-            "status_path": status_path,
+            "state": state,
             "operation": "train",
             "benchmark": "stage2_physics",
             "task": "simulation/tiny",
             "fold": None,
             "required": "checkpoint.json",
-            "progress": progress,
-            "model_name": "mlp",
-            "progress_counts": counts,
+            "training_job": True,
         }
         success = run_sweep_job(
             **common,
@@ -504,8 +542,250 @@ def test_sweep_training_progress_counts_success_failure_and_completed_skip(
         )
         assert skipped == completed
         assert progress.n == 3
-        assert counts == {"done": 2, "failed": 1}
-        assert progress.postfixes[-1] == counts
+        assert state.progress_counts == {"done": 2, "failed": 1}
+        assert progress.postfixes[-1] == state.progress_counts
         assert [row["status"] for row in rows] == [
             "OK", "FAILED", "SKIPPED_COMPLETED"
         ]
+
+
+def test_sweep_status_and_progress_updates_are_thread_safe() -> None:
+    repository_root = Path(__file__).resolve().parents[1]
+    with tempfile.TemporaryDirectory(
+        prefix="pytest-benchmark-concurrent-status-", dir=repository_root / "outputs"
+    ) as temporary:
+        working = Path(temporary)
+        reporter = RecordingReporter()
+        progress = reporter.bar(total=12, desc="sweep", unit="train-job")
+        state = _SweepState(
+            rows=[],
+            status_path=working / "status.tsv",
+            progress=progress,
+            model_name="mlp",
+        )
+
+        def run(index: int) -> Path | None:
+            return run_sweep_job(
+                state,
+                operation="train",
+                benchmark="stage2_physics",
+                task=f"simulation/task-{index}",
+                fold=None,
+                root=working / f"task-{index}",
+                required="checkpoint.json",
+                command=[sys.executable, "-c", "pass"],
+                training_job=True,
+            )
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            assert all(executor.map(run, range(12)))
+
+        with state.status_path.open(newline="", encoding="utf-8") as handle:
+            persisted = list(csv.DictReader(handle, delimiter="\t"))
+        assert len(persisted) == len(state.rows) == 12
+        assert {row["task"] for row in persisted} == {
+            f"simulation/task-{index}" for index in range(12)
+        }
+        assert progress.n == 12
+        assert state.progress_counts == {"done": 12, "failed": 0}
+
+
+def test_sweep_scheduler_is_bounded_and_preserves_dependencies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    jobs, ensembles = _build_jobs(
+        root=tmp_path,
+        stage3_tasks=("experiment/one", "experiment/two"),
+        folds=(1, 2),
+        stage2_tasks=("simulation/one", "simulation/two"),
+        devices=(),
+    )
+    lock = threading.Lock()
+    active = 0
+    maximum_active = 0
+    finished: set[tuple[str, str, int | None]] = set()
+    ensemble_dependencies: dict[str, set[int]] = {}
+
+    def execute(job, **_kwargs):
+        nonlocal active, maximum_active
+        with lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+            if job.kind == "stage3_ensemble":
+                ensemble_dependencies[job.task] = {
+                    fold
+                    for kind, task, fold in finished
+                    if kind == "stage3_fold" and task == job.task and fold is not None
+                }
+        time.sleep(0.03)
+        with lock:
+            active -= 1
+            finished.add(job.key)
+        return _JobResult(job, job.kind != "stage3_ensemble")
+
+    monkeypatch.setattr(sweep_module, "_execute_job", execute)
+    state = _SweepState(rows=[], status_path=tmp_path / "status.tsv")
+    _schedule(
+        jobs=jobs,
+        ensembles=ensembles,
+        folds=(1, 2),
+        max_workers=3,
+        state=state,
+        config_path="unused.yaml",
+        root=tmp_path,
+        train_script=tmp_path / "train.py",
+        evaluate_script=tmp_path / "evaluate.py",
+    )
+    assert maximum_active == 3
+    assert ensemble_dependencies == {
+        "experiment/one": {1, 2},
+        "experiment/two": {1, 2},
+    }
+    assert {job.key for job in [*jobs, *ensembles.values()]} == finished
+
+
+def test_sweep_scheduler_preserves_serial_priority_and_blocks_failed_ensemble(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    jobs, ensembles = _build_jobs(
+        root=tmp_path,
+        stage3_tasks=("experiment/one", "experiment/two"),
+        folds=(1, 2),
+        stage2_tasks=("simulation/one",),
+        devices=(),
+    )
+    order = []
+
+    def execute(job, **_kwargs):
+        order.append(job.key)
+        succeeded = not (job.task == "experiment/two" and job.fold == 2)
+        return _JobResult(job, succeeded)
+
+    monkeypatch.setattr(sweep_module, "_execute_job", execute)
+    _schedule(
+        jobs=jobs,
+        ensembles=ensembles,
+        folds=(1, 2),
+        max_workers=1,
+        state=_SweepState(rows=[], status_path=tmp_path / "status.tsv"),
+        config_path="unused.yaml",
+        root=tmp_path,
+        train_script=tmp_path / "train.py",
+        evaluate_script=tmp_path / "evaluate.py",
+    )
+    assert order == [
+        ("stage3_fold", "experiment/one", 1),
+        ("stage3_fold", "experiment/one", 2),
+        ("stage3_ensemble", "experiment/one", None),
+        ("stage3_fold", "experiment/two", 1),
+        ("stage3_fold", "experiment/two", 2),
+        ("stage2_task", "simulation/one", None),
+    ]
+
+
+def test_sweep_scheduler_continues_after_worker_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    jobs, ensembles = _build_jobs(
+        root=tmp_path,
+        stage3_tasks=(),
+        folds=(1, 2, 3, 4, 5),
+        stage2_tasks=("simulation/failing", "simulation/success"),
+        devices=(),
+    )
+    completed = []
+
+    def execute(job, **_kwargs):
+        if job.task == "simulation/failing":
+            raise RuntimeError("synthetic worker failure")
+        completed.append(job.key)
+        return _JobResult(job, True)
+
+    monkeypatch.setattr(sweep_module, "_execute_job", execute)
+    state = _SweepState(rows=[], status_path=tmp_path / "status.tsv")
+    _schedule(
+        jobs=jobs,
+        ensembles=ensembles,
+        folds=(1, 2, 3, 4, 5),
+        max_workers=2,
+        state=state,
+        config_path="unused.yaml",
+        root=tmp_path,
+        train_script=tmp_path / "train.py",
+        evaluate_script=tmp_path / "evaluate.py",
+    )
+    assert completed == [("stage2_task", "simulation/success", None)]
+    assert [(row["operation"], row["status"]) for row in state.rows] == [
+        ("scheduler", "FAILED")
+    ]
+
+
+def test_stage2_train_failure_skips_evaluation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = []
+    job = sweep_module._Job(
+        (1, 0, 0), "stage2_task", "stage2_physics", "simulation/tiny", None, None
+    )
+
+    def run(_state, **kwargs):
+        calls.append(kwargs["operation"])
+        return None
+
+    monkeypatch.setattr(sweep_module, "_run", run)
+    result = sweep_module._execute_job(
+        job,
+        state=_SweepState(rows=[], status_path=tmp_path / "status.tsv"),
+        config_path="config.yaml",
+        root=tmp_path,
+        train_script=tmp_path / "train.py",
+        evaluate_script=tmp_path / "evaluate.py",
+    )
+    assert calls == ["train"]
+    assert not result.train_succeeded
+
+
+def test_stage3_valid_failure_does_not_block_ensemble_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = []
+    job = sweep_module._Job(
+        (0, 0, 0), "stage3_fold", "stage3", "experiment/tiny", 1, None
+    )
+
+    def run(_state, **kwargs):
+        calls.append(kwargs["operation"])
+        if kwargs["operation"] == "train":
+            return Path("outputs/test-benchmark-checkpoint")
+        return None
+
+    monkeypatch.setattr(sweep_module, "_run", run)
+    result = sweep_module._execute_job(
+        job,
+        state=_SweepState(rows=[], status_path=tmp_path / "status.tsv"),
+        config_path="config.yaml",
+        root=tmp_path,
+        train_script=tmp_path / "train.py",
+        evaluate_script=tmp_path / "evaluate.py",
+    )
+    assert calls == ["train", "evaluate_valid"]
+    assert result.train_succeeded
+
+
+def test_sweep_devices_are_validated_and_assigned_round_robin(tmp_path: Path) -> None:
+    assert _parse_devices("cuda:0,cuda:2") == ("cuda:0", "cuda:2")
+    with pytest.raises(ValueError, match="duplicate"):
+        _parse_devices("cuda:0,cuda:0")
+    with pytest.raises(ValueError, match="comma-separated"):
+        _parse_devices("0,1")
+    jobs, ensembles = _build_jobs(
+        root=tmp_path,
+        stage3_tasks=("experiment/one",),
+        folds=(1, 2),
+        stage2_tasks=("simulation/one",),
+        devices=("cuda:0", "cuda:1"),
+    )
+    assert [job.device for job in jobs] == ["cuda:0", "cuda:1", "cuda:1"]
+    assert ensembles["experiment/one"].device == "cuda:0"
+    assert _subprocess_env(None) is None
+    assert _subprocess_env("cuda:3")["CUDA_VISIBLE_DEVICES"] == "3"

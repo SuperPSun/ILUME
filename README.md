@@ -91,7 +91,7 @@ python scripts/benchmarks/train.py \
   --output outputs/benchmarks/mlp/stage3/experiment__density/fold1/attempt-001
 ```
 
-批量入口为 `python scripts/benchmarks/sweep.py --config configs/benchmarks/mlp.yaml --output outputs/benchmarks/mlp`。它顺序执行并保留逐 job 状态；直接运行与 sweep 在交互终端显示 feature、epoch/boosting round 和训练 job 的 tqdm 进度，重定向到非 TTY 时保持静默。当前 Stage 3 缺失压力修复前，完整 21-task sweep 会按现役 condition 合同失败。正式训练与评估仍由用户显式运行。
+批量入口为 `python scripts/benchmarks/sweep.py --config configs/benchmarks/mlp.yaml --output outputs/benchmarks/mlp --max-workers 1`。`--max-workers` 控制同时运行的 train/evaluate 子进程数，默认值 1 保持串行行为；Stage 3 按 task × fold、Stage 2 Physics 按 task 并行，并保留逐 job 状态和依赖关系。MLP 可通过 `--devices cuda:0,cuda:1,...` 将逻辑 job 链 round-robin 分配到多张 GPU；不指定时多个 worker 共享 YAML 中现有的 `device: cuda`。XGBoost 继续使用 YAML 的 `training.n_jobs`，应按 `max_workers × training.n_jobs` 估算总 CPU 并行度并结合机器核心数设置，避免 oversubscription。直接运行与 sweep 在交互终端显示 feature、epoch/boosting round 和训练 job 的 tqdm 进度，重定向到非 TTY 时保持静默。当前 Stage 3 缺失压力修复前，完整 21-task sweep 会按现役 condition 合同失败。正式训练与评估仍由用户显式运行。
 
 ```bash
 python scripts/stage3/prepare.py \

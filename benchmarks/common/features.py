@@ -4,9 +4,10 @@ import hashlib
 import io
 import json
 import sqlite3
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import numpy as np
 from rdkit import Chem, DataStructs
@@ -23,6 +24,21 @@ from .data import RawDataset
 
 FEATURE_CACHE_SCHEMA_VERSION = 1
 RDKIT_DESCRIPTOR_NAMES = rdkit_descriptor_names()
+SQLITE_BUSY_TIMEOUT_MS = 60_000
+SQLITE_BUSY_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8, 1.0)
+
+
+def _retry_sqlite_busy(operation: Callable[[], Any]) -> Any:
+    for attempt in range(len(SQLITE_BUSY_RETRY_DELAYS) + 1):
+        try:
+            return operation()
+        except sqlite3.OperationalError as error:
+            message = str(error).lower()
+            if not any(marker in message for marker in ("locked", "busy")):
+                raise
+            if attempt == len(SQLITE_BUSY_RETRY_DELAYS):
+                raise
+            time.sleep(SQLITE_BUSY_RETRY_DELAYS[attempt])
 
 
 @dataclass(frozen=True)
@@ -63,13 +79,22 @@ class FeatureCache:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(self.path, timeout=60)
-        self.connection.execute("PRAGMA journal_mode=WAL")
-        self.connection.execute(
-            "CREATE TABLE IF NOT EXISTS features ("
-            "cache_key TEXT PRIMARY KEY, payload BLOB NOT NULL, sha256 TEXT NOT NULL, "
-            "dtype TEXT NOT NULL, length INTEGER NOT NULL)"
-        )
-        self.connection.commit()
+        try:
+            self.connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+            _retry_sqlite_busy(
+                lambda: self.connection.execute("PRAGMA journal_mode=WAL").fetchone()
+            )
+            _retry_sqlite_busy(
+                lambda: self.connection.execute(
+                    "CREATE TABLE IF NOT EXISTS features ("
+                    "cache_key TEXT PRIMARY KEY, payload BLOB NOT NULL, sha256 TEXT NOT NULL, "
+                    "dtype TEXT NOT NULL, length INTEGER NOT NULL)"
+                )
+            )
+            _retry_sqlite_busy(self.connection.commit)
+        except Exception:
+            self.connection.close()
+            raise
 
     def close(self) -> None:
         self.connection.close()
@@ -107,11 +132,13 @@ class FeatureCache:
             payload = handle.getvalue()
         key = self._key(smiles, schema)
         digest = hashlib.sha256(payload).hexdigest()
-        self.connection.execute(
-            "INSERT OR IGNORE INTO features(cache_key, payload, sha256, dtype, length) VALUES (?, ?, ?, ?, ?)",
-            (key, payload, digest, str(array.dtype), len(array)),
+        _retry_sqlite_busy(
+            lambda: self.connection.execute(
+                "INSERT OR IGNORE INTO features(cache_key, payload, sha256, dtype, length) VALUES (?, ?, ?, ?, ?)",
+                (key, payload, digest, str(array.dtype), len(array)),
+            )
         )
-        self.connection.commit()
+        _retry_sqlite_busy(self.connection.commit)
         stored = self.get(smiles, schema)
         if stored is None or not np.array_equal(stored, array, equal_nan=True):
             raise ValueError(f"Benchmark feature cache collision: {key}")
