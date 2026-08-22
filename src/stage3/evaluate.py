@@ -6,6 +6,7 @@ from typing import Any, Mapping, Sequence
 
 import torch
 
+from common.progress import ProgressReporter
 from common.identity import (
     IDENTITY_CONTRACT_VERSION,
     require_compatible_identity,
@@ -96,11 +97,31 @@ def _predict(
     normalization: Mapping[str, Any],
     config: Stage3Config,
     device: torch.device,
+    *,
+    progress_bar: Any | None = None,
+    fold: int | None = None,
+    fold_count: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     normalized_predictions: list[torch.Tensor] = []
     target_stats = normalization["target"]
-    for start in range(0, len(dataset), config.training.microbatch_size):
-        indices = torch.arange(start, min(len(dataset), start + config.training.microbatch_size))
+
+    microbatch_size = config.training.microbatch_size
+    total_batches = math.ceil(len(dataset) / microbatch_size) if len(dataset) else 0
+
+    for batch_index, start in enumerate(
+        range(0, len(dataset), microbatch_size),
+        start=1,
+    ):
+        if progress_bar is not None:
+            progress_bar.set_postfix_str(
+                (
+                    f"fold={fold}/{fold_count} "
+                    f"task={task_id} "
+                    f"batch={batch_index}/{total_batches}"
+                ),
+                refresh=True,
+            )
+        indices = torch.arange(start, min(len(dataset), start + microbatch_size))
         primary = embeddings[dataset.primary_object_ids[indices]].to(device)
         partner_ids = dataset.partner_object_ids[indices]
         partner = (
@@ -235,47 +256,66 @@ def evaluate_checkpoints(
     folds = range(1, 6) if split == "test" else (fold,)
     root = Path(checkpoint_dir)
     embeddings = prepared["objects"]["embeddings"].float()
+    progress = ProgressReporter()
+    evaluation_progress = progress.bar(
+        total=len(folds) * len(tasks),
+        desc=f"Stage 3 {split} evaluation",
+        unit="task",
+    )    
     fold_results: dict[str, Any] = {}
     ensemble_predictions: dict[str, list[torch.Tensor]] = {task: [] for task in tasks}
     raw_targets: dict[str, torch.Tensor] = {}
     normalizations: dict[str, list[dict[str, Any]]] = {task: [] for task in tasks}
     checkpoint_identities: list[Mapping[str, Any]] = []
     model_state_hashes: list[str] = []
-    for current_fold in folds:
-        assert current_fold is not None
-        path = _checkpoint_path(root, current_fold, epoch)
-        if not path.is_file():
-            raise FileNotFoundError(f"Missing Stage 3 checkpoint: {path}")
-        model, checkpoint = _load_model(
-            config, prepared, path, current_fold, epoch, device
-        )
-        checkpoint_identities.append(checkpoint["training_identity"])
-        model_state_hashes.append(checkpoint["model_state_hash"])
-        per_task: dict[str, Any] = {}
-        for task in tasks:
-            dataset = Stage3TaskDataset(
-                config.data.artifacts_dir, current_fold, task, split
+    try:
+        for current_fold in folds:
+            assert current_fold is not None
+            path = _checkpoint_path(root, current_fold, epoch)
+            if not path.is_file():
+                raise FileNotFoundError(f"Missing Stage 3 checkpoint: {path}")
+            model, checkpoint = _load_model(
+                config, prepared, path, current_fold, epoch, device
             )
-            normalization = checkpoint["normalization"][task]
-            normalized, raw, normalized_targets = _predict(
-                model, task, dataset, embeddings, normalization, config, device
-            )
-            per_task[task] = regression_metrics(
-                normalized, normalized_targets, normalization
-            )
-            ensemble_predictions[task].append(raw)
-            normalizations[task].append(normalization)
-            if task in raw_targets and not torch.equal(
-                raw_targets[task], dataset.raw_targets
-            ):
-                raise ValueError(
-                    f"Stage 3 test target order differs across folds: {task}"
+            checkpoint_identities.append(checkpoint["training_identity"])
+            model_state_hashes.append(checkpoint["model_state_hash"])
+            per_task: dict[str, Any] = {}
+            for task in tasks:
+                dataset = Stage3TaskDataset(
+                    config.data.artifacts_dir, current_fold, task, split
                 )
-            raw_targets[task] = dataset.raw_targets.float()
-        fold_results[f"fold{current_fold}"] = {
-            "tasks": per_task,
-            **_macro(per_task, prepared["registry"]),
-        }
+                normalization = checkpoint["normalization"][task]
+                normalized, raw, normalized_targets = _predict(
+                    model,
+                    task,
+                    dataset,
+                    embeddings,
+                    normalization,
+                    config,
+                    device,
+                    progress_bar=evaluation_progress,
+                    fold=current_fold,
+                    fold_count=len(folds),
+                )
+                per_task[task] = regression_metrics(
+                    normalized, normalized_targets, normalization
+                )
+                ensemble_predictions[task].append(raw)
+                normalizations[task].append(normalization)
+                if task in raw_targets and not torch.equal(
+                    raw_targets[task], dataset.raw_targets
+                ):
+                    raise ValueError(
+                        f"Stage 3 test target order differs across folds: {task}"
+                    )
+                raw_targets[task] = dataset.raw_targets.float()
+                evaluation_progress.update(1)
+            fold_results[f"fold{current_fold}"] = {
+                "tasks": per_task,
+                **_macro(per_task, prepared["registry"]),
+            }
+    finally:
+        evaluation_progress.close()
     evaluation_identity = build_stage3_evaluation_identity(
         prepared_identity=metadata_identity(
             prepared["metadata"], "prepared", context="Stage 3 prepared artifact"
