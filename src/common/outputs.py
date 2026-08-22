@@ -148,6 +148,7 @@ def open_run_directory(
     reusable: bool = False,
     resume: str | Path | None = None,
     details: dict[str, Any] | None = None,
+    data_metadata: str | list[str] | None = None,
 ) -> RunDirectory:
     _validate_public_paths(config_payload)
     validate_semantic_identity(semantic_identity)
@@ -199,7 +200,7 @@ def open_run_directory(
             "config_path": repository_relative(config_path),
             "output": repository_relative(root),
         },
-        "data_metadata": f"data/{stage}/metadata.json",
+        "data_metadata": data_metadata if data_metadata is not None else f"data/{stage}/metadata.json",
         "seed": seed,
         "attempt_id": attempt_id,
         "attempt_count": previous_attempts + 1,

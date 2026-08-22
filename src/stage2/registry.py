@@ -50,8 +50,8 @@ class DatasetSpec:
     resource_manifest: str | None
 
     def split_path(self, data_root: Path, split: str) -> Path:
-        if split not in {"train", "valid"}:
-            raise ValueError("Stage 2 split must be train or valid")
+        if split not in {"train", "valid", "test"}:
+            raise ValueError("Stage 2 split must be train, valid, or test")
         relative = str(PurePosixPath(self.materialized_path) / f"{split}.csv")
         return _under_root(data_root, relative, field="materialized_path")
 
@@ -128,7 +128,7 @@ def _task_from_row(row: dict[str, str]) -> TaskSpec:
         stage = int(row["stage"])
     except (KeyError, ValueError) as error:
         raise ValueError("Invalid task catalog schema/stage") from error
-    if schema_version != 1 or stage != 2:
+    if schema_version not in {1, 2} or stage != 2:
         raise ValueError("Unsupported Stage 2 task catalog row")
     task_id = row["task_id"].strip()
     _safe_relative(task_id, field="task_id")

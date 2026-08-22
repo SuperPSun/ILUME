@@ -2,10 +2,10 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
-/.pytest_cache/
-/build/
-/dist/
-/.vscode/
+.pytest_cache/
+build/
+dist/
+.vscode/
 
 # Local data: retain only stage identity files
 /data/**
@@ -16,14 +16,10 @@ __pycache__/
 !/data/stage2/metadata.json
 !/data/stage3/metadata.json
 
-# Self-describing run identities: everything else is payload
-/outputs/**
-!/outputs/**/
-!/outputs/**/run_config.yaml
-!/outputs/**/metadata.json
-!/outputs/**/summary.json
-!/outputs/**/attempts.jsonl
-/outputs/**/artifacts/
+# Runtime experiment outputs
+# Includes run_config.yaml, metadata.json, summary.json,
+# attempts.jsonl, checkpoints, metrics, artifacts, etc.
+/outputs/
 
 # Historical and local research payloads
 /artifacts/

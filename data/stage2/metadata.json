@@ -1,128 +1,231 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "identity_contract_version": 1,
   "stage": "stage2",
-  "source_repository_commit": "5262cf8d5ae9a2f38309893aea1ce719df159b9f",
-  "source_repository_dirty": false,
-  "files": [
-    {
-      "path": "data/stage2/density/train.csv",
-      "sha256": "8d7f6b003e6e8a4e63b893577682b88699428ac6737b421e69167afaca59bde1",
-      "size": 1639731,
-      "rows": 22160
-    },
-    {
-      "path": "data/stage2/density/valid.csv",
-      "sha256": "1e1889261c3b7d438134cae3757195e95dc0c29dcb683abd5f5c3027bb4917fc",
-      "size": 185978,
-      "rows": 2522
-    },
-    {
-      "path": "data/stage2/heat_capacity/train.csv",
-      "sha256": "bc0bbc48d888648af320c9bac48d0a19e32b4ec6966d7120c400d779bcc6d71d",
-      "size": 780638,
-      "rows": 10730
-    },
-    {
-      "path": "data/stage2/heat_capacity/valid.csv",
-      "sha256": "4ccf0ab0e378ab49bfe3b51fbdd670a688c2d4b70e2fa0f4b5abad3680b44ffb",
-      "size": 86520,
-      "rows": 1194
-    },
-    {
-      "path": "data/stage2/heat_of_vaporization/train.csv",
-      "sha256": "74928abf9cd2d422595be73a0c9e295f59b00ba9dad2d2b39273b090c5f29686",
-      "size": 1881980,
-      "rows": 24212
-    },
-    {
-      "path": "data/stage2/heat_of_vaporization/valid.csv",
-      "sha256": "02df50ac796760846da7ea2de995dc160186bb8a98ec62f8a7dc89afff9eae0b",
-      "size": 203637,
-      "rows": 2623
-    },
-    {
-      "path": "data/stage2/partial_atomic_charge/charge_20260514/structure_manifest.csv",
-      "sha256": "ea4dfe3eb6bef53df969fea444cae0ce2f9005d12f87225656c29d174535d9a1",
-      "size": 3076283,
-      "rows": 28214
-    },
-    {
-      "path": "data/stage2/partial_atomic_charge/train.csv",
-      "sha256": "36684078c9af52d7f72dc40dfed7e80b4ac586d0fda9acd9cc2be2b19a7728dd",
-      "size": 2000487,
-      "rows": 25413
-    },
-    {
-      "path": "data/stage2/partial_atomic_charge/valid.csv",
-      "sha256": "2257ad68aeed5e472687734d9c01cafdcb53c51fc7a7d598267f1d97ef62ad88",
-      "size": 217875,
-      "rows": 2790
-    },
-    {
-      "path": "data/stage2/pbe_tzvp_anion_orbitals/train.csv",
-      "sha256": "a457b8f8146ba89568a7a1179bbc647028f57906534cd840159bacf1e6b0af75",
-      "size": 554581,
-      "rows": 6687
-    },
-    {
-      "path": "data/stage2/pbe_tzvp_anion_orbitals/valid.csv",
-      "sha256": "bf1a4bc854f356153ab186db56f49293b13fcc9f1b57da3f8e516e5a0b983ff1",
-      "size": 63621,
-      "rows": 757
-    },
-    {
-      "path": "data/stage2/pbe_tzvp_cation_orbitals/train.csv",
-      "sha256": "a3746cd961465597a40b92c45eb2cd72411bb674b2b324e86497acca4d44b2a4",
-      "size": 685888,
-      "rows": 8218
-    },
-    {
-      "path": "data/stage2/pbe_tzvp_cation_orbitals/valid.csv",
-      "sha256": "70e4ba3426dfe12a4c0f7bda23a7626e70d19bcafb25c4cf6d7f94a5382e0cd5",
-      "size": 80218,
-      "rows": 954
-    },
-    {
-      "path": "data/stage2/simulated_qm_elec_hf/train.csv",
-      "sha256": "236e3ceaf4169a28802e040161fd389eb616e404eebd38ea67c9131798bd19cb",
-      "size": 5137936,
-      "rows": 24543
-    },
-    {
-      "path": "data/stage2/simulated_qm_elec_hf/valid.csv",
-      "sha256": "b40f79f9448c5bcd568aad130abde513520e7b36f054ba8e145c1af5d66f70b0",
-      "size": 569003,
-      "rows": 2715
-    },
-    {
-      "path": "data/stage2/thermal_expansion/train.csv",
-      "sha256": "920ea0abe16671fba7feabd06995ac2e712ef001913a20519d4cc0f0d71bec8e",
-      "size": 835412,
-      "rows": 10865
-    },
-    {
-      "path": "data/stage2/thermal_expansion/valid.csv",
-      "sha256": "d5aab5f1d10ceb1305f061dfb33965e012fa72faa8d1931f74f5caf093ca017c",
-      "size": 89655,
-      "rows": 1170
-    },
-    {
-      "path": "data/stage2/transfer_organic/train.csv",
-      "sha256": "09e55fe763a10531a97006ae649164d6ce5ad1b515880193dfb5c47b06f39e4e",
-      "size": 43246874,
-      "rows": 899224
-    },
-    {
-      "path": "data/stage2/transfer_organic/valid.csv",
-      "sha256": "93fd8b04c6d5905fea977358abbab28138e984adad18c1b783e55fd2f120af51",
-      "size": 4821804,
-      "rows": 100148
-    },
-    {
-      "path": "data/task_catalog.csv",
-      "sha256": "31f24098378f07eb514c30437fbc19b7529270e490e8df2d42b3278b780f6350",
-      "size": 11377,
-      "rows": 30
+  "locator": {
+    "files": {
+      "source_00000": "data/task_catalog.csv",
+      "source_00001": "data/stage2/density/train.csv",
+      "source_00002": "data/stage2/density/valid.csv",
+      "source_00003": "data/stage2/heat_capacity/train.csv",
+      "source_00004": "data/stage2/heat_capacity/valid.csv",
+      "source_00005": "data/stage2/heat_of_vaporization/train.csv",
+      "source_00006": "data/stage2/heat_of_vaporization/valid.csv",
+      "source_00007": "data/stage2/partial_atomic_charge/train.csv",
+      "source_00008": "data/stage2/partial_atomic_charge/valid.csv",
+      "source_00009": "data/stage2/partial_atomic_charge/charge_20260514/structure_manifest.csv",
+      "source_00010": "data/stage2/pbe_tzvp_anion_orbitals/train.csv",
+      "source_00011": "data/stage2/pbe_tzvp_anion_orbitals/valid.csv",
+      "source_00012": "data/stage2/pbe_tzvp_cation_orbitals/train.csv",
+      "source_00013": "data/stage2/pbe_tzvp_cation_orbitals/valid.csv",
+      "source_00014": "data/stage2/simulated_qm_elec_hf/train.csv",
+      "source_00015": "data/stage2/simulated_qm_elec_hf/valid.csv",
+      "source_00016": "data/stage2/thermal_expansion/train.csv",
+      "source_00017": "data/stage2/thermal_expansion/valid.csv",
+      "source_00018": "data/stage2/transfer_organic/train.csv",
+      "source_00019": "data/stage2/transfer_organic/valid.csv"
     }
-  ]
+  },
+  "semantic": {
+    "identities": {
+      "source": {
+        "identity_contract_version": 1,
+        "type": "stage2.source-data",
+        "payload": {
+          "stage": "stage2",
+          "sources": {
+            "source_00000": {
+              "sha256": "4afd4056f86f47c6dbd08f744ac9c042c333f6dc2ff9e76426f0e1777bb2f951",
+              "size": 11936,
+              "rows": 30
+            },
+            "source_00001": {
+              "sha256": "8d7f6b003e6e8a4e63b893577682b88699428ac6737b421e69167afaca59bde1",
+              "size": 1639731,
+              "rows": 22160
+            },
+            "source_00002": {
+              "sha256": "1e1889261c3b7d438134cae3757195e95dc0c29dcb683abd5f5c3027bb4917fc",
+              "size": 185978,
+              "rows": 2522
+            },
+            "source_00003": {
+              "sha256": "bc0bbc48d888648af320c9bac48d0a19e32b4ec6966d7120c400d779bcc6d71d",
+              "size": 780638,
+              "rows": 10730
+            },
+            "source_00004": {
+              "sha256": "4ccf0ab0e378ab49bfe3b51fbdd670a688c2d4b70e2fa0f4b5abad3680b44ffb",
+              "size": 86520,
+              "rows": 1194
+            },
+            "source_00005": {
+              "sha256": "066a640276f823c8fc12abee56e0d6e682f676559e031bed84ef5d4050960ee2",
+              "size": 1668333,
+              "rows": 21466
+            },
+            "source_00006": {
+              "sha256": "9278d8d4266e7b4078d4b504cba2c14bd44d78f7b8c99a88b25e926fbbaee299",
+              "size": 207633,
+              "rows": 2685
+            },
+            "source_00007": {
+              "sha256": "41ccf91975d6d9679ffaed260b1f8f60f2d30d7dd7db09724608704adc8456a3",
+              "size": 1769774,
+              "rows": 22530
+            },
+            "source_00008": {
+              "sha256": "3ff556fe62ee3204df734274aab5fa237575bcbefb9e591542a8e1d46df3b6fd",
+              "size": 224827,
+              "rows": 2819
+            },
+            "source_00009": {
+              "sha256": "ea4dfe3eb6bef53df969fea444cae0ce2f9005d12f87225656c29d174535d9a1",
+              "size": 3076283,
+              "rows": 28214
+            },
+            "source_00010": {
+              "sha256": "f8539828a07a525aa18f350e7beb0654ea81b9d28f30670ef3b2ec5086df2e96",
+              "size": 494188,
+              "rows": 5956
+            },
+            "source_00011": {
+              "sha256": "b92a96c8f1cc68c23445bf3f7e2f88209ff02e139f98c2502a9edca93988f70a",
+              "size": 62019,
+              "rows": 744
+            },
+            "source_00012": {
+              "sha256": "5b3e729891f227f058660460c04bbacf250b6c4e4d82a6058e2072442b973068",
+              "size": 611655,
+              "rows": 7338
+            },
+            "source_00013": {
+              "sha256": "988c987ecab019295ef396b86306339e7ba12ebda1abddee7682ff5afce503c4",
+              "size": 76858,
+              "rows": 917
+            },
+            "source_00014": {
+              "sha256": "236e3ceaf4169a28802e040161fd389eb616e404eebd38ea67c9131798bd19cb",
+              "size": 5137936,
+              "rows": 24543
+            },
+            "source_00015": {
+              "sha256": "b40f79f9448c5bcd568aad130abde513520e7b36f054ba8e145c1af5d66f70b0",
+              "size": 569003,
+              "rows": 2715
+            },
+            "source_00016": {
+              "sha256": "920ea0abe16671fba7feabd06995ac2e712ef001913a20519d4cc0f0d71bec8e",
+              "size": 835412,
+              "rows": 10865
+            },
+            "source_00017": {
+              "sha256": "d5aab5f1d10ceb1305f061dfb33965e012fa72faa8d1931f74f5caf093ca017c",
+              "size": 89655,
+              "rows": 1170
+            },
+            "source_00018": {
+              "sha256": "09e55fe763a10531a97006ae649164d6ce5ad1b515880193dfb5c47b06f39e4e",
+              "size": 43246874,
+              "rows": 899224
+            },
+            "source_00019": {
+              "sha256": "93fd8b04c6d5905fea977358abbab28138e984adad18c1b783e55fd2f120af51",
+              "size": 4821804,
+              "rows": 100148
+            }
+          }
+        },
+        "hash": "68c0bf1cf4db2d7217ee0fc75a72bcf98ec804e5da18defd1787443aa2f7d2fd"
+      }
+    }
+  },
+  "integrity": {
+    "files": {
+      "source_00000": {
+        "sha256": "4afd4056f86f47c6dbd08f744ac9c042c333f6dc2ff9e76426f0e1777bb2f951",
+        "size": 11936
+      },
+      "source_00001": {
+        "sha256": "8d7f6b003e6e8a4e63b893577682b88699428ac6737b421e69167afaca59bde1",
+        "size": 1639731
+      },
+      "source_00002": {
+        "sha256": "1e1889261c3b7d438134cae3757195e95dc0c29dcb683abd5f5c3027bb4917fc",
+        "size": 185978
+      },
+      "source_00003": {
+        "sha256": "bc0bbc48d888648af320c9bac48d0a19e32b4ec6966d7120c400d779bcc6d71d",
+        "size": 780638
+      },
+      "source_00004": {
+        "sha256": "4ccf0ab0e378ab49bfe3b51fbdd670a688c2d4b70e2fa0f4b5abad3680b44ffb",
+        "size": 86520
+      },
+      "source_00005": {
+        "sha256": "066a640276f823c8fc12abee56e0d6e682f676559e031bed84ef5d4050960ee2",
+        "size": 1668333
+      },
+      "source_00006": {
+        "sha256": "9278d8d4266e7b4078d4b504cba2c14bd44d78f7b8c99a88b25e926fbbaee299",
+        "size": 207633
+      },
+      "source_00007": {
+        "sha256": "41ccf91975d6d9679ffaed260b1f8f60f2d30d7dd7db09724608704adc8456a3",
+        "size": 1769774
+      },
+      "source_00008": {
+        "sha256": "3ff556fe62ee3204df734274aab5fa237575bcbefb9e591542a8e1d46df3b6fd",
+        "size": 224827
+      },
+      "source_00009": {
+        "sha256": "ea4dfe3eb6bef53df969fea444cae0ce2f9005d12f87225656c29d174535d9a1",
+        "size": 3076283
+      },
+      "source_00010": {
+        "sha256": "f8539828a07a525aa18f350e7beb0654ea81b9d28f30670ef3b2ec5086df2e96",
+        "size": 494188
+      },
+      "source_00011": {
+        "sha256": "b92a96c8f1cc68c23445bf3f7e2f88209ff02e139f98c2502a9edca93988f70a",
+        "size": 62019
+      },
+      "source_00012": {
+        "sha256": "5b3e729891f227f058660460c04bbacf250b6c4e4d82a6058e2072442b973068",
+        "size": 611655
+      },
+      "source_00013": {
+        "sha256": "988c987ecab019295ef396b86306339e7ba12ebda1abddee7682ff5afce503c4",
+        "size": 76858
+      },
+      "source_00014": {
+        "sha256": "236e3ceaf4169a28802e040161fd389eb616e404eebd38ea67c9131798bd19cb",
+        "size": 5137936
+      },
+      "source_00015": {
+        "sha256": "b40f79f9448c5bcd568aad130abde513520e7b36f054ba8e145c1af5d66f70b0",
+        "size": 569003
+      },
+      "source_00016": {
+        "sha256": "920ea0abe16671fba7feabd06995ac2e712ef001913a20519d4cc0f0d71bec8e",
+        "size": 835412
+      },
+      "source_00017": {
+        "sha256": "d5aab5f1d10ceb1305f061dfb33965e012fa72faa8d1931f74f5caf093ca017c",
+        "size": 89655
+      },
+      "source_00018": {
+        "sha256": "09e55fe763a10531a97006ae649164d6ce5ad1b515880193dfb5c47b06f39e4e",
+        "size": 43246874
+      },
+      "source_00019": {
+        "sha256": "93fd8b04c6d5905fea977358abbab28138e984adad18c1b783e55fd2f120af51",
+        "size": 4821804
+      }
+    }
+  },
+  "provenance": {
+    "source_repository_commit": "6eee05ec9ee9a63b4182a29d983a3d9f5ff8e955",
+    "source_repository_dirty": false
+  }
 }

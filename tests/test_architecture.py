@@ -57,6 +57,19 @@ def test_stage_packages_only_use_cross_stage_public_contracts() -> None:
     assert violations == []
 
 
+def test_stage_packages_do_not_import_benchmarks() -> None:
+    violations = []
+    for stage in sorted(STAGES):
+        for path in sorted((ROOT / "src" / stage).rglob("*.py")):
+            source = path.read_text(encoding="utf-8")
+            for node in ast.walk(ast.parse(source)):
+                if isinstance(node, ast.ImportFrom) and node.module and node.module.split(".", 1)[0] == "benchmarks":
+                    violations.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+                if isinstance(node, ast.Import) and any(alias.name.split(".", 1)[0] == "benchmarks" for alias in node.names):
+                    violations.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+    assert violations == []
+
+
 def test_cross_stage_import_rule_accepts_public_and_rejects_private() -> None:
     allowed = "from stage1.features import build_entity_sample\n"
     rejected = (
