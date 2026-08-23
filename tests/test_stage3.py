@@ -184,6 +184,7 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
     assert len(config.tasks) == 21
     assert len(config.groups) == 6
     assert config.data.split_policy == "prefer_il"
+    assert config.training.microbatch_size == 1024
     assert config.training.checkpoint_interval_epochs == 10
     assert config.model.dropout == 0.10
     assert config.model.expert_hidden_ratio == 2.0
@@ -509,6 +510,45 @@ def test_short_training_checkpoint_and_resume_are_exact(tiny_prepared: Stage3Con
     )
     assert evaluation["checkpoint_epoch"] == 2
     assert set(evaluation["tasks"]) == {"experiment/a"}
+
+    incompatible = replace(
+        tiny_prepared,
+        training=replace(tiny_prepared.training, microbatch_size=1),
+    )
+    incompatible_output = tiny_prepared.data.artifacts_dir.parent / "incompatible"
+    incompatible_output.mkdir()
+    shutil.copy(continuous / "resolved_training_plan.json", incompatible_output)
+    shutil.copy(continuous / "metrics.jsonl", incompatible_output)
+    shutil.copy(continuous / "diagnostics.jsonl", incompatible_output)
+    with pytest.raises(ValueError, match="semantic identity mismatch"):
+        run_stage3_training(
+            incompatible,
+            1,
+            output_dir=incompatible_output,
+            resume_from=continuous / "checkpoint_epoch_00002.pt",
+        )
+
+    corrupt_output = tiny_prepared.data.artifacts_dir.parent / "corrupt-resume"
+    corrupt_output.mkdir()
+    shutil.copy(continuous / "resolved_training_plan.json", corrupt_output)
+    (corrupt_output / "metrics.jsonl").write_text(first_metric + "\n")
+    (corrupt_output / "diagnostics.jsonl").write_text(first_diag + "\n")
+    corrupt_checkpoint = torch.load(
+        continuous / "checkpoint_epoch_00001.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    first_parameter = next(iter(corrupt_checkpoint["model"].values()))
+    first_parameter.view(-1)[0] += 1
+    corrupt_path = corrupt_output / "checkpoint_epoch_00001.pt"
+    torch.save(corrupt_checkpoint, corrupt_path)
+    with pytest.raises(ValueError, match="model state hash mismatch"):
+        run_stage3_training(
+            tiny_prepared,
+            1,
+            output_dir=corrupt_output,
+            resume_from=corrupt_path,
+        )
 
 
 def test_stage3_scripts_configure_runtime_before_loading_operation() -> None:

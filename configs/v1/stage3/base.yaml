@@ -67,7 +67,7 @@ tasks:
   experiment/pec50: {meta_group: biological}
 training:
   composite_batch_size: 2048
-  microbatch_size: 128
+  microbatch_size: 1024
   virtual_min_size: 1000
   epochs: 100
   learning_rate: 0.0003

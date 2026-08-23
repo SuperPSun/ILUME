@@ -9,6 +9,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from common.outputs import open_run_directory, repository_path, repository_relative
 from stage3.config import configure_process_runtime, load_stage3_config
+from common.progress import ProgressReporter
 
 
 def main() -> None:
@@ -30,15 +31,18 @@ def main() -> None:
     )
 
     checkpoint_dir = repository_path(args.checkpoint_dir)
-    evaluation_identity = resolve_stage3_evaluation_identity(
-        config,
-        checkpoint_dir,
-        split=args.split,
-        ensemble_folds=args.ensemble_folds,
-        checkpoint_epoch=args.checkpoint_epoch,
-        task_subset=args.tasks,
-        fold=args.fold,
-    )
+    progress = ProgressReporter()
+
+    with progress.status("Resolving Stage 3 evaluation identity"):
+        evaluation_identity = resolve_stage3_evaluation_identity(
+            config,
+            checkpoint_dir,
+            split=args.split,
+            ensemble_folds=args.ensemble_folds,
+            checkpoint_epoch=args.checkpoint_epoch,
+            task_subset=args.tasks,
+            fold=args.fold,
+        )
 
     run = open_run_directory(
         stage="stage3", operation="evaluate", config_path=args.config,

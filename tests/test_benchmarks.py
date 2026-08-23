@@ -787,5 +787,5 @@ def test_sweep_devices_are_validated_and_assigned_round_robin(tmp_path: Path) ->
     )
     assert [job.device for job in jobs] == ["cuda:0", "cuda:1", "cuda:1"]
     assert ensembles["experiment/one"].device == "cuda:0"
-    assert _subprocess_env(None) is None
+    assert _subprocess_env(None)["ILUME_DISABLE_PROGRESS"] == "1"
     assert _subprocess_env("cuda:3")["CUDA_VISIBLE_DEVICES"] == "3"
