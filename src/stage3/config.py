@@ -149,7 +149,7 @@ def _base_groups() -> dict[str, Stage3GroupConfig]:
 @dataclass(frozen=True)
 class Stage3TrainingConfig:
     composite_batch_size: int = 2048
-    microbatch_size: int = 128
+    microbatch_size: int = 1024
     virtual_min_size: int = 1000
     epochs: int = 100
     learning_rate: float = 3.0e-4

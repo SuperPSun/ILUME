@@ -77,7 +77,7 @@ python scripts/stage2/train.py \
 
 Stage 3 v1 从 catalog 解析 21 个 scalar observation task 和 6 个 meta-group。prepare 通过自包含 `stage2_encoder.pt` 建立按 encoder semantic identity 内容寻址的 FP32 object cache；train/evaluate 只读完整 Stage 3 artifact，不反向定位 Stage 1 或加载完整 Stage 2 checkpoint。每个任务保留独立 dataset，按 task-local fold 拟合 normalization，并使用固定 composite allocation 与 ownership-aware hierarchical PCGrad：GLOBAL、GROUP block 始终独立投影，PRIVATE 不参与投影。
 
-正式 Base 仅支持单进程单 CUDA GPU，默认 BF16；设备不支持时直接失败。测试可显式使用 CPU 与 `amp_dtype: none`。截至 2026-08-20，当前五折 CSV 中有 6 个任务同时包含有值和缺失的 `pressure_kPa`，缺失合计 50,300 行，并非这些任务整列都没有压力。正式 prepare 会按合同拒绝；需先由 ILUME-Data 逐行补齐，或在确认压力不是该任务合法条件后同步修改 catalog `condition_columns`，Stage 3 不负责填充或删行。
+每个正式 fold worker 只支持单进程单 CUDA GPU，默认 BF16；设备不支持时直接失败。唯一 train 入口可以用 spawn worker 并发调度多个独立 fold，测试可显式使用 CPU 与 `amp_dtype: none`。Base 的 training/validation `microbatch_size` 为 1024，改变它会产生新的 training identity。2026-08-23 对当前五折物化源的复核覆盖 21 个任务、232,889 行和 423,907 个 condition 值，未发现缺失或非有限 condition；未来任何声明 condition 的缺失仍然硬失败，Stage 3 不填充或删行。
 
 ## Baselines
 
@@ -91,7 +91,7 @@ python scripts/benchmarks/train.py \
   --output outputs/benchmarks/mlp/stage3/experiment__density/fold1/attempt-001
 ```
 
-批量入口为 `python scripts/benchmarks/sweep.py --config configs/benchmarks/mlp.yaml --output outputs/benchmarks/mlp --max-workers 1`。`--max-workers` 控制同时运行的 train/evaluate 子进程数，默认值 1 保持串行行为；Stage 3 按 task × fold、Stage 2 Physics 按 task 并行，并保留逐 job 状态和依赖关系。MLP 可通过 `--devices cuda:0,cuda:1,...` 将逻辑 job 链 round-robin 分配到多张 GPU；不指定时多个 worker 共享 YAML 中现有的 `device: cuda`。XGBoost 继续使用 YAML 的 `training.n_jobs`，应按 `max_workers × training.n_jobs` 估算总 CPU 并行度并结合机器核心数设置，避免 oversubscription。直接运行与 sweep 在交互终端显示 feature、epoch/boosting round 和训练 job 的 tqdm 进度，重定向到非 TTY 时保持静默。当前 Stage 3 缺失压力修复前，完整 21-task sweep 会按现役 condition 合同失败。正式训练与评估仍由用户显式运行。
+批量入口为 `python scripts/benchmarks/sweep.py --config configs/benchmarks/mlp.yaml --output outputs/benchmarks/mlp --max-workers 1`。`--max-workers` 控制同时运行的 train/evaluate 子进程数，默认值 1 保持串行行为；Stage 3 按 task × fold、Stage 2 Physics 按 task 并行，并保留逐 job 状态和依赖关系。MLP 可通过 `--devices cuda:0,cuda:1,...` 将逻辑 job 链 round-robin 分配到多张 GPU；不指定时多个 worker 共享 YAML 中现有的 `device: cuda`。XGBoost 继续使用 YAML 的 `training.n_jobs`，应按 `max_workers × training.n_jobs` 估算总 CPU 并行度并结合机器核心数设置，避免 oversubscription。直接运行在交互终端显示自身进度；sweep 只显示全局进度并关闭子进程动态进度，重定向到非 TTY 时保持静默。正式训练与评估仍由用户显式运行。
 
 ```bash
 python scripts/stage3/prepare.py \
@@ -100,8 +100,23 @@ python scripts/stage3/prepare.py \
 
 python scripts/stage3/train.py \
   --config configs/v1/stage3/base.yaml \
-  --fold 1 \
-  --output outputs/v1/stage3/base/train/fold1
+  --fold 1 2 3 4 5 \
+  --output outputs/v1/stage3/base/train_micro1024 \
+  --max-parallel 4 \
+  --devices cuda:0,cuda:1,cuda:2,cuda:3
+```
+
+Stage 3 train 的 `--output` 始终表示五折共同 root，单 fold 也写入 `<output>/foldN`。默认 `--max-parallel 1`；并发大于 1 时必须用 `--devices` 显式给出 GPU，设备槽按列表 round-robin 绑定。一个设备配多个槽可显式同卡并发，例如 `--max-parallel 2 --devices cuda:0`。每个 fold 是独立的 spawn 进程；任一 fold 失败不阻断其余 fold，也不会自动降低并发或 microbatch。布尔 `--resume` 对已完成且 identity/历史完整的 fold 做 skip，对其余 fold 只从 checkpoint、metrics、diagnostics 尾部完全一致的位置恢复。
+
+任何 `microbatch_size=128` 的旧训练都属于旧 training identity，不可恢复为新 Base。新 Base 固定写入上例的 `outputs/v1/stage3/base/train_micro1024`。截至 2026-08-23，本机保留 completed prepare 和 validation/test evaluation，但旧 train checkpoint root 已不存在，新的 microbatch=1024 正式训练尚未运行。同卡并发可使用：
+
+```bash
+python scripts/stage3/train.py \
+  --config configs/v1/stage3/base.yaml \
+  --fold 1 2 3 4 5 \
+  --output outputs/v1/stage3/base/train_micro1024 \
+  --max-parallel 2 \
+  --devices cuda:0
 ```
 
 验证集汇总和 test ensemble：
@@ -109,20 +124,20 @@ python scripts/stage3/train.py \
 ```bash
 python scripts/stage3/evaluate.py \
   --config configs/v1/stage3/base.yaml \
-  --checkpoint-dir outputs/v1/stage3/base/train/fold1 \
+  --checkpoint-dir outputs/v1/stage3/base/train_micro1024/fold1 \
   --split valid --fold 1 --checkpoint-epoch 100 \
   --output outputs/v1/stage3/base/evaluate_valid_fold1
 
 python scripts/stage3/evaluate.py \
   --config configs/v1/stage3/base.yaml \
-  --checkpoint-dir outputs/v1/stage3/base/train \
+  --checkpoint-dir outputs/v1/stage3/base/train_micro1024 \
   --split test --ensemble-folds --checkpoint-epoch 100 \
   --output outputs/v1/stage3/base/evaluate_test
 ```
 
 ## Outputs
 
-`--output` 是一次操作的独立目录。新训练和 evaluate 拒绝覆盖已有目录；只有显式 `--resume` 可继续训练。Stage 1/2 prepare 按各自 artifact 身份合同支持受控复用；Stage 3 prepare 拒绝已有输出目录，只能发布到新的空输出。
+`--output` 是一次操作的独立目录；Stage 3 train 的共同 root 是唯一例外，其下每个 `foldN/` 才是独立 run directory。新训练和 evaluate 拒绝覆盖已有目录；只有显式 `--resume` 可继续训练。Stage 1/2 prepare 按各自 artifact 身份合同支持受控复用；Stage 3 prepare 拒绝已有输出目录，只能发布到新的空输出。
 
 每个操作目录包含 Git 可跟踪的 `run_config.yaml`、`metadata.json`、逐 attempt 追加的 `attempts.jsonl` 和成功后生成的 `summary.json`。Prepare payload 位于 `artifacts/` 子目录；checkpoint、训练 metrics JSONL、日志和 tensor 默认不进入 Git。Stage 1 用 `last.pt` 表示最新完整恢复状态；Stage 2 直接通过最新的完整 epoch checkpoint 恢复；Stage 3 Base 默认只保存 epoch 10、20、…、100 的完整 checkpoint，不生成 best/last。
 
