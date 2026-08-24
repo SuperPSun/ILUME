@@ -110,20 +110,20 @@ python scripts/stage3/prepare.py \
 python scripts/stage3/train.py \
   --config configs/v1/stage3/base.yaml \
   --fold 1 2 3 4 5 \
-  --output outputs/v1/stage3/base/train_micro1024 \
+  --output outputs/v1/stage3/base/train \
   --max-parallel 4 \
   --devices cuda:0,cuda:1,cuda:2,cuda:3
 ```
 
 Stage 3 train 的 `--output` 始终表示五折共同 root，单 fold 也写入 `<output>/foldN`。默认 `--max-parallel 1`；并发大于 1 时必须用 `--devices` 显式给出 GPU，设备槽按列表 round-robin 绑定。一个设备配多个槽可显式同卡并发，例如 `--max-parallel 2 --devices cuda:0`。每个 fold 是独立的 spawn 进程；任一 fold 失败不阻断其余 fold，也不会自动降低并发或 microbatch。布尔 `--resume` 对已完成且 identity/历史完整的 fold 做 skip，对其余 fold 只从 checkpoint、metrics、diagnostics 尾部完全一致的位置恢复。
 
-任何 `microbatch_size=128` 的旧训练都属于旧 training identity，不可恢复为新 Base。新 Base 固定写入上例的 `outputs/v1/stage3/base/train_micro1024`。截至 2026-08-23，本机保留 completed prepare 和 validation/test evaluation，但旧 train checkpoint root 已不存在，新的 microbatch=1024 正式训练尚未运行。同卡并发可使用：
+任何 `microbatch_size=128` 的旧训练都属于旧 training identity，不可恢复为新 Base。`--output` 路径不属于 training identity；截至 2026-08-24，本机 `outputs/v1/stage3/base/train/fold1` 至 `fold5` 均为 completed microbatch-1024 epoch-100 run，现役 evaluator 已只读解析五折 test ensemble identity，确认全部 checkpoint 与当前配置兼容。同卡并发的新运行可使用新的 output root：
 
 ```bash
 python scripts/stage3/train.py \
   --config configs/v1/stage3/base.yaml \
   --fold 1 2 3 4 5 \
-  --output outputs/v1/stage3/base/train_micro1024 \
+  --output outputs/v1/stage3/base/train_same_gpu_new \
   --max-parallel 2 \
   --devices cuda:0
 ```
@@ -133,13 +133,13 @@ python scripts/stage3/train.py \
 ```bash
 python scripts/stage3/evaluate.py \
   --config configs/v1/stage3/base.yaml \
-  --checkpoint-dir outputs/v1/stage3/base/train_micro1024/fold1 \
+  --checkpoint-dir outputs/v1/stage3/base/train/fold1 \
   --split valid --fold 1 --checkpoint-epoch 100 \
   --output outputs/v1/stage3/base/evaluate_valid_fold1
 
 python scripts/stage3/evaluate.py \
   --config configs/v1/stage3/base.yaml \
-  --checkpoint-dir outputs/v1/stage3/base/train_micro1024 \
+  --checkpoint-dir outputs/v1/stage3/base/train \
   --split test --ensemble-folds --checkpoint-epoch 100 \
   --output outputs/v1/stage3/base/evaluate_test
 ```
@@ -160,7 +160,7 @@ python scripts/benchmarks/summarize.py --input outputs --output summary
 
 只有 reporting schema 完整且 comparison identity 一致的 completed evaluation/sweep 进入对应排名；缺少 `stage2-benchmark-suite-v1` 的旧 Stage 2 结果、失败、运行中或不完整实验只进入 health。明确 `unsupported` 的模型仍可进入 Core，但不进入 Partial/Full。发现声称为当前合同的损坏正式结果时命令失败，已有 `summary/` 保持不变。
 
-正式刷新命令（不会启动 Stage 3 重跑；ILUME evaluation 必须使用新的 output 路径）：
+Stage 2 suite 的正式刷新命令如下；baseline sweep 会跳过已完成的 Stage 3 与训练，只重跑 stale 的 Stage 2 child evaluation。ILUME evaluation 必须使用新的 output 路径：
 
 ```bash
 python scripts/stage2/evaluate.py \
@@ -178,6 +178,8 @@ python scripts/benchmarks/sweep.py \
 
 python scripts/benchmarks/summarize.py --input outputs --output summary
 ```
+
+Partial Charge 合同本身不要求重跑 Stage 3；但缺少 reporting schema v1 的旧 ILUME Stage 3 evaluation 仍只进入 health，不能进入 Stage 3 榜。需要让 ILUME 参加 Stage 3 TEST/VALIDATION 榜时，复用既有 epoch-100 checkpoint 执行上文的 Stage 3 evaluation 命令即可，不需要重跑训练。
 
 ## Tests
 

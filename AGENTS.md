@@ -18,6 +18,7 @@ Stage 2 现役合同以 ADR-0019 和 `configs/v1/stage2/base.yaml` 为准，iden
 - `--output`、`--resume`、Stage 3 fold 和 evaluation selector 是运行参数，不进入科研 config schema。
 - Stage 3 train 的 `--fold` 可接收一个或多个 fold，`--output` 始终是共同 root，实际 run contract 位于 `foldN/`。多 fold 只允许由该入口使用 spawn worker 和显式设备槽调度；不得把并发下沉到 `src/stage3`，也不得恢复独立 fold/matrix runner。
 - Baseline 以 ADR-0022 为准，只复用现役 registry、split、canonical SMILES、condition/target 与评估口径；不得改变或被解释为 Stage 1/2/3 数值训练合同。Baseline v1 不支持 resume，失败由 sweep 在新 attempt 目录完整重跑。
+- Evaluation reporting 与汇总以 ADR-0023/0024 为准：Stage 2 固定分为 Core、Partial Charge、Full 三榜；缺少 `stage2-benchmark-suite-v1` 的旧 Stage 2 reporting 只进入 health，禁止跨 run 拼接 Full。MLP 与 ECFP+XGBoost 的 Partial/Full 显式为 unsupported。
 
 ## 数据、输出与恢复
 

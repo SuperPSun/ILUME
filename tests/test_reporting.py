@@ -189,6 +189,8 @@ def test_summarizer_ranks_runs_and_republishes_deterministically(tmp_path: Path)
     assert tuple(sorted(path.name for path in output.iterdir())) == tuple(
         sorted(SUMMARY_FILES)
     )
+    for path in output.glob("*.csv"):
+        assert b"\r\n" not in path.read_bytes()
     before = {path.name: path.read_bytes() for path in output.iterdir()}
     publish_summary(inputs, output, tmp_path)
     after = {path.name: path.read_bytes() for path in output.iterdir()}

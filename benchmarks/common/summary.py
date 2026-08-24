@@ -995,7 +995,12 @@ def _wins(
 
 def _write_csv(path: Path, rows: Sequence[Mapping[str, Any]], fields: Sequence[str]) -> None:
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="raise")
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=fields,
+            extrasaction="raise",
+            lineterminator="\n",
+        )
         writer.writeheader()
         for row in rows:
             writer.writerow({name: row.get(name, "") for name in fields})
