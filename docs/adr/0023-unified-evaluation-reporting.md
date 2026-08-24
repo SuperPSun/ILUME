@@ -3,6 +3,10 @@
 - 状态：Accepted
 - 日期：2026-08-24
 
+> Stage 2 的输出文件集、ranking 和 eligibility 已由
+> [ADR-0024](0024-stage2-partial-charge-benchmark-suite.md) 扩展为 Core、Partial Charge、Full
+> 三榜；本 ADR 的 Stage 3 合同保持不变。
+
 ## 背景
 
 完整科研运行产物分散在 `outputs/`，ILUME、MLP、ECFP+XGBoost 与后续 baseline 缺少统一、可审计且适合论文比较的结果入口。Stage 2 也缺少与 baseline test 合同对齐的独立 evaluator。

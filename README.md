@@ -69,13 +69,13 @@ python scripts/stage2/train.py \
   --output outputs/v1/stage2/base/train
 ```
 
-Stage 2 Physics test evaluator 固定评估 heat of vaporization 和 cation/anion PBE/TZVP HOMO/LUMO，共 3 个 task、5 个 scalar target；test 实体只在 evaluation 进程内构建，不进入 prepared artifact 或训练：
+Stage 2 test evaluator 同时发布三个互不混淆的口径：Core 固定评估 heat of vaporization 和 cation/anion PBE/TZVP HOMO/LUMO 的 5 个 scalar unit；Partial Charge 使用确定性 MOL2 mapping 后的 all-mapped molecule-macro normalized MAE；Full 对 Core 5 unit 与 Partial 1 unit 等权平均。Test 实体只在 evaluation 进程内构建，不进入 prepared artifact 或训练：
 
 ```bash
 python scripts/stage2/evaluate.py \
   --config configs/v1/stage2/base.yaml \
   --checkpoint-dir outputs/v1/stage2/base/train \
-  --output outputs/v1/stage2/base/evaluate/test_reporting_v1
+  --output outputs/v1/stage2/base/evaluate/test_benchmark_suite_v1
 ```
 
 训练每个 epoch 完整覆盖所有任务的全部有效行，并以 deterministic randomized round-robin 交替 task batch；Object v3 强制一个 batch 对应一个 optimizer step，不支持 gradient accumulation。第一 epoch 的 object/interaction task 直接复用 teacher CLS，不运行 Stage 1；atom task仍运行冻结 Stage 1 取得 fusion atom states。后四个 epoch联合微调。Partial charge 只去重 Stage 1 entity forward，ObjectEncoder 与 AtomHead 按 molecule sample 向量化执行；atom target 全量保持 CPU resident。Task weight 归一化后只补偿 physics loss，teacher loss保持独立。Base 使用 4 个 ordered packing worker、包含 H2D 在内的 4 个逻辑预取名额，以及单 batch CUDA lookahead；transfer stream 通过 event 交接，不做逐 batch synchronize。CUDA 固定使用 TF32、pinned/non-blocking transfer 与 fused AdamW。每个 epoch full validation 后保存 `checkpoint_epoch_00001.pt` 至 `checkpoint_epoch_00005.pt`，epoch 5 后额外导出不含 physics heads 的 `stage2_encoder.pt`。只允许从完整 Object v3 epoch 恢复；不生成 `best.pt` 或 `last.pt`。旧 Object v2 以及缺少当前 preparation/extraction contract 的开发期 v3 artifact/cache/checkpoint 不迁移，必须重新 prepare。
@@ -100,7 +100,7 @@ python scripts/benchmarks/train.py \
   --output outputs/benchmarks/mlp/stage3/experiment__density/fold1/attempt-001
 ```
 
-批量入口为 `python scripts/benchmarks/sweep.py --config configs/benchmarks/mlp.yaml --output outputs/benchmarks/mlp --max-workers 1`。`--max-workers` 控制同时运行的 train/evaluate 子进程数，默认值 1 保持串行行为；Stage 3 按 task × fold、Stage 2 Physics 按 task 并行，并保留逐 job 状态和依赖关系。MLP 可通过 `--devices cuda:0,cuda:1,...` 将逻辑 job 链 round-robin 分配到多张 GPU；不指定时多个 worker 共享 YAML 中现有的 `device: cuda`。XGBoost 继续使用 YAML 的 `training.n_jobs`，应按 `max_workers × training.n_jobs` 估算总 CPU 并行度并结合机器核心数设置，避免 oversubscription。直接运行在交互终端显示自身进度；sweep 只显示全局进度并关闭子进程动态进度，重定向到非 TTY 时保持静默。正式训练与评估仍由用户显式运行。
+批量入口为 `python scripts/benchmarks/sweep.py --config configs/benchmarks/mlp.yaml --output outputs/benchmarks/mlp --max-workers 1`。`--max-workers` 控制同时运行的 train/evaluate 子进程数，默认值 1 保持串行行为；Stage 3 按 task × fold、Stage 2 Physics 按 task 并行，并保留逐 job 状态和依赖关系。MLP 与 ECFP+XGBoost 在 Stage 2 suite 中显式发布 Partial/Full `unsupported`，只参加 Core；旧 Stage 2 child evaluation 会视为 stale，在新 attempt 中复用已有训练 checkpoint 重新评估。MLP 可通过 `--devices cuda:0,cuda:1,...` 将逻辑 job 链 round-robin 分配到多张 GPU；不指定时多个 worker 共享 YAML 中现有的 `device: cuda`。XGBoost 继续使用 YAML 的 `training.n_jobs`，应按 `max_workers × training.n_jobs` 估算总 CPU 并行度并结合机器核心数设置，避免 oversubscription。直接运行在交互终端显示自身进度；sweep 只显示全局进度并关闭子进程动态进度，重定向到非 TTY 时保持静默。正式训练与评估仍由用户显式运行。
 
 ```bash
 python scripts/stage3/prepare.py \
@@ -152,13 +152,32 @@ python scripts/stage3/evaluate.py \
 
 ## 结果汇总
 
-[ADR-0023](docs/adr/0023-unified-evaluation-reporting.md) 将完整运行与论文结果分层：`outputs/` 保留 prediction/checkpoint/audit，`summary/` 只保留三张 leaderboard、三张 metric 明细、health、overview 和机器可读 summary。生成或原子刷新汇总：
+[ADR-0023](docs/adr/0023-unified-evaluation-reporting.md) 与 [ADR-0024](docs/adr/0024-stage2-partial-charge-benchmark-suite.md) 将完整运行与论文结果分层：`outputs/` 保留 prediction/checkpoint/audit，`summary/` 原子发布 Stage 3 TEST、Stage 3 VALIDATION、Stage 2 CORE、Partial Charge、Stage 2 FULL 三类 Stage 2/两类 Stage 3 榜单及相应明细、health、overview 和机器可读 summary。生成或刷新汇总：
 
 ```bash
 python scripts/benchmarks/summarize.py --input outputs --output summary
 ```
 
-只有 reporting schema 完整且 comparison identity 一致的 completed evaluation/sweep 进入排名；旧格式、失败、运行中或不完整实验只进入 health。发现声称为当前 schema 的损坏正式结果时命令失败，已有 `summary/` 保持不变。
+只有 reporting schema 完整且 comparison identity 一致的 completed evaluation/sweep 进入对应排名；缺少 `stage2-benchmark-suite-v1` 的旧 Stage 2 结果、失败、运行中或不完整实验只进入 health。明确 `unsupported` 的模型仍可进入 Core，但不进入 Partial/Full。发现声称为当前合同的损坏正式结果时命令失败，已有 `summary/` 保持不变。
+
+正式刷新命令（不会启动 Stage 3 重跑；ILUME evaluation 必须使用新的 output 路径）：
+
+```bash
+python scripts/stage2/evaluate.py \
+  --config configs/v1/stage2/base.yaml \
+  --checkpoint-dir outputs/v1/stage2/base/train \
+  --output outputs/v1/stage2/base/evaluate/test_benchmark_suite_v1
+
+python scripts/benchmarks/sweep.py \
+  --config configs/benchmarks/mlp.yaml \
+  --output outputs/benchmarks/mlp --max-workers 1
+
+python scripts/benchmarks/sweep.py \
+  --config configs/benchmarks/ecfp_xgboost.yaml \
+  --output outputs/benchmarks/ecfp_xgboost --max-workers 1
+
+python scripts/benchmarks/summarize.py --input outputs --output summary
+```
 
 ## Tests
 

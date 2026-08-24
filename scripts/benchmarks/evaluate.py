@@ -18,6 +18,7 @@ from common.io import sha256_file
 from common.outputs import open_run_directory, repository_path, repository_relative
 from common.progress import ProgressReporter
 from common.reporting import (
+    STAGE2_CORE_EVALUATION_CONTRACT,
     REPORTING_SCHEMA_VERSION,
     comparison_identity,
     reporting_block,
@@ -262,6 +263,10 @@ def main() -> None:
         data_metadata=["data/task_catalog.csv", "data/stage2/metadata.json"],
         details={
             "reporting_schema_version": REPORTING_SCHEMA_VERSION,
+            **(
+                {"reporting_contract": STAGE2_CORE_EVALUATION_CONTRACT}
+                if args.benchmark == "stage2_physics" else {}
+            ),
             "benchmark": args.benchmark, "task": args.task, "split": args.split,
             "fold": selector_fold, "ensemble_folds": args.ensemble_folds,
             "checkpoints": [repository_relative(path) for path in checkpoints],
@@ -351,6 +356,8 @@ def main() -> None:
             study_id=f"{config.name}-{study}",
             predictions=[prediction_manifest],
         )
+        if args.benchmark == "stage2_physics":
+            summary["reporting"]["contract"] = STAGE2_CORE_EVALUATION_CONTRACT
         run.complete(summary)
     except BaseException:
         run.fail()

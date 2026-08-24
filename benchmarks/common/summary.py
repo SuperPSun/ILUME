@@ -12,7 +12,10 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from common.identity import validate_semantic_identity
 from common.io import atomic_json
-from common.reporting import REPORTING_SCHEMA_VERSION
+from common.reporting import (
+    REPORTING_SCHEMA_VERSION,
+    STAGE2_BENCHMARK_SUITE_CONTRACT,
+)
 
 
 SUMMARY_SCHEMA_VERSION = 1
@@ -20,10 +23,13 @@ SUMMARY_FILES = (
     "overview.md",
     "stage3_test_leaderboard.csv",
     "stage3_validation_leaderboard.csv",
-    "stage2_physics_leaderboard.csv",
+    "stage2_core_physics_leaderboard.csv",
+    "stage2_partial_charge_leaderboard.csv",
+    "stage2_physics_full_leaderboard.csv",
     "stage3_test_metrics.csv",
     "stage3_validation_metrics.csv",
-    "stage2_physics_metrics.csv",
+    "stage2_core_physics_metrics.csv",
+    "stage2_partial_charge_metrics.csv",
     "sweep_status.csv",
     "summary.json",
 )
@@ -116,6 +122,45 @@ def _validate_comparison(value: Any, context: str) -> None:
         raise ValueError(f"{context} has unsupported comparison identity")
 
 
+def _validate_stage2_suite(reporting: Mapping[str, Any]) -> None:
+    capabilities = reporting.get("capabilities")
+    sections = reporting.get("benchmarks")
+    names = {
+        "stage2_core_physics", "stage2_partial_charge", "stage2_physics_full"
+    }
+    if not isinstance(capabilities, dict) or set(capabilities) != names:
+        raise ValueError("Stage 2 reporting capabilities are incomplete")
+    if not isinstance(sections, dict):
+        raise ValueError("Stage 2 reporting benchmarks are malformed")
+    for name in names:
+        capability = capabilities[name]
+        status = sections[name].get("status")
+        if capability not in {"supported", "unsupported"}:
+            raise ValueError(f"Invalid Stage 2 capability: {name}")
+        if status not in {"complete", "incomplete", "unsupported"}:
+            raise ValueError(f"Invalid Stage 2 status: {name}")
+        if (capability == "unsupported") != (status == "unsupported"):
+            raise ValueError(f"Stage 2 capability/status mismatch: {name}")
+    full = sections["stage2_physics_full"]
+    if full["status"] == "complete":
+        core = sections["stage2_core_physics"]
+        partial = sections["stage2_partial_charge"]
+        if core["status"] != "complete" or partial["status"] != "complete":
+            raise ValueError("Stage 2 Full cannot outlive an incomplete component")
+        payload = full["comparison_identity"]["payload"]
+        if payload.get("component_hashes") != {
+            "stage2_core_physics": core["comparison_identity"]["hash"],
+            "stage2_partial_charge": partial["comparison_identity"]["hash"],
+        }:
+            raise ValueError("Stage 2 Full component identities are inconsistent")
+        expected_units = [
+            *core["protocol"].get("expected_targets", ()),
+            *partial["protocol"].get("expected_units", ()),
+        ]
+        if payload.get("ordered_units") != expected_units:
+            raise ValueError("Stage 2 Full ordered units are inconsistent")
+
+
 def _validate_current(candidate: Candidate) -> None:
     assert candidate.summary is not None
     stage = candidate.metadata["stage"]
@@ -129,14 +174,59 @@ def _validate_current(candidate: Candidate) -> None:
         raise ValueError("reporting study identity is incomplete")
     if stage == "benchmark":
         benchmarks = reporting.get("benchmarks")
-        if set(benchmarks or ()) != {
-            "stage3_test", "stage3_validation", "stage2_physics"
-        }:
+        expected_sections = (
+            {
+                "stage3_test", "stage3_validation", "stage2_core_physics",
+                "stage2_partial_charge", "stage2_physics_full",
+            }
+            if reporting.get("contract") == STAGE2_BENCHMARK_SUITE_CONTRACT
+            else {"stage3_test", "stage3_validation", "stage2_physics"}
+        )
+        if set(benchmarks or ()) != expected_sections:
             raise ValueError("benchmark sweep reporting sections are incomplete")
+        if reporting.get("contract") == STAGE2_BENCHMARK_SUITE_CONTRACT:
+            _validate_stage2_suite(reporting)
         for name, value in benchmarks.items():
-            _validate_comparison(value.get("comparison_identity"), name)
+            if value.get("status") not in {"unsupported", "incomplete"}:
+                _validate_comparison(value.get("comparison_identity"), name)
         if not isinstance(reporting.get("source_runs"), dict):
             raise ValueError("benchmark sweep reporting lacks source runs")
+        if reporting.get("contract") == STAGE2_BENCHMARK_SUITE_CONTRACT:
+            source_manifest = reporting.get("source_run_manifest")
+            if not isinstance(source_manifest, dict):
+                raise ValueError("benchmark sweep reporting lacks source-run manifest")
+            validate_semantic_identity(source_manifest)
+            if source_manifest.get("type") != "benchmark.source-run-manifest.v1":
+                raise ValueError("benchmark sweep source-run manifest has wrong type")
+            if source_manifest.get("payload", {}).get("source_runs") != reporting["source_runs"]:
+                raise ValueError("benchmark sweep source-run manifest is inconsistent")
+    elif stage == "stage2":
+        if reporting.get("contract") != STAGE2_BENCHMARK_SUITE_CONTRACT:
+            return
+        benchmarks = reporting.get("benchmarks")
+        if set(benchmarks or ()) != {
+            "stage2_core_physics", "stage2_partial_charge", "stage2_physics_full"
+        }:
+            raise ValueError("Stage 2 reporting suite sections are incomplete")
+        _validate_stage2_suite(reporting)
+        if benchmarks["stage2_physics_full"]["status"] == "complete":
+            protocols = [
+                benchmarks[name]["protocol"]
+                for name in (
+                    "stage2_core_physics", "stage2_partial_charge",
+                    "stage2_physics_full",
+                )
+            ]
+            checkpoint_hashes = {item.get("checkpoint_sha256") for item in protocols}
+            checkpoint_epochs = {item.get("checkpoint_epoch") for item in protocols}
+            if (
+                len(checkpoint_hashes) != 1 or None in checkpoint_hashes
+                or len(checkpoint_epochs) != 1 or None in checkpoint_epochs
+            ):
+                raise ValueError("ILUME Stage 2 suite checkpoint binding is inconsistent")
+        for name, value in benchmarks.items():
+            if value.get("status") not in {"unsupported", "incomplete"}:
+                _validate_comparison(value.get("comparison_identity"), name)
     else:
         _validate_comparison(
             reporting.get("comparison_identity"), f"{stage} evaluation"
@@ -170,6 +260,23 @@ def _model(candidate: Candidate) -> tuple[str, str]:
     return ("ilume", "ILUME") if candidate.metadata.get("stage") != "benchmark" else ("unknown", "unknown")
 
 
+def _stage2_eligibility(reporting: Mapping[str, Any]) -> tuple[str, str, str]:
+    if reporting.get("contract") != STAGE2_BENCHMARK_SUITE_CONTRACT:
+        return ("legacy", "legacy", "legacy")
+    sections = reporting["benchmarks"]
+    values = []
+    for name in (
+        "stage2_core_physics", "stage2_partial_charge", "stage2_physics_full"
+    ):
+        status = sections[name]["status"]
+        values.append(
+            "eligible" if status == "complete" else
+            "not_evaluated" if status == "unsupported" else
+            "not_eligible"
+        )
+    return tuple(values)
+
+
 def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     signatures: list[tuple[str, str, str, str, str]] = []
@@ -188,6 +295,13 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
         status = str(candidate.metadata.get("status", "unknown"))
         summary = candidate.summary or {}
         issues = list(candidate.issues)
+        reporting = summary.get("reporting", {})
+        has_stage2 = candidate.metadata.get("stage") in {"stage2", "benchmark"}
+        eligibility = (
+            _stage2_eligibility(reporting) if has_stage2 and reporting else ("", "", "")
+        )
+        if has_stage2 and reporting and eligibility[0] == "legacy":
+            issues.append("legacy_stage2_reporting_contract")
         if not candidate.current:
             completeness = "legacy"
             issues.append("reporting_schema_missing")
@@ -201,7 +315,6 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
         checkpoint = summary.get("checkpoint_epoch", "")
         failed_jobs = summary.get("jobs", {}).get("failed", "")
         if candidate.current and candidate.summary:
-            reporting = summary["reporting"]
             if candidate.metadata["stage"] == "benchmark":
                 sections = reporting["benchmarks"]
                 expected = ";".join(
@@ -216,7 +329,7 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
                     )
                 )
                 folds = ";".join(map(str, sections["stage3_validation"]["protocol"]["folds"]))
-            else:
+            elif candidate.metadata["stage"] == "stage3":
                 protocol = reporting["protocol"]
                 expected_tasks = protocol.get("expected_tasks", ())
                 expected = len(expected_tasks)
@@ -231,8 +344,10 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
                     )
                     fold = protocol.get("fold")
                     folds = ";".join(map(str, protocol.get("folds", ()))) if fold is None else str(fold)
-                else:
-                    available = len(summary.get("tasks", {}))
+            elif reporting.get("contract") == STAGE2_BENCHMARK_SUITE_CONTRACT:
+                protocol = reporting["benchmarks"]["stage2_core_physics"]["protocol"]
+                expected = len(protocol.get("expected_tasks", ()))
+                available = len(summary.get("tasks", {}))
         rows.append(
             {
                 "run": _run_id(model, candidate.source_run),
@@ -250,6 +365,9 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
                 "available_tasks": available,
                 "available_folds": folds,
                 "failed_jobs": failed_jobs,
+                "stage2_core_eligibility": eligibility[0],
+                "stage2_partial_eligibility": eligibility[1],
+                "stage2_full_eligibility": eligibility[2],
                 "source_run": candidate.source_run,
                 "issues": ";".join(issues),
             }
@@ -310,22 +428,31 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
                     "stage3_validation_missing_tasks=" + ",".join(valid_missing),
                 )
 
-            stage2_expected = tuple(
-                sections["stage2_physics"]["protocol"]["expected_targets"]
-            )
-            stage2_metrics = summary["stage2_physics_benchmark"]["test"]
-            stage2_available = {
-                f"{task}::{target}"
-                for task, targets in stage2_metrics.items()
-                for target, values in targets.items()
-                if int(values.get("count", 0)) > 0
-            }
-            stage2_missing = sorted(set(stage2_expected) - stage2_available)
-            if stage2_missing:
-                mark_incomplete(
-                    candidate,
-                    "stage2_missing_targets=" + ",".join(stage2_missing),
+            if reporting.get("contract") == STAGE2_BENCHMARK_SUITE_CONTRACT:
+                stage2_expected = tuple(
+                    sections["stage2_core_physics"]["protocol"]["expected_targets"]
                 )
+                stage2_metrics = summary["stage2_physics_benchmark"]["test"]
+                stage2_available = {
+                    f"{task}::{target}"
+                    for task, targets in stage2_metrics.items()
+                    for target, values in targets.items()
+                    if int(values.get("count", 0)) > 0
+                }
+                stage2_missing = sorted(set(stage2_expected) - stage2_available)
+                if stage2_missing:
+                    mark_incomplete(
+                        candidate,
+                        "stage2_missing_targets=" + ",".join(stage2_missing),
+                    )
+                for name in (
+                    "stage2_core_physics", "stage2_partial_charge",
+                    "stage2_physics_full",
+                ):
+                    section = sections[name]
+                    if section["status"] == "incomplete":
+                        for issue in section.get("issues", ("incomplete",)):
+                            mark_incomplete(candidate, f"{name}:{issue}")
             try:
                 if int(summary.get("jobs", {}).get("failed", 0)) > 0:
                     mark_incomplete(candidate, "failed_jobs")
@@ -360,10 +487,16 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
                     candidate
                 )
         elif candidate.metadata["stage"] == "stage2":
-            expected_targets = tuple(reporting["protocol"]["expected_targets"])
+            if reporting.get("contract") != STAGE2_BENCHMARK_SUITE_CONTRACT:
+                continue
+            sections = reporting["benchmarks"]
+            expected_targets = tuple(
+                sections["stage2_core_physics"]["protocol"]["expected_targets"]
+            )
             available_targets = {
                 f"{task}::{target}"
                 for task, targets in summary.get("tasks", {}).items()
+                if task != "simulation/partial_atomic_charge"
                 for target, values in targets.items()
                 if int(values.get("count", 0)) > 0
             }
@@ -372,6 +505,14 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
                 mark_incomplete(
                     candidate, "missing_targets=" + ",".join(missing)
                 )
+            for name in (
+                "stage2_core_physics", "stage2_partial_charge",
+                "stage2_physics_full",
+            ):
+                section = sections[name]
+                if section["status"] == "incomplete":
+                    for issue in section.get("issues", ("incomplete",)):
+                        mark_incomplete(candidate, f"{name}:{issue}")
 
     for folds in validation_groups.values():
         missing = sorted(set(range(1, 6)) - set(folds))
@@ -609,7 +750,7 @@ def _stage3_validation(
     )
 
 
-def _stage2(
+def _stage2_core(
     candidates: Sequence[Candidate],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, list[str]]]:
     leaders: list[dict[str, Any]] = []
@@ -618,20 +759,25 @@ def _stage2(
     for candidate in _current_completed(candidates):
         summary = candidate.summary
         reporting = summary["reporting"]
+        if reporting.get("contract") != STAGE2_BENCHMARK_SUITE_CONTRACT:
+            continue
         if candidate.metadata["stage"] == "benchmark":
-            section = reporting["benchmarks"]["stage2_physics"]
+            section = reporting["benchmarks"]["stage2_core_physics"]
             metrics = summary["stage2_physics_benchmark"]["test"]
             checkpoint = ""
         elif candidate.metadata["stage"] == "stage2":
-            section = reporting
+            section = reporting["benchmarks"]["stage2_core_physics"]
             metrics = summary["tasks"]
             checkpoint = summary["checkpoint_epoch"]
         else:
+            continue
+        if section.get("status") != "complete":
             continue
         expected = tuple(section["protocol"]["expected_targets"])
         flattened = {
             f"{task}::{target}": (task, target, value)
             for task, targets in metrics.items()
+            if task != "simulation/partial_atomic_charge"
             for target, value in targets.items()
         }
         if not expected or any(
@@ -667,13 +813,144 @@ def _stage2(
                 "checkpoint_epoch": checkpoint,
             }
         )
-    _require_one_comparison(comparisons, "Stage 2 physics")
+    _require_one_comparison(comparisons, "Stage 2 Core physics")
     wins = _wins(metrics_rows, "target", "normalized_mae", secondary="task")
     for row in leaders:
         row["per_target_wins"] = len(wins.get(row["run"], ()))
     return _rank(leaders, "macro_normalized_mae"), sorted(
         metrics_rows, key=lambda row: (row["run"], row["task"], row["target"])
     ), wins
+
+
+def _partial_metrics(summary: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    if "tasks" in summary:
+        value = summary["tasks"].get("simulation/partial_atomic_charge")
+        return value if isinstance(value, dict) else None
+    value = summary.get("stage2_partial_charge_benchmark", {}).get("test")
+    return value if isinstance(value, dict) else None
+
+
+def _stage2_partial(
+    candidates: Sequence[Candidate],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    leaders: list[dict[str, Any]] = []
+    metrics_rows: list[dict[str, Any]] = []
+    comparisons: dict[str, list[str]] = {}
+    for candidate in _current_completed(candidates):
+        reporting = candidate.summary["reporting"]
+        if reporting.get("contract") != STAGE2_BENCHMARK_SUITE_CONTRACT:
+            continue
+        section = reporting["benchmarks"]["stage2_partial_charge"]
+        if section["status"] != "complete":
+            continue
+        metrics = _partial_metrics(candidate.summary)
+        if metrics is None or metrics.get("status") != "complete":
+            continue
+        primary = metrics.get("primary") or {}
+        if not _finite(primary.get("molecule_macro_normalized_mae")):
+            continue
+        model_id = reporting["model_id"]
+        display = reporting["model_display_name"]
+        run = _run_id(model_id, candidate.source_run)
+        for subset in ("all_mapped", "unique", "ambiguous", "typed", "connectivity_only"):
+            value = metrics.get("subsets", {}).get(subset)
+            if not isinstance(value, dict):
+                break
+            metrics_rows.append(
+                {
+                    "run": run, "model": display, "subset": subset,
+                    **{
+                        name: value.get(name)
+                        for name in (
+                            "molecule_count", "atom_count", "molecule_macro_mae",
+                            "molecule_macro_normalized_mae", "atom_micro_mae",
+                            "atom_micro_rmse", "atom_micro_r2", "atom_micro_r2_reason",
+                            "reason",
+                        )
+                    },
+                    "source_run": candidate.source_run,
+                }
+            )
+        else:
+            coverage = metrics.get("coverage", {})
+            leaders.append(
+                {
+                    "run": run, "model": display,
+                    "molecule_macro_normalized_mae": float(
+                        primary["molecule_macro_normalized_mae"]
+                    ),
+                    "molecule_macro_mae": primary["molecule_macro_mae"],
+                    "mapped_molecules": coverage.get("mapped_molecule_count", ""),
+                    "test_molecules": coverage.get("test_molecule_count", ""),
+                    "source_run": candidate.source_run,
+                    "checkpoint_epoch": candidate.summary.get("checkpoint_epoch", ""),
+                }
+            )
+            comparisons.setdefault(section["comparison_identity"]["hash"], []).append(run)
+            continue
+        metrics_rows = [row for row in metrics_rows if row["run"] != run]
+    _require_one_comparison(comparisons, "Stage 2 Partial Charge")
+    return _rank(leaders, "molecule_macro_normalized_mae"), sorted(
+        metrics_rows, key=lambda row: (row["run"], row["subset"])
+    )
+
+
+def _stage2_full(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
+    leaders: list[dict[str, Any]] = []
+    comparisons: dict[str, list[str]] = {}
+    for candidate in _current_completed(candidates):
+        summary = candidate.summary
+        reporting = summary["reporting"]
+        if reporting.get("contract") != STAGE2_BENCHMARK_SUITE_CONTRACT:
+            continue
+        section = reporting["benchmarks"]["stage2_physics_full"]
+        if section["status"] != "complete":
+            continue
+        core_section = reporting["benchmarks"]["stage2_core_physics"]
+        partial_section = reporting["benchmarks"]["stage2_partial_charge"]
+        if core_section["status"] != "complete" or partial_section["status"] != "complete":
+            continue
+        expected = tuple(core_section["protocol"]["expected_targets"])
+        core_metrics = (
+            summary["stage2_physics_benchmark"]["test"]
+            if candidate.metadata["stage"] == "benchmark"
+            else summary["tasks"]
+        )
+        flattened = {
+            f"{task}::{target}": value
+            for task, targets in core_metrics.items()
+            if task != "simulation/partial_atomic_charge"
+            for target, value in targets.items()
+        }
+        partial = _partial_metrics(summary)
+        primary = None if partial is None else partial.get("primary")
+        if (
+            not expected
+            or any(
+                unit not in flattened
+                or not _finite(flattened[unit].get("normalized_mae"))
+                for unit in expected
+            )
+            or not isinstance(primary, dict)
+            or not _finite(primary.get("molecule_macro_normalized_mae"))
+        ):
+            continue
+        values = [float(flattened[unit]["normalized_mae"]) for unit in expected]
+        values.append(float(primary["molecule_macro_normalized_mae"]))
+        model_id = reporting["model_id"]
+        run = _run_id(model_id, candidate.source_run)
+        leaders.append(
+            {
+                "run": run, "model": reporting["model_display_name"],
+                "macro_normalized_mae": sum(values) / len(values),
+                "valid_units": len(values), "total_units": len(values),
+                "source_run": candidate.source_run,
+                "checkpoint_epoch": summary.get("checkpoint_epoch", ""),
+            }
+        )
+        comparisons.setdefault(section["comparison_identity"]["hash"], []).append(run)
+    _require_one_comparison(comparisons, "Stage 2 Full physics")
+    return _rank(leaders, "macro_normalized_mae")
 
 
 def _require_one_comparison(groups: Mapping[str, Sequence[str]], label: str) -> None:
@@ -727,8 +1004,9 @@ def _write_csv(path: Path, rows: Sequence[Mapping[str, Any]], fields: Sequence[s
 def _overview(
     stage3_test: Sequence[Mapping[str, Any]],
     stage3_validation: Sequence[Mapping[str, Any]],
-    stage2: Sequence[Mapping[str, Any]],
-    test_wins: Mapping[str, Sequence[str]],
+    stage2_core: Sequence[Mapping[str, Any]],
+    stage2_partial: Sequence[Mapping[str, Any]],
+    stage2_full: Sequence[Mapping[str, Any]],
     stage2_wins: Mapping[str, Sequence[str]],
     health: Sequence[Mapping[str, Any]],
 ) -> str:
@@ -736,14 +1014,16 @@ def _overview(
     for title, rows in (
         ("Stage 3 TEST (5-fold ensemble)", stage3_test),
         ("Stage 3 VALIDATION (5-fold mean)", stage3_validation),
-        ("Stage 2 PHYSICS", stage2),
+        ("Stage 2 CORE", stage2_core),
+        ("Partial Charge", stage2_partial),
+        ("Stage 2 FULL", stage2_full),
     ):
         lines.extend((f"## {title}", ""))
         if rows:
             for row in rows:
                 lines.append(
                     f"{row['rank']}. {row['model']} — macro normalized MAE "
-                    f"{float(row['macro_normalized_mae']):.6g}"
+                    f"{float(row.get('macro_normalized_mae', row.get('molecule_macro_normalized_mae'))):.6g}"
                 )
         else:
             lines.append("No eligible run.")
@@ -752,14 +1032,29 @@ def _overview(
                 f"Coverage: {rows[0]['total_tasks']} test tasks / "
                 f"{rows[0]['enabled_tasks']} enabled Stage 3 tasks."
             )
+        if title in {"Partial Charge", "Stage 2 FULL"}:
+            not_evaluated = [
+                row["run"] for row in health
+                if row[
+                    "stage2_partial_eligibility"
+                    if title == "Partial Charge" else "stage2_full_eligibility"
+                ] == "not_evaluated"
+            ]
+            not_eligible = [
+                row["run"] for row in health
+                if row[
+                    "stage2_partial_eligibility"
+                    if title == "Partial Charge" else "stage2_full_eligibility"
+                ] == "not_eligible"
+            ]
+            lines.append(
+                "Not evaluated: " + (", ".join(not_evaluated) if not_evaluated else "None")
+            )
+            lines.append(
+                "Not eligible: " + (", ".join(not_eligible) if not_eligible else "None")
+            )
         lines.append("")
-    lines.extend(("## Stage 3 task wins", ""))
-    lines.extend(
-        f"- {run}: {len(values)}" for run, values in test_wins.items()
-    )
-    if not test_wins:
-        lines.append("- None")
-    lines.extend(("", "## Stage 2 target wins", ""))
+    lines.extend(("## Core target wins", ""))
     lines.extend(
         f"- {run}: {len(values)}" for run, values in stage2_wins.items()
     )
@@ -781,7 +1076,9 @@ def build_summary(input_root: Path, repository_root: Path) -> dict[str, Any]:
     health = _health(candidates)
     stage3_test, stage3_test_metrics, test_wins = _stage3_test(candidates)
     stage3_validation, stage3_validation_metrics = _stage3_validation(candidates)
-    stage2, stage2_metrics, stage2_wins = _stage2(candidates)
+    stage2_core, stage2_core_metrics, stage2_wins = _stage2_core(candidates)
+    stage2_partial, stage2_partial_metrics = _stage2_partial(candidates)
+    stage2_full = _stage2_full(candidates)
     return {
         "schema_version": SUMMARY_SCHEMA_VERSION,
         "inputs": sorted(
@@ -795,14 +1092,17 @@ def build_summary(input_root: Path, repository_root: Path) -> dict[str, Any]:
         "leaderboards": {
             "stage3_test": stage3_test,
             "stage3_validation": stage3_validation,
-            "stage2_physics": stage2,
+            "stage2_core_physics": stage2_core,
+            "stage2_partial_charge": stage2_partial,
+            "stage2_physics_full": stage2_full,
         },
         "metrics": {
             "stage3_test": stage3_test_metrics,
             "stage3_validation": stage3_validation_metrics,
-            "stage2_physics": stage2_metrics,
+            "stage2_core_physics": stage2_core_metrics,
+            "stage2_partial_charge": stage2_partial_metrics,
         },
-        "wins": {"stage3_test": test_wins, "stage2_physics": stage2_wins},
+        "wins": {"stage3_test": test_wins, "stage2_core_physics": stage2_wins},
         "health": health,
     }
 
@@ -813,14 +1113,23 @@ def _comparison_catalog(
     catalog: dict[str, dict[str, dict[str, Any]]] = {
         "stage3_test": {},
         "stage3_validation": {},
-        "stage2_physics": {},
+        "stage2_core_physics": {},
+        "stage2_partial_charge": {},
+        "stage2_physics_full": {},
     }
     sources: dict[tuple[str, str], list[str]] = {}
     for candidate in _current_completed(candidates):
         reporting = candidate.summary["reporting"]
         sections: Iterable[tuple[str, Mapping[str, Any]]]
         if candidate.metadata["stage"] == "benchmark":
-            sections = reporting["benchmarks"].items()
+            sections = (
+                reporting["benchmarks"].items()
+                if reporting.get("contract") == STAGE2_BENCHMARK_SUITE_CONTRACT
+                else (
+                    ("stage3_test", reporting["benchmarks"]["stage3_test"]),
+                    ("stage3_validation", reporting["benchmarks"]["stage3_validation"]),
+                )
+            )
         elif candidate.metadata["stage"] == "stage3":
             name = (
                 "stage3_test"
@@ -828,9 +1137,13 @@ def _comparison_catalog(
                 else "stage3_validation"
             )
             sections = ((name, reporting),)
+        elif reporting.get("contract") == STAGE2_BENCHMARK_SUITE_CONTRACT:
+            sections = reporting["benchmarks"].items()
         else:
-            sections = (("stage2_physics", reporting),)
+            sections = ()
         for name, section in sections:
+            if section.get("status") in {"unsupported", "incomplete"}:
+                continue
             identity = section["comparison_identity"]
             identity_hash = str(identity["hash"])
             existing = catalog[name].get(identity_hash)
@@ -867,9 +1180,19 @@ def write_summary_snapshot(payload: Mapping[str, Any], destination: Path) -> Non
         ("rank", "run", "model", "macro_normalized_mae", "valid_tasks", "total_tasks", "per_task_wins", "source_run", "checkpoint_epoch"),
     )
     _write_csv(
-        destination / "stage2_physics_leaderboard.csv",
-        leaderboards["stage2_physics"],
+        destination / "stage2_core_physics_leaderboard.csv",
+        leaderboards["stage2_core_physics"],
         ("rank", "run", "model", "macro_normalized_mae", "valid_targets", "total_targets", "per_target_wins", "source_run", "checkpoint_epoch"),
+    )
+    _write_csv(
+        destination / "stage2_partial_charge_leaderboard.csv",
+        leaderboards["stage2_partial_charge"],
+        ("rank", "run", "model", "molecule_macro_normalized_mae", "molecule_macro_mae", "mapped_molecules", "test_molecules", "source_run", "checkpoint_epoch"),
+    )
+    _write_csv(
+        destination / "stage2_physics_full_leaderboard.csv",
+        leaderboards["stage2_physics_full"],
+        ("rank", "run", "model", "macro_normalized_mae", "valid_units", "total_units", "source_run", "checkpoint_epoch"),
     )
     _write_csv(
         destination / "stage3_test_metrics.csv",
@@ -882,20 +1205,27 @@ def write_summary_snapshot(payload: Mapping[str, Any], destination: Path) -> Non
         ("run", "model", "task", "mae_mean", "mae_std", "rmse_mean", "rmse_std", "r2_mean", "r2_std", "normalized_mae_mean", "normalized_mae_std", "normalized_rmse_mean", "normalized_rmse_std", "source_run"),
     )
     _write_csv(
-        destination / "stage2_physics_metrics.csv",
-        metrics["stage2_physics"],
+        destination / "stage2_core_physics_metrics.csv",
+        metrics["stage2_core_physics"],
         ("run", "model", "task", "target", "count", "mae", "rmse", "r2", "normalized_mae", "normalized_rmse", "source_run"),
+    )
+    _write_csv(
+        destination / "stage2_partial_charge_metrics.csv",
+        metrics["stage2_partial_charge"],
+        ("run", "model", "subset", "molecule_count", "atom_count", "molecule_macro_mae", "molecule_macro_normalized_mae", "atom_micro_mae", "atom_micro_rmse", "atom_micro_r2", "atom_micro_r2_reason", "reason", "source_run"),
     )
     _write_csv(
         destination / "sweep_status.csv",
         payload["health"],
-        ("run", "model", "stage", "operation", "status", "completeness", "checkpoint_epoch", "enabled_tasks", "expected_tasks", "available_tasks", "available_folds", "failed_jobs", "source_run", "issues"),
+        ("run", "model", "stage", "operation", "status", "completeness", "checkpoint_epoch", "enabled_tasks", "expected_tasks", "available_tasks", "available_folds", "failed_jobs", "stage2_core_eligibility", "stage2_partial_eligibility", "stage2_full_eligibility", "source_run", "issues"),
     )
     (destination / "overview.md").write_text(
         _overview(
             leaderboards["stage3_test"], leaderboards["stage3_validation"],
-            leaderboards["stage2_physics"], payload["wins"]["stage3_test"],
-            payload["wins"]["stage2_physics"], payload["health"],
+            leaderboards["stage2_core_physics"],
+            leaderboards["stage2_partial_charge"],
+            leaderboards["stage2_physics_full"],
+            payload["wins"]["stage2_core_physics"], payload["health"],
         ),
         encoding="utf-8",
     )

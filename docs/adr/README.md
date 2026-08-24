@@ -25,3 +25,4 @@
 - [ADR-0021：Identity / Audit Contract v1](0021-identity-audit-contract-v1.md)
 - [ADR-0022：MLP 与 ECFP-XGBoost 对比基线](0022-mlp-ecfp-xgboost-baselines.md)
 - [ADR-0023：统一 evaluation reporting 与结果汇总](0023-unified-evaluation-reporting.md)
+- [ADR-0024：Stage 2 Partial Charge benchmark 与三榜汇总](0024-stage2-partial-charge-benchmark-suite.md)

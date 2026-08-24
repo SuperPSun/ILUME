@@ -10,6 +10,7 @@ from typing import Iterator
 
 from rdkit import Chem
 
+from common.identity import semantic_identity
 from common.io import sha256_file
 
 
@@ -20,6 +21,19 @@ _BOND_TYPES = {
     "ar": "aromatic",
     "am": "single",
 }
+
+PARTIAL_CHARGE_MAPPING_CONTRACT = semantic_identity(
+    "stage2.partial-charge-mapping.v1",
+    {
+        "model_graph": "rdkit-canonical-smiles-atom-order",
+        "structure_graph": "verified-mol2-atom-order",
+        "hydrogen_policy": "exclude-mol2-hydrogen-when-model-graph-has-no-explicit-hydrogen",
+        "matching": "typed-isomorphism-then-connectivity-fallback",
+        "candidate_limit": 2,
+        "selection": "first-deterministic-depth-first-mapping",
+        "prediction_independent": True,
+    },
+)
 
 
 @dataclass(frozen=True)
@@ -324,7 +338,8 @@ def load_verify_parse_and_map(
 
 
 __all__ = [
-    "AtomMappingResult", "Mol2Graph", "StructureManifestEntry",
+    "AtomMappingResult", "Mol2Graph", "PARTIAL_CHARGE_MAPPING_CONTRACT",
+    "StructureManifestEntry",
     "load_structure_manifest", "load_verify_parse_and_map", "map_partial_charges",
     "parse_mol2", "parse_mol2_text", "verify_structure",
 ]

@@ -4,6 +4,7 @@ import argparse
 import csv
 import heapq
 import json
+import math
 import os
 import re
 import subprocess
@@ -25,7 +26,12 @@ from common.identity import semantic_identity
 from common.io import atomic_json
 from common.outputs import open_run_directory, repository_path, repository_relative
 from common.progress import ProgressReporter
-from common.reporting import REPORTING_SCHEMA_VERSION, comparison_identity
+from common.reporting import (
+    REPORTING_SCHEMA_VERSION,
+    STAGE2_BENCHMARK_SUITE_CONTRACT,
+    STAGE2_CORE_EVALUATION_CONTRACT,
+    comparison_identity,
+)
 
 FIELDS = ("operation", "benchmark", "task", "fold", "attempt", "status", "exit_code", "output")
 
@@ -39,7 +45,9 @@ def _metadata(path: Path) -> dict[str, Any] | None:
     return json.loads(metadata.read_text(encoding="utf-8")) if metadata.is_file() else None
 
 
-def _latest_completed(root: Path, required: str) -> Path | None:
+def _latest_completed(
+    root: Path, required: str, *, reporting_contract: str | None = None
+) -> Path | None:
     candidates = []
     for path in root.glob("attempt-*"):
         payload = _metadata(path)
@@ -52,6 +60,11 @@ def _latest_completed(root: Path, required: str) -> Path | None:
                     summary.get("reporting", {}).get("schema_version")
                     == REPORTING_SCHEMA_VERSION
                 )
+                if reporting_contract is not None:
+                    reporting_current = reporting_current and (
+                        summary.get("reporting", {}).get("contract")
+                        == reporting_contract
+                    )
             except (json.JSONDecodeError, OSError):
                 reporting_current = False
         if (
@@ -102,7 +115,15 @@ class _SweepState:
         task: str, fold: int | None, training_job: bool,
     ) -> tuple[int, Path] | Path:
         with self.lock:
-            completed = _latest_completed(root, required)
+            completed = _latest_completed(
+                root,
+                required,
+                reporting_contract=(
+                    STAGE2_CORE_EVALUATION_CONTRACT
+                    if operation.startswith("evaluate") and benchmark == "stage2_physics"
+                    else None
+                ),
+            )
             if completed is not None:
                 self._record_locked(
                     operation=operation, benchmark=benchmark, task=task, fold=fold,
@@ -436,7 +457,11 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
             stage3_test_reporting.append(payload["reporting"])
             source_runs["stage3_test"][task] = repository_relative(run)
     for task in configured_tasks(config, "stage2_physics"):
-        run = _latest_completed(root / "stage2_physics" / _sanitize(task) / "evaluate_test", "summary.json")
+        run = _latest_completed(
+            root / "stage2_physics" / _sanitize(task) / "evaluate_test",
+            "summary.json",
+            reporting_contract=STAGE2_CORE_EVALUATION_CONTRACT,
+        )
         if run:
             payload = json.loads((run / "summary.json").read_text(encoding="utf-8"))
             stage2_test[task] = payload["targets"]
@@ -493,6 +518,8 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
         for task in configured_tasks(config, "stage2_physics")
         for target in stage2_test.get(task, {})
     ]
+    stage2_valid_count = sum(math.isfinite(value) for value in stage2_values)
+    stage2_complete = stage2_valid_count == len(stage2_expected)
     study_ids = {
         item["study_id"]
         for item in [*stage3_valid_reporting, *stage3_test_reporting, *stage2_reporting]
@@ -523,6 +550,7 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
         },
         "reporting": {
             "schema_version": REPORTING_SCHEMA_VERSION,
+            "contract": STAGE2_BENCHMARK_SUITE_CONTRACT,
             "model_id": config.name,
             "model_display_name": config.display_name,
             "study_id": study_id,
@@ -555,7 +583,8 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
                         expected=valid_expected, ensemble=False,
                     ),
                 },
-                "stage2_physics": {
+                "stage2_core_physics": {
+                    "status": "complete" if stage2_complete else "incomplete",
                     "benchmark": "stage2_physics",
                     "protocol": {
                         "split": "test", "folds": [], "ensemble": False,
@@ -567,9 +596,31 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
                         benchmark="stage2_physics", split="test",
                         expected=stage2_expected, ensemble=False,
                     ),
+                    "issues": (
+                        [] if stage2_complete
+                        else [f"missing_or_invalid_targets={len(stage2_expected) - stage2_valid_count}"]
+                    ),
+                },
+                "stage2_partial_charge": {
+                    "status": "unsupported",
+                    "benchmark": "stage2_partial_charge",
+                    "protocol": {"split": "test", "ensemble": False},
+                },
+                "stage2_physics_full": {
+                    "status": "unsupported",
+                    "benchmark": "stage2_physics_full",
+                    "protocol": {"split": "test", "ensemble": False},
                 },
             },
+            "capabilities": {
+                "stage2_core_physics": "supported",
+                "stage2_partial_charge": "unsupported",
+                "stage2_physics_full": "unsupported",
+            },
             "source_runs": source_runs,
+            "source_run_manifest": semantic_identity(
+                "benchmark.source-run-manifest.v1", {"source_runs": source_runs}
+            ),
         },
     }
     return result
@@ -633,7 +684,10 @@ def main() -> None:
         config_payload=config.to_dict(), semantic_identity=identity,
         output=args.output, seed=config.seed, reusable=True,
         data_metadata=["data/task_catalog.csv", "data/stage2/metadata.json"],
-        details={"reporting_schema_version": REPORTING_SCHEMA_VERSION},
+        details={
+            "reporting_schema_version": REPORTING_SCHEMA_VERSION,
+            "reporting_contract": STAGE2_BENCHMARK_SUITE_CONTRACT,
+        },
     )
     rows: list[dict[str, Any]] = []
     train_script = ROOT / "scripts/benchmarks/train.py"

@@ -421,7 +421,7 @@ def test_atom_forward_vectorizes_molecule_and_atom_samples(tiny_stage2_setup):
         backbone_dropout=0.0,
     )
     model = Stage2ObjectModel(
-        loaded.model, registry, object_layers=1, object_ffn_dim=32, dropout=0.1,
+        loaded.model, registry, object_layers=1, object_ffn_dim=32, dropout=0.0,
     )
     task = "simulation/partial_atomic_charge"
     states = EncodedEntityStates(
@@ -433,6 +433,10 @@ def test_atom_forward_vectorizes_molecule_and_atom_samples(tiny_stage2_setup):
     roles = torch.full((3, 1), 2, dtype=torch.long)
     atom_state_indices = torch.tensor([0, 1, 2, 0, 1, 2, 3, 4])
     atom_sample_indices = torch.tensor([0, 0, 0, 1, 1, 1, 2, 2])
+    expected = model.predict_atom_from_states(
+        task, states, positions, roles, object_slots,
+        atom_state_indices, atom_sample_indices,
+    )
     with (
         patch.object(model.object_encoder, "forward", wraps=model.object_encoder.forward) as object_forward,
         patch.object(model.atom_heads[task], "forward", wraps=model.atom_heads[task].forward) as atom_forward,
@@ -447,6 +451,7 @@ def test_atom_forward_vectorizes_molecule_and_atom_samples(tiny_stage2_setup):
     assert atom_forward.call_count == 1
     assert atom_forward.call_args.args[0].shape[0] == 8
     assert output.predictions.shape == (8,)
+    assert torch.equal(output.predictions, expected)
     assert output.teacher_loss.item() == 0.0
 
 

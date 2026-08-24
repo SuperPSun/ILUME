@@ -9,7 +9,10 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from common.progress import ProgressReporter
 from common.outputs import open_run_directory, repository_path, repository_relative
-from common.reporting import REPORTING_SCHEMA_VERSION
+from common.reporting import (
+    REPORTING_SCHEMA_VERSION,
+    STAGE2_BENCHMARK_SUITE_CONTRACT,
+)
 from common.training import resolve_device
 from stage2.config import load_stage2_config
 from stage2.runtime import configure_stage2_math
@@ -28,7 +31,7 @@ def main() -> None:
     from stage2.evaluate import (
         evaluate_stage2_checkpoints,
         resolve_checkpoint_path,
-        resolve_stage2_evaluation_identity,
+        resolve_stage2_evaluation_contract,
     )
 
     progress = ProgressReporter()
@@ -40,7 +43,7 @@ def main() -> None:
     )
 
     with progress.status("Resolving Stage 2 evaluation identity"):
-        evaluation_identity = resolve_stage2_evaluation_identity(
+        evaluation_identity, partial_charge_benchmark = resolve_stage2_evaluation_contract(
             config,
             checkpoint_dir,
             checkpoint_epoch=args.checkpoint_epoch,
@@ -55,6 +58,7 @@ def main() -> None:
         seed=config.data.seed,
         details={
             "reporting_schema_version": REPORTING_SCHEMA_VERSION,
+            "reporting_contract": STAGE2_BENCHMARK_SUITE_CONTRACT,
             "checkpoint_dir": repository_relative(checkpoint_dir),
             "checkpoint": repository_relative(checkpoint_path),
             "checkpoint_epoch": int(checkpoint_path.stem.rsplit("_", 1)[1]),
@@ -69,6 +73,7 @@ def main() -> None:
             checkpoint_epoch=args.checkpoint_epoch,
             predictions_dir=run.root / "predictions",
             expected_evaluation_identity=evaluation_identity,
+            partial_charge_benchmark=partial_charge_benchmark,
             reporter=progress,
         )
         run.complete(result)

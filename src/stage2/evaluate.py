@@ -15,9 +15,10 @@ from common.progress import ProgressReporter
 from common.identity import IDENTITY_CONTRACT_VERSION, require_compatible_identity, semantic_identity
 from common.io import sha256_file
 from common.reporting import (
+    STAGE2_BENCHMARK_SUITE_CONTRACT,
     comparison_identity,
-    reporting_block,
     sanitize_task_id,
+    stage2_full_comparison_identity,
     write_prediction_csv,
 )
 from common.training import resolve_device
@@ -34,9 +35,18 @@ from .config import STAGE2_CHECKPOINT_KIND, STAGE2_CHECKPOINT_VERSION, Stage2Con
 from .data import load_artifact_registry
 from .identity import metadata_identity
 from .model import Stage2ObjectModel
+from .atom_evaluation import (
+    PARTIAL_CHARGE_TASK,
+    PARTIAL_CHARGE_UNIT,
+    PartialChargeBenchmark,
+    build_partial_charge_benchmark,
+    public_partial_charge_score,
+    score_partial_charge_predictions,
+    write_partial_charge_predictions,
+)
 
 
-STAGE2_PHYSICS_TASKS = (
+STAGE2_CORE_TASKS = (
     "simulation/heat_of_vaporization",
     "simulation/pbe_tzvp_cation_orbitals",
     "simulation/pbe_tzvp_anion_orbitals",
@@ -117,7 +127,7 @@ def _scalers(config: Stage2Config) -> dict[str, Any]:
 def _scalar_ids(registry: Any) -> tuple[str, ...]:
     return tuple(
         f"{task}::{target}"
-        for task in STAGE2_PHYSICS_TASKS
+        for task in STAGE2_CORE_TASKS
         for target in registry.by_id(task).target_columns
     )
 
@@ -127,7 +137,7 @@ def _comparison(
 ) -> dict[str, Any]:
     sources: dict[str, Any] = {}
     normalization: dict[str, Any] = {}
-    for task in STAGE2_PHYSICS_TASKS:
+    for task in STAGE2_CORE_TASKS:
         spec = registry.by_id(task)
         for split in ("train", "test"):
             path = spec.dataset.split_path(config.data.data_root, split)
@@ -146,25 +156,85 @@ def _comparison(
     )
 
 
+def _partial_benchmark(
+    config: Stage2Config, registry: Any, scalers: Mapping[str, Any]
+) -> PartialChargeBenchmark:
+    spec = registry.by_id(PARTIAL_CHARGE_TASK)
+    manifest = spec.dataset.resource_manifest_path(config.data.data_root)
+    if manifest is None:
+        raise ValueError("Partial-charge task is missing its structure manifest")
+    return build_partial_charge_benchmark(
+        spec.dataset.split_path(config.data.data_root, "test"),
+        manifest,
+        scalers[PARTIAL_CHARGE_TASK]["targets"][spec.target_columns[0]],
+    )
+
+
+def _full_comparison(
+    registry: Any,
+    core: Mapping[str, Any],
+    partial_charge: Mapping[str, Any],
+) -> dict[str, Any]:
+    return stage2_full_comparison_identity(
+        core,
+        partial_charge,
+        ordered_units=(*_scalar_ids(registry), PARTIAL_CHARGE_UNIT),
+    )
+
+
 def resolve_stage2_evaluation_identity(
     config: Stage2Config,
     checkpoint_dir: str | Path,
     *,
     checkpoint_epoch: int | None = None,
 ) -> dict[str, Any]:
+    identity, _ = resolve_stage2_evaluation_contract(
+        config, checkpoint_dir, checkpoint_epoch=checkpoint_epoch
+    )
+    return identity
+
+
+def resolve_stage2_evaluation_contract(
+    config: Stage2Config,
+    checkpoint_dir: str | Path,
+    *,
+    checkpoint_epoch: int | None = None,
+) -> tuple[dict[str, Any], PartialChargeBenchmark]:
     path = resolve_checkpoint_path(checkpoint_dir, checkpoint_epoch)
     checkpoint, registry, _ = _load_checkpoint_contract(config, path)
     scalers = _scalers(config)
-    comparison = _comparison(config, registry, scalers)
+    core_comparison = _comparison(config, registry, scalers)
+    partial_benchmark = _partial_benchmark(config, registry, scalers)
+    full_comparison = _full_comparison(
+        registry, core_comparison, partial_benchmark.comparison_identity
+    )
+    identity = _evaluation_identity(
+        path, checkpoint, core_comparison,
+        partial_benchmark.comparison_identity, full_comparison,
+    )
+    return identity, partial_benchmark
+
+
+def _evaluation_identity(
+    checkpoint_path: Path,
+    checkpoint: Mapping[str, Any],
+    core_comparison: Mapping[str, Any],
+    partial_comparison: Mapping[str, Any],
+    full_comparison: Mapping[str, Any],
+) -> dict[str, Any]:
     return semantic_identity(
         "stage2.evaluation.v1",
         {
-            "checkpoint_sha256": sha256_file(path),
+            "checkpoint_sha256": sha256_file(checkpoint_path),
             "checkpoint_epoch": int(checkpoint["completed_epoch"]),
             "training_identity": checkpoint["training_identity"]["hash"],
             "prepared_identity": checkpoint["data_identity"]["hash"],
-            "tasks": list(STAGE2_PHYSICS_TASKS),
-            "comparison_identity": comparison["hash"],
+            "tasks": [*STAGE2_CORE_TASKS, PARTIAL_CHARGE_TASK],
+            "comparison_identities": {
+                "stage2_core_physics": core_comparison["hash"],
+                "stage2_partial_charge": partial_comparison["hash"],
+                "stage2_physics_full": full_comparison["hash"],
+            },
         },
     )
 
@@ -299,14 +369,22 @@ def evaluate_stage2_checkpoints(
     checkpoint_epoch: int | None = None,
     predictions_dir: str | Path | None = None,
     expected_evaluation_identity: Mapping[str, Any] | None = None,
+    partial_charge_benchmark: PartialChargeBenchmark | None = None,
     reporter: ProgressReporter | None = None,
 ) -> dict[str, Any]:
     checkpoint_path = resolve_checkpoint_path(checkpoint_dir, checkpoint_epoch)
     checkpoint, registry, _ = _load_checkpoint_contract(config, checkpoint_path)
     scalers = _scalers(config)
-    comparison = _comparison(config, registry, scalers)
-    evaluation_identity = resolve_stage2_evaluation_identity(
-        config, checkpoint_dir, checkpoint_epoch=checkpoint_epoch
+    core_comparison = _comparison(config, registry, scalers)
+    partial_benchmark = partial_charge_benchmark or _partial_benchmark(
+        config, registry, scalers
+    )
+    full_comparison = _full_comparison(
+        registry, core_comparison, partial_benchmark.comparison_identity
+    )
+    evaluation_identity = _evaluation_identity(
+        checkpoint_path, checkpoint, core_comparison,
+        partial_benchmark.comparison_identity, full_comparison,
     )
     if expected_evaluation_identity is not None:
         require_compatible_identity(
@@ -353,13 +431,13 @@ def evaluate_stage2_checkpoints(
 
     task_rows = {
         task: _read_test_rows(config, registry.by_id(task))
-        for task in STAGE2_PHYSICS_TASKS
+        for task in STAGE2_CORE_TASKS
     }
 
     total_batches = sum(
         math.ceil(len(rows) / config.training.batch_size)
         for rows in task_rows.values()
-    )
+    ) + math.ceil(len(partial_benchmark.evaluated) / config.training.batch_size)
 
     evaluation_progress = progress_reporter.bar(
         total=total_batches,
@@ -367,7 +445,7 @@ def evaluate_stage2_checkpoints(
         unit="batch",
     )
     try:
-        for task in STAGE2_PHYSICS_TASKS:
+        for task in STAGE2_CORE_TASKS:
             spec = registry.by_id(task)
             rows = task_rows[task]
             raw_predictions: list[np.ndarray] = []
@@ -492,44 +570,183 @@ def evaluate_stage2_checkpoints(
                 manifest["path"] = f"predictions/{sanitize_task_id(task)}.csv"
                 manifest["task"] = task
                 prediction_manifests.append(manifest)
+
+        partial_predictions: dict[str, np.ndarray] = {}
+        partial_rows = partial_benchmark.evaluated
+        partial_batches = math.ceil(
+            len(partial_rows) / config.training.batch_size
+        )
+        for batch_index, start in enumerate(
+            range(0, len(partial_rows), config.training.batch_size), start=1
+        ):
+            evaluation_progress.set_postfix_str(
+                f"task={PARTIAL_CHARGE_TASK} batch={batch_index}/{partial_batches}",
+                refresh=False,
+            )
+            chunk = partial_rows[start : start + config.training.batch_size]
+            samples = []
+            for molecule in chunk:
+                key = (molecule.role, molecule.canonical_smiles)
+                if key not in sample_cache:
+                    sample_cache[key] = _entity_sample(
+                        molecule.role,
+                        molecule.canonical_smiles,
+                        feature_config=feature_config,
+                        vocabulary=vocabulary,
+                        schema=schema,
+                        standardizer=standardizer,
+                    )
+                sample = dict(sample_cache[key])
+                sample["sample_id"] = f"stage2-evaluate:{molecule.mol_id}"
+                samples.append(sample)
+            packed = packer(samples).to(device)
+            states = model.encode_entity_states(packed)
+            positions = torch.arange(
+                len(chunk), dtype=torch.long, device=device
+            ).reshape(-1, 1)
+            atom_state_indices = torch.arange(
+                states.atom_states.shape[0], dtype=torch.long, device=device
+            )
+            with torch.autocast(
+                device_type=device.type,
+                dtype=torch.bfloat16,
+                enabled=config.training.amp_dtype == "bf16",
+            ):
+                normalized = model.predict_atom_from_states(
+                    PARTIAL_CHARGE_TASK,
+                    states,
+                    positions,
+                    packed.roles[positions],
+                    states.entity_cls[positions],
+                    atom_state_indices,
+                    states.atom_batch,
+                )
+            normalized = normalized.reshape(-1)
+            if not torch.isfinite(normalized).all():
+                raise RuntimeError("Non-finite partial-charge evaluation prediction")
+            raw = (
+                normalized.float().cpu().numpy() * partial_benchmark.target_scale
+                + partial_benchmark.target_mean
+            )
+            atom_batch = states.atom_batch.cpu().numpy()
+            for row_index, molecule in enumerate(chunk):
+                values = raw[atom_batch == row_index]
+                partial_predictions[molecule.mol_id] = values.astype(np.float64)
+            evaluation_progress.update(1)
+
+        partial_score = score_partial_charge_predictions(
+            partial_benchmark, partial_predictions
+        )
+        task_metrics[PARTIAL_CHARGE_TASK] = public_partial_charge_score(
+            partial_score
+        )
+        if predictions_dir is not None:
+            manifest = write_partial_charge_predictions(
+                Path(predictions_dir) / f"{sanitize_task_id(PARTIAL_CHARGE_TASK)}.csv",
+                partial_benchmark,
+                partial_score,
+            )
+            manifest["path"] = (
+                f"predictions/{sanitize_task_id(PARTIAL_CHARGE_TASK)}.csv"
+            )
+            prediction_manifests.append(manifest)
     finally:
         evaluation_progress.close()
     scalar_values = [
         float(task_metrics[task][target]["normalized_mae"])
-        for task in STAGE2_PHYSICS_TASKS
+        for task in STAGE2_CORE_TASKS
         for target in registry.by_id(task).target_columns
     ]
     epoch = int(checkpoint["completed_epoch"])
+    core_value = sum(scalar_values) / len(scalar_values)
+    partial_public = task_metrics[PARTIAL_CHARGE_TASK]
+    partial_complete = partial_public["status"] == "complete"
+    partial_value = (
+        None
+        if not partial_complete
+        else float(partial_public["primary"]["molecule_macro_normalized_mae"])
+    )
+    full_value = (
+        None
+        if partial_value is None
+        else (sum(scalar_values) + partial_value) / (len(scalar_values) + 1)
+    )
+    study_id = f"ilume-stage2-{checkpoint['training_identity']['hash']}"
+    reporting_protocol = {
+        "split": "test",
+        "ensemble": False,
+        "checkpoint_epoch": epoch,
+        "checkpoint_sha256": sha256_file(checkpoint_path),
+    }
     return {
         "split": "test",
         "checkpoint_epoch": epoch,
         "tasks": task_metrics,
-        "macro_normalized_mae": {
-            "value": sum(scalar_values) / len(scalar_values),
+        "core_macro_normalized_mae": {
+            "value": core_value,
             "valid_targets": len(scalar_values),
             "total_targets": len(_scalar_ids(registry)),
         },
-        "reporting": reporting_block(
-            model_id="ilume",
-            model_display_name="ILUME",
-            benchmark="stage2_physics",
-            protocol={
-                "split": "test",
-                "ensemble": False,
-                "expected_tasks": list(STAGE2_PHYSICS_TASKS),
-                "expected_targets": list(_scalar_ids(registry)),
-                "checkpoint_epoch": epoch,
+        "full_macro_normalized_mae": {
+            "value": full_value,
+            "valid_units": len(scalar_values) + (1 if partial_complete else 0),
+            "total_units": len(scalar_values) + 1,
+        },
+        "reporting": {
+            "schema_version": 1,
+            "contract": STAGE2_BENCHMARK_SUITE_CONTRACT,
+            "model_id": "ilume",
+            "model_display_name": "ILUME",
+            "study_id": study_id,
+            "capabilities": {
+                "stage2_core_physics": "supported",
+                "stage2_partial_charge": "supported",
+                "stage2_physics_full": "supported",
             },
-            comparison=comparison,
-            study_id=f"ilume-stage2-{checkpoint['training_identity']['hash']}",
-            predictions=prediction_manifests,
-        ),
+            "benchmarks": {
+                "stage2_core_physics": {
+                    "status": "complete",
+                    "benchmark": "stage2_physics",
+                    "protocol": {
+                        **reporting_protocol,
+                        "expected_tasks": list(STAGE2_CORE_TASKS),
+                        "expected_targets": list(_scalar_ids(registry)),
+                    },
+                    "comparison_identity": core_comparison,
+                },
+                "stage2_partial_charge": {
+                    "status": partial_public["status"],
+                    "benchmark": "stage2_partial_charge",
+                    "protocol": {
+                        **reporting_protocol,
+                        "expected_tasks": [PARTIAL_CHARGE_TASK],
+                        "expected_units": [PARTIAL_CHARGE_UNIT],
+                        "weighting": "molecule_equal",
+                    },
+                    "comparison_identity": partial_benchmark.comparison_identity,
+                    "issues": partial_public["coverage"]["issues"],
+                },
+                "stage2_physics_full": {
+                    "status": "complete" if partial_complete else "incomplete",
+                    "benchmark": "stage2_physics_full",
+                    "protocol": {
+                        **reporting_protocol,
+                        "ordered_units": [*_scalar_ids(registry), PARTIAL_CHARGE_UNIT],
+                        "unit_weighting": "equal",
+                    },
+                    "comparison_identity": full_comparison,
+                    "issues": [] if partial_complete else ["partial_charge_incomplete"],
+                },
+            },
+            "predictions": prediction_manifests,
+        },
     }
 
 
 __all__ = [
-    "STAGE2_PHYSICS_TASKS",
+    "STAGE2_CORE_TASKS",
     "evaluate_stage2_checkpoints",
     "resolve_checkpoint_path",
+    "resolve_stage2_evaluation_contract",
     "resolve_stage2_evaluation_identity",
 ]

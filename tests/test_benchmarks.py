@@ -746,6 +746,47 @@ def test_stage2_train_failure_skips_evaluation(
     assert not result.train_succeeded
 
 
+def test_stage2_child_evaluation_contract_marks_old_attempt_stale(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "evaluate_test"
+    old = root / "attempt-001"
+    old.mkdir(parents=True)
+    (old / "metadata.json").write_text(
+        json.dumps({"status": "completed"}), encoding="utf-8"
+    )
+    (old / "summary.json").write_text(
+        json.dumps({"reporting": {"schema_version": 1}}), encoding="utf-8"
+    )
+    assert sweep_module._latest_completed(
+        root,
+        "summary.json",
+        reporting_contract=sweep_module.STAGE2_CORE_EVALUATION_CONTRACT,
+    ) is None
+
+    current = root / "attempt-002"
+    current.mkdir()
+    (current / "metadata.json").write_text(
+        json.dumps({"status": "completed"}), encoding="utf-8"
+    )
+    (current / "summary.json").write_text(
+        json.dumps(
+            {
+                "reporting": {
+                    "schema_version": 1,
+                    "contract": sweep_module.STAGE2_CORE_EVALUATION_CONTRACT,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert sweep_module._latest_completed(
+        root,
+        "summary.json",
+        reporting_contract=sweep_module.STAGE2_CORE_EVALUATION_CONTRACT,
+    ) == current
+
+
 def test_stage3_valid_failure_does_not_block_ensemble_gate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

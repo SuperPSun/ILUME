@@ -1,0 +1,2 @@
+rank,run,model,molecule_macro_normalized_mae,molecule_macro_mae,mapped_molecules,test_molecules,source_run,checkpoint_epoch
+1,ilume@outputs/v1/stage2/base/evaluate/test,ILUME,0.14306422818483386,0.06304466799774337,2842,2854,outputs/v1/stage2/base/evaluate/test,5

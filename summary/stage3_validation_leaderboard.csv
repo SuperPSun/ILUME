@@ -1,0 +1,3 @@
+rank,run,model,macro_normalized_mae,valid_tasks,total_tasks,per_task_wins,source_run,checkpoint_epoch
+1,ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep,ECFP+XGBoost,0.30209580088402943,21,21,8,outputs/benchmarks/ecfp_xgboost/sweep,
+2,mlp@outputs/benchmarks/mlp/sweep,MLP,556351514740597.06,21,21,13,outputs/benchmarks/mlp/sweep,

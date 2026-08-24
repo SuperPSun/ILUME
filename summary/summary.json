@@ -1,0 +1,2407 @@
+{
+  "schema_version": 1,
+  "inputs": [
+    "13fffb40d0c1449e7e627fe66db8cb5ea80522a96f8df94ebac658875a5f6509",
+    "25905068458f6920db65e7167a94c57f899a74be481c6c0309a032c5b3517180",
+    "6a87c4062306bd9714f66e67f48a1891ca5eeca04ecb773827a8219c258858a0",
+    "88cf68ee7a6bd65861c7752734ff11323f248dfee11a0b25307b1e9a079d488d",
+    "896010afd9df6e1697470dbe8851598ae97c0ae4360ddec6b47398814d0aeb58",
+    "9ae593dd75539784a05442187a1ff9154e907520e01f18b18a56a9bcfd51a3bd",
+    "9d957d80210182c5e18999f8e346df12a97fd11415891fcaa9c51eef2260894e",
+    "a075914b968d9a2b893af521d428335d24f4a15da51bebe2a20d3097720659a9",
+    "a3dd08b4503dd7c43f3e831ea8c8a62bfa825613f410b7751d45213a99c871a3"
+  ],
+  "comparison_identities": {
+    "stage3_test": [
+      {
+        "identity": {
+          "identity_contract_version": 1,
+          "type": "reporting.comparison.v1",
+          "payload": {
+            "benchmark": "stage3_property",
+            "split": "test",
+            "expected": [
+              "experiment/electrical_conductivity",
+              "experiment/viscosity",
+              "experiment/density",
+              "experiment/surface_tension",
+              "experiment/glass_transition_temperature",
+              "experiment/melting_point",
+              "experiment/thermal_decomposition_temperature",
+              "experiment/refractive_index",
+              "experiment/solvation",
+              "experiment/transfer",
+              "experiment/transfer_organic"
+            ],
+            "sources": {
+              "experiment/electrical_conductivity:fold2": "893050cfc4ebb34ccfd5b7b7bdceff1c99c961a4991e15bed1b24f8e7199e828",
+              "experiment/electrical_conductivity:fold3": "c181c35661370d8b9532787fa1a0e88708da6133c573fd531ec1f56442c4e27f",
+              "experiment/electrical_conductivity:fold4": "a6f5ebbe2a277dfea5142f13cfcc1760d1a601974c15112a3c69aff26fd83190",
+              "experiment/electrical_conductivity:fold5": "24ea1c874e5f601aa41db5da98f5e1928257a20228bca96e7ae82ff8ec02dfe1",
+              "experiment/electrical_conductivity:fold1": "dfdf7dba384bb57aa59b292e5ed4e9ca67fdd4aa9aafcf37cb6ea61444769cda",
+              "experiment/electrical_conductivity:test": "bf8f58cc615e582d92d9702bc1717a198b94721490a84425118eb9b43af2b779",
+              "experiment/viscosity:fold2": "f2b92625878f05666405c2283ff5182b2d7043d174efdc653439a96c3aa285a7",
+              "experiment/viscosity:fold3": "53942e831c4ed0a4723cc77fa438fa0cb9b67331a6b611613f94558e5ba5b33d",
+              "experiment/viscosity:fold4": "15b85b142d5c5d5bd2c8de1d9c71be55cb5f71894780fa0906cee65c98c05ab2",
+              "experiment/viscosity:fold5": "150769a1193c7db76e21b3e959ef84df0c2186c9e4303ae3a0d748d5ce47a7f5",
+              "experiment/viscosity:fold1": "e92ac7369a148fa7af96355af18120f341f4f353c7f39e45980569ee4c8bc2c0",
+              "experiment/viscosity:test": "9d7b91a1c1f65d02daa11ce5d2a0d41a6e6c75518c627307b4fa6a7524efc29d",
+              "experiment/density:fold2": "ef4459353c249ca0e41b0131d25c9b16c871e9196255e11cdcaa52604ed3e4f4",
+              "experiment/density:fold3": "d15755534959d29e9ae7785b4012006293db9c04f0f1c2673fe565b25081672c",
+              "experiment/density:fold4": "fa632e5163bf1975f583d0a64955e0b36313e8bc885a9ea03f3aeec1d194cb70",
+              "experiment/density:fold5": "34f973afa89b7cad459c6bc3e3398bb522518164727c3e5720f0854f72cc4b51",
+              "experiment/density:fold1": "a963652c09a1782e8ede3274babb8aea53f3c8d0e197b6efc2d47210a58aa271",
+              "experiment/density:test": "0792aaa07a84f13720a4005e13270c5e4e75a991074b4f251ea34b74f0caa47d",
+              "experiment/surface_tension:fold2": "68181b78055d41aace54692309fde930e287155eb92f9fa8038db14229afb6d9",
+              "experiment/surface_tension:fold3": "82d55378eaab730fe0e43cc897739d6fabbbef19cf3d37e287a59d7034ad137f",
+              "experiment/surface_tension:fold4": "674bc44724fc9e57a29b9d0fa61732ee979fc4b49b44601931086d3d63f55a73",
+              "experiment/surface_tension:fold5": "18fd6b3abdf0c6f8b2454af3c39b508772ebf6c78cdd835ef755db082adc57c5",
+              "experiment/surface_tension:fold1": "3c5773d40848ddcabc73abc9c32dd6cd504b517d1eac495afd95a58d34b00b60",
+              "experiment/surface_tension:test": "3cc86ede62d2dc9495bb0755c1b950a8344bb3e667c93198faea4ad26e26619f",
+              "experiment/glass_transition_temperature:fold2": "b4ac86bb208937aba7b383b11acf49bb575f60bf247a62b55c7197fb7c8f9f75",
+              "experiment/glass_transition_temperature:fold3": "f8fdb5da6ba15d1bae40ea9a74a9d012f0a2fe38314ed7e08360289c5bca828e",
+              "experiment/glass_transition_temperature:fold4": "0193bdcef48d5872a9c7eb3540909cc8fc8ec3a59a9b7325d9cfc9ac303acb4b",
+              "experiment/glass_transition_temperature:fold5": "50870c95f22b7c620d3228182de16db21d5bad9e30d9193af6add60d7770b582",
+              "experiment/glass_transition_temperature:fold1": "e816cbfb78c1e1f9226fca4c562165f5129ec781b410ee47fd79ba046d00a33b",
+              "experiment/glass_transition_temperature:test": "d759e538a5ac7a9d9d5d8fd5176e1cedfe403ed44916cfcc75f5202032d95d6c",
+              "experiment/melting_point:fold2": "48ffb763f4fad1b90a233b1ec9032de37146c49939307ee532eb503249ccbf90",
+              "experiment/melting_point:fold3": "d2216e99a11ba504d04c8c8872a3d9172f7e32480abb57382f66f8bd014d29c6",
+              "experiment/melting_point:fold4": "8219748660caa2573f9ba3c57d98971f2ff5360f4e1840408c9194dc3908b2e5",
+              "experiment/melting_point:fold5": "da96b045e6a1d82c6ff05c29817a25d5b5b4e8635c9a9b364a64db4510a2d6fe",
+              "experiment/melting_point:fold1": "c72887aa6a8ab914208414e34238b5e2926194177a7f1a70cf7be19eafa2b5e6",
+              "experiment/melting_point:test": "99dbdd8165c1a44f85ab820590e83a00bbd6897d40aae2ac9802fa8c41928abe",
+              "experiment/thermal_decomposition_temperature:fold2": "d189c87c5ddad4aa675a2923354959c734397061622334b069764215213398c5",
+              "experiment/thermal_decomposition_temperature:fold3": "1cdf9db7e6097f2d9409f0dff9f6594ea2ddfc8e96990021b30a01e25b7a1c37",
+              "experiment/thermal_decomposition_temperature:fold4": "6c316eb481b59e5dc9fd4706164f9bbdab1bd70a4a8dc3abf2006bc4ad2fad51",
+              "experiment/thermal_decomposition_temperature:fold5": "1de4c3ce3f1d937c7025a6955d0ce7bfa4bc665b89a4f8c2a66f5a9404240304",
+              "experiment/thermal_decomposition_temperature:fold1": "e9c888b70a6d1eed92c51bf973b4478eede20af32a038795c5e62c7f880942dd",
+              "experiment/thermal_decomposition_temperature:test": "a2dd97ecfebc381a3fe198d1b7285e10593db17eb8b625d1e0519c01f2c4bd18",
+              "experiment/refractive_index:fold2": "57a510fcac89effc38b593d6881007e8a1c90d929b2fdafdeb047ec22b88287a",
+              "experiment/refractive_index:fold3": "93b6341bdd1c18e42d6e0fa87d73f0c2eec4bdc2d2492e0f9e09ac4346842d47",
+              "experiment/refractive_index:fold4": "e22d01f58808aad738e2de022a0d63fdb3d13295e037cf5b92307108e4ccdd83",
+              "experiment/refractive_index:fold5": "84a8fd45c6cb71db9c0c1133258338b1654ef818f3d53d6a63726fb3edc92ae3",
+              "experiment/refractive_index:fold1": "37d6b9ed7bda050a0110f77327d9d0bf144fb2d56b33da413c1ea4da3909bcf3",
+              "experiment/refractive_index:test": "687a9ffa8971c0f4ef3ace91e69881e2800dcece4c217b79720299b7d516b877",
+              "experiment/solvation:fold2": "1271f55ff094584a052220ba7ee5df19eafb663026c1413f8bb266b70c9f99c9",
+              "experiment/solvation:fold3": "1334761bce63593b1d3965827ce3ae400c7f73b23cf829900439a05165b4e941",
+              "experiment/solvation:fold4": "99717f1968c3d777f81b37cdfc9b58dd40e29af5f29b99dda9444a14b2740dc7",
+              "experiment/solvation:fold5": "1fa7ae2835ff2ad6fab9d2d033c1d171a8b6e97905d4a501fce17bada4c7e6e0",
+              "experiment/solvation:fold1": "a0a2dd0867012bef8ca371d67e2fcf240b75ccf1097db3dab7b056eebf71e6a3",
+              "experiment/solvation:test": "22268222a6d5723e5d9b645bc770111fae6859259c44ebca15996e7fa6dd02e2",
+              "experiment/transfer:fold2": "901b89ead5007d7b4885cfc5f7a71a1a82d0cf9f88050a934ea635c232fefe90",
+              "experiment/transfer:fold3": "da5c5c5dbbc221ef5f1887e9f0b31acf493c1639b9fc3575fe165fd6e953b316",
+              "experiment/transfer:fold4": "91a42c7fa5b9a3b1f3cebc0d8363f950bf626b506adcfdfa20bdfcd9bc56a8ac",
+              "experiment/transfer:fold5": "524a2d625bcadc13659fc6b29f38860d7413deae0f05a4abef539fcbd19e2c07",
+              "experiment/transfer:fold1": "711efd888e087e65f6042273fc73f56e3548745c866234ef7766c5198c203dd6",
+              "experiment/transfer:test": "9c23c2c6b28448118661f4e3f42767daec7ac95855c44f2982dfc6ff6098b96a",
+              "experiment/transfer_organic:fold2": "138157892ea83a810e7cfdc2bb88490019dea96e38842d9ac163e7d43b9ec7c4",
+              "experiment/transfer_organic:fold3": "f132ccbc13630a123ba500a5e84ad8f4ca256c17e74ec2617d4cc024310232ee",
+              "experiment/transfer_organic:fold4": "d4353ea45728994b50b5f2b117ac5561890467ce7529e8b81a0c9fba86455693",
+              "experiment/transfer_organic:fold5": "c1f207533dafc8d39a8cf00aaa476e0e8d118d0983025c4137bc86198eac5dc6",
+              "experiment/transfer_organic:fold1": "62598fca332629a54e16c1730d107a4e27fa1479325f22b0f2fbdb9cab83a67a",
+              "experiment/transfer_organic:test": "c6c4a42f84c4bb0629ba5f391dc9049f41f8e778fb246af81430319ca459f569"
+            },
+            "normalization": {
+              "experiment/electrical_conductivity:fold1": {
+                "scale": 1.33811739709
+              },
+              "experiment/electrical_conductivity:fold2": {
+                "scale": 1.54536754141
+              },
+              "experiment/electrical_conductivity:fold3": {
+                "scale": 1.56526757572
+              },
+              "experiment/electrical_conductivity:fold4": {
+                "scale": 1.41899433832
+              },
+              "experiment/electrical_conductivity:fold5": {
+                "scale": 1.44419624698
+              },
+              "experiment/viscosity:fold1": {
+                "scale": 0.74442618578
+              },
+              "experiment/viscosity:fold2": {
+                "scale": 0.738025662832
+              },
+              "experiment/viscosity:fold3": {
+                "scale": 0.755086103642
+              },
+              "experiment/viscosity:fold4": {
+                "scale": 0.728855575809
+              },
+              "experiment/viscosity:fold5": {
+                "scale": 0.768503591943
+              },
+              "experiment/density:fold1": {
+                "scale": 0.179863109451
+              },
+              "experiment/density:fold2": {
+                "scale": 0.181073735871
+              },
+              "experiment/density:fold3": {
+                "scale": 0.176288379582
+              },
+              "experiment/density:fold4": {
+                "scale": 0.177671069533
+              },
+              "experiment/density:fold5": {
+                "scale": 0.18095495494
+              },
+              "experiment/surface_tension:fold1": {
+                "scale": 8.56674157864
+              },
+              "experiment/surface_tension:fold2": {
+                "scale": 8.94114776019
+              },
+              "experiment/surface_tension:fold3": {
+                "scale": 9.1054851903
+              },
+              "experiment/surface_tension:fold4": {
+                "scale": 8.80602503313
+              },
+              "experiment/surface_tension:fold5": {
+                "scale": 8.88997232784
+              },
+              "experiment/glass_transition_temperature:fold1": {
+                "scale": 28.7459104863
+              },
+              "experiment/glass_transition_temperature:fold2": {
+                "scale": 28.7607435976
+              },
+              "experiment/glass_transition_temperature:fold3": {
+                "scale": 29.8843592875
+              },
+              "experiment/glass_transition_temperature:fold4": {
+                "scale": 29.725743813
+              },
+              "experiment/glass_transition_temperature:fold5": {
+                "scale": 29.3352646084
+              },
+              "experiment/melting_point:fold1": {
+                "scale": 70.9028352394
+              },
+              "experiment/melting_point:fold2": {
+                "scale": 70.975881897
+              },
+              "experiment/melting_point:fold3": {
+                "scale": 71.1409505126
+              },
+              "experiment/melting_point:fold4": {
+                "scale": 71.9143094403
+              },
+              "experiment/melting_point:fold5": {
+                "scale": 71.4220746622
+              },
+              "experiment/thermal_decomposition_temperature:fold1": {
+                "scale": 75.1490898498
+              },
+              "experiment/thermal_decomposition_temperature:fold2": {
+                "scale": 75.63697936
+              },
+              "experiment/thermal_decomposition_temperature:fold3": {
+                "scale": 75.2614641428
+              },
+              "experiment/thermal_decomposition_temperature:fold4": {
+                "scale": 76.4799572156
+              },
+              "experiment/thermal_decomposition_temperature:fold5": {
+                "scale": 75.4657123934
+              },
+              "experiment/refractive_index:fold1": {
+                "scale": 0.0406228106759
+              },
+              "experiment/refractive_index:fold2": {
+                "scale": 0.0396649832244
+              },
+              "experiment/refractive_index:fold3": {
+                "scale": 0.038658015929
+              },
+              "experiment/refractive_index:fold4": {
+                "scale": 0.039771751926
+              },
+              "experiment/refractive_index:fold5": {
+                "scale": 0.039092600057
+              },
+              "experiment/solvation:fold1": {
+                "scale": 1.10202100195
+              },
+              "experiment/solvation:fold2": {
+                "scale": 1.10338689641
+              },
+              "experiment/solvation:fold3": {
+                "scale": 1.09095255321
+              },
+              "experiment/solvation:fold4": {
+                "scale": 1.08195271949
+              },
+              "experiment/solvation:fold5": {
+                "scale": 1.09951206163
+              },
+              "experiment/transfer:fold1": {
+                "scale": 2.28540029114
+              },
+              "experiment/transfer:fold2": {
+                "scale": 2.29822897946
+              },
+              "experiment/transfer:fold3": {
+                "scale": 2.32730198556
+              },
+              "experiment/transfer:fold4": {
+                "scale": 2.31075401607
+              },
+              "experiment/transfer:fold5": {
+                "scale": 2.30720394127
+              },
+              "experiment/transfer_organic:fold1": {
+                "scale": 2.39309598484
+              },
+              "experiment/transfer_organic:fold2": {
+                "scale": 2.33121993997
+              },
+              "experiment/transfer_organic:fold3": {
+                "scale": 2.35874779917
+              },
+              "experiment/transfer_organic:fold4": {
+                "scale": 2.30315612444
+              },
+              "experiment/transfer_organic:fold5": {
+                "scale": 2.33973223999
+              }
+            },
+            "folds": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "ensemble": true
+          },
+          "hash": "d6252504c2f52e2b1d390000cfd9171dc365840877331671de90991037efa2de"
+        },
+        "source_runs": [
+          "outputs/benchmarks/ecfp_xgboost/sweep",
+          "outputs/benchmarks/mlp/sweep"
+        ]
+      }
+    ],
+    "stage3_validation": [
+      {
+        "identity": {
+          "identity_contract_version": 1,
+          "type": "reporting.comparison.v1",
+          "payload": {
+            "benchmark": "stage3_property",
+            "split": "valid",
+            "expected": [
+              "experiment/electrical_conductivity",
+              "experiment/self_diffusion_coefficient",
+              "experiment/viscosity",
+              "experiment/thermal_conductivity",
+              "experiment/density",
+              "experiment/heat_capacity",
+              "experiment/isobaric_coefficient_of_volume_expansion",
+              "experiment/speed_of_sound",
+              "experiment/surface_tension",
+              "experiment/equilibrium_pressure",
+              "experiment/glass_transition_temperature",
+              "experiment/melting_point",
+              "experiment/thermal_decomposition_temperature",
+              "experiment/dynamic_relative_permittivity",
+              "experiment/static_relative_permittivity",
+              "experiment/refractive_index",
+              "experiment/solvation",
+              "experiment/transfer",
+              "experiment/transfer_organic",
+              "experiment/x_co2",
+              "experiment/pec50"
+            ],
+            "sources": {
+              "experiment/electrical_conductivity:fold2": "893050cfc4ebb34ccfd5b7b7bdceff1c99c961a4991e15bed1b24f8e7199e828",
+              "experiment/electrical_conductivity:fold3": "c181c35661370d8b9532787fa1a0e88708da6133c573fd531ec1f56442c4e27f",
+              "experiment/electrical_conductivity:fold4": "a6f5ebbe2a277dfea5142f13cfcc1760d1a601974c15112a3c69aff26fd83190",
+              "experiment/electrical_conductivity:fold5": "24ea1c874e5f601aa41db5da98f5e1928257a20228bca96e7ae82ff8ec02dfe1",
+              "experiment/electrical_conductivity:fold1": "dfdf7dba384bb57aa59b292e5ed4e9ca67fdd4aa9aafcf37cb6ea61444769cda",
+              "experiment/self_diffusion_coefficient:fold2": "b66eaf5e5b11d5b19a793ab5997aa2439b3ff63e290820abecbaa8aed88deed2",
+              "experiment/self_diffusion_coefficient:fold3": "11618c2d16db2e750c96d132e7d9a674419b4368e2171c4e64204111de379f62",
+              "experiment/self_diffusion_coefficient:fold4": "b33529b1cd19564757940dbc73495b752f1915dcaf13b9f0fd81c5e623986e33",
+              "experiment/self_diffusion_coefficient:fold5": "77bdc048f29b32c4f86e47c7058f8e0549830b3abfe0ba5f9645820d231e01f4",
+              "experiment/self_diffusion_coefficient:fold1": "5d2e0e4046837105b99b944e372aef1be0bfb90c33028bd03e69f265d2d5aa0d",
+              "experiment/viscosity:fold2": "f2b92625878f05666405c2283ff5182b2d7043d174efdc653439a96c3aa285a7",
+              "experiment/viscosity:fold3": "53942e831c4ed0a4723cc77fa438fa0cb9b67331a6b611613f94558e5ba5b33d",
+              "experiment/viscosity:fold4": "15b85b142d5c5d5bd2c8de1d9c71be55cb5f71894780fa0906cee65c98c05ab2",
+              "experiment/viscosity:fold5": "150769a1193c7db76e21b3e959ef84df0c2186c9e4303ae3a0d748d5ce47a7f5",
+              "experiment/viscosity:fold1": "e92ac7369a148fa7af96355af18120f341f4f353c7f39e45980569ee4c8bc2c0",
+              "experiment/thermal_conductivity:fold2": "f906c483ff5ea5fc2b7cd838d4f3b9ff59cf90124cdcc83680cf1b813414165d",
+              "experiment/thermal_conductivity:fold3": "340ed36d12f9d65459ac1f1870b7d423bd361266ae9717c21f73376a8550f64f",
+              "experiment/thermal_conductivity:fold4": "0db6948cf7c2e911a622bd13fa89717ab7b3dac972ec0204088ee9d8f293e0ca",
+              "experiment/thermal_conductivity:fold5": "b686edf753b3e23e0082f7b0586e44090fd9925fb16bf7d0b0d8dff0163a8ab2",
+              "experiment/thermal_conductivity:fold1": "ac2279081ce72a2b2cd4bce773b54ee477d9eb8a56212dc615236cbc550a686d",
+              "experiment/density:fold2": "ef4459353c249ca0e41b0131d25c9b16c871e9196255e11cdcaa52604ed3e4f4",
+              "experiment/density:fold3": "d15755534959d29e9ae7785b4012006293db9c04f0f1c2673fe565b25081672c",
+              "experiment/density:fold4": "fa632e5163bf1975f583d0a64955e0b36313e8bc885a9ea03f3aeec1d194cb70",
+              "experiment/density:fold5": "34f973afa89b7cad459c6bc3e3398bb522518164727c3e5720f0854f72cc4b51",
+              "experiment/density:fold1": "a963652c09a1782e8ede3274babb8aea53f3c8d0e197b6efc2d47210a58aa271",
+              "experiment/heat_capacity:fold2": "742bcc04fad9d9bb15440b41f40b39f9b09beb2b03294adda90451f449796400",
+              "experiment/heat_capacity:fold3": "b094605caf722ad118f03cbc838b40b4c00cc6375607fe449fe9624073142127",
+              "experiment/heat_capacity:fold4": "2da6c1112df6a59ff1242d13db3b3c4be0c5d98c117fbc2437b39755a4ed4e43",
+              "experiment/heat_capacity:fold5": "a158d3df986962d541fd9a49a2c0346edc31cfe6f2d14464f44b737bd67e5173",
+              "experiment/heat_capacity:fold1": "a73ba14b2491e5a00f825b475418e55b9fb706b87876e32aa4b6910d6dd50a60",
+              "experiment/isobaric_coefficient_of_volume_expansion:fold2": "3e28e87392adb7580efa7973a5ec20bb9408eb8a6f00f36972f9411d3c99f11a",
+              "experiment/isobaric_coefficient_of_volume_expansion:fold3": "28b69202aef0c622e8606529dd76f5e4ac8b293f4e461f38f2758d8981af63e6",
+              "experiment/isobaric_coefficient_of_volume_expansion:fold4": "146e95e7c26560e11f04ac5f60163ab601ce3617cb83b89d6e9f001c13dc821c",
+              "experiment/isobaric_coefficient_of_volume_expansion:fold5": "36a74a328f3d1c3a90fa691953c556834fc5cedc0e433847c1ade165eac98b24",
+              "experiment/isobaric_coefficient_of_volume_expansion:fold1": "0d5dc74b977de7fdfb98d02a7382465adde7dc7f2f1de56becd151048650364f",
+              "experiment/speed_of_sound:fold2": "77204bdf5d305560991f74a94e3a66adaec0ee093da4bf4309aa37a9fe367a70",
+              "experiment/speed_of_sound:fold3": "05e0a416800d753fd860c94d876a1b92d4ee7e35458a4b38b365ee0eb8b47868",
+              "experiment/speed_of_sound:fold4": "9bdd19d3e7a34ab22585668f818b81bdda2038f6bf8cf3cb89d0360cd5ea2f5b",
+              "experiment/speed_of_sound:fold5": "ad910a4146cedbafa90a1a54159db26644637ceee8acfda67ef6757abd9bed27",
+              "experiment/speed_of_sound:fold1": "20358ce341b5a3de4f1991b464f0edbb2deabf1d90c26ad9fc179906745610f5",
+              "experiment/surface_tension:fold2": "68181b78055d41aace54692309fde930e287155eb92f9fa8038db14229afb6d9",
+              "experiment/surface_tension:fold3": "82d55378eaab730fe0e43cc897739d6fabbbef19cf3d37e287a59d7034ad137f",
+              "experiment/surface_tension:fold4": "674bc44724fc9e57a29b9d0fa61732ee979fc4b49b44601931086d3d63f55a73",
+              "experiment/surface_tension:fold5": "18fd6b3abdf0c6f8b2454af3c39b508772ebf6c78cdd835ef755db082adc57c5",
+              "experiment/surface_tension:fold1": "3c5773d40848ddcabc73abc9c32dd6cd504b517d1eac495afd95a58d34b00b60",
+              "experiment/equilibrium_pressure:fold2": "698295d79c5802c02d06daecb298761259a86b83c77c843047ddff8fdc70a037",
+              "experiment/equilibrium_pressure:fold3": "170defe82d580b17f22558d23997e58170d4f33d2be532f262927d74166f7d30",
+              "experiment/equilibrium_pressure:fold4": "246d4c205aa495db2784a200d647b00bd1a875229fdec1fd2c8d3aad01ae09ef",
+              "experiment/equilibrium_pressure:fold5": "40a3c36ad96500c84c7be8b98f4e76b2b34064b13caa6c8a785c474c72c11d95",
+              "experiment/equilibrium_pressure:fold1": "411ed325b6fe08f5ec8d5c3660d5ee14796a4e4808148adf254e564edec8a865",
+              "experiment/glass_transition_temperature:fold2": "b4ac86bb208937aba7b383b11acf49bb575f60bf247a62b55c7197fb7c8f9f75",
+              "experiment/glass_transition_temperature:fold3": "f8fdb5da6ba15d1bae40ea9a74a9d012f0a2fe38314ed7e08360289c5bca828e",
+              "experiment/glass_transition_temperature:fold4": "0193bdcef48d5872a9c7eb3540909cc8fc8ec3a59a9b7325d9cfc9ac303acb4b",
+              "experiment/glass_transition_temperature:fold5": "50870c95f22b7c620d3228182de16db21d5bad9e30d9193af6add60d7770b582",
+              "experiment/glass_transition_temperature:fold1": "e816cbfb78c1e1f9226fca4c562165f5129ec781b410ee47fd79ba046d00a33b",
+              "experiment/melting_point:fold2": "48ffb763f4fad1b90a233b1ec9032de37146c49939307ee532eb503249ccbf90",
+              "experiment/melting_point:fold3": "d2216e99a11ba504d04c8c8872a3d9172f7e32480abb57382f66f8bd014d29c6",
+              "experiment/melting_point:fold4": "8219748660caa2573f9ba3c57d98971f2ff5360f4e1840408c9194dc3908b2e5",
+              "experiment/melting_point:fold5": "da96b045e6a1d82c6ff05c29817a25d5b5b4e8635c9a9b364a64db4510a2d6fe",
+              "experiment/melting_point:fold1": "c72887aa6a8ab914208414e34238b5e2926194177a7f1a70cf7be19eafa2b5e6",
+              "experiment/thermal_decomposition_temperature:fold2": "d189c87c5ddad4aa675a2923354959c734397061622334b069764215213398c5",
+              "experiment/thermal_decomposition_temperature:fold3": "1cdf9db7e6097f2d9409f0dff9f6594ea2ddfc8e96990021b30a01e25b7a1c37",
+              "experiment/thermal_decomposition_temperature:fold4": "6c316eb481b59e5dc9fd4706164f9bbdab1bd70a4a8dc3abf2006bc4ad2fad51",
+              "experiment/thermal_decomposition_temperature:fold5": "1de4c3ce3f1d937c7025a6955d0ce7bfa4bc665b89a4f8c2a66f5a9404240304",
+              "experiment/thermal_decomposition_temperature:fold1": "e9c888b70a6d1eed92c51bf973b4478eede20af32a038795c5e62c7f880942dd",
+              "experiment/dynamic_relative_permittivity:fold2": "55dd1defded6eb989a528245b96304ef254c0c897422315569a50f669411ac94",
+              "experiment/dynamic_relative_permittivity:fold3": "29cf3b1e1f6680c0386632705f4cc12d80b876408df4f74f8f43efb6be30f16c",
+              "experiment/dynamic_relative_permittivity:fold4": "bc977800de070b9c4743f343ce1ec537ea9e2d7640caa44e5790c848afb058f3",
+              "experiment/dynamic_relative_permittivity:fold5": "f1872702c2ec54a270f1c17c99d1936c2f7032b00cdf81765420b4d7bb52f344",
+              "experiment/dynamic_relative_permittivity:fold1": "9ed05d6912501a30e24ec69db4f9cb8125cfed28bb3a582c1acbfd8f814c6753",
+              "experiment/static_relative_permittivity:fold2": "f7ff74349bdff41eadaf8547bd8db91269cce0a945bae18643d9790c195d3123",
+              "experiment/static_relative_permittivity:fold3": "b521bb4cad327eecec64e54e5a1ccc6513112f91eebcda521147955a94c7807a",
+              "experiment/static_relative_permittivity:fold4": "b2fe80cb8f412d4c3da3e405479cd591ebaa3eac263365524686d44c10ad8e38",
+              "experiment/static_relative_permittivity:fold5": "20cb6ab477b19a9c5022ef73284e7c921a5c158276c6fd70f8063306c229d430",
+              "experiment/static_relative_permittivity:fold1": "451893503221e1fbafe194c649d35e6207f68b11a74bf8ba51a67035bd3f5e1a",
+              "experiment/refractive_index:fold2": "57a510fcac89effc38b593d6881007e8a1c90d929b2fdafdeb047ec22b88287a",
+              "experiment/refractive_index:fold3": "93b6341bdd1c18e42d6e0fa87d73f0c2eec4bdc2d2492e0f9e09ac4346842d47",
+              "experiment/refractive_index:fold4": "e22d01f58808aad738e2de022a0d63fdb3d13295e037cf5b92307108e4ccdd83",
+              "experiment/refractive_index:fold5": "84a8fd45c6cb71db9c0c1133258338b1654ef818f3d53d6a63726fb3edc92ae3",
+              "experiment/refractive_index:fold1": "37d6b9ed7bda050a0110f77327d9d0bf144fb2d56b33da413c1ea4da3909bcf3",
+              "experiment/solvation:fold2": "1271f55ff094584a052220ba7ee5df19eafb663026c1413f8bb266b70c9f99c9",
+              "experiment/solvation:fold3": "1334761bce63593b1d3965827ce3ae400c7f73b23cf829900439a05165b4e941",
+              "experiment/solvation:fold4": "99717f1968c3d777f81b37cdfc9b58dd40e29af5f29b99dda9444a14b2740dc7",
+              "experiment/solvation:fold5": "1fa7ae2835ff2ad6fab9d2d033c1d171a8b6e97905d4a501fce17bada4c7e6e0",
+              "experiment/solvation:fold1": "a0a2dd0867012bef8ca371d67e2fcf240b75ccf1097db3dab7b056eebf71e6a3",
+              "experiment/transfer:fold2": "901b89ead5007d7b4885cfc5f7a71a1a82d0cf9f88050a934ea635c232fefe90",
+              "experiment/transfer:fold3": "da5c5c5dbbc221ef5f1887e9f0b31acf493c1639b9fc3575fe165fd6e953b316",
+              "experiment/transfer:fold4": "91a42c7fa5b9a3b1f3cebc0d8363f950bf626b506adcfdfa20bdfcd9bc56a8ac",
+              "experiment/transfer:fold5": "524a2d625bcadc13659fc6b29f38860d7413deae0f05a4abef539fcbd19e2c07",
+              "experiment/transfer:fold1": "711efd888e087e65f6042273fc73f56e3548745c866234ef7766c5198c203dd6",
+              "experiment/transfer_organic:fold2": "138157892ea83a810e7cfdc2bb88490019dea96e38842d9ac163e7d43b9ec7c4",
+              "experiment/transfer_organic:fold3": "f132ccbc13630a123ba500a5e84ad8f4ca256c17e74ec2617d4cc024310232ee",
+              "experiment/transfer_organic:fold4": "d4353ea45728994b50b5f2b117ac5561890467ce7529e8b81a0c9fba86455693",
+              "experiment/transfer_organic:fold5": "c1f207533dafc8d39a8cf00aaa476e0e8d118d0983025c4137bc86198eac5dc6",
+              "experiment/transfer_organic:fold1": "62598fca332629a54e16c1730d107a4e27fa1479325f22b0f2fbdb9cab83a67a",
+              "experiment/x_co2:fold2": "e4e953c04965b582cd0ba02494b1f327e2f0509ea2c133da55dab5d1273eb09d",
+              "experiment/x_co2:fold3": "5c347bd61768ea2f6304c8999bf4a9d4f31a74adeb55e1a03eabddfabf3c4e17",
+              "experiment/x_co2:fold4": "baf48b5658b5e8cd045ca51fb6a29325c54b5834fac1580e41af24d23fb7e876",
+              "experiment/x_co2:fold5": "b35160d9a645c80cf03e71bd68f071d5fb7a1ff1b53e42d8fbb726081ab5f362",
+              "experiment/x_co2:fold1": "c01c6f28636962b948db5cf70ecd864182e9b56e5243fcc8675b3d3395abef3b",
+              "experiment/pec50:fold2": "40f796831b5d2eb5cfa535dc0f2c34f699200acb59531acf3e6c830b5f5bc30c",
+              "experiment/pec50:fold3": "41988ccac291bc9c574a9c3645e5e725e1a68f82c063f83f0601e5c3db8ea383",
+              "experiment/pec50:fold4": "7a08533eb0a7d8ff834a5b1eb6952a2044e9f0dd8e1743618d8191513b4c999b",
+              "experiment/pec50:fold5": "90e4d5c79f8bcee2a0af1392c11ffe519b238fde4f4b9a8e1248f5f9f1630f32",
+              "experiment/pec50:fold1": "e71c1b24577cada4be6305de4b7a783de4f8ca6b580cbd8da7a76c167ab99c5a"
+            },
+            "normalization": {
+              "experiment/electrical_conductivity:fold1": {
+                "scale": 1.33811739709
+              },
+              "experiment/electrical_conductivity:fold2": {
+                "scale": 1.54536754141
+              },
+              "experiment/electrical_conductivity:fold3": {
+                "scale": 1.56526757572
+              },
+              "experiment/electrical_conductivity:fold4": {
+                "scale": 1.41899433832
+              },
+              "experiment/electrical_conductivity:fold5": {
+                "scale": 1.44419624698
+              },
+              "experiment/self_diffusion_coefficient:fold1": {
+                "scale": 0.976708127388
+              },
+              "experiment/self_diffusion_coefficient:fold2": {
+                "scale": 0.605656999343
+              },
+              "experiment/self_diffusion_coefficient:fold3": {
+                "scale": 0.997005287035
+              },
+              "experiment/self_diffusion_coefficient:fold4": {
+                "scale": 0.986097466016
+              },
+              "experiment/self_diffusion_coefficient:fold5": {
+                "scale": 0.978184771421
+              },
+              "experiment/viscosity:fold1": {
+                "scale": 0.74442618578
+              },
+              "experiment/viscosity:fold2": {
+                "scale": 0.738025662832
+              },
+              "experiment/viscosity:fold3": {
+                "scale": 0.755086103642
+              },
+              "experiment/viscosity:fold4": {
+                "scale": 0.728855575809
+              },
+              "experiment/viscosity:fold5": {
+                "scale": 0.768503591943
+              },
+              "experiment/thermal_conductivity:fold1": {
+                "scale": 0.0266078060103
+              },
+              "experiment/thermal_conductivity:fold2": {
+                "scale": 0.0265695471043
+              },
+              "experiment/thermal_conductivity:fold3": {
+                "scale": 0.0263807691901
+              },
+              "experiment/thermal_conductivity:fold4": {
+                "scale": 0.0268684816707
+              },
+              "experiment/thermal_conductivity:fold5": {
+                "scale": 0.0247033828212
+              },
+              "experiment/density:fold1": {
+                "scale": 0.179863109451
+              },
+              "experiment/density:fold2": {
+                "scale": 0.181073735871
+              },
+              "experiment/density:fold3": {
+                "scale": 0.176288379582
+              },
+              "experiment/density:fold4": {
+                "scale": 0.177671069533
+              },
+              "experiment/density:fold5": {
+                "scale": 0.18095495494
+              },
+              "experiment/heat_capacity:fold1": {
+                "scale": 229.29905287
+              },
+              "experiment/heat_capacity:fold2": {
+                "scale": 241.91187363
+              },
+              "experiment/heat_capacity:fold3": {
+                "scale": 214.594865387
+              },
+              "experiment/heat_capacity:fold4": {
+                "scale": 253.117727055
+              },
+              "experiment/heat_capacity:fold5": {
+                "scale": 251.961369146
+              },
+              "experiment/isobaric_coefficient_of_volume_expansion:fold1": {
+                "scale": 4.67944661141e-05
+              },
+              "experiment/isobaric_coefficient_of_volume_expansion:fold2": {
+                "scale": 3.98846491104e-05
+              },
+              "experiment/isobaric_coefficient_of_volume_expansion:fold3": {
+                "scale": 4.62755200588e-05
+              },
+              "experiment/isobaric_coefficient_of_volume_expansion:fold4": {
+                "scale": 3.99509476158e-05
+              },
+              "experiment/isobaric_coefficient_of_volume_expansion:fold5": {
+                "scale": 4.57125600964e-05
+              },
+              "experiment/speed_of_sound:fold1": {
+                "scale": 201.850173567
+              },
+              "experiment/speed_of_sound:fold2": {
+                "scale": 217.120798166
+              },
+              "experiment/speed_of_sound:fold3": {
+                "scale": 202.110507034
+              },
+              "experiment/speed_of_sound:fold4": {
+                "scale": 211.200595804
+              },
+              "experiment/speed_of_sound:fold5": {
+                "scale": 192.853470328
+              },
+              "experiment/surface_tension:fold1": {
+                "scale": 8.56674157864
+              },
+              "experiment/surface_tension:fold2": {
+                "scale": 8.94114776019
+              },
+              "experiment/surface_tension:fold3": {
+                "scale": 9.1054851903
+              },
+              "experiment/surface_tension:fold4": {
+                "scale": 8.80602503313
+              },
+              "experiment/surface_tension:fold5": {
+                "scale": 8.88997232784
+              },
+              "experiment/equilibrium_pressure:fold1": {
+                "scale": 1.83250587032
+              },
+              "experiment/equilibrium_pressure:fold2": {
+                "scale": 2.08901426014
+              },
+              "experiment/equilibrium_pressure:fold3": {
+                "scale": 2.09825113204
+              },
+              "experiment/equilibrium_pressure:fold4": {
+                "scale": 2.05165012736
+              },
+              "experiment/equilibrium_pressure:fold5": {
+                "scale": 2.08490319983
+              },
+              "experiment/glass_transition_temperature:fold1": {
+                "scale": 28.7459104863
+              },
+              "experiment/glass_transition_temperature:fold2": {
+                "scale": 28.7607435976
+              },
+              "experiment/glass_transition_temperature:fold3": {
+                "scale": 29.8843592875
+              },
+              "experiment/glass_transition_temperature:fold4": {
+                "scale": 29.725743813
+              },
+              "experiment/glass_transition_temperature:fold5": {
+                "scale": 29.3352646084
+              },
+              "experiment/melting_point:fold1": {
+                "scale": 70.9028352394
+              },
+              "experiment/melting_point:fold2": {
+                "scale": 70.975881897
+              },
+              "experiment/melting_point:fold3": {
+                "scale": 71.1409505126
+              },
+              "experiment/melting_point:fold4": {
+                "scale": 71.9143094403
+              },
+              "experiment/melting_point:fold5": {
+                "scale": 71.4220746622
+              },
+              "experiment/thermal_decomposition_temperature:fold1": {
+                "scale": 75.1490898498
+              },
+              "experiment/thermal_decomposition_temperature:fold2": {
+                "scale": 75.63697936
+              },
+              "experiment/thermal_decomposition_temperature:fold3": {
+                "scale": 75.2614641428
+              },
+              "experiment/thermal_decomposition_temperature:fold4": {
+                "scale": 76.4799572156
+              },
+              "experiment/thermal_decomposition_temperature:fold5": {
+                "scale": 75.4657123934
+              },
+              "experiment/dynamic_relative_permittivity:fold1": {
+                "scale": 1.74950130126
+              },
+              "experiment/dynamic_relative_permittivity:fold2": {
+                "scale": 1.98890746282
+              },
+              "experiment/dynamic_relative_permittivity:fold3": {
+                "scale": 2.03354503153
+              },
+              "experiment/dynamic_relative_permittivity:fold4": {
+                "scale": 2.02505417026
+              },
+              "experiment/dynamic_relative_permittivity:fold5": {
+                "scale": 1.92782818938
+              },
+              "experiment/static_relative_permittivity:fold1": {
+                "scale": 9.55670526554
+              },
+              "experiment/static_relative_permittivity:fold2": {
+                "scale": 13.0211240698
+              },
+              "experiment/static_relative_permittivity:fold3": {
+                "scale": 13.2938288254
+              },
+              "experiment/static_relative_permittivity:fold4": {
+                "scale": 13.1301540367
+              },
+              "experiment/static_relative_permittivity:fold5": {
+                "scale": 11.7659553707
+              },
+              "experiment/refractive_index:fold1": {
+                "scale": 0.0406228106759
+              },
+              "experiment/refractive_index:fold2": {
+                "scale": 0.0396649832244
+              },
+              "experiment/refractive_index:fold3": {
+                "scale": 0.038658015929
+              },
+              "experiment/refractive_index:fold4": {
+                "scale": 0.039771751926
+              },
+              "experiment/refractive_index:fold5": {
+                "scale": 0.039092600057
+              },
+              "experiment/solvation:fold1": {
+                "scale": 1.10202100195
+              },
+              "experiment/solvation:fold2": {
+                "scale": 1.10338689641
+              },
+              "experiment/solvation:fold3": {
+                "scale": 1.09095255321
+              },
+              "experiment/solvation:fold4": {
+                "scale": 1.08195271949
+              },
+              "experiment/solvation:fold5": {
+                "scale": 1.09951206163
+              },
+              "experiment/transfer:fold1": {
+                "scale": 2.28540029114
+              },
+              "experiment/transfer:fold2": {
+                "scale": 2.29822897946
+              },
+              "experiment/transfer:fold3": {
+                "scale": 2.32730198556
+              },
+              "experiment/transfer:fold4": {
+                "scale": 2.31075401607
+              },
+              "experiment/transfer:fold5": {
+                "scale": 2.30720394127
+              },
+              "experiment/transfer_organic:fold1": {
+                "scale": 2.39309598484
+              },
+              "experiment/transfer_organic:fold2": {
+                "scale": 2.33121993997
+              },
+              "experiment/transfer_organic:fold3": {
+                "scale": 2.35874779917
+              },
+              "experiment/transfer_organic:fold4": {
+                "scale": 2.30315612444
+              },
+              "experiment/transfer_organic:fold5": {
+                "scale": 2.33973223999
+              },
+              "experiment/x_co2:fold1": {
+                "scale": 0.233849814622
+              },
+              "experiment/x_co2:fold2": {
+                "scale": 0.235249783338
+              },
+              "experiment/x_co2:fold3": {
+                "scale": 0.231379582877
+              },
+              "experiment/x_co2:fold4": {
+                "scale": 0.234747682575
+              },
+              "experiment/x_co2:fold5": {
+                "scale": 0.227336939548
+              },
+              "experiment/pec50:fold1": {
+                "scale": 1.0906964597
+              },
+              "experiment/pec50:fold2": {
+                "scale": 1.08167582147
+              },
+              "experiment/pec50:fold3": {
+                "scale": 1.00734530947
+              },
+              "experiment/pec50:fold4": {
+                "scale": 1.08026588062
+              },
+              "experiment/pec50:fold5": {
+                "scale": 1.10458622877
+              }
+            },
+            "folds": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "ensemble": false
+          },
+          "hash": "7610df5ae5dce514537718a760a9f472c3abf9d288a1dca1542005e39775efdc"
+        },
+        "source_runs": [
+          "outputs/benchmarks/ecfp_xgboost/sweep",
+          "outputs/benchmarks/mlp/sweep"
+        ]
+      }
+    ],
+    "stage2_core_physics": [
+      {
+        "identity": {
+          "identity_contract_version": 1,
+          "type": "reporting.comparison.v1",
+          "payload": {
+            "benchmark": "stage2_physics",
+            "split": "test",
+            "expected": [
+              "simulation/heat_of_vaporization::heat_of_vaporization_kJ/mol",
+              "simulation/pbe_tzvp_cation_orbitals::HOMO_eV",
+              "simulation/pbe_tzvp_cation_orbitals::LUMO_eV",
+              "simulation/pbe_tzvp_anion_orbitals::HOMO_eV",
+              "simulation/pbe_tzvp_anion_orbitals::LUMO_eV"
+            ],
+            "sources": {
+              "simulation/heat_of_vaporization:train": "066a640276f823c8fc12abee56e0d6e682f676559e031bed84ef5d4050960ee2",
+              "simulation/heat_of_vaporization:test": "75e54d3f89c74386a13f91764451ecfd8d5b2ae29bc0c883dffc427ee13c034a",
+              "simulation/pbe_tzvp_cation_orbitals:train": "5b3e729891f227f058660460c04bbacf250b6c4e4d82a6058e2072442b973068",
+              "simulation/pbe_tzvp_cation_orbitals:test": "0ba7f1832ff6225446918a7ef50b9c9583a898c6b5f81a966669f13b57b00798",
+              "simulation/pbe_tzvp_anion_orbitals:train": "f8539828a07a525aa18f350e7beb0654ea81b9d28f30670ef3b2ec5086df2e96",
+              "simulation/pbe_tzvp_anion_orbitals:test": "4acd0fe752d2f5954a0a98390fd5f867e62183f5e77d4f11ef11b29665538d07"
+            },
+            "normalization": {
+              "simulation/heat_of_vaporization::heat_of_vaporization_kJ/mol": {
+                "scale": 27.824443512
+              },
+              "simulation/pbe_tzvp_cation_orbitals::HOMO_eV": {
+                "scale": 0.860626265395
+              },
+              "simulation/pbe_tzvp_cation_orbitals::LUMO_eV": {
+                "scale": 1.03521635899
+              },
+              "simulation/pbe_tzvp_anion_orbitals::HOMO_eV": {
+                "scale": 1.11067366185
+              },
+              "simulation/pbe_tzvp_anion_orbitals::LUMO_eV": {
+                "scale": 0.878521247247
+              }
+            },
+            "folds": [],
+            "ensemble": false
+          },
+          "hash": "70599a657d98a18f5968d8f651095be711bebf3253e249293b4ee56f4b6af8bc"
+        },
+        "source_runs": [
+          "outputs/benchmarks/ecfp_xgboost/sweep",
+          "outputs/benchmarks/mlp/sweep",
+          "outputs/v1/stage2/base/evaluate/test"
+        ]
+      }
+    ],
+    "stage2_partial_charge": [
+      {
+        "identity": {
+          "identity_contract_version": 1,
+          "type": "reporting.comparison.v1",
+          "payload": {
+            "benchmark": "stage2_partial_charge",
+            "split": "test",
+            "expected": [
+              "simulation/partial_atomic_charge::molecule_macro_normalized_mae"
+            ],
+            "sources": {
+              "simulation/partial_atomic_charge:test": "19784c28622e3b759f4d6ddeffca8141956c909af5045480886bdbb71124c5db",
+              "simulation/partial_atomic_charge:structure_manifest": "ea4dfe3eb6bef53df969fea444cae0ce2f9005d12f87225656c29d174535d9a1",
+              "simulation/partial_atomic_charge:mapping_contract": "eb5c0f886dced6d7c81d3f881afb18e8a4fbf544e1a1030c10c49c30e82cc64a",
+              "simulation/partial_atomic_charge:mapping_audit": "db4b76b401804baee1ea49394ada4dd6dc04d9fa94eb937380ae7664cf7b4be5",
+              "simulation/partial_atomic_charge:evaluated_subset": "a0e66171c0295f0f1529eabc99c565440f50257f89d5a60bdd4b272d5e82fcb4"
+            },
+            "normalization": {
+              "simulation/partial_atomic_charge::molecule_macro_normalized_mae": {
+                "scale": 0.440673876326,
+                "weighting": "molecule_equal"
+              }
+            },
+            "folds": [],
+            "ensemble": false
+          },
+          "hash": "47f11c6f20e5c1a28c82e6388749d1ab9339e5791797a20e666bf55f50dc45e5"
+        },
+        "source_runs": [
+          "outputs/v1/stage2/base/evaluate/test"
+        ]
+      }
+    ],
+    "stage2_physics_full": [
+      {
+        "identity": {
+          "identity_contract_version": 1,
+          "type": "reporting.comparison.v1",
+          "payload": {
+            "benchmark": "stage2_physics_full",
+            "split": "test",
+            "component_hashes": {
+              "stage2_core_physics": "70599a657d98a18f5968d8f651095be711bebf3253e249293b4ee56f4b6af8bc",
+              "stage2_partial_charge": "47f11c6f20e5c1a28c82e6388749d1ab9339e5791797a20e666bf55f50dc45e5"
+            },
+            "ordered_units": [
+              "simulation/heat_of_vaporization::heat_of_vaporization_kJ/mol",
+              "simulation/pbe_tzvp_cation_orbitals::HOMO_eV",
+              "simulation/pbe_tzvp_cation_orbitals::LUMO_eV",
+              "simulation/pbe_tzvp_anion_orbitals::HOMO_eV",
+              "simulation/pbe_tzvp_anion_orbitals::LUMO_eV",
+              "simulation/partial_atomic_charge::molecule_macro_normalized_mae"
+            ],
+            "unit_weighting": "equal"
+          },
+          "hash": "80bac10dab487784ff4b8a874b340da5f1d3a9395d3f998ebe410a58c5167f54"
+        },
+        "source_runs": [
+          "outputs/v1/stage2/base/evaluate/test"
+        ]
+      }
+    ]
+  },
+  "leaderboards": {
+    "stage3_test": [
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "macro_normalized_mae": 0.2253401769112121,
+        "valid_tasks": 11,
+        "total_tasks": 11,
+        "per_task_wins": 10,
+        "source_run": "outputs/benchmarks/mlp/sweep",
+        "checkpoint_epoch": "",
+        "enabled_tasks": 21,
+        "rank": 1
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "macro_normalized_mae": 0.26939481353528555,
+        "valid_tasks": 11,
+        "total_tasks": 11,
+        "per_task_wins": 1,
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "checkpoint_epoch": "",
+        "enabled_tasks": 21,
+        "rank": 2
+      }
+    ],
+    "stage3_validation": [
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "macro_normalized_mae": 0.30209580088402943,
+        "valid_tasks": 21,
+        "total_tasks": 21,
+        "per_task_wins": 8,
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "checkpoint_epoch": "",
+        "rank": 1
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "macro_normalized_mae": 556351514740597.06,
+        "valid_tasks": 21,
+        "total_tasks": 21,
+        "per_task_wins": 13,
+        "source_run": "outputs/benchmarks/mlp/sweep",
+        "checkpoint_epoch": "",
+        "rank": 2
+      }
+    ],
+    "stage2_core_physics": [
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "macro_normalized_mae": 0.18921043956988762,
+        "valid_targets": 5,
+        "total_targets": 5,
+        "per_target_wins": 4,
+        "source_run": "outputs/benchmarks/mlp/sweep",
+        "checkpoint_epoch": "",
+        "rank": 1
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "macro_normalized_mae": 0.23628610071230471,
+        "valid_targets": 5,
+        "total_targets": 5,
+        "per_target_wins": 1,
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "checkpoint_epoch": "",
+        "rank": 2
+      },
+      {
+        "run": "ilume@outputs/v1/stage2/base/evaluate/test",
+        "model": "ILUME",
+        "macro_normalized_mae": 0.27569428031650994,
+        "valid_targets": 5,
+        "total_targets": 5,
+        "per_target_wins": 0,
+        "source_run": "outputs/v1/stage2/base/evaluate/test",
+        "checkpoint_epoch": 5,
+        "rank": 3
+      }
+    ],
+    "stage2_partial_charge": [
+      {
+        "run": "ilume@outputs/v1/stage2/base/evaluate/test",
+        "model": "ILUME",
+        "molecule_macro_normalized_mae": 0.14306422818483386,
+        "molecule_macro_mae": 0.06304466799774337,
+        "mapped_molecules": 2842,
+        "test_molecules": 2854,
+        "source_run": "outputs/v1/stage2/base/evaluate/test",
+        "checkpoint_epoch": 5,
+        "rank": 1
+      }
+    ],
+    "stage2_physics_full": [
+      {
+        "run": "ilume@outputs/v1/stage2/base/evaluate/test",
+        "model": "ILUME",
+        "macro_normalized_mae": 0.25358927162789724,
+        "valid_units": 6,
+        "total_units": 6,
+        "source_run": "outputs/v1/stage2/base/evaluate/test",
+        "checkpoint_epoch": 5,
+        "rank": 1
+      }
+    ]
+  },
+  "metrics": {
+    "stage3_test": [
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/density",
+        "count": 4918,
+        "mae": 0.02906412744562935,
+        "rmse": 0.042243633853623966,
+        "r2": 0.9430950622591594,
+        "normalized_mae": 0.1622151415531302,
+        "normalized_rmse": 0.23577370619859078,
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/electrical_conductivity",
+        "count": 467,
+        "mae": 0.23269416918983687,
+        "rmse": 0.4859590483660943,
+        "r2": 0.6667837894372866,
+        "normalized_mae": 0.15911924232929536,
+        "normalized_rmse": 0.3323049986525214,
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/glass_transition_temperature",
+        "count": 79,
+        "mae": 13.616748664952532,
+        "rmse": 20.14197733830722,
+        "r2": 0.16486031105374632,
+        "normalized_mae": 0.4648876983147214,
+        "normalized_rmse": 0.6876647072449702,
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/melting_point",
+        "count": 524,
+        "mae": 28.829956111762357,
+        "rmse": 40.090075851942636,
+        "r2": 0.4401922094976537,
+        "normalized_mae": 0.40451054458112295,
+        "normalized_rmse": 0.5625002810375946,
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/refractive_index",
+        "count": 579,
+        "mae": 0.012013265651380039,
+        "rmse": 0.01906378271135873,
+        "r2": 0.7750207047924029,
+        "normalized_mae": 0.3036564335552513,
+        "normalized_rmse": 0.48187066166629305,
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/solvation",
+        "count": 2379,
+        "mae": 0.2003807242547031,
+        "rmse": 0.35863632918373545,
+        "r2": 0.8967222092496805,
+        "normalized_mae": 0.18290171349318257,
+        "normalized_rmse": 0.32735283981323726,
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/surface_tension",
+        "count": 545,
+        "mae": 3.247602342413946,
+        "rmse": 4.495899307397046,
+        "r2": 0.7837307930195224,
+        "normalized_mae": 0.3664690113943065,
+        "normalized_rmse": 0.5073305167299128,
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/thermal_decomposition_temperature",
+        "count": 276,
+        "mae": 26.643892481707145,
+        "rmse": 37.79055685252589,
+        "r2": 0.7596074416767493,
+        "normalized_mae": 0.35243877764138687,
+        "normalized_rmse": 0.49988407934898654,
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/transfer",
+        "count": 308,
+        "mae": 0.25885778067516707,
+        "rmse": 0.42597145911941087,
+        "r2": 0.9627622441545978,
+        "normalized_mae": 0.11226484003846499,
+        "normalized_rmse": 0.18474089360675666,
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/transfer_organic",
+        "count": 191,
+        "mae": 0.40073149778182904,
+        "rmse": 0.6498664730518849,
+        "r2": 0.9165410922058558,
+        "normalized_mae": 0.1708737570990388,
+        "normalized_rmse": 0.27710605848990016,
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/viscosity",
+        "count": 2459,
+        "mae": 0.2121464805967492,
+        "rmse": 0.3195392595747841,
+        "r2": 0.7791297691372586,
+        "normalized_mae": 0.2840057888882401,
+        "normalized_rmse": 0.4277751826993602,
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/density",
+        "count": 4918,
+        "mae": 0.022751352541067825,
+        "rmse": 0.053626490688009655,
+        "r2": 0.908296445730648,
+        "normalized_mae": 0.12698175370578613,
+        "normalized_rmse": 0.2993046598156608,
+        "source_run": "outputs/benchmarks/mlp/sweep"
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/electrical_conductivity",
+        "count": 467,
+        "mae": 0.17848019902088608,
+        "rmse": 0.3042141635905474,
+        "r2": 0.8694173026101444,
+        "normalized_mae": 0.12204703769700481,
+        "normalized_rmse": 0.2080255271754459,
+        "source_run": "outputs/benchmarks/mlp/sweep"
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/glass_transition_temperature",
+        "count": 79,
+        "mae": 9.108323081764999,
+        "rmse": 12.97631589443723,
+        "r2": 0.6533767130159235,
+        "normalized_mae": 0.3109661092509664,
+        "normalized_rmse": 0.44302276389197703,
+        "source_run": "outputs/benchmarks/mlp/sweep"
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/melting_point",
+        "count": 524,
+        "mae": 25.705941422249904,
+        "rmse": 35.23079104836871,
+        "r2": 0.5676753770631209,
+        "normalized_mae": 0.3606777729169811,
+        "normalized_rmse": 0.4943200890682247,
+        "source_run": "outputs/benchmarks/mlp/sweep"
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/refractive_index",
+        "count": 579,
+        "mae": 0.0056082637283264266,
+        "rmse": 0.01058465104808615,
+        "r2": 0.9306450467801601,
+        "normalized_mae": 0.1417587366833303,
+        "normalized_rmse": 0.2675456849919463,
+        "source_run": "outputs/benchmarks/mlp/sweep"
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/solvation",
+        "count": 2379,
+        "mae": 0.10696461028077398,
+        "rmse": 0.26036435078856046,
+        "r2": 0.9455671068263723,
+        "normalized_mae": 0.0976341939887208,
+        "normalized_rmse": 0.23765302809883454,
+        "source_run": "outputs/benchmarks/mlp/sweep"
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/surface_tension",
+        "count": 545,
+        "mae": 2.8107947672420495,
+        "rmse": 4.099845043374366,
+        "r2": 0.8201558063762441,
+        "normalized_mae": 0.3171783583632447,
+        "normalized_rmse": 0.46263858733346847,
+        "source_run": "outputs/benchmarks/mlp/sweep"
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/thermal_decomposition_temperature",
+        "count": 276,
+        "mae": 24.75596342559092,
+        "rmse": 36.11146351795452,
+        "r2": 0.780494899488813,
+        "normalized_mae": 0.32746572202392826,
+        "normalized_rmse": 0.4776734506734494,
+        "source_run": "outputs/benchmarks/mlp/sweep"
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/transfer",
+        "count": 308,
+        "mae": 0.7784721286296206,
+        "rmse": 4.6747181822155826,
+        "r2": -3.484699680594698,
+        "normalized_mae": 0.3376180108129612,
+        "normalized_rmse": 2.027393140675575,
+        "source_run": "outputs/benchmarks/mlp/sweep"
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/transfer_organic",
+        "count": 191,
+        "mae": 0.24443987807678363,
+        "rmse": 0.40423167695672185,
+        "r2": 0.9677087304896682,
+        "normalized_mae": 0.10423029031411703,
+        "normalized_rmse": 0.17236624962693928,
+        "source_run": "outputs/benchmarks/mlp/sweep"
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/viscosity",
+        "count": 2459,
+        "mae": 0.17343664090203711,
+        "rmse": 0.2875314536388064,
+        "r2": 0.8211621434603421,
+        "normalized_mae": 0.2321839602662927,
+        "normalized_rmse": 0.3849255339573281,
+        "source_run": "outputs/benchmarks/mlp/sweep"
+      }
+    ],
+    "stage3_validation": [
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/density",
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "mae_mean": 0.029097269106688313,
+        "mae_std": 0.005344860943909221,
+        "rmse_mean": 0.04405731207497965,
+        "rmse_std": 0.006646708930942523,
+        "r2_mean": 0.9366891354360657,
+        "r2_std": 0.023415166522212413,
+        "normalized_mae_mean": 0.16221478836498443,
+        "normalized_mae_std": 0.02834664388565639,
+        "normalized_rmse_mean": 0.24571483087506252,
+        "normalized_rmse_std": 0.035241958373881895
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/dynamic_relative_permittivity",
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "mae_mean": 1.131058251245522,
+        "mae_std": 0.35036105313918964,
+        "rmse_mean": 1.5945914822545486,
+        "rmse_std": 0.6905056519743639,
+        "r2_mean": -0.18051851439003608,
+        "r2_std": 1.2454515870815484,
+        "normalized_mae_mean": 0.5886025533987255,
+        "normalized_mae_std": 0.21359567588826633,
+        "normalized_rmse_mean": 0.8333445481505901,
+        "normalized_rmse_std": 0.4047913839553094
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/electrical_conductivity",
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "mae_mean": 0.25014079705207826,
+        "mae_std": 0.030395315536488863,
+        "rmse_mean": 0.3990344755379163,
+        "rmse_std": 0.06874512322998318,
+        "r2_mean": 0.8982658398799679,
+        "r2_std": 0.0560107776491926,
+        "normalized_mae_mean": 0.17199699199013133,
+        "normalized_mae_std": 0.02712789585118073,
+        "normalized_rmse_mean": 0.2749003006861119,
+        "normalized_rmse_std": 0.057816977019052945
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/equilibrium_pressure",
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "mae_mean": 0.43819862806689025,
+        "mae_std": 0.136112040267479,
+        "rmse_mean": 0.7791588151524695,
+        "rmse_std": 0.32107715692584915,
+        "r2_mean": 0.8208508352953363,
+        "r2_std": 0.13470858757965895,
+        "normalized_mae_mean": 0.217842999663486,
+        "normalized_mae_std": 0.07410460242496192,
+        "normalized_rmse_mean": 0.38761921618225365,
+        "normalized_rmse_std": 0.16735126233077094
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/glass_transition_temperature",
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "mae_mean": 11.99345264315711,
+        "mae_std": 0.8389987588172576,
+        "rmse_mean": 19.1645712803684,
+        "rmse_std": 2.3504521487274346,
+        "r2_mean": 0.5684511267847461,
+        "r2_std": 0.07253480941468984,
+        "normalized_mae_mean": 0.40964267898133394,
+        "normalized_mae_std": 0.03065527428638021,
+        "normalized_rmse_mean": 0.6552900746216087,
+        "normalized_rmse_std": 0.08933704809865795
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/heat_capacity",
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "mae_mean": 64.15822810287399,
+        "mae_std": 14.055190535228926,
+        "rmse_mean": 99.25982231244885,
+        "rmse_std": 21.055646774503057,
+        "r2_mean": 0.7736821506109942,
+        "r2_std": 0.12944304366027762,
+        "normalized_mae_mean": 0.2690564459542044,
+        "normalized_mae_std": 0.05309831619406136,
+        "normalized_rmse_mean": 0.41706197417285534,
+        "normalized_rmse_std": 0.08725115465269087
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/isobaric_coefficient_of_volume_expansion",
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "mae_mean": 3.261638302760516e-05,
+        "mae_std": 1.1254921510064242e-05,
+        "rmse_mean": 4.346429839092568e-05,
+        "rmse_std": 1.510123100395828e-05,
+        "r2_mean": -0.19358109730321232,
+        "r2_std": 0.19395792745866436,
+        "normalized_mae_mean": 0.7652507159923891,
+        "normalized_mae_std": 0.32419656547391185,
+        "normalized_rmse_mean": 1.0217987604998267,
+        "normalized_rmse_std": 0.4360207691625514
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/melting_point",
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "mae_mean": 28.33789135792396,
+        "mae_std": 1.8554746475832418,
+        "rmse_mean": 38.2002524215878,
+        "rmse_std": 2.153022288992534,
+        "r2_mean": 0.7107770717879596,
+        "r2_std": 0.03598433763307857,
+        "normalized_mae_mean": 0.3975794160877554,
+        "normalized_mae_std": 0.02547480996478488,
+        "normalized_rmse_mean": 0.535978642466478,
+        "normalized_rmse_std": 0.029983001883075372
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/pec50",
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "mae_mean": 0.40508620529067685,
+        "mae_std": 0.04314885090593383,
+        "rmse_mean": 0.591232488977201,
+        "rmse_std": 0.05908301203537275,
+        "r2_mean": 0.6839231477051689,
+        "r2_std": 0.06794993646532481,
+        "normalized_mae_mean": 0.3785882335397003,
+        "normalized_mae_std": 0.0495844622450692,
+        "normalized_rmse_mean": 0.5526867274837426,
+        "normalized_rmse_std": 0.07164196197986564
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/refractive_index",
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "mae_mean": 0.006508640641612546,
+        "mae_std": 0.00025003009499708587,
+        "rmse_mean": 0.010915340727116422,
+        "rmse_std": 0.0009673969684428493,
+        "r2_mean": 0.9219650352616371,
+        "r2_std": 0.012015420574916632,
+        "normalized_mae_mean": 0.16459655713073212,
+        "normalized_mae_std": 0.00787633314980332,
+        "normalized_rmse_mean": 0.2761852735432976,
+        "normalized_rmse_std": 0.02731973025189405
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/self_diffusion_coefficient",
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "mae_mean": 0.23657298851251088,
+        "mae_std": 0.08348371191597496,
+        "rmse_mean": 0.3308862475770032,
+        "rmse_std": 0.15063048473939478,
+        "r2_mean": 0.7682372355682837,
+        "r2_std": 0.08488049405553441,
+        "normalized_mae_mean": 0.28754973415367335,
+        "normalized_mae_std": 0.18518721813207853,
+        "normalized_rmse_mean": 0.40899687645574356,
+        "normalized_rmse_std": 0.30730078420015794
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/solvation",
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "mae_mean": 0.2800145808214349,
+        "mae_std": 0.03609025902714856,
+        "rmse_mean": 0.4522466771381593,
+        "rmse_std": 0.0423524943602094,
+        "r2_mean": 0.8265114514675578,
+        "r2_std": 0.02473092363880845,
+        "normalized_mae_mean": 0.25573693970950034,
+        "normalized_mae_std": 0.034419333992109065,
+        "normalized_rmse_mean": 0.41303297312012066,
+        "normalized_rmse_std": 0.04175904907395333
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/speed_of_sound",
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "mae_mean": 47.890474404812764,
+        "mae_std": 21.43975867721035,
+        "rmse_mean": 77.0628756271259,
+        "rmse_std": 21.644945276787038,
+        "r2_mean": 0.8290849987139112,
+        "r2_std": 0.11312282910969586,
+        "normalized_mae_mean": 0.2340095262221995,
+        "normalized_mae_std": 0.10823307831568929,
+        "normalized_rmse_mean": 0.376062063055307,
+        "normalized_rmse_std": 0.10719452807066772
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/static_relative_permittivity",
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "mae_mean": 4.002730902727135,
+        "mae_std": 1.3196319841000592,
+        "rmse_mean": 7.0643171920716,
+        "rmse_std": 3.1716349821912684,
+        "r2_mean": 0.3504270454184308,
+        "r2_std": 0.5277464940793463,
+        "normalized_mae_mean": 0.3370350281860202,
+        "normalized_mae_std": 0.12184668090060734,
+        "normalized_rmse_mean": 0.5980958102113684,
+        "normalized_rmse_std": 0.2821450020687313
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/surface_tension",
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "mae_mean": 2.9092561453545844,
+        "mae_std": 0.3056532316490038,
+        "rmse_mean": 4.207587473122152,
+        "rmse_std": 0.34030607573276545,
+        "r2_mean": 0.7705776793875281,
+        "r2_std": 0.033275117229262685,
+        "normalized_mae_mean": 0.32895952666737527,
+        "normalized_mae_std": 0.041457239987923285,
+        "normalized_rmse_mean": 0.4753856412337287,
+        "normalized_rmse_std": 0.04584921787121807
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/thermal_conductivity",
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "mae_mean": 0.007848931928583429,
+        "mae_std": 0.0025411171114630804,
+        "rmse_mean": 0.010359048523440181,
+        "rmse_std": 0.002604769277170541,
+        "r2_mean": 0.825288978584579,
+        "r2_std": 0.09107002002078046,
+        "normalized_mae_mean": 0.2992290710995711,
+        "normalized_mae_std": 0.0955989124872957,
+        "normalized_rmse_mean": 0.3953074852245692,
+        "normalized_rmse_std": 0.09903525939632979
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/thermal_decomposition_temperature",
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "mae_mean": 25.912229379904364,
+        "mae_std": 1.3849415977652269,
+        "rmse_mean": 35.788745272101345,
+        "rmse_std": 2.168357683549443,
+        "r2_mean": 0.7755355847639887,
+        "r2_std": 0.017133992791823073,
+        "normalized_mae_mean": 0.3428706786334494,
+        "normalized_mae_std": 0.02048251850285908,
+        "normalized_rmse_mean": 0.47356398498156926,
+        "normalized_rmse_std": 0.03147610749912057
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/transfer",
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "mae_mean": 0.3956012974360434,
+        "mae_std": 0.08486784395384138,
+        "rmse_mean": 0.6129051080354206,
+        "rmse_std": 0.12878151857178705,
+        "r2_mean": 0.9272480220583471,
+        "r2_std": 0.030086962254524067,
+        "normalized_mae_mean": 0.17162314422681807,
+        "normalized_mae_std": 0.03699106853299636,
+        "normalized_rmse_mean": 0.2659584233180224,
+        "normalized_rmse_std": 0.05653004853580473
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/transfer_organic",
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "mae_mean": 0.40494418729829534,
+        "mae_std": 0.04369545069280884,
+        "rmse_mean": 0.6548103402864398,
+        "rmse_std": 0.08930432068443504,
+        "r2_mean": 0.9213159135763183,
+        "r2_std": 0.016147192143399037,
+        "normalized_mae_mean": 0.1728246082787438,
+        "normalized_mae_std": 0.020437292956247115,
+        "normalized_rmse_mean": 0.2795665467700334,
+        "normalized_rmse_std": 0.04147587180136797
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/viscosity",
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "mae_mean": 0.17495167417065477,
+        "mae_std": 0.007022984702614021,
+        "rmse_mean": 0.3020449074950466,
+        "rmse_std": 0.042086303864222414,
+        "r2_mean": 0.8342858911960713,
+        "r2_std": 0.02530538926823507,
+        "normalized_mae_mean": 0.23428832239676983,
+        "normalized_mae_std": 0.010456673333531874,
+        "normalized_rmse_mean": 0.40528496800774094,
+        "normalized_rmse_std": 0.06371900990750372
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "experiment/x_co2",
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "mae_mean": 0.03589132093106705,
+        "mae_std": 0.0057089971723381224,
+        "rmse_mean": 0.05391823092532624,
+        "rmse_std": 0.010023194412801284,
+        "r2_mean": 0.9426086154080459,
+        "r2_std": 0.02035035989610782,
+        "normalized_mae_mean": 0.15451385788705496,
+        "normalized_mae_std": 0.025742235891636104,
+        "normalized_rmse_mean": 0.23209027930818366,
+        "normalized_rmse_std": 0.04447895055035556
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/density",
+        "source_run": "outputs/benchmarks/mlp/sweep",
+        "mae_mean": 0.014271596463653483,
+        "mae_std": 0.0013909849927641231,
+        "rmse_mean": 0.0526149553911512,
+        "rmse_std": 0.04365137546553862,
+        "r2_mean": 0.8617585437053427,
+        "r2_std": 0.22356765168577766,
+        "normalized_mae_mean": 0.07965559042991296,
+        "normalized_mae_std": 0.00771309533515411,
+        "normalized_rmse_mean": 0.29303891592269815,
+        "normalized_rmse_std": 0.24219676679072188
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/dynamic_relative_permittivity",
+        "source_run": "outputs/benchmarks/mlp/sweep",
+        "mae_mean": 0.7620629920754979,
+        "mae_std": 0.14874001410957968,
+        "rmse_mean": 1.0714426330861524,
+        "rmse_std": 0.22324455055516865,
+        "r2_mean": 0.5690264306279191,
+        "r2_std": 0.22384297685320256,
+        "normalized_mae_mean": 0.3957373271354828,
+        "normalized_mae_std": 0.09993000326695106,
+        "normalized_rmse_mean": 0.5573584500654084,
+        "normalized_rmse_std": 0.15174672677512469
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/electrical_conductivity",
+        "source_run": "outputs/benchmarks/mlp/sweep",
+        "mae_mean": 0.20321435211763883,
+        "mae_std": 0.033219848030873474,
+        "rmse_mean": 0.46060861863091845,
+        "rmse_std": 0.19826284098515273,
+        "r2_mean": 0.8792303447548491,
+        "r2_std": 0.0614285524204588,
+        "normalized_mae_mean": 0.1399942729941241,
+        "normalized_mae_std": 0.02951429010762683,
+        "normalized_rmse_mean": 0.32176765600625196,
+        "normalized_rmse_std": 0.1608464116047951
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/equilibrium_pressure",
+        "source_run": "outputs/benchmarks/mlp/sweep",
+        "mae_mean": 0.38889929670409606,
+        "mae_std": 0.08873461169816681,
+        "rmse_mean": 0.900860743801571,
+        "rmse_std": 0.22889162947761818,
+        "r2_mean": 0.7592421605693963,
+        "r2_std": 0.13351971363227497,
+        "normalized_mae_mean": 0.19290549498864634,
+        "normalized_mae_std": 0.04990046582852838,
+        "normalized_rmse_mean": 0.4430011523025887,
+        "normalized_rmse_std": 0.10591594556147174
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/glass_transition_temperature",
+        "source_run": "outputs/benchmarks/mlp/sweep",
+        "mae_mean": 3.360220716274165e+17,
+        "mae_std": 7.513681940992067e+17,
+        "rmse_mean": 4.018239547957741e+18,
+        "rmse_std": 8.985056779111537e+18,
+        "r2_mean": -8.228899921767386e+34,
+        "r2_std": 1.8400379605114576e+35,
+        "normalized_mae_mean": 1.1683358272278764e+16,
+        "normalized_mae_std": 2.6124783302299816e+16,
+        "normalized_rmse_mean": 1.3971264457498013e+17,
+        "normalized_rmse_std": 3.124069705859228e+17
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/heat_capacity",
+        "source_run": "outputs/benchmarks/mlp/sweep",
+        "mae_mean": 30.497534226936978,
+        "mae_std": 11.081238591100208,
+        "rmse_mean": 59.36122182131233,
+        "rmse_std": 26.41058566481762,
+        "r2_mean": 0.9281133379209578,
+        "r2_std": 0.048716499254568946,
+        "normalized_mae_mean": 0.12992443445776894,
+        "normalized_mae_std": 0.0510417959618896,
+        "normalized_rmse_mean": 0.2531007566540283,
+        "normalized_rmse_std": 0.11891000402155223
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/isobaric_coefficient_of_volume_expansion",
+        "source_run": "outputs/benchmarks/mlp/sweep",
+        "mae_mean": 1.4130190600133163e-05,
+        "mae_std": 1.2089750116215354e-05,
+        "rmse_mean": 2.255052484590953e-05,
+        "rmse_std": 1.426450252453452e-05,
+        "r2_mean": 0.4198779200948698,
+        "r2_std": 0.927440672575591,
+        "normalized_mae_mean": 0.3259137366337243,
+        "normalized_mae_std": 0.2704442160313306,
+        "normalized_rmse_mean": 0.526379478750797,
+        "normalized_rmse_std": 0.3314211816042353
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/melting_point",
+        "source_run": "outputs/benchmarks/mlp/sweep",
+        "mae_mean": 1668859245242.627,
+        "mae_std": 3731682717172.014,
+        "rmse_mean": 47642935593621.62,
+        "rmse_std": 106532842634723.77,
+        "r2_mean": -2.1419379938376968e+24,
+        "r2_std": 4.7895189578106157e+24,
+        "normalized_mae_mean": 23537270965.354298,
+        "normalized_mae_std": 52630937882.39054,
+        "normalized_rmse_mean": 671946833053.0508,
+        "normalized_rmse_std": 1502518795968.7043
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/pec50",
+        "source_run": "outputs/benchmarks/mlp/sweep",
+        "mae_mean": 0.5034104734724575,
+        "mae_std": 0.43128247969836686,
+        "rmse_mean": 1.8278658320493808,
+        "rmse_std": 3.064953641272137,
+        "r2_mean": -5.491815650213285,
+        "r2_std": 14.042286306750578,
+        "normalized_mae_mean": 0.4811362645574578,
+        "normalized_mae_std": 0.43845455797541955,
+        "normalized_rmse_mean": 1.787112452436281,
+        "normalized_rmse_std": 3.057864694436262
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/refractive_index",
+        "source_run": "outputs/benchmarks/mlp/sweep",
+        "mae_mean": 0.00501942209547483,
+        "mae_std": 0.0009003349548236343,
+        "rmse_mean": 0.009574756904497182,
+        "rmse_std": 0.0015574526673998003,
+        "r2_mean": 0.9393716928446759,
+        "r2_std": 0.017491234808724224,
+        "normalized_mae_mean": 0.12710103263167535,
+        "normalized_mae_std": 0.024110140317488402,
+        "normalized_rmse_mean": 0.24236288308466292,
+        "normalized_rmse_std": 0.04157833833008104
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/self_diffusion_coefficient",
+        "source_run": "outputs/benchmarks/mlp/sweep",
+        "mae_mean": 0.35448423133950463,
+        "mae_std": 0.41729480196671753,
+        "rmse_mean": 0.5024135934779894,
+        "rmse_std": 0.6205317043011174,
+        "r2_mean": 0.5006796038473913,
+        "r2_std": 0.7117680270748047,
+        "normalized_mae_mean": 0.4989992441405879,
+        "normalized_mae_std": 0.7328816679180123,
+        "normalized_rmse_mean": 0.713955334038783,
+        "normalized_rmse_std": 1.083075703628029
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/solvation",
+        "source_run": "outputs/benchmarks/mlp/sweep",
+        "mae_mean": 0.2248961417881307,
+        "mae_std": 0.07691273869264069,
+        "rmse_mean": 0.4057810770413763,
+        "rmse_std": 0.1721963223417553,
+        "r2_mean": 0.8443263389266413,
+        "r2_std": 0.11641450580304999,
+        "normalized_mae_mean": 0.20554496901685698,
+        "normalized_mae_std": 0.071039305712946,
+        "normalized_rmse_mean": 0.37106852172467164,
+        "normalized_rmse_std": 0.1590104051690272
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/speed_of_sound",
+        "source_run": "outputs/benchmarks/mlp/sweep",
+        "mae_mean": 28.496590934111993,
+        "mae_std": 10.401597737629464,
+        "rmse_mean": 45.61615771154375,
+        "rmse_std": 15.54746258786023,
+        "r2_mean": 0.9367129306590659,
+        "r2_std": 0.06007587657539334,
+        "normalized_mae_mean": 0.13893063975856285,
+        "normalized_mae_std": 0.049455455526051996,
+        "normalized_rmse_mean": 0.22234247617863026,
+        "normalized_rmse_std": 0.07299596196694728
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/static_relative_permittivity",
+        "source_run": "outputs/benchmarks/mlp/sweep",
+        "mae_mean": 3.5570710508753556,
+        "mae_std": 1.090848641163144,
+        "rmse_mean": 5.44891239247679,
+        "rmse_std": 2.4743224478846613,
+        "r2_mean": 0.6498696714217831,
+        "r2_std": 0.18214834470774627,
+        "normalized_mae_mean": 0.30570746001726024,
+        "normalized_mae_std": 0.13289877074298773,
+        "normalized_rmse_mean": 0.46797573777560847,
+        "normalized_rmse_std": 0.2480135016849819
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/surface_tension",
+        "source_run": "outputs/benchmarks/mlp/sweep",
+        "mae_mean": 6821.360502103349,
+        "mae_std": 15248.122905255743,
+        "rmse_mean": 267864.23397266713,
+        "rmse_std": 598954.0757422277,
+        "r2_mean": -4879151345.067976,
+        "r2_std": 10910114081.897833,
+        "normalized_mae_mean": 767.3107876538254,
+        "normalized_mae_std": 1715.2040637647824,
+        "normalized_rmse_mean": 30131.056012184563,
+        "normalized_rmse_std": 67374.12023014482
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/thermal_conductivity",
+        "source_run": "outputs/benchmarks/mlp/sweep",
+        "mae_mean": 0.005802149038546932,
+        "mae_std": 0.0018927927401431546,
+        "rmse_mean": 0.008079955249459193,
+        "rmse_std": 0.002280932295711005,
+        "r2_mean": 0.891044888718841,
+        "r2_std": 0.06299730913747051,
+        "normalized_mae_mean": 0.22074140439346043,
+        "normalized_mae_std": 0.0700442423515503,
+        "normalized_rmse_mean": 0.3077798868722455,
+        "normalized_rmse_std": 0.08466231170505846
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/thermal_decomposition_temperature",
+        "source_run": "outputs/benchmarks/mlp/sweep",
+        "mae_mean": 153932.06936814127,
+        "mae_std": 303783.8446160611,
+        "rmse_mean": 3446329.6252444694,
+        "rmse_std": 6806978.1606667135,
+        "r2_mean": -8618621384.051655,
+        "r2_std": 19010104481.231018,
+        "normalized_mae_mean": 2036.4367989572281,
+        "normalized_mae_std": 4015.9231552028414,
+        "normalized_rmse_mean": 45592.890772432096,
+        "normalized_rmse_std": 89986.04151106719
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/transfer",
+        "source_run": "outputs/benchmarks/mlp/sweep",
+        "mae_mean": 2.6826375099101734,
+        "mae_std": 5.249507965035111,
+        "rmse_mean": 9.682176017512694,
+        "rmse_std": 20.59471807720997,
+        "r2_mean": -74.89150861521186,
+        "r2_std": 169.5957598918953,
+        "normalized_mae_mean": 1.172612661588304,
+        "normalized_mae_std": 2.297648385921959,
+        "normalized_rmse_mean": 4.2348334212166865,
+        "normalized_rmse_std": 9.012375984299457
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/transfer_organic",
+        "source_run": "outputs/benchmarks/mlp/sweep",
+        "mae_mean": 0.2663589566312966,
+        "mae_std": 0.020720760664077836,
+        "rmse_mean": 0.43344356753299146,
+        "rmse_std": 0.05826653369657178,
+        "r2_mean": 0.9643350955097063,
+        "r2_std": 0.013140419229803262,
+        "normalized_mae_mean": 0.11356977738894099,
+        "normalized_mae_std": 0.008607532476724036,
+        "normalized_rmse_mean": 0.1846891411278006,
+        "normalized_rmse_std": 0.023296397199962196
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/viscosity",
+        "source_run": "outputs/benchmarks/mlp/sweep",
+        "mae_mean": 0.12380772567260659,
+        "mae_std": 0.014295003920551616,
+        "rmse_mean": 0.23195676745636057,
+        "rmse_std": 0.0239760085483491,
+        "r2_mean": 0.9013554175008803,
+        "r2_std": 0.017228500941918617,
+        "normalized_mae_mean": 0.16590046373816253,
+        "normalized_mae_std": 0.02055962980029499,
+        "normalized_rmse_mean": 0.3109000130270733,
+        "normalized_rmse_std": 0.03581458134765094
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "experiment/x_co2",
+        "source_run": "outputs/benchmarks/mlp/sweep",
+        "mae_mean": 0.043790997256256584,
+        "mae_std": 0.007258487414233843,
+        "rmse_mean": 0.06644754754173791,
+        "rmse_std": 0.012160843877994243,
+        "r2_mean": 0.9136228965801498,
+        "r2_std": 0.028354407635224132,
+        "normalized_mae_mean": 0.18846319045831122,
+        "normalized_mae_std": 0.03193379062256221,
+        "normalized_rmse_mean": 0.28613113014494596,
+        "normalized_rmse_std": 0.05458524292530221
+      }
+    ],
+    "stage2_core_physics": [
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "simulation/heat_of_vaporization",
+        "target": "heat_of_vaporization_kJ/mol",
+        "count": 2684,
+        "mae": 5.6614555401635345,
+        "rmse": 9.5359103703066,
+        "r2": 0.8872886953236472,
+        "normalized_mae": 0.20347057570852525,
+        "normalized_rmse": 0.3427170202408998,
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "simulation/pbe_tzvp_anion_orbitals",
+        "target": "HOMO_eV",
+        "count": 744,
+        "mae": 0.1804670747291785,
+        "rmse": 0.2686483975079845,
+        "r2": 0.9387769134271454,
+        "normalized_mae": 0.16248433804439397,
+        "normalized_rmse": 0.24187878648378416,
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "simulation/pbe_tzvp_anion_orbitals",
+        "target": "LUMO_eV",
+        "count": 744,
+        "mae": 0.18548911817966077,
+        "rmse": 0.26369941454330437,
+        "r2": 0.9139868630622932,
+        "normalized_mae": 0.21113788512324,
+        "normalized_rmse": 0.30016281947592394,
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "simulation/pbe_tzvp_cation_orbitals",
+        "target": "HOMO_eV",
+        "count": 917,
+        "mae": 0.32566221887373165,
+        "rmse": 0.4088634975350272,
+        "r2": 0.7717477999155332,
+        "normalized_mae": 0.37840144086746935,
+        "normalized_rmse": 0.47507671329032636,
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "model": "ECFP+XGBoost",
+        "task": "simulation/pbe_tzvp_cation_orbitals",
+        "target": "LUMO_eV",
+        "count": 917,
+        "mae": 0.23389291639408422,
+        "rmse": 0.32262320618617946,
+        "r2": 0.906563031979643,
+        "normalized_mae": 0.22593626381789494,
+        "normalized_rmse": 0.3116480949933523,
+        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+      },
+      {
+        "run": "ilume@outputs/v1/stage2/base/evaluate/test",
+        "model": "ILUME",
+        "task": "simulation/heat_of_vaporization",
+        "target": "heat_of_vaporization_kJ/mol",
+        "count": 2684,
+        "mae": 7.047253768303127,
+        "rmse": 9.015545003094598,
+        "r2": 0.8992541588308838,
+        "normalized_mae": 0.25327564108351047,
+        "normalized_rmse": 0.3240152853081998,
+        "source_run": "outputs/v1/stage2/base/evaluate/test"
+      },
+      {
+        "run": "ilume@outputs/v1/stage2/base/evaluate/test",
+        "model": "ILUME",
+        "task": "simulation/pbe_tzvp_anion_orbitals",
+        "target": "HOMO_eV",
+        "count": 744,
+        "mae": 0.234125090849489,
+        "rmse": 0.3015410598554703,
+        "r2": 0.9228671060300435,
+        "normalized_mae": 0.2107955728952263,
+        "normalized_rmse": 0.2714938421723044,
+        "source_run": "outputs/v1/stage2/base/evaluate/test"
+      },
+      {
+        "run": "ilume@outputs/v1/stage2/base/evaluate/test",
+        "model": "ILUME",
+        "task": "simulation/pbe_tzvp_anion_orbitals",
+        "target": "LUMO_eV",
+        "count": 744,
+        "mae": 0.2278844755541147,
+        "rmse": 0.2960803415490834,
+        "r2": 0.8915659692460205,
+        "normalized_mae": 0.2593955197647301,
+        "normalized_rmse": 0.33702126439940616,
+        "source_run": "outputs/v1/stage2/base/evaluate/test"
+      },
+      {
+        "run": "ilume@outputs/v1/stage2/base/evaluate/test",
+        "model": "ILUME",
+        "task": "simulation/pbe_tzvp_cation_orbitals",
+        "target": "HOMO_eV",
+        "count": 917,
+        "mae": 0.32921198052909156,
+        "rmse": 0.41982206812505923,
+        "r2": 0.7593483626044468,
+        "normalized_mae": 0.3825260670822316,
+        "normalized_rmse": 0.48780996468023874,
+        "source_run": "outputs/v1/stage2/base/evaluate/test"
+      },
+      {
+        "run": "ilume@outputs/v1/stage2/base/evaluate/test",
+        "model": "ILUME",
+        "task": "simulation/pbe_tzvp_cation_orbitals",
+        "target": "LUMO_eV",
+        "count": 917,
+        "mae": 0.2820743049790643,
+        "rmse": 0.36910482617991497,
+        "r2": 0.8776998529355398,
+        "normalized_mae": 0.2724786007568512,
+        "normalized_rmse": 0.35654848667470296,
+        "source_run": "outputs/v1/stage2/base/evaluate/test"
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "simulation/heat_of_vaporization",
+        "target": "heat_of_vaporization_kJ/mol",
+        "count": 2684,
+        "mae": 2.2692951018914216,
+        "rmse": 3.1512996542969454,
+        "r2": 0.9876910060066117,
+        "normalized_mae": 0.08155760962154382,
+        "normalized_rmse": 0.11325652040205807,
+        "source_run": "outputs/benchmarks/mlp/sweep"
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "simulation/pbe_tzvp_anion_orbitals",
+        "target": "HOMO_eV",
+        "count": 744,
+        "mae": 0.17358775462587528,
+        "rmse": 0.23716103325984322,
+        "r2": 0.9522873674157661,
+        "normalized_mae": 0.1562905114150316,
+        "normalized_rmse": 0.21352899722555138,
+        "source_run": "outputs/benchmarks/mlp/sweep"
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "simulation/pbe_tzvp_anion_orbitals",
+        "target": "LUMO_eV",
+        "count": 744,
+        "mae": 0.15177364680186614,
+        "rmse": 0.20791999440677658,
+        "r2": 0.9465264563619626,
+        "normalized_mae": 0.17276035984035115,
+        "normalized_rmse": 0.23667042209647202,
+        "source_run": "outputs/benchmarks/mlp/sweep"
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "simulation/pbe_tzvp_cation_orbitals",
+        "target": "HOMO_eV",
+        "count": 917,
+        "mae": 0.2658022640548371,
+        "rmse": 0.34297598300638477,
+        "r2": 0.83938514404864,
+        "normalized_mae": 0.30884749250935856,
+        "normalized_rmse": 0.3985190747683047,
+        "source_run": "outputs/benchmarks/mlp/sweep"
+      },
+      {
+        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "model": "MLP",
+        "task": "simulation/pbe_tzvp_cation_orbitals",
+        "target": "LUMO_eV",
+        "count": 917,
+        "mae": 0.23457611845034693,
+        "rmse": 0.31146847431282254,
+        "r2": 0.9129125202086589,
+        "normalized_mae": 0.2265962244631529,
+        "normalized_rmse": 0.30087282876378296,
+        "source_run": "outputs/benchmarks/mlp/sweep"
+      }
+    ],
+    "stage2_partial_charge": [
+      {
+        "run": "ilume@outputs/v1/stage2/base/evaluate/test",
+        "model": "ILUME",
+        "subset": "all_mapped",
+        "molecule_count": 2842,
+        "atom_count": 68920,
+        "molecule_macro_mae": 0.06304466799774337,
+        "molecule_macro_normalized_mae": 0.14306422818483386,
+        "atom_micro_mae": 0.06447103416547745,
+        "atom_micro_rmse": 0.0930524820258784,
+        "atom_micro_r2": 0.9534197228682566,
+        "atom_micro_r2_reason": null,
+        "reason": null,
+        "source_run": "outputs/v1/stage2/base/evaluate/test"
+      },
+      {
+        "run": "ilume@outputs/v1/stage2/base/evaluate/test",
+        "model": "ILUME",
+        "subset": "ambiguous",
+        "molecule_count": 2179,
+        "atom_count": 56199,
+        "molecule_macro_mae": 0.06340398964742502,
+        "molecule_macro_normalized_mae": 0.1438796194957001,
+        "atom_micro_mae": 0.06469607569241113,
+        "atom_micro_rmse": 0.09347152538277163,
+        "atom_micro_r2": 0.9536103964619101,
+        "atom_micro_r2_reason": null,
+        "reason": null,
+        "source_run": "outputs/v1/stage2/base/evaluate/test"
+      },
+      {
+        "run": "ilume@outputs/v1/stage2/base/evaluate/test",
+        "model": "ILUME",
+        "subset": "connectivity_only",
+        "molecule_count": 1775,
+        "atom_count": 44194,
+        "molecule_macro_mae": 0.06484102323952856,
+        "molecule_macro_normalized_mae": 0.14714061060342282,
+        "atom_micro_mae": 0.06633524973910557,
+        "atom_micro_rmse": 0.09581107208690395,
+        "atom_micro_r2": 0.9529279322049222,
+        "atom_micro_r2_reason": null,
+        "reason": null,
+        "source_run": "outputs/v1/stage2/base/evaluate/test"
+      },
+      {
+        "run": "ilume@outputs/v1/stage2/base/evaluate/test",
+        "model": "ILUME",
+        "subset": "typed",
+        "molecule_count": 1067,
+        "atom_count": 24726,
+        "molecule_macro_mae": 0.06005635445119351,
+        "molecule_macro_normalized_mae": 0.13628299220264514,
+        "atom_micro_mae": 0.061139029673811934,
+        "atom_micro_rmse": 0.08790654436472908,
+        "atom_micro_r2": 0.9544304962135683,
+        "atom_micro_r2_reason": null,
+        "reason": null,
+        "source_run": "outputs/v1/stage2/base/evaluate/test"
+      },
+      {
+        "run": "ilume@outputs/v1/stage2/base/evaluate/test",
+        "model": "ILUME",
+        "subset": "unique",
+        "molecule_count": 663,
+        "atom_count": 12721,
+        "molecule_macro_mae": 0.061863730026919354,
+        "molecule_macro_normalized_mae": 0.140384382534189,
+        "atom_micro_mae": 0.0634768427676199,
+        "atom_micro_rmse": 0.09117818198114146,
+        "atom_micro_r2": 0.9525105308796432,
+        "atom_micro_r2_reason": null,
+        "reason": null,
+        "source_run": "outputs/v1/stage2/base/evaluate/test"
+      }
+    ]
+  },
+  "wins": {
+    "stage3_test": {
+      "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep": [
+        "experiment/transfer"
+      ],
+      "mlp@outputs/benchmarks/mlp/sweep": [
+        "experiment/density",
+        "experiment/electrical_conductivity",
+        "experiment/glass_transition_temperature",
+        "experiment/melting_point",
+        "experiment/refractive_index",
+        "experiment/solvation",
+        "experiment/surface_tension",
+        "experiment/thermal_decomposition_temperature",
+        "experiment/transfer_organic",
+        "experiment/viscosity"
+      ]
+    },
+    "stage2_core_physics": {
+      "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep": [
+        "simulation/pbe_tzvp_cation_orbitals::LUMO_eV"
+      ],
+      "mlp@outputs/benchmarks/mlp/sweep": [
+        "simulation/heat_of_vaporization::heat_of_vaporization_kJ/mol",
+        "simulation/pbe_tzvp_anion_orbitals::HOMO_eV",
+        "simulation/pbe_tzvp_anion_orbitals::LUMO_eV",
+        "simulation/pbe_tzvp_cation_orbitals::HOMO_eV"
+      ]
+    }
+  },
+  "health": [
+    {
+      "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+      "model": "ECFP+XGBoost",
+      "stage": "benchmark",
+      "operation": "sweep",
+      "status": "completed",
+      "completeness": "complete",
+      "checkpoint_epoch": "",
+      "enabled_tasks": "",
+      "expected_tasks": "stage2_core_physics:3;stage2_partial_charge:0;stage2_physics_full:0;stage3_test:11;stage3_validation:21",
+      "available_tasks": "stage3_test:21;stage3_validation:21;stage2_physics:3",
+      "available_folds": "1;2;3;4;5",
+      "failed_jobs": 0,
+      "stage2_core_eligibility": "eligible",
+      "stage2_partial_eligibility": "not_evaluated",
+      "stage2_full_eligibility": "not_evaluated",
+      "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+      "issues": ""
+    },
+    {
+      "run": "ilume@outputs/v1/stage2/base/evaluate/test",
+      "model": "ILUME",
+      "stage": "stage2",
+      "operation": "evaluate",
+      "status": "completed",
+      "completeness": "complete",
+      "checkpoint_epoch": 5,
+      "enabled_tasks": "",
+      "expected_tasks": 3,
+      "available_tasks": 4,
+      "available_folds": "",
+      "failed_jobs": "",
+      "stage2_core_eligibility": "eligible",
+      "stage2_partial_eligibility": "eligible",
+      "stage2_full_eligibility": "eligible",
+      "source_run": "outputs/v1/stage2/base/evaluate/test",
+      "issues": ""
+    },
+    {
+      "run": "ilume@outputs/v1/stage3/base/evaluate/test",
+      "model": "ILUME",
+      "stage": "stage3",
+      "operation": "evaluate",
+      "status": "completed",
+      "completeness": "legacy",
+      "checkpoint_epoch": 100,
+      "enabled_tasks": 0,
+      "expected_tasks": "",
+      "available_tasks": "",
+      "available_folds": "",
+      "failed_jobs": "",
+      "stage2_core_eligibility": "",
+      "stage2_partial_eligibility": "",
+      "stage2_full_eligibility": "",
+      "source_run": "outputs/v1/stage3/base/evaluate/test",
+      "issues": "reporting_schema_missing"
+    },
+    {
+      "run": "ilume@outputs/v1/stage3/base/evaluate/valid_fold1",
+      "model": "ILUME",
+      "stage": "stage3",
+      "operation": "evaluate",
+      "status": "completed",
+      "completeness": "legacy",
+      "checkpoint_epoch": 100,
+      "enabled_tasks": 0,
+      "expected_tasks": "",
+      "available_tasks": "",
+      "available_folds": "",
+      "failed_jobs": "",
+      "stage2_core_eligibility": "",
+      "stage2_partial_eligibility": "",
+      "stage2_full_eligibility": "",
+      "source_run": "outputs/v1/stage3/base/evaluate/valid_fold1",
+      "issues": "reporting_schema_missing"
+    },
+    {
+      "run": "ilume@outputs/v1/stage3/base/evaluate/valid_fold2",
+      "model": "ILUME",
+      "stage": "stage3",
+      "operation": "evaluate",
+      "status": "completed",
+      "completeness": "legacy",
+      "checkpoint_epoch": 100,
+      "enabled_tasks": 0,
+      "expected_tasks": "",
+      "available_tasks": "",
+      "available_folds": "",
+      "failed_jobs": "",
+      "stage2_core_eligibility": "",
+      "stage2_partial_eligibility": "",
+      "stage2_full_eligibility": "",
+      "source_run": "outputs/v1/stage3/base/evaluate/valid_fold2",
+      "issues": "reporting_schema_missing"
+    },
+    {
+      "run": "ilume@outputs/v1/stage3/base/evaluate/valid_fold3",
+      "model": "ILUME",
+      "stage": "stage3",
+      "operation": "evaluate",
+      "status": "completed",
+      "completeness": "legacy",
+      "checkpoint_epoch": 100,
+      "enabled_tasks": 0,
+      "expected_tasks": "",
+      "available_tasks": "",
+      "available_folds": "",
+      "failed_jobs": "",
+      "stage2_core_eligibility": "",
+      "stage2_partial_eligibility": "",
+      "stage2_full_eligibility": "",
+      "source_run": "outputs/v1/stage3/base/evaluate/valid_fold3",
+      "issues": "reporting_schema_missing"
+    },
+    {
+      "run": "ilume@outputs/v1/stage3/base/evaluate/valid_fold4",
+      "model": "ILUME",
+      "stage": "stage3",
+      "operation": "evaluate",
+      "status": "completed",
+      "completeness": "legacy",
+      "checkpoint_epoch": 100,
+      "enabled_tasks": 0,
+      "expected_tasks": "",
+      "available_tasks": "",
+      "available_folds": "",
+      "failed_jobs": "",
+      "stage2_core_eligibility": "",
+      "stage2_partial_eligibility": "",
+      "stage2_full_eligibility": "",
+      "source_run": "outputs/v1/stage3/base/evaluate/valid_fold4",
+      "issues": "reporting_schema_missing"
+    },
+    {
+      "run": "ilume@outputs/v1/stage3/base/evaluate/valid_fold5",
+      "model": "ILUME",
+      "stage": "stage3",
+      "operation": "evaluate",
+      "status": "completed",
+      "completeness": "legacy",
+      "checkpoint_epoch": 100,
+      "enabled_tasks": 0,
+      "expected_tasks": "",
+      "available_tasks": "",
+      "available_folds": "",
+      "failed_jobs": "",
+      "stage2_core_eligibility": "",
+      "stage2_partial_eligibility": "",
+      "stage2_full_eligibility": "",
+      "source_run": "outputs/v1/stage3/base/evaluate/valid_fold5",
+      "issues": "reporting_schema_missing"
+    },
+    {
+      "run": "mlp@outputs/benchmarks/mlp/sweep",
+      "model": "MLP",
+      "stage": "benchmark",
+      "operation": "sweep",
+      "status": "completed",
+      "completeness": "complete",
+      "checkpoint_epoch": "",
+      "enabled_tasks": "",
+      "expected_tasks": "stage2_core_physics:3;stage2_partial_charge:0;stage2_physics_full:0;stage3_test:11;stage3_validation:21",
+      "available_tasks": "stage3_test:21;stage3_validation:21;stage2_physics:3",
+      "available_folds": "1;2;3;4;5",
+      "failed_jobs": 0,
+      "stage2_core_eligibility": "eligible",
+      "stage2_partial_eligibility": "not_evaluated",
+      "stage2_full_eligibility": "not_evaluated",
+      "source_run": "outputs/benchmarks/mlp/sweep",
+      "issues": ""
+    }
+  ]
+}
