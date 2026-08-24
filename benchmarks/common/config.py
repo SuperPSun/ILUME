@@ -48,10 +48,13 @@ class BenchmarkConfig:
     stage3: Stage3BenchmarkConfig
     stage2_physics: Stage2PhysicsConfig
     seed: int
+    display_name: str = ""
 
     def validate(self) -> None:
         if self.name not in {"mlp", "ecfp_xgboost"}:
             raise ValueError(f"Unknown benchmark model: {self.name}")
+        if not self.display_name:
+            raise ValueError("Benchmark display_name must be non-empty")
         if self.name == "mlp" and self.features.kind != "rdkit_2d":
             raise ValueError("MLP benchmark requires RDKit 2D descriptors")
         if self.name == "ecfp_xgboost" and self.features.kind != "ecfp4":
@@ -97,7 +100,7 @@ def _only(values: dict[str, Any], allowed: set[str], context: str) -> None:
 def benchmark_config_from_dict(raw: dict[str, Any]) -> BenchmarkConfig:
     _only(
         raw,
-        {"name", "seed", "data", "features", "model", "training", "stage3", "stage2_physics"},
+        {"name", "display_name", "seed", "data", "features", "model", "training", "stage3", "stage2_physics"},
         "benchmark config",
     )
     data = _mapping(raw.get("data"), "data")
@@ -117,6 +120,7 @@ def benchmark_config_from_dict(raw: dict[str, Any]) -> BenchmarkConfig:
         raise ValueError("stage3.tasks must be 'all' or a list")
     config = BenchmarkConfig(
         name=str(raw.get("name")),  # type: ignore[arg-type]
+        display_name=str(raw.get("display_name", str(raw.get("name", "")).upper())),
         seed=int(raw.get("seed", 42)),
         data=DataConfig(
             data_root=Path(data["data_root"]),

@@ -69,6 +69,15 @@ python scripts/stage2/train.py \
   --output outputs/v1/stage2/base/train
 ```
 
+Stage 2 Physics test evaluator 固定评估 heat of vaporization 和 cation/anion PBE/TZVP HOMO/LUMO，共 3 个 task、5 个 scalar target；test 实体只在 evaluation 进程内构建，不进入 prepared artifact 或训练：
+
+```bash
+python scripts/stage2/evaluate.py \
+  --config configs/v1/stage2/base.yaml \
+  --checkpoint-dir outputs/v1/stage2/base/train \
+  --output outputs/v1/stage2/base/evaluate/test_reporting_v1
+```
+
 训练每个 epoch 完整覆盖所有任务的全部有效行，并以 deterministic randomized round-robin 交替 task batch；Object v3 强制一个 batch 对应一个 optimizer step，不支持 gradient accumulation。第一 epoch 的 object/interaction task 直接复用 teacher CLS，不运行 Stage 1；atom task仍运行冻结 Stage 1 取得 fusion atom states。后四个 epoch联合微调。Partial charge 只去重 Stage 1 entity forward，ObjectEncoder 与 AtomHead 按 molecule sample 向量化执行；atom target 全量保持 CPU resident。Task weight 归一化后只补偿 physics loss，teacher loss保持独立。Base 使用 4 个 ordered packing worker、包含 H2D 在内的 4 个逻辑预取名额，以及单 batch CUDA lookahead；transfer stream 通过 event 交接，不做逐 batch synchronize。CUDA 固定使用 TF32、pinned/non-blocking transfer 与 fused AdamW。每个 epoch full validation 后保存 `checkpoint_epoch_00001.pt` 至 `checkpoint_epoch_00005.pt`，epoch 5 后额外导出不含 physics heads 的 `stage2_encoder.pt`。只允许从完整 Object v3 epoch 恢复；不生成 `best.pt` 或 `last.pt`。旧 Object v2 以及缺少当前 preparation/extraction contract 的开发期 v3 artifact/cache/checkpoint 不迁移，必须重新 prepare。
 
 截至 2026-08-19 的正式 Base 产物缺少 ADR-0021 identity contract v1 block，升级后不再兼容，必须按 Stage 1 → Stage 2 → Stage 3 顺序重新生成。归档旧正式输出前先做精确清单并等待单独确认。
@@ -140,6 +149,16 @@ python scripts/stage3/evaluate.py \
 `--output` 是一次操作的独立目录；Stage 3 train 的共同 root 是唯一例外，其下每个 `foldN/` 才是独立 run directory。新训练和 evaluate 拒绝覆盖已有目录；只有显式 `--resume` 可继续训练。Stage 1/2 prepare 按各自 artifact 身份合同支持受控复用；Stage 3 prepare 拒绝已有输出目录，只能发布到新的空输出。
 
 每个操作目录包含 Git 可跟踪的 `run_config.yaml`、`metadata.json`、逐 attempt 追加的 `attempts.jsonl` 和成功后生成的 `summary.json`。Prepare payload 位于 `artifacts/` 子目录；checkpoint、训练 metrics JSONL、日志和 tensor 默认不进入 Git。Stage 1 用 `last.pt` 表示最新完整恢复状态；Stage 2 直接通过最新的完整 epoch checkpoint 恢复；Stage 3 Base 默认只保存 epoch 10、20、…、100 的完整 checkpoint，不生成 best/last。
+
+## 结果汇总
+
+[ADR-0023](docs/adr/0023-unified-evaluation-reporting.md) 将完整运行与论文结果分层：`outputs/` 保留 prediction/checkpoint/audit，`summary/` 只保留三张 leaderboard、三张 metric 明细、health、overview 和机器可读 summary。生成或原子刷新汇总：
+
+```bash
+python scripts/benchmarks/summarize.py --input outputs --output summary
+```
+
+只有 reporting schema 完整且 comparison identity 一致的 completed evaluation/sweep 进入排名；旧格式、失败、运行中或不完整实验只进入 health。发现声称为当前 schema 的损坏正式结果时命令失败，已有 `summary/` 保持不变。
 
 ## Tests
 

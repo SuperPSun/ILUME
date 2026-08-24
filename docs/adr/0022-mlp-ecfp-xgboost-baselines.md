@@ -3,6 +3,8 @@
 - 状态：Accepted
 - 日期：2026-08-21
 
+> 第 6 条中“不建立 Stage 2 aggregate”的决定已由 [ADR-0023](0023-unified-evaluation-reporting.md) 取代；其余训练与 evaluation 数值合同保持有效。
+
 ## 背景
 
 ILUME 需要以简单、可审计的单任务模型作为 Stage 3 property benchmark 和 Stage 2 physics benchmark 的论文对照。对照实验必须复用 catalog、任务 topology、canonical SMILES、既有 split、train-only normalization 与 test 评价边界，但不能进入或改变 Stage 1/2/3 的训练数值合同。
@@ -22,4 +24,3 @@ ILUME 需要以简单、可审计的单任务模型作为 Stage 3 property bench
 - 两类 baseline 同时改变 feature family 与 estimator，因此只解释为完整 baseline pipeline 对照，不用于归因单一组件。
 - Stage 3 声明 condition 的缺失继续硬失败；当前压力缺失由上游数据修复，baseline 不建立例外。
 - 正式 216 个训练 run 与 test evaluation 由用户执行；代码验收只使用临时小数据，不运行正式实验。
-

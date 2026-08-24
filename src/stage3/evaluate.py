@@ -13,8 +13,15 @@ from common.identity import (
     tensor_state_hash,
 )
 from common.training import canonical_json_sha256, resolve_device
+from common.io import sha256_file
+from common.reporting import (
+    comparison_identity,
+    reporting_block,
+    sanitize_task_id,
+    write_prediction_csv,
+)
 from .config import Stage3Config
-from .data import Stage3TaskDataset
+from .data import Stage3TaskDataset, iter_rows, source_path, test_path
 from .model import Stage3SparseModel
 from .prepare import load_prepared_stage3
 from .train import STAGE3_CHECKPOINT_KIND, STAGE3_CHECKPOINT_VERSION, regression_metrics
@@ -221,6 +228,143 @@ def _macro(
     return result
 
 
+def _reporting_comparison(
+    config: Stage3Config,
+    prepared: Mapping[str, Any],
+    *,
+    split: str,
+    expected_tasks: Sequence[str],
+) -> dict[str, Any]:
+    sources: dict[str, Any] = {}
+    normalization: dict[str, Any] = {}
+    for task in expected_tasks:
+        spec = prepared["registry"][task]
+        for fold in range(1, 6):
+            sources[f"{task}:fold{fold}"] = sha256_file(
+                source_path(config, spec, fold)
+            )
+        if split == "test":
+            sources[f"{task}:test"] = sha256_file(test_path(config, spec))
+        for fold in range(1, 6):
+            stats = prepared["normalization"][f"fold{fold}"][task]["target"]
+            normalization[f"{task}:fold{fold}"] = {
+                "scale": float(stats["scale"]),
+            }
+    return comparison_identity(
+        "stage3_property",
+        split=split,
+        expected=expected_tasks,
+        sources=sources,
+        normalization=normalization,
+        folds=tuple(range(1, 6)),
+        ensemble=split == "test",
+    )
+
+
+def _prediction_context(
+    config: Stage3Config,
+    spec: Any,
+    *,
+    split: str,
+    fold: int | None,
+) -> list[dict[str, Any]]:
+    rows = iter_rows(config, spec, None if split == "test" else (fold,))
+    return [
+        {
+            "source_fold": source_fold,
+            "source_row": source_row,
+            **{name: row[name] for name in spec.identity_columns},
+            **{name: row[name] for name in spec.condition_columns},
+            "target": float(row[spec.target_column]),
+        }
+        for source_fold, source_row, row in rows
+    ]
+
+
+def _write_predictions(
+    config: Stage3Config,
+    prepared: Mapping[str, Any],
+    *,
+    split: str,
+    fold: int | None,
+    tasks: Sequence[str],
+    raw_targets: Mapping[str, torch.Tensor],
+    fold_predictions: Mapping[int, Mapping[str, torch.Tensor]],
+    destination: Path,
+) -> list[dict[str, Any]]:
+    manifests: list[dict[str, Any]] = []
+    for task in tasks:
+        spec = prepared["registry"][task]
+        contexts = _prediction_context(
+            config, spec, split=split, fold=fold
+        )
+        target_values = raw_targets[task].double()
+        if len(contexts) != len(target_values) or any(
+            int(row["source_row"]) != int(source_row)
+            for row, source_row in zip(
+                contexts,
+                Stage3TaskDataset(
+                    config.data.artifacts_dir,
+                    1 if split == "test" else int(fold),
+                    task,
+                    split,
+                ).source_rows.tolist(),
+                strict=True,
+            )
+        ):
+            raise ValueError(f"Stage 3 prediction/source-row mismatch: {task}")
+        if contexts and not torch.allclose(
+            torch.tensor([row["target"] for row in contexts], dtype=torch.float64),
+            target_values,
+            rtol=1e-6,
+            atol=1e-6,
+        ):
+            raise ValueError(f"Stage 3 prediction/source-target mismatch: {task}")
+        fields = [
+            "source_row",
+            *(("source_fold",) if split == "valid" else ()),
+            *spec.identity_columns,
+            *spec.condition_columns,
+            "target",
+        ]
+        output_rows: list[dict[str, Any]] = []
+        if split == "test":
+            fields.extend(f"prediction_fold{current}" for current in range(1, 6))
+            fields.extend(("prediction_ensemble", "absolute_error_ensemble"))
+            ensemble = torch.stack(
+                [fold_predictions[current][task].double() for current in range(1, 6)]
+            ).mean(dim=0)
+            for index, context in enumerate(contexts):
+                row = {name: context[name] for name in fields if name in context}
+                for current in range(1, 6):
+                    row[f"prediction_fold{current}"] = float(
+                        fold_predictions[current][task][index]
+                    )
+                row["prediction_ensemble"] = float(ensemble[index])
+                row["absolute_error_ensemble"] = abs(
+                    float(ensemble[index]) - float(context["target"])
+                )
+                output_rows.append(row)
+        else:
+            fields.extend(("prediction", "absolute_error"))
+            assert fold is not None
+            predictions = fold_predictions[fold][task].double()
+            for index, context in enumerate(contexts):
+                row = {name: context[name] for name in fields if name in context}
+                row["prediction"] = float(predictions[index])
+                row["absolute_error"] = abs(
+                    float(predictions[index]) - float(context["target"])
+                )
+                output_rows.append(row)
+        manifest = write_prediction_csv(
+            destination / f"{sanitize_task_id(task)}.csv", output_rows, fields
+        )
+        manifest["path"] = f"predictions/{sanitize_task_id(task)}.csv"
+        manifest["task"] = task
+        manifests.append(manifest)
+    return manifests
+
+
 def evaluate_checkpoints(
     config: Stage3Config,
     checkpoint_dir: str | Path,
@@ -230,6 +374,8 @@ def evaluate_checkpoints(
     checkpoint_epoch: int | None = None,
     task_subset: Sequence[str] | None = None,
     fold: int | None = None,
+    predictions_dir: str | Path | None = None,
+    reporting_study_id: str | None = None,
     expected_evaluation_identity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if split not in {"valid", "test"}:
@@ -268,6 +414,7 @@ def evaluate_checkpoints(
     normalizations: dict[str, list[dict[str, Any]]] = {task: [] for task in tasks}
     checkpoint_identities: list[Mapping[str, Any]] = []
     model_state_hashes: list[str] = []
+    raw_fold_predictions: dict[int, dict[str, torch.Tensor]] = {}
     try:
         for current_fold in folds:
             assert current_fold is not None
@@ -280,6 +427,7 @@ def evaluate_checkpoints(
             checkpoint_identities.append(checkpoint["training_identity"])
             model_state_hashes.append(checkpoint["model_state_hash"])
             per_task: dict[str, Any] = {}
+            raw_fold_predictions[current_fold] = {}
             for task in tasks:
                 dataset = Stage3TaskDataset(
                     config.data.artifacts_dir, current_fold, task, split
@@ -301,6 +449,7 @@ def evaluate_checkpoints(
                     normalized, normalized_targets, normalization
                 )
                 ensemble_predictions[task].append(raw)
+                raw_fold_predictions[current_fold][task] = raw
                 normalizations[task].append(normalization)
                 if task in raw_targets and not torch.equal(
                     raw_targets[task], dataset.raw_targets
@@ -335,11 +484,52 @@ def evaluate_checkpoints(
             context="Stage 3 run-directory evaluation identity",
         )
     if split == "valid":
-        return {
+        prediction_manifests = (
+            _write_predictions(
+                config,
+                prepared,
+                split=split,
+                fold=fold,
+                tasks=tasks,
+                raw_targets=raw_targets,
+                fold_predictions=raw_fold_predictions,
+                destination=Path(predictions_dir),
+            )
+            if predictions_dir is not None
+            else []
+        )
+        comparison = _reporting_comparison(
+            config, prepared, split=split, expected_tasks=enabled
+        )
+        result = {
             "split": split,
             "checkpoint_epoch": epoch,
             **next(iter(fold_results.values())),
         }
+        default_study_id = (
+            "ilume-stage3-"
+            + metadata_identity(
+                prepared["metadata"], "prepared", context="Stage 3 prepared artifact"
+            )["hash"]
+            + f"-epoch{epoch}"
+        )
+        result["reporting"] = reporting_block(
+            model_id="ilume",
+            model_display_name="ILUME",
+            benchmark="stage3_property",
+            protocol={
+                "split": "valid",
+                "fold": fold,
+                "folds": list(range(1, 6)),
+                "ensemble": False,
+                "expected_tasks": list(enabled),
+                "checkpoint_epoch": epoch,
+            },
+            comparison=comparison,
+            study_id=reporting_study_id or default_study_id,
+            predictions=prediction_manifests,
+        )
+        return result
     ensemble = {
         task: _raw_ensemble_metrics(
             torch.stack(predictions).mean(dim=0),
@@ -352,7 +542,29 @@ def evaluate_checkpoints(
         )
         for task, predictions in ensemble_predictions.items()
     }
-    return {
+    prediction_manifests = (
+        _write_predictions(
+            config,
+            prepared,
+            split=split,
+            fold=fold,
+            tasks=tasks,
+            raw_targets=raw_targets,
+            fold_predictions=raw_fold_predictions,
+            destination=Path(predictions_dir),
+        )
+        if predictions_dir is not None
+        else []
+    )
+    expected_test = tuple(
+        task
+        for task in enabled
+        if next(iter_rows(config, prepared["registry"][task], None), None) is not None
+    )
+    comparison = _reporting_comparison(
+        config, prepared, split=split, expected_tasks=expected_test
+    )
+    result = {
         "split": split,
         "checkpoint_epoch": epoch,
         "folds": fold_results,
@@ -361,6 +573,30 @@ def evaluate_checkpoints(
             **_macro(ensemble, prepared["registry"]),
         },
     }
+    default_study_id = (
+        "ilume-stage3-"
+        + metadata_identity(
+            prepared["metadata"], "prepared", context="Stage 3 prepared artifact"
+        )["hash"]
+        + f"-epoch{epoch}"
+    )
+    result["reporting"] = reporting_block(
+        model_id="ilume",
+        model_display_name="ILUME",
+        benchmark="stage3_property",
+        protocol={
+            "split": "test",
+            "folds": list(range(1, 6)),
+            "ensemble": True,
+            "expected_tasks": list(expected_test),
+            "enabled_tasks": list(enabled),
+            "checkpoint_epoch": epoch,
+        },
+        comparison=comparison,
+        study_id=reporting_study_id or default_study_id,
+        predictions=prediction_manifests,
+    )
+    return result
 
 
 def resolve_stage3_evaluation_identity(

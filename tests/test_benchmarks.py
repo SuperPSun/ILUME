@@ -400,7 +400,8 @@ def test_mlp_train_checkpoint_and_test_evaluation(tmp_path: Path) -> None:
         (2, 2, True),
     ]
     assert "test features" in evaluation_reporter.bars[-1].desc
-    assert "normalized_mae" not in result.metrics["left"]
+    assert "normalized_mae" in result.metrics["left"]
+    assert "normalized_rmse" in result.metrics["right"]
 
 
 def test_stage3_fold_training_and_normalized_evaluation(tmp_path: Path) -> None:
