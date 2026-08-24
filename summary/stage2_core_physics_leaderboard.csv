@@ -1,0 +1,4 @@
+rank,run,model,macro_normalized_mae,valid_targets,total_targets,per_target_wins,source_run,checkpoint_epoch
+1,mlp@outputs/benchmarks/mlp/sweep,MLP,0.18921043956988762,5,5,4,outputs/benchmarks/mlp/sweep,
+2,ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep,ECFP+XGBoost,0.23628610071230471,5,5,1,outputs/benchmarks/ecfp_xgboost/sweep,
+3,ilume@outputs/v1/stage2/base/evaluate/test,ILUME,0.27568664817264527,5,5,0,outputs/v1/stage2/base/evaluate/test,5

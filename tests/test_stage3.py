@@ -499,6 +499,7 @@ def test_short_training_checkpoint_and_resume_are_exact(tiny_prepared: Stage3Con
     )["model"]
     assert expected.keys() == actual.keys()
     assert all(torch.equal(expected[name], actual[name]) for name in expected)
+    prediction_dir = tiny_prepared.data.artifacts_dir.parent / "evaluation-predictions"
     evaluation = evaluate_checkpoints(
         tiny_prepared,
         continuous,
@@ -507,9 +508,22 @@ def test_short_training_checkpoint_and_resume_are_exact(tiny_prepared: Stage3Con
         checkpoint_epoch=2,
         task_subset=("experiment/a",),
         fold=1,
+        predictions_dir=prediction_dir,
     )
     assert evaluation["checkpoint_epoch"] == 2
     assert set(evaluation["tasks"]) == {"experiment/a"}
+    prediction_path = prediction_dir / "experiment__a.csv"
+    with prediction_path.open(newline="", encoding="utf-8") as handle:
+        prediction_rows = list(csv.DictReader(handle))
+    assert prediction_rows
+    spec = resolve_task_registry(tiny_prepared)["experiment/a"]
+    assert set(prediction_rows[0]) == {
+        "source_row", "source_fold", *spec.identity_columns,
+        *spec.condition_columns, "target", "prediction", "absolute_error",
+    }
+    assert evaluation["reporting"]["predictions"][0]["rows"] == len(
+        prediction_rows
+    )
 
     incompatible = replace(
         tiny_prepared,

@@ -11,12 +11,20 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from benchmarks.common.config import load_benchmark_config
-from benchmarks.common.engine import ensemble_evaluation, evaluate_checkpoint, write_predictions
+from benchmarks.common.engine import ensemble_evaluation, evaluate_checkpoint
 from benchmarks.common.data import resolve_task
 from common.identity import semantic_identity
 from common.io import sha256_file
 from common.outputs import open_run_directory, repository_path, repository_relative
 from common.progress import ProgressReporter
+from common.reporting import (
+    STAGE2_CORE_EVALUATION_CONTRACT,
+    REPORTING_SCHEMA_VERSION,
+    comparison_identity,
+    reporting_block,
+    sanitize_task_id,
+    write_prediction_csv,
+)
 
 
 def _latest_completed(root: Path) -> Path:
@@ -49,6 +57,150 @@ def _checkpoint_fingerprint(path: Path) -> dict[str, Any]:
 
 def _source_hash(path: Path) -> str | None:
     return sha256_file(path) if path.is_file() else None
+
+
+def _comparison_fragment(
+    task: Any,
+    result: Any,
+    *,
+    split: str,
+    fold: int | None,
+    ensemble: bool,
+    ensemble_results: list[Any] | None = None,
+) -> dict[str, Any]:
+    if task.benchmark == "stage2_physics":
+        expected = tuple(
+            f"{task.task_id}::{target}" for target in task.target_columns
+        )
+        sources = {
+            f"{task.task_id}:train": sha256_file(task.train_paths[0]),
+            f"{task.task_id}:test": sha256_file(task.test_path),
+        }
+        normalization = {
+            f"{task.task_id}::{target}": {
+                "scale": float(result.target_stats.scale[index])
+            }
+            for index, target in enumerate(task.target_columns)
+        }
+        return comparison_identity(
+            "stage2_physics",
+            split="test",
+            expected=expected,
+            sources=sources,
+            normalization=normalization,
+        )
+    sources = {
+        f"{task.task_id}:fold{path.stem.removeprefix('fold')}": sha256_file(path)
+        for path in (*task.train_paths, *task.valid_paths)
+    }
+    if split == "test":
+        sources[f"{task.task_id}:test"] = (
+            sha256_file(task.test_path) if task.test_path.is_file() else None
+        )
+    normalization = (
+        {
+            f"{task.task_id}:fold{current}": {
+                "scale": float(item.target_stats.scale[0])
+            }
+            for current, item in zip(
+                range(1, 6), ensemble_results, strict=True
+            )
+        }
+        if ensemble_results is not None
+        else {
+            f"{task.task_id}:fold{fold}": {
+                "scale": float(result.target_stats.scale[0])
+            }
+        }
+    )
+    return comparison_identity(
+        "stage3_property",
+        split=split,
+        expected=(task.task_id,),
+        sources=sources,
+        normalization=normalization,
+        folds=(int(fold),) if fold is not None else tuple(range(1, 6)),
+        ensemble=ensemble,
+    )
+
+
+def _write_task_predictions(
+    path: Path,
+    task: Any,
+    result: Any,
+    predictions: Any,
+    extra_predictions: dict[str, Any] | None,
+) -> dict[str, Any]:
+    multi_target = len(task.target_columns) > 1
+    fields = [
+        "source_row",
+        *(("source_fold",) if task.benchmark == "stage3" and not extra_predictions else ()),
+        *task.slots,
+        *task.condition_columns,
+    ]
+    if extra_predictions:
+        if multi_target:
+            raise ValueError("Ensemble prediction artifacts require a scalar task")
+        fields.extend(
+            ["target", *(f"prediction_{name}" for name in extra_predictions)]
+        )
+        fields.extend(("prediction_ensemble", "absolute_error_ensemble"))
+    elif multi_target:
+        for target in task.target_columns:
+            fields.extend(
+                (
+                    f"{target}_target",
+                    f"{target}_prediction",
+                    f"{target}_absolute_error",
+                )
+            )
+    else:
+        fields.extend(("target", "prediction", "absolute_error"))
+    rows: list[dict[str, Any]] = []
+    conditions = result.conditions
+    if conditions is None:
+        raise ValueError("Benchmark evaluation result lacks prediction conditions")
+    for index, source in enumerate(result.source_rows):
+        try:
+            source_row = int(source.rsplit(":", 1)[1])
+        except (IndexError, ValueError) as error:
+            raise ValueError(f"Malformed benchmark source row: {source}") from error
+        row: dict[str, Any] = {"source_row": source_row}
+        if "source_fold" in fields:
+            row["source_fold"] = task.fold
+        row.update(dict(zip(task.slots, result.components[index], strict=True)))
+        row.update(
+            {
+                name: float(conditions[index, column])
+                for column, name in enumerate(task.condition_columns)
+            }
+        )
+        if extra_predictions:
+            actual = float(result.targets[index, 0])
+            predicted = float(predictions[index, 0])
+            row["target"] = actual
+            for name, values in extra_predictions.items():
+                row[f"prediction_{name}"] = float(values[index, 0])
+            row["prediction_ensemble"] = predicted
+            row["absolute_error_ensemble"] = abs(predicted - actual)
+        elif multi_target:
+            for column, target in enumerate(task.target_columns):
+                actual = float(result.targets[index, column])
+                predicted = float(predictions[index, column])
+                row[f"{target}_target"] = actual
+                row[f"{target}_prediction"] = predicted
+                row[f"{target}_absolute_error"] = abs(predicted - actual)
+        else:
+            actual = float(result.targets[index, 0])
+            predicted = float(predictions[index, 0])
+            row["target"] = actual
+            row["prediction"] = predicted
+            row["absolute_error"] = abs(predicted - actual)
+        rows.append(row)
+    manifest = write_prediction_csv(path, rows, fields)
+    manifest["path"] = f"predictions/{path.name}"
+    manifest["task"] = task.task_id
+    return manifest
 
 
 def main() -> None:
@@ -110,6 +262,11 @@ def main() -> None:
         output=args.output, seed=config.seed,
         data_metadata=["data/task_catalog.csv", "data/stage2/metadata.json"],
         details={
+            "reporting_schema_version": REPORTING_SCHEMA_VERSION,
+            **(
+                {"reporting_contract": STAGE2_CORE_EVALUATION_CONTRACT}
+                if args.benchmark == "stage2_physics" else {}
+            ),
             "benchmark": args.benchmark, "task": args.task, "split": args.split,
             "fold": selector_fold, "ensemble_folds": args.ensemble_folds,
             "checkpoints": [repository_relative(path) for path in checkpoints],
@@ -149,10 +306,58 @@ def main() -> None:
                 "fold": selector_fold, "targets": first.metrics,
             }
             extras = None
-        write_predictions(
-            run.root / "predictions.csv", first.source_rows, tuple(first.metrics),
-            first.targets, prediction, extras,
+        prediction_manifest = _write_task_predictions(
+            run.root / "predictions" / f"{sanitize_task_id(args.task)}.csv",
+            evaluation_task,
+            first,
+            prediction,
+            extras,
         )
+        comparison = _comparison_fragment(
+            evaluation_task,
+            first,
+            split=args.split,
+            fold=selector_fold,
+            ensemble=args.ensemble_folds,
+            ensemble_results=results if args.ensemble_folds else None,
+        )
+        study = semantic_identity(
+            "benchmark.reporting-study.v1",
+            {
+                "model": config.name,
+                "config": {
+                    key: value
+                    for key, value in config.to_dict().items()
+                    if key != "display_name"
+                },
+            },
+        )["hash"]
+        summary["reporting"] = reporting_block(
+            model_id=config.name,
+            model_display_name=config.display_name,
+            benchmark=(
+                "stage3_property"
+                if args.benchmark == "stage3"
+                else "stage2_physics"
+            ),
+            protocol={
+                "split": args.split,
+                "fold": selector_fold,
+                "folds": list(config.stage3.folds) if args.benchmark == "stage3" else [],
+                "ensemble": args.ensemble_folds,
+                "expected_tasks": [args.task],
+                "expected_targets": (
+                    [f"{args.task}::{target}" for target in evaluation_task.target_columns]
+                    if args.benchmark == "stage2_physics"
+                    else []
+                ),
+            },
+            comparison=comparison,
+            study_id=f"{config.name}-{study}",
+            predictions=[prediction_manifest],
+        )
+        if args.benchmark == "stage2_physics":
+            summary["reporting"]["contract"] = STAGE2_CORE_EVALUATION_CONTRACT
         run.complete(summary)
     except BaseException:
         run.fail()

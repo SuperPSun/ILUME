@@ -468,6 +468,8 @@ class EvaluationResult:
     metrics: dict[str, dict[str, Any]]
     target_stats: TargetStats
     training_identity: dict[str, Any]
+    components: tuple[tuple[str, ...], ...] = ()
+    conditions: np.ndarray | None = None
 
 
 def ensemble_evaluation(
@@ -529,7 +531,7 @@ def evaluate_checkpoint(
         if not len(dataset)
         else _predict(config, manifest, root, features)
     )
-    scales = bundle.target_stats.scale if benchmark == "stage3" else None
+    scales = bundle.target_stats.scale
     metrics = target_metrics(predictions, dataset.targets, bundle.task.target_columns, scales)
     return EvaluationResult(
         predictions=predictions,
@@ -538,6 +540,8 @@ def evaluate_checkpoint(
         metrics=metrics,
         target_stats=bundle.target_stats,
         training_identity=bundle.training_identity,
+        components=dataset.components,
+        conditions=dataset.conditions,
     )
 
 

@@ -4,6 +4,7 @@ import argparse
 import csv
 import heapq
 import json
+import math
 import os
 import re
 import subprocess
@@ -19,12 +20,18 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from benchmarks.common.config import load_benchmark_config
-from benchmarks.common.data import configured_tasks
+from benchmarks.common.data import configured_tasks, has_test_rows, resolve_task
 from benchmarks.common.metrics import macro_normalized_mae, mean_sample_std
 from common.identity import semantic_identity
 from common.io import atomic_json
 from common.outputs import open_run_directory, repository_path, repository_relative
 from common.progress import ProgressReporter
+from common.reporting import (
+    REPORTING_SCHEMA_VERSION,
+    STAGE2_BENCHMARK_SUITE_CONTRACT,
+    STAGE2_CORE_EVALUATION_CONTRACT,
+    comparison_identity,
+)
 
 FIELDS = ("operation", "benchmark", "task", "fold", "attempt", "status", "exit_code", "output")
 
@@ -38,11 +45,34 @@ def _metadata(path: Path) -> dict[str, Any] | None:
     return json.loads(metadata.read_text(encoding="utf-8")) if metadata.is_file() else None
 
 
-def _latest_completed(root: Path, required: str) -> Path | None:
+def _latest_completed(
+    root: Path, required: str, *, reporting_contract: str | None = None
+) -> Path | None:
     candidates = []
     for path in root.glob("attempt-*"):
         payload = _metadata(path)
-        if payload and payload.get("status") == "completed" and (path / required).is_file():
+        required_path = path / required
+        reporting_current = True
+        if required == "summary.json" and required_path.is_file():
+            try:
+                summary = json.loads(required_path.read_text(encoding="utf-8"))
+                reporting_current = (
+                    summary.get("reporting", {}).get("schema_version")
+                    == REPORTING_SCHEMA_VERSION
+                )
+                if reporting_contract is not None:
+                    reporting_current = reporting_current and (
+                        summary.get("reporting", {}).get("contract")
+                        == reporting_contract
+                    )
+            except (json.JSONDecodeError, OSError):
+                reporting_current = False
+        if (
+            payload
+            and payload.get("status") == "completed"
+            and required_path.is_file()
+            and reporting_current
+        ):
             try:
                 candidates.append((int(path.name.split("-", 1)[1]), path))
             except ValueError:
@@ -85,7 +115,15 @@ class _SweepState:
         task: str, fold: int | None, training_job: bool,
     ) -> tuple[int, Path] | Path:
         with self.lock:
-            completed = _latest_completed(root, required)
+            completed = _latest_completed(
+                root,
+                required,
+                reporting_contract=(
+                    STAGE2_CORE_EVALUATION_CONTRACT
+                    if operation.startswith("evaluate") and benchmark == "stage2_physics"
+                    else None
+                ),
+            )
             if completed is not None:
                 self._record_locked(
                     operation=operation, benchmark=benchmark, task=task, fold=fold,
@@ -386,36 +424,212 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
     stage3_valid: dict[str, Any] = {}
     stage3_test: dict[str, Any] = {}
     stage2_test: dict[str, Any] = {}
+    stage3_valid_reporting: list[dict[str, Any]] = []
+    stage3_test_reporting: list[dict[str, Any]] = []
+    stage2_reporting: list[dict[str, Any]] = []
+    source_runs: dict[str, Any] = {
+        "stage3_validation": {}, "stage3_test": {}, "stage2_physics": {}
+    }
     for task in configured_tasks(config, "stage3"):
         task_root = root / "stage3" / _sanitize(task)
         fold_values = []
         for fold in config.stage3.folds:
             run = _latest_completed(task_root / f"evaluate_valid_fold{fold}", "summary.json")
             if run:
-                fold_values.append(json.loads((run / "summary.json").read_text(encoding="utf-8")))
+                payload = json.loads((run / "summary.json").read_text(encoding="utf-8"))
+                fold_values.append(payload)
+                stage3_valid_reporting.append(payload["reporting"])
+                source_runs["stage3_validation"].setdefault(task, {})[
+                    f"fold{fold}"
+                ] = repository_relative(run)
         if len(fold_values) == len(config.stage3.folds):
             target = next(iter(fold_values[0]["targets"]))
             stage3_valid[task] = {
                 metric: mean_sample_std([float(row["targets"][target][metric]) for row in fold_values])
-                for metric in ("mae", "rmse", "r2", "normalized_mae")
+                for metric in (
+                    "mae", "rmse", "r2", "normalized_mae", "normalized_rmse"
+                )
             }
         run = _latest_completed(task_root / "evaluate_test", "summary.json")
         if run:
             payload = json.loads((run / "summary.json").read_text(encoding="utf-8"))
             stage3_test[task] = next(iter(payload["ensemble"]["targets"].values()))
+            stage3_test_reporting.append(payload["reporting"])
+            source_runs["stage3_test"][task] = repository_relative(run)
     for task in configured_tasks(config, "stage2_physics"):
-        run = _latest_completed(root / "stage2_physics" / _sanitize(task) / "evaluate_test", "summary.json")
+        run = _latest_completed(
+            root / "stage2_physics" / _sanitize(task) / "evaluate_test",
+            "summary.json",
+            reporting_contract=STAGE2_CORE_EVALUATION_CONTRACT,
+        )
         if run:
-            stage2_test[task] = json.loads((run / "summary.json").read_text(encoding="utf-8"))["targets"]
-    return {
+            payload = json.loads((run / "summary.json").read_text(encoding="utf-8"))
+            stage2_test[task] = payload["targets"]
+            stage2_reporting.append(payload["reporting"])
+            source_runs["stage2_physics"][task] = repository_relative(run)
+
+    def merged_comparison(
+        fragments: list[dict[str, Any]],
+        *,
+        benchmark: str,
+        split: str,
+        expected: list[str],
+        ensemble: bool,
+    ) -> dict[str, Any]:
+        sources: dict[str, Any] = {}
+        normalization: dict[str, Any] = {}
+        for fragment in fragments:
+            payload = fragment["comparison_identity"]["payload"]
+            for destination, values in (
+                (sources, payload["sources"]),
+                (normalization, payload["normalization"]),
+            ):
+                for key, value in values.items():
+                    if key in destination and destination[key] != value:
+                        raise ValueError(f"Conflicting reporting comparison item: {key}")
+                    destination[key] = value
+        return comparison_identity(
+            benchmark,
+            split=split,
+            expected=expected,
+            sources=sources,
+            normalization=normalization,
+            folds=config.stage3.folds if benchmark == "stage3_property" else (),
+            ensemble=ensemble,
+        )
+
+    valid_expected = list(configured_tasks(config, "stage3"))
+    test_expected = [
+        task
+        for task in valid_expected
+        if has_test_rows(
+            resolve_task(config, "stage3", task, config.stage3.folds[0])
+        )
+    ]
+    stage2_expected = [
+        f"{task}::{target}"
+        for task in configured_tasks(config, "stage2_physics")
+        for target in resolve_task(
+            config, "stage2_physics", task, None
+        ).target_columns
+    ]
+    stage2_values = [
+        float(stage2_test[task][target]["normalized_mae"])
+        for task in configured_tasks(config, "stage2_physics")
+        for target in stage2_test.get(task, {})
+    ]
+    stage2_valid_count = sum(math.isfinite(value) for value in stage2_values)
+    stage2_complete = stage2_valid_count == len(stage2_expected)
+    study_ids = {
+        item["study_id"]
+        for item in [*stage3_valid_reporting, *stage3_test_reporting, *stage2_reporting]
+    }
+    study_id = f"{config.name}-" + semantic_identity(
+        "benchmark.reporting-study.v1",
+        {"model": config.name, "config": _scientific_config(config)},
+    )["hash"]
+    if study_ids - {study_id}:
+        raise ValueError("Benchmark sweep contains incompatible reporting study identities")
+    result = {
         "model": config.name,
         "stage3_property_benchmark": {
             "validation_five_fold": stage3_valid,
             "test_ensemble": stage3_test,
             "macro_normalized_mae": macro_normalized_mae(stage3_test),
         },
-        "stage2_physics_benchmark": {"test": stage2_test, "aggregate": None},
+        "stage2_physics_benchmark": {
+            "test": stage2_test,
+            "aggregate": {
+                "macro_normalized_mae": (
+                    sum(stage2_values) / len(stage2_values)
+                    if stage2_values else float("nan")
+                ),
+                "valid_targets": len(stage2_values),
+                "total_targets": len(stage2_expected),
+            },
+        },
+        "reporting": {
+            "schema_version": REPORTING_SCHEMA_VERSION,
+            "contract": STAGE2_BENCHMARK_SUITE_CONTRACT,
+            "model_id": config.name,
+            "model_display_name": config.display_name,
+            "study_id": study_id,
+            "benchmarks": {
+                "stage3_test": {
+                    "benchmark": "stage3_property",
+                    "protocol": {
+                        "split": "test", "folds": list(config.stage3.folds),
+                        "ensemble": True, "expected_tasks": test_expected,
+                        "enabled_tasks": valid_expected,
+                    },
+                    "comparison_identity": merged_comparison(
+                        [
+                            item for item in stage3_test_reporting
+                            if item["protocol"]["expected_tasks"][0] in test_expected
+                        ],
+                        benchmark="stage3_property", split="test",
+                        expected=test_expected, ensemble=True,
+                    ),
+                },
+                "stage3_validation": {
+                    "benchmark": "stage3_property",
+                    "protocol": {
+                        "split": "valid", "folds": list(config.stage3.folds),
+                        "ensemble": False, "expected_tasks": valid_expected,
+                    },
+                    "comparison_identity": merged_comparison(
+                        stage3_valid_reporting,
+                        benchmark="stage3_property", split="valid",
+                        expected=valid_expected, ensemble=False,
+                    ),
+                },
+                "stage2_core_physics": {
+                    "status": "complete" if stage2_complete else "incomplete",
+                    "benchmark": "stage2_physics",
+                    "protocol": {
+                        "split": "test", "folds": [], "ensemble": False,
+                        "expected_tasks": list(configured_tasks(config, "stage2_physics")),
+                        "expected_targets": stage2_expected,
+                    },
+                    "comparison_identity": merged_comparison(
+                        stage2_reporting,
+                        benchmark="stage2_physics", split="test",
+                        expected=stage2_expected, ensemble=False,
+                    ),
+                    "issues": (
+                        [] if stage2_complete
+                        else [f"missing_or_invalid_targets={len(stage2_expected) - stage2_valid_count}"]
+                    ),
+                },
+                "stage2_partial_charge": {
+                    "status": "unsupported",
+                    "benchmark": "stage2_partial_charge",
+                    "protocol": {"split": "test", "ensemble": False},
+                },
+                "stage2_physics_full": {
+                    "status": "unsupported",
+                    "benchmark": "stage2_physics_full",
+                    "protocol": {"split": "test", "ensemble": False},
+                },
+            },
+            "capabilities": {
+                "stage2_core_physics": "supported",
+                "stage2_partial_charge": "unsupported",
+                "stage2_physics_full": "unsupported",
+            },
+            "source_runs": source_runs,
+            "source_run_manifest": semantic_identity(
+                "benchmark.source-run-manifest.v1", {"source_runs": source_runs}
+            ),
+        },
     }
+    return result
+
+
+def _scientific_config(config: Any) -> dict[str, Any]:
+    payload = config.to_dict()
+    payload.pop("display_name", None)
+    return payload
 
 
 def _positive_int(value: str) -> int:
@@ -464,12 +678,16 @@ def main() -> None:
         parser.error("--devices requires MLP training.device: cuda")
 
     root = repository_path(args.output)
-    identity = semantic_identity("benchmark.sweep.v1", {"config": config.to_dict()})
+    identity = semantic_identity("benchmark.sweep.v1", {"config": _scientific_config(config)})
     run = open_run_directory(
         stage="benchmark", operation="sweep", config_path=args.config,
         config_payload=config.to_dict(), semantic_identity=identity,
         output=args.output, seed=config.seed, reusable=True,
         data_metadata=["data/task_catalog.csv", "data/stage2/metadata.json"],
+        details={
+            "reporting_schema_version": REPORTING_SCHEMA_VERSION,
+            "reporting_contract": STAGE2_BENCHMARK_SUITE_CONTRACT,
+        },
     )
     rows: list[dict[str, Any]] = []
     train_script = ROOT / "scripts/benchmarks/train.py"

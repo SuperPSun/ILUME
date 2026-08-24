@@ -188,4 +188,26 @@ def load_split(task: BenchmarkTask, split: Literal["train", "valid", "test"]) ->
     return _read_paths(task, paths, allow_empty=split == "test" and task.benchmark == "stage3")
 
 
-__all__ = ["BenchmarkTask", "RawDataset", "configured_tasks", "load_split", "resolve_task"]
+def has_test_rows(task: BenchmarkTask) -> bool:
+    if not task.test_path.is_file():
+        return False
+    required = set(task.slots) | set(task.condition_columns) | set(task.target_columns)
+    with task.test_path.open(newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        missing = required - set(reader.fieldnames or ())
+        if missing:
+            raise ValueError(
+                f"Benchmark test source missing columns in {task.test_path}: "
+                f"{sorted(missing)}"
+            )
+        return next(reader, None) is not None
+
+
+__all__ = [
+    "BenchmarkTask",
+    "RawDataset",
+    "configured_tasks",
+    "has_test_rows",
+    "load_split",
+    "resolve_task",
+]

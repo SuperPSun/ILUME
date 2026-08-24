@@ -18,6 +18,7 @@ Stage 2 现役合同以 ADR-0019 和 `configs/v1/stage2/base.yaml` 为准，iden
 - `--output`、`--resume`、Stage 3 fold 和 evaluation selector 是运行参数，不进入科研 config schema。
 - Stage 3 train 的 `--fold` 可接收一个或多个 fold，`--output` 始终是共同 root，实际 run contract 位于 `foldN/`。多 fold 只允许由该入口使用 spawn worker 和显式设备槽调度；不得把并发下沉到 `src/stage3`，也不得恢复独立 fold/matrix runner。
 - Baseline 以 ADR-0022 为准，只复用现役 registry、split、canonical SMILES、condition/target 与评估口径；不得改变或被解释为 Stage 1/2/3 数值训练合同。Baseline v1 不支持 resume，失败由 sweep 在新 attempt 目录完整重跑。
+- Evaluation reporting 与汇总以 ADR-0023/0024 为准：Stage 2 固定分为 Core、Partial Charge、Full 三榜；缺少 `stage2-benchmark-suite-v1` 的旧 Stage 2 reporting 只进入 health，禁止跨 run 拼接 Full。MLP 与 ECFP+XGBoost 的 Partial/Full 显式为 unsupported。
 
 ## 数据、输出与恢复
 
@@ -30,6 +31,6 @@ Stage 2 现役合同以 ADR-0019 和 `configs/v1/stage2/base.yaml` 为准，iden
 
 ## 验证与清理
 
-修改后运行 `pytest -q`，并按风险检查七个 script 的 `--help`、`compileall`、`git diff --check`、Markdown 链接、ignore 白名单与旧入口搜索。只使用临时小数据；除非用户明确要求，不执行正式 prepare、教师缓存、训练或五折 evaluation。
+修改后运行 `pytest -q`，并按风险检查八个 Stage script 与四个 benchmark script 的 `--help`、`compileall`、`git diff --check`、Markdown 链接、ignore 白名单与旧入口搜索。只使用临时小数据；除非用户明确要求，不执行正式 prepare、教师缓存、训练或五折 evaluation。
 
 `trash/` 不进入 Git。移动旧 artifact、旧 YAML、未消费数据或删除机器缓存前，必须先报告精确文件数、大小、目标和冲突策略，并等待用户明确确认。不得覆盖、重排或删除既有 `trash/` 内容。

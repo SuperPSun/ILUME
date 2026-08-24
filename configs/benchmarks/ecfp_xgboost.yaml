@@ -1,4 +1,5 @@
 name: ecfp_xgboost
+display_name: ECFP+XGBoost
 seed: 42
 data:
   data_root: data
@@ -34,4 +35,3 @@ stage2_physics:
     - simulation/heat_of_vaporization
     - simulation/pbe_tzvp_cation_orbitals
     - simulation/pbe_tzvp_anion_orbitals
-

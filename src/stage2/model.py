@@ -277,12 +277,9 @@ class Stage2ObjectModel(nn.Module):
         atom_state_indices: torch.Tensor, atom_sample_indices: torch.Tensor,
         *, teacher_loss_is_zero: bool = False,
     ) -> Stage2ForwardOutput:
-        spec = self.specs[task]
-        if spec.target_level != "atom" or entity_positions.shape[1] != 1:
-            raise ValueError("Atom task requires one entity slot")
-        objects = self.encode_object(object_slots, roles)
-        predictions = self.atom_heads[task](
-            states.atom_states[atom_state_indices], objects[atom_sample_indices]
+        predictions = self.predict_atom_from_states(
+            task, states, entity_positions, roles, object_slots,
+            atom_state_indices, atom_sample_indices,
         )
         physics = molecule_equal_smooth_l1_loss(
             predictions, targets, target_mask, atom_sample_indices,
@@ -290,6 +287,20 @@ class Stage2ObjectModel(nn.Module):
         )
         teacher = predictions.new_zeros(()) if teacher_loss_is_zero else torch.square(object_slots - teacher_slots).mean()
         return Stage2ForwardOutput(predictions, physics, teacher, object_slots, teacher_slots)
+
+    def predict_atom_from_states(
+        self, task: str, states: EncodedEntityStates,
+        entity_positions: torch.Tensor, roles: torch.Tensor,
+        object_slots: torch.Tensor, atom_state_indices: torch.Tensor,
+        atom_sample_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        spec = self.specs[task]
+        if spec.target_level != "atom" or entity_positions.shape[1] != 1:
+            raise ValueError("Atom task requires one entity slot")
+        objects = self.encode_object(object_slots, roles)
+        return self.atom_heads[task](
+            states.atom_states[atom_state_indices], objects[atom_sample_indices]
+        )
 
 
 def stage2_optimizer_groups(model: Stage2ObjectModel, *, backbone_learning_rate: float, object_encoder_learning_rate: float, task_head_learning_rate: float, weight_decay: float) -> list[dict[str, Any]]:
