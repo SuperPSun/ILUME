@@ -219,7 +219,16 @@ class FeaturePreprocessor:
         filled = np.where(np.isfinite(retained), retained, median)
         mean = filled.mean(axis=0)
         scale = filled.std(axis=0)
-        scale = np.where(np.isfinite(scale) & (scale > 0), scale, 1.0)
+
+        # Treat numerically near-constant features as constant.
+        # Do NOT divide by tiny std values, otherwise validation OOD values
+        # can explode to extremely large z-scores.
+        min_scale = 1e-8 * np.maximum(1.0, np.abs(mean))
+        scale = np.where(
+            np.isfinite(scale) & (scale > min_scale),
+            scale,
+            1.0,
+        )
         return cls(
             finite_mask=tuple(bool(value) for value in finite_mask_array),
             median=tuple(float(value) for value in median),
@@ -235,6 +244,9 @@ class FeaturePreprocessor:
         median = np.asarray(self.median)
         filled = np.where(np.isfinite(retained), retained, median)
         transformed = (filled - np.asarray(self.mean)) / np.asarray(self.scale)
+
+        # Guard against unseen / out-of-distribution validation values.
+        transformed = np.clip(transformed, -10.0, 10.0)
         if not np.isfinite(transformed).all():
             raise ValueError("Non-finite feature after benchmark preprocessing")
         return transformed.astype(np.float32)

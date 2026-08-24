@@ -318,7 +318,8 @@ class RunningStats:
         if self.count == 0:
             raise ValueError(f"No Stage 3 training values for {context}")
         scale = math.sqrt(max(self.m2 / self.count, 0.0))
-        constant = not math.isfinite(scale) or scale == 0.0
+        min_scale = 1e-8 * max(1.0, abs(self.mean))
+        constant = not math.isfinite(scale) or scale <= min_scale
         if target and constant:
             raise ValueError(f"Stage 3 target has zero variance: {context}")
         return {
