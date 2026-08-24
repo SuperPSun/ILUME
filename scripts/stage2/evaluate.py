@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
+from common.progress import ProgressReporter
 from common.outputs import open_run_directory, repository_path, repository_relative
 from common.reporting import REPORTING_SCHEMA_VERSION
 from common.training import resolve_device
@@ -30,11 +31,20 @@ def main() -> None:
         resolve_stage2_evaluation_identity,
     )
 
+    progress = ProgressReporter()
+
     checkpoint_dir = repository_path(args.checkpoint_dir)
-    checkpoint_path = resolve_checkpoint_path(checkpoint_dir, args.checkpoint_epoch)
-    evaluation_identity = resolve_stage2_evaluation_identity(
-        config, checkpoint_dir, checkpoint_epoch=args.checkpoint_epoch
+    checkpoint_path = resolve_checkpoint_path(
+        checkpoint_dir,
+        args.checkpoint_epoch,
     )
+
+    with progress.status("Resolving Stage 2 evaluation identity"):
+        evaluation_identity = resolve_stage2_evaluation_identity(
+            config,
+            checkpoint_dir,
+            checkpoint_epoch=args.checkpoint_epoch,
+        )
     run = open_run_directory(
         stage="stage2",
         operation="evaluate",
@@ -59,6 +69,7 @@ def main() -> None:
             checkpoint_epoch=args.checkpoint_epoch,
             predictions_dir=run.root / "predictions",
             expected_evaluation_identity=evaluation_identity,
+            reporter=progress,
         )
         run.complete(result)
     except BaseException:

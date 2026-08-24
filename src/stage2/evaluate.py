@@ -11,6 +11,7 @@ import numpy as np
 import torch
 from rdkit import Chem
 
+from common.progress import ProgressReporter
 from common.identity import IDENTITY_CONTRACT_VERSION, require_compatible_identity, semantic_identity
 from common.io import sha256_file
 from common.reporting import (
@@ -298,6 +299,7 @@ def evaluate_stage2_checkpoints(
     checkpoint_epoch: int | None = None,
     predictions_dir: str | Path | None = None,
     expected_evaluation_identity: Mapping[str, Any] | None = None,
+    reporter: ProgressReporter | None = None,
 ) -> dict[str, Any]:
     checkpoint_path = resolve_checkpoint_path(checkpoint_dir, checkpoint_epoch)
     checkpoint, registry, _ = _load_checkpoint_contract(config, checkpoint_path)
@@ -347,116 +349,151 @@ def evaluate_stage2_checkpoints(
     task_metrics: dict[str, Any] = {}
     prediction_manifests: list[dict[str, Any]] = []
 
-    for task in STAGE2_PHYSICS_TASKS:
-        spec = registry.by_id(task)
-        rows = _read_test_rows(config, spec)
-        raw_predictions: list[np.ndarray] = []
-        for start in range(0, len(rows), config.training.batch_size):
-            chunk = rows[start : start + config.training.batch_size]
-            samples = []
-            role_rows = []
-            for row in chunk:
-                roles = []
-                for role, canonical in zip(
-                    spec.role_policy, row["canonicals"], strict=True
-                ):
-                    key = (role, canonical)
-                    if key not in sample_cache:
-                        sample_cache[key] = _entity_sample(
-                            role,
-                            canonical,
-                            feature_config=feature_config,
-                            vocabulary=vocabulary,
-                            schema=schema,
-                            standardizer=standardizer,
-                        )
-                    samples.append(sample_cache[key])
-                    roles.append(ROLE_TO_ID[role])
-                role_rows.append(roles)
-            packed = packer(samples).to(device)
-            slots = model.encode_entities(packed).reshape(
-                len(chunk), len(spec.entity_columns), -1
-            )
-            roles = torch.tensor(role_rows, dtype=torch.long, device=device)
-            condition_values = []
-            for row in chunk:
-                condition_values.append(
-                    [
-                        (value - float(scalers[task]["conditions"][name]["mean"]))
-                        / float(scalers[task]["conditions"][name]["scale"])
-                        for name, value in zip(
-                            spec.condition_columns, row["conditions"], strict=True
-                        )
-                    ]
-                )
-            conditions = torch.tensor(
-                condition_values, dtype=torch.float32, device=device
-            ).reshape(len(chunk), len(spec.condition_columns))
-            with torch.autocast(
-                device_type=device.type,
-                dtype=torch.bfloat16,
-                enabled=config.training.amp_dtype == "bf16",
-            ):
-                normalized = model.predict_object(spec, slots, roles, conditions)
-            if not torch.isfinite(normalized).all():
-                raise RuntimeError(f"Non-finite Stage 2 evaluation prediction: {task}")
-            prediction = normalized.float().cpu().numpy()
-            for column, target in enumerate(spec.target_columns):
-                stats = scalers[task]["targets"][target]
-                prediction[:, column] = (
-                    prediction[:, column] * float(stats["scale"])
-                    + float(stats["mean"])
-                )
-            raw_predictions.append(prediction.astype(np.float64))
-        predictions = np.concatenate(raw_predictions, axis=0)
-        targets = np.asarray([row["targets"] for row in rows], dtype=np.float64)
-        task_metrics[task] = {
-            target: _metrics(
-                predictions[:, column],
-                targets[:, column],
-                float(scalers[task]["targets"][target]["scale"]),
-            )
-            for column, target in enumerate(spec.target_columns)
-        }
-        if predictions_dir is not None:
-            output_rows: list[dict[str, Any]] = []
-            fields = ["source_row", *spec.entity_columns, *spec.condition_columns]
-            if len(spec.target_columns) == 1:
-                fields.extend(("target", "prediction", "absolute_error"))
-            else:
-                for target in spec.target_columns:
-                    fields.extend(
-                        (
-                            f"{target}_target",
-                            f"{target}_prediction",
-                            f"{target}_absolute_error",
-                        )
-                    )
-            for row_index, row in enumerate(rows):
-                output: dict[str, Any] = {"source_row": row["source_row"]}
-                for name in (*spec.entity_columns, *spec.condition_columns):
-                    output[name] = row["raw"][name]
-                for column, target in enumerate(spec.target_columns):
-                    actual = float(targets[row_index, column])
-                    predicted = float(predictions[row_index, column])
-                    if len(spec.target_columns) == 1:
-                        output["target"] = actual
-                        output["prediction"] = predicted
-                        output["absolute_error"] = abs(predicted - actual)
-                    else:
-                        output[f"{target}_target"] = actual
-                        output[f"{target}_prediction"] = predicted
-                        output[f"{target}_absolute_error"] = abs(predicted - actual)
-                output_rows.append(output)
-            manifest = write_prediction_csv(
-                Path(predictions_dir) / f"{sanitize_task_id(task)}.csv",
-                output_rows,
-                fields,
-            )
-            manifest["path"] = f"predictions/{sanitize_task_id(task)}.csv"
-            manifest["task"] = task
-            prediction_manifests.append(manifest)
+    progress_reporter = reporter or ProgressReporter()
 
+    task_rows = {
+        task: _read_test_rows(config, registry.by_id(task))
+        for task in STAGE2_PHYSICS_TASKS
+    }
+
+    total_batches = sum(
+        math.ceil(len(rows) / config.training.batch_size)
+        for rows in task_rows.values()
+    )
+
+    evaluation_progress = progress_reporter.bar(
+        total=total_batches,
+        desc="Stage 2 test evaluation",
+        unit="batch",
+    )
+    try:
+        for task in STAGE2_PHYSICS_TASKS:
+            spec = registry.by_id(task)
+            rows = task_rows[task]
+            raw_predictions: list[np.ndarray] = []
+
+            task_batches = math.ceil(
+                len(rows) / config.training.batch_size
+            )
+
+            for batch_index, start in enumerate(
+                range(0, len(rows), config.training.batch_size),
+                start=1,
+            ):
+                evaluation_progress.set_postfix_str(
+                    f"task={task} batch={batch_index}/{task_batches}",
+                    refresh=False,
+                )
+
+                chunk = rows[
+                    start : start + config.training.batch_size
+                ]
+                samples = []
+                role_rows = []
+                for row in chunk:
+                    roles = []
+                    for role, canonical in zip(
+                        spec.role_policy, row["canonicals"], strict=True
+                    ):
+                        key = (role, canonical)
+                        if key not in sample_cache:
+                            sample_cache[key] = _entity_sample(
+                                role,
+                                canonical,
+                                feature_config=feature_config,
+                                vocabulary=vocabulary,
+                                schema=schema,
+                                standardizer=standardizer,
+                            )
+                        samples.append(sample_cache[key])
+                        roles.append(ROLE_TO_ID[role])
+                    role_rows.append(roles)
+                packed = packer(samples).to(device)
+                slots = model.encode_entities(packed).reshape(
+                    len(chunk), len(spec.entity_columns), -1
+                )
+                roles = torch.tensor(role_rows, dtype=torch.long, device=device)
+                condition_values = []
+                for row in chunk:
+                    condition_values.append(
+                        [
+                            (value - float(scalers[task]["conditions"][name]["mean"]))
+                            / float(scalers[task]["conditions"][name]["scale"])
+                            for name, value in zip(
+                                spec.condition_columns, row["conditions"], strict=True
+                            )
+                        ]
+                    )
+                conditions = torch.tensor(
+                    condition_values, dtype=torch.float32, device=device
+                ).reshape(len(chunk), len(spec.condition_columns))
+                with torch.autocast(
+                    device_type=device.type,
+                    dtype=torch.bfloat16,
+                    enabled=config.training.amp_dtype == "bf16",
+                ):
+                    normalized = model.predict_object(spec, slots, roles, conditions)
+                if not torch.isfinite(normalized).all():
+                    raise RuntimeError(f"Non-finite Stage 2 evaluation prediction: {task}")
+                prediction = normalized.float().cpu().numpy()
+                for column, target in enumerate(spec.target_columns):
+                    stats = scalers[task]["targets"][target]
+                    prediction[:, column] = (
+                        prediction[:, column] * float(stats["scale"])
+                        + float(stats["mean"])
+                    )
+                raw_predictions.append(prediction.astype(np.float64))
+                evaluation_progress.update(1)
+            predictions = np.concatenate(raw_predictions, axis=0)
+            targets = np.asarray([row["targets"] for row in rows], dtype=np.float64)
+            task_metrics[task] = {
+                target: _metrics(
+                    predictions[:, column],
+                    targets[:, column],
+                    float(scalers[task]["targets"][target]["scale"]),
+                )
+                for column, target in enumerate(spec.target_columns)
+            }
+            if predictions_dir is not None:
+                output_rows: list[dict[str, Any]] = []
+                fields = ["source_row", *spec.entity_columns, *spec.condition_columns]
+                if len(spec.target_columns) == 1:
+                    fields.extend(("target", "prediction", "absolute_error"))
+                else:
+                    for target in spec.target_columns:
+                        fields.extend(
+                            (
+                                f"{target}_target",
+                                f"{target}_prediction",
+                                f"{target}_absolute_error",
+                            )
+                        )
+                for row_index, row in enumerate(rows):
+                    output: dict[str, Any] = {"source_row": row["source_row"]}
+                    for name in (*spec.entity_columns, *spec.condition_columns):
+                        output[name] = row["raw"][name]
+                    for column, target in enumerate(spec.target_columns):
+                        actual = float(targets[row_index, column])
+                        predicted = float(predictions[row_index, column])
+                        if len(spec.target_columns) == 1:
+                            output["target"] = actual
+                            output["prediction"] = predicted
+                            output["absolute_error"] = abs(predicted - actual)
+                        else:
+                            output[f"{target}_target"] = actual
+                            output[f"{target}_prediction"] = predicted
+                            output[f"{target}_absolute_error"] = abs(predicted - actual)
+                    output_rows.append(output)
+                manifest = write_prediction_csv(
+                    Path(predictions_dir) / f"{sanitize_task_id(task)}.csv",
+                    output_rows,
+                    fields,
+                )
+                manifest["path"] = f"predictions/{sanitize_task_id(task)}.csv"
+                manifest["task"] = task
+                prediction_manifests.append(manifest)
+    finally:
+        evaluation_progress.close()
     scalar_values = [
         float(task_metrics[task][target]["normalized_mae"])
         for task in STAGE2_PHYSICS_TASKS
