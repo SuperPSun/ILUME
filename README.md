@@ -128,14 +128,26 @@ python scripts/stage3/train.py \
   --devices cuda:0
 ```
 
-验证集汇总和 test ensemble：
+Validation 支持一次请求一个、部分或全部 fold，并始终按给定顺序单进程执行。`--output` 是 validation 的共同 root，每个 fold 都写入独立的 `<output>/foldN/` run directory：
 
 ```bash
 python scripts/stage3/evaluate.py \
   --config configs/v1/stage3/base.yaml \
-  --checkpoint-dir outputs/v1/stage3/base/train/fold1 \
-  --split valid --fold 1 --checkpoint-epoch 100 \
-  --output outputs/v1/stage3/base/evaluate_valid_fold1
+  --checkpoint-dir outputs/v1/stage3/base/train \
+  --split valid --fold 1 2 3 4 5 --checkpoint-epoch 100 \
+  --output outputs/v1/stage3/base/evaluate_valid
+
+python scripts/stage3/evaluate.py \
+  --config configs/v1/stage3/base.yaml \
+  --checkpoint-dir outputs/v1/stage3/base/train \
+  --split valid --fold 2 4 --checkpoint-epoch 100 \
+  --output outputs/v1/stage3/base/evaluate_valid_subset
+
+python scripts/stage3/evaluate.py \
+  --config configs/v1/stage3/base.yaml \
+  --checkpoint-dir outputs/v1/stage3/base/train \
+  --split valid --fold 3 --checkpoint-epoch 100 \
+  --output outputs/v1/stage3/base/evaluate_valid
 
 python scripts/stage3/evaluate.py \
   --config configs/v1/stage3/base.yaml \
@@ -146,7 +158,7 @@ python scripts/stage3/evaluate.py \
 
 ## Outputs
 
-`--output` 是一次操作的独立目录；Stage 3 train 的共同 root 是唯一例外，其下每个 `foldN/` 才是独立 run directory。新训练和 evaluate 拒绝覆盖已有目录；只有显式 `--resume` 可继续训练。Stage 1/2 prepare 按各自 artifact 身份合同支持受控复用；Stage 3 prepare 拒绝已有输出目录，只能发布到新的空输出。
+`--output` 是一次操作的独立目录；Stage 3 train 与 validation evaluate 使用共同 root，其下每个 `foldN/` 才是独立 run directory。Stage 3 test ensemble 仍直接使用自身的 `--output`。新训练和 evaluate 拒绝覆盖已有正式 run directory；只有显式 `--resume` 可继续训练。Stage 1/2 prepare 按各自 artifact 身份合同支持受控复用；Stage 3 prepare 拒绝已有输出目录，只能发布到新的空输出。
 
 每个操作目录包含 Git 可跟踪的 `run_config.yaml`、`metadata.json`、逐 attempt 追加的 `attempts.jsonl` 和成功后生成的 `summary.json`。Prepare payload 位于 `artifacts/` 子目录；checkpoint、训练 metrics JSONL、日志和 tensor 默认不进入 Git。Stage 1 用 `last.pt` 表示最新完整恢复状态；Stage 2 直接通过最新的完整 epoch checkpoint 恢复；Stage 3 Base 默认只保存 epoch 10、20、…、100 的完整 checkpoint，不生成 best/last。
 

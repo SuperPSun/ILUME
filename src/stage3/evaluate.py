@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -261,6 +262,33 @@ def _reporting_comparison(
     )
 
 
+def _default_reporting_study_id(
+    metadata: Mapping[str, Any], checkpoint_epoch: int
+) -> str:
+    return (
+        "ilume-stage3-"
+        + metadata_identity(
+            metadata, "prepared", context="Stage 3 prepared artifact"
+        )["hash"]
+        + f"-epoch{checkpoint_epoch}"
+    )
+
+
+def resolve_stage3_reporting_study_id(
+    config: Stage3Config, *, checkpoint_epoch: int | None = None
+) -> str:
+    """Resolve the fold-independent default reporting study identifier."""
+    epoch = config.training.epochs if checkpoint_epoch is None else checkpoint_epoch
+    if epoch <= 0:
+        raise ValueError("Stage 3 checkpoint epoch must be positive")
+    metadata = json.loads(
+        (config.data.artifacts_dir / "metadata.json").read_text(encoding="utf-8")
+    )
+    if not isinstance(metadata, dict):
+        raise ValueError("Stage 3 prepared metadata must contain a JSON object")
+    return _default_reporting_study_id(metadata, epoch)
+
+
 def _prediction_context(
     config: Stage3Config,
     spec: Any,
@@ -506,13 +534,7 @@ def evaluate_checkpoints(
             "checkpoint_epoch": epoch,
             **next(iter(fold_results.values())),
         }
-        default_study_id = (
-            "ilume-stage3-"
-            + metadata_identity(
-                prepared["metadata"], "prepared", context="Stage 3 prepared artifact"
-            )["hash"]
-            + f"-epoch{epoch}"
-        )
+        default_study_id = _default_reporting_study_id(prepared["metadata"], epoch)
         result["reporting"] = reporting_block(
             model_id="ilume",
             model_display_name="ILUME",
@@ -573,13 +595,7 @@ def evaluate_checkpoints(
             **_macro(ensemble, prepared["registry"]),
         },
     }
-    default_study_id = (
-        "ilume-stage3-"
-        + metadata_identity(
-            prepared["metadata"], "prepared", context="Stage 3 prepared artifact"
-        )["hash"]
-        + f"-epoch{epoch}"
-    )
+    default_study_id = _default_reporting_study_id(prepared["metadata"], epoch)
     result["reporting"] = reporting_block(
         model_id="ilume",
         model_display_name="ILUME",
@@ -653,4 +669,8 @@ def resolve_stage3_evaluation_identity(
     )
 
 
-__all__ = ["evaluate_checkpoints", "resolve_stage3_evaluation_identity"]
+__all__ = [
+    "evaluate_checkpoints",
+    "resolve_stage3_evaluation_identity",
+    "resolve_stage3_reporting_study_id",
+]

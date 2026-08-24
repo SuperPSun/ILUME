@@ -1,10 +1,10 @@
 run,model,stage,operation,status,completeness,checkpoint_epoch,enabled_tasks,expected_tasks,available_tasks,available_folds,failed_jobs,stage2_core_eligibility,stage2_partial_eligibility,stage2_full_eligibility,source_run,issues
 ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep,ECFP+XGBoost,benchmark,sweep,completed,complete,,,stage2_core_physics:3;stage2_partial_charge:0;stage2_physics_full:0;stage3_test:11;stage3_validation:21,stage3_test:21;stage3_validation:21;stage2_physics:3,1;2;3;4;5,0,eligible,not_evaluated,not_evaluated,outputs/benchmarks/ecfp_xgboost/sweep,
 ilume@outputs/v1/stage2/base/evaluate/test,ILUME,stage2,evaluate,completed,complete,5,,3,4,,,eligible,eligible,eligible,outputs/v1/stage2/base/evaluate/test,
-ilume@outputs/v1/stage3/base/evaluate/test,ILUME,stage3,evaluate,completed,legacy,100,0,,,,,,,,outputs/v1/stage3/base/evaluate/test,reporting_schema_missing
-ilume@outputs/v1/stage3/base/evaluate/valid_fold1,ILUME,stage3,evaluate,completed,legacy,100,0,,,,,,,,outputs/v1/stage3/base/evaluate/valid_fold1,reporting_schema_missing
-ilume@outputs/v1/stage3/base/evaluate/valid_fold2,ILUME,stage3,evaluate,completed,legacy,100,0,,,,,,,,outputs/v1/stage3/base/evaluate/valid_fold2,reporting_schema_missing
-ilume@outputs/v1/stage3/base/evaluate/valid_fold3,ILUME,stage3,evaluate,completed,legacy,100,0,,,,,,,,outputs/v1/stage3/base/evaluate/valid_fold3,reporting_schema_missing
-ilume@outputs/v1/stage3/base/evaluate/valid_fold4,ILUME,stage3,evaluate,completed,legacy,100,0,,,,,,,,outputs/v1/stage3/base/evaluate/valid_fold4,reporting_schema_missing
-ilume@outputs/v1/stage3/base/evaluate/valid_fold5,ILUME,stage3,evaluate,completed,legacy,100,0,,,,,,,,outputs/v1/stage3/base/evaluate/valid_fold5,reporting_schema_missing
+ilume@outputs/v1/stage3/base/evaluate/fold1,ILUME,stage3,evaluate,completed,complete,100,0,21,21,1,,,,,outputs/v1/stage3/base/evaluate/fold1,
+ilume@outputs/v1/stage3/base/evaluate/fold2,ILUME,stage3,evaluate,completed,complete,100,0,21,21,2,,,,,outputs/v1/stage3/base/evaluate/fold2,
+ilume@outputs/v1/stage3/base/evaluate/fold3,ILUME,stage3,evaluate,completed,complete,100,0,21,21,3,,,,,outputs/v1/stage3/base/evaluate/fold3,
+ilume@outputs/v1/stage3/base/evaluate/fold4,ILUME,stage3,evaluate,completed,complete,100,0,21,21,4,,,,,outputs/v1/stage3/base/evaluate/fold4,
+ilume@outputs/v1/stage3/base/evaluate/fold5,ILUME,stage3,evaluate,completed,complete,100,0,21,21,5,,,,,outputs/v1/stage3/base/evaluate/fold5,
+ilume@outputs/v1/stage3/base/test,ILUME,stage3,evaluate,completed,complete,100,21,11,11,1;2;3;4;5,,,,,outputs/v1/stage3/base/test,
 mlp@outputs/benchmarks/mlp/sweep,MLP,benchmark,sweep,completed,complete,,,stage2_core_physics:3;stage2_partial_charge:0;stage2_physics_full:0;stage3_test:11;stage3_validation:21,stage3_test:21;stage3_validation:21;stage2_physics:3,1;2;3;4;5,0,eligible,not_evaluated,not_evaluated,outputs/benchmarks/mlp/sweep,

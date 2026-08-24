@@ -33,14 +33,6 @@ def _parse_devices(value: str | None) -> tuple[str, ...]:
     return devices
 
 
-def _validate_folds(folds: list[int]) -> tuple[int, ...]:
-    if any(fold not in range(1, 6) for fold in folds):
-        raise ValueError("--fold values must be in 1..5")
-    if len(folds) != len(set(folds)):
-        raise ValueError("--fold must not contain duplicate folds")
-    return tuple(folds)
-
-
 def _read_json(path: Path, *, context: str) -> dict[str, Any]:
     if not path.is_file():
         raise FileNotFoundError(f"{context} is missing: {path.name}")
@@ -375,15 +367,15 @@ def _build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = _build_parser()
     args = parser.parse_args()
+    from stage3.config import load_stage3_config, validate_stage3_folds
+
     try:
-        folds = _validate_folds(args.fold)
+        folds = validate_stage3_folds(args.fold)
         devices = _parse_devices(args.devices)
     except ValueError as error:
         parser.error(str(error))
 
     from common.outputs import repository_path
-    from stage3.config import load_stage3_config
-
     config = load_stage3_config(args.config)
     repository_path(args.output)
     effective_parallel = min(args.max_parallel, len(folds))

@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from common.identity import semantic_identity
+from stage3.config import validate_stage3_folds
 import scripts.stage3.train as launcher
 
 
@@ -59,11 +60,11 @@ def test_fold_and_device_cli_values_are_strict_and_ordered() -> None:
     assert parsed.fold == [3]
     assert parsed.max_parallel == 1
     assert parsed.resume is False
-    assert launcher._validate_folds([3, 1, 5]) == (3, 1, 5)
+    assert validate_stage3_folds([3, 1, 5]) == (3, 1, 5)
     with pytest.raises(ValueError, match="1..5"):
-        launcher._validate_folds([0])
+        validate_stage3_folds([0])
     with pytest.raises(ValueError, match="duplicate"):
-        launcher._validate_folds([1, 1])
+        validate_stage3_folds([1, 1])
     assert launcher._parse_devices("cuda:0,cuda:3") == ("cuda:0", "cuda:3")
     with pytest.raises(ValueError, match="comma-separated"):
         launcher._parse_devices("0,1")

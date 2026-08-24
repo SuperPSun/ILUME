@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import torch
 import yaml
@@ -42,6 +42,17 @@ BASE_GROUP_TASKS: dict[str, tuple[str, ...]] = {
     ),
     "biological": ("experiment/pec50",),
 }
+
+
+def validate_stage3_folds(folds: Sequence[int]) -> tuple[int, ...]:
+    values = tuple(folds)
+    if not values:
+        raise ValueError("--fold requires at least one value")
+    if any(fold not in range(1, 6) for fold in values):
+        raise ValueError("--fold values must be in 1..5")
+    if len(values) != len(set(values)):
+        raise ValueError("--fold must not contain duplicate folds")
+    return values
 
 
 @dataclass(frozen=True)

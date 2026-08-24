@@ -10,6 +10,17 @@ ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep,ECFP+XGBoost,experiment/therm
 ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep,ECFP+XGBoost,experiment/transfer,308,0.25885778067516707,0.42597145911941087,0.9627622441545978,0.11226484003846499,0.18474089360675666,outputs/benchmarks/ecfp_xgboost/sweep
 ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep,ECFP+XGBoost,experiment/transfer_organic,191,0.40073149778182904,0.6498664730518849,0.9165410922058558,0.1708737570990388,0.27710605848990016,outputs/benchmarks/ecfp_xgboost/sweep
 ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep,ECFP+XGBoost,experiment/viscosity,2459,0.2121464805967492,0.3195392595747841,0.7791297691372586,0.2840057888882401,0.4277751826993602,outputs/benchmarks/ecfp_xgboost/sweep
+ilume@outputs/v1/stage3/base/test,ILUME,experiment/density,4918,0.015726969936796686,0.0282933132900601,0.9744732790292138,0.08777668138401075,0.15791300905007308,outputs/v1/stage3/base/test
+ilume@outputs/v1/stage3/base/test,ILUME,experiment/electrical_conductivity,467,0.16389454009750015,0.27367922179602916,0.8943157107983726,0.11207317799590798,0.1871453443164199,outputs/v1/stage3/base/test
+ilume@outputs/v1/stage3/base/test,ILUME,experiment/glass_transition_temperature,79,9.259835931319225,12.961816243839431,0.6541509079986869,0.31613889033310993,0.44252773315015775,outputs/v1/stage3/base/test
+ilume@outputs/v1/stage3/base/test,ILUME,experiment/melting_point,524,28.42534421964456,38.46440741159867,0.484672539650408,0.3988334711860032,0.539690672047466,outputs/v1/stage3/base/test
+ilume@outputs/v1/stage3/base/test,ILUME,experiment/refractive_index,579,0.0064853662448019975,0.008905644458974212,0.9509029796557427,0.16392904655113139,0.22510583827908093,outputs/v1/stage3/base/test
+ilume@outputs/v1/stage3/base/test,ILUME,experiment/solvation,2379,0.05590940066255056,0.13261733652593938,0.9858779097108031,0.05103247939437155,0.12104925850385059,outputs/v1/stage3/base/test
+ilume@outputs/v1/stage3/base/test,ILUME,experiment/surface_tension,545,2.434624057734778,3.7001086619175947,0.853515900123434,0.27473014780857524,0.4175311569631868,outputs/v1/stage3/base/test
+ilume@outputs/v1/stage3/base/test,ILUME,experiment/thermal_decomposition_temperature,276,23.94408118206522,36.04875116525528,0.7812566366769985,0.31672634579752307,0.47684390728208853,outputs/v1/stage3/base/test
+ilume@outputs/v1/stage3/base/test,ILUME,experiment/transfer,308,0.09362654658729912,0.16859095368654156,0.9941670127009155,0.04060518964723309,0.07311673768578962,outputs/v1/stage3/base/test
+ilume@outputs/v1/stage3/base/test,ILUME,experiment/transfer_organic,191,0.18807256613804407,0.35077155705492497,0.9756850615522589,0.08019500878057076,0.14957060817337306,outputs/v1/stage3/base/test
+ilume@outputs/v1/stage3/base/test,ILUME,experiment/viscosity,2459,0.1653693970118586,0.27641100521799583,0.8347279549596978,0.22138413950688524,0.3700383120828036,outputs/v1/stage3/base/test
 mlp@outputs/benchmarks/mlp/sweep,MLP,experiment/density,4918,0.022751352541067825,0.053626490688009655,0.908296445730648,0.12698175370578613,0.2993046598156608,outputs/benchmarks/mlp/sweep
 mlp@outputs/benchmarks/mlp/sweep,MLP,experiment/electrical_conductivity,467,0.17848019902088608,0.3042141635905474,0.8694173026101444,0.12204703769700481,0.2080255271754459,outputs/benchmarks/mlp/sweep
 mlp@outputs/benchmarks/mlp/sweep,MLP,experiment/glass_transition_temperature,79,9.108323081764999,12.97631589443723,0.6533767130159235,0.3109661092509664,0.44302276389197703,outputs/benchmarks/mlp/sweep
