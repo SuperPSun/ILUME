@@ -1,4 +1,4 @@
 rank,run,model,macro_normalized_mae,valid_tasks,total_tasks,per_task_wins,source_run,checkpoint_epoch
-1,ilume@study:ilume-stage3-0eef3e178870794998d44abfb324762ef344a71ac6cf15c85b6863dd42cea472-epoch100,ILUME,0.21546570596533177,21,21,16,outputs/v1/stage3/base/evaluate/fold1;outputs/v1/stage3/base/evaluate/fold2;outputs/v1/stage3/base/evaluate/fold3;outputs/v1/stage3/base/evaluate/fold4;outputs/v1/stage3/base/evaluate/fold5,100
-2,ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep,ECFP+XGBoost,0.30209580088402943,21,21,0,outputs/benchmarks/ecfp_xgboost/sweep,
-3,mlp@outputs/benchmarks/mlp/sweep,MLP,556351514740597.06,21,21,5,outputs/benchmarks/mlp/sweep,
+1,mlp@outputs/benchmarks/mlp/sweep,MLP,0.21428538724080334,21,21,10,outputs/benchmarks/mlp/sweep,
+2,ilume@study:ilume-stage3-0eef3e178870794998d44abfb324762ef344a71ac6cf15c85b6863dd42cea472-epoch100,ILUME,0.21477346912108122,21,21,11,outputs/v1/stage3/base/evaluate/fold1;outputs/v1/stage3/base/evaluate/fold2;outputs/v1/stage3/base/evaluate/fold3;outputs/v1/stage3/base/evaluate/fold4;outputs/v1/stage3/base/evaluate/fold5,100
+3,ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep,ECFP+XGBoost,0.30209580088402943,21,21,0,outputs/benchmarks/ecfp_xgboost/sweep,

@@ -2,20 +2,20 @@
 
 ## Stage 3 TEST (5-fold ensemble)
 
-1. ILUME — macro normalized MAE 0.187584
-2. MLP — macro normalized MAE 0.22534
+1. ILUME — macro normalized MAE 0.186944
+2. MLP — macro normalized MAE 0.195299
 3. ECFP+XGBoost — macro normalized MAE 0.269395
 Coverage: 11 test tasks / 21 enabled Stage 3 tasks.
 
 ## Stage 3 VALIDATION (5-fold mean)
 
-1. ILUME — macro normalized MAE 0.215466
-2. ECFP+XGBoost — macro normalized MAE 0.302096
-3. MLP — macro normalized MAE 5.56352e+14
+1. MLP — macro normalized MAE 0.214285
+2. ILUME — macro normalized MAE 0.214773
+3. ECFP+XGBoost — macro normalized MAE 0.302096
 
 ## Stage 2 CORE
 
-1. MLP — macro normalized MAE 0.18921
+1. MLP — macro normalized MAE 0.185741
 2. ECFP+XGBoost — macro normalized MAE 0.236286
 3. ILUME — macro normalized MAE 0.275687
 
