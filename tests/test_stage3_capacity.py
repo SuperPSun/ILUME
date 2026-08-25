@@ -242,7 +242,7 @@ def test_capacity_study_runs_synchronous_waves_and_resumes(tmp_path: Path) -> No
     assert calls == []
 
     decision = tmp_path / "final-recipe.yaml"
-    probe_config = "configs/experiments/stage3/capacity_v1/probe/base-default.yaml"
+    probe_config = "configs/experiments_v1/stage3/probe/base-default.yaml"
     decision.write_text(
         __import__("yaml").safe_dump(
             {
@@ -318,10 +318,10 @@ def test_capacity_wave_retries_failed_fold_once(
 
 
 def test_capacity_v1_static_configs_cover_four_by_three_matrix() -> None:
-    root = Path("configs/experiments")
-    stage1_paths = sorted((root / "stage1/capacity_v1").glob("*.yaml"))
-    stage2_paths = sorted((root / "stage2/capacity_v1").glob("*.yaml"))
-    probe_paths = sorted((root / "stage3/capacity_v1/probe").glob("*.yaml"))
+    root = Path("configs/experiments_v1")
+    stage1_paths = sorted((root / "stage1").glob("*.yaml"))
+    stage2_paths = sorted((root / "stage2").glob("*.yaml"))
+    probe_paths = sorted((root / "stage3/probe").glob("*.yaml"))
     assert [path.stem for path in stage1_paths] == ["base", "l", "s", "xl"]
     assert len(stage2_paths) == 12
     assert len(probe_paths) == 12
@@ -354,7 +354,7 @@ def test_capacity_v1_static_configs_cover_four_by_three_matrix() -> None:
         )
 
     study = load_capacity_study_config(
-        root / "stage3/capacity_v1/hpo.yaml"
+        root / "stage3/hpo.yaml"
     )
     assert study.attempted_trials == 40
     assert study.startup_trials == 10
@@ -423,7 +423,7 @@ def test_anchor_decision_requires_selected_probe_winner(
         encoding="utf-8",
     )
     base_spec = load_capacity_study_config(
-        "configs/experiments/stage3/capacity_v1/hpo.yaml"
+        "configs/experiments_v1/stage3/hpo.yaml"
     )
     spec = replace(base_spec, anchor_decision="outputs/anchor.yaml")
     decision = validate_anchor_decision(spec, config_path)

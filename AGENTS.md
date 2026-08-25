@@ -8,7 +8,7 @@ Stage 1 现役合同以 ADR-0013/0014/0015/0017 为准，identity/audit 边界�
 
 Stage 2 现役合同以 ADR-0019、ADR-0025 和 `configs/v1/stage2/base.yaml` 为准，identity/audit 边界以 ADR-0021 为准：九个 catalog task 共享 `ObjectEncoder`；HOMO/LUMO 是各自 pooling cation/anion 的独立 scalar task，并分别使用 pooled train global scaler。Registry 与 Stage 1 派生的 model contract 分离；prepared data不绑定Stage 2 model contract，teacher cache只绑定Stage 1 encoder与entity artifact，model contract只属于训练checkpoint与encoder artifact。QM mask、entity teacher、逐行完整覆盖和只补偿 physics loss 的语义必须保持。Object v3 强制一个 batch 对应一个 optimizer step，只从完整 epoch 恢复；旧 v2、旧 orbital contract 和缺少现役 preparation/extraction contract 的开发期 v3 不迁移。不得恢复双实体编码器、体系采样、渐进解冻、early stopping、best/last、step checkpoint、PCGrad 或 accumulation window。Stage 3 现役合同以 ADR-0020 为准、identity/audit 边界以 ADR-0021 为准：21 个 sparse-label observation task、6 个 meta-group、冻结 Stage 2 Object v3 表示、动态 HoME、ownership-aware hierarchical PCGrad 和完整 epoch checkpoint；Base 的 training/validation microbatch 上限为 1024 且属于严格 training identity。ADR-0010～0012 仅为历史。
 
-Capacity v1 是 ADR-0026 和 `configs/experiments/*/capacity_v1` 限定的预注册端到端实验；它不修改 `configs/v1` 或现役 Stage 1/2/3 合同，也不得被解释为正式多容量配置、strict scaling law 或 encoder-only effect。
+Capacity v1 是 ADR-0026 和 `configs/experiments_v1/{stage1,stage2,stage3}` 限定的预注册端到端实验；它不修改 `configs/v1` 或现役 Stage 1/2/3 合同，也不得被解释为正式多容量配置、strict scaling law 或 encoder-only effect。
 
 ## 结构与入口
 
@@ -16,7 +16,7 @@ Capacity v1 是 ADR-0026 和 `configs/experiments/*/capacity_v1` 限定的预注
 - `common` 只接收至少两个 Stage 实际复用的原子功能；禁止建立 `utils.py`。
 - Stage 可以导入其他 Stage 的公开 contract，但 `src/stageN` 禁止从其他 Stage 导入 `_private_symbol` 或使用 `import *`。
 - 唯一运行入口是 `scripts/stage{1,2,3}/*.py` 与 `scripts/benchmarks/*.py`；不恢复 console CLI、shell runner、smoke 或 matrix runner。
-- 科研参数与 prepare 执行参数都写入完整自包含 YAML；`preparation` 不进入实验身份。正式 v1 配置位于 `configs/v1`；首次真实消融时再建立 `configs/experiments/<stage>`。
+- 科研参数与 prepare 执行参数都写入完整自包含 YAML；`preparation` 不进入实验身份。正式 v1 配置位于 `configs/v1`；预注册实验配置位于 `configs/experiments_v1/<stage>`。
 - `--output`、`--resume`、Stage 3 fold 和 evaluation selector 是运行参数，不进入科研 config schema。
 - Stage 3 train 的 `--fold` 可接收一个或多个 fold，`--output` 始终是共同 root，实际 run contract 位于 `foldN/`。多 fold 只允许由该入口使用 spawn worker 和显式设备槽调度；不得把并发下沉到 `src/stage3`，也不得恢复独立 fold/matrix runner。
 - Baseline 以 ADR-0022 为准，只复用现役 registry、split、canonical SMILES、condition/target 与评估口径；不得改变或被解释为 Stage 1/2/3 数值训练合同。Baseline v1 不支持 resume，失败由 sweep 在新 attempt 目录完整重跑。

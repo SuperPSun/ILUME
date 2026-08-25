@@ -2,7 +2,7 @@
 
 - 状态：Accepted
 - 日期：2026-08-25
-- 适用范围：`configs/experiments/*/capacity_v1` 与 `outputs/experiments/capacity-v1`
+- 适用范围：`configs/experiments_v1/{stage1,stage2,stage3}` 与 `outputs/experiments/capacity-v1`
 
 ## 背景
 

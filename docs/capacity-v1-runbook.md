@@ -9,10 +9,10 @@
 四个配置均复用现役只读 Stage 1 corpus，并写入新输出。每个命令可显式绑定一张同型 GPU：
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python scripts/stage1/train.py --config configs/experiments/stage1/capacity_v1/s.yaml --output outputs/experiments/capacity-v1/stage1/s/train
-CUDA_VISIBLE_DEVICES=1 python scripts/stage1/train.py --config configs/experiments/stage1/capacity_v1/base.yaml --output outputs/experiments/capacity-v1/stage1/base/train
-CUDA_VISIBLE_DEVICES=2 python scripts/stage1/train.py --config configs/experiments/stage1/capacity_v1/l.yaml --output outputs/experiments/capacity-v1/stage1/l/train
-CUDA_VISIBLE_DEVICES=3 python scripts/stage1/train.py --config configs/experiments/stage1/capacity_v1/xl.yaml --output outputs/experiments/capacity-v1/stage1/xl/train
+CUDA_VISIBLE_DEVICES=0 python scripts/stage1/train.py --config configs/experiments_v1/stage1/s.yaml --output outputs/experiments/capacity-v1/stage1/s/train
+CUDA_VISIBLE_DEVICES=1 python scripts/stage1/train.py --config configs/experiments_v1/stage1/base.yaml --output outputs/experiments/capacity-v1/stage1/base/train
+CUDA_VISIBLE_DEVICES=2 python scripts/stage1/train.py --config configs/experiments_v1/stage1/l.yaml --output outputs/experiments/capacity-v1/stage1/l/train
+CUDA_VISIBLE_DEVICES=3 python scripts/stage1/train.py --config configs/experiments_v1/stage1/xl.yaml --output outputs/experiments/capacity-v1/stage1/xl/train
 ```
 
 不要并入同一 shell runner；分别启动、监控并确认四者 epoch 15 full validation 与 checkpoint
@@ -24,17 +24,17 @@ CUDA_VISIBLE_DEVICES=3 python scripts/stage1/train.py --config configs/experimen
 四次分别补充对应 Stage 1 encoder 的 teacher cache：
 
 ```bash
-python scripts/stage2/prepare.py --config configs/experiments/stage2/capacity_v1/s-default.yaml --output outputs/experiments/capacity-v1/stage2/prepare
-python scripts/stage2/prepare.py --config configs/experiments/stage2/capacity_v1/base-default.yaml --output outputs/experiments/capacity-v1/stage2/prepare
-python scripts/stage2/prepare.py --config configs/experiments/stage2/capacity_v1/l-default.yaml --output outputs/experiments/capacity-v1/stage2/prepare
-python scripts/stage2/prepare.py --config configs/experiments/stage2/capacity_v1/xl-default.yaml --output outputs/experiments/capacity-v1/stage2/prepare
+python scripts/stage2/prepare.py --config configs/experiments_v1/stage2/s-default.yaml --output outputs/experiments/capacity-v1/stage2/prepare
+python scripts/stage2/prepare.py --config configs/experiments_v1/stage2/base-default.yaml --output outputs/experiments/capacity-v1/stage2/prepare
+python scripts/stage2/prepare.py --config configs/experiments_v1/stage2/l-default.yaml --output outputs/experiments/capacity-v1/stage2/prepare
+python scripts/stage2/prepare.py --config configs/experiments_v1/stage2/xl-default.yaml --output outputs/experiments/capacity-v1/stage2/prepare
 ```
 
 随后对 `s/base/l/xl` 与 `conservative/default/aggressive` 的 12 个 YAML 分别运行：
 
 ```bash
 python scripts/stage2/train.py \
-  --config configs/experiments/stage2/capacity_v1/<scale>-<recipe>.yaml \
+  --config configs/experiments_v1/stage2/<scale>-<recipe>.yaml \
   --output outputs/experiments/capacity-v1/stage2/<scale>/<recipe>/train
 ```
 
@@ -46,7 +46,7 @@ python scripts/stage2/train.py \
 
 ```bash
 python scripts/stage3/prepare.py \
-  --config configs/experiments/stage3/capacity_v1/probe/<scale>-<recipe>.yaml \
+  --config configs/experiments_v1/stage3/probe/<scale>-<recipe>.yaml \
   --output outputs/experiments/capacity-v1/stage3/prepare/<scale>-<recipe>
 ```
 
@@ -54,7 +54,7 @@ python scripts/stage3/prepare.py \
 
 ```bash
 python scripts/stage3/train.py \
-  --config configs/experiments/stage3/capacity_v1/probe/<scale>-<recipe>.yaml \
+  --config configs/experiments_v1/stage3/probe/<scale>-<recipe>.yaml \
   --fold 1 2 \
   --output outputs/experiments/capacity-v1/stage3/probe/<scale>/<recipe> \
   --max-parallel 2 \
@@ -65,7 +65,7 @@ python scripts/stage3/train.py \
 
 ```bash
 python scripts/stage3/capacity.py \
-  --manifest configs/experiments/stage3/capacity_v1/probe-report.yaml \
+  --manifest configs/experiments_v1/stage3/probe-report.yaml \
   --output outputs/experiments/capacity-v1/reports/probe
 ```
 
@@ -80,7 +80,7 @@ python scripts/stage3/capacity.py \
 schema_version: 1
 kind: anchor
 selected_candidate: l-default
-selected_config: configs/experiments/stage3/capacity_v1/probe/l-default.yaml
+selected_config: configs/experiments_v1/stage3/probe/l-default.yaml
 probe_report: outputs/experiments/capacity-v1/reports/probe/summary.json
 reason: >-
   在 validation、fold 波动、参数量、峰值显存、吞吐和 wall time 的 Pareto 证据下选择。
@@ -97,8 +97,8 @@ trial wave、SQLite resume、一次 fold retry，并自动完成 Top-5+Base 的 
 ```bash
 python -m pip install -e '.[hpo]'
 python scripts/stage3/train.py \
-  --config configs/experiments/stage3/capacity_v1/probe/l-default.yaml \
-  --study-config configs/experiments/stage3/capacity_v1/hpo.yaml \
+  --config configs/experiments_v1/stage3/probe/l-default.yaml \
+  --study-config configs/experiments_v1/stage3/hpo.yaml \
   --output outputs/experiments/capacity-v1/stage3/hpo \
   --devices cuda:0,cuda:1,cuda:2,cuda:3
 ```
@@ -114,10 +114,10 @@ trial_number: 17
 reason: >-
   根据五折末三轮主指标、fold sample-SD、per-task 指标与完整曲线选择。
 scale_configs:
-  s: configs/experiments/stage3/capacity_v1/probe/s-default.yaml
-  base: configs/experiments/stage3/capacity_v1/probe/base-conservative.yaml
-  l: configs/experiments/stage3/capacity_v1/probe/l-default.yaml
-  xl: configs/experiments/stage3/capacity_v1/probe/xl-aggressive.yaml
+  s: configs/experiments_v1/stage3/probe/s-default.yaml
+  base: configs/experiments_v1/stage3/probe/base-conservative.yaml
+  l: configs/experiments_v1/stage3/probe/l-default.yaml
+  xl: configs/experiments_v1/stage3/probe/xl-aggressive.yaml
 seed_output_root: outputs/experiments/capacity-v1/stage3/seed-robustness
 formal_output_root: outputs/experiments/capacity-v1/stage3/formal
 ```
