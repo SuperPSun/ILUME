@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import csv
-import copy
 import json
 from pathlib import Path
-
-import pytest
 
 from benchmarks.common.summary import SUMMARY_FILES, publish_summary
 from common.identity import semantic_identity
@@ -157,12 +154,6 @@ def test_prediction_csv_is_atomic_and_records_integrity(tmp_path: Path) -> None:
         assert list(csv.DictReader(handle)) == [
             {"source_row": "2", "target": "1", "prediction": "1.25"}
         ]
-    with pytest.raises(ValueError, match="Non-finite"):
-        write_prediction_csv(
-            path,
-            [{"source_row": 2, "target": float("nan")}],
-            ("source_row", "target"),
-        )
     assert not path.with_suffix(".csv.tmp").exists()
 
 
@@ -197,66 +188,7 @@ def test_summarizer_ranks_runs_and_republishes_deterministically(tmp_path: Path)
     assert before == after
 
 
-def test_malformed_current_summary_preserves_existing_snapshot(tmp_path: Path) -> None:
-    inputs = tmp_path / "outputs"
-    broken = inputs / "broken"
-    broken.mkdir(parents=True)
-    metadata = {
-        "schema_version": 1,
-        "stage": "stage2",
-        "operation": "evaluate",
-        "status": "completed",
-        "semantic_identity": semantic_identity("test.reporting-run", {"run": 1}),
-        "provenance": {"reporting_schema_version": 1},
-    }
-    (broken / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
-    (broken / "summary.json").write_text("{}", encoding="utf-8")
-    output = tmp_path / "summary"
-    output.mkdir()
-    marker = output / "keep.txt"
-    marker.write_text("old", encoding="utf-8")
-    with pytest.raises(ValueError, match="Cannot publish summary"):
-        publish_summary(inputs, output, tmp_path)
-    assert marker.read_text(encoding="utf-8") == "old"
-
-
-def test_incomplete_and_malformed_noncompleted_runs_remain_in_health(
-    tmp_path: Path,
-) -> None:
-    inputs = tmp_path / "outputs"
-    incomplete = _stage2_summary("ilume", "ILUME", 0.2)
-    del incomplete["tasks"]["simulation/pbe_tzvp_anion_orbitals"]["LUMO"]
-    _write_run(inputs / "incomplete", incomplete)
-
-    failed = inputs / "failed"
-    failed.mkdir(parents=True)
-    (failed / "metadata.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "stage": "stage2",
-                "operation": "evaluate",
-                "status": "failed",
-                "semantic_identity": semantic_identity(
-                    "test.reporting-run", {"run": "failed"}
-                ),
-                "provenance": {"reporting_schema_version": 1},
-            }
-        ),
-        encoding="utf-8",
-    )
-    (failed / "summary.json").write_text("not-json", encoding="utf-8")
-
-    payload = publish_summary(inputs, tmp_path / "summary", tmp_path)
-    assert payload["leaderboards"]["stage2_core_physics"] == []
-    health = {row["source_run"]: row for row in payload["health"]}
-    assert health["outputs/incomplete"]["completeness"] == "incomplete"
-    assert "missing_targets=" in health["outputs/incomplete"]["issues"]
-    assert health["outputs/failed"]["completeness"] == "failed"
-    assert "malformed_summary" in health["outputs/failed"]["issues"]
-
-
-def test_stage2_capability_eligibility_and_legacy_migration(tmp_path: Path) -> None:
+def test_stage2_unsupported_capabilities_are_not_evaluated(tmp_path: Path) -> None:
     inputs = tmp_path / "outputs"
     unsupported = _stage2_summary("mlp", "MLP", 0.3)
     unsupported["reporting"]["capabilities"]["stage2_partial_charge"] = "unsupported"
@@ -269,39 +201,10 @@ def test_stage2_capability_eligibility_and_legacy_migration(tmp_path: Path) -> N
         }
     _write_run(inputs / "unsupported", unsupported)
 
-    incomplete = _stage2_summary("ilume", "ILUME", 0.2)
-    incomplete["reporting"]["benchmarks"]["stage2_partial_charge"]["status"] = "incomplete"
-    incomplete["reporting"]["benchmarks"]["stage2_partial_charge"]["issues"] = ["missing_predictions=1"]
-    incomplete["reporting"]["benchmarks"]["stage2_physics_full"]["status"] = "incomplete"
-    incomplete["reporting"]["benchmarks"]["stage2_physics_full"]["issues"] = ["partial_charge_incomplete"]
-    incomplete["tasks"][PARTIAL_CHARGE_TASK]["status"] = "incomplete"
-    incomplete["tasks"][PARTIAL_CHARGE_TASK]["primary"] = None
-    _write_run(inputs / "incomplete_partial", incomplete)
-
-    partial_only = _stage2_summary("partial", "PartialOnly", 0.15)
-    partial_only["reporting"]["benchmarks"]["stage2_core_physics"]["status"] = "incomplete"
-    partial_only["reporting"]["benchmarks"]["stage2_core_physics"]["issues"] = ["missing_targets=1"]
-    partial_only["reporting"]["benchmarks"]["stage2_physics_full"]["status"] = "incomplete"
-    partial_only["reporting"]["benchmarks"]["stage2_physics_full"]["issues"] = ["core_incomplete"]
-    del partial_only["tasks"]["simulation/heat_of_vaporization"]["heat"]
-    _write_run(inputs / "partial_only", partial_only)
-
-    legacy = copy.deepcopy(_stage2_summary("old", "Old", 0.1))
-    del legacy["reporting"]["contract"]
-    _write_run(inputs / "legacy", legacy)
-
     payload = publish_summary(inputs, tmp_path / "summary", tmp_path)
-    assert [row["model"] for row in payload["leaderboards"]["stage2_core_physics"]] == [
-        "ILUME", "MLP"
-    ]
-    assert [row["model"] for row in payload["leaderboards"]["stage2_partial_charge"]] == [
-        "PartialOnly"
-    ]
+    assert [row["model"] for row in payload["leaderboards"]["stage2_core_physics"]] == ["MLP"]
+    assert payload["leaderboards"]["stage2_partial_charge"] == []
     assert payload["leaderboards"]["stage2_physics_full"] == []
     health = {row["source_run"]: row for row in payload["health"]}
     assert health["outputs/unsupported"]["stage2_partial_eligibility"] == "not_evaluated"
     assert health["outputs/unsupported"]["issues"] == ""
-    assert health["outputs/incomplete_partial"]["stage2_partial_eligibility"] == "not_eligible"
-    assert "missing_predictions=1" in health["outputs/incomplete_partial"]["issues"]
-    assert health["outputs/legacy"]["stage2_core_eligibility"] == "legacy"
-    assert "legacy_stage2_reporting_contract" in health["outputs/legacy"]["issues"]

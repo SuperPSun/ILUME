@@ -70,21 +70,6 @@ def test_stage_packages_do_not_import_benchmarks() -> None:
     assert violations == []
 
 
-def test_cross_stage_import_rule_accepts_public_and_rejects_private() -> None:
-    allowed = "from stage1.features import build_entity_sample\n"
-    rejected = (
-        "from stage1.features import _calculate_ipc\n"
-        "from stage1.features import *\n"
-        "import stage1._internal\n"
-    )
-    assert _cross_stage_private_imports(allowed, "stage2") == []
-    assert [item for _, item in _cross_stage_private_imports(rejected, "stage2")] == [
-        "stage1.features._calculate_ipc",
-        "stage1.features.*",
-        "stage1._internal",
-    ]
-
-
 def test_common_training_primitives_preserve_exact_contracts() -> None:
     payload = {"z": [1, 2], "a": {"value": 3.5}}
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()

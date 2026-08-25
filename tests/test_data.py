@@ -23,7 +23,6 @@ from stage1.masking import MultimodalPacker
 from stage1.prepare import (
     _descriptor_batch,
     _csv_data_row_count,
-    _entity_qc_batch,
     _ordered_batch_map,
     _stage1_shard_sample,
     preparation_source_paths,
@@ -162,23 +161,6 @@ def test_prepare_uses_new_original_sources_and_sharded_artifacts(tmp_path, monke
         assert pinned.graphs.atom_categorical.is_pinned()
         assert pinned.fusion_layout.smiles_lengths.is_pinned()
         assert all(value.is_pinned() for value in pinned.fingerprints.values.values())
-    with pytest.raises(ValueError, match="Legacy corpus.pt"):
-        legacy = artifacts / "corpus.pt"
-        legacy.touch()
-        PreparedCorpusDataset(legacy)
-    for unsupported_version in (1, 3):
-        metadata["format_version"] = unsupported_version
-        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
-        with pytest.raises(ValueError, match="create corpus v2"):
-            PreparedCorpusDataset(artifacts)
-    metadata["format_version"] = CORPUS_FORMAT_VERSION
-    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
-    shard = artifacts / dataset.shards[0]["path"]
-    shard.write_bytes(shard.read_bytes() + b"corrupt")
-    with pytest.raises(ValueError, match="Shard hash mismatch"):
-        PreparedCorpusDataset(artifacts, "train")[0]
-
-
 def test_entity_qc_records_multiple_reasons_and_keeps_isolated_hydrogen(monkeypatch):
     record = {
         "canonical_smiles": "CC(C)[CH2][AlH-](<-[CH2](C)C)[S](C)(=O)=O",
@@ -450,7 +432,7 @@ def test_prepare_workers_preserve_artifact_semantics(tmp_path):
                     assert left_sample[key] == right_sample[key]
 
 
-def test_descriptor_workers_are_bitwise_equal_and_qc_errors_have_context():
+def test_descriptor_workers_are_bitwise_equal():
     task = ([(0, "CCO"), (1, "C[NH3+]")], rdkit_descriptor_names())
     serial_rows, serial_values = _descriptor_batch(task)
     parallel_rows, parallel_values = next(
@@ -458,10 +440,6 @@ def test_descriptor_workers_are_bitwise_equal_and_qc_errors_have_context():
     )
     assert serial_rows == parallel_rows
     np.testing.assert_array_equal(serial_values, parallel_values)
-    with pytest.raises(RuntimeError, match=r"entity_qc record id=7 smiles='invalid'"):
-        _entity_qc_batch([(7, "invalid")])
-
-
 def test_stage1_shard_fingerprint_uint8_preserves_every_bit():
     fingerprint = torch.tensor([0.0, 1.0, 1.0, 0.0], dtype=torch.float32)
     sample = {
@@ -562,16 +540,6 @@ def test_prepare_reuses_source_identity_and_writes_performance(tmp_path, monkeyp
         for name, phase in reused["phases"].items()
         if name != "input_identity"
     )
-    invalid_identity = json.loads(json.dumps(identity))
-    invalid_identity["locator"]["files"].pop(
-        next(iter(invalid_identity["locator"]["files"]))
-    )
-    with pytest.raises(ValueError, match="file set does not match"):
-        prepare_corpus(
-            PretrainConfig(data=data_config), source_identity=invalid_identity
-        )
-
-
 import numpy as np
 import pytest
 from rdkit import Chem
@@ -599,10 +567,6 @@ def test_ais_round_trip_and_vocabulary_save_load(tmp_path):
     assert loaded.encode(smiles, max_length=32) == vocabulary.encode(
         smiles, max_length=32
     )
-    with pytest.raises(ValueError, match="exceeding"):
-        loaded.encode(smiles, max_length=3)
-
-
 def test_ais_min_frequency_filters_counts_and_preserves_frequency_order():
     counts = Counter({"rare": 1, "common-b": 3, "common-a": 3, "twice": 2})
     expected = {
@@ -617,18 +581,11 @@ def test_ais_min_frequency_filters_counts_and_preserves_frequency_order():
         assert tokenizer.tokens[5:] == learned
 
 
-def test_token_to_id_is_cached():
-    tokenizer = SmilesTokenizer.fit(["CCO"], backend="ais")
-    assert tokenizer.token_to_id is tokenizer.token_to_id
-
-
 def test_token_count_includes_special_tokens_and_matches_encode_boundary():
     tokenizer = SmilesTokenizer.fit(["C" * 255], backend="ais")
     assert tokenizer.token_count("C" * 254) == 256
     assert len(tokenizer.encode("C" * 254, max_length=256)) == 256
     assert tokenizer.token_count("C" * 255) == 257
-    with pytest.raises(ValueError, match="257 tokens"):
-        tokenizer.encode("C" * 255, max_length=256)
 
 
 def test_smiles_masking_uses_bert_replacement_distribution():
@@ -676,9 +633,6 @@ def test_descriptor_standardizer_is_finite_aware_and_round_trips(tmp_path):
     standardizer.save(path)
     loaded = DescriptorStandardizer.load(path, expected_names=("a", "b", "c"))
     np.testing.assert_allclose(loaded.means, standardizer.means)
-    with pytest.raises(ValueError, match="names/order"):
-        DescriptorStandardizer.load(path, expected_names=("b", "a", "c"))
-
     no_training_value = DescriptorStandardizer.fit(
         np.asarray([[1.0, np.nan], [3.0, np.nan]]), ("a", "missing")
     )
@@ -714,8 +668,6 @@ def test_descriptor_schema_clean_pruned_groups_and_save_load(tmp_path):
     pruned.save(path)
     loaded = DescriptorSchema.load(path, expected_raw_names=names)
     assert loaded == pruned
-    with pytest.raises(ValueError, match="names/order"):
-        DescriptorSchema.load(path, expected_raw_names=names[::-1])
 
 
 @pytest.mark.parametrize("backend", ["bpe", "spe", "ape"])

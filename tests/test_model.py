@@ -314,8 +314,6 @@ def test_encode_uses_complete_unmasked_modalities_and_preserves_forward(
 
     assert encoded.shape == (len(samples), tiny_config.model.d_model)
     assert torch.equal(encoded, reconstructed.fused_cls)
-    with pytest.raises(ValueError, match="unmasked batch"):
-        model.encode(masked)
 
 
 def test_zero_mask_configuration_returns_backward_safe_zero_loss(

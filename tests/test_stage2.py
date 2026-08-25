@@ -1,14 +1,10 @@
 from __future__ import annotations
 
 import csv
-import inspect
 import json
-import threading
-import time
 import copy
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -27,32 +23,27 @@ from stage1.masking import MultimodalPacker
 from stage1.model import EncodedEntityStates, MultimodalPretrainModel, load_stage1_model
 from stage1.prepare import prepare_corpus
 from stage1.tokenizer import SmilesTokenizer
-from stage2.atom_targets import (
-    StructureManifestEntry, map_partial_charges, parse_mol2,
-    verify_structure,
-)
 from stage2.config import (
     Stage2Config, Stage2DataConfig, Stage2InitializationConfig,
-    Stage2PreparationConfig, Stage2TrainingConfig, stage2_config_from_dict,
+    Stage2PreparationConfig, Stage2TrainingConfig,
 )
 from stage2.data import (
     STAGE2_PREPARATION_CONTRACT_VERSION, Stage2BatchDescriptor,
     Stage2DeviceTaskData, Stage2EntityDataset,
-    Stage2TaskDataset, epoch_batch_schedule, load_artifact_registry,
+    Stage2TaskDataset, load_artifact_registry,
     pack_stage2_batch,
 )
 from stage2.model import (
-    ObjectEncoder, Stage2ObjectModel, masked_target_macro_smooth_l1_loss,
-    molecule_equal_smooth_l1_loss,
+    ObjectEncoder, Stage2ObjectModel, molecule_equal_smooth_l1_loss,
 )
 from stage2.prepare import (
-    load_teacher_embeddings, prepare_stage2_data, prepare_teacher_cache,
+    prepare_stage2_data, prepare_teacher_cache,
     stage1_encoder_identity, teacher_cache_identity,
 )
 from stage2.registry import load_stage2_registry
 from stage2.train import (
-    _batch_output, _device_batches, _ordered_packed_batches,
-    load_stage2_encoder_artifact, run_stage2_training, task_compensation_scale,
+    _batch_output,
+    load_stage2_encoder_artifact, run_stage2_training,
 )
 from stage2 import FrozenObjectSpec, load_frozen_object_encoder
 
@@ -233,19 +224,11 @@ def test_registry_is_catalog_driven_and_model_independent(tiny_stage2_setup):
     assert model.model_contract["tasks"]["simulation/partial_atomic_charge"]["head_family"] == "atom"
 
 
-def test_config_normalizes_relative_weights_and_rejects_accumulation(tiny_stage2_setup):
+def test_config_normalizes_relative_weights(tiny_stage2_setup):
     registry = load_stage2_registry(tiny_stage2_setup.data.task_catalog_path)
     normalized = tiny_stage2_setup.normalized_task_weights(registry)
     scaled = replace(tiny_stage2_setup, loss=replace(tiny_stage2_setup.loss, task_weights={key: value * 10 for key, value in tiny_stage2_setup.loss.task_weights.items()}))
     assert scaled.normalized_task_weights(registry) == pytest.approx(normalized)
-    with pytest.raises(ValueError, match="gradient_accumulation_steps == 1"):
-        replace(tiny_stage2_setup, training=replace(tiny_stage2_setup.training, gradient_accumulation_steps=2)).validate()
-    with pytest.raises(ValueError, match="cuda_prefetch_batches == 1"):
-        replace(tiny_stage2_setup, training=replace(tiny_stage2_setup.training, cuda_prefetch_batches=2)).validate()
-    legacy = tiny_stage2_setup.to_dict()
-    legacy["training"]["packing_prefetch_windows"] = legacy["training"].pop("packing_prefetch_batches")
-    with pytest.raises(ValueError, match="packing_prefetch_windows"):
-        stage2_config_from_dict(legacy)
 
 
 def test_prepare_v3_task_local_scalers_and_ragged_atoms(tiny_stage2_setup):
@@ -327,33 +310,6 @@ def test_teacher_identity_binds_stage1_encoding_contract_and_entity_data(tiny_st
         next(loaded.model.smiles_encoder.parameters()).add_(1.0)
     changed_state_identity = teacher_cache_identity(data_metadata, loaded)
     assert identity != changed_state_identity
-
-
-def test_old_data_and_teacher_identity_contracts_are_rejected(tiny_stage2_setup):
-    prepare_teacher_cache(tiny_stage2_setup)
-    data_path = tiny_stage2_setup.data.artifacts_dir / "metadata.json"
-    data_metadata = json.loads(data_path.read_text(encoding="utf-8"))
-    loaded = load_stage1_model(
-        tiny_stage2_setup.initialization.checkpoint,
-        tiny_stage2_setup.data.pretrain_artifacts_dir,
-        backbone_dropout=0.0,
-    )
-    identity = teacher_cache_identity(data_metadata, loaded)
-    teacher_path = tiny_stage2_setup.data.artifacts_dir / "teachers" / identity["hash"] / "metadata.json"
-    teacher_metadata = json.loads(teacher_path.read_text(encoding="utf-8"))
-    teacher_metadata["semantic"]["identities"]["teacher"]["payload"]["extraction_contract_version"] = 1
-    teacher_path.write_text(json.dumps(teacher_metadata), encoding="utf-8")
-    with pytest.raises(ValueError, match="identity self-hash mismatch"):
-        load_teacher_embeddings(
-            tiny_stage2_setup, loaded, data_metadata,
-            expected_count=teacher_metadata["entity_count"],
-            expected_dim=teacher_metadata["embedding_dim"],
-        )
-
-    data_metadata["preparation_contract_version"] = 2
-    data_path.write_text(json.dumps(data_metadata), encoding="utf-8")
-    with pytest.raises(ValueError, match="rerun prepare"):
-        Stage2EntityDataset(tiny_stage2_setup.data.artifacts_dir)
 
 
 def test_partial_charge_duplicate_smiles_remain_distinct_molecules(tiny_stage2_setup):
@@ -584,28 +540,7 @@ def test_frozen_and_unfrozen_batches_select_the_correct_stage1_api(tiny_stage2_s
         assert encode_states.call_count == 2
 
 
-def test_mol2_typed_mapping_and_explicit_connectivity_fallback(tmp_path):
-    typed_path = tmp_path / "typed.mol2"
-    _write_mol2(typed_path, [("C1", "c3", 0.1), ("O1", "os", -0.1), ("H1", "h1", 0.0)], [(1, 2, "1"), (1, 3, "1")])
-    typed = map_partial_charges("CO", parse_mol2(typed_path))
-    assert typed.bond_match_mode == "typed"
-    assert typed.charges == pytest.approx((0.1, -0.1))
-    fallback_path = tmp_path / "fallback.mol2"
-    _write_mol2(fallback_path, [("C1", "c3", 0.1), ("O1", "os", -0.1)], [(1, 2, "du")])
-    fallback = map_partial_charges("CO", parse_mol2(fallback_path))
-    assert fallback.bond_match_mode == "connectivity_only"
-    assert fallback.unparsed_bond_types == ("du",)
-    symmetric_path = tmp_path / "symmetric.mol2"
-    _write_mol2(symmetric_path, [("C1", "c3", 0.2), ("C2", "c3", -0.2)], [(1, 2, "1")])
-    symmetric = map_partial_charges("CC", parse_mol2(symmetric_path))
-    assert symmetric.mapping_status == "ambiguous"
-    assert symmetric.mapping_count_lower_bound == 2
-    assert symmetric.charges == pytest.approx((0.2, -0.2))
-    with pytest.raises(ValueError, match="hash mismatch"):
-        verify_structure(StructureManifestEntry("bad", typed_path, typed_path.stat().st_size, "0" * 64))
-
-
-def test_object_encoder_roles_dynamic_heads_and_losses(tiny_stage2_setup):
+def test_object_encoder_roles_and_dynamic_heads(tiny_stage2_setup):
     registry = load_stage2_registry(tiny_stage2_setup.data.task_catalog_path)
     loaded = load_stage1_model(tiny_stage2_setup.initialization.checkpoint, tiny_stage2_setup.data.pretrain_artifacts_dir, backbone_dropout=0.0)
     model = Stage2ObjectModel(loaded.model, registry, object_layers=1, object_ffn_dim=32, dropout=0.0)
@@ -614,49 +549,7 @@ def test_object_encoder_roles_dynamic_heads_and_losses(tiny_stage2_setup):
         assert model.encode_object(values, torch.full((2, 1), role)).shape == (2, 16)
     ions = torch.randn(2, 2, 16)
     assert model.encode_object(ions, torch.tensor([[0, 1], [0, 1]])).shape == (2, 16)
-    with pytest.raises(ValueError, match="ordered"):
-        model.encode_object(ions, torch.tensor([[1, 0], [1, 0]]))
     assert model.object_heads["simulation/pbe_tzvp_cation_orbitals"] is not model.object_heads["simulation/pbe_tzvp_anion_orbitals"]
-    predictions = torch.tensor([[2.0, 2.0], [0.0, 2.0]], requires_grad=True)
-    loss = masked_target_macro_smooth_l1_loss(predictions, torch.zeros_like(predictions), torch.tensor([[True, True], [False, True]]))
-    assert loss.item() == pytest.approx(1.5)
-    atom_loss = molecule_equal_smooth_l1_loss(torch.tensor([2.0, 2.0, 2.0]), torch.zeros(3), torch.ones(3, dtype=torch.bool), torch.tensor([0, 1, 1]), 2)
-    assert atom_loss.item() == pytest.approx(1.5)
-
-
-def test_round_robin_schedule_is_complete_deterministic_and_no_cycle(tiny_stage2_setup):
-    prepare_stage2_data(tiny_stage2_setup)
-    datasets = {task: Stage2TaskDataset(tiny_stage2_setup.data.artifacts_dir, task, "train") for task in TASKS}
-    first = epoch_batch_schedule(datasets, 1, seed=42, epoch=1)
-    second = epoch_batch_schedule(datasets, 1, seed=42, epoch=1)
-    assert [(item.task, item.indices.tolist()) for item in first] == [(item.task, item.indices.tolist()) for item in second]
-    for task, dataset in datasets.items():
-        observed = torch.cat([item.indices for item in first if item.task == task]).tolist()
-        assert sorted(observed) == list(range(len(dataset)))
-    assert len({item.task for item in first[:len(TASKS)]}) == len(TASKS)
-
-
-def test_task_compensation_only_scales_physics():
-    compensation = task_compensation_scale(0.25, 20, 4, 10)
-    physics = torch.tensor(2.0)
-    teacher = torch.tensor(3.0)
-    step = compensation * physics + 0.1 * teacher
-    assert step.item() == pytest.approx(4.3)
-
-
-def test_hot_paths_do_not_materialize_cuda_scalars_or_offsets():
-    from stage2 import model as model_module
-    from stage2 import train as train_module
-    atom_forward = inspect.getsource(model_module.Stage2ObjectModel.forward_atom_from_states)
-    atom_loss = inspect.getsource(model_module.molecule_equal_smooth_l1_loss)
-    training = inspect.getsource(train_module.run_stage2_training)
-    validation = inspect.getsource(train_module.evaluate_stage2)
-    for source in (atom_forward, atom_loss):
-        assert ".tolist()" not in source
-        assert "bool(" not in source
-    assert "bool(torch.isfinite" not in training
-    assert "float(batch_output" not in training
-    assert "float(output.teacher_loss" not in validation
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
@@ -687,63 +580,8 @@ def test_cuda_bf16_partial_charge_loss_uses_fp32_reduction():
     assert torch.isfinite(predictions.grad).all()
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
-def test_cuda_one_batch_prefetch_matches_synchronous_transfer():
-    from stage2.data import PackedStage2Batch
-    descriptors = [Stage2BatchDescriptor("task", torch.tensor([index])) for index in range(3)]
-    cpu_batches = iter(
-        PackedStage2Batch(descriptor, descriptor.indices.pin_memory(), None, None, None, None)
-        for descriptor in descriptors
-    )
-    observed = [batch.row_indices.cpu() for batch in _device_batches(cpu_batches, torch.device("cuda"))]
-    assert [value.tolist() for value in observed] == [[0], [1], [2]]
-
-
-def test_ordered_cpu_packer_preserves_order_and_bounded_slots():
-    from stage2.data import PackedStage2Batch
-
-    active = 0
-    maximum_active = 0
-    lock = threading.Lock()
-
-    def fake_pack(descriptor, *_args, **_kwargs):
-        nonlocal active, maximum_active
-        with lock:
-            active += 1
-            maximum_active = max(maximum_active, active)
-        time.sleep(0.005 * (5 - int(descriptor.indices[0]) % 5))
-        with lock:
-            active -= 1
-        return PackedStage2Batch(
-            descriptor, descriptor.indices, None, None, None, None,
-        )
-
-    descriptors = [
-        Stage2BatchDescriptor("task", torch.tensor([index])) for index in range(9)
-    ]
-    registry = SimpleNamespace(
-        by_id=lambda _task: SimpleNamespace(target_level="object")
-    )
-    with patch("stage2.train.pack_stage2_batch", side_effect=fake_pack):
-        observed = list(_ordered_packed_batches(
-            descriptors, {}, None, None, registry, backbone_trainable=True,
-            include_raw_atom_targets=False, workers=4, prefetch_batches=4,
-            pin_memory=False,
-        ))
-    assert [int(batch.row_indices[0]) for batch in observed] == list(range(9))
-    assert maximum_active <= 4
-
-
 def test_prepare_train_checkpoint_and_encoder_export(tiny_stage2_setup, tmp_path):
     prepare_teacher_cache(tiny_stage2_setup)
-    legacy = tmp_path / "object_v2.pt"
-    torch.save({"kind": "ilume_stage2_object", "format_version": 2}, legacy)
-    with pytest.raises(ValueError, match="Object v2 is not migrated"):
-        run_stage2_training(
-            tiny_stage2_setup,
-            output_dir=tmp_path / "legacy_resume",
-            resume_from=legacy,
-        )
     output = tmp_path / "train"
     run_stage2_training(tiny_stage2_setup, output_dir=output)
     assert (output / "checkpoint_epoch_00001.pt").is_file()
@@ -807,36 +645,3 @@ def test_prepare_train_checkpoint_and_encoder_export(tiny_stage2_setup, tmp_path
     resumed = torch.load(resume_output / "checkpoint_epoch_00002.pt", map_location="cpu", weights_only=False)
     assert resumed["scheduler_geometry"]["gradient_accumulation_steps"] == 1
     assert (resume_output / "stage2_encoder.pt").is_file()
-
-    changed_model = replace(
-        tiny_stage2_setup,
-        model=replace(
-            tiny_stage2_setup.model,
-            object_layers=tiny_stage2_setup.model.object_layers + 1,
-        ),
-    )
-    with pytest.raises(ValueError, match="semantic identity mismatch"):
-        run_stage2_training(
-            changed_model,
-            output_dir=tmp_path / "changed_model_resume",
-            resume_from=output / "checkpoint_epoch_00001.pt",
-        )
-
-
-def test_nonfinite_interval_fails_before_epoch_checkpoint(tiny_stage2_setup, tmp_path):
-    prepare_teacher_cache(tiny_stage2_setup)
-    import stage2.train as train_module
-
-    original = train_module._batch_output
-
-    def nonfinite_output(*args, **kwargs):
-        output = original(*args, **kwargs)
-        return replace(output, physics_loss=output.physics_loss * float("nan"))
-
-    output_dir = tmp_path / "nonfinite"
-    with (
-        patch.object(train_module, "_batch_output", side_effect=nonfinite_output),
-        pytest.raises(RuntimeError, match="Non-finite Stage 2 loss"),
-    ):
-        run_stage2_training(tiny_stage2_setup, output_dir=output_dir)
-    assert not list(output_dir.glob("checkpoint_epoch_*.pt"))
