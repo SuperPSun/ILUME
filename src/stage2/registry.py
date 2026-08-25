@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
 from common.io import sha256_file
 from common.training import canonical_json_sha256
@@ -12,6 +12,50 @@ from common.training import canonical_json_sha256
 TaskKind = Literal["object_property", "atom_property"]
 TargetLevel = Literal["object", "atom"]
 Topology = Literal["single_entity", "ionic_liquid", "interaction"]
+
+ORBITAL_TASK_TARGETS = {
+    "simulation/homo": "HOMO_eV",
+    "simulation/lumo": "LUMO_eV",
+}
+ORBITAL_AUDIT_COLUMNS = (
+    "ion_role",
+    "provenance_source_file",
+    "provenance_source_row",
+)
+ORBITAL_SOURCE_FILE_BY_ROLE = {
+    "cation": (
+        "simulation/simulated_HOMO+LUMO_PBE_TZVP_cations_structured.csv"
+    ),
+    "anion": (
+        "simulation/simulated_HOMO+LUMO_PBE_TZVP_anions_structured.csv"
+    ),
+}
+
+
+def orbital_audit_columns(task_id: str) -> tuple[str, ...]:
+    return ORBITAL_AUDIT_COLUMNS if task_id in ORBITAL_TASK_TARGETS else ()
+
+
+def validate_orbital_audit_row(
+    task_id: str,
+    row: Mapping[str, str],
+    *,
+    inferred_role: str,
+    context: str,
+) -> None:
+    if task_id not in ORBITAL_TASK_TARGETS:
+        return
+    role = row.get("ion_role", "").strip()
+    if role != inferred_role or role not in ORBITAL_SOURCE_FILE_BY_ROLE:
+        raise ValueError(f"Orbital ion_role/formal-charge mismatch in {context}")
+    if row.get("provenance_source_file", "").strip() != ORBITAL_SOURCE_FILE_BY_ROLE[role]:
+        raise ValueError(f"Orbital provenance source/role mismatch in {context}")
+    try:
+        source_row = int(row.get("provenance_source_row", ""))
+    except ValueError as error:
+        raise ValueError(f"Invalid orbital provenance_source_row in {context}") from error
+    if source_row < 2:
+        raise ValueError(f"Invalid orbital provenance_source_row in {context}")
 
 
 def _columns(value: str) -> tuple[str, ...]:
@@ -205,4 +249,13 @@ def load_stage2_registry(path: str | Path) -> Stage2Registry:
     return Stage2Registry(tuple(tasks), canonical_json_sha256(snapshot), sha256_file(catalog_path))
 
 
-__all__ = ["DatasetSpec", "Stage2Registry", "TaskSpec", "load_stage2_registry"]
+__all__ = [
+    "DatasetSpec",
+    "ORBITAL_AUDIT_COLUMNS",
+    "ORBITAL_TASK_TARGETS",
+    "Stage2Registry",
+    "TaskSpec",
+    "load_stage2_registry",
+    "orbital_audit_columns",
+    "validate_orbital_audit_row",
+]

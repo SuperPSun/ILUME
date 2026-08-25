@@ -6,7 +6,7 @@
 
 Stage 1 现役合同以 ADR-0013/0014/0015/0017 为准，identity/audit 边界以 ADR-0021 为准：自然频率全量 epoch、cation/anion/molecule 的 element-level loss 权重 2/2/1、五模态等权、global batch 128、默认 eager 执行、单一 Base、原生单卡/DDP、corpus/checkpoint 既定 kind 与 `format_version=2`。只支持 epoch 边界恢复；不得恢复 45/45/10 coverage sampler、augmentation multiplier、多容量正式配置、mid-epoch cursor/RNG 恢复或旧 artifact/checkpoint 兼容。
 
-Stage 2 现役合同以 ADR-0019 和 `configs/v1/stage2/base.yaml` 为准，identity/audit 边界以 ADR-0021 为准：九个 catalog task 共享 `ObjectEncoder`，registry 与 Stage 1 派生的 model contract 分离；prepared data不绑定Stage 2 model contract，teacher cache只绑定Stage 1 encoder与entity artifact，model contract只属于训练checkpoint与encoder artifact。QM mask、entity teacher、逐行完整覆盖和只补偿 physics loss 的语义必须保持。Object v3 强制一个 batch 对应一个 optimizer step，只从完整 epoch 恢复；旧 v2 和缺少现役 preparation/extraction contract 的开发期 v3 不迁移。不得恢复双实体编码器、体系采样、渐进解冻、early stopping、best/last、step checkpoint、PCGrad 或 accumulation window。Stage 3 现役合同以 ADR-0020 为准、identity/audit 边界以 ADR-0021 为准：21 个 sparse-label observation task、6 个 meta-group、冻结 Stage 2 Object v3 表示、动态 HoME、ownership-aware hierarchical PCGrad 和完整 epoch checkpoint；Base 的 training/validation microbatch 上限为 1024 且属于严格 training identity。ADR-0010～0012 仅为历史。
+Stage 2 现役合同以 ADR-0019、ADR-0025 和 `configs/v1/stage2/base.yaml` 为准，identity/audit 边界以 ADR-0021 为准：九个 catalog task 共享 `ObjectEncoder`；HOMO/LUMO 是各自 pooling cation/anion 的独立 scalar task，并分别使用 pooled train global scaler。Registry 与 Stage 1 派生的 model contract 分离；prepared data不绑定Stage 2 model contract，teacher cache只绑定Stage 1 encoder与entity artifact，model contract只属于训练checkpoint与encoder artifact。QM mask、entity teacher、逐行完整覆盖和只补偿 physics loss 的语义必须保持。Object v3 强制一个 batch 对应一个 optimizer step，只从完整 epoch 恢复；旧 v2、旧 orbital contract 和缺少现役 preparation/extraction contract 的开发期 v3 不迁移。不得恢复双实体编码器、体系采样、渐进解冻、early stopping、best/last、step checkpoint、PCGrad 或 accumulation window。Stage 3 现役合同以 ADR-0020 为准、identity/audit 边界以 ADR-0021 为准：21 个 sparse-label observation task、6 个 meta-group、冻结 Stage 2 Object v3 表示、动态 HoME、ownership-aware hierarchical PCGrad 和完整 epoch checkpoint；Base 的 training/validation microbatch 上限为 1024 且属于严格 training identity。ADR-0010～0012 仅为历史。
 
 ## 结构与入口
 
@@ -18,7 +18,7 @@ Stage 2 现役合同以 ADR-0019 和 `configs/v1/stage2/base.yaml` 为准，iden
 - `--output`、`--resume`、Stage 3 fold 和 evaluation selector 是运行参数，不进入科研 config schema。
 - Stage 3 train 的 `--fold` 可接收一个或多个 fold，`--output` 始终是共同 root，实际 run contract 位于 `foldN/`。多 fold 只允许由该入口使用 spawn worker 和显式设备槽调度；不得把并发下沉到 `src/stage3`，也不得恢复独立 fold/matrix runner。
 - Baseline 以 ADR-0022 为准，只复用现役 registry、split、canonical SMILES、condition/target 与评估口径；不得改变或被解释为 Stage 1/2/3 数值训练合同。Baseline v1 不支持 resume，失败由 sweep 在新 attempt 目录完整重跑。
-- Evaluation reporting 与汇总以 ADR-0023/0024 为准：Stage 2 固定分为 Core、Partial Charge、Full 三榜；缺少 `stage2-benchmark-suite-v1` 的旧 Stage 2 reporting 只进入 health，禁止跨 run 拼接 Full。MLP 与 ECFP+XGBoost 的 Partial/Full 显式为 unsupported。
+- Evaluation reporting 与汇总以 ADR-0023/0024/0025 为准：Stage 2 固定分为 Core、Partial Charge、Full 三榜；Core 是 heat of vaporization、HOMO、LUMO 三任务等权，Full 再与 Partial Charge 组成四单元等权。缺少 `stage2-benchmark-suite-v2` 的旧 Stage 2 reporting 只进入 health，禁止跨 run 拼接 Full。MLP 与 ECFP+XGBoost 的 Partial/Full 显式为 unsupported。
 
 ## 数据、输出与恢复
 

@@ -9,6 +9,7 @@ from common.identity import semantic_identity
 from common.reporting import (
     STAGE2_BENCHMARK_SUITE_CONTRACT,
     comparison_identity,
+    role_mae_diagnostics,
     stage2_full_comparison_identity,
     write_prediction_csv,
 )
@@ -18,17 +19,13 @@ from stage2.evaluate import resolve_checkpoint_path
 
 TASK_TARGETS = {
     "simulation/heat_of_vaporization": ("heat",),
-    "simulation/pbe_tzvp_cation_orbitals": ("HOMO", "LUMO"),
-    "simulation/pbe_tzvp_anion_orbitals": ("HOMO", "LUMO"),
+    "simulation/homo": ("HOMO_eV",),
+    "simulation/lumo": ("LUMO_eV",),
 }
 
 
 def _comparison() -> dict[str, object]:
-    expected = [
-        f"{task}::{target}"
-        for task, targets in TASK_TARGETS.items()
-        for target in targets
-    ]
+    expected = list(TASK_TARGETS)
     return comparison_identity(
         "stage2_physics",
         split="test",
@@ -40,11 +37,10 @@ def _comparison() -> dict[str, object]:
 
 def _stage2_summary(model: str, display: str, offset: float) -> dict[str, object]:
     metrics = {}
-    expected = []
+    expected = list(TASK_TARGETS)
     for task, targets in TASK_TARGETS.items():
         metrics[task] = {}
         for index, target in enumerate(targets):
-            expected.append(f"{task}::{target}")
             value = offset + index / 10
             metrics[task][target] = {
                 "count": 4,
@@ -54,6 +50,11 @@ def _stage2_summary(model: str, display: str, offset: float) -> dict[str, object
                 "normalized_mae": value,
                 "normalized_rmse": value * 1.5,
             }
+            if task in {"simulation/homo", "simulation/lumo"}:
+                metrics[task][target]["role_diagnostics"] = {
+                    "cation": {"count": 2, "mae": value * 1.5},
+                    "anion": {"count": 2, "mae": value * 2.5},
+                }
     partial_comparison = comparison_identity(
         "stage2_partial_charge",
         split="test",
@@ -106,7 +107,7 @@ def _stage2_summary(model: str, display: str, offset: float) -> dict[str, object
             "benchmarks": {
                 "stage2_core_physics": {
                     "status": "complete", "benchmark": "stage2_physics",
-                    "protocol": {"split": "test", "expected_tasks": list(TASK_TARGETS), "expected_targets": expected, "checkpoint_epoch": 5, "checkpoint_sha256": "checkpoint"},
+                    "protocol": {"split": "test", "expected_tasks": list(TASK_TARGETS), "checkpoint_epoch": 5, "checkpoint_sha256": "checkpoint"},
                     "comparison_identity": _comparison(),
                 },
                 "stage2_partial_charge": {
@@ -125,11 +126,13 @@ def _stage2_summary(model: str, display: str, offset: float) -> dict[str, object
     }
 
 
-def _write_run(root: Path, summary: dict[str, object]) -> None:
+def _write_run(
+    root: Path, summary: dict[str, object], *, stage: str = "stage2"
+) -> None:
     root.mkdir(parents=True)
     metadata = {
         "schema_version": 1,
-        "stage": "stage2",
+        "stage": stage,
         "operation": "evaluate",
         "status": "completed",
         "semantic_identity": semantic_identity(
@@ -157,6 +160,18 @@ def test_prediction_csv_is_atomic_and_records_integrity(tmp_path: Path) -> None:
     assert not path.with_suffix(".csv.tmp").exists()
 
 
+def test_orbital_role_diagnostics_are_sample_weighted_and_non_headline() -> None:
+    diagnostics = role_mae_diagnostics(
+        [0.0, 2.0, 10.0],
+        [1.0, 4.0, 6.0],
+        ["cation", "cation", "anion"],
+    )
+    assert diagnostics == {
+        "cation": {"count": 2, "mae": 1.5},
+        "anion": {"count": 1, "mae": 4.0},
+    }
+
+
 def test_stage2_checkpoint_default_selects_highest_filename(tmp_path: Path) -> None:
     for epoch in (1, 5, 3):
         (tmp_path / f"checkpoint_epoch_{epoch:05d}.pt").touch()
@@ -173,7 +188,13 @@ def test_summarizer_ranks_runs_and_republishes_deterministically(tmp_path: Path)
     assert [row["model"] for row in first["leaderboards"]["stage2_core_physics"]] == [
         "ILUME", "MLP"
     ]
-    assert first["leaderboards"]["stage2_core_physics"][0]["per_target_wins"] == 5
+    assert first["leaderboards"]["stage2_core_physics"][0]["per_task_wins"] == 3
+    subsets = {
+        row["subset"]
+        for row in first["metrics"]["stage2_core_physics"]
+        if row["task"] in {"simulation/homo", "simulation/lumo"}
+    }
+    assert subsets == {"pooled", "cation", "anion"}
     assert [row["model"] for row in first["leaderboards"]["stage2_partial_charge"]] == ["ILUME", "MLP"]
     assert [row["model"] for row in first["leaderboards"]["stage2_physics_full"]] == ["ILUME", "MLP"]
     assert len(first["comparison_identities"]["stage2_core_physics"]) == 1
@@ -208,3 +229,48 @@ def test_stage2_unsupported_capabilities_are_not_evaluated(tmp_path: Path) -> No
     health = {row["source_run"]: row for row in payload["health"]}
     assert health["outputs/unsupported"]["stage2_partial_eligibility"] == "not_evaluated"
     assert health["outputs/unsupported"]["issues"] == ""
+
+
+def test_stage2_suite_v1_is_health_only_after_breaking_contract(tmp_path: Path) -> None:
+    inputs = tmp_path / "outputs"
+    legacy = _stage2_summary("ilume", "ILUME", 0.3)
+    legacy["reporting"]["contract"] = "stage2-benchmark-suite-v1"
+    _write_run(inputs / "legacy", legacy)
+
+    payload = publish_summary(inputs, tmp_path / "summary", tmp_path)
+    assert payload["leaderboards"]["stage2_core_physics"] == []
+    health = {row["source_run"]: row for row in payload["health"]}
+    assert health["outputs/legacy"]["stage2_core_eligibility"] == "legacy"
+    assert "legacy_stage2_reporting_contract" in health["outputs/legacy"]["issues"]
+
+
+def test_stage2_suite_v1_benchmark_keeps_stage3_and_is_health_only(
+    tmp_path: Path,
+) -> None:
+    inputs = tmp_path / "outputs"
+    legacy = _stage2_summary("mlp", "MLP", 0.3)
+    reporting = legacy["reporting"]
+    reporting["contract"] = "stage2-benchmark-suite-v1"
+    reporting["source_runs"] = {}
+    reporting["benchmarks"]["stage3_test"] = {
+        "status": "unsupported",
+        "protocol": {"expected_tasks": [], "folds": [1, 2, 3, 4, 5]},
+    }
+    reporting["benchmarks"]["stage3_validation"] = {
+        "status": "unsupported",
+        "protocol": {"expected_tasks": [], "folds": [1, 2, 3, 4, 5]},
+    }
+    legacy["stage3_property_benchmark"] = {
+        "test_ensemble": [], "validation_five_fold": []
+    }
+    legacy["stage2_physics_benchmark"] = {"test": {}}
+    root = inputs / "legacy"
+    _write_run(root, legacy, stage="benchmark")
+    metadata = json.loads((root / "metadata.json").read_text(encoding="utf-8"))
+    metadata["operation"] = "sweep"
+    (root / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+    payload = publish_summary(inputs, tmp_path / "summary", tmp_path)
+    assert payload["leaderboards"]["stage2_core_physics"] == []
+    health = {row["source_run"]: row for row in payload["health"]}
+    assert health["outputs/legacy"]["stage2_core_eligibility"] == "legacy"

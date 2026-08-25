@@ -57,7 +57,7 @@ python scripts/stage1/train.py \
 
 ## Stage 2
 
-Stage 2 只保留一个正式 Base。Object v3 从 `task_catalog.csv` 动态加载九个 simulation task，以共享 ObjectEncoder 建模 single entity、ionic liquid 与 interaction，并从 Stage 1 Base 的 v2 checkpoint 准备内容寻址的 FP32 entity teacher cache。Prepared data只绑定数据、Stage 1 feature、registry与tensor contract；teacher cache只绑定Stage 1 encoder与entity artifact。ObjectEncoder layers、FFN或dropout变化不要求重新prepare或提取teacher，但不同模型配置仍不可互相resume。Prepare 发布 task-local normalized object/atom tensor；partial charge 通过可审计的 typed/fallback MOL2 graph mapping 对齐到 Stage 1 atom ordering：
+Stage 2 只保留一个正式 Base。Object v3 从 `task_catalog.csv` 动态加载九个 simulation task，以共享 ObjectEncoder 建模 single entity、ionic liquid 与 interaction，并从 Stage 1 Base 的 v2 checkpoint 准备内容寻址的 FP32 entity teacher cache。HOMO 与 LUMO 是两个独立 scalar task，各自 pooling cation/anion 并使用 pooled train rows 拟合 global scaler；不做 role balancing 或 role-specific normalization。Prepared data只绑定数据、Stage 1 feature、registry与tensor contract；teacher cache只绑定Stage 1 encoder与entity artifact。ObjectEncoder layers、FFN或dropout变化不要求重新prepare或提取teacher，但不同模型配置仍不可互相resume。Prepare 发布 task-local normalized object/atom tensor；partial charge 通过可审计的 typed/fallback MOL2 graph mapping 对齐到 Stage 1 atom ordering：
 
 ```bash
 python scripts/stage2/prepare.py \
@@ -69,13 +69,13 @@ python scripts/stage2/train.py \
   --output outputs/v1/stage2/base/train
 ```
 
-Stage 2 test evaluator 同时发布三个互不混淆的口径：Core 固定评估 heat of vaporization 和 cation/anion PBE/TZVP HOMO/LUMO 的 5 个 scalar unit；Partial Charge 使用确定性 MOL2 mapping 后的 all-mapped molecule-macro normalized MAE；Full 对 Core 5 unit 与 Partial 1 unit 等权平均。Test 实体只在 evaluation 进程内构建，不进入 prepared artifact 或训练：
+Stage 2 test evaluator 同时发布三个互不混淆的口径：Core 固定对 heat of vaporization、pooled HOMO、pooled LUMO 三个 task 的 normalized MAE 等权平均；HOMO/LUMO headline raw MAE 为按实际样本数自然加权的 pooled eV MAE，cation/anion count 与 raw MAE仅作诊断。Partial Charge 使用确定性 MOL2 mapping 后的 all-mapped molecule-macro normalized MAE；Full 对三个 Core task 与 Partial Charge 四单元等权平均。Test 实体只在 evaluation 进程内构建，不进入 prepared artifact 或训练：
 
 ```bash
 python scripts/stage2/evaluate.py \
   --config configs/v1/stage2/base.yaml \
   --checkpoint-dir outputs/v1/stage2/base/train \
-  --output outputs/v1/stage2/base/evaluate/test_benchmark_suite_v1
+  --output outputs/v1/stage2/base/evaluate/test_benchmark_suite_v2
 ```
 
 训练每个 epoch 完整覆盖所有任务的全部有效行，并以 deterministic randomized round-robin 交替 task batch；Object v3 强制一个 batch 对应一个 optimizer step，不支持 gradient accumulation。第一 epoch 的 object/interaction task 直接复用 teacher CLS，不运行 Stage 1；atom task仍运行冻结 Stage 1 取得 fusion atom states。后四个 epoch联合微调。Partial charge 只去重 Stage 1 entity forward，ObjectEncoder 与 AtomHead 按 molecule sample 向量化执行；atom target 全量保持 CPU resident。Task weight 归一化后只补偿 physics loss，teacher loss保持独立。Base 使用 4 个 ordered packing worker、包含 H2D 在内的 4 个逻辑预取名额，以及单 batch CUDA lookahead；transfer stream 通过 event 交接，不做逐 batch synchronize。CUDA 固定使用 TF32、pinned/non-blocking transfer 与 fused AdamW。每个 epoch full validation 后保存 `checkpoint_epoch_00001.pt` 至 `checkpoint_epoch_00005.pt`，epoch 5 后额外导出不含 physics heads 的 `stage2_encoder.pt`。只允许从完整 Object v3 epoch 恢复；不生成 `best.pt` 或 `last.pt`。旧 Object v2 以及缺少当前 preparation/extraction contract 的开发期 v3 artifact/cache/checkpoint 不迁移，必须重新 prepare。
@@ -170,7 +170,7 @@ python scripts/stage3/evaluate.py \
 python scripts/benchmarks/summarize.py --input outputs --output summary
 ```
 
-只有 reporting schema 完整且 comparison identity 一致的 completed evaluation/sweep 进入对应排名；缺少 `stage2-benchmark-suite-v1` 的旧 Stage 2 结果、失败、运行中或不完整实验只进入 health。明确 `unsupported` 的模型仍可进入 Core，但不进入 Partial/Full。发现声称为当前合同的损坏正式结果时命令失败，已有 `summary/` 保持不变。
+只有 reporting schema 完整且 comparison identity 一致的 completed evaluation/sweep 进入对应排名；缺少 `stage2-benchmark-suite-v2` 的旧 Stage 2 结果、失败、运行中或不完整实验只进入 health。明确 `unsupported` 的模型仍可进入 Core，但不进入 Partial/Full。当前尚无新合同的正式 Stage 2 训练与 evaluation，因此 v2 榜单为空，旧结果仅保留为 legacy health；Stage 3 榜单不受影响。发现声称为当前合同的损坏正式结果时命令失败，已有 `summary/` 保持不变。
 
 Stage 2 suite 的正式刷新命令如下；baseline sweep 会跳过已完成的 Stage 3 与训练，只重跑 stale 的 Stage 2 child evaluation。ILUME evaluation 必须使用新的 output 路径：
 
@@ -178,7 +178,7 @@ Stage 2 suite 的正式刷新命令如下；baseline sweep 会跳过已完成的
 python scripts/stage2/evaluate.py \
   --config configs/v1/stage2/base.yaml \
   --checkpoint-dir outputs/v1/stage2/base/train \
-  --output outputs/v1/stage2/base/evaluate/test_benchmark_suite_v1
+  --output outputs/v1/stage2/base/evaluate/test_benchmark_suite_v2
 
 python scripts/benchmarks/sweep.py \
   --config configs/benchmarks/mlp.yaml \

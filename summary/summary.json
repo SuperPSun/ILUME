@@ -763,121 +763,9 @@
         ]
       }
     ],
-    "stage2_core_physics": [
-      {
-        "identity": {
-          "identity_contract_version": 1,
-          "type": "reporting.comparison.v1",
-          "payload": {
-            "benchmark": "stage2_physics",
-            "split": "test",
-            "expected": [
-              "simulation/heat_of_vaporization::heat_of_vaporization_kJ/mol",
-              "simulation/pbe_tzvp_cation_orbitals::HOMO_eV",
-              "simulation/pbe_tzvp_cation_orbitals::LUMO_eV",
-              "simulation/pbe_tzvp_anion_orbitals::HOMO_eV",
-              "simulation/pbe_tzvp_anion_orbitals::LUMO_eV"
-            ],
-            "sources": {
-              "simulation/heat_of_vaporization:train": "066a640276f823c8fc12abee56e0d6e682f676559e031bed84ef5d4050960ee2",
-              "simulation/heat_of_vaporization:test": "75e54d3f89c74386a13f91764451ecfd8d5b2ae29bc0c883dffc427ee13c034a",
-              "simulation/pbe_tzvp_cation_orbitals:train": "5b3e729891f227f058660460c04bbacf250b6c4e4d82a6058e2072442b973068",
-              "simulation/pbe_tzvp_cation_orbitals:test": "0ba7f1832ff6225446918a7ef50b9c9583a898c6b5f81a966669f13b57b00798",
-              "simulation/pbe_tzvp_anion_orbitals:train": "f8539828a07a525aa18f350e7beb0654ea81b9d28f30670ef3b2ec5086df2e96",
-              "simulation/pbe_tzvp_anion_orbitals:test": "4acd0fe752d2f5954a0a98390fd5f867e62183f5e77d4f11ef11b29665538d07"
-            },
-            "normalization": {
-              "simulation/heat_of_vaporization::heat_of_vaporization_kJ/mol": {
-                "scale": 27.824443512
-              },
-              "simulation/pbe_tzvp_cation_orbitals::HOMO_eV": {
-                "scale": 0.860626265395
-              },
-              "simulation/pbe_tzvp_cation_orbitals::LUMO_eV": {
-                "scale": 1.03521635899
-              },
-              "simulation/pbe_tzvp_anion_orbitals::HOMO_eV": {
-                "scale": 1.11067366185
-              },
-              "simulation/pbe_tzvp_anion_orbitals::LUMO_eV": {
-                "scale": 0.878521247247
-              }
-            },
-            "folds": [],
-            "ensemble": false
-          },
-          "hash": "70599a657d98a18f5968d8f651095be711bebf3253e249293b4ee56f4b6af8bc"
-        },
-        "source_runs": [
-          "outputs/benchmarks/ecfp_xgboost/sweep",
-          "outputs/benchmarks/mlp/sweep",
-          "outputs/v1/stage2/base/evaluate/test"
-        ]
-      }
-    ],
-    "stage2_partial_charge": [
-      {
-        "identity": {
-          "identity_contract_version": 1,
-          "type": "reporting.comparison.v1",
-          "payload": {
-            "benchmark": "stage2_partial_charge",
-            "split": "test",
-            "expected": [
-              "simulation/partial_atomic_charge::molecule_macro_normalized_mae"
-            ],
-            "sources": {
-              "simulation/partial_atomic_charge:test": "19784c28622e3b759f4d6ddeffca8141956c909af5045480886bdbb71124c5db",
-              "simulation/partial_atomic_charge:structure_manifest": "ea4dfe3eb6bef53df969fea444cae0ce2f9005d12f87225656c29d174535d9a1",
-              "simulation/partial_atomic_charge:mapping_contract": "eb5c0f886dced6d7c81d3f881afb18e8a4fbf544e1a1030c10c49c30e82cc64a",
-              "simulation/partial_atomic_charge:mapping_audit": "db4b76b401804baee1ea49394ada4dd6dc04d9fa94eb937380ae7664cf7b4be5",
-              "simulation/partial_atomic_charge:evaluated_subset": "a0e66171c0295f0f1529eabc99c565440f50257f89d5a60bdd4b272d5e82fcb4"
-            },
-            "normalization": {
-              "simulation/partial_atomic_charge::molecule_macro_normalized_mae": {
-                "scale": 0.440673876326,
-                "weighting": "molecule_equal"
-              }
-            },
-            "folds": [],
-            "ensemble": false
-          },
-          "hash": "47f11c6f20e5c1a28c82e6388749d1ab9339e5791797a20e666bf55f50dc45e5"
-        },
-        "source_runs": [
-          "outputs/v1/stage2/base/evaluate/test"
-        ]
-      }
-    ],
-    "stage2_physics_full": [
-      {
-        "identity": {
-          "identity_contract_version": 1,
-          "type": "reporting.comparison.v1",
-          "payload": {
-            "benchmark": "stage2_physics_full",
-            "split": "test",
-            "component_hashes": {
-              "stage2_core_physics": "70599a657d98a18f5968d8f651095be711bebf3253e249293b4ee56f4b6af8bc",
-              "stage2_partial_charge": "47f11c6f20e5c1a28c82e6388749d1ab9339e5791797a20e666bf55f50dc45e5"
-            },
-            "ordered_units": [
-              "simulation/heat_of_vaporization::heat_of_vaporization_kJ/mol",
-              "simulation/pbe_tzvp_cation_orbitals::HOMO_eV",
-              "simulation/pbe_tzvp_cation_orbitals::LUMO_eV",
-              "simulation/pbe_tzvp_anion_orbitals::HOMO_eV",
-              "simulation/pbe_tzvp_anion_orbitals::LUMO_eV",
-              "simulation/partial_atomic_charge::molecule_macro_normalized_mae"
-            ],
-            "unit_weighting": "equal"
-          },
-          "hash": "80bac10dab487784ff4b8a874b340da5f1d3a9395d3f998ebe410a58c5167f54"
-        },
-        "source_runs": [
-          "outputs/v1/stage2/base/evaluate/test"
-        ]
-      }
-    ]
+    "stage2_core_physics": [],
+    "stage2_partial_charge": [],
+    "stage2_physics_full": []
   },
   "leaderboards": {
     "stage3_test": [
@@ -953,66 +841,9 @@
         "rank": 3
       }
     ],
-    "stage2_core_physics": [
-      {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
-        "model": "MLP",
-        "macro_normalized_mae": 0.18574096556770636,
-        "valid_targets": 5,
-        "total_targets": 5,
-        "per_target_wins": 4,
-        "source_run": "outputs/benchmarks/mlp/sweep",
-        "checkpoint_epoch": "",
-        "rank": 1
-      },
-      {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
-        "model": "ECFP+XGBoost",
-        "macro_normalized_mae": 0.23628610071230471,
-        "valid_targets": 5,
-        "total_targets": 5,
-        "per_target_wins": 1,
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
-        "checkpoint_epoch": "",
-        "rank": 2
-      },
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate/test",
-        "model": "ILUME",
-        "macro_normalized_mae": 0.27568664817264527,
-        "valid_targets": 5,
-        "total_targets": 5,
-        "per_target_wins": 0,
-        "source_run": "outputs/v1/stage2/base/evaluate/test",
-        "checkpoint_epoch": 5,
-        "rank": 3
-      }
-    ],
-    "stage2_partial_charge": [
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate/test",
-        "model": "ILUME",
-        "molecule_macro_normalized_mae": 0.1430629957417808,
-        "molecule_macro_mae": 0.06304412489228584,
-        "mapped_molecules": 2842,
-        "test_molecules": 2854,
-        "source_run": "outputs/v1/stage2/base/evaluate/test",
-        "checkpoint_epoch": 5,
-        "rank": 1
-      }
-    ],
-    "stage2_physics_full": [
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate/test",
-        "model": "ILUME",
-        "macro_normalized_mae": 0.2535827061008345,
-        "valid_units": 6,
-        "total_units": 6,
-        "source_run": "outputs/v1/stage2/base/evaluate/test",
-        "checkpoint_epoch": 5,
-        "rank": 1
-      }
-    ]
+    "stage2_core_physics": [],
+    "stage2_partial_charge": [],
+    "stage2_physics_full": []
   },
   "metrics": {
     "stage3_test": [
@@ -2423,280 +2254,8 @@
         "normalized_rmse_std": 0.04794011002998598
       }
     ],
-    "stage2_core_physics": [
-      {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
-        "model": "ECFP+XGBoost",
-        "task": "simulation/heat_of_vaporization",
-        "target": "heat_of_vaporization_kJ/mol",
-        "count": 2684,
-        "mae": 5.6614555401635345,
-        "rmse": 9.5359103703066,
-        "r2": 0.8872886953236472,
-        "normalized_mae": 0.20347057570852525,
-        "normalized_rmse": 0.3427170202408998,
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
-      },
-      {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
-        "model": "ECFP+XGBoost",
-        "task": "simulation/pbe_tzvp_anion_orbitals",
-        "target": "HOMO_eV",
-        "count": 744,
-        "mae": 0.1804670747291785,
-        "rmse": 0.2686483975079845,
-        "r2": 0.9387769134271454,
-        "normalized_mae": 0.16248433804439397,
-        "normalized_rmse": 0.24187878648378416,
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
-      },
-      {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
-        "model": "ECFP+XGBoost",
-        "task": "simulation/pbe_tzvp_anion_orbitals",
-        "target": "LUMO_eV",
-        "count": 744,
-        "mae": 0.18548911817966077,
-        "rmse": 0.26369941454330437,
-        "r2": 0.9139868630622932,
-        "normalized_mae": 0.21113788512324,
-        "normalized_rmse": 0.30016281947592394,
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
-      },
-      {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
-        "model": "ECFP+XGBoost",
-        "task": "simulation/pbe_tzvp_cation_orbitals",
-        "target": "HOMO_eV",
-        "count": 917,
-        "mae": 0.32566221887373165,
-        "rmse": 0.4088634975350272,
-        "r2": 0.7717477999155332,
-        "normalized_mae": 0.37840144086746935,
-        "normalized_rmse": 0.47507671329032636,
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
-      },
-      {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
-        "model": "ECFP+XGBoost",
-        "task": "simulation/pbe_tzvp_cation_orbitals",
-        "target": "LUMO_eV",
-        "count": 917,
-        "mae": 0.23389291639408422,
-        "rmse": 0.32262320618617946,
-        "r2": 0.906563031979643,
-        "normalized_mae": 0.22593626381789494,
-        "normalized_rmse": 0.3116480949933523,
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
-      },
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate/test",
-        "model": "ILUME",
-        "task": "simulation/heat_of_vaporization",
-        "target": "heat_of_vaporization_kJ/mol",
-        "count": 2684,
-        "mae": 7.046972663204772,
-        "rmse": 9.01527986280113,
-        "r2": 0.899260084460249,
-        "normalized_mae": 0.2532655382723533,
-        "normalized_rmse": 0.3240057562661058,
-        "source_run": "outputs/v1/stage2/base/evaluate/test"
-      },
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate/test",
-        "model": "ILUME",
-        "task": "simulation/pbe_tzvp_anion_orbitals",
-        "target": "HOMO_eV",
-        "count": 744,
-        "mae": 0.23411433934123255,
-        "rmse": 0.30152873868207475,
-        "r2": 0.9228734093065871,
-        "normalized_mae": 0.21078589272667117,
-        "normalized_rmse": 0.2714827487487194,
-        "source_run": "outputs/v1/stage2/base/evaluate/test"
-      },
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate/test",
-        "model": "ILUME",
-        "task": "simulation/pbe_tzvp_anion_orbitals",
-        "target": "LUMO_eV",
-        "count": 744,
-        "mae": 0.22788505229314393,
-        "rmse": 0.2960623328372291,
-        "r2": 0.8915791595700916,
-        "normalized_mae": 0.25939617625315425,
-        "normalized_rmse": 0.3370007655077621,
-        "source_run": "outputs/v1/stage2/base/evaluate/test"
-      },
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate/test",
-        "model": "ILUME",
-        "task": "simulation/pbe_tzvp_cation_orbitals",
-        "target": "HOMO_eV",
-        "count": 917,
-        "mae": 0.32920980538205474,
-        "rmse": 0.419833128459824,
-        "r2": 0.7593356823623402,
-        "normalized_mae": 0.3825235396819833,
-        "normalized_rmse": 0.4878228161759571,
-        "source_run": "outputs/v1/stage2/base/evaluate/test"
-      },
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate/test",
-        "model": "ILUME",
-        "task": "simulation/pbe_tzvp_cation_orbitals",
-        "target": "LUMO_eV",
-        "count": 917,
-        "mae": 0.2820572168409042,
-        "rmse": 0.3690894587657492,
-        "r2": 0.8777100364809971,
-        "normalized_mae": 0.27246209392906423,
-        "normalized_rmse": 0.3565336420347084,
-        "source_run": "outputs/v1/stage2/base/evaluate/test"
-      },
-      {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
-        "model": "MLP",
-        "task": "simulation/heat_of_vaporization",
-        "target": "heat_of_vaporization_kJ/mol",
-        "count": 2684,
-        "mae": 2.278852919300507,
-        "rmse": 3.174555039306804,
-        "r2": 0.9875086643475632,
-        "normalized_mae": 0.08190111397249158,
-        "normalized_rmse": 0.11409231016366815,
-        "source_run": "outputs/benchmarks/mlp/sweep"
-      },
-      {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
-        "model": "MLP",
-        "task": "simulation/pbe_tzvp_anion_orbitals",
-        "target": "HOMO_eV",
-        "count": 744,
-        "mae": 0.15616351320611424,
-        "rmse": 0.2154888832226651,
-        "r2": 0.9606090501731439,
-        "normalized_mae": 0.14060251770612803,
-        "normalized_rmse": 0.19401637999011323,
-        "source_run": "outputs/benchmarks/mlp/sweep"
-      },
-      {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
-        "model": "MLP",
-        "task": "simulation/pbe_tzvp_anion_orbitals",
-        "target": "LUMO_eV",
-        "count": 744,
-        "mae": 0.15321398969485114,
-        "rmse": 0.20619804261195376,
-        "r2": 0.9474085030870811,
-        "normalized_mae": 0.17439986815901481,
-        "normalized_rmse": 0.2347103650116628,
-        "source_run": "outputs/benchmarks/mlp/sweep"
-      },
-      {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
-        "model": "MLP",
-        "task": "simulation/pbe_tzvp_cation_orbitals",
-        "target": "HOMO_eV",
-        "count": 917,
-        "mae": 0.26266755089488647,
-        "rmse": 0.33984783699608057,
-        "r2": 0.842301590269877,
-        "normalized_mae": 0.3052051296324679,
-        "normalized_rmse": 0.39488434255516497,
-        "source_run": "outputs/benchmarks/mlp/sweep"
-      },
-      {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
-        "model": "MLP",
-        "task": "simulation/pbe_tzvp_cation_orbitals",
-        "target": "LUMO_eV",
-        "count": 917,
-        "mae": 0.2345760914366624,
-        "rmse": 0.31127705974580283,
-        "r2": 0.9130195274427878,
-        "normalized_mae": 0.2265961983684295,
-        "normalized_rmse": 0.3006879258057136,
-        "source_run": "outputs/benchmarks/mlp/sweep"
-      }
-    ],
-    "stage2_partial_charge": [
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate/test",
-        "model": "ILUME",
-        "subset": "all_mapped",
-        "molecule_count": 2842,
-        "atom_count": 68920,
-        "molecule_macro_mae": 0.06304412489228584,
-        "molecule_macro_normalized_mae": 0.1430629957417808,
-        "atom_micro_mae": 0.06447097317769274,
-        "atom_micro_rmse": 0.09305298460928896,
-        "atom_micro_r2": 0.953419219699781,
-        "atom_micro_r2_reason": null,
-        "reason": null,
-        "source_run": "outputs/v1/stage2/base/evaluate/test"
-      },
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate/test",
-        "model": "ILUME",
-        "subset": "ambiguous",
-        "molecule_count": 2179,
-        "atom_count": 56199,
-        "molecule_macro_mae": 0.06340323667455927,
-        "molecule_macro_normalized_mae": 0.14387791081064702,
-        "atom_micro_mae": 0.06469603834996174,
-        "atom_micro_rmse": 0.09347218096573742,
-        "atom_micro_r2": 0.953609745732388,
-        "atom_micro_r2_reason": null,
-        "reason": null,
-        "source_run": "outputs/v1/stage2/base/evaluate/test"
-      },
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate/test",
-        "model": "ILUME",
-        "subset": "connectivity_only",
-        "molecule_count": 1775,
-        "atom_count": 44194,
-        "molecule_macro_mae": 0.06484037599860905,
-        "molecule_macro_normalized_mae": 0.14713914185078217,
-        "atom_micro_mae": 0.0663357642536527,
-        "atom_micro_rmse": 0.09581264897938795,
-        "atom_micro_r2": 0.9529263827347174,
-        "atom_micro_r2_reason": null,
-        "reason": null,
-        "source_run": "outputs/v1/stage2/base/evaluate/test"
-      },
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate/test",
-        "model": "ILUME",
-        "subset": "typed",
-        "molecule_count": 1067,
-        "atom_count": 24726,
-        "molecule_macro_mae": 0.060055984579517586,
-        "molecule_macro_normalized_mae": 0.13628215287066792,
-        "atom_micro_mae": 0.06113794006230914,
-        "atom_micro_rmse": 0.08790495531755861,
-        "atom_micro_r2": 0.9544321436776358,
-        "atom_micro_r2_reason": null,
-        "reason": null,
-        "source_run": "outputs/v1/stage2/base/evaluate/test"
-      },
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate/test",
-        "model": "ILUME",
-        "subset": "unique",
-        "molecule_count": 663,
-        "atom_count": 12721,
-        "molecule_macro_mae": 0.061863876666684234,
-        "molecule_macro_normalized_mae": 0.1403847152967437,
-        "atom_micro_mae": 0.06347667731916386,
-        "atom_micro_rmse": 0.09117799176399043,
-        "atom_micro_r2": 0.9525107290257765,
-        "atom_micro_r2_reason": null,
-        "reason": null,
-        "source_run": "outputs/v1/stage2/base/evaluate/test"
-      }
-    ]
+    "stage2_core_physics": [],
+    "stage2_partial_charge": []
   },
   "wins": {
     "stage3_test": {
@@ -2716,17 +2275,7 @@
         "experiment/refractive_index"
       ]
     },
-    "stage2_core_physics": {
-      "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep": [
-        "simulation/pbe_tzvp_cation_orbitals::LUMO_eV"
-      ],
-      "mlp@outputs/benchmarks/mlp/sweep": [
-        "simulation/heat_of_vaporization::heat_of_vaporization_kJ/mol",
-        "simulation/pbe_tzvp_anion_orbitals::HOMO_eV",
-        "simulation/pbe_tzvp_anion_orbitals::LUMO_eV",
-        "simulation/pbe_tzvp_cation_orbitals::HOMO_eV"
-      ]
-    }
+    "stage2_core_physics": {}
   },
   "health": [
     {
@@ -2742,11 +2291,11 @@
       "available_tasks": "stage3_test:21;stage3_validation:21;stage2_physics:3",
       "available_folds": "1;2;3;4;5",
       "failed_jobs": 0,
-      "stage2_core_eligibility": "eligible",
-      "stage2_partial_eligibility": "not_evaluated",
-      "stage2_full_eligibility": "not_evaluated",
+      "stage2_core_eligibility": "legacy",
+      "stage2_partial_eligibility": "legacy",
+      "stage2_full_eligibility": "legacy",
       "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
-      "issues": ""
+      "issues": "legacy_stage2_reporting_contract"
     },
     {
       "run": "ilume@outputs/v1/stage2/base/evaluate/test",
@@ -2757,15 +2306,15 @@
       "completeness": "complete",
       "checkpoint_epoch": 5,
       "enabled_tasks": "",
-      "expected_tasks": 3,
-      "available_tasks": 4,
+      "expected_tasks": "",
+      "available_tasks": "",
       "available_folds": "",
       "failed_jobs": "",
-      "stage2_core_eligibility": "eligible",
-      "stage2_partial_eligibility": "eligible",
-      "stage2_full_eligibility": "eligible",
+      "stage2_core_eligibility": "legacy",
+      "stage2_partial_eligibility": "legacy",
+      "stage2_full_eligibility": "legacy",
       "source_run": "outputs/v1/stage2/base/evaluate/test",
-      "issues": ""
+      "issues": "legacy_stage2_reporting_contract"
     },
     {
       "run": "ilume@outputs/v1/stage3/base/evaluate/fold1",
@@ -2894,11 +2443,11 @@
       "available_tasks": "stage3_test:21;stage3_validation:21;stage2_physics:3",
       "available_folds": "1;2;3;4;5",
       "failed_jobs": 0,
-      "stage2_core_eligibility": "eligible",
-      "stage2_partial_eligibility": "not_evaluated",
-      "stage2_full_eligibility": "not_evaluated",
+      "stage2_core_eligibility": "legacy",
+      "stage2_partial_eligibility": "legacy",
+      "stage2_full_eligibility": "legacy",
       "source_run": "outputs/benchmarks/mlp/sweep",
-      "issues": ""
+      "issues": "legacy_stage2_reporting_contract"
     }
   ]
 }

@@ -15,35 +15,32 @@ Coverage: 11 test tasks / 21 enabled Stage 3 tasks.
 
 ## Stage 2 CORE
 
-1. MLP — macro normalized MAE 0.185741
-2. ECFP+XGBoost — macro normalized MAE 0.236286
-3. ILUME — macro normalized MAE 0.275687
+No eligible run.
 
 ## Partial Charge
 
-1. ILUME — macro normalized MAE 0.143063
-Not evaluated: ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep, mlp@outputs/benchmarks/mlp/sweep
+No eligible run.
+Not evaluated: None
 Not eligible: None
 
 ## Stage 2 FULL
 
-1. ILUME — macro normalized MAE 0.253583
-Not evaluated: ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep, mlp@outputs/benchmarks/mlp/sweep
+No eligible run.
+Not evaluated: None
 Not eligible: None
 
-## Core target wins
+## Core task wins
 
-- ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep: 1
-- mlp@outputs/benchmarks/mlp/sweep: 4
+- None
 
 ## Experiment health
 
-- ✓ ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep: complete
-- ✓ ilume@outputs/v1/stage2/base/evaluate/test: complete
+- ✓ ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep: complete (legacy_stage2_reporting_contract)
+- ✓ ilume@outputs/v1/stage2/base/evaluate/test: complete (legacy_stage2_reporting_contract)
 - ✓ ilume@outputs/v1/stage3/base/evaluate/fold1: complete
 - ✓ ilume@outputs/v1/stage3/base/evaluate/fold2: complete
 - ✓ ilume@outputs/v1/stage3/base/evaluate/fold3: complete
 - ✓ ilume@outputs/v1/stage3/base/evaluate/fold4: complete
 - ✓ ilume@outputs/v1/stage3/base/evaluate/fold5: complete
 - ✓ ilume@outputs/v1/stage3/base/test: complete
-- ✓ mlp@outputs/benchmarks/mlp/sweep: complete
+- ✓ mlp@outputs/benchmarks/mlp/sweep: complete (legacy_stage2_reporting_contract)

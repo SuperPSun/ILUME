@@ -6,6 +6,8 @@
 > Stage 2 的输出文件集、ranking 和 eligibility 已由
 > [ADR-0024](0024-stage2-partial-charge-benchmark-suite.md) 扩展为 Core、Partial Charge、Full
 > 三榜；本 ADR 的 Stage 3 合同保持不变。
+>
+> 2026-08-25：Stage 2 的 orbital、Core 与子合同版本由 [ADR-0025](0025-stage2-homo-lumo-scalar-tasks.md) 取代；通用 reporting schema v1 与 Stage 3 合同保持不变。
 
 ## 背景
 

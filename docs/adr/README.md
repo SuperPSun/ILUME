@@ -26,3 +26,4 @@
 - [ADR-0022：MLP 与 ECFP-XGBoost 对比基线](0022-mlp-ecfp-xgboost-baselines.md)
 - [ADR-0023：统一 evaluation reporting 与结果汇总](0023-unified-evaluation-reporting.md)
 - [ADR-0024：Stage 2 Partial Charge benchmark 与三榜汇总](0024-stage2-partial-charge-benchmark-suite.md)
+- [ADR-0025：Stage 2 HOMO/LUMO 独立标量任务与 reporting v2](0025-stage2-homo-lumo-scalar-tasks.md)

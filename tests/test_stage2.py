@@ -52,9 +52,9 @@ TASKS = (
     "simulation/density",
     "simulation/heat_capacity",
     "simulation/heat_of_vaporization",
+    "simulation/homo",
+    "simulation/lumo",
     "simulation/partial_atomic_charge",
-    "simulation/pbe_tzvp_anion_orbitals",
-    "simulation/pbe_tzvp_cation_orbitals",
     "simulation/simulated_qm_elec_hf",
     "simulation/thermal_expansion",
     "simulation/transfer_organic",
@@ -115,13 +115,38 @@ def _stage2_sources(data_root: Path) -> None:
         valid = [{"cation": "C[NH3+]", "anion": "C(=O)[O-]", "temperature_K": 310, target: valid_value, "source_list": "simulation"}]
         _write_csv(root / name / "train.csv", fields, train)
         _write_csv(root / name / "valid.csv", fields, valid)
-    for name, column, train_smiles, valid_smiles in (
-        ("pbe_tzvp_cation_orbitals", "cation", "[Na+]", "C[NH3+]"),
-        ("pbe_tzvp_anion_orbitals", "anion", "[Cl-]", "C(=O)[O-]"),
+    orbital_fields = [
+        "SMILES", "ion_role", "provenance_source_file",
+        "provenance_source_row",
+    ]
+    role_rows = {
+        "train": (("cation", "[Na+]"), ("anion", "[Cl-]")),
+        "valid": (("cation", "C[NH3+]"), ("anion", "C(=O)[O-]")),
+    }
+    for name, target, values in (
+        ("homo", "HOMO_eV", (-9.0, 1.0)),
+        ("lumo", "LUMO_eV", (-4.0, 4.0)),
     ):
-        fields = [column, "HOMO_eV", "LUMO_eV", "source_list"]
-        _write_csv(root / name / "train.csv", fields, [{column: train_smiles, "HOMO_eV": -1.0, "LUMO_eV": 1.0, "source_list": "simulation"}])
-        _write_csv(root / name / "valid.csv", fields, [{column: valid_smiles, "HOMO_eV": -2.0, "LUMO_eV": 2.0, "source_list": "simulation"}])
+        fields = [*orbital_fields, target, "source_list"]
+        for split, entities in role_rows.items():
+            _write_csv(
+                root / name / f"{split}.csv",
+                fields,
+                [
+                    {
+                        "SMILES": smiles,
+                        "ion_role": role,
+                        "provenance_source_file": (
+                            "simulation/simulated_HOMO+LUMO_PBE_TZVP_"
+                            f"{role}s_structured.csv"
+                        ),
+                        "provenance_source_row": 2,
+                        target: values[index] + (index if split == "valid" else 0),
+                        "source_list": "simulation",
+                    }
+                    for index, (role, smiles) in enumerate(entities)
+                ],
+            )
     qm_targets = ("ESP_max", "ESP_min", "ESP_std", "ESP_pos_frac", "Dipole", "Quadrupole", "q_max", "q_min", "q_std", "q_pos_frac", "gap_eV")
     qm_fields = ["SMILES", *qm_targets, "source_list"]
     _write_csv(root / "simulated_qm_elec_hf/train.csv", qm_fields, [{"SMILES": "CC", **{name: index + 0.5 for index, name in enumerate(qm_targets)}, "source_list": "simulation"}])
@@ -151,8 +176,8 @@ def _stage2_sources(data_root: Path) -> None:
         ("heat_capacity", "object_property", "object", "heat_capacity_J/mol/K", "cation;anion", "temperature_K", "il", "materialized_csv", ""),
         ("heat_of_vaporization", "object_property", "object", "heat_of_vaporization_kJ/mol", "cation;anion", "temperature_K", "il", "materialized_csv", ""),
         ("partial_atomic_charge", "atom_property", "atom", "partial_atomic_charge", "SMILES", "", "molecule", "structure_resource", "stage2/partial_atomic_charge/charge_20260514/structure_manifest.csv"),
-        ("pbe_tzvp_anion_orbitals", "object_property", "object", "HOMO_eV;LUMO_eV", "anion", "", "anion", "materialized_csv", ""),
-        ("pbe_tzvp_cation_orbitals", "object_property", "object", "HOMO_eV;LUMO_eV", "cation", "", "cation", "materialized_csv", ""),
+        ("homo", "object_property", "object", "HOMO_eV", "SMILES", "", "molecule", "materialized_csv", ""),
+        ("lumo", "object_property", "object", "LUMO_eV", "SMILES", "", "molecule", "materialized_csv", ""),
         ("simulated_qm_elec_hf", "object_property", "object", ";".join(qm_targets), "SMILES", "", "molecule", "materialized_csv", ""),
         ("thermal_expansion", "object_property", "object", "thermal_expansion_K^-1", "cation;anion", "temperature_K", "il", "materialized_csv", ""),
         ("transfer_organic", "object_property", "object", "transfer_organic_kcal/mol", "solute;solvent", "", "solute_solvent", "materialized_csv", ""),
@@ -240,12 +265,29 @@ def test_prepare_v3_task_local_scalers_and_ragged_atoms(tiny_stage2_setup):
     density = metadata["scalers"]["simulation/density"]["targets"]["density_g/cm^3"]
     assert density["mean"] == pytest.approx(1.5)
     assert density["scale"] == pytest.approx(0.5)
+    homo = metadata["scalers"]["simulation/homo"]["targets"]["HOMO_eV"]
+    lumo = metadata["scalers"]["simulation/lumo"]["targets"]["LUMO_eV"]
+    assert (homo["count"], homo["mean"], homo["scale"]) == pytest.approx(
+        (2, -4.0, 5.0)
+    )
+    assert (lumo["count"], lumo["mean"], lumo["scale"]) == pytest.approx(
+        (2, 0.0, 4.0)
+    )
     atom = Stage2TaskDataset(tiny_stage2_setup.data.artifacts_dir, "simulation/partial_atomic_charge", "train")
     assert atom.mol_ids == ("mol_train",)
     assert atom.atom_target_offsets.tolist() == [0, 3]
     assert metadata["scalers"]["simulation/partial_atomic_charge"]["targets"]["partial_atomic_charge"]["weighting"] == "molecule_equal"
     audit = list(csv.DictReader((tiny_stage2_setup.data.artifacts_dir / "partial_charge_mapping_audit.csv").open()))
     assert {row["status"] for row in audit} == {"mapped"}
+
+
+def test_prepare_rejects_orbital_role_provenance_mismatch(tiny_stage2_setup):
+    path = tiny_stage2_setup.data.data_root / "stage2/homo/train.csv"
+    rows = list(csv.DictReader(path.open(encoding="utf-8")))
+    rows[0]["ion_role"] = "anion"
+    _write_csv(path, list(rows[0]), rows)
+    with pytest.raises(ValueError, match="formal-charge mismatch"):
+        prepare_stage2_data(tiny_stage2_setup)
 
 
 def test_data_and_teacher_identity_ignore_stage2_model_contract(tiny_stage2_setup):
@@ -549,7 +591,7 @@ def test_object_encoder_roles_and_dynamic_heads(tiny_stage2_setup):
         assert model.encode_object(values, torch.full((2, 1), role)).shape == (2, 16)
     ions = torch.randn(2, 2, 16)
     assert model.encode_object(ions, torch.tensor([[0, 1], [0, 1]])).shape == (2, 16)
-    assert model.object_heads["simulation/pbe_tzvp_cation_orbitals"] is not model.object_heads["simulation/pbe_tzvp_anion_orbitals"]
+    assert model.object_heads["simulation/homo"] is not model.object_heads["simulation/lumo"]
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")

@@ -7,6 +7,8 @@
 > 2026-08-20：本文关于“Stage 3 迁移延期并拒绝 Object v3”的决定已由 [ADR-0020](0020-stage3-v1-sparse-home-pcgrad.md) 取代；其余 Stage 2 Object v3 合同继续有效。
 >
 > 2026-08-20：本文分散的 identity、lineage 与 audit 规则已由 [ADR-0021](0021-identity-audit-contract-v1.md) 取代；物理格式版本与科研训练合同不变。
+>
+> 2026-08-25：本文的 cation/anion orbital task 定义已由 [ADR-0025](0025-stage2-homo-lumo-scalar-tasks.md) 取代；Object v3、训练与 identity 分层合同保持不变。
 
 ## 决定
 

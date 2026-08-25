@@ -261,15 +261,18 @@ def test_formal_configs_and_registry_resolution(tmp_path: Path) -> None:
     assert len(configured_tasks(config, "stage3")) == 21
     assert configured_tasks(config, "stage2_physics") == (
         "simulation/heat_of_vaporization",
-        "simulation/pbe_tzvp_cation_orbitals",
-        "simulation/pbe_tzvp_anion_orbitals",
+        "simulation/homo",
+        "simulation/lumo",
     )
     solvation = resolve_task(config, "stage3", "experiment/solvation", 1)
     organic = resolve_task(config, "stage3", "experiment/transfer_organic", 1)
-    orbital = resolve_task(config, "stage2_physics", "simulation/pbe_tzvp_cation_orbitals", None)
+    orbital = resolve_task(config, "stage2_physics", "simulation/homo", None)
     assert solvation.slots == ("cation", "anion", "solute")
     assert organic.slots == ("solute", "solvent")
-    assert orbital.slots == ("cation",) and orbital.target_columns == ("HOMO_eV", "LUMO_eV")
+    assert orbital.slots == ("SMILES",) and orbital.target_columns == ("HOMO_eV",)
+    assert orbital.audit_columns == (
+        "ion_role", "provenance_source_file", "provenance_source_row"
+    )
     missing_test = resolve_task(config, "stage3", "experiment/self_diffusion_coefficient", 1)
     empty = load_split(missing_test, "test")
     reporter = RecordingReporter()
