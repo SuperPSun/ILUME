@@ -2,7 +2,7 @@
 
 - 状态：Accepted
 - 日期：2026-08-25
-- 适用范围：`configs/experiments_v1/{stage1,stage2,stage3}` 与 `outputs/experiments/capacity-v1`
+- 适用范围：`configs/experiments_v1/{stage1,stage2,stage3}` 与 `outputs/experiments_v1`
 
 ## 背景
 
@@ -33,8 +33,10 @@ encoder 的单独因果效应。Stage 2 ObjectEncoder 和 Stage 3 HoME 宽度均
    - Conservative：freeze 4，LR `3e-6/9e-6/3e-5`，teacher λ 0.30；
    - Default：freeze 2，LR `1e-5/3e-5/1e-4`，teacher λ 0.10；
    - Aggressive：freeze 0，LR `3e-5/9e-5/3e-4`，teacher λ 0.03。
-4. 四规模共享 Stage 1 prepared corpus；Stage 2 在新的实验 artifact root 发布一份
-   data artifact、每个 Stage 1 encoder 一份内容寻址 teacher cache，三个 recipe 复用。
+4. 仅用 `configs/experiments_v1/stage1/base.yaml` prepare 一次 Stage 1 corpus，四规模共享
+   `outputs/experiments_v1/stage1/base/prepare/artifacts`。Stage 2 在新的实验 artifact root
+   发布一份 data artifact、每个 Stage 1 encoder 一份内容寻址 teacher cache，三个
+   recipe 复用。
 
 ### Probe、HPO 与正式比较
 

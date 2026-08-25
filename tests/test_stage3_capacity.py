@@ -6,7 +6,9 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import yaml
 
+from common.identity import semantic_identity
 from stage3.capacity import (
     CapacityStudyConfig,
     aggregate_fold_summaries,
@@ -22,6 +24,7 @@ from stage3.capacity import (
 from stage3.config import load_stage3_config
 import scripts.stage3.train as launcher
 from stage1.config import load_config
+from stage1.identity import build_stage1_corpus_identity
 from stage2.config import load_stage2_config
 
 
@@ -327,6 +330,18 @@ def test_capacity_v1_static_configs_cover_four_by_three_matrix() -> None:
     assert len(probe_paths) == 12
 
     expected_widths = {"s": 384, "base": 512, "l": 640, "xl": 768}
+    shared_corpus = Path(
+        "outputs/experiments_v1/stage1/base/prepare/artifacts"
+    )
+    source = semantic_identity(
+        "test.stage1-source", {"sources": {"source": {"sha256": "test"}}}
+    )
+    source_audit = {
+        "semantic": {"identities": {"source": source}},
+        "locator": {"files": {"source": "data/stage1/source.csv"}},
+        "integrity": {"files": {"source": {"sha256": "test"}}},
+    }
+    corpus_identities = []
     for path in stage1_paths:
         config = load_config(path)
         assert config.model.d_model == expected_widths[path.stem]
@@ -335,6 +350,9 @@ def test_capacity_v1_static_configs_cover_four_by_three_matrix() -> None:
         assert config.model.descriptor_hidden_dim == 2 * config.model.d_model
         assert config.model.graph_depth == 6
         assert config.training.epochs == 15
+        assert config.data.artifacts_dir == shared_corpus
+        corpus_identities.append(build_stage1_corpus_identity(config, source_audit))
+    assert all(identity == corpus_identities[0] for identity in corpus_identities)
 
     for path in stage2_paths:
         scale, recipe = path.stem.split("-", 1)
@@ -343,6 +361,11 @@ def test_capacity_v1_static_configs_cover_four_by_three_matrix() -> None:
         assert config.model.object_layers == 2
         assert config.training.epochs == 10
         assert recipe in {"conservative", "default", "aggressive"}
+        assert config.data.pretrain_artifacts_dir == shared_corpus
+        assert config.initialization.checkpoint == Path(
+            f"outputs/experiments_v1/stage1/{scale}/train/"
+            "checkpoint_epoch_00015.pt"
+        )
 
     for path in probe_paths:
         config = load_stage3_config(path)
@@ -350,7 +373,7 @@ def test_capacity_v1_static_configs_cover_four_by_three_matrix() -> None:
         assert config.training.epochs == 20
         assert config.training.checkpoint_interval_epochs == 10
         assert str(config.data.artifacts_dir).startswith(
-            "outputs/experiments/capacity-v1/"
+            "outputs/experiments_v1/"
         )
 
     study = load_capacity_study_config(
@@ -360,10 +383,33 @@ def test_capacity_v1_static_configs_cover_four_by_three_matrix() -> None:
     assert study.startup_trials == 10
     assert study.baseline["learning_rate"] == pytest.approx(3.0e-4)
 
+    all_paths = sorted(root.rglob("*.yaml"))
+    assert len(all_paths) == 30
+
+    def strings(value):
+        if isinstance(value, dict):
+            for item in value.values():
+                yield from strings(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from strings(item)
+        elif isinstance(value, str):
+            yield value
+
+    output_references = [
+        value
+        for path in all_paths
+        for value in strings(yaml.safe_load(path.read_text(encoding="utf-8")))
+        if value.startswith("outputs/")
+    ]
+    assert output_references
+    assert all(
+        value.startswith("outputs/experiments_v1/")
+        for value in output_references
+    )
+
 
 def test_robustness_manifest_reports_seed_and_task_variation(tmp_path: Path) -> None:
-    import yaml
-
     runs = []
     for seed_index, seed in enumerate((42, 10042)):
         for fold in (1, 2):
@@ -397,7 +443,6 @@ def test_anchor_decision_requires_selected_probe_winner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import common.outputs as outputs_module
-    import yaml
 
     monkeypatch.setattr(outputs_module, "REPOSITORY_ROOT", tmp_path)
     config_path = tmp_path / "configs/anchor.yaml"

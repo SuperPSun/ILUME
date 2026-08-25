@@ -6,13 +6,22 @@
 
 ## 1. Stage 1 四规模
 
-四个配置均复用现役只读 Stage 1 corpus，并写入新输出。每个命令可显式绑定一张同型 GPU：
+只用 Base 配置 prepare 一次实验 corpus；S、Base、L、XL 四个训练配置都读取该 artifact，
+不得分别 prepare：
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python scripts/stage1/train.py --config configs/experiments_v1/stage1/s.yaml --output outputs/experiments/capacity-v1/stage1/s/train
-CUDA_VISIBLE_DEVICES=1 python scripts/stage1/train.py --config configs/experiments_v1/stage1/base.yaml --output outputs/experiments/capacity-v1/stage1/base/train
-CUDA_VISIBLE_DEVICES=2 python scripts/stage1/train.py --config configs/experiments_v1/stage1/l.yaml --output outputs/experiments/capacity-v1/stage1/l/train
-CUDA_VISIBLE_DEVICES=3 python scripts/stage1/train.py --config configs/experiments_v1/stage1/xl.yaml --output outputs/experiments/capacity-v1/stage1/xl/train
+python scripts/stage1/prepare.py \
+  --config configs/experiments_v1/stage1/base.yaml \
+  --output outputs/experiments_v1/stage1/base/prepare
+```
+
+prepare 完整成功后，四个训练命令可分别显式绑定一张同型 GPU：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/stage1/train.py --config configs/experiments_v1/stage1/s.yaml --output outputs/experiments_v1/stage1/s/train
+CUDA_VISIBLE_DEVICES=1 python scripts/stage1/train.py --config configs/experiments_v1/stage1/base.yaml --output outputs/experiments_v1/stage1/base/train
+CUDA_VISIBLE_DEVICES=2 python scripts/stage1/train.py --config configs/experiments_v1/stage1/l.yaml --output outputs/experiments_v1/stage1/l/train
+CUDA_VISIBLE_DEVICES=3 python scripts/stage1/train.py --config configs/experiments_v1/stage1/xl.yaml --output outputs/experiments_v1/stage1/xl/train
 ```
 
 不要并入同一 shell runner；分别启动、监控并确认四者 epoch 15 full validation 与 checkpoint
@@ -24,10 +33,10 @@ CUDA_VISIBLE_DEVICES=3 python scripts/stage1/train.py --config configs/experimen
 四次分别补充对应 Stage 1 encoder 的 teacher cache：
 
 ```bash
-python scripts/stage2/prepare.py --config configs/experiments_v1/stage2/s-default.yaml --output outputs/experiments/capacity-v1/stage2/prepare
-python scripts/stage2/prepare.py --config configs/experiments_v1/stage2/base-default.yaml --output outputs/experiments/capacity-v1/stage2/prepare
-python scripts/stage2/prepare.py --config configs/experiments_v1/stage2/l-default.yaml --output outputs/experiments/capacity-v1/stage2/prepare
-python scripts/stage2/prepare.py --config configs/experiments_v1/stage2/xl-default.yaml --output outputs/experiments/capacity-v1/stage2/prepare
+python scripts/stage2/prepare.py --config configs/experiments_v1/stage2/s-default.yaml --output outputs/experiments_v1/stage2/prepare
+python scripts/stage2/prepare.py --config configs/experiments_v1/stage2/base-default.yaml --output outputs/experiments_v1/stage2/prepare
+python scripts/stage2/prepare.py --config configs/experiments_v1/stage2/l-default.yaml --output outputs/experiments_v1/stage2/prepare
+python scripts/stage2/prepare.py --config configs/experiments_v1/stage2/xl-default.yaml --output outputs/experiments_v1/stage2/prepare
 ```
 
 随后对 `s/base/l/xl` 与 `conservative/default/aggressive` 的 12 个 YAML 分别运行：
@@ -35,7 +44,7 @@ python scripts/stage2/prepare.py --config configs/experiments_v1/stage2/xl-defau
 ```bash
 python scripts/stage2/train.py \
   --config configs/experiments_v1/stage2/<scale>-<recipe>.yaml \
-  --output outputs/experiments/capacity-v1/stage2/<scale>/<recipe>/train
+  --output outputs/experiments_v1/stage2/<scale>/<recipe>/train
 ```
 
 每次只消费自动发布的 epoch-10 `stage2_encoder.pt`；Stage 2 validation 不淘汰 candidate。
@@ -47,7 +56,7 @@ python scripts/stage2/train.py \
 ```bash
 python scripts/stage3/prepare.py \
   --config configs/experiments_v1/stage3/probe/<scale>-<recipe>.yaml \
-  --output outputs/experiments/capacity-v1/stage3/prepare/<scale>-<recipe>
+  --output outputs/experiments_v1/stage3/prepare/<scale>-<recipe>
 ```
 
 每个 candidate 跑 folds 1/2：
@@ -56,7 +65,7 @@ python scripts/stage3/prepare.py \
 python scripts/stage3/train.py \
   --config configs/experiments_v1/stage3/probe/<scale>-<recipe>.yaml \
   --fold 1 2 \
-  --output outputs/experiments/capacity-v1/stage3/probe/<scale>/<recipe> \
+  --output outputs/experiments_v1/stage3/probe/<scale>/<recipe> \
   --max-parallel 2 \
   --devices cuda:0,cuda:1
 ```
@@ -66,7 +75,7 @@ python scripts/stage3/train.py \
 ```bash
 python scripts/stage3/capacity.py \
   --manifest configs/experiments_v1/stage3/probe-report.yaml \
-  --output outputs/experiments/capacity-v1/reports/probe
+  --output outputs/experiments_v1/reports/probe
 ```
 
 报告的 `scale_winners` 已按末三轮分数和 Default→Conservative→Aggressive tie-break 选出。
@@ -74,14 +83,14 @@ python scripts/stage3/capacity.py \
 显存、吞吐、wall time 与 Stage 1/2 稳定性不会由报告器推断，必须从同类硬件上的训练
 日志和监控记录中另行取证，并随人工 decision 一起保留。
 人工 Pareto 只能从这四者中选 anchor。创建
-`outputs/experiments/capacity-v1/decisions/anchor.yaml`：
+`outputs/experiments_v1/decisions/anchor.yaml`：
 
 ```yaml
 schema_version: 1
 kind: anchor
 selected_candidate: l-default
 selected_config: configs/experiments_v1/stage3/probe/l-default.yaml
-probe_report: outputs/experiments/capacity-v1/reports/probe/summary.json
+probe_report: outputs/experiments_v1/reports/probe/summary.json
 reason: >-
   在 validation、fold 波动、参数量、峰值显存、吞吐和 wall time 的 Pareto 证据下选择。
 ```
@@ -99,7 +108,7 @@ python -m pip install -e '.[hpo]'
 python scripts/stage3/train.py \
   --config configs/experiments_v1/stage3/probe/l-default.yaml \
   --study-config configs/experiments_v1/stage3/hpo.yaml \
-  --output outputs/experiments/capacity-v1/stage3/hpo \
+  --output outputs/experiments_v1/stage3/hpo \
   --devices cuda:0,cuda:1,cuda:2,cuda:3
 ```
 
@@ -109,7 +118,7 @@ python scripts/stage3/train.py \
 ```yaml
 schema_version: 1
 kind: final_recipe
-hpo_output: outputs/experiments/capacity-v1/stage3/hpo
+hpo_output: outputs/experiments_v1/stage3/hpo
 trial_number: 17
 reason: >-
   根据五折末三轮主指标、fold sample-SD、per-task 指标与完整曲线选择。
@@ -118,16 +127,16 @@ scale_configs:
   base: configs/experiments_v1/stage3/probe/base-conservative.yaml
   l: configs/experiments_v1/stage3/probe/l-default.yaml
   xl: configs/experiments_v1/stage3/probe/xl-aggressive.yaml
-seed_output_root: outputs/experiments/capacity-v1/stage3/seed-robustness
-formal_output_root: outputs/experiments/capacity-v1/stage3/formal
+seed_output_root: outputs/experiments_v1/stage3/seed-robustness
+formal_output_root: outputs/experiments_v1/stage3/formal
 ```
 
 `trial_number` 与四个 `scale_configs` 必须替换为真实决定。物化完整 seed/formal YAML：
 
 ```bash
 python scripts/stage3/capacity.py \
-  --recipe-decision outputs/experiments/capacity-v1/decisions/final-recipe.yaml \
-  --output-dir outputs/experiments/capacity-v1/decisions/final-recipe
+  --recipe-decision outputs/experiments_v1/decisions/final-recipe.yaml \
+  --output-dir outputs/experiments_v1/decisions/final-recipe
 ```
 
 ## 5. Seed robustness
@@ -136,9 +145,9 @@ seed 42 的 folds 1/2 已由 HPO 复用。其余四个 seed 分别运行：
 
 ```bash
 python scripts/stage3/train.py \
-  --config outputs/experiments/capacity-v1/decisions/final-recipe/seed/seed<seed>.yaml \
+  --config outputs/experiments_v1/decisions/final-recipe/seed/seed<seed>.yaml \
   --fold 1 2 \
-  --output outputs/experiments/capacity-v1/stage3/seed-robustness/seed<seed> \
+  --output outputs/experiments_v1/stage3/seed-robustness/seed<seed> \
   --max-parallel 2 \
   --devices cuda:0,cuda:1
 ```
@@ -147,8 +156,8 @@ python scripts/stage3/train.py \
 
 ```bash
 python scripts/stage3/capacity.py \
-  --manifest outputs/experiments/capacity-v1/decisions/final-recipe/robustness-report.yaml \
-  --output outputs/experiments/capacity-v1/reports/seed-robustness
+  --manifest outputs/experiments_v1/decisions/final-recipe/robustness-report.yaml \
+  --output outputs/experiments_v1/reports/seed-robustness
 ```
 
 人工复核并写 `decisions/seed-acceptance.yaml`，至少包含 `schema_version: 1`、
@@ -161,9 +170,9 @@ python scripts/stage3/capacity.py \
 
 ```bash
 python scripts/stage3/train.py \
-  --config outputs/experiments/capacity-v1/decisions/final-recipe/formal/<scale>.yaml \
+  --config outputs/experiments_v1/decisions/final-recipe/formal/<scale>.yaml \
   --fold 1 2 3 4 5 \
-  --output outputs/experiments/capacity-v1/stage3/formal/<scale> \
+  --output outputs/experiments_v1/stage3/formal/<scale> \
   --max-parallel 4 \
   --devices cuda:0,cuda:1,cuda:2,cuda:3
 ```
@@ -172,8 +181,8 @@ python scripts/stage3/train.py \
 
 ```bash
 python scripts/stage3/capacity.py \
-  --manifest outputs/experiments/capacity-v1/decisions/final-recipe/formal-report.yaml \
-  --output outputs/experiments/capacity-v1/reports/formal-validation
+  --manifest outputs/experiments_v1/decisions/final-recipe/formal-report.yaml \
+  --output outputs/experiments_v1/reports/formal-validation
 ```
 
 再把同类硬件上的参数量、峰值显存、吞吐和 wall time 证据附入决策记录。在查看 test
@@ -182,13 +191,13 @@ formal report。然后才允许对四个 scale 各执行一次 test ensemble：
 
 ```bash
 python scripts/stage3/evaluate.py \
-  --config outputs/experiments/capacity-v1/decisions/final-recipe/formal/<scale>.yaml \
-  --checkpoint-dir outputs/experiments/capacity-v1/stage3/formal/<scale> \
+  --config outputs/experiments_v1/decisions/final-recipe/formal/<scale>.yaml \
+  --checkpoint-dir outputs/experiments_v1/stage3/formal/<scale> \
   --split test \
   --ensemble-folds \
   --checkpoint-epoch 50 \
   --study-id capacity-v1-<scale> \
-  --output outputs/experiments/capacity-v1/stage3/test/<scale>
+  --output outputs/experiments_v1/stage3/test/<scale>
 ```
 
 Test 只发布四点 capacity trend，不得修改 main scale、recipe 或 checkpoint。任何正式命令

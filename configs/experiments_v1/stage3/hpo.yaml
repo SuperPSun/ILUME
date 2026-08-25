@@ -1,6 +1,6 @@
 schema_version: 1
 study_name: ilume-capacity-v1-anchor
-anchor_decision: outputs/experiments/capacity-v1/decisions/anchor.yaml
+anchor_decision: outputs/experiments_v1/decisions/anchor.yaml
 attempted_trials: 40
 startup_trials: 10
 trials_per_wave: 2
