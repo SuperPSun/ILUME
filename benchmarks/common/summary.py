@@ -59,10 +59,63 @@ def _source_run(path: Path, repository_root: Path) -> str:
         return path.resolve().as_posix()
 
 
-def discover_candidates(input_root: Path, repository_root: Path) -> list[Candidate]:
+def _resolved_directories(
+    paths: Path | Sequence[Path], *, label: str, required: bool
+) -> tuple[Path, ...]:
+    values = (paths,) if isinstance(paths, Path) else tuple(paths)
+    if required and not values:
+        raise ValueError(f"At least one summary {label} directory is required")
+    resolved = tuple(
+        sorted({path.resolve() for path in values}, key=lambda path: path.as_posix())
+    )
+    for path in resolved:
+        if not path.is_dir():
+            raise FileNotFoundError(f"Summary {label} directory does not exist: {path}")
+    return resolved
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def discover_candidates(
+    input_roots: Path | Sequence[Path],
+    repository_root: Path,
+    *,
+    include_roots: Path | Sequence[Path] = (),
+) -> list[Candidate]:
+    inputs = _resolved_directories(input_roots, label="input", required=True)
+    includes = _resolved_directories(include_roots, label="include", required=False)
+    outside = [
+        include for include in includes
+        if not any(_is_within(include, input_root) for input_root in inputs)
+    ]
+    if outside:
+        raise ValueError(
+            "Summary include directories must be inside an input directory:\n- "
+            + "\n- ".join(str(path) for path in outside)
+        )
+
     candidates: list[Candidate] = []
     malformed: list[str] = []
-    for metadata_path in sorted(input_root.rglob("metadata.json")):
+    matched_includes: set[Path] = set()
+    metadata_paths = sorted(
+        {
+            metadata_path.resolve()
+            for input_root in inputs
+            for metadata_path in input_root.rglob("metadata.json")
+            if not includes or any(
+                _is_within(metadata_path.resolve().parent, include)
+                for include in includes
+            )
+        },
+        key=lambda path: path.as_posix(),
+    )
+    for metadata_path in metadata_paths:
         try:
             metadata = _json(metadata_path)
         except (OSError, json.JSONDecodeError, ValueError) as error:
@@ -76,6 +129,9 @@ def discover_candidates(input_root: Path, repository_root: Path) -> list[Candida
         }:
             continue
         root = metadata_path.parent
+        matched_includes.update(
+            include for include in includes if _is_within(root, include)
+        )
         current = (
             metadata.get("provenance", {}).get("reporting_schema_version")
             == REPORTING_SCHEMA_VERSION
@@ -110,6 +166,12 @@ def discover_candidates(input_root: Path, repository_root: Path) -> list[Candida
         raise ValueError(
             "Cannot publish summary because formal reporting inputs are malformed:\n- "
             + "\n- ".join(malformed)
+        )
+    unmatched = [include for include in includes if include not in matched_includes]
+    if unmatched:
+        raise ValueError(
+            "Summary include directories contain no reporting candidates:\n- "
+            + "\n- ".join(str(path) for path in unmatched)
         )
     return candidates
 
@@ -1104,8 +1166,15 @@ def _overview(
     return "\n".join(lines) + "\n"
 
 
-def build_summary(input_root: Path, repository_root: Path) -> dict[str, Any]:
-    candidates = discover_candidates(input_root, repository_root)
+def build_summary(
+    input_roots: Path | Sequence[Path],
+    repository_root: Path,
+    *,
+    include_roots: Path | Sequence[Path] = (),
+) -> dict[str, Any]:
+    candidates = discover_candidates(
+        input_roots, repository_root, include_roots=include_roots
+    )
     health = _health(candidates)
     stage3_test, stage3_test_metrics, test_wins = _stage3_test(candidates)
     stage3_validation, stage3_validation_metrics = _stage3_validation(candidates)
@@ -1268,8 +1337,16 @@ def write_summary_snapshot(payload: Mapping[str, Any], destination: Path) -> Non
         raise AssertionError(f"Summary snapshot file set mismatch: {actual}")
 
 
-def publish_summary(input_root: Path, output: Path, repository_root: Path) -> dict[str, Any]:
-    payload = build_summary(input_root, repository_root)
+def publish_summary(
+    input_roots: Path | Sequence[Path],
+    output: Path,
+    repository_root: Path,
+    *,
+    include_roots: Path | Sequence[Path] = (),
+) -> dict[str, Any]:
+    payload = build_summary(
+        input_roots, repository_root, include_roots=include_roots
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{output.name}-staging-", dir=output.parent))
     shutil.rmtree(staging)

@@ -22,7 +22,8 @@
 5. Stage 3 test 保持五折 raw prediction 逐样本平均后计分。Test 排名要求覆盖 registry 中实际存在非空 test 的任务；当前为 11/21 enabled task。Validation 要求全部 enabled task 的五折结果，并报告 mean/sample standard deviation。
 6. Prediction 按 task 写入 `predictions/<task>.csv`，保留 source row、registry identity/condition、raw target、prediction 与 absolute error。Stage 3 test 同时保留五个 fold prediction 和 ensemble prediction。
 7. `completed` 且 schema 完整的 run 才能排名；running、failed、legacy 与 incomplete 只进入 health。声称当前 schema 的 completed run 若损坏，summarizer 必须失败且保持已有 `summary/` 不变。不同 comparison identity 不进入同一榜单。
-8. Summarizer 在同级 staging 目录完成全套校验后交换 `summary/`，相同输入产生确定性结果。不得按 mtime、文件名或路径顺序猜测正式 run；alternative run 全部保留。
+8. Summarizer 必须显式接收一个或多个 input root；可选 include 是精确目录前缀，必须属于某个 input 且至少匹配一个 reporting candidate，不支持 glob。过滤先于 metadata 解析，未选择目录中的损坏结果不阻塞发布。
+9. 选中范围内的 alternative run 全部保留，并按真实 run 路径去重。Summarizer 在同级 staging 目录校验后原子交换 `summary/`；相同输入产生确定性结果，不按 mtime、文件名或路径顺序猜测正式 run。
 
 ## 后果
 

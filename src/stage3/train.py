@@ -26,7 +26,7 @@ from common.training import (
     restore_rng_state,
     seed_everything,
 )
-from .config import Stage3Config
+from .config import Stage3Config, effective_training_seed
 from .data import (
     Stage3TaskDataset,
     balanced_virtual_indices,
@@ -293,7 +293,7 @@ def build_resolved_training_plan(
     total_steps = config.training.epochs * steps
     warmup_steps = math.ceil(config.training.warmup_ratio * total_steps)
     virtual = {task: max(counts[task], config.training.virtual_min_size) for task in active_tasks}
-    return {
+    plan = {
         "format_version": 1,
         "fold": fold,
         "active_tasks": list(active_tasks),
@@ -356,6 +356,9 @@ def build_resolved_training_plan(
             "debug_pcgrad_traces": config.training.debug_pcgrad_traces,
         },
     }
+    if config.training.seed is not None:
+        plan["training_seed"] = effective_training_seed(config)
+    return plan
 
 
 def _optimizer(model: nn.Module, config: Stage3Config) -> torch.optim.AdamW:
@@ -523,6 +526,12 @@ def validate_tasks(
     metrics = ("mae", "rmse", "r2", "pearson_r", "normalized_mae", "normalized_rmse")
     macro_task: dict[str, Any] = {}
     macro_group: dict[str, Any] = {}
+    per_group: dict[str, dict[str, float]] = {
+        group: {}
+        for group in sorted(
+            {model.task_specs[task].meta_group for task in per_task}
+        )
+    }
     for metric in metrics:
         valid = {task: value[metric] for task, value in per_task.items() if metric in value and math.isfinite(value[metric])}
         macro_task[metric] = {
@@ -530,16 +539,23 @@ def validate_tasks(
             "valid_tasks": len(valid), "total_tasks": len(per_task),
         }
         group_values = []
-        for group in sorted({model.task_specs[task].meta_group for task in per_task}):
+        for group in per_group:
             values = [valid[task] for task in valid if model.task_specs[task].meta_group == group]
             if values:
-                group_values.append(sum(values) / len(values))
+                value = sum(values) / len(values)
+                per_group[group][metric] = value
+                group_values.append(value)
         macro_group[metric] = {
             "value": sum(group_values) / len(group_values) if group_values else float("nan"),
             "valid_groups": len(group_values),
             "total_groups": len({model.task_specs[task].meta_group for task in per_task}),
         }
-    return {"tasks": per_task, "macro_task_equal": macro_task, "macro_group_equal": macro_group}
+    return {
+        "tasks": per_task,
+        "groups": per_group,
+        "macro_task_equal": macro_task,
+        "macro_group_equal": macro_group,
+    }
 
 
 def _pair_matrix(names: Sequence[str], diagnostics: Mapping[tuple[str, str], Any]) -> dict[str, Any]:
@@ -607,7 +623,8 @@ def run_stage3_training(
     if config.training.amp_dtype == "bf16":
         if device.type != "cuda" or not torch.cuda.is_bf16_supported():
             raise RuntimeError("Stage 3 BF16 requires a BF16-capable CUDA GPU")
-    seed_everything(config.data.seed + fold)
+    training_seed = effective_training_seed(config)
+    seed_everything(training_seed + fold)
     prepared = load_prepared_stage3(config)
     embedding_matrix = prepared["objects"]["embeddings"].float()
     d_model = int(embedding_matrix.shape[1])
@@ -662,9 +679,9 @@ def run_stage3_training(
         optimizer,
         lambda step: _lr_factor(step, scheduler_info["warmup_steps"], scheduler_info["total_steps"], scheduler_info["min_lr_ratio"]),
     )
-    pcgrad_rng = random.Random(stable_seed(config.data.seed, fold, "pcgrad"))
+    pcgrad_rng = random.Random(stable_seed(training_seed, fold, "pcgrad"))
     task_order_rng = random.Random(
-        stable_seed(config.data.seed, fold, "task_order")
+        stable_seed(training_seed, fold, "task_order")
     )
     start_epoch = 1
     global_step = 0
@@ -751,7 +768,7 @@ def run_stage3_training(
             sequences = {
                 task: balanced_virtual_indices(
                     counts[task], steps_per_epoch * allocation[task],
-                    seed=config.data.seed, epoch=epoch, task_id=task,
+                    seed=training_seed, epoch=epoch, task_id=task,
                 )
                 for task in active
             }

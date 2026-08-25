@@ -24,6 +24,7 @@ from stage3.config import (
     Stage3PreparationConfig,
     Stage3TaskConfig,
     Stage3TrainingConfig,
+    effective_training_seed,
     load_stage3_config,
 )
 from stage3.data import (
@@ -45,6 +46,7 @@ from stage3.train import (
     _load_plugin,
     checkpoint_epochs,
     compute_task_gradient,
+    resolve_stage3_training_identity,
     run_stage3_training,
 )
 from stage3.identity import build_stage3_training_identity, metadata_identity
@@ -186,10 +188,34 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
     assert config.data.split_policy == "prefer_il"
     assert config.training.microbatch_size == 1024
     assert config.training.checkpoint_interval_epochs == 10
+    assert config.training.seed is None
+    assert effective_training_seed(config) == config.data.seed
     assert config.model.dropout == 0.10
     assert config.model.expert_hidden_ratio == 2.0
     assert checkpoint_epochs(100, 10) == tuple(range(10, 101, 10))
     assert checkpoint_epochs(23, 10) == (10, 20, 23)
+
+
+def test_training_seed_changes_training_identity_not_prepared_artifact(
+    tiny_prepared: Stage3Config,
+) -> None:
+    original_metadata = json.loads(
+        (tiny_prepared.data.artifacts_dir / "metadata.json").read_text()
+    )
+    changed = replace(
+        tiny_prepared,
+        training=replace(tiny_prepared.training, seed=10042),
+    )
+
+    assert effective_training_seed(tiny_prepared) == tiny_prepared.data.seed
+    assert effective_training_seed(changed) == 10042
+    assert changed.data.artifacts_dir == tiny_prepared.data.artifacts_dir
+    assert json.loads(
+        (changed.data.artifacts_dir / "metadata.json").read_text()
+    ) == original_metadata
+    assert resolve_stage3_training_identity(changed, 1) != (
+        resolve_stage3_training_identity(tiny_prepared, 1)
+    )
 
 
 def test_registry_catalog_precedence_split_and_topology(tmp_path: Path) -> None:

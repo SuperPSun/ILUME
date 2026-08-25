@@ -4,6 +4,8 @@ import csv
 import json
 from pathlib import Path
 
+import pytest
+
 from benchmarks.common.summary import SUMMARY_FILES, publish_summary
 from common.identity import semantic_identity
 from common.reporting import (
@@ -207,6 +209,86 @@ def test_summarizer_ranks_runs_and_republishes_deterministically(tmp_path: Path)
     publish_summary(inputs, output, tmp_path)
     after = {path.name: path.read_bytes() for path in output.iterdir()}
     assert before == after
+
+
+def test_summarizer_combines_multiple_input_roots(tmp_path: Path) -> None:
+    first_input = tmp_path / "first"
+    second_input = tmp_path / "second"
+    _write_run(first_input / "ilume", _stage2_summary("ilume", "ILUME", 0.2))
+    _write_run(second_input / "mlp", _stage2_summary("mlp", "MLP", 0.4))
+
+    payload = publish_summary(
+        [first_input, second_input], tmp_path / "summary", tmp_path
+    )
+
+    assert [
+        row["model"] for row in payload["leaderboards"]["stage2_core_physics"]
+    ] == ["ILUME", "MLP"]
+
+
+def test_summarizer_include_filters_before_validation(tmp_path: Path) -> None:
+    inputs = tmp_path / "outputs"
+    selected = inputs / "selected"
+    excluded = inputs / "excluded"
+    _write_run(selected, _stage2_summary("ilume", "ILUME", 0.2))
+    _write_run(excluded, _stage2_summary("mlp", "MLP", 0.4))
+    malformed = excluded / "malformed"
+    malformed.mkdir(parents=True)
+    (malformed / "metadata.json").write_text("{", encoding="utf-8")
+
+    payload = publish_summary(
+        inputs, tmp_path / "summary", tmp_path, include_roots=[selected]
+    )
+
+    assert [
+        row["model"] for row in payload["leaderboards"]["stage2_core_physics"]
+    ] == ["ILUME"]
+    assert [row["model"] for row in payload["health"]] == ["ILUME"]
+
+    with pytest.raises(ValueError, match="malformed metadata"):
+        publish_summary(
+            inputs, tmp_path / "malformed-summary", tmp_path,
+            include_roots=[excluded],
+        )
+
+
+def test_summarizer_deduplicates_overlapping_roots(tmp_path: Path) -> None:
+    inputs = tmp_path / "outputs"
+    selected = inputs / "selected"
+    _write_run(selected, _stage2_summary("ilume", "ILUME", 0.2))
+
+    payload = publish_summary(
+        [inputs, selected], tmp_path / "summary", tmp_path,
+        include_roots=[inputs, selected],
+    )
+
+    assert len(payload["leaderboards"]["stage2_core_physics"]) == 1
+    assert len(payload["health"]) == 1
+
+
+def test_summarizer_rejects_invalid_include_roots(tmp_path: Path) -> None:
+    inputs = tmp_path / "outputs"
+    inputs.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    empty = inputs / "empty"
+    empty.mkdir()
+
+    with pytest.raises(FileNotFoundError, match="include directory does not exist"):
+        publish_summary(
+            inputs, tmp_path / "missing-summary", tmp_path,
+            include_roots=[inputs / "missing"],
+        )
+    with pytest.raises(ValueError, match="must be inside an input directory"):
+        publish_summary(
+            inputs, tmp_path / "outside-summary", tmp_path,
+            include_roots=[outside],
+        )
+    with pytest.raises(ValueError, match="contain no reporting candidates"):
+        publish_summary(
+            inputs, tmp_path / "empty-summary", tmp_path,
+            include_roots=[empty],
+        )
 
 
 def test_stage2_unsupported_capabilities_are_not_evaluated(tmp_path: Path) -> None:

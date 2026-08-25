@@ -28,6 +28,7 @@ benchmarks = [
     "scikit-learn>=1.7,<2",
     "xgboost>=3.3,<4",
 ]
+hpo = ["optuna>=4.7,<5"]
 
 [tool.setuptools.packages.find]
 where = ["src", "."]

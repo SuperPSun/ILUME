@@ -1,12 +1,11 @@
 {
   "schema_version": 1,
   "inputs": [
-    "13fffb40d0c1449e7e627fe66db8cb5ea80522a96f8df94ebac658875a5f6509",
-    "6a87c4062306bd9714f66e67f48a1891ca5eeca04ecb773827a8219c258858a0",
-    "896010afd9df6e1697470dbe8851598ae97c0ae4360ddec6b47398814d0aeb58",
+    "0d51f52fac9daf5a4f57c8497c76820828360bc22bb64172c2c55a7e10da6f62",
     "930f348d6d8dabb0a38866c907b7315d5e1716c28cd8b8815fa7fc2235aeba0a",
     "93e8e8808de0d9dd66f73d3f86c7d6decd1ad59e971cf39089929d4726ef6d71",
     "971a93b667db1550d632cad0e3d8a7065dcd99fc52826779f793704c8c9cf088",
+    "cabc0bc0f7b763fe9b9ba1361e0d6b3309460e476f991c810c77e0713e2e75e9",
     "d8c74764b5b4780cc2f4b5f198790b73fc889a81a08524d34fe466ea3c32c6cf",
     "ed83110b64bfd4aded9ca5f0003fb940f61a26928ed3d3fd56f2223f988aebb6",
     "fb2dfdadbe18476be3577f13c03dd080ef56ea2a7a4286dbff232c79f33cde1b"
@@ -280,8 +279,8 @@
           "hash": "d6252504c2f52e2b1d390000cfd9171dc365840877331671de90991037efa2de"
         },
         "source_runs": [
-          "outputs/benchmarks/ecfp_xgboost/sweep",
-          "outputs/benchmarks/mlp/sweep",
+          "outputs/benchmarks/v1/ecfp_xgboost",
+          "outputs/benchmarks/v1/mlp",
           "outputs/v1/stage3/base/test"
         ]
       }
@@ -753,8 +752,8 @@
           "hash": "7610df5ae5dce514537718a760a9f472c3abf9d288a1dca1542005e39775efdc"
         },
         "source_runs": [
-          "outputs/benchmarks/ecfp_xgboost/sweep",
-          "outputs/benchmarks/mlp/sweep",
+          "outputs/benchmarks/v1/ecfp_xgboost",
+          "outputs/benchmarks/v1/mlp",
           "outputs/v1/stage3/base/evaluate/fold1",
           "outputs/v1/stage3/base/evaluate/fold2",
           "outputs/v1/stage3/base/evaluate/fold3",
@@ -763,7 +762,49 @@
         ]
       }
     ],
-    "stage2_core_physics": [],
+    "stage2_core_physics": [
+      {
+        "identity": {
+          "identity_contract_version": 1,
+          "type": "reporting.comparison.v1",
+          "payload": {
+            "benchmark": "stage2_physics",
+            "split": "test",
+            "expected": [
+              "simulation/heat_of_vaporization",
+              "simulation/homo",
+              "simulation/lumo"
+            ],
+            "sources": {
+              "simulation/heat_of_vaporization:train": "066a640276f823c8fc12abee56e0d6e682f676559e031bed84ef5d4050960ee2",
+              "simulation/heat_of_vaporization:test": "75e54d3f89c74386a13f91764451ecfd8d5b2ae29bc0c883dffc427ee13c034a",
+              "simulation/homo:train": "44b4326633257c9ede278be2fd6fc528445d7c3531ad2277aa0bde713d75d77d",
+              "simulation/homo:test": "fe5cb73a0a53b49070494162854a0a67f5905c02e47099739ff52166152e660b",
+              "simulation/lumo:train": "431b2f98782f0efd66507c88d34a51682f8a7deabae51187ab9ee9e3f8e0c761",
+              "simulation/lumo:test": "49c48a6e64c7db92493512cb7342a9f9f9bc46ea27706a213d20d828e341668f"
+            },
+            "normalization": {
+              "simulation/heat_of_vaporization": {
+                "scale": 27.824443512
+              },
+              "simulation/homo": {
+                "scale": 3.60067202043
+              },
+              "simulation/lumo": {
+                "scale": 3.6988644728
+              }
+            },
+            "folds": [],
+            "ensemble": false
+          },
+          "hash": "349e1002d831c32da11e360e0a49638879be41f8367ccf587bc055c4e57a0e53"
+        },
+        "source_runs": [
+          "outputs/benchmarks/v1/ecfp_xgboost",
+          "outputs/benchmarks/v1/mlp"
+        ]
+      }
+    ],
     "stage2_partial_charge": [],
     "stage2_physics_full": []
   },
@@ -782,25 +823,25 @@
         "rank": 1
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "macro_normalized_mae": 0.19529912525906326,
         "valid_tasks": 11,
         "total_tasks": 11,
         "per_task_wins": 3,
-        "source_run": "outputs/benchmarks/mlp/sweep",
+        "source_run": "outputs/benchmarks/v1/mlp",
         "checkpoint_epoch": "",
         "enabled_tasks": 21,
         "rank": 2
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "macro_normalized_mae": 0.26939481353528555,
         "valid_tasks": 11,
         "total_tasks": 11,
         "per_task_wins": 0,
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "checkpoint_epoch": "",
         "enabled_tasks": 21,
         "rank": 3
@@ -808,13 +849,13 @@
     ],
     "stage3_validation": [
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "macro_normalized_mae": 0.21428538724080334,
         "valid_tasks": 21,
         "total_tasks": 21,
         "per_task_wins": 10,
-        "source_run": "outputs/benchmarks/mlp/sweep",
+        "source_run": "outputs/benchmarks/v1/mlp",
         "checkpoint_epoch": "",
         "rank": 1
       },
@@ -830,25 +871,48 @@
         "rank": 2
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "macro_normalized_mae": 0.30209580088402943,
         "valid_tasks": 21,
         "total_tasks": 21,
         "per_task_wins": 0,
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "checkpoint_epoch": "",
         "rank": 3
       }
     ],
-    "stage2_core_physics": [],
+    "stage2_core_physics": [
+      {
+        "run": "mlp@outputs/benchmarks/v1/mlp",
+        "model": "MLP",
+        "macro_normalized_mae": 0.06765666672818853,
+        "valid_tasks": 3,
+        "total_tasks": 3,
+        "per_task_wins": 3,
+        "source_run": "outputs/benchmarks/v1/mlp",
+        "checkpoint_epoch": "",
+        "rank": 1
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
+        "model": "ECFP+XGBoost",
+        "macro_normalized_mae": 0.13470258857254386,
+        "valid_tasks": 3,
+        "total_tasks": 3,
+        "per_task_wins": 0,
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
+        "checkpoint_epoch": "",
+        "rank": 2
+      }
+    ],
     "stage2_partial_charge": [],
     "stage2_physics_full": []
   },
   "metrics": {
     "stage3_test": [
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/density",
         "count": 4918,
@@ -857,10 +921,10 @@
         "r2": 0.9430950622591594,
         "normalized_mae": 0.1622151415531302,
         "normalized_rmse": 0.23577370619859078,
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost"
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/electrical_conductivity",
         "count": 467,
@@ -869,10 +933,10 @@
         "r2": 0.6667837894372866,
         "normalized_mae": 0.15911924232929536,
         "normalized_rmse": 0.3323049986525214,
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost"
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/glass_transition_temperature",
         "count": 79,
@@ -881,10 +945,10 @@
         "r2": 0.16486031105374632,
         "normalized_mae": 0.4648876983147214,
         "normalized_rmse": 0.6876647072449702,
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost"
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/melting_point",
         "count": 524,
@@ -893,10 +957,10 @@
         "r2": 0.4401922094976537,
         "normalized_mae": 0.40451054458112295,
         "normalized_rmse": 0.5625002810375946,
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost"
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/refractive_index",
         "count": 579,
@@ -905,10 +969,10 @@
         "r2": 0.7750207047924029,
         "normalized_mae": 0.3036564335552513,
         "normalized_rmse": 0.48187066166629305,
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost"
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/solvation",
         "count": 2379,
@@ -917,10 +981,10 @@
         "r2": 0.8967222092496805,
         "normalized_mae": 0.18290171349318257,
         "normalized_rmse": 0.32735283981323726,
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost"
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/surface_tension",
         "count": 545,
@@ -929,10 +993,10 @@
         "r2": 0.7837307930195224,
         "normalized_mae": 0.3664690113943065,
         "normalized_rmse": 0.5073305167299128,
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost"
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/thermal_decomposition_temperature",
         "count": 276,
@@ -941,10 +1005,10 @@
         "r2": 0.7596074416767493,
         "normalized_mae": 0.35243877764138687,
         "normalized_rmse": 0.49988407934898654,
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost"
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/transfer",
         "count": 308,
@@ -953,10 +1017,10 @@
         "r2": 0.9627622441545978,
         "normalized_mae": 0.11226484003846499,
         "normalized_rmse": 0.18474089360675666,
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost"
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/transfer_organic",
         "count": 191,
@@ -965,10 +1029,10 @@
         "r2": 0.9165410922058558,
         "normalized_mae": 0.1708737570990388,
         "normalized_rmse": 0.27710605848990016,
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost"
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/viscosity",
         "count": 2459,
@@ -977,7 +1041,7 @@
         "r2": 0.7791297691372586,
         "normalized_mae": 0.2840057888882401,
         "normalized_rmse": 0.4277751826993602,
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep"
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost"
       },
       {
         "run": "ilume@outputs/v1/stage3/base/test",
@@ -1112,7 +1176,7 @@
         "source_run": "outputs/v1/stage3/base/test"
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/density",
         "count": 4918,
@@ -1121,10 +1185,10 @@
         "r2": 0.9571836540306871,
         "normalized_mae": 0.10309334245669961,
         "normalized_rmse": 0.2045150132218105,
-        "source_run": "outputs/benchmarks/mlp/sweep"
+        "source_run": "outputs/benchmarks/v1/mlp"
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/electrical_conductivity",
         "count": 467,
@@ -1133,10 +1197,10 @@
         "r2": 0.8598199817455265,
         "normalized_mae": 0.12869121259643918,
         "normalized_rmse": 0.21553453638594477,
-        "source_run": "outputs/benchmarks/mlp/sweep"
+        "source_run": "outputs/benchmarks/v1/mlp"
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/glass_transition_temperature",
         "count": 79,
@@ -1145,10 +1209,10 @@
         "r2": 0.6800150565731523,
         "normalized_mae": 0.2980030780096853,
         "normalized_rmse": 0.42565912289866403,
-        "source_run": "outputs/benchmarks/mlp/sweep"
+        "source_run": "outputs/benchmarks/v1/mlp"
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/melting_point",
         "count": 524,
@@ -1157,10 +1221,10 @@
         "r2": 0.5600627276126368,
         "normalized_mae": 0.35948757091757505,
         "normalized_rmse": 0.4986532497458364,
-        "source_run": "outputs/benchmarks/mlp/sweep"
+        "source_run": "outputs/benchmarks/v1/mlp"
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/refractive_index",
         "count": 579,
@@ -1169,10 +1233,10 @@
         "r2": 0.9304247665861916,
         "normalized_mae": 0.15109985551471825,
         "normalized_rmse": 0.267970227800606,
-        "source_run": "outputs/benchmarks/mlp/sweep"
+        "source_run": "outputs/benchmarks/v1/mlp"
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/solvation",
         "count": 2379,
@@ -1181,10 +1245,10 @@
         "r2": 0.9687254547687141,
         "normalized_mae": 0.08972424184124894,
         "normalized_rmse": 0.18013916479660866,
-        "source_run": "outputs/benchmarks/mlp/sweep"
+        "source_run": "outputs/benchmarks/v1/mlp"
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/surface_tension",
         "count": 545,
@@ -1193,10 +1257,10 @@
         "r2": 0.8348707529272379,
         "normalized_mae": 0.29558048968607886,
         "normalized_rmse": 0.4433080758912207,
-        "source_run": "outputs/benchmarks/mlp/sweep"
+        "source_run": "outputs/benchmarks/v1/mlp"
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/thermal_decomposition_temperature",
         "count": 276,
@@ -1205,10 +1269,10 @@
         "r2": 0.7804603831167795,
         "normalized_mae": 0.32375319030683386,
         "normalized_rmse": 0.47771100539631156,
-        "source_run": "outputs/benchmarks/mlp/sweep"
+        "source_run": "outputs/benchmarks/v1/mlp"
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/transfer",
         "count": 308,
@@ -1217,10 +1281,10 @@
         "r2": 0.9855160817434232,
         "normalized_mae": 0.07096065381381202,
         "normalized_rmse": 0.11521640562039474,
-        "source_run": "outputs/benchmarks/mlp/sweep"
+        "source_run": "outputs/benchmarks/v1/mlp"
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/transfer_organic",
         "count": 191,
@@ -1229,10 +1293,10 @@
         "r2": 0.9702745850416913,
         "normalized_mae": 0.09607515542651249,
         "normalized_rmse": 0.1653764387772368,
-        "source_run": "outputs/benchmarks/mlp/sweep"
+        "source_run": "outputs/benchmarks/v1/mlp"
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/viscosity",
         "count": 2459,
@@ -1241,15 +1305,15 @@
         "r2": 0.8274703105434736,
         "normalized_mae": 0.23182158728009236,
         "normalized_rmse": 0.3780758290839105,
-        "source_run": "outputs/benchmarks/mlp/sweep"
+        "source_run": "outputs/benchmarks/v1/mlp"
       }
     ],
     "stage3_validation": [
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/density",
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "mae_mean": 0.029097269106688313,
         "mae_std": 0.005344860943909221,
         "rmse_mean": 0.04405731207497965,
@@ -1262,10 +1326,10 @@
         "normalized_rmse_std": 0.035241958373881895
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/dynamic_relative_permittivity",
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "mae_mean": 1.131058251245522,
         "mae_std": 0.35036105313918964,
         "rmse_mean": 1.5945914822545486,
@@ -1278,10 +1342,10 @@
         "normalized_rmse_std": 0.4047913839553094
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/electrical_conductivity",
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "mae_mean": 0.25014079705207826,
         "mae_std": 0.030395315536488863,
         "rmse_mean": 0.3990344755379163,
@@ -1294,10 +1358,10 @@
         "normalized_rmse_std": 0.057816977019052945
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/equilibrium_pressure",
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "mae_mean": 0.43819862806689025,
         "mae_std": 0.136112040267479,
         "rmse_mean": 0.7791588151524695,
@@ -1310,10 +1374,10 @@
         "normalized_rmse_std": 0.16735126233077094
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/glass_transition_temperature",
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "mae_mean": 11.99345264315711,
         "mae_std": 0.8389987588172576,
         "rmse_mean": 19.1645712803684,
@@ -1326,10 +1390,10 @@
         "normalized_rmse_std": 0.08933704809865795
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/heat_capacity",
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "mae_mean": 64.15822810287399,
         "mae_std": 14.055190535228926,
         "rmse_mean": 99.25982231244885,
@@ -1342,10 +1406,10 @@
         "normalized_rmse_std": 0.08725115465269087
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/isobaric_coefficient_of_volume_expansion",
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "mae_mean": 3.261638302760516e-05,
         "mae_std": 1.1254921510064242e-05,
         "rmse_mean": 4.346429839092568e-05,
@@ -1358,10 +1422,10 @@
         "normalized_rmse_std": 0.4360207691625514
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/melting_point",
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "mae_mean": 28.33789135792396,
         "mae_std": 1.8554746475832418,
         "rmse_mean": 38.2002524215878,
@@ -1374,10 +1438,10 @@
         "normalized_rmse_std": 0.029983001883075372
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/pec50",
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "mae_mean": 0.40508620529067685,
         "mae_std": 0.04314885090593383,
         "rmse_mean": 0.591232488977201,
@@ -1390,10 +1454,10 @@
         "normalized_rmse_std": 0.07164196197986564
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/refractive_index",
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "mae_mean": 0.006508640641612546,
         "mae_std": 0.00025003009499708587,
         "rmse_mean": 0.010915340727116422,
@@ -1406,10 +1470,10 @@
         "normalized_rmse_std": 0.02731973025189405
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/self_diffusion_coefficient",
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "mae_mean": 0.23657298851251088,
         "mae_std": 0.08348371191597496,
         "rmse_mean": 0.3308862475770032,
@@ -1422,10 +1486,10 @@
         "normalized_rmse_std": 0.30730078420015794
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/solvation",
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "mae_mean": 0.2800145808214349,
         "mae_std": 0.03609025902714856,
         "rmse_mean": 0.4522466771381593,
@@ -1438,10 +1502,10 @@
         "normalized_rmse_std": 0.04175904907395333
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/speed_of_sound",
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "mae_mean": 47.890474404812764,
         "mae_std": 21.43975867721035,
         "rmse_mean": 77.0628756271259,
@@ -1454,10 +1518,10 @@
         "normalized_rmse_std": 0.10719452807066772
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/static_relative_permittivity",
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "mae_mean": 4.002730902727135,
         "mae_std": 1.3196319841000592,
         "rmse_mean": 7.0643171920716,
@@ -1470,10 +1534,10 @@
         "normalized_rmse_std": 0.2821450020687313
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/surface_tension",
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "mae_mean": 2.9092561453545844,
         "mae_std": 0.3056532316490038,
         "rmse_mean": 4.207587473122152,
@@ -1486,10 +1550,10 @@
         "normalized_rmse_std": 0.04584921787121807
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/thermal_conductivity",
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "mae_mean": 0.007848931928583429,
         "mae_std": 0.0025411171114630804,
         "rmse_mean": 0.010359048523440181,
@@ -1502,10 +1566,10 @@
         "normalized_rmse_std": 0.09903525939632979
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/thermal_decomposition_temperature",
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "mae_mean": 25.912229379904364,
         "mae_std": 1.3849415977652269,
         "rmse_mean": 35.788745272101345,
@@ -1518,10 +1582,10 @@
         "normalized_rmse_std": 0.03147610749912057
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/transfer",
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "mae_mean": 0.3956012974360434,
         "mae_std": 0.08486784395384138,
         "rmse_mean": 0.6129051080354206,
@@ -1534,10 +1598,10 @@
         "normalized_rmse_std": 0.05653004853580473
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/transfer_organic",
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "mae_mean": 0.40494418729829534,
         "mae_std": 0.04369545069280884,
         "rmse_mean": 0.6548103402864398,
@@ -1550,10 +1614,10 @@
         "normalized_rmse_std": 0.04147587180136797
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/viscosity",
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "mae_mean": 0.17495167417065477,
         "mae_std": 0.007022984702614021,
         "rmse_mean": 0.3020449074950466,
@@ -1566,10 +1630,10 @@
         "normalized_rmse_std": 0.06371900990750372
       },
       {
-        "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "task": "experiment/x_co2",
-        "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "mae_mean": 0.03589132093106705,
         "mae_std": 0.0057089971723381224,
         "rmse_mean": 0.05391823092532624,
@@ -1918,10 +1982,10 @@
         "normalized_rmse_std": 0.035718919308991355
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/density",
-        "source_run": "outputs/benchmarks/mlp/sweep",
+        "source_run": "outputs/benchmarks/v1/mlp",
         "mae_mean": 0.013665538590279327,
         "mae_std": 0.0012909276555245564,
         "rmse_mean": 0.028252802474687443,
@@ -1934,10 +1998,10 @@
         "normalized_rmse_std": 0.03828949147913924
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/dynamic_relative_permittivity",
-        "source_run": "outputs/benchmarks/mlp/sweep",
+        "source_run": "outputs/benchmarks/v1/mlp",
         "mae_mean": 0.7205292872124106,
         "mae_std": 0.14010294484558433,
         "rmse_mean": 1.0353265542212213,
@@ -1950,10 +2014,10 @@
         "normalized_rmse_std": 0.16701609320174204
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/electrical_conductivity",
-        "source_run": "outputs/benchmarks/mlp/sweep",
+        "source_run": "outputs/benchmarks/v1/mlp",
         "mae_mean": 0.1962706730928435,
         "mae_std": 0.023852996020281198,
         "rmse_mean": 0.37327086753369143,
@@ -1966,10 +2030,10 @@
         "normalized_rmse_std": 0.04976131351542246
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/equilibrium_pressure",
-        "source_run": "outputs/benchmarks/mlp/sweep",
+        "source_run": "outputs/benchmarks/v1/mlp",
         "mae_mean": 0.36078745083287167,
         "mae_std": 0.11127226878623799,
         "rmse_mean": 0.7590414997162591,
@@ -1982,10 +2046,10 @@
         "normalized_rmse_std": 0.09286345196231423
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/glass_transition_temperature",
-        "source_run": "outputs/benchmarks/mlp/sweep",
+        "source_run": "outputs/benchmarks/v1/mlp",
         "mae_mean": 10.217866200405842,
         "mae_std": 0.4815617650013336,
         "rmse_mean": 17.134305009985844,
@@ -1998,10 +2062,10 @@
         "normalized_rmse_std": 0.0818412077715477
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/heat_capacity",
-        "source_run": "outputs/benchmarks/mlp/sweep",
+        "source_run": "outputs/benchmarks/v1/mlp",
         "mae_mean": 29.209797351521768,
         "mae_std": 8.490523052530428,
         "rmse_mean": 54.879259368305455,
@@ -2014,10 +2078,10 @@
         "normalized_rmse_std": 0.09372559539084019
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/isobaric_coefficient_of_volume_expansion",
-        "source_run": "outputs/benchmarks/mlp/sweep",
+        "source_run": "outputs/benchmarks/v1/mlp",
         "mae_mean": 1.17521787398881e-05,
         "mae_std": 8.792628274487858e-06,
         "rmse_mean": 1.962357837336824e-05,
@@ -2030,10 +2094,10 @@
         "normalized_rmse_std": 0.3068037179118304
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/melting_point",
-        "source_run": "outputs/benchmarks/mlp/sweep",
+        "source_run": "outputs/benchmarks/v1/mlp",
         "mae_mean": 26.696816547985275,
         "mae_std": 2.3746685444275597,
         "rmse_mean": 36.8403313826206,
@@ -2046,10 +2110,10 @@
         "normalized_rmse_std": 0.03947611951374734
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/pec50",
-        "source_run": "outputs/benchmarks/mlp/sweep",
+        "source_run": "outputs/benchmarks/v1/mlp",
         "mae_mean": 0.29500712757995284,
         "mae_std": 0.013722166492877044,
         "rmse_mean": 0.39600726672206876,
@@ -2062,10 +2126,10 @@
         "normalized_rmse_std": 0.018917059431092544
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/refractive_index",
-        "source_run": "outputs/benchmarks/mlp/sweep",
+        "source_run": "outputs/benchmarks/v1/mlp",
         "mae_mean": 0.004840129883945706,
         "mae_std": 0.0007482078592471643,
         "rmse_mean": 0.008842636759498377,
@@ -2078,10 +2142,10 @@
         "normalized_rmse_std": 0.046680556227196364
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/self_diffusion_coefficient",
-        "source_run": "outputs/benchmarks/mlp/sweep",
+        "source_run": "outputs/benchmarks/v1/mlp",
         "mae_mean": 0.1935065220263045,
         "mae_std": 0.0885168989744445,
         "rmse_mean": 0.2637315309940516,
@@ -2094,10 +2158,10 @@
         "normalized_rmse_std": 0.22887286431764609
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/solvation",
-        "source_run": "outputs/benchmarks/mlp/sweep",
+        "source_run": "outputs/benchmarks/v1/mlp",
         "mae_mean": 0.20155461135915798,
         "mae_std": 0.0847988588663576,
         "rmse_mean": 0.3130668017063726,
@@ -2110,10 +2174,10 @@
         "normalized_rmse_std": 0.08954734746143679
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/speed_of_sound",
-        "source_run": "outputs/benchmarks/mlp/sweep",
+        "source_run": "outputs/benchmarks/v1/mlp",
         "mae_mean": 27.00991358515853,
         "mae_std": 8.649297072289473,
         "rmse_mean": 44.36046673213535,
@@ -2126,10 +2190,10 @@
         "normalized_rmse_std": 0.05794268234994671
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/static_relative_permittivity",
-        "source_run": "outputs/benchmarks/mlp/sweep",
+        "source_run": "outputs/benchmarks/v1/mlp",
         "mae_mean": 3.4646576413920274,
         "mae_std": 1.123168315364836,
         "rmse_mean": 5.332015017434813,
@@ -2142,10 +2206,10 @@
         "normalized_rmse_std": 0.2539398509564388
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/surface_tension",
-        "source_run": "outputs/benchmarks/mlp/sweep",
+        "source_run": "outputs/benchmarks/v1/mlp",
         "mae_mean": 2.127653828932781,
         "mae_std": 0.21916358640711253,
         "rmse_mean": 3.6181465315717403,
@@ -2158,10 +2222,10 @@
         "normalized_rmse_std": 0.07346018847957203
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/thermal_conductivity",
-        "source_run": "outputs/benchmarks/mlp/sweep",
+        "source_run": "outputs/benchmarks/v1/mlp",
         "mae_mean": 0.005706871819198763,
         "mae_std": 0.001636659679190274,
         "rmse_mean": 0.007957487885695013,
@@ -2174,10 +2238,10 @@
         "normalized_rmse_std": 0.06380941428724135
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/thermal_decomposition_temperature",
-        "source_run": "outputs/benchmarks/mlp/sweep",
+        "source_run": "outputs/benchmarks/v1/mlp",
         "mae_mean": 23.324316882717376,
         "mae_std": 0.8275551078915213,
         "rmse_mean": 33.84389950827021,
@@ -2190,10 +2254,10 @@
         "normalized_rmse_std": 0.024800397482413996
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/transfer",
-        "source_run": "outputs/benchmarks/mlp/sweep",
+        "source_run": "outputs/benchmarks/v1/mlp",
         "mae_mean": 0.3137944178943859,
         "mae_std": 0.08517213267313604,
         "rmse_mean": 0.44454410876016137,
@@ -2206,10 +2270,10 @@
         "normalized_rmse_std": 0.06334410476120009
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/transfer_organic",
-        "source_run": "outputs/benchmarks/mlp/sweep",
+        "source_run": "outputs/benchmarks/v1/mlp",
         "mae_mean": 0.2582499369159556,
         "mae_std": 0.02558639044688102,
         "rmse_mean": 0.42351602198275573,
@@ -2222,10 +2286,10 @@
         "normalized_rmse_std": 0.028505211293665875
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/viscosity",
-        "source_run": "outputs/benchmarks/mlp/sweep",
+        "source_run": "outputs/benchmarks/v1/mlp",
         "mae_mean": 0.1257525451573192,
         "mae_std": 0.013515185566766702,
         "rmse_mean": 0.2292606414960717,
@@ -2238,10 +2302,10 @@
         "normalized_rmse_std": 0.03424371631893619
       },
       {
-        "run": "mlp@outputs/benchmarks/mlp/sweep",
+        "run": "mlp@outputs/benchmarks/v1/mlp",
         "model": "MLP",
         "task": "experiment/x_co2",
-        "source_run": "outputs/benchmarks/mlp/sweep",
+        "source_run": "outputs/benchmarks/v1/mlp",
         "mae_mean": 0.04283611626268106,
         "mae_std": 0.006938289798762627,
         "rmse_mean": 0.06442573876941426,
@@ -2254,7 +2318,172 @@
         "normalized_rmse_std": 0.04794011002998598
       }
     ],
-    "stage2_core_physics": [],
+    "stage2_core_physics": [
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
+        "model": "ECFP+XGBoost",
+        "task": "simulation/heat_of_vaporization",
+        "target": "heat_of_vaporization_kJ/mol",
+        "subset": "pooled",
+        "count": 2684,
+        "mae": 5.6614555401635345,
+        "rmse": 9.5359103703066,
+        "r2": 0.8872886953236472,
+        "normalized_mae": 0.20347057570852525,
+        "normalized_rmse": 0.3427170202408998,
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost"
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
+        "model": "ECFP+XGBoost",
+        "task": "simulation/homo",
+        "target": "HOMO_eV",
+        "subset": "anion",
+        "count": 744,
+        "mae": 0.2741569086700482,
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost"
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
+        "model": "ECFP+XGBoost",
+        "task": "simulation/homo",
+        "target": "HOMO_eV",
+        "subset": "cation",
+        "count": 917,
+        "mae": 0.4733949380878851,
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost"
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
+        "model": "ECFP+XGBoost",
+        "task": "simulation/homo",
+        "target": "HOMO_eV",
+        "subset": "pooled",
+        "count": 1661,
+        "mae": 0.3841516545918763,
+        "rmse": 0.5911888126062096,
+        "r2": 0.9727179803344413,
+        "normalized_mae": 0.10668887707963094,
+        "normalized_rmse": 0.16418846516750285,
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost"
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
+        "model": "ECFP+XGBoost",
+        "task": "simulation/lumo",
+        "target": "LUMO_eV",
+        "subset": "anion",
+        "count": 744,
+        "mae": 0.2694680622361275,
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost"
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
+        "model": "ECFP+XGBoost",
+        "task": "simulation/lumo",
+        "target": "LUMO_eV",
+        "subset": "cation",
+        "count": 917,
+        "mae": 0.4108142983103888,
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost"
+      },
+      {
+        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
+        "model": "ECFP+XGBoost",
+        "task": "simulation/lumo",
+        "target": "LUMO_eV",
+        "subset": "pooled",
+        "count": 1661,
+        "mae": 0.34750207697429586,
+        "rmse": 0.5456975912391558,
+        "r2": 0.9782540703736791,
+        "normalized_mae": 0.09394831292947536,
+        "normalized_rmse": 0.14753111265688726,
+        "source_run": "outputs/benchmarks/v1/ecfp_xgboost"
+      },
+      {
+        "run": "mlp@outputs/benchmarks/v1/mlp",
+        "model": "MLP",
+        "task": "simulation/heat_of_vaporization",
+        "target": "heat_of_vaporization_kJ/mol",
+        "subset": "pooled",
+        "count": 2684,
+        "mae": 2.278852919300507,
+        "rmse": 3.174555039306804,
+        "r2": 0.9875086643475632,
+        "normalized_mae": 0.08190111397249158,
+        "normalized_rmse": 0.11409231016366815,
+        "source_run": "outputs/benchmarks/v1/mlp"
+      },
+      {
+        "run": "mlp@outputs/benchmarks/v1/mlp",
+        "model": "MLP",
+        "task": "simulation/homo",
+        "target": "HOMO_eV",
+        "subset": "anion",
+        "count": 744,
+        "mae": 0.18760133552454616,
+        "source_run": "outputs/benchmarks/v1/mlp"
+      },
+      {
+        "run": "mlp@outputs/benchmarks/v1/mlp",
+        "model": "MLP",
+        "task": "simulation/homo",
+        "target": "HOMO_eV",
+        "subset": "cation",
+        "count": 917,
+        "mae": 0.27528779718835983,
+        "source_run": "outputs/benchmarks/v1/mlp"
+      },
+      {
+        "run": "mlp@outputs/benchmarks/v1/mlp",
+        "model": "MLP",
+        "task": "simulation/homo",
+        "target": "HOMO_eV",
+        "subset": "pooled",
+        "count": 1661,
+        "mae": 0.23601101965803029,
+        "rmse": 0.30971991449411806,
+        "r2": 0.9925120598431728,
+        "normalized_mae": 0.0655463808752431,
+        "normalized_rmse": 0.08601725253970974,
+        "source_run": "outputs/benchmarks/v1/mlp"
+      },
+      {
+        "run": "mlp@outputs/benchmarks/v1/mlp",
+        "model": "MLP",
+        "task": "simulation/lumo",
+        "target": "LUMO_eV",
+        "subset": "anion",
+        "count": 744,
+        "mae": 0.16748066617358764,
+        "source_run": "outputs/benchmarks/v1/mlp"
+      },
+      {
+        "run": "mlp@outputs/benchmarks/v1/mlp",
+        "model": "MLP",
+        "task": "simulation/lumo",
+        "target": "LUMO_eV",
+        "subset": "cation",
+        "count": 917,
+        "mae": 0.23611158541452984,
+        "source_run": "outputs/benchmarks/v1/mlp"
+      },
+      {
+        "run": "mlp@outputs/benchmarks/v1/mlp",
+        "model": "MLP",
+        "task": "simulation/lumo",
+        "target": "LUMO_eV",
+        "subset": "pooled",
+        "count": 1661,
+        "mae": 0.20537022243123002,
+        "rmse": 0.2793598521344941,
+        "r2": 0.9943009575876748,
+        "normalized_mae": 0.05552250533683088,
+        "normalized_rmse": 0.0755258415626815,
+        "source_run": "outputs/benchmarks/v1/mlp"
+      }
+    ],
     "stage2_partial_charge": []
   },
   "wins": {
@@ -2269,17 +2498,23 @@
         "experiment/transfer_organic",
         "experiment/viscosity"
       ],
-      "mlp@outputs/benchmarks/mlp/sweep": [
+      "mlp@outputs/benchmarks/v1/mlp": [
         "experiment/glass_transition_temperature",
         "experiment/melting_point",
         "experiment/refractive_index"
       ]
     },
-    "stage2_core_physics": {}
+    "stage2_core_physics": {
+      "mlp@outputs/benchmarks/v1/mlp": [
+        "simulation/heat_of_vaporization",
+        "simulation/homo",
+        "simulation/lumo"
+      ]
+    }
   },
   "health": [
     {
-      "run": "ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep",
+      "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
       "model": "ECFP+XGBoost",
       "stage": "benchmark",
       "operation": "sweep",
@@ -2291,30 +2526,11 @@
       "available_tasks": "stage3_test:21;stage3_validation:21;stage2_physics:3",
       "available_folds": "1;2;3;4;5",
       "failed_jobs": 0,
-      "stage2_core_eligibility": "legacy",
-      "stage2_partial_eligibility": "legacy",
-      "stage2_full_eligibility": "legacy",
-      "source_run": "outputs/benchmarks/ecfp_xgboost/sweep",
-      "issues": "legacy_stage2_reporting_contract"
-    },
-    {
-      "run": "ilume@outputs/v1/stage2/base/evaluate/test",
-      "model": "ILUME",
-      "stage": "stage2",
-      "operation": "evaluate",
-      "status": "completed",
-      "completeness": "complete",
-      "checkpoint_epoch": 5,
-      "enabled_tasks": "",
-      "expected_tasks": "",
-      "available_tasks": "",
-      "available_folds": "",
-      "failed_jobs": "",
-      "stage2_core_eligibility": "legacy",
-      "stage2_partial_eligibility": "legacy",
-      "stage2_full_eligibility": "legacy",
-      "source_run": "outputs/v1/stage2/base/evaluate/test",
-      "issues": "legacy_stage2_reporting_contract"
+      "stage2_core_eligibility": "eligible",
+      "stage2_partial_eligibility": "not_evaluated",
+      "stage2_full_eligibility": "not_evaluated",
+      "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
+      "issues": ""
     },
     {
       "run": "ilume@outputs/v1/stage3/base/evaluate/fold1",
@@ -2431,7 +2647,7 @@
       "issues": ""
     },
     {
-      "run": "mlp@outputs/benchmarks/mlp/sweep",
+      "run": "mlp@outputs/benchmarks/v1/mlp",
       "model": "MLP",
       "stage": "benchmark",
       "operation": "sweep",
@@ -2443,11 +2659,11 @@
       "available_tasks": "stage3_test:21;stage3_validation:21;stage2_physics:3",
       "available_folds": "1;2;3;4;5",
       "failed_jobs": 0,
-      "stage2_core_eligibility": "legacy",
-      "stage2_partial_eligibility": "legacy",
-      "stage2_full_eligibility": "legacy",
-      "source_run": "outputs/benchmarks/mlp/sweep",
-      "issues": "legacy_stage2_reporting_contract"
+      "stage2_core_eligibility": "eligible",
+      "stage2_partial_eligibility": "not_evaluated",
+      "stage2_full_eligibility": "not_evaluated",
+      "source_run": "outputs/benchmarks/v1/mlp",
+      "issues": ""
     }
   ]
 }

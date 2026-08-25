@@ -1,0 +1,282 @@
+data:
+  stage3_dir: data/stage3
+  task_catalog: data/task_catalog.csv
+  artifacts_dir: outputs/experiments/capacity-v1/stage3/prepare/l-default/artifacts
+  split_policy: prefer_il
+  split_strategies: {}
+  cv_repeat: 1
+  cv_repeats: {}
+  seed: 42
+preparation:
+  encoding_batch_size: 256
+  cache_dir: outputs/experiments/capacity-v1/stage3/prepare/l-default/object_cache
+initialization:
+  stage2_encoder: outputs/experiments/capacity-v1/stage2/l/default/train/stage2_encoder.pt
+  plugin: null
+model:
+  global_experts: 2
+  group_experts: 2
+  private_experts: 1
+  dropout: 0.1
+  activation: silu
+  expert_hidden_ratio: 2.0
+  interaction_hidden_ratio: 2.0
+  film_hidden_ratio: 1.0
+  tower_hidden_ratio: 1.0
+  l2_residual: true
+groups:
+  transport:
+    enabled: true
+    group_weight: 1.0
+  thermophysical:
+    enabled: true
+    group_weight: 1.0
+  phase_stability:
+    enabled: true
+    group_weight: 1.0
+  dielectric_optical:
+    enabled: true
+    group_weight: 1.0
+  solvation:
+    enabled: true
+    group_weight: 1.0
+  biological:
+    enabled: true
+    group_weight: 1.0
+tasks:
+  experiment/electrical_conductivity:
+    meta_group: transport
+    partner_mode: none
+    primary_slots:
+    - cation
+    - anion
+    partner_slots: []
+    enabled: true
+    task_weight: 1.0
+    model_overrides: {}
+  experiment/self_diffusion_coefficient:
+    meta_group: transport
+    partner_mode: none
+    primary_slots:
+    - cation
+    - anion
+    partner_slots: []
+    enabled: true
+    task_weight: 1.0
+    model_overrides: {}
+  experiment/viscosity:
+    meta_group: transport
+    partner_mode: none
+    primary_slots:
+    - cation
+    - anion
+    partner_slots: []
+    enabled: true
+    task_weight: 1.0
+    model_overrides: {}
+  experiment/thermal_conductivity:
+    meta_group: transport
+    partner_mode: none
+    primary_slots:
+    - cation
+    - anion
+    partner_slots: []
+    enabled: true
+    task_weight: 1.0
+    model_overrides: {}
+  experiment/density:
+    meta_group: thermophysical
+    partner_mode: none
+    primary_slots:
+    - cation
+    - anion
+    partner_slots: []
+    enabled: true
+    task_weight: 1.0
+    model_overrides: {}
+  experiment/heat_capacity:
+    meta_group: thermophysical
+    partner_mode: none
+    primary_slots:
+    - cation
+    - anion
+    partner_slots: []
+    enabled: true
+    task_weight: 1.0
+    model_overrides: {}
+  experiment/isobaric_coefficient_of_volume_expansion:
+    meta_group: thermophysical
+    partner_mode: none
+    primary_slots:
+    - cation
+    - anion
+    partner_slots: []
+    enabled: true
+    task_weight: 1.0
+    model_overrides: {}
+  experiment/speed_of_sound:
+    meta_group: thermophysical
+    partner_mode: none
+    primary_slots:
+    - cation
+    - anion
+    partner_slots: []
+    enabled: true
+    task_weight: 1.0
+    model_overrides: {}
+  experiment/surface_tension:
+    meta_group: thermophysical
+    partner_mode: none
+    primary_slots:
+    - cation
+    - anion
+    partner_slots: []
+    enabled: true
+    task_weight: 1.0
+    model_overrides: {}
+  experiment/equilibrium_pressure:
+    meta_group: phase_stability
+    partner_mode: none
+    primary_slots:
+    - cation
+    - anion
+    partner_slots: []
+    enabled: true
+    task_weight: 1.0
+    model_overrides: {}
+  experiment/glass_transition_temperature:
+    meta_group: phase_stability
+    partner_mode: none
+    primary_slots:
+    - cation
+    - anion
+    partner_slots: []
+    enabled: true
+    task_weight: 1.0
+    model_overrides: {}
+  experiment/melting_point:
+    meta_group: phase_stability
+    partner_mode: none
+    primary_slots:
+    - cation
+    - anion
+    partner_slots: []
+    enabled: true
+    task_weight: 1.0
+    model_overrides: {}
+  experiment/thermal_decomposition_temperature:
+    meta_group: phase_stability
+    partner_mode: none
+    primary_slots:
+    - cation
+    - anion
+    partner_slots: []
+    enabled: true
+    task_weight: 1.0
+    model_overrides: {}
+  experiment/dynamic_relative_permittivity:
+    meta_group: dielectric_optical
+    partner_mode: none
+    primary_slots:
+    - cation
+    - anion
+    partner_slots: []
+    enabled: true
+    task_weight: 1.0
+    model_overrides: {}
+  experiment/static_relative_permittivity:
+    meta_group: dielectric_optical
+    partner_mode: none
+    primary_slots:
+    - cation
+    - anion
+    partner_slots: []
+    enabled: true
+    task_weight: 1.0
+    model_overrides: {}
+  experiment/refractive_index:
+    meta_group: dielectric_optical
+    partner_mode: none
+    primary_slots:
+    - cation
+    - anion
+    partner_slots: []
+    enabled: true
+    task_weight: 1.0
+    model_overrides: {}
+  experiment/solvation:
+    meta_group: solvation
+    partner_mode: interaction
+    primary_slots:
+    - cation
+    - anion
+    partner_slots:
+    - solute
+    enabled: true
+    task_weight: 1.0
+    model_overrides: {}
+  experiment/transfer:
+    meta_group: solvation
+    partner_mode: interaction
+    primary_slots:
+    - cation
+    - anion
+    partner_slots:
+    - solute
+    enabled: true
+    task_weight: 1.0
+    model_overrides: {}
+  experiment/transfer_organic:
+    meta_group: solvation
+    partner_mode: interaction
+    primary_slots:
+    - solute
+    partner_slots:
+    - solvent
+    enabled: true
+    task_weight: 1.0
+    model_overrides: {}
+  experiment/x_co2:
+    meta_group: solvation
+    partner_mode: none
+    primary_slots:
+    - cation
+    - anion
+    partner_slots: []
+    enabled: true
+    task_weight: 1.0
+    model_overrides: {}
+  experiment/pec50:
+    meta_group: biological
+    partner_mode: none
+    primary_slots:
+    - cation
+    - anion
+    partner_slots: []
+    enabled: true
+    task_weight: 1.0
+    model_overrides: {}
+training:
+  seed: 42
+  composite_batch_size: 2048
+  microbatch_size: 1024
+  virtual_min_size: 1000
+  epochs: 20
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  betas:
+  - 0.9
+  - 0.999
+  eps: 1.0e-08
+  warmup_ratio: 0.05
+  min_lr_ratio: 0.05
+  max_grad_norm: 1.0
+  smooth_l1_beta: 1.0
+  amp_dtype: bf16
+  optimizer_implementation: single_tensor
+  active_tasks: auto
+  checkpoint_interval_epochs: 10
+  device: cuda
+  cpu_threads: 4
+  cpu_interop_threads: 1
+  debug_pcgrad_traces: false
