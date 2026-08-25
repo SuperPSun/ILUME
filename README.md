@@ -1,6 +1,6 @@
 # ILUME
 
-ILUME 是按 Stage 组织的分子科研 pipeline：Stage 1 进行四模态掩码预训练，Stage 2 训练 catalog 驱动的九任务 physics representation，Stage 3 训练 21 个 sparse-label observation task。正式 YAML 与 [ADR 索引](docs/adr/README.md) 共同定义现役科研合同。
+ILUME 是按 Stage 组织的分子科研 pipeline：Stage 1 进行五路目标掩码预训练，Stage 2 训练 catalog 驱动的九任务 physics representation，Stage 3 训练 21 个 sparse-label observation task。正式 YAML 与 [ADR 索引](docs/adr/README.md) 共同定义现役科研合同。
 
 ## 安装与数据
 

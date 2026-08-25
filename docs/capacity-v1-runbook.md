@@ -70,6 +70,9 @@ python scripts/stage3/capacity.py \
 ```
 
 报告的 `scale_winners` 已按末三轮分数和 Default→Conservative→Aggressive tie-break 选出。
+该命令自动汇总主指标、task/group 指标、fold sample-SD 和原始 run 路径；参数量、峰值
+显存、吞吐、wall time 与 Stage 1/2 稳定性不会由报告器推断，必须从同类硬件上的训练
+日志和监控记录中另行取证，并随人工 decision 一起保留。
 人工 Pareto 只能从这四者中选 anchor。创建
 `outputs/experiments/capacity-v1/decisions/anchor.yaml`：
 
@@ -165,7 +168,7 @@ python scripts/stage3/train.py \
   --devices cuda:0,cuda:1,cuda:2,cuda:3
 ```
 
-四者完成后生成 validation/resource 决策包：
+四者完成后生成 validation 汇总：
 
 ```bash
 python scripts/stage3/capacity.py \
@@ -173,8 +176,9 @@ python scripts/stage3/capacity.py \
   --output outputs/experiments/capacity-v1/reports/formal-validation
 ```
 
-在查看 test 前写入 `decisions/main-scale.yaml`，记录所选 scale、validation/resource
-Pareto 理由和 formal report。然后才允许对四个 scale 各执行一次 test ensemble：
+再把同类硬件上的参数量、峰值显存、吞吐和 wall time 证据附入决策记录。在查看 test
+前写入 `decisions/main-scale.yaml`，记录所选 scale、validation/resource Pareto 理由和
+formal report。然后才允许对四个 scale 各执行一次 test ensemble：
 
 ```bash
 python scripts/stage3/evaluate.py \
