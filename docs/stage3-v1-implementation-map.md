@@ -16,4 +16,4 @@
 | 旧 valid/test best checkpoint loader | 替换为 full v1 checkpoint 严格加载与显式 epoch/task selector | `src/stage3/evaluate.py` |
 | phase/adaptation-style staged expansion | 替换为 load scopes 与 adaptation scopes 分离的 plugin 初始化 | `src/stage3/train.py` |
 
-三个公开入口保持为 `scripts/stage3/prepare.py`、`train.py`、`evaluate.py`。`train.py --fold` 接收一个或多个 fold，`--output` 始终是共同 root，实际 run contract 位于 `foldN/`；布尔 `--resume` 只恢复 identity 一致且 checkpoint/metrics/diagnostics 尾部严格对齐的 fold。旧 artifact/config/checkpoint 不提供兼容解析器。
+现役 v1 的训练与评估入口保持为 `scripts/stage3/prepare.py`、`train.py`、`evaluate.py`。Capacity v1 另有只负责报告和配置物化的 `scripts/stage3/capacity.py`；HPO 仍由 `train.py --study-config` 执行，不建立独立 fold/matrix runner。`train.py --fold` 接收一个或多个 fold，`--output` 始终是共同 root，实际 run contract 位于 `foldN/`；布尔 `--resume` 只恢复 identity 一致且 checkpoint/metrics/diagnostics 尾部严格对齐的 fold。旧 artifact/config/checkpoint 不提供兼容解析器。

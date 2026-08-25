@@ -506,18 +506,16 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
             resolve_task(config, "stage3", task, config.stage3.folds[0])
         )
     ]
-    stage2_expected = [
-        f"{task}::{target}"
-        for task in configured_tasks(config, "stage2_physics")
-        for target in resolve_task(
-            config, "stage2_physics", task, None
-        ).target_columns
-    ]
-    stage2_values = [
-        float(stage2_test[task][target]["normalized_mae"])
-        for task in configured_tasks(config, "stage2_physics")
-        for target in stage2_test.get(task, {})
-    ]
+    stage2_expected = list(configured_tasks(config, "stage2_physics"))
+    stage2_values = []
+    for task in stage2_expected:
+        spec = resolve_task(config, "stage2_physics", task, None)
+        if len(spec.target_columns) != 1:
+            raise ValueError(f"Stage 2 Core task must be scalar: {task}")
+        target = spec.target_columns[0]
+        metrics = stage2_test.get(task, {}).get(target, {})
+        if "normalized_mae" in metrics:
+            stage2_values.append(float(metrics["normalized_mae"]))
     stage2_valid_count = sum(math.isfinite(value) for value in stage2_values)
     stage2_complete = stage2_valid_count == len(stage2_expected)
     study_ids = {
@@ -544,8 +542,8 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
                     sum(stage2_values) / len(stage2_values)
                     if stage2_values else float("nan")
                 ),
-                "valid_targets": len(stage2_values),
-                "total_targets": len(stage2_expected),
+                "valid_tasks": len(stage2_values),
+                "total_tasks": len(stage2_expected),
             },
         },
         "reporting": {
@@ -589,7 +587,6 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
                     "protocol": {
                         "split": "test", "folds": [], "ensemble": False,
                         "expected_tasks": list(configured_tasks(config, "stage2_physics")),
-                        "expected_targets": stage2_expected,
                     },
                     "comparison_identity": merged_comparison(
                         stage2_reporting,
@@ -598,7 +595,7 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
                     ),
                     "issues": (
                         [] if stage2_complete
-                        else [f"missing_or_invalid_targets={len(stage2_expected) - stage2_valid_count}"]
+                        else [f"missing_or_invalid_tasks={len(stage2_expected) - stage2_valid_count}"]
                     ),
                 },
                 "stage2_partial_charge": {

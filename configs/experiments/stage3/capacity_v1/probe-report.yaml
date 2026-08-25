@@ -1,0 +1,17 @@
+schema_version: 1
+kind: probe
+expected_epochs: 20
+tail_epochs: 3
+candidates:
+  - {id: s-conservative, scale: S, recipe: conservative, folds: {1: outputs/experiments/capacity-v1/stage3/probe/s/conservative/fold1, 2: outputs/experiments/capacity-v1/stage3/probe/s/conservative/fold2}}
+  - {id: s-default, scale: S, recipe: default, folds: {1: outputs/experiments/capacity-v1/stage3/probe/s/default/fold1, 2: outputs/experiments/capacity-v1/stage3/probe/s/default/fold2}}
+  - {id: s-aggressive, scale: S, recipe: aggressive, folds: {1: outputs/experiments/capacity-v1/stage3/probe/s/aggressive/fold1, 2: outputs/experiments/capacity-v1/stage3/probe/s/aggressive/fold2}}
+  - {id: base-conservative, scale: Base, recipe: conservative, folds: {1: outputs/experiments/capacity-v1/stage3/probe/base/conservative/fold1, 2: outputs/experiments/capacity-v1/stage3/probe/base/conservative/fold2}}
+  - {id: base-default, scale: Base, recipe: default, folds: {1: outputs/experiments/capacity-v1/stage3/probe/base/default/fold1, 2: outputs/experiments/capacity-v1/stage3/probe/base/default/fold2}}
+  - {id: base-aggressive, scale: Base, recipe: aggressive, folds: {1: outputs/experiments/capacity-v1/stage3/probe/base/aggressive/fold1, 2: outputs/experiments/capacity-v1/stage3/probe/base/aggressive/fold2}}
+  - {id: l-conservative, scale: L, recipe: conservative, folds: {1: outputs/experiments/capacity-v1/stage3/probe/l/conservative/fold1, 2: outputs/experiments/capacity-v1/stage3/probe/l/conservative/fold2}}
+  - {id: l-default, scale: L, recipe: default, folds: {1: outputs/experiments/capacity-v1/stage3/probe/l/default/fold1, 2: outputs/experiments/capacity-v1/stage3/probe/l/default/fold2}}
+  - {id: l-aggressive, scale: L, recipe: aggressive, folds: {1: outputs/experiments/capacity-v1/stage3/probe/l/aggressive/fold1, 2: outputs/experiments/capacity-v1/stage3/probe/l/aggressive/fold2}}
+  - {id: xl-conservative, scale: XL, recipe: conservative, folds: {1: outputs/experiments/capacity-v1/stage3/probe/xl/conservative/fold1, 2: outputs/experiments/capacity-v1/stage3/probe/xl/conservative/fold2}}
+  - {id: xl-default, scale: XL, recipe: default, folds: {1: outputs/experiments/capacity-v1/stage3/probe/xl/default/fold1, 2: outputs/experiments/capacity-v1/stage3/probe/xl/default/fold2}}
+  - {id: xl-aggressive, scale: XL, recipe: aggressive, folds: {1: outputs/experiments/capacity-v1/stage3/probe/xl/aggressive/fold1, 2: outputs/experiments/capacity-v1/stage3/probe/xl/aggressive/fold2}}

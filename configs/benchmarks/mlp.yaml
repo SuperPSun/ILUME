@@ -32,5 +32,5 @@ stage2_physics:
   enabled: true
   tasks:
     - simulation/heat_of_vaporization
-    - simulation/pbe_tzvp_cation_orbitals
-    - simulation/pbe_tzvp_anion_orbitals
+    - simulation/homo
+    - simulation/lumo

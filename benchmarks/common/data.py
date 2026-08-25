@@ -6,8 +6,13 @@ from pathlib import Path
 from typing import Any, Iterable, Literal, Sequence
 
 import numpy as np
+from rdkit import Chem
 
-from stage2.registry import load_stage2_registry
+from stage2.registry import (
+    load_stage2_registry,
+    orbital_audit_columns,
+    validate_orbital_audit_row,
+)
 from stage3.config import load_stage3_config
 from stage3.data import (
     canonicalize_smiles,
@@ -27,6 +32,7 @@ class BenchmarkTask:
     slots: tuple[str, ...]
     condition_columns: tuple[str, ...]
     target_columns: tuple[str, ...]
+    audit_columns: tuple[str, ...]
     train_paths: tuple[Path, ...]
     valid_paths: tuple[Path, ...]
     test_path: Path
@@ -49,6 +55,7 @@ class RawDataset:
     conditions: np.ndarray
     targets: np.ndarray
     source_rows: tuple[str, ...]
+    audit_rows: tuple[dict[str, str], ...]
 
     def __len__(self) -> int:
         return len(self.components)
@@ -85,6 +92,7 @@ def resolve_task(
             slots=spec.identity_columns,
             condition_columns=spec.condition_columns,
             target_columns=(spec.target_column,),
+            audit_columns=(),
             train_paths=tuple(source_path(authority, spec, value) for value in train_folds),
             valid_paths=(source_path(authority, spec, fold),),
             test_path=test_path(authority, spec),
@@ -106,6 +114,7 @@ def resolve_task(
         slots=spec.entity_columns,
         condition_columns=spec.condition_columns,
         target_columns=spec.target_columns,
+        audit_columns=orbital_audit_columns(task_id),
         train_paths=(spec.dataset.split_path(config.data.data_root, "train"),),
         valid_paths=(spec.dataset.split_path(config.data.data_root, "valid"),),
         test_path=spec.dataset.split_path(config.data.data_root, "test"),
@@ -137,6 +146,7 @@ def _empty_dataset(task: BenchmarkTask) -> RawDataset:
         conditions=np.empty((0, len(task.condition_columns)), dtype=np.float64),
         targets=np.empty((0, len(task.target_columns)), dtype=np.float64),
         source_rows=(),
+        audit_rows=(),
     )
 
 
@@ -145,7 +155,13 @@ def _read_paths(task: BenchmarkTask, paths: Iterable[Path], *, allow_empty: bool
     conditions: list[list[float]] = []
     targets: list[list[float]] = []
     source_rows: list[str] = []
-    required = set(task.slots) | set(task.condition_columns) | set(task.target_columns)
+    audit_rows: list[dict[str, str]] = []
+    required = (
+        set(task.slots)
+        | set(task.condition_columns)
+        | set(task.target_columns)
+        | set(task.audit_columns)
+    )
     for path in paths:
         if not path.is_file():
             if allow_empty and task.benchmark == "stage3":
@@ -158,7 +174,31 @@ def _read_paths(task: BenchmarkTask, paths: Iterable[Path], *, allow_empty: bool
                 raise ValueError(f"Benchmark source missing columns in {path}: {sorted(missing)}")
             for row_number, row in enumerate(reader, start=2):
                 context = f"{task.task_id}/{path.name}:{row_number}"
-                components.append(tuple(canonicalize_smiles(row.get(slot, ""), f"{context}/{slot}") for slot in task.slots))
+                component = tuple(
+                    canonicalize_smiles(
+                        row.get(slot, ""), f"{context}/{slot}"
+                    )
+                    for slot in task.slots
+                )
+                components.append(component)
+                audit = {name: row.get(name, "") for name in task.audit_columns}
+                if task.audit_columns:
+                    molecule = Chem.MolFromSmiles(component[0])
+                    if molecule is None:
+                        raise ValueError(f"Invalid orbital SMILES in {context}")
+                    charge = sum(
+                        atom.GetFormalCharge() for atom in molecule.GetAtoms()
+                    )
+                    inferred_role = (
+                        "cation" if charge > 0 else "anion" if charge < 0 else "neutral"
+                    )
+                    validate_orbital_audit_row(
+                        task.task_id,
+                        row,
+                        inferred_role=inferred_role,
+                        context=context,
+                    )
+                audit_rows.append(audit)
                 conditions.append([finite_float(row.get(name), f"{context}/{name}") for name in task.condition_columns])
                 targets.append([finite_float(row.get(name), f"{context}/{name}") for name in task.target_columns])
                 source_rows.append(f"{path.as_posix()}:{row_number}")
@@ -172,6 +212,7 @@ def _read_paths(task: BenchmarkTask, paths: Iterable[Path], *, allow_empty: bool
         conditions=np.asarray(conditions, dtype=np.float64).reshape(len(components), len(task.condition_columns)),
         targets=np.asarray(targets, dtype=np.float64).reshape(len(components), len(task.target_columns)),
         source_rows=tuple(source_rows),
+        audit_rows=tuple(audit_rows),
     )
 
 
@@ -191,7 +232,12 @@ def load_split(task: BenchmarkTask, split: Literal["train", "valid", "test"]) ->
 def has_test_rows(task: BenchmarkTask) -> bool:
     if not task.test_path.is_file():
         return False
-    required = set(task.slots) | set(task.condition_columns) | set(task.target_columns)
+    required = (
+        set(task.slots)
+        | set(task.condition_columns)
+        | set(task.target_columns)
+        | set(task.audit_columns)
+    )
     with task.test_path.open(newline="", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
         missing = required - set(reader.fieldnames or ())

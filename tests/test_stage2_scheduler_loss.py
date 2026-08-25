@@ -28,6 +28,7 @@ def test_round_robin_is_complete_deterministic_and_does_not_cycle() -> None:
     for task, dataset in datasets.items():
         observed = torch.cat([item.indices for item in first if item.task == task]).tolist()
         assert sorted(observed) == list(range(len(dataset)))
+    assert len({item.task for item in first[:len(datasets)]}) == len(datasets)
     assert [item.task for item in first].count("c") == 1
 
 

@@ -1,6 +1,1 @@
 run,model,subset,molecule_count,atom_count,molecule_macro_mae,molecule_macro_normalized_mae,atom_micro_mae,atom_micro_rmse,atom_micro_r2,atom_micro_r2_reason,reason,source_run
-ilume@outputs/v1/stage2/base/evaluate/test,ILUME,all_mapped,2842,68920,0.06304412489228584,0.1430629957417808,0.06447097317769274,0.09305298460928896,0.953419219699781,,,outputs/v1/stage2/base/evaluate/test
-ilume@outputs/v1/stage2/base/evaluate/test,ILUME,ambiguous,2179,56199,0.06340323667455927,0.14387791081064702,0.06469603834996174,0.09347218096573742,0.953609745732388,,,outputs/v1/stage2/base/evaluate/test
-ilume@outputs/v1/stage2/base/evaluate/test,ILUME,connectivity_only,1775,44194,0.06484037599860905,0.14713914185078217,0.0663357642536527,0.09581264897938795,0.9529263827347174,,,outputs/v1/stage2/base/evaluate/test
-ilume@outputs/v1/stage2/base/evaluate/test,ILUME,typed,1067,24726,0.060055984579517586,0.13628215287066792,0.06113794006230914,0.08790495531755861,0.9544321436776358,,,outputs/v1/stage2/base/evaluate/test
-ilume@outputs/v1/stage2/base/evaluate/test,ILUME,unique,663,12721,0.061863876666684234,0.1403847152967437,0.06347667731916386,0.09117799176399043,0.9525107290257765,,,outputs/v1/stage2/base/evaluate/test

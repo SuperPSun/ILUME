@@ -10,8 +10,35 @@ from .io import sha256_file
 
 
 REPORTING_SCHEMA_VERSION = 1
-STAGE2_BENCHMARK_SUITE_CONTRACT = "stage2-benchmark-suite-v1"
-STAGE2_CORE_EVALUATION_CONTRACT = "stage2-core-evaluation-v1"
+STAGE2_BENCHMARK_SUITE_CONTRACT = "stage2-benchmark-suite-v2"
+STAGE2_CORE_EVALUATION_CONTRACT = "stage2-core-evaluation-v2"
+
+
+def role_mae_diagnostics(
+    predicted: Sequence[float],
+    actual: Sequence[float],
+    roles: Sequence[str],
+) -> dict[str, dict[str, float | int]]:
+    if not (len(predicted) == len(actual) == len(roles)) or not roles:
+        raise ValueError("Role diagnostics require matching non-empty vectors")
+    result: dict[str, dict[str, float | int]] = {}
+    for role in ("cation", "anion"):
+        errors = [
+            abs(float(prediction) - float(target))
+            for prediction, target, row_role in zip(
+                predicted, actual, roles, strict=True
+            )
+            if row_role == role
+        ]
+        if not errors or not all(math.isfinite(value) for value in errors):
+            raise ValueError(f"Role diagnostics require finite {role} rows")
+        result[role] = {
+            "count": len(errors),
+            "mae": sum(errors) / len(errors),
+        }
+    if set(roles) != set(result):
+        raise ValueError("Role diagnostics contain an unsupported ion_role")
+    return result
 
 
 def sanitize_task_id(task_id: str) -> str:
@@ -163,6 +190,7 @@ __all__ = [
     "STAGE2_CORE_EVALUATION_CONTRACT",
     "comparison_identity",
     "reporting_block",
+    "role_mae_diagnostics",
     "sanitize_task_id",
     "stage2_full_comparison_identity",
     "write_prediction_csv",

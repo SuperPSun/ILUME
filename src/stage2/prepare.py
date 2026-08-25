@@ -59,7 +59,13 @@ from .data import (
     Stage2TaskDataset,
 )
 from .model import RECONSTRUCTION_MODULES
-from .registry import Stage2Registry, TaskSpec, load_stage2_registry
+from .registry import (
+    Stage2Registry,
+    TaskSpec,
+    load_stage2_registry,
+    orbital_audit_columns,
+    validate_orbital_audit_row,
+)
 from .runtime import configure_stage2_math
 from .identity import (
     build_stage2_data_identity,
@@ -259,7 +265,13 @@ def _collect_sources(config: Stage2Config, registry: Stage2Registry, reporter: P
                 expected = (
                     ("mol_id", *spec.entity_columns, "role", "formal_charge", "source_list")
                     if spec.target_level == "atom"
-                    else (*spec.entity_columns, *spec.condition_columns, *spec.target_columns, "source_list")
+                    else (
+                        *spec.entity_columns,
+                        *spec.condition_columns,
+                        *orbital_audit_columns(spec.task_id),
+                        *spec.target_columns,
+                        "source_list",
+                    )
                 )
                 source_rows = list(_iter_rows(spec.dataset.split_path(config.data.data_root, split), expected))
                 mapping_outcomes: dict[int, AtomMappingOutcome] = {}
@@ -296,6 +308,13 @@ def _collect_sources(config: Stage2Config, registry: Stage2Registry, reporter: P
                             canonical_cache[raw] = canonical
                         canonicals.append(canonical)
                         roles.append(_role_for(canonical, policy, row, f"{spec.task_id}/{split}:{row_number}", role_cache))
+                    if roles:
+                        validate_orbital_audit_row(
+                            spec.task_id,
+                            row,
+                            inferred_role=roles[0],
+                            context=f"{spec.task_id}/{split}:{row_number}",
+                        )
                     conditions = [_finite_float(row[name], f"{spec.task_id}/{split}:{row_number}/{name}") for name in spec.condition_columns]
                     allow_missing = config.data.target_materialization_modes.get(
                         spec.task_id, "require_complete"

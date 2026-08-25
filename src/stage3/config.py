@@ -159,6 +159,7 @@ def _base_groups() -> dict[str, Stage3GroupConfig]:
 
 @dataclass(frozen=True)
 class Stage3TrainingConfig:
+    seed: int | None = None
     composite_batch_size: int = 2048
     microbatch_size: int = 1024
     virtual_min_size: int = 1000
@@ -245,6 +246,8 @@ class Stage3Config:
             if getattr(model, name) <= 0:
                 raise ValueError(f"model.{name} must be positive")
         training = self.training
+        if training.seed is not None and training.seed < 0:
+            raise ValueError("training.seed must be non-negative or null")
         for name in (
             "composite_batch_size", "microbatch_size", "virtual_min_size",
             "epochs", "checkpoint_interval_epochs", "cpu_threads",
@@ -396,6 +399,11 @@ def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
     )
     config.validate()
     return config
+
+
+def effective_training_seed(config: Stage3Config) -> int:
+    """Return the training RNG seed while preserving the legacy data-seed default."""
+    return config.data.seed if config.training.seed is None else config.training.seed
 
 
 def stage3_config_from_checkpoint_dict(raw: dict[str, Any]) -> Stage3Config:

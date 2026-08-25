@@ -137,6 +137,8 @@ def build_stage3_training_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
             "frozen_parameters",
         )
     }
+    if "training_seed" in plan:
+        semantic_plan["training_seed"] = plan["training_seed"]
     return semantic_identity(
         "stage3.training",
         {

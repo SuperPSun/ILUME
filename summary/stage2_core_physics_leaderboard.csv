@@ -1,4 +1,3 @@
-rank,run,model,macro_normalized_mae,valid_targets,total_targets,per_target_wins,source_run,checkpoint_epoch
-1,mlp@outputs/benchmarks/mlp/sweep,MLP,0.18574096556770636,5,5,4,outputs/benchmarks/mlp/sweep,
-2,ecfp_xgboost@outputs/benchmarks/ecfp_xgboost/sweep,ECFP+XGBoost,0.23628610071230471,5,5,1,outputs/benchmarks/ecfp_xgboost/sweep,
-3,ilume@outputs/v1/stage2/base/evaluate/test,ILUME,0.27568664817264527,5,5,0,outputs/v1/stage2/base/evaluate/test,5
+rank,run,model,macro_normalized_mae,valid_tasks,total_tasks,per_task_wins,source_run,checkpoint_epoch
+1,mlp@outputs/benchmarks/v1/mlp,MLP,0.06765666672818853,3,3,3,outputs/benchmarks/v1/mlp,
+2,ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost,ECFP+XGBoost,0.13470258857254386,3,3,0,outputs/benchmarks/v1/ecfp_xgboost,

@@ -1,0 +1,27 @@
+schema_version: 1
+study_name: ilume-capacity-v1-anchor
+anchor_decision: outputs/experiments/capacity-v1/decisions/anchor.yaml
+attempted_trials: 40
+startup_trials: 10
+trials_per_wave: 2
+folds: [1, 2]
+confirmation_folds: [3, 4, 5]
+top_k: 5
+tail_epochs: 3
+max_retries: 1
+sampler_seed: 42
+global_experts: [1, 2, 3, 4]
+group_experts: [1, 2, 3, 4]
+private_experts: [1, 2]
+expert_hidden_ratio: [1.0, 1.5, 2.0, 3.0, 4.0]
+dropout: [0.0, 0.30]
+learning_rate: [0.0001, 0.001]
+weight_decay: [0.0001, 0.1]
+baseline:
+  global_experts: 2
+  group_experts: 2
+  private_experts: 1
+  expert_hidden_ratio: 2.0
+  dropout: 0.10
+  learning_rate: 0.0003
+  weight_decay: 0.01

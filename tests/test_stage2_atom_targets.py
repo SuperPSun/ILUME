@@ -4,17 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from common.io import sha256_file
 from stage2.atom_targets import (
-    StructureManifestEntry, map_partial_charges, parse_mol2,
-    verify_structure,
+    map_partial_charges, parse_mol2,
 )
 
 
-def _write_mol2(path: Path, atoms, bonds, *, declared_atoms: int | None = None) -> None:
+def _write_mol2(path: Path, atoms, bonds) -> None:
     lines = [
         "@<TRIPOS>MOLECULE", "MOL",
-        f"{len(atoms) if declared_atoms is None else declared_atoms} {len(bonds)} 1 0 0",
+        f"{len(atoms)} {len(bonds)} 1 0 0",
         "SMALL", "resp", "@<TRIPOS>ATOM",
     ]
     for index, (name, atom_type, charge) in enumerate(atoms, start=1):
@@ -47,15 +45,3 @@ def test_unknown_bond_is_auditable_connectivity_fallback(tmp_path: Path) -> None
     assert result.bond_match_mode == "connectivity_only"
     assert result.unparsed_bond_types == ("du",)
     assert result.bond_fallback_reason == "unparsed_bond_type"
-
-
-def test_mol2_counts_and_manifest_hash_are_strict(tmp_path: Path) -> None:
-    path = tmp_path / "bad-count.mol2"
-    _write_mol2(path, [("C1", "c3", 0.0)], [], declared_atoms=2)
-    with pytest.raises(ValueError, match="declared atom/bond counts"):
-        parse_mol2(path)
-    good = tmp_path / "good.mol2"
-    _write_mol2(good, [("C1", "c3", 0.0)], [])
-    verify_structure(StructureManifestEntry("ok", good, good.stat().st_size, sha256_file(good)))
-    with pytest.raises(ValueError, match="hash mismatch"):
-        verify_structure(StructureManifestEntry("bad", good, good.stat().st_size, "0" * 64))

@@ -16,14 +16,25 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Build deterministic ILUME and baseline result leaderboards."
     )
-    parser.add_argument("--input", default="outputs")
+    parser.add_argument(
+        "--input", nargs="+", required=True, metavar="PATH",
+        help="One or more repository-relative directories to scan recursively.",
+    )
+    parser.add_argument(
+        "--include", nargs="+", metavar="PATH",
+        help=(
+            "Optional exact repository-relative directory prefixes to include; "
+            "each must be inside an input directory."
+        ),
+    )
     parser.add_argument("--output", default="summary")
     args = parser.parse_args()
-    input_root = repository_path(args.input)
+    input_roots = [repository_path(path) for path in args.input]
+    include_roots = [repository_path(path) for path in (args.include or ())]
     output = repository_path(args.output)
-    if not input_root.is_dir():
-        raise FileNotFoundError(f"Summary input directory does not exist: {input_root}")
-    publish_summary(input_root, output, ROOT)
+    publish_summary(
+        input_roots, output, ROOT, include_roots=include_roots
+    )
 
 
 if __name__ == "__main__":

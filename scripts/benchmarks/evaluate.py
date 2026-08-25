@@ -69,18 +69,15 @@ def _comparison_fragment(
     ensemble_results: list[Any] | None = None,
 ) -> dict[str, Any]:
     if task.benchmark == "stage2_physics":
-        expected = tuple(
-            f"{task.task_id}::{target}" for target in task.target_columns
-        )
+        if len(task.target_columns) != 1:
+            raise ValueError(f"Stage 2 Core task must be scalar: {task.task_id}")
+        expected = (task.task_id,)
         sources = {
             f"{task.task_id}:train": sha256_file(task.train_paths[0]),
             f"{task.task_id}:test": sha256_file(task.test_path),
         }
         normalization = {
-            f"{task.task_id}::{target}": {
-                "scale": float(result.target_stats.scale[index])
-            }
-            for index, target in enumerate(task.target_columns)
+            task.task_id: {"scale": float(result.target_stats.scale[0])}
         }
         return comparison_identity(
             "stage2_physics",
@@ -137,6 +134,7 @@ def _write_task_predictions(
         *(("source_fold",) if task.benchmark == "stage3" and not extra_predictions else ()),
         *task.slots,
         *task.condition_columns,
+        *task.audit_columns,
     ]
     if extra_predictions:
         if multi_target:
@@ -169,6 +167,7 @@ def _write_task_predictions(
         if "source_fold" in fields:
             row["source_fold"] = task.fold
         row.update(dict(zip(task.slots, result.components[index], strict=True)))
+        row.update(result.audit_rows[index] if result.audit_rows else {})
         row.update(
             {
                 name: float(conditions[index, column])
@@ -346,11 +345,6 @@ def main() -> None:
                 "folds": list(config.stage3.folds) if args.benchmark == "stage3" else [],
                 "ensemble": args.ensemble_folds,
                 "expected_tasks": [args.task],
-                "expected_targets": (
-                    [f"{args.task}::{target}" for target in evaluation_task.target_columns]
-                    if args.benchmark == "stage2_physics"
-                    else []
-                ),
             },
             comparison=comparison,
             study_id=f"{config.name}-{study}",

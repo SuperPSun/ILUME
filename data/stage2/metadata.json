@@ -11,13 +11,13 @@
       "source_00004": "data/stage2/heat_capacity/valid.csv",
       "source_00005": "data/stage2/heat_of_vaporization/train.csv",
       "source_00006": "data/stage2/heat_of_vaporization/valid.csv",
-      "source_00007": "data/stage2/partial_atomic_charge/train.csv",
-      "source_00008": "data/stage2/partial_atomic_charge/valid.csv",
-      "source_00009": "data/stage2/partial_atomic_charge/charge_20260514/structure_manifest.csv",
-      "source_00010": "data/stage2/pbe_tzvp_anion_orbitals/train.csv",
-      "source_00011": "data/stage2/pbe_tzvp_anion_orbitals/valid.csv",
-      "source_00012": "data/stage2/pbe_tzvp_cation_orbitals/train.csv",
-      "source_00013": "data/stage2/pbe_tzvp_cation_orbitals/valid.csv",
+      "source_00007": "data/stage2/homo/train.csv",
+      "source_00008": "data/stage2/homo/valid.csv",
+      "source_00009": "data/stage2/lumo/train.csv",
+      "source_00010": "data/stage2/lumo/valid.csv",
+      "source_00011": "data/stage2/partial_atomic_charge/train.csv",
+      "source_00012": "data/stage2/partial_atomic_charge/valid.csv",
+      "source_00013": "data/stage2/partial_atomic_charge/charge_20260514/structure_manifest.csv",
       "source_00014": "data/stage2/simulated_qm_elec_hf/train.csv",
       "source_00015": "data/stage2/simulated_qm_elec_hf/valid.csv",
       "source_00016": "data/stage2/thermal_expansion/train.csv",
@@ -35,8 +35,8 @@
           "stage": "stage2",
           "sources": {
             "source_00000": {
-              "sha256": "4afd4056f86f47c6dbd08f744ac9c042c333f6dc2ff9e76426f0e1777bb2f951",
-              "size": 11936,
+              "sha256": "fd98f34d286a1d60ceee5a5b78be66ed25cce54ba1cfb9a02a6c85885c5c64d0",
+              "size": 11904,
               "rows": 30
             },
             "source_00001": {
@@ -70,39 +70,39 @@
               "rows": 2685
             },
             "source_00007": {
+              "sha256": "44b4326633257c9ede278be2fd6fc528445d7c3531ad2277aa0bde713d75d77d",
+              "size": 1934120,
+              "rows": 13294
+            },
+            "source_00008": {
+              "sha256": "5cf0d7e7f735fc818d326e6741db85ae6c3b6aea65d7d51ce71059239b59bffb",
+              "size": 242426,
+              "rows": 1661
+            },
+            "source_00009": {
+              "sha256": "431b2f98782f0efd66507c88d34a51682f8a7deabae51187ab9ee9e3f8e0c761",
+              "size": 1929040,
+              "rows": 13294
+            },
+            "source_00010": {
+              "sha256": "f0524a172daf47e34b15cc523ff9d5ccb64fe329e6a6c726c71b1f8d27f8711d",
+              "size": 241710,
+              "rows": 1661
+            },
+            "source_00011": {
               "sha256": "41ccf91975d6d9679ffaed260b1f8f60f2d30d7dd7db09724608704adc8456a3",
               "size": 1769774,
               "rows": 22530
             },
-            "source_00008": {
+            "source_00012": {
               "sha256": "3ff556fe62ee3204df734274aab5fa237575bcbefb9e591542a8e1d46df3b6fd",
               "size": 224827,
               "rows": 2819
             },
-            "source_00009": {
+            "source_00013": {
               "sha256": "ea4dfe3eb6bef53df969fea444cae0ce2f9005d12f87225656c29d174535d9a1",
               "size": 3076283,
               "rows": 28214
-            },
-            "source_00010": {
-              "sha256": "f8539828a07a525aa18f350e7beb0654ea81b9d28f30670ef3b2ec5086df2e96",
-              "size": 494188,
-              "rows": 5956
-            },
-            "source_00011": {
-              "sha256": "b92a96c8f1cc68c23445bf3f7e2f88209ff02e139f98c2502a9edca93988f70a",
-              "size": 62019,
-              "rows": 744
-            },
-            "source_00012": {
-              "sha256": "5b3e729891f227f058660460c04bbacf250b6c4e4d82a6058e2072442b973068",
-              "size": 611655,
-              "rows": 7338
-            },
-            "source_00013": {
-              "sha256": "988c987ecab019295ef396b86306339e7ba12ebda1abddee7682ff5afce503c4",
-              "size": 76858,
-              "rows": 917
             },
             "source_00014": {
               "sha256": "236e3ceaf4169a28802e040161fd389eb616e404eebd38ea67c9131798bd19cb",
@@ -136,15 +136,15 @@
             }
           }
         },
-        "hash": "68c0bf1cf4db2d7217ee0fc75a72bcf98ec804e5da18defd1787443aa2f7d2fd"
+        "hash": "1e262289f285e4e1a7b866e69b4377d86135f320bd59e054fa0067a65cb37100"
       }
     }
   },
   "integrity": {
     "files": {
       "source_00000": {
-        "sha256": "4afd4056f86f47c6dbd08f744ac9c042c333f6dc2ff9e76426f0e1777bb2f951",
-        "size": 11936
+        "sha256": "fd98f34d286a1d60ceee5a5b78be66ed25cce54ba1cfb9a02a6c85885c5c64d0",
+        "size": 11904
       },
       "source_00001": {
         "sha256": "8d7f6b003e6e8a4e63b893577682b88699428ac6737b421e69167afaca59bde1",
@@ -171,32 +171,32 @@
         "size": 207633
       },
       "source_00007": {
+        "sha256": "44b4326633257c9ede278be2fd6fc528445d7c3531ad2277aa0bde713d75d77d",
+        "size": 1934120
+      },
+      "source_00008": {
+        "sha256": "5cf0d7e7f735fc818d326e6741db85ae6c3b6aea65d7d51ce71059239b59bffb",
+        "size": 242426
+      },
+      "source_00009": {
+        "sha256": "431b2f98782f0efd66507c88d34a51682f8a7deabae51187ab9ee9e3f8e0c761",
+        "size": 1929040
+      },
+      "source_00010": {
+        "sha256": "f0524a172daf47e34b15cc523ff9d5ccb64fe329e6a6c726c71b1f8d27f8711d",
+        "size": 241710
+      },
+      "source_00011": {
         "sha256": "41ccf91975d6d9679ffaed260b1f8f60f2d30d7dd7db09724608704adc8456a3",
         "size": 1769774
       },
-      "source_00008": {
+      "source_00012": {
         "sha256": "3ff556fe62ee3204df734274aab5fa237575bcbefb9e591542a8e1d46df3b6fd",
         "size": 224827
       },
-      "source_00009": {
+      "source_00013": {
         "sha256": "ea4dfe3eb6bef53df969fea444cae0ce2f9005d12f87225656c29d174535d9a1",
         "size": 3076283
-      },
-      "source_00010": {
-        "sha256": "f8539828a07a525aa18f350e7beb0654ea81b9d28f30670ef3b2ec5086df2e96",
-        "size": 494188
-      },
-      "source_00011": {
-        "sha256": "b92a96c8f1cc68c23445bf3f7e2f88209ff02e139f98c2502a9edca93988f70a",
-        "size": 62019
-      },
-      "source_00012": {
-        "sha256": "5b3e729891f227f058660460c04bbacf250b6c4e4d82a6058e2072442b973068",
-        "size": 611655
-      },
-      "source_00013": {
-        "sha256": "988c987ecab019295ef396b86306339e7ba12ebda1abddee7682ff5afce503c4",
-        "size": 76858
       },
       "source_00014": {
         "sha256": "236e3ceaf4169a28802e040161fd389eb616e404eebd38ea67c9131798bd19cb",
@@ -225,7 +225,7 @@
     }
   },
   "provenance": {
-    "source_repository_commit": "6eee05ec9ee9a63b4182a29d983a3d9f5ff8e955",
+    "source_repository_commit": "6ebf885bda6096306b2a7b8163e26f17646bd975",
     "source_repository_dirty": false
   }
 }

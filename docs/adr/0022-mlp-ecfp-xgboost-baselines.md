@@ -4,6 +4,8 @@
 - 日期：2026-08-21
 
 > 第 6 条中“不建立 Stage 2 aggregate”的决定先由 [ADR-0023](0023-unified-evaluation-reporting.md) 取代，并由 [ADR-0024](0024-stage2-partial-charge-benchmark-suite.md) 扩展为 Core、Partial Charge、Full 三榜；其余训练与 evaluation 数值合同保持有效。
+>
+> Stage 2 orbital task 与 Core 单元定义由 [ADR-0025](0025-stage2-homo-lumo-scalar-tasks.md) 取代；MLP normalized-target MSE 与 XGBoost raw-target scalar regressor 合同保持不变。
 
 ## 背景
 

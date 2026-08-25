@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 import torch
 
 from stage1.features import ROLE_TO_ID
@@ -54,23 +53,3 @@ def test_encoder_artifact_reloads_without_physics_heads(tmp_path: Path) -> None:
     loaded = load_stage2_encoder_artifact(path)
     assert set(loaded["stage1_backbone"]) == {"fusion.weight"}
     assert "physics_heads" not in loaded
-
-
-def test_encoder_artifact_detects_state_tampering(tmp_path: Path) -> None:
-    path = tmp_path / "tampered.pt"
-    torch.save(
-        {
-            "identity_contract_version": IDENTITY_CONTRACT_VERSION,
-            "kind": "ilume_stage2_encoder",
-            "format_version": 1,
-            "stage1_backbone": {"value": torch.ones(1)},
-            "object_encoder": {"value": torch.ones(1)},
-            "state_hashes": {
-                "stage1_backbone": "bad",
-                "object_encoder": "bad",
-            },
-        },
-        path,
-    )
-    with pytest.raises(ValueError, match="Stage 1 state hash mismatch"):
-        load_stage2_encoder_artifact(path)

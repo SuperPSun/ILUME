@@ -14,6 +14,8 @@ import torch
 from common.identity import require_compatible_identity, semantic_identity, tensor_state_hash
 from common.io import atomic_json, atomic_torch_save, sha256_file
 from common.progress import ProgressReporter
+from common.reporting import role_mae_diagnostics
+from stage2.registry import ORBITAL_TASK_TARGETS
 
 from .config import BenchmarkConfig, BenchmarkName
 from .data import BenchmarkTask, RawDataset, load_split, resolve_task
@@ -470,6 +472,7 @@ class EvaluationResult:
     training_identity: dict[str, Any]
     components: tuple[tuple[str, ...], ...] = ()
     conditions: np.ndarray | None = None
+    audit_rows: tuple[dict[str, str], ...] = ()
 
 
 def ensemble_evaluation(
@@ -533,6 +536,13 @@ def evaluate_checkpoint(
     )
     scales = bundle.target_stats.scale
     metrics = target_metrics(predictions, dataset.targets, bundle.task.target_columns, scales)
+    if task_id in ORBITAL_TASK_TARGETS:
+        target = ORBITAL_TASK_TARGETS[task_id]
+        metrics[target]["role_diagnostics"] = role_mae_diagnostics(
+            predictions[:, 0],
+            dataset.targets[:, 0],
+            [row["ion_role"] for row in dataset.audit_rows],
+        )
     return EvaluationResult(
         predictions=predictions,
         targets=dataset.targets,
@@ -542,6 +552,7 @@ def evaluate_checkpoint(
         training_identity=bundle.training_identity,
         components=dataset.components,
         conditions=dataset.conditions,
+        audit_rows=dataset.audit_rows,
     )
 
 

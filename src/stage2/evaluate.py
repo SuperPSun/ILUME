@@ -17,6 +17,7 @@ from common.io import sha256_file
 from common.reporting import (
     STAGE2_BENCHMARK_SUITE_CONTRACT,
     comparison_identity,
+    role_mae_diagnostics,
     sanitize_task_id,
     stage2_full_comparison_identity,
     write_prediction_csv,
@@ -35,6 +36,11 @@ from .config import STAGE2_CHECKPOINT_KIND, STAGE2_CHECKPOINT_VERSION, Stage2Con
 from .data import load_artifact_registry
 from .identity import metadata_identity
 from .model import Stage2ObjectModel
+from .registry import (
+    ORBITAL_TASK_TARGETS,
+    orbital_audit_columns,
+    validate_orbital_audit_row,
+)
 from .atom_evaluation import (
     PARTIAL_CHARGE_TASK,
     PARTIAL_CHARGE_UNIT,
@@ -48,8 +54,8 @@ from .atom_evaluation import (
 
 STAGE2_CORE_TASKS = (
     "simulation/heat_of_vaporization",
-    "simulation/pbe_tzvp_cation_orbitals",
-    "simulation/pbe_tzvp_anion_orbitals",
+    "simulation/homo",
+    "simulation/lumo",
 )
 
 
@@ -124,12 +130,11 @@ def _scalers(config: Stage2Config) -> dict[str, Any]:
     return payload
 
 
-def _scalar_ids(registry: Any) -> tuple[str, ...]:
-    return tuple(
-        f"{task}::{target}"
-        for task in STAGE2_CORE_TASKS
-        for target in registry.by_id(task).target_columns
-    )
+def _core_units(registry: Any) -> tuple[str, ...]:
+    for task in STAGE2_CORE_TASKS:
+        if len(registry.by_id(task).target_columns) != 1:
+            raise ValueError(f"Stage 2 Core task must be scalar: {task}")
+    return STAGE2_CORE_TASKS
 
 
 def _comparison(
@@ -142,15 +147,13 @@ def _comparison(
         for split in ("train", "test"):
             path = spec.dataset.split_path(config.data.data_root, split)
             sources[f"{task}:{split}"] = sha256_file(path)
-        for target in spec.target_columns:
-            stats = scalers[task]["targets"][target]
-            normalization[f"{task}::{target}"] = {
-                "scale": float(stats["scale"]),
-            }
+        target = spec.target_columns[0]
+        stats = scalers[task]["targets"][target]
+        normalization[task] = {"scale": float(stats["scale"])}
     return comparison_identity(
         "stage2_physics",
         split="test",
-        expected=_scalar_ids(registry),
+        expected=_core_units(registry),
         sources=sources,
         normalization=normalization,
     )
@@ -178,7 +181,7 @@ def _full_comparison(
     return stage2_full_comparison_identity(
         core,
         partial_charge,
-        ordered_units=(*_scalar_ids(registry), PARTIAL_CHARGE_UNIT),
+        ordered_units=(*_core_units(registry), PARTIAL_CHARGE_UNIT),
     )
 
 
@@ -256,11 +259,27 @@ def _finite(raw: str | None, context: str) -> float:
     return value
 
 
+def _entity_role(canonical: str, policy: str, context: str) -> str:
+    molecule = Chem.MolFromSmiles(canonical)
+    if molecule is None:
+        raise ValueError(f"Invalid canonical Stage 2 test SMILES: {canonical}")
+    charge = sum(atom.GetFormalCharge() for atom in molecule.GetAtoms())
+    inferred = "cation" if charge > 0 else "anion" if charge < 0 else "neutral"
+    if policy == "formal_charge":
+        return inferred
+    if policy != inferred:
+        raise ValueError(
+            f"Stage 2 test role mismatch in {context}: {policy} != {inferred}"
+        )
+    return policy
+
+
 def _read_test_rows(config: Stage2Config, spec: Any) -> list[dict[str, Any]]:
     path = spec.dataset.split_path(config.data.data_root, "test")
     required = (
         *spec.entity_columns,
         *spec.condition_columns,
+        *orbital_audit_columns(spec.task_id),
         *spec.target_columns,
         "source_list",
     )
@@ -272,14 +291,33 @@ def _read_test_rows(config: Stage2Config, spec: Any) -> list[dict[str, Any]]:
                 f"Unexpected Stage 2 test columns in {path}: {reader.fieldnames}"
             )
         for source_row, raw in enumerate(reader, start=2):
+            canonicals = tuple(
+                _canonical(raw[name], f"{spec.task_id}:{source_row}/{name}")
+                for name in spec.entity_columns
+            )
+            roles = tuple(
+                _entity_role(
+                    canonical,
+                    policy,
+                    f"{spec.task_id}:{source_row}",
+                )
+                for canonical, policy in zip(
+                    canonicals, spec.role_policy, strict=True
+                )
+            )
+            if roles:
+                validate_orbital_audit_row(
+                    spec.task_id,
+                    raw,
+                    inferred_role=roles[0],
+                    context=f"{spec.task_id}:{source_row}",
+                )
             rows.append(
                 {
                     "source_row": source_row,
                     "raw": dict(raw),
-                    "canonicals": tuple(
-                        _canonical(raw[name], f"{spec.task_id}:{source_row}/{name}")
-                        for name in spec.entity_columns
-                    ),
+                    "canonicals": canonicals,
+                    "roles": roles,
                     "conditions": tuple(
                         _finite(raw[name], f"{spec.task_id}:{source_row}/{name}")
                         for name in spec.condition_columns
@@ -471,7 +509,7 @@ def evaluate_stage2_checkpoints(
                 for row in chunk:
                     roles = []
                     for role, canonical in zip(
-                        spec.role_policy, row["canonicals"], strict=True
+                        row["roles"], row["canonicals"], strict=True
                     ):
                         key = (role, canonical)
                         if key not in sample_cache:
@@ -532,9 +570,22 @@ def evaluate_stage2_checkpoints(
                 )
                 for column, target in enumerate(spec.target_columns)
             }
+            if task in ORBITAL_TASK_TARGETS:
+                target = ORBITAL_TASK_TARGETS[task]
+                values = task_metrics[task][target]
+                values["role_diagnostics"] = role_mae_diagnostics(
+                    predictions[:, 0],
+                    targets[:, 0],
+                    [row["raw"]["ion_role"] for row in rows],
+                )
             if predictions_dir is not None:
                 output_rows: list[dict[str, Any]] = []
-                fields = ["source_row", *spec.entity_columns, *spec.condition_columns]
+                fields = [
+                    "source_row",
+                    *spec.entity_columns,
+                    *spec.condition_columns,
+                    *orbital_audit_columns(spec.task_id),
+                ]
                 if len(spec.target_columns) == 1:
                     fields.extend(("target", "prediction", "absolute_error"))
                 else:
@@ -548,7 +599,11 @@ def evaluate_stage2_checkpoints(
                         )
                 for row_index, row in enumerate(rows):
                     output: dict[str, Any] = {"source_row": row["source_row"]}
-                    for name in (*spec.entity_columns, *spec.condition_columns):
+                    for name in (
+                        *spec.entity_columns,
+                        *spec.condition_columns,
+                        *orbital_audit_columns(spec.task_id),
+                    ):
                         output[name] = row["raw"][name]
                     for column, target in enumerate(spec.target_columns):
                         actual = float(targets[row_index, column])
@@ -684,8 +739,8 @@ def evaluate_stage2_checkpoints(
         "tasks": task_metrics,
         "core_macro_normalized_mae": {
             "value": core_value,
-            "valid_targets": len(scalar_values),
-            "total_targets": len(_scalar_ids(registry)),
+            "valid_tasks": len(scalar_values),
+            "total_tasks": len(_core_units(registry)),
         },
         "full_macro_normalized_mae": {
             "value": full_value,
@@ -710,7 +765,6 @@ def evaluate_stage2_checkpoints(
                     "protocol": {
                         **reporting_protocol,
                         "expected_tasks": list(STAGE2_CORE_TASKS),
-                        "expected_targets": list(_scalar_ids(registry)),
                     },
                     "comparison_identity": core_comparison,
                 },
@@ -731,7 +785,7 @@ def evaluate_stage2_checkpoints(
                     "benchmark": "stage2_physics_full",
                     "protocol": {
                         **reporting_protocol,
-                        "ordered_units": [*_scalar_ids(registry), PARTIAL_CHARGE_UNIT],
+                        "ordered_units": [*_core_units(registry), PARTIAL_CHARGE_UNIT],
                         "unit_weighting": "equal",
                     },
                     "comparison_identity": full_comparison,

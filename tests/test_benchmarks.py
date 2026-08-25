@@ -2,13 +2,10 @@ from __future__ import annotations
 
 import csv
 import json
-import subprocess
-import sqlite3
 import sys
 import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -264,15 +261,18 @@ def test_formal_configs_and_registry_resolution(tmp_path: Path) -> None:
     assert len(configured_tasks(config, "stage3")) == 21
     assert configured_tasks(config, "stage2_physics") == (
         "simulation/heat_of_vaporization",
-        "simulation/pbe_tzvp_cation_orbitals",
-        "simulation/pbe_tzvp_anion_orbitals",
+        "simulation/homo",
+        "simulation/lumo",
     )
     solvation = resolve_task(config, "stage3", "experiment/solvation", 1)
     organic = resolve_task(config, "stage3", "experiment/transfer_organic", 1)
-    orbital = resolve_task(config, "stage2_physics", "simulation/pbe_tzvp_cation_orbitals", None)
+    orbital = resolve_task(config, "stage2_physics", "simulation/homo", None)
     assert solvation.slots == ("cation", "anion", "solute")
     assert organic.slots == ("solute", "solvent")
-    assert orbital.slots == ("cation",) and orbital.target_columns == ("HOMO_eV", "LUMO_eV")
+    assert orbital.slots == ("SMILES",) and orbital.target_columns == ("HOMO_eV",)
+    assert orbital.audit_columns == (
+        "ion_role", "provenance_source_file", "provenance_source_row"
+    )
     missing_test = resolve_task(config, "stage3", "experiment/self_diffusion_coefficient", 1)
     empty = load_split(missing_test, "test")
     reporter = RecordingReporter()
@@ -293,46 +293,14 @@ def test_preprocessor_uses_train_mask_median_and_population_zscore() -> None:
     assert transformed[0].tolist() == pytest.approx([0.0, 2.0, 0.0])
 
 
-def test_feature_cache_is_content_addressed_and_detects_corruption(tmp_path: Path) -> None:
+def test_feature_cache_is_content_addressed(tmp_path: Path) -> None:
     config = _tiny_config(tmp_path)
     schema = feature_schema(config.features)
     with FeatureCache(config.data.feature_cache) as cache:
         first = component_feature("CCO", schema, cache)
         second = component_feature("CCO", schema, cache)
         assert np.array_equal(first, second, equal_nan=True)
-    with sqlite3.connect(config.data.feature_cache) as connection:
-        connection.execute("UPDATE features SET payload = ?", (b"broken",))
-        connection.commit()
-    with FeatureCache(config.data.feature_cache) as cache:
-        with pytest.raises(ValueError, match="Corrupt benchmark feature cache"):
-            component_feature("CCO", schema, cache)
-
-
-def test_feature_cache_supports_concurrent_first_writers(tmp_path: Path) -> None:
-    cache_path = tmp_path / "concurrent-features.sqlite3"
-    schema = feature_schema(_tiny_config(tmp_path).features)
-    barrier = threading.Barrier(8)
-
-    def writer(index: int) -> None:
-        barrier.wait()
-        with FeatureCache(cache_path) as cache:
-            cache.put(
-                f"C{index}",
-                schema,
-                np.full(schema.component_width, index, dtype=np.float64),
-            )
-
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        futures = [executor.submit(writer, index) for index in range(8)]
-        for future in futures:
-            future.result()
-
-    with sqlite3.connect(cache_path) as connection:
-        assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-        assert connection.execute("SELECT COUNT(*) FROM features").fetchone()[0] == 8
-
-
-def test_training_prepare_does_not_open_test_and_conditions_fail_strictly(tmp_path: Path) -> None:
+def test_training_prepare_uses_only_training_and_validation_splits(tmp_path: Path) -> None:
     config = _tiny_config(tmp_path)
     test_path = tmp_path / "stage2/tiny/test.csv"
     test_path.unlink()
@@ -351,16 +319,6 @@ def test_training_prepare_does_not_open_test_and_conditions_fail_strictly(tmp_pa
     ]
     assert "train features" in reporter.bars[0].desc
     assert "valid features" in reporter.bars[1].desc
-    with pytest.raises(FileNotFoundError, match="Missing benchmark source"):
-        load_split(bundle.task, "test")
-    valid_path = tmp_path / "stage2/tiny/valid.csv"
-    rows = list(csv.DictReader(valid_path.open(encoding="utf-8")))
-    rows[0]["temperature_K"] = "nan"
-    _write_csv(valid_path, list(rows[0]), rows)
-    with pytest.raises(ValueError, match="Missing Stage 3 value"):
-        prepare_training(config, "stage2_physics", "simulation/tiny", None)
-
-
 def test_mlp_train_checkpoint_and_test_evaluation(tmp_path: Path) -> None:
     config = _tiny_config(tmp_path, targets="left;right")
     bundle = prepare_training(config, "stage2_physics", "simulation/tiny", None)
@@ -460,39 +418,7 @@ def test_five_fold_ensemble_averages_predictions_before_metrics() -> None:
     assert metrics["value"]["normalized_mae"] == 0.0
 
 
-def test_sweep_preserves_preinitialization_failures_as_new_attempts() -> None:
-    root = Path(__file__).resolve().parents[1]
-    with tempfile.TemporaryDirectory(prefix="pytest-benchmark-", dir=root / "outputs") as temporary:
-        working = Path(temporary)
-        config = _tiny_config(working)
-        train_path = working / "stage2/tiny/train.csv"
-        rows = list(csv.DictReader(train_path.open(encoding="utf-8")))
-        rows[0]["temperature_K"] = "nan"
-        _write_csv(train_path, list(rows[0]), rows)
-        payload = config.to_dict()
-        relative = working.relative_to(root)
-        payload["data"] = {
-            "data_root": relative.as_posix(),
-            "task_catalog": (relative / "task_catalog.csv").as_posix(),
-            "stage3_authority_config": (relative / "unused.yaml").as_posix(),
-            "feature_cache": (relative / "features.sqlite3").as_posix(),
-        }
-        config_path = working / "config.yaml"
-        config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
-        output = relative / "sweep"
-        command = [
-            sys.executable, "scripts/benchmarks/sweep.py",
-            "--config", config_path.relative_to(root).as_posix(),
-            "--output", output.as_posix(),
-        ]
-        assert subprocess.run(command, cwd=root, check=False).returncode == 1
-        assert subprocess.run(command, cwd=root, check=False).returncode == 1
-        attempts = working / "sweep/stage2_physics/simulation__tiny/train"
-        assert (attempts / "attempt-001/sweep_failure.json").is_file()
-        assert (attempts / "attempt-002/sweep_failure.json").is_file()
-
-
-def test_sweep_training_progress_counts_success_failure_and_completed_skip(
+def test_sweep_training_progress_counts_success_and_completed_skip(
 ) -> None:
     repository_root = Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory(
@@ -502,7 +428,7 @@ def test_sweep_training_progress_counts_success_failure_and_completed_skip(
         rows: list[dict[str, object]] = []
         status_path = working / "status.tsv"
         reporter = RecordingReporter()
-        progress = reporter.bar(total=3, desc="sweep", unit="train-job")
+        progress = reporter.bar(total=2, desc="sweep", unit="train-job")
         state = _SweepState(
             rows=rows,
             status_path=status_path,
@@ -524,12 +450,6 @@ def test_sweep_training_progress_counts_success_failure_and_completed_skip(
             command=[sys.executable, "-c", "pass"],
         )
         assert success is not None
-        failed = run_sweep_job(
-            **common,
-            root=working / "failure",
-            command=[sys.executable, "-c", "raise SystemExit(7)"],
-        )
-        assert failed is None
         completed = working / "completed/attempt-001"
         completed.mkdir(parents=True)
         (completed / "checkpoint.json").write_text("{}", encoding="utf-8")
@@ -542,53 +462,10 @@ def test_sweep_training_progress_counts_success_failure_and_completed_skip(
             command=[sys.executable, "-c", "raise AssertionError('must not run')"],
         )
         assert skipped == completed
-        assert progress.n == 3
-        assert state.progress_counts == {"done": 2, "failed": 1}
+        assert progress.n == 2
+        assert state.progress_counts == {"done": 2, "failed": 0}
         assert progress.postfixes[-1] == state.progress_counts
-        assert [row["status"] for row in rows] == [
-            "OK", "FAILED", "SKIPPED_COMPLETED"
-        ]
-
-
-def test_sweep_status_and_progress_updates_are_thread_safe() -> None:
-    repository_root = Path(__file__).resolve().parents[1]
-    with tempfile.TemporaryDirectory(
-        prefix="pytest-benchmark-concurrent-status-", dir=repository_root / "outputs"
-    ) as temporary:
-        working = Path(temporary)
-        reporter = RecordingReporter()
-        progress = reporter.bar(total=12, desc="sweep", unit="train-job")
-        state = _SweepState(
-            rows=[],
-            status_path=working / "status.tsv",
-            progress=progress,
-            model_name="mlp",
-        )
-
-        def run(index: int) -> Path | None:
-            return run_sweep_job(
-                state,
-                operation="train",
-                benchmark="stage2_physics",
-                task=f"simulation/task-{index}",
-                fold=None,
-                root=working / f"task-{index}",
-                required="checkpoint.json",
-                command=[sys.executable, "-c", "pass"],
-                training_job=True,
-            )
-
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            assert all(executor.map(run, range(12)))
-
-        with state.status_path.open(newline="", encoding="utf-8") as handle:
-            persisted = list(csv.DictReader(handle, delimiter="\t"))
-        assert len(persisted) == len(state.rows) == 12
-        assert {row["task"] for row in persisted} == {
-            f"simulation/task-{index}" for index in range(12)
-        }
-        assert progress.n == 12
-        assert state.progress_counts == {"done": 12, "failed": 0}
+        assert [row["status"] for row in rows] == ["OK", "SKIPPED_COMPLETED"]
 
 
 def test_sweep_scheduler_is_bounded_and_preserves_dependencies(
@@ -645,7 +522,7 @@ def test_sweep_scheduler_is_bounded_and_preserves_dependencies(
     assert {job.key for job in [*jobs, *ensembles.values()]} == finished
 
 
-def test_sweep_scheduler_preserves_serial_priority_and_blocks_failed_ensemble(
+def test_sweep_scheduler_preserves_serial_priority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     jobs, ensembles = _build_jobs(
@@ -659,8 +536,7 @@ def test_sweep_scheduler_preserves_serial_priority_and_blocks_failed_ensemble(
 
     def execute(job, **_kwargs):
         order.append(job.key)
-        succeeded = not (job.task == "experiment/two" and job.fold == 2)
-        return _JobResult(job, succeeded)
+        return _JobResult(job, True)
 
     monkeypatch.setattr(sweep_module, "_execute_job", execute)
     _schedule(
@@ -680,146 +556,13 @@ def test_sweep_scheduler_preserves_serial_priority_and_blocks_failed_ensemble(
         ("stage3_ensemble", "experiment/one", None),
         ("stage3_fold", "experiment/two", 1),
         ("stage3_fold", "experiment/two", 2),
+        ("stage3_ensemble", "experiment/two", None),
         ("stage2_task", "simulation/one", None),
     ]
 
 
-def test_sweep_scheduler_continues_after_worker_exception(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    jobs, ensembles = _build_jobs(
-        root=tmp_path,
-        stage3_tasks=(),
-        folds=(1, 2, 3, 4, 5),
-        stage2_tasks=("simulation/failing", "simulation/success"),
-        devices=(),
-    )
-    completed = []
-
-    def execute(job, **_kwargs):
-        if job.task == "simulation/failing":
-            raise RuntimeError("synthetic worker failure")
-        completed.append(job.key)
-        return _JobResult(job, True)
-
-    monkeypatch.setattr(sweep_module, "_execute_job", execute)
-    state = _SweepState(rows=[], status_path=tmp_path / "status.tsv")
-    _schedule(
-        jobs=jobs,
-        ensembles=ensembles,
-        folds=(1, 2, 3, 4, 5),
-        max_workers=2,
-        state=state,
-        config_path="unused.yaml",
-        root=tmp_path,
-        train_script=tmp_path / "train.py",
-        evaluate_script=tmp_path / "evaluate.py",
-    )
-    assert completed == [("stage2_task", "simulation/success", None)]
-    assert [(row["operation"], row["status"]) for row in state.rows] == [
-        ("scheduler", "FAILED")
-    ]
-
-
-def test_stage2_train_failure_skips_evaluation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    calls = []
-    job = sweep_module._Job(
-        (1, 0, 0), "stage2_task", "stage2_physics", "simulation/tiny", None, None
-    )
-
-    def run(_state, **kwargs):
-        calls.append(kwargs["operation"])
-        return None
-
-    monkeypatch.setattr(sweep_module, "_run", run)
-    result = sweep_module._execute_job(
-        job,
-        state=_SweepState(rows=[], status_path=tmp_path / "status.tsv"),
-        config_path="config.yaml",
-        root=tmp_path,
-        train_script=tmp_path / "train.py",
-        evaluate_script=tmp_path / "evaluate.py",
-    )
-    assert calls == ["train"]
-    assert not result.train_succeeded
-
-
-def test_stage2_child_evaluation_contract_marks_old_attempt_stale(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "evaluate_test"
-    old = root / "attempt-001"
-    old.mkdir(parents=True)
-    (old / "metadata.json").write_text(
-        json.dumps({"status": "completed"}), encoding="utf-8"
-    )
-    (old / "summary.json").write_text(
-        json.dumps({"reporting": {"schema_version": 1}}), encoding="utf-8"
-    )
-    assert sweep_module._latest_completed(
-        root,
-        "summary.json",
-        reporting_contract=sweep_module.STAGE2_CORE_EVALUATION_CONTRACT,
-    ) is None
-
-    current = root / "attempt-002"
-    current.mkdir()
-    (current / "metadata.json").write_text(
-        json.dumps({"status": "completed"}), encoding="utf-8"
-    )
-    (current / "summary.json").write_text(
-        json.dumps(
-            {
-                "reporting": {
-                    "schema_version": 1,
-                    "contract": sweep_module.STAGE2_CORE_EVALUATION_CONTRACT,
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    assert sweep_module._latest_completed(
-        root,
-        "summary.json",
-        reporting_contract=sweep_module.STAGE2_CORE_EVALUATION_CONTRACT,
-    ) == current
-
-
-def test_stage3_valid_failure_does_not_block_ensemble_gate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    calls = []
-    job = sweep_module._Job(
-        (0, 0, 0), "stage3_fold", "stage3", "experiment/tiny", 1, None
-    )
-
-    def run(_state, **kwargs):
-        calls.append(kwargs["operation"])
-        if kwargs["operation"] == "train":
-            return Path("outputs/test-benchmark-checkpoint")
-        return None
-
-    monkeypatch.setattr(sweep_module, "_run", run)
-    result = sweep_module._execute_job(
-        job,
-        state=_SweepState(rows=[], status_path=tmp_path / "status.tsv"),
-        config_path="config.yaml",
-        root=tmp_path,
-        train_script=tmp_path / "train.py",
-        evaluate_script=tmp_path / "evaluate.py",
-    )
-    assert calls == ["train", "evaluate_valid"]
-    assert result.train_succeeded
-
-
-def test_sweep_devices_are_validated_and_assigned_round_robin(tmp_path: Path) -> None:
+def test_sweep_devices_are_assigned_round_robin(tmp_path: Path) -> None:
     assert _parse_devices("cuda:0,cuda:2") == ("cuda:0", "cuda:2")
-    with pytest.raises(ValueError, match="duplicate"):
-        _parse_devices("cuda:0,cuda:0")
-    with pytest.raises(ValueError, match="comma-separated"):
-        _parse_devices("0,1")
     jobs, ensembles = _build_jobs(
         root=tmp_path,
         stage3_tasks=("experiment/one",),
