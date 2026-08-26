@@ -146,7 +146,7 @@ def build_stage2_training_identity(
                 "name": "AdamW",
                 "implementation": optimizer_implementation,
             },
-            "scheduler": "three-group-freeze-cosine-v1",
+            "scheduler": "joint-cosine-plus-taskwise-refinement-v1",
             "math_contract": dict(math_contract),
             "seed": config.data.seed,
         },

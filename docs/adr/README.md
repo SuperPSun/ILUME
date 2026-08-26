@@ -5,14 +5,14 @@
 ## 现役权威
 
 - Stage 1：[ADR-0013](0013-stage1-full-corpus-ddp.md)、[0014](0014-stage1-prepare-performance-and-corpus-v2.md)、[0015](0015-stage1-high-throughput-epoch-resume.md)、[0017](0017-stage1-base-runtime-profile.md)。基础数据、descriptor、tokenizer、fingerprint 与 QC 决定仍见 ADR-0001～0005 各自的有效范围。
-- Stage 2：[ADR-0019](0019-stage2-catalog-object-v3.md) 定义 Object v3；[ADR-0025](0025-stage2-homo-lumo-scalar-tasks.md) 定义现役 HOMO/LUMO 与 reporting v2。
-- Stage 3：[ADR-0020](0020-stage3-v1-sparse-home-pcgrad.md) 定义 sparse-label HoME 与 hierarchical PCGrad。
-- 跨 Stage identity/audit：[ADR-0021](0021-identity-audit-contract-v1.md)。
+- Stage 2：[ADR-0019](0019-stage2-catalog-object-v3.md) 定义 Object v3；[ADR-0025](0025-stage2-homo-lumo-scalar-tasks.md) 定义现役 HOMO/LUMO 与 reporting v2；[ADR-0027](0027-late-taskwise-refinement.md) 修订末期训练和最终评估 artifact。
+- Stage 3：[ADR-0020](0020-stage3-v1-sparse-home-pcgrad.md) 定义 sparse-label HoME 与 hierarchical PCGrad；末期 PRIVATE-only refinement 由 [ADR-0027](0027-late-taskwise-refinement.md) 定义。
+- 跨 Stage identity/audit：[ADR-0021](0021-identity-audit-contract-v1.md)、[ADR-0027](0027-late-taskwise-refinement.md)。
 - Baseline 与 reporting：[ADR-0022](0022-mlp-ecfp-xgboost-baselines.md)、[0023](0023-unified-evaluation-reporting.md)、[0024](0024-stage2-partial-charge-benchmark-suite.md)、[0025](0025-stage2-homo-lumo-scalar-tasks.md)。
 
 ## 预注册实验
 
-- [ADR-0026：Capacity v1](0026-capacity-v1-pipeline-study.md) 定义独立的端到端容量研究，不取代 `configs/v1`；运行步骤见 [操作手册](../capacity-v1-runbook.md)。
+- [ADR-0026：Capacity v1](0026-capacity-v1-pipeline-study.md) 定义独立的端到端容量研究；其 refinement/HPO 评分修订见 [ADR-0027](0027-late-taskwise-refinement.md)，运行步骤见 [操作手册](../capacity-v1-runbook.md)。
 
 ## 历史与基础记录
 

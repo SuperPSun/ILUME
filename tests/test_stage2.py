@@ -553,6 +553,19 @@ def test_frozen_and_unfrozen_batches_select_the_correct_stage1_api(tiny_stage2_s
         assert encode_states.call_count == 0
         assert frozen_output.teacher_loss.item() == 0.0
 
+        live_frozen_object = pack_stage2_batch(
+            object_descriptor, {object_dataset.task: object_dataset}, entities,
+            packer, needs_entities=True, include_raw_atom_targets=False,
+            pin_memory=False,
+        )
+        _batch_output(
+            model, registry, live_frozen_object, object_data, teacher,
+            entity_roles, tiny_stage2_setup, backbone_trainable=False,
+            use_student_encoder=True,
+        )
+        assert encode_entities.call_count == 1
+        encode_entities.reset_mock()
+
         frozen_atom_output = _batch_output(
             model, registry, packed_atom, atom_data, teacher, entity_roles,
             tiny_stage2_setup, backbone_trainable=False,
@@ -627,8 +640,13 @@ def test_prepare_train_checkpoint_and_encoder_export(tiny_stage2_setup, tmp_path
     output = tmp_path / "train"
     run_stage2_training(tiny_stage2_setup, output_dir=output)
     assert (output / "checkpoint_epoch_00001.pt").is_file()
+    boundary_checkpoint = torch.load(
+        output / "checkpoint_epoch_00001.pt", map_location="cpu", weights_only=False
+    )
+    assert boundary_checkpoint["optimizer"]["state"]
+    assert boundary_checkpoint["refinement"]["optimizers"] == {}
     final_checkpoint = torch.load(output / "checkpoint_epoch_00002.pt", map_location="cpu", weights_only=False)
-    assert final_checkpoint["format_version"] == 3
+    assert final_checkpoint["format_version"] == 4
     assert final_checkpoint["completed_epoch"] == 2
     assert final_checkpoint["registry_hash"] == load_artifact_registry(tiny_stage2_setup.data.artifacts_dir).registry_hash
     assert final_checkpoint["model_contract"]["object_encoder"] == {
@@ -637,6 +655,14 @@ def test_prepare_train_checkpoint_and_encoder_export(tiny_stage2_setup, tmp_path
         "dropout": tiny_stage2_setup.model.dropout,
     }
     encoder_path = output / "stage2_encoder.pt"
+    assert (output / "taskwise_refined.pt").is_file()
+    assert (output / "taskwise_refinement.json").is_file()
+    refined_payload = torch.load(
+        output / "taskwise_refined.pt", map_location="cpu", weights_only=False
+    )
+    assert set(refined_payload["private_state_hashes"]) == set(
+        load_artifact_registry(tiny_stage2_setup.data.artifacts_dir).task_ids
+    )
     frozen = load_frozen_object_encoder(encoder_path, device="cpu")
     assert not frozen.backbone.training
     assert not frozen.object_encoder.training

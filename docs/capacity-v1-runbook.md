@@ -47,7 +47,8 @@ python scripts/stage2/train.py \
   --output outputs/experiments_v1/stage2/<scale>/<recipe>/train
 ```
 
-每次只消费自动发布的 epoch-10 `stage2_encoder.pt`；Stage 2 validation 不淘汰 candidate。
+每次发布历史 epoch-10 checkpoint、boundary-frozen `stage2_encoder.pt` 和 Stage 2 自身的
+`taskwise_refined.pt`；Stage 3 只消费 encoder，Stage 2 validation 不淘汰 candidate。
 
 ## 3. Stage 3 prepare、probe 与自动选 recipe
 
@@ -78,7 +79,8 @@ python scripts/stage3/capacity.py \
   --output outputs/experiments_v1/reports/probe
 ```
 
-报告的 `scale_winners` 已按末三轮分数和 Default→Conservative→Aggressive tie-break 选出。
+报告的 `scale_winners` 已按各 fold taskwise-refined stitched validation 和
+Default→Conservative→Aggressive tie-break 选出。
 该命令自动汇总主指标、task/group 指标、fold sample-SD 和原始 run 路径；参数量、峰值
 显存、吞吐、wall time 与 Stage 1/2 稳定性不会由报告器推断，必须从同类硬件上的训练
 日志和监控记录中另行取证，并随人工 decision 一起保留。
@@ -121,7 +123,7 @@ kind: final_recipe
 hpo_output: outputs/experiments_v1/stage3/hpo
 trial_number: 17
 reason: >-
-  根据五折末三轮主指标、fold sample-SD、per-task 指标与完整曲线选择。
+  根据五折 stitched validation 主指标、fold sample-SD、per-task 指标与完整曲线选择。
 scale_configs:
   s: configs/experiments_v1/stage3/probe/s-default.yaml
   base: configs/experiments_v1/stage3/probe/base-conservative.yaml
@@ -195,10 +197,10 @@ python scripts/stage3/evaluate.py \
   --checkpoint-dir outputs/experiments_v1/stage3/formal/<scale> \
   --split test \
   --ensemble-folds \
-  --checkpoint-epoch 50 \
+  --taskwise-refined \
   --study-id capacity-v1-<scale> \
   --output outputs/experiments_v1/stage3/test/<scale>
 ```
 
-Test 只发布四点 capacity trend，不得修改 main scale、recipe 或 checkpoint。任何正式命令
+Test 只发布四点 capacity trend，不得修改 main scale、recipe 或 refined artifact。任何正式命令
 失败时先保存原日志和 metadata；同配置最多原样重跑一次，不做动态 rescue。

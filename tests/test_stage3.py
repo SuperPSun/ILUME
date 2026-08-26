@@ -387,6 +387,7 @@ def _plugin_checkpoint(
         "model": asdict(model.model_config),
         "optimizer": {},
         "scheduler": {},
+        "refinement": {},
         "math": {},
         "stage2_encoder_identity": stage2_encoder_identity,
         "prepared_identity": "test-prepared",
@@ -465,6 +466,19 @@ def test_short_training_checkpoint_and_resume_are_exact(tiny_prepared: Stage3Con
     assert sorted(path.name for path in continuous.glob("checkpoint_*.pt")) == [
         "checkpoint_epoch_00001.pt", "checkpoint_epoch_00002.pt"
     ]
+    assert (continuous / "taskwise_refined.pt").is_file()
+    assert (continuous / "taskwise_refinement.json").is_file()
+    boundary_checkpoint = torch.load(
+        continuous / "checkpoint_epoch_00001.pt", map_location="cpu", weights_only=False
+    )
+    assert boundary_checkpoint["optimizer"]["state"]
+    assert boundary_checkpoint["refinement"]["optimizers"] == {}
+    refined_payload = torch.load(
+        continuous / "taskwise_refined.pt", map_location="cpu", weights_only=False
+    )
+    assert set(refined_payload["private_state_hashes"]) == set(
+        refined_payload["selected_tasks"]
+    )
     resumed = tiny_prepared.data.artifacts_dir.parent / "resumed"
     resumed.mkdir()
     shutil.copy(continuous / "resolved_training_plan.json", resumed)
@@ -485,6 +499,7 @@ def test_short_training_checkpoint_and_resume_are_exact(tiny_prepared: Stage3Con
     )["model"]
     assert expected.keys() == actual.keys()
     assert all(torch.equal(expected[name], actual[name]) for name in expected)
+    assert (resumed / "taskwise_refined.pt").is_file()
     prediction_dir = tiny_prepared.data.artifacts_dir.parent / "evaluation-predictions"
     evaluation = evaluate_checkpoints(
         tiny_prepared,
@@ -510,6 +525,17 @@ def test_short_training_checkpoint_and_resume_are_exact(tiny_prepared: Stage3Con
     assert evaluation["reporting"]["predictions"][0]["rows"] == len(
         prediction_rows
     )
+    refined = evaluate_checkpoints(
+        tiny_prepared,
+        continuous,
+        split="valid",
+        ensemble_folds=False,
+        task_subset=("experiment/a",),
+        fold=1,
+        taskwise_refined=True,
+    )
+    assert refined["checkpoint_epoch"] is None
+    assert refined["model_selector"] == "taskwise_refined"
 
 
 def test_stage3_scripts_configure_runtime_before_loading_operation() -> None:

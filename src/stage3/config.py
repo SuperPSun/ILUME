@@ -180,6 +180,8 @@ class Stage3TrainingConfig:
     cpu_threads: int = 4
     cpu_interop_threads: int = 1
     debug_pcgrad_traces: bool = False
+    refinement_ratio: float = 0.20
+    refinement_lr_multiplier: float = 0.10
 
 
 @dataclass(frozen=True)
@@ -257,6 +259,10 @@ class Stage3Config:
                 raise ValueError(f"training.{name} must be positive")
         if training.microbatch_size > training.composite_batch_size:
             raise ValueError("microbatch_size exceeds composite_batch_size")
+        from common.refinement import refinement_geometry
+        refinement_geometry(training.epochs, training.refinement_ratio)
+        if training.refinement_lr_multiplier <= 0:
+            raise ValueError("refinement_lr_multiplier must be positive")
         if training.learning_rate <= 0 or training.weight_decay < 0:
             raise ValueError("Stage 3 optimizer values are invalid")
         if len(training.betas) != 2 or not all(0 <= x < 1 for x in training.betas):

@@ -127,6 +127,7 @@ def build_stage3_training_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
             "model",
             "optimizer",
             "scheduler",
+            "refinement",
             "math",
             "stage2_encoder_identity",
             "prepared_identity",
@@ -153,9 +154,11 @@ def build_stage3_evaluation_identity(
     prepared_identity: Mapping[str, Any],
     checkpoint_identities: Sequence[Mapping[str, Any]],
     model_state_hashes: Sequence[str],
+    selection_manifest_hashes: Sequence[str] = (),
     split: str,
     fold: int | None,
-    checkpoint_epoch: int,
+    checkpoint_epoch: int | None,
+    model_selector: str = "epoch_checkpoint",
     tasks: Sequence[str],
     ensemble_folds: bool,
 ) -> dict[str, Any]:
@@ -168,10 +171,12 @@ def build_stage3_evaluation_identity(
                 identity["hash"] for identity in checkpoint_identities
             ],
             "model_state_hashes": list(model_state_hashes),
+            "selection_manifest_sha256": list(selection_manifest_hashes),
             "selector": {
                 "split": split,
                 "fold": fold,
                 "checkpoint_epoch": checkpoint_epoch,
+                "model_selector": model_selector,
                 "tasks": list(tasks),
                 "ensemble_folds": ensemble_folds,
             },

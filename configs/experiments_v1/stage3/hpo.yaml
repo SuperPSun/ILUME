@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 2
 study_name: ilume-capacity-v1-anchor
 anchor_decision: outputs/experiments_v1/decisions/anchor.yaml
 attempted_trials: 40
@@ -7,7 +7,6 @@ trials_per_wave: 2
 folds: [1, 2]
 confirmation_folds: [3, 4, 5]
 top_k: 5
-tail_epochs: 3
 max_retries: 1
 sampler_seed: 42
 global_experts: [1, 2, 3, 4]

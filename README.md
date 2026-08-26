@@ -43,7 +43,7 @@ python scripts/stage1/train.py \
 
 ## Stage 2
 
-Stage 2 Object v3 从 catalog 加载九个 simulation task，共享 ObjectEncoder，并从 Stage 1 encoder 准备 entity teacher cache。模型、数据身份、恢复和 HOMO/LUMO 合同见 [ADR-0019/0021/0025](docs/adr/README.md)。
+Stage 2 Object v3 从 catalog 加载九个 simulation task，共享 ObjectEncoder，并从 Stage 1 encoder 准备 entity teacher cache；最后 20% epoch 冻结共享表示并独立优化各 task head。模型、数据身份、恢复和选择合同见 [ADR-0019/0021/0025/0027](docs/adr/README.md)。
 
 ```bash
 python scripts/stage2/prepare.py \
@@ -57,6 +57,7 @@ python scripts/stage2/train.py \
 python scripts/stage2/evaluate.py \
   --config configs/v1/stage2/base.yaml \
   --checkpoint-dir outputs/v1/stage2/base/train \
+  --taskwise-refined \
   --output outputs/v1/stage2/base/evaluate/test_benchmark_suite_v2
 ```
 
@@ -64,7 +65,7 @@ Evaluator 分别发布 Core、Partial Charge 和 Full 三榜；评分及 eligibi
 
 ## Stage 3
 
-Stage 3 使用冻结的 Stage 2 Object v3 表示、动态 HoME 和 ownership-aware hierarchical PCGrad。数据、模型、五折调度和恢复合同见 [ADR-0020/0021](docs/adr/README.md)。
+Stage 3 使用冻结的 Stage 2 Object v3 表示、动态 HoME 和 ownership-aware hierarchical PCGrad；最后 20% epoch 冻结 GLOBAL/GROUP，仅优化各 task PRIVATE。数据、模型、五折调度和恢复合同见 [ADR-0020/0021/0027](docs/adr/README.md)。
 
 ```bash
 python scripts/stage3/prepare.py \
@@ -85,13 +86,13 @@ python scripts/stage3/train.py \
 python scripts/stage3/evaluate.py \
   --config configs/v1/stage3/base.yaml \
   --checkpoint-dir outputs/v1/stage3/base/train \
-  --split valid --fold 1 2 3 4 5 --checkpoint-epoch 100 \
+  --split valid --fold 1 2 3 4 5 --taskwise-refined \
   --output outputs/v1/stage3/base/evaluate_valid
 
 python scripts/stage3/evaluate.py \
   --config configs/v1/stage3/base.yaml \
   --checkpoint-dir outputs/v1/stage3/base/train \
-  --split test --ensemble-folds --checkpoint-epoch 100 \
+  --split test --ensemble-folds --taskwise-refined \
   --output outputs/v1/stage3/base/evaluate_test
 ```
 

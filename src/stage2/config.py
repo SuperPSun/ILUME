@@ -21,7 +21,7 @@ DEFAULT_TASK_WEIGHTS = {
     "simulation/transfer_organic": 0.5,
 }
 
-STAGE2_CHECKPOINT_VERSION = 3
+STAGE2_CHECKPOINT_VERSION = 4
 STAGE2_CHECKPOINT_KIND = "ilume_stage2_object"
 
 
@@ -83,6 +83,8 @@ class Stage2TrainingConfig:
     log_every_batches: int = 50
     device: str = "auto"
     amp_dtype: str = "bf16"
+    refinement_ratio: float = 0.20
+    refinement_lr_multiplier: float = 0.10
 
 
 @dataclass(frozen=True)
@@ -135,6 +137,10 @@ class Stage2Config:
             raise ValueError("Stage 2 Object v3 requires cuda_prefetch_batches == 1")
         if training.amp_dtype not in {"bf16", "fp16", "none"}:
             raise ValueError("training.amp_dtype must be bf16, fp16, or none")
+        from common.refinement import refinement_geometry
+        refinement_geometry(training.epochs, training.refinement_ratio)
+        if training.refinement_lr_multiplier <= 0:
+            raise ValueError("refinement_lr_multiplier must be positive")
 
     def validate_registry(self, registry: Stage2Registry) -> None:
         expected = set(registry.task_ids)

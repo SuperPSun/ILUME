@@ -311,6 +311,25 @@ class Stage3SparseModel(nn.Module):
             if candidate == owner
         )
 
+    def private_modules_for_task(self, task_id: str) -> tuple[nn.Module, ...]:
+        if task_id not in self.task_specs or not self.task_specs[task_id].enabled:
+            raise KeyError(f"Unknown Stage 3 private task: {task_id}")
+        key = sanitize_task(task_id)
+        modules: list[nn.Module] = [
+            self.private_experts[key],
+            self.task_gates[key],
+            self.task_normalizations[key],
+            self.towers[key],
+        ]
+        if key in self.condition_films:
+            modules.append(self.condition_films[key])
+        return tuple(modules)
+
+    def set_task_refinement_mode(self, task_id: str) -> None:
+        self.eval()
+        for module in self.private_modules_for_task(task_id):
+            module.train()
+
     def forward(
         self,
         task_id: str,

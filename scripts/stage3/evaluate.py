@@ -31,6 +31,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ensemble-folds", action="store_true")
     parser.add_argument("--fold", type=int, nargs="+")
     parser.add_argument("--checkpoint-epoch", type=int)
+    parser.add_argument("--taskwise-refined", action="store_true")
     parser.add_argument("--tasks", nargs="+")
     parser.add_argument("--study-id")
     parser.add_argument("--output", required=True)
@@ -38,6 +39,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _validate_request(args: argparse.Namespace) -> tuple[int, ...] | None:
+    if args.taskwise_refined and args.checkpoint_epoch is not None:
+        raise ValueError("--taskwise-refined forbids --checkpoint-epoch")
     if args.split == "valid":
         if args.fold is None:
             raise ValueError("Stage 3 validation requires --fold")
@@ -64,6 +67,7 @@ def _run_fold(
     progress: ProgressReporter,
     resolve_identity: ResolveIdentity,
     evaluate_checkpoints: EvaluateCheckpoints,
+    taskwise_refined: bool = False,
 ) -> None:
     with progress.status(f"Resolving Stage 3 fold{fold} evaluation identity"):
         evaluation_identity = resolve_identity(
@@ -74,6 +78,7 @@ def _run_fold(
             checkpoint_epoch=checkpoint_epoch,
             task_subset=tasks,
             fold=fold,
+            taskwise_refined=taskwise_refined,
         )
     output = Path(output_root) / f"fold{fold}"
     run = open_run_directory(
@@ -91,6 +96,7 @@ def _run_fold(
             "ensemble_folds": False,
             "fold": fold,
             "checkpoint_epoch": checkpoint_epoch,
+            "model_selector": "taskwise_refined" if taskwise_refined else "epoch_checkpoint",
             "tasks": tasks,
             "reporting_study_id": study_id,
         },
@@ -107,6 +113,7 @@ def _run_fold(
             predictions_dir=run.root / "predictions",
             reporting_study_id=study_id,
             expected_evaluation_identity=evaluation_identity,
+            taskwise_refined=taskwise_refined,
         )
         run.complete(result)
     except BaseException:
@@ -127,6 +134,7 @@ def _run_validation_schedule(
     progress: ProgressReporter,
     resolve_identity: ResolveIdentity,
     evaluate_checkpoints: EvaluateCheckpoints,
+    taskwise_refined: bool = False,
 ) -> dict[int, str]:
     results: dict[int, str] = {}
     for fold in folds:
@@ -144,6 +152,7 @@ def _run_validation_schedule(
                 progress=progress,
                 resolve_identity=resolve_identity,
                 evaluate_checkpoints=evaluate_checkpoints,
+                taskwise_refined=taskwise_refined,
             )
         except Exception as error:
             results[fold] = "failed"
@@ -167,6 +176,7 @@ def _run_test(
     resolve_identity: ResolveIdentity,
     evaluate_checkpoints: EvaluateCheckpoints,
 ) -> None:
+    taskwise_refined = bool(getattr(args, "taskwise_refined", False))
     with progress.status("Resolving Stage 3 evaluation identity"):
         evaluation_identity = resolve_identity(
             config,
@@ -176,6 +186,7 @@ def _run_test(
             checkpoint_epoch=args.checkpoint_epoch,
             task_subset=args.tasks,
             fold=None,
+            taskwise_refined=taskwise_refined,
         )
     run = open_run_directory(
         stage="stage3",
@@ -192,6 +203,7 @@ def _run_test(
             "ensemble_folds": True,
             "fold": None,
             "checkpoint_epoch": args.checkpoint_epoch,
+            "model_selector": "taskwise_refined" if taskwise_refined else "epoch_checkpoint",
             "tasks": args.tasks,
             "reporting_study_id": args.study_id,
         },
@@ -208,6 +220,7 @@ def _run_test(
             predictions_dir=run.root / "predictions",
             reporting_study_id=args.study_id,
             expected_evaluation_identity=evaluation_identity,
+            taskwise_refined=taskwise_refined,
         )
         run.complete(result)
     except BaseException:
@@ -250,7 +263,8 @@ def main() -> int:
     if study_id is None:
         with progress.status("Resolving Stage 3 validation study identity"):
             study_id = resolve_stage3_reporting_study_id(
-                config, checkpoint_epoch=args.checkpoint_epoch
+                config, checkpoint_epoch=args.checkpoint_epoch,
+                taskwise_refined=args.taskwise_refined,
             )
     try:
         results = _run_validation_schedule(
@@ -265,6 +279,7 @@ def main() -> int:
             progress=progress,
             resolve_identity=resolve_stage3_evaluation_identity,
             evaluate_checkpoints=evaluate_checkpoints,
+            taskwise_refined=args.taskwise_refined,
         )
     except KeyboardInterrupt:
         print("Stage3 validation evaluation interrupted", file=sys.stderr)

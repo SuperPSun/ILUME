@@ -4,6 +4,8 @@
 - 日期：2026-08-25
 - 适用范围：`configs/experiments_v1/{stage1,stage2,stage3}` 与 `outputs/experiments_v1`
 
+> 2026-08-26：Stage 2/3 late task-wise refinement、Capacity report schema v2 与 stitched validation 评分由 [ADR-0027](0027-late-taskwise-refinement.md) 修订；trial wave、搜索空间、人工决策与 seed 规则不变。
+
 ## 背景
 
 本研究的目标是选择容量合适、下游迁移有效且训练稳定的 ILUME 主模型，并形成
@@ -41,9 +43,9 @@ encoder 的单独因果效应。Stage 2 ObjectEncoder 和 Stage 3 HoME 宽度均
 ### Probe、HPO 与正式比较
 
 5. 12 个 Stage 2 candidate 全部跑 Stage 3 folds 1/2 × 20 epochs。每 fold 的 proxy
-   固定为 epoch 18–20 的 `macro_task_equal.normalized_mae.value` 均值；candidate 再跨
-   fold 平均。每 scale 选择最低分 recipe，精确并列时依次优先 Default、Conservative、
-   Aggressive。
+   固定为 taskwise-refined stitched validation 的
+   `macro_task_equal.normalized_mae.value`；candidate 再跨 fold 平均。每 scale 选择最低分
+   recipe，精确并列时依次优先 Default、Conservative、Aggressive。
 6. 四个 scale winner 之间的 anchor 由人工 Pareto 决策，证据限于 validation、曲线、
    参数量、显存、吞吐、wall time 与失败记录；必须先发布带理由的 anchor decision，
    HPO 入口才接受运行。test 不参与。
@@ -52,17 +54,17 @@ encoder 的单独因果效应。Stage 2 ObjectEncoder 和 Stage 3 HoME 宽度均
    hidden ratio、dropout、LR 和 weight decay。两 trial 为同步 wave，每 trial folds 1/2，
    四张 GPU 各运行一个 fold；wave 完成后按 trial number 写回结果。
 8. 每个失败 fold 只允许同配置再运行一次；第二次失败使 trial failed 并消耗预算。
-   Top-5 加 Base 补 folds 3/4/5；Base 已在 Top-5 时不重复。五折仍按末三轮评分，最终
-   recipe 由人工确认并冻结。
+   Top-5 加 Base 补 folds 3/4/5；Base 已在 Top-5 时不重复。五折均按 stitched validation
+   评分，最终 recipe 由人工确认并冻结。
 9. Stage 3 配置新增可选 `training.seed`。`null` 保持旧 `data.seed` RNG 和旧 training
    plan 形状；显式值只改变模型初始化、virtual sampler、task order 与 PCGrad RNG，
    并进入 training identity，不进入 prepared identity。robustness 固定 seeds
    `42/10042/20042/30042/40042`、folds 1/2 × 20 epochs，结果由人工复核；拒绝时停止，
    不自动换 recipe、加 seed 或重启 HPO。
 10. 最终 recipe 原样迁移到四个 scale，expert 数固定、ratio 按各自 `d_model` 解析。
-    四规模从头跑 5 folds × 50 epochs、seed 42，固定使用 epoch 50；20-epoch run 不恢复
-    到 50 epochs。先按 validation/resource Pareto 冻结主 scale，再一次性评估四规模
-    epoch-50 五折 test ensemble。test 不得反向改变 scale、recipe 或 checkpoint；本轮
+    四规模从头跑 5 folds × 50 epochs、seed 42，固定使用各 fold taskwise-refined artifact；
+    20-epoch run 不恢复到 50 epochs。先按 validation/resource Pareto 冻结主 scale，再
+    一次性评估四规模 refined 五折 test ensemble。test 不得反向改变 scale、recipe 或 artifact；本轮
     不追加 100-epoch 训练。
 
 ### 失败、身份与报告

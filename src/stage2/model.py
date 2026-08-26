@@ -241,6 +241,22 @@ class Stage2ObjectModel(nn.Module):
         yield from self.interaction_heads.parameters()
         yield from self.atom_heads.parameters()
 
+    def task_head_module(self, task_id: str) -> nn.Module:
+        if task_id in self.object_heads:
+            return self.object_heads[task_id]
+        if task_id in self.interaction_heads:
+            return self.interaction_heads[task_id]
+        if task_id in self.atom_heads:
+            return self.atom_heads[task_id]
+        raise KeyError(f"Unknown Stage 2 task head: {task_id}")
+
+    def task_head_parameters_for(self, task_id: str) -> tuple[nn.Parameter, ...]:
+        return tuple(self.task_head_module(task_id).parameters())
+
+    def set_task_refinement_mode(self, task_id: str) -> None:
+        self.eval()
+        self.task_head_module(task_id).train()
+
     def new_module_parameters(self) -> Iterator[nn.Parameter]:
         yield from self.object_encoder_parameters()
         yield from self.task_head_parameters()

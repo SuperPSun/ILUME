@@ -18,7 +18,7 @@ from stage3.capacity import (
     materialize_final_recipe_configs,
     select_probe_winners,
     summarize_capacity_manifest,
-    tail_validation_summary,
+    refined_validation_summary,
     validate_anchor_decision,
 )
 from stage3.config import load_stage3_config
@@ -26,6 +26,7 @@ import scripts.stage3.train as launcher
 from stage1.config import load_config
 from stage1.identity import build_stage1_corpus_identity
 from stage2.config import load_stage2_config
+from common.io import sha256_file
 
 
 def _write_metrics(path: Path, values: list[float]) -> None:
@@ -55,22 +56,35 @@ def _write_metrics(path: Path, values: list[float]) -> None:
     (path / "metrics.jsonl").write_text(
         "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
     )
+    artifact = path / "taskwise_refined.pt"
+    artifact.write_bytes(b"fake-refined-artifact")
+    (path / "taskwise_refinement.json").write_text(
+        json.dumps({
+            "kind": "ilume_stage3_taskwise_refined",
+            "format_version": 1,
+            "artifact": artifact.name,
+            "artifact_sha256": sha256_file(artifact),
+            "ordinary_final_epoch": len(values),
+            "validation": rows[-1]["validation"],
+        }),
+        encoding="utf-8",
+    )
 
 
-def test_tail_score_requires_complete_finite_history(tmp_path: Path) -> None:
+def test_refined_score_uses_stitched_validation(tmp_path: Path) -> None:
     root = tmp_path / "run"
-    _write_metrics(root, [float(value) for value in range(1, 21)])
-    summary = tail_validation_summary(root, expected_epochs=20)
-    assert summary["tail_epoch_numbers"] == [18, 19, 20]
-    assert summary["score"] == pytest.approx(19.0)
-    assert summary["task_scores"]["experiment/a"] == pytest.approx(19.1)
-    assert summary["group_scores"]["group-a"] == pytest.approx(19.15)
+    _write_metrics(root, [1.0] * 19 + [0.25])
+    summary = refined_validation_summary(root, expected_epochs=20)
+    assert summary["score"] == pytest.approx(0.25)
+    assert summary["model_selector"] == "taskwise_refined"
 
-    with pytest.raises(ValueError, match="continuous"):
-        tail_validation_summary(root, expected_epochs=21)
-    _write_metrics(root, [1.0] * 19 + [math.nan])
-    with pytest.raises(ValueError, match="finite"):
-        tail_validation_summary(root, expected_epochs=20)
+
+def test_refined_score_rejects_corrupt_artifact(tmp_path: Path) -> None:
+    root = tmp_path / "run"
+    _write_metrics(root, [0.25] * 20)
+    (root / "taskwise_refined.pt").write_bytes(b"corrupt")
+    with pytest.raises(ValueError, match="missing or corrupt"):
+        refined_validation_summary(root, expected_epochs=20)
 
 
 def test_fold_aggregation_and_probe_tie_priority() -> None:
@@ -123,7 +137,7 @@ def test_capacity_study_and_trial_config_are_strict(tmp_path: Path) -> None:
     study = tmp_path / "study.yaml"
     study.write_text(
         """
-schema_version: 1
+schema_version: 2
 study_name: test
 anchor_decision: outputs/test/anchor.yaml
 attempted_trials: 40
@@ -132,7 +146,6 @@ trials_per_wave: 2
 folds: [1, 2]
 confirmation_folds: [3, 4, 5]
 top_k: 5
-tail_epochs: 3
 max_retries: 1
 sampler_seed: 42
 global_experts: [1, 2, 3, 4]
@@ -182,7 +195,6 @@ def test_capacity_study_runs_synchronous_waves_and_resumes(tmp_path: Path) -> No
         folds=(1, 2),
         confirmation_folds=(3, 4, 5),
         top_k=2,
-        tail_epochs=3,
         max_retries=1,
         sampler_seed=42,
         global_experts=(1, 2),
@@ -249,7 +261,7 @@ def test_capacity_study_runs_synchronous_waves_and_resumes(tmp_path: Path) -> No
     decision.write_text(
         __import__("yaml").safe_dump(
             {
-                "schema_version": 1,
+                    "schema_version": 1,
                 "kind": "final_recipe",
                 "hpo_output": str(output),
                 "trial_number": 0,
@@ -420,10 +432,9 @@ def test_robustness_manifest_reports_seed_and_task_variation(tmp_path: Path) -> 
     manifest.write_text(
         yaml.safe_dump(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "kind": "robustness",
                 "expected_epochs": 20,
-                "tail_epochs": 3,
                 "runs": runs,
             },
             sort_keys=False,

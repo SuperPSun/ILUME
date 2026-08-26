@@ -209,7 +209,8 @@ def test_test_path_remains_one_root_ensemble_run(
             "fold": None,
             "predictions_dir": Path("/repo/evaluate_test/predictions"),
             "reporting_study_id": None,
-            "expected_evaluation_identity": EVALUATION_IDENTITY,
+                "expected_evaluation_identity": EVALUATION_IDENTITY,
+                "taskwise_refined": False,
         }
     ]
     assert run.completed == {"split": "test"}

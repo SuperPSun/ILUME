@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -69,7 +70,15 @@ def test_completed_run_is_skipped_after_identity_and_history_checks(
 ) -> None:
     root = tmp_path / "fold2"
     _write_run(root, status="completed", epochs=[1, 2], checkpoints=[2])
-    _write_json(root / "summary.json", {"fold": 2, "final_epoch": {"epoch": 2}})
+    artifact = root / "taskwise_refined.pt"
+    artifact.write_bytes(b"refined")
+    refinement = {"artifact_sha256": hashlib.sha256(b"refined").hexdigest()}
+    _write_json(root / "taskwise_refinement.json", refinement)
+    _write_json(root / "summary.json", {
+        "fold": 2,
+        "final_epoch": {"epoch": 2},
+        "taskwise_refinement": refinement,
+    })
     assert launcher._resume_action(
         root, fold=2, total_epochs=2, training_identity=TRAINING_IDENTITY
     ) == ("skipped", None)

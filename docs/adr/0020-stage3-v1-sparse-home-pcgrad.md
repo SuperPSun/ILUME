@@ -5,6 +5,8 @@
 - 取代：ADR-0010、ADR-0011、ADR-0012 的全部现役 Stage 3 决定
 
 > 2026-08-20：本文的 Stage 2 checkpoint SHA、plugin lineage、run resume 与 evaluation identity 规则已由 [ADR-0021](0021-identity-audit-contract-v1.md) 取代；模型、采样、PCGrad 与数值训练合同不变。
+>
+> 2026-08-26：本文的全程 PCGrad、固定 final epoch 评估与 checkpoint v1 合同已由 [ADR-0027](0027-late-taskwise-refinement.md) 修订；joint phase 的 HoME、采样与 hierarchical PCGrad 合同保持不变。
 
 ## 背景
 
@@ -12,7 +14,7 @@
 
 ## 决定
 
-1. Stage 3 v1 使用独立 artifact/checkpoint kind 与 `format_version=1`，不兼容任何旧 Stage 3 artifact、YAML 或 checkpoint。正式配置为 `configs/v1/stage3/base.yaml`，输出根为 `outputs/v1/stage3/base`。
+1. Stage 3 v1 使用独立 artifact/checkpoint kind；prepared artifact 保持 `format_version=1`，训练 checkpoint 按 ADR-0027 升级为 `format_version=2`，taskwise-refined artifact 独立使用 format v1。旧 Stage 3 artifact、YAML 或 checkpoint 不兼容。正式配置为 `configs/v1/stage3/base.yaml`，输出根为 `outputs/v1/stage3/base`。
 2. registry 合并 catalog 数据事实与 YAML 模型侧分组、topology slots、启用状态和权重。Base 包含 21 个 observation task 与 transport、thermophysical、phase_stability、dielectric_optical、solvation、biological 六组。默认 split 为 `prefer_il`，但 catalog 声明且已物化的任意合法 strategy 与 repeat 均可逐 task 显式选择；绝不自动退回 random。
 3. identity、target、condition 与 SMILES 必须逐行合法且有限。normalization 只使用 held-out fold 之外四折的 population mean/std；target 零方差失败，constant condition 记为 scale 1。当前上游 condition 缺失由 ILUME-Data 修复，Stage 3 不填充、不删行。
 4. Stage 2 提供公开 frozen Object v3 checkpoint loader。prepare 严格加载完整模型、registry 与 model contract，并生成内容寻址的 FP32 object cache；partner 始终保持 frozen embedding，只有 primary 进入 GroupMoE/FiLM。artifact 全部成功后原子发布，train/evaluate 只读 artifact 并强校验 Stage 2 checkpoint SHA。
@@ -21,7 +23,7 @@
 7. virtual epoch 使用 `N'_t=max(N_t,1000)`、总 composite allocation 2048 和稳定 SHA-256 shuffle。每 step 按 task 取得固定 `B_t`，Base 拆成至多 1024 的 microbatch，以 `loss_sum/B_t` 累积完整 FP32 task gradient，完成全部 task 后才执行 PCGrad、weighting、gradient assembly、global clipping、optimizer 与 scheduler step。`microbatch_size` 同时约束 validation forward 分块，保留为显式 YAML 参数并进入 training identity；不增加独立 validation batch 参数，不自动选择或在 OOM 后降低。
 8. hierarchical PCGrad 将 GLOBAL 与每个 GROUP 作为独立 logical block，绝不拼接。组内 task-level GLOBAL 与 GROUP 投影使用独立可复现顺序；task weight 在投影后生效。GROUP 在组内聚合，GLOBAL 先组内聚合再做 group-level PCGrad 并按 group weight 聚合；PRIVATE 不投影。diagnostics 使用 NaN 与 applicability mask 表示不适用位置。
 9. Base 使用 normalized SmoothL1、AdamW、5% warmup 后 cosine 到 5% base LR、global norm clipping 1.0、100 epochs。BF16 不可用时失败，只能通过 YAML 显式选择 FP32/none。每个 fold worker 只支持单进程单 CUDA GPU，CPU 仅用于测试；唯一 train 入口可以使用 spawn worker 在显式设备槽中并行调度多个彼此隔离的 fold，这属于 execution orchestration，不改变单 fold 数值合同。
-10. 每 epoch 完整 validation；科学指标在原单位与 normalized 单位报告，并同时给出 task-equal 与 group-equal macro。Base 每 10 epoch 保存不可覆盖 checkpoint，额外保存非整除 final；epoch 100 是固定最终模型，不 early stop，不生成 best/last。
+10. 每 epoch 完整 validation；科学指标在原单位与 normalized 单位报告，并同时给出 task-equal 与 group-equal macro。Base 每 10 epoch 保存不可覆盖 checkpoint，额外保存非整除 final；epoch 100 是固定普通历史 checkpoint，不 early stop，不生成 best/last。最终评估模型按 ADR-0027 发布为独立 taskwise-refined artifact。
 11. plugin load 与 adaptation 分离。默认加载并冻结 source GLOBAL、匹配 GROUP/PRIVATE，只训练新 task PRIVATE 或新 group GROUP+PRIVATE；但 YAML 可显式 adaptation GLOBAL、已有 GROUP、已有 PRIVATE，并可让任意 enabled task 重新参与 composite batching 与 PCGrad。target registry 可等于或扩展 source registry，结构、ownership、shape、Stage 2 SHA 和 normalization 严格校验；plugin 新 run 不继承 optimizer、scheduler、epoch 或 RNG。
 
 ## 后果

@@ -9,6 +9,8 @@
 > 2026-08-20：本文分散的 identity、lineage 与 audit 规则已由 [ADR-0021](0021-identity-audit-contract-v1.md) 取代；物理格式版本与科研训练合同不变。
 >
 > 2026-08-25：本文的 cation/anion orbital task 定义已由 [ADR-0025](0025-stage2-homo-lumo-scalar-tasks.md) 取代；Object v3、训练与 identity 分层合同保持不变。
+>
+> 2026-08-26：本文的末期 joint training、固定 final checkpoint 与 checkpoint v3 合同已由 [ADR-0027](0027-late-taskwise-refinement.md) 修订；Object v3 数据、teacher 与模型合同保持不变。
 
 ## 决定
 
@@ -22,7 +24,7 @@ Prepare 为每个任务建立 train-only condition/target scaler。普通 object
 
 每个 task 独立 shuffle 样本并组 batch；scheduler 每轮确定性打乱 active tasks，各发一个 batch，小任务耗尽后移除且不 cycle。每个 emitted batch 独立执行一次 optimizer step。归一化权重为 `w_t`、epoch batch 总数为 `M` 时，physics compensation 为 `w_t * M * batch_rows / task_rows`，总目标为 `compensation * physics_loss + lambda_teacher * teacher_loss`；teacher loss 不乘 task 权重或 compensation。
 
-Data artifact、teacher cache 和 checkpoint 统一为 v3，旧 v2 明确拒绝且不迁移。Prepared-data identity 只绑定 source、Stage 1 feature、registry、tensor 与 preparation contract，不包含 Stage 2 `model_contract`。Teacher cache identity 只绑定 entity artifact 与 Stage 1 encoder identity；后者由 encoding-only state、encoding config 与 feature artifact 决定。teacher 的 FP32 dtype 与 math contract 仅记录生成 provenance，不参与 cache identity。完整 epoch checkpoint 保存 registry、model contract、loss/scheduler geometry、optimizer、AMP 与 RNG；固定 epoch 5 为最终 checkpoint。成功保存 epoch 5 后原子导出 format v1 `stage2_encoder.pt`，只包含 Stage 1 encoding state、ObjectEncoder state、配置、内部 state hash 与 provenance，不包含 physics heads 或训练状态。Stage 3 迁移仍延期，并同时拒绝 Object v3 checkpoint 与 encoder artifact。
+Data artifact 与 teacher cache 保持 v3，checkpoint 按 ADR-0027 升级为 v4，旧 checkpoint 明确拒绝且不迁移。Prepared-data identity 只绑定 source、Stage 1 feature、registry、tensor 与 preparation contract，不包含 Stage 2 `model_contract`。Teacher cache identity 只绑定 entity artifact 与 Stage 1 encoder identity；后者由 encoding-only state、encoding config 与 feature artifact 决定。teacher 的 FP32 dtype 与 math contract 仅记录生成 provenance，不参与 cache identity。完整 epoch checkpoint 保存 registry、model contract、phase、loss/scheduler geometry、joint/per-task optimizer、AMP、refinement cache 与 RNG；epoch 5 是最终普通历史 checkpoint，最终评估模型是独立 taskwise-refined artifact。保存 epoch 5 后原子导出 format v1 `stage2_encoder.pt`，只包含 Stage 1 encoding state、ObjectEncoder state、配置、内部 state hash 与 refinement provenance，不包含 physics heads 或训练状态。
 
 CUDA 执行继续固定 TF32、fused AdamW、三组学习率、bf16、梯度裁剪和 full validation；不引入 PCGrad、MoE、curriculum、early stopping、best/last 或 step checkpoint。
 
@@ -36,7 +38,7 @@ Partial charge 的 CPU packer 只对 Stage 1 entity forward 去重。它发布 m
 
 Partial-charge mapping 使用 `spawn` ProcessPool，并保持最多 `2 * workers` 个 outstanding work item；每个 worker 只读取一次 MOL2 bytes，并完成 size/SHA、UTF-8、parse 与 mapping，返回纯 Python/NumPy payload。Parent 按 task、split、source row 顺序消费结果，随后才启动 entity feature pool。Graph DFS 固定按 model atom index 和升序 structure candidate 搜索；第一解即词典序最小解，探测到第二解即停止，并以 `unique|ambiguous` 和 `mapping_count_lower_bound=1|2` 审计。
 
-上述 execution 参数不进入 experiment hash，恢复时允许变化，但 checkpoint 记录实际值作为 provenance。`cuda_prefetch_batches` 目前只接受 1。Data/checkpoint 保持 format v3、encoder 保持 format v1；data signature 额外绑定 preparation contract version，缺少该合同的开发期 v3 artifact 必须重新 prepare。明确不引入 compile、gradient checkpointing、accumulation、batch autotune、OOM fallback、bucketing、多 batch GPU queue或异步 checkpoint。
+上述 execution 参数不进入 experiment hash，恢复时允许变化，但 checkpoint 记录实际值作为 provenance。`cuda_prefetch_batches` 目前只接受 1。Data 保持 format v3、checkpoint 为 format v4、encoder 保持 format v1；data signature 额外绑定 preparation contract version，缺少该合同的开发期 v3 artifact 必须重新 prepare。明确不引入 compile、gradient checkpointing、accumulation、batch autotune、OOM fallback、bucketing、多 batch GPU queue或异步 checkpoint。
 
 ### Identity boundary refinements
 

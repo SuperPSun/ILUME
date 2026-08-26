@@ -86,3 +86,5 @@ training:
   cpu_threads: 4
   cpu_interop_threads: 1
   debug_pcgrad_traces: false
+  refinement_ratio: 0.20
+  refinement_lr_multiplier: 0.10
