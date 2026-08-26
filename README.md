@@ -102,7 +102,7 @@ Stage 3 evaluator 同样默认加载每个 fold 的 `taskwise_refined.pt`；显�
 
 ## Baselines
 
-MLP 与 ECFP4-XGBoost 位于 `benchmarks/`，与 Stage 代码隔离；合同见 [ADR-0022](docs/adr/0022-mlp-ecfp-xgboost-baselines.md)。
+MLP、ECFP4-XGBoost 与 Chemprop D-MPNN 位于 `benchmarks/`，与 Stage 代码隔离；合同见 [ADR-0022](docs/adr/0022-mlp-ecfp-xgboost-baselines.md) 和 [ADR-0028](docs/adr/0028-chemprop-dmpnn-baseline.md)。
 
 ```bash
 python -m pip install -e ".[benchmarks]"
@@ -118,7 +118,36 @@ python scripts/benchmarks/sweep.py \
   --max-workers 1
 ```
 
-`--max-workers 1` 保持串行行为。MLP 多 GPU sweep 可通过 `--devices cuda:0,cuda:1,...` 分配逻辑 job；XGBoost 的 CPU 并行度由 YAML 中的 `training.n_jobs` 控制。
+D-MPNN 使用独立 hash-lock 环境，不修改主环境。环境只由以下显式命令创建和安装；普通运行会通过 `conda run` 自动进入已有环境，不要求 `conda activate`，也不会自动安装或更新依赖。
+
+```bash
+conda env create -f benchmarks/dmpnn/environment.yml
+conda run --no-capture-output -n ilume-dmpnn \
+  python -m pip install --require-hashes \
+  -r benchmarks/dmpnn/requirements-linux-x86_64-cu128.lock
+conda run --no-capture-output -n ilume-dmpnn \
+  python -m pip install --no-deps --no-build-isolation -e .
+
+ILUME_BENCHMARK_ENVIRONMENT=ilume-dmpnn \
+conda run --no-capture-output -n ilume-dmpnn \
+  python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_dmpnn_environment; validate_dmpnn_environment(load_benchmark_config("configs/benchmarks/dmpnn.yaml"))'
+```
+
+单任务与完整 sweep 仍复用公共入口：
+
+```bash
+python scripts/benchmarks/train.py \
+  --config configs/benchmarks/dmpnn.yaml \
+  --benchmark stage3 --task experiment/density --fold 1 \
+  --output outputs/benchmarks/v1/dmpnn/stage3/experiment__density/fold1/attempt-001
+
+python scripts/benchmarks/sweep.py \
+  --config configs/benchmarks/dmpnn.yaml \
+  --output outputs/benchmarks/v1/dmpnn \
+  --max-workers 1
+```
+
+`--max-workers 1` 保持串行行为。MLP 与 D-MPNN 多 GPU sweep 可通过 `--devices cuda:0,cuda:1,...` 分配逻辑 job；XGBoost 的 CPU 并行度由 YAML 中的 `training.n_jobs` 控制。D-MPNN 正式 sweep 共 109 个单 seed 训练任务；上述命令不会 resume，失败任务由 sweep 在新 attempt 中完整重跑。
 
 ## 输出与结果汇总
 

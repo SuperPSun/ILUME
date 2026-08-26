@@ -21,6 +21,10 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from benchmarks.common.config import load_benchmark_config
 from benchmarks.common.data import configured_tasks, has_test_rows, resolve_task
+from benchmarks.common.environment import (
+    ensure_benchmark_environment,
+    write_environment_snapshot,
+)
 from benchmarks.common.metrics import macro_normalized_mae, mean_sample_std
 from common.identity import semantic_identity
 from common.io import atomic_json
@@ -30,8 +34,11 @@ from common.reporting import (
     REPORTING_SCHEMA_VERSION,
     STAGE2_BENCHMARK_SUITE_CONTRACT,
     STAGE2_CORE_EVALUATION_CONTRACT,
+    STAGE2_PARTIAL_EVALUATION_CONTRACT,
     comparison_identity,
+    stage2_full_comparison_identity,
 )
+from stage2.atom_evaluation import PARTIAL_CHARGE_TASK, PARTIAL_CHARGE_UNIT
 
 FIELDS = ("operation", "benchmark", "task", "fold", "attempt", "status", "exit_code", "output")
 
@@ -119,7 +126,11 @@ class _SweepState:
                 root,
                 required,
                 reporting_contract=(
-                    STAGE2_CORE_EVALUATION_CONTRACT
+                    (
+                        STAGE2_PARTIAL_EVALUATION_CONTRACT
+                        if task == PARTIAL_CHARGE_TASK
+                        else STAGE2_CORE_EVALUATION_CONTRACT
+                    )
                     if operation.startswith("evaluate") and benchmark == "stage2_physics"
                     else None
                 ),
@@ -424,9 +435,11 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
     stage3_valid: dict[str, Any] = {}
     stage3_test: dict[str, Any] = {}
     stage2_test: dict[str, Any] = {}
+    stage2_partial: dict[str, Any] | None = None
     stage3_valid_reporting: list[dict[str, Any]] = []
     stage3_test_reporting: list[dict[str, Any]] = []
     stage2_reporting: list[dict[str, Any]] = []
+    stage2_partial_reporting: list[dict[str, Any]] = []
     source_runs: dict[str, Any] = {
         "stage3_validation": {}, "stage3_test": {}, "stage2_physics": {}
     }
@@ -457,15 +470,24 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
             stage3_test_reporting.append(payload["reporting"])
             source_runs["stage3_test"][task] = repository_relative(run)
     for task in configured_tasks(config, "stage2_physics"):
+        contract = (
+            STAGE2_PARTIAL_EVALUATION_CONTRACT
+            if task == PARTIAL_CHARGE_TASK
+            else STAGE2_CORE_EVALUATION_CONTRACT
+        )
         run = _latest_completed(
             root / "stage2_physics" / _sanitize(task) / "evaluate_test",
             "summary.json",
-            reporting_contract=STAGE2_CORE_EVALUATION_CONTRACT,
+            reporting_contract=contract,
         )
         if run:
             payload = json.loads((run / "summary.json").read_text(encoding="utf-8"))
-            stage2_test[task] = payload["targets"]
-            stage2_reporting.append(payload["reporting"])
+            if task == PARTIAL_CHARGE_TASK:
+                stage2_partial = payload["stage2_partial_charge_benchmark"]["test"]
+                stage2_partial_reporting.append(payload["reporting"])
+            else:
+                stage2_test[task] = payload["targets"]
+                stage2_reporting.append(payload["reporting"])
             source_runs["stage2_physics"][task] = repository_relative(run)
 
     def merged_comparison(
@@ -506,7 +528,10 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
             resolve_task(config, "stage3", task, config.stage3.folds[0])
         )
     ]
-    stage2_expected = list(configured_tasks(config, "stage2_physics"))
+    configured_stage2 = list(configured_tasks(config, "stage2_physics"))
+    stage2_expected = [
+        task for task in configured_stage2 if task != PARTIAL_CHARGE_TASK
+    ]
     stage2_values = []
     for task in stage2_expected:
         spec = resolve_task(config, "stage2_physics", task, None)
@@ -520,7 +545,12 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
     stage2_complete = stage2_valid_count == len(stage2_expected)
     study_ids = {
         item["study_id"]
-        for item in [*stage3_valid_reporting, *stage3_test_reporting, *stage2_reporting]
+        for item in [
+            *stage3_valid_reporting,
+            *stage3_test_reporting,
+            *stage2_reporting,
+            *stage2_partial_reporting,
+        ]
     }
     study_id = f"{config.name}-" + semantic_identity(
         "benchmark.reporting-study.v1",
@@ -528,6 +558,35 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
     )["hash"]
     if study_ids - {study_id}:
         raise ValueError("Benchmark sweep contains incompatible reporting study identities")
+    partial_supported = PARTIAL_CHARGE_TASK in configured_stage2
+    partial_complete = bool(
+        partial_supported
+        and stage2_partial is not None
+        and stage2_partial.get("status") == "complete"
+        and stage2_partial_reporting
+    )
+    core_comparison = merged_comparison(
+        stage2_reporting,
+        benchmark="stage2_physics",
+        split="test",
+        expected=stage2_expected,
+        ensemble=False,
+    )
+    partial_comparison = (
+        stage2_partial_reporting[0]["comparison_identity"]
+        if stage2_partial_reporting
+        else None
+    )
+    full_complete = stage2_complete and partial_complete
+    full_comparison = (
+        stage2_full_comparison_identity(
+            core_comparison,
+            partial_comparison,
+            ordered_units=(*stage2_expected, PARTIAL_CHARGE_UNIT),
+        )
+        if full_complete and partial_comparison is not None
+        else None
+    )
     result = {
         "model": config.name,
         "stage3_property_benchmark": {
@@ -545,6 +604,9 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
                 "valid_tasks": len(stage2_values),
                 "total_tasks": len(stage2_expected),
             },
+        },
+        "stage2_partial_charge_benchmark": {
+            "test": stage2_partial
         },
         "reporting": {
             "schema_version": REPORTING_SCHEMA_VERSION,
@@ -586,7 +648,7 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
                     "benchmark": "stage2_physics",
                     "protocol": {
                         "split": "test", "folds": [], "ensemble": False,
-                        "expected_tasks": list(configured_tasks(config, "stage2_physics")),
+                        "expected_tasks": stage2_expected,
                     },
                     "comparison_identity": merged_comparison(
                         stage2_reporting,
@@ -599,20 +661,66 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
                     ),
                 },
                 "stage2_partial_charge": {
-                    "status": "unsupported",
+                    "status": (
+                        "complete"
+                        if partial_complete
+                        else "incomplete"
+                        if partial_supported
+                        else "unsupported"
+                    ),
                     "benchmark": "stage2_partial_charge",
-                    "protocol": {"split": "test", "ensemble": False},
+                    "protocol": {
+                        "split": "test",
+                        "folds": [],
+                        "ensemble": False,
+                        "expected_units": [PARTIAL_CHARGE_UNIT],
+                    },
+                    **(
+                        {}
+                        if partial_comparison is None
+                        else {"comparison_identity": partial_comparison}
+                    ),
+                    "issues": (
+                        []
+                        if partial_complete or not partial_supported
+                        else ["missing_or_incomplete_partial_charge"]
+                    ),
                 },
                 "stage2_physics_full": {
-                    "status": "unsupported",
+                    "status": (
+                        "complete"
+                        if full_complete
+                        else "incomplete"
+                        if partial_supported
+                        else "unsupported"
+                    ),
                     "benchmark": "stage2_physics_full",
-                    "protocol": {"split": "test", "ensemble": False},
+                    "protocol": {
+                        "split": "test",
+                        "folds": [],
+                        "ensemble": False,
+                        "expected_units": [*stage2_expected, PARTIAL_CHARGE_UNIT],
+                    },
+                    **(
+                        {}
+                        if full_comparison is None
+                        else {"comparison_identity": full_comparison}
+                    ),
+                    "issues": (
+                        []
+                        if full_complete or not partial_supported
+                        else ["core_or_partial_incomplete"]
+                    ),
                 },
             },
             "capabilities": {
                 "stage2_core_physics": "supported",
-                "stage2_partial_charge": "unsupported",
-                "stage2_physics_full": "unsupported",
+                "stage2_partial_charge": (
+                    "supported" if partial_supported else "unsupported"
+                ),
+                "stage2_physics_full": (
+                    "supported" if partial_supported else "unsupported"
+                ),
             },
             "source_runs": source_runs,
             "source_run_manifest": semantic_identity(
@@ -660,19 +768,20 @@ def main() -> None:
     )
     parser.add_argument(
         "--devices",
-        help=("optional MLP GPU list such as cuda:0,cuda:1; logical job chains are "
+        help=("optional MLP/D-MPNN GPU list such as cuda:0,cuda:1; logical job chains are "
               "assigned round-robin via CUDA_VISIBLE_DEVICES"),
     )
     args = parser.parse_args()
     config = load_benchmark_config(args.config)
+    environment_snapshot = ensure_benchmark_environment(config)
     try:
         devices = _parse_devices(args.devices)
     except ValueError as error:
         parser.error(str(error))
-    if devices and config.name != "mlp":
-        parser.error("--devices is only supported for the MLP benchmark")
+    if devices and config.name not in {"mlp", "dmpnn"}:
+        parser.error("--devices is only supported for GPU neural-network benchmarks")
     if devices and config.training.get("device") != "cuda":
-        parser.error("--devices requires MLP training.device: cuda")
+        parser.error("--devices requires training.device: cuda")
 
     root = repository_path(args.output)
     identity = semantic_identity("benchmark.sweep.v1", {"config": _scientific_config(config)})
@@ -684,8 +793,19 @@ def main() -> None:
         details={
             "reporting_schema_version": REPORTING_SCHEMA_VERSION,
             "reporting_contract": STAGE2_BENCHMARK_SUITE_CONTRACT,
+            **(
+                {}
+                if environment_snapshot is None
+                else {
+                    "benchmark_environment": environment_snapshot["environment_name"],
+                    "environment_lock_sha256": environment_snapshot["environment_lock_sha256"],
+                    "chemprop_version": environment_snapshot["direct_versions"]["chemprop"],
+                }
+            ),
         },
     )
+    if environment_snapshot is not None:
+        write_environment_snapshot(run.root / "environment.json", environment_snapshot)
     rows: list[dict[str, Any]] = []
     train_script = ROOT / "scripts/benchmarks/train.py"
     evaluate_script = ROOT / "scripts/benchmarks/evaluate.py"

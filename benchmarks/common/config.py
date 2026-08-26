@@ -15,7 +15,8 @@ class DataConfig:
     data_root: Path
     task_catalog: Path
     stage3_authority_config: Path
-    feature_cache: Path
+    feature_cache: Path | None
+    stage2_authority_config: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,13 @@ class FeatureConfig:
     kind: Literal["rdkit_2d", "ecfp4"]
     radius: int = 2
     n_bits: int = 2048
+
+
+@dataclass(frozen=True)
+class EnvironmentConfig:
+    name: str
+    definition: Path
+    lock: Path
 
 
 @dataclass(frozen=True)
@@ -40,9 +48,10 @@ class Stage2PhysicsConfig:
 
 @dataclass(frozen=True)
 class BenchmarkConfig:
-    name: Literal["mlp", "ecfp_xgboost"]
+    name: Literal["mlp", "ecfp_xgboost", "dmpnn"]
     data: DataConfig
-    features: FeatureConfig
+    features: FeatureConfig | None
+    environment: EnvironmentConfig | None
     model: dict[str, Any]
     training: dict[str, Any]
     stage3: Stage3BenchmarkConfig
@@ -51,16 +60,28 @@ class BenchmarkConfig:
     display_name: str = ""
 
     def validate(self) -> None:
-        if self.name not in {"mlp", "ecfp_xgboost"}:
+        if self.name not in {"mlp", "ecfp_xgboost", "dmpnn"}:
             raise ValueError(f"Unknown benchmark model: {self.name}")
         if not self.display_name:
             raise ValueError("Benchmark display_name must be non-empty")
-        if self.name == "mlp" and self.features.kind != "rdkit_2d":
+        if self.name == "mlp" and (
+            self.features is None or self.features.kind != "rdkit_2d"
+        ):
             raise ValueError("MLP benchmark requires RDKit 2D descriptors")
-        if self.name == "ecfp_xgboost" and self.features.kind != "ecfp4":
+        if self.name == "ecfp_xgboost" and (
+            self.features is None or self.features.kind != "ecfp4"
+        ):
             raise ValueError("XGBoost benchmark requires ECFP4 features")
-        if self.features.radius <= 0 or self.features.n_bits <= 0:
+        if self.features is not None and (
+            self.features.radius <= 0 or self.features.n_bits <= 0
+        ):
             raise ValueError("Fingerprint radius and n_bits must be positive")
+        if self.name != "dmpnn" and self.data.feature_cache is None:
+            raise ValueError("Feature baselines require data.feature_cache")
+        if self.name != "dmpnn" and self.environment is not None:
+            raise ValueError("Only D-MPNN uses a dedicated benchmark environment")
+        if self.name == "dmpnn":
+            self._validate_dmpnn()
         if not self.model or not self.training or self.seed < 0:
             raise ValueError("Benchmark model/training contract is incomplete")
         if not self.stage3.folds or any(fold not in range(1, 6) for fold in self.stage3.folds):
@@ -71,6 +92,49 @@ class BenchmarkConfig:
             raise ValueError("Enabled Stage 3 benchmark has no tasks")
         if self.stage2_physics.enabled and not self.stage2_physics.tasks:
             raise ValueError("Enabled Stage 2 physics benchmark has no tasks")
+
+    def _validate_dmpnn(self) -> None:
+        if self.features is not None:
+            raise ValueError("D-MPNN uses Chemprop graphs and does not accept features")
+        if self.environment is None or not all(
+            (self.environment.name, str(self.environment.definition), str(self.environment.lock))
+        ):
+            raise ValueError("D-MPNN requires a dedicated environment definition and lock")
+        if self.environment.name != "ilume-dmpnn":
+            raise ValueError("D-MPNN environment name must be ilume-dmpnn")
+        if self.data.stage2_authority_config is None:
+            raise ValueError("D-MPNN requires data.stage2_authority_config")
+        expected_model = {
+            "message_hidden_dim": 300,
+            "depth": 3,
+            "dropout": 0.0,
+            "activation": "relu",
+            "aggregation": "norm",
+            "aggregation_norm": 100.0,
+            "ffn_hidden_dim": 300,
+            "ffn_hidden_layers": 1,
+            "batch_norm": False,
+            "multicomponent_shared": False,
+        }
+        if self.model != expected_model:
+            raise ValueError("D-MPNN model must match the registered Chemprop recipe")
+        expected_training = {
+            "optimizer": "adam",
+            "scheduler": "noam",
+            "warmup_epochs": 2,
+            "initial_learning_rate": 1.0e-4,
+            "max_learning_rate": 1.0e-3,
+            "final_learning_rate": 1.0e-4,
+            "batch_size": 64,
+            "max_epochs": 50,
+            "early_stopping_patience": 10,
+            "loss": "mse",
+            "selection_metric": "validation_mae",
+            "device": "cuda",
+            "precision": "fp32",
+        }
+        if self.training != expected_training:
+            raise ValueError("D-MPNN training must match the registered Chemprop recipe")
 
     def to_dict(self) -> dict[str, Any]:
         def convert(value: Any) -> Any:
@@ -100,13 +164,27 @@ def _only(values: dict[str, Any], allowed: set[str], context: str) -> None:
 def benchmark_config_from_dict(raw: dict[str, Any]) -> BenchmarkConfig:
     _only(
         raw,
-        {"name", "display_name", "seed", "data", "features", "model", "training", "stage3", "stage2_physics"},
+        {"name", "display_name", "seed", "data", "features", "environment", "model", "training", "stage3", "stage2_physics"},
         "benchmark config",
     )
     data = _mapping(raw.get("data"), "data")
-    _only(data, {"data_root", "task_catalog", "stage3_authority_config", "feature_cache"}, "data")
-    features = _mapping(raw.get("features"), "features")
-    _only(features, {"kind", "radius", "n_bits"}, "features")
+    _only(
+        data,
+        {"data_root", "task_catalog", "stage3_authority_config", "feature_cache", "stage2_authority_config"},
+        "data",
+    )
+    features_raw = raw.get("features")
+    features = None if features_raw is None else _mapping(features_raw, "features")
+    if features is not None:
+        _only(features, {"kind", "radius", "n_bits"}, "features")
+    environment_raw = raw.get("environment")
+    environment = (
+        None
+        if environment_raw is None
+        else _mapping(environment_raw, "environment")
+    )
+    if environment is not None:
+        _only(environment, {"name", "definition", "lock"}, "environment")
     stage3 = _mapping(raw.get("stage3"), "stage3")
     _only(stage3, {"enabled", "tasks", "folds"}, "stage3")
     stage2 = _mapping(raw.get("stage2_physics"), "stage2_physics")
@@ -126,12 +204,32 @@ def benchmark_config_from_dict(raw: dict[str, Any]) -> BenchmarkConfig:
             data_root=Path(data["data_root"]),
             task_catalog=Path(data["task_catalog"]),
             stage3_authority_config=Path(data["stage3_authority_config"]),
-            feature_cache=Path(data["feature_cache"]),
+            feature_cache=(
+                None if data.get("feature_cache") is None else Path(data["feature_cache"])
+            ),
+            stage2_authority_config=(
+                None
+                if data.get("stage2_authority_config") is None
+                else Path(data["stage2_authority_config"])
+            ),
         ),
-        features=FeatureConfig(
-            kind=str(features["kind"]),  # type: ignore[arg-type]
-            radius=int(features.get("radius", 2)),
-            n_bits=int(features.get("n_bits", 2048)),
+        features=(
+            None
+            if features is None
+            else FeatureConfig(
+                kind=str(features["kind"]),  # type: ignore[arg-type]
+                radius=int(features.get("radius", 2)),
+                n_bits=int(features.get("n_bits", 2048)),
+            )
+        ),
+        environment=(
+            None
+            if environment is None
+            else EnvironmentConfig(
+                name=str(environment["name"]),
+                definition=Path(environment["definition"]),
+                lock=Path(environment["lock"]),
+            )
         ),
         model=_mapping(raw.get("model"), "model"),
         training=_mapping(raw.get("training"), "training"),
@@ -160,6 +258,7 @@ def load_benchmark_config(path: str | Path) -> BenchmarkConfig:
 __all__ = [
     "BenchmarkConfig",
     "BenchmarkName",
+    "EnvironmentConfig",
     "FeatureConfig",
     "benchmark_config_from_dict",
     "load_benchmark_config",

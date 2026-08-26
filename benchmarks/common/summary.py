@@ -287,7 +287,7 @@ def _validate_current(candidate: Candidate) -> None:
             checkpoint_epochs = {item.get("checkpoint_epoch") for item in protocols}
             if (
                 len(checkpoint_hashes) != 1 or None in checkpoint_hashes
-                or len(checkpoint_epochs) != 1 or None in checkpoint_epochs
+                or len(checkpoint_epochs) != 1
             ):
                 raise ValueError("ILUME Stage 2 suite checkpoint binding is inconsistent")
         for name, value in benchmarks.items():

@@ -116,9 +116,15 @@ def prepare_training(
     *,
     reporter: ProgressReporter | None = None,
 ) -> TrainingBundle:
+    if config.name == "dmpnn":
+        from benchmarks.dmpnn.adapter import prepare_dmpnn_training
+
+        return prepare_dmpnn_training(config, benchmark, task_id, fold)  # type: ignore[return-value]
     task = resolve_task(config, benchmark, task_id, fold)
     train = load_split(task, "train")
     valid = load_split(task, "valid")
+    if config.features is None or config.data.feature_cache is None:
+        raise ValueError("Feature baseline configuration is incomplete")
     schema = feature_schema(config.features)
     fold_suffix = f" fold{fold}" if fold is not None else ""
     with FeatureCache(config.data.feature_cache) as cache:
@@ -408,6 +414,10 @@ def train_bundle(
     *,
     reporter: ProgressReporter | None = None,
 ) -> dict[str, Any]:
+    if config.name == "dmpnn":
+        from benchmarks.dmpnn.adapter import train_dmpnn_bundle
+
+        return train_dmpnn_bundle(config, bundle, output_dir)  # type: ignore[arg-type]
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
     if config.name == "mlp":
@@ -502,6 +512,12 @@ def evaluate_checkpoint(
     *,
     reporter: ProgressReporter | None = None,
 ) -> EvaluationResult:
+    if config.name == "dmpnn":
+        from benchmarks.dmpnn.adapter import evaluate_dmpnn_checkpoint
+
+        return evaluate_dmpnn_checkpoint(
+            config, benchmark, task_id, fold, checkpoint_dir, split
+        )
     if split not in {"valid", "test"}:
         raise ValueError("Benchmark evaluation split must be valid or test")
     root = Path(checkpoint_dir)

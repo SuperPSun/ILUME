@@ -22,6 +22,11 @@ from benchmarks.common.engine import (
     prepare_training,
     train_bundle,
 )
+from benchmarks.common.environment import (
+    ENVIRONMENT_MARKER,
+    ensure_benchmark_environment,
+    environment_command,
+)
 from benchmarks.common.features import (
     FeatureCache,
     FeaturePreprocessor,
@@ -30,10 +35,19 @@ from benchmarks.common.features import (
     raw_feature_matrix,
 )
 from benchmarks.common.metrics import mean_sample_std, regression_metrics
+from common.identity import semantic_identity
+from common.reporting import (
+    REPORTING_SCHEMA_VERSION,
+    STAGE2_CORE_EVALUATION_CONTRACT,
+    STAGE2_PARTIAL_EVALUATION_CONTRACT,
+    comparison_identity,
+)
+from stage2.atom_evaluation import PARTIAL_CHARGE_TASK, PARTIAL_CHARGE_UNIT
 import scripts.benchmarks.sweep as sweep_module
 from scripts.benchmarks.sweep import (
     _JobResult,
     _SweepState,
+    _aggregate,
     _build_jobs,
     _parse_devices,
     _run as run_sweep_job,
@@ -282,6 +296,70 @@ def test_formal_configs_and_registry_resolution(tmp_path: Path) -> None:
         )
     assert matrix.shape == (0, 2 * 217 + 2)
     assert reporter.bars == []
+
+
+def test_formal_dmpnn_config_resolves_109_training_jobs() -> None:
+    config = load_benchmark_config("configs/benchmarks/dmpnn.yaml")
+    stage3_tasks = configured_tasks(config, "stage3")
+    stage2_tasks = configured_tasks(config, "stage2_physics")
+    assert len(stage3_tasks) == 21
+    assert stage2_tasks == (
+        "simulation/heat_of_vaporization",
+        "simulation/homo",
+        "simulation/lumo",
+        "simulation/partial_atomic_charge",
+    )
+    assert len(stage3_tasks) * len(config.stage3.folds) + len(stage2_tasks) == 109
+    assert config.features is None
+    assert config.data.feature_cache is None
+
+
+def test_dmpnn_config_unknown_fields_still_fail_hard() -> None:
+    raw = yaml.safe_load(Path("configs/benchmarks/dmpnn.yaml").read_text(encoding="utf-8"))
+    raw["data"]["feature_cache_policy"] = "none"
+    with pytest.raises(ValueError, match="Unknown data fields"):
+        benchmark_config_from_dict(raw)
+
+
+def test_dmpnn_environment_dispatches_once_before_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_benchmark_config("configs/benchmarks/dmpnn.yaml")
+    command = environment_command(
+        config,
+        ("scripts/benchmarks/train.py", "--config", "configs/benchmarks/dmpnn.yaml"),
+        conda="/opt/conda/bin/conda",
+    )
+    assert command[:7] == [
+        "/opt/conda/bin/conda",
+        "run",
+        "--no-capture-output",
+        "-n",
+        "ilume-dmpnn",
+        "python",
+        str((Path.cwd() / "scripts/benchmarks/train.py").resolve()),
+    ]
+    monkeypatch.delenv(ENVIRONMENT_MARKER, raising=False)
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return type("Result", (), {"returncode": 7})()
+
+    monkeypatch.setattr("benchmarks.common.environment.shutil.which", lambda _: "conda")
+    monkeypatch.setattr("benchmarks.common.environment.subprocess.run", fake_run)
+    with pytest.raises(SystemExit, match="7"):
+        ensure_benchmark_environment(config, ("scripts/benchmarks/train.py",))
+    assert calls[0][1]["env"][ENVIRONMENT_MARKER] == "ilume-dmpnn"
+
+
+def test_dmpnn_environment_marker_mismatch_is_a_hard_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_benchmark_config("configs/benchmarks/dmpnn.yaml")
+    monkeypatch.setenv(ENVIRONMENT_MARKER, "wrong-environment")
+    with pytest.raises(RuntimeError, match="marker mismatch"):
+        ensure_benchmark_environment(config)
 
 
 def test_preprocessor_uses_train_mask_median_and_population_zscore() -> None:
@@ -574,3 +652,109 @@ def test_sweep_devices_are_assigned_round_robin(tmp_path: Path) -> None:
     assert ensembles["experiment/one"].device == "cuda:0"
     assert _subprocess_env(None)["ILUME_DISABLE_PROGRESS"] == "1"
     assert _subprocess_env("cuda:3")["CUDA_VISIBLE_DEVICES"] == "3"
+
+
+def test_dmpnn_full_requires_complete_core_and_partial_from_same_sweep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_benchmark_config("configs/benchmarks/dmpnn.yaml")
+    monkeypatch.setattr(
+        sweep_module, "repository_relative", lambda value: Path(value).as_posix()
+    )
+    study_id = f"dmpnn-{semantic_identity(
+        'benchmark.reporting-study.v1',
+        {'model': config.name, 'config': sweep_module._scientific_config(config)},
+    )['hash']}"
+
+    def completed(task: str, summary: dict[str, object]) -> None:
+        run = (
+            tmp_path
+            / "stage2_physics"
+            / task.replace("/", "__")
+            / "evaluate_test"
+            / "attempt-001"
+        )
+        run.mkdir(parents=True)
+        (run / "metadata.json").write_text(
+            '{"status":"completed"}\n', encoding="utf-8"
+        )
+        (run / "summary.json").write_text(
+            json.dumps(summary), encoding="utf-8"
+        )
+
+    core_tasks = config.stage2_physics.tasks[:-1]
+    for index, task in enumerate(core_tasks, start=1):
+        spec = resolve_task(config, "stage2_physics", task, None)
+        target = spec.target_columns[0]
+        comparison = comparison_identity(
+            "stage2_physics",
+            split="test",
+            expected=(task,),
+            sources={f"{task}:test": f"hash-{index}"},
+            normalization={task: {"scale": float(index)}},
+        )
+        completed(
+            task,
+            {
+                "targets": {target: {"normalized_mae": index / 10}},
+                "reporting": {
+                    "schema_version": REPORTING_SCHEMA_VERSION,
+                    "contract": STAGE2_CORE_EVALUATION_CONTRACT,
+                    "study_id": study_id,
+                    "comparison_identity": comparison,
+                },
+            },
+        )
+    partial_comparison = comparison_identity(
+        "stage2_partial_charge",
+        split="test",
+        expected=(PARTIAL_CHARGE_UNIT,),
+        sources={"partial:test": "partial-hash"},
+        normalization={PARTIAL_CHARGE_UNIT: {"scale": 1.5}},
+    )
+    completed(
+        PARTIAL_CHARGE_TASK,
+        {
+            "stage2_partial_charge_benchmark": {
+                "test": {
+                    "status": "complete",
+                    "primary": {"molecule_macro_normalized_mae": 0.4},
+                }
+            },
+            "reporting": {
+                "schema_version": REPORTING_SCHEMA_VERSION,
+                "contract": STAGE2_PARTIAL_EVALUATION_CONTRACT,
+                "study_id": study_id,
+                "comparison_identity": partial_comparison,
+            },
+        },
+    )
+    complete = _aggregate(tmp_path, config)
+    assert complete["reporting"]["benchmarks"]["stage2_core_physics"][
+        "protocol"
+    ]["expected_tasks"] == list(core_tasks)
+    assert complete["reporting"]["benchmarks"]["stage2_partial_charge"][
+        "status"
+    ] == "complete"
+    assert complete["reporting"]["benchmarks"]["stage2_physics_full"][
+        "status"
+    ] == "complete"
+
+    partial_run = (
+        tmp_path
+        / "stage2_physics"
+        / PARTIAL_CHARGE_TASK.replace("/", "__")
+        / "evaluate_test"
+        / "attempt-001"
+        / "summary.json"
+    )
+    payload = json.loads(partial_run.read_text(encoding="utf-8"))
+    payload["stage2_partial_charge_benchmark"]["test"]["status"] = "incomplete"
+    partial_run.write_text(json.dumps(payload), encoding="utf-8")
+    incomplete = _aggregate(tmp_path, config)
+    assert incomplete["reporting"]["benchmarks"]["stage2_partial_charge"][
+        "status"
+    ] == "incomplete"
+    assert incomplete["reporting"]["benchmarks"]["stage2_physics_full"][
+        "status"
+    ] == "incomplete"
