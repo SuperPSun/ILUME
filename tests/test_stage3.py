@@ -532,10 +532,30 @@ def test_short_training_checkpoint_and_resume_are_exact(tiny_prepared: Stage3Con
         ensemble_folds=False,
         task_subset=("experiment/a",),
         fold=1,
-        taskwise_refined=True,
     )
     assert refined["checkpoint_epoch"] is None
     assert refined["model_selector"] == "taskwise_refined"
+    (continuous / "taskwise_refined.pt").unlink()
+    (continuous / "taskwise_refinement.json").unlink()
+    with pytest.raises(FileNotFoundError, match="taskwise_refined"):
+        evaluate_checkpoints(
+            tiny_prepared,
+            continuous,
+            split="valid",
+            ensemble_folds=False,
+            task_subset=("experiment/a",),
+            fold=1,
+        )
+    epoch_only = evaluate_checkpoints(
+        tiny_prepared,
+        continuous,
+        split="valid",
+        ensemble_folds=False,
+        checkpoint_epoch=2,
+        task_subset=("experiment/a",),
+        fold=1,
+    )
+    assert epoch_only["model_selector"] == "epoch_checkpoint"
 
 
 def test_stage3_scripts_configure_runtime_before_loading_operation() -> None:

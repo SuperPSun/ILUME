@@ -63,9 +63,10 @@ task validation-best private state stitching，重新运行完整 validation，�
 
 Stage 2 checkpoint 升级到 format v4，Stage 3 checkpoint 升级到 format v2，保存 phase、
 per-task optimizer/scheduler、update counters 与 best-state cache。支持 boundary、
-mid-refinement 和 finalization 恢复；旧 checkpoint 不迁移。evaluate 新增与
-`--checkpoint-epoch` 互斥的 `--taskwise-refined` selector；正式模型选择与 test 使用 refined
-artifact，普通 checkpoint 只保留历史与恢复语义。
+mid-refinement 和 finalization 恢复；旧 checkpoint 不迁移。evaluate 默认选择
+taskwise-refined artifact；只有显式提供 `--checkpoint-epoch N` 才选择
+对应普通历史 checkpoint。正式模型选择与 test 使用 refined artifact，普通 checkpoint
+只保留历史、恢复与显式诊断评估语义。
 
 ### Capacity 与 HPO
 

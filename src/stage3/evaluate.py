@@ -327,9 +327,9 @@ def _default_reporting_study_id(
 
 def resolve_stage3_reporting_study_id(
     config: Stage3Config, *, checkpoint_epoch: int | None = None,
-    taskwise_refined: bool = False,
 ) -> str:
     """Resolve the fold-independent default reporting study identifier."""
+    taskwise_refined = checkpoint_epoch is None
     epoch = config.training.epochs if checkpoint_epoch is None else checkpoint_epoch
     if epoch <= 0:
         raise ValueError("Stage 3 checkpoint epoch must be positive")
@@ -460,7 +460,6 @@ def evaluate_checkpoints(
     predictions_dir: str | Path | None = None,
     reporting_study_id: str | None = None,
     expected_evaluation_identity: Mapping[str, Any] | None = None,
-    taskwise_refined: bool = False,
 ) -> dict[str, Any]:
     if split not in {"valid", "test"}:
         raise ValueError("Stage 3 evaluation split must be valid or test")
@@ -480,8 +479,7 @@ def evaluate_checkpoints(
     tasks = tuple(task_subset) if task_subset is not None else enabled
     if not tasks or set(tasks) - set(enabled):
         raise ValueError("Stage 3 evaluation task subset is invalid")
-    if taskwise_refined and checkpoint_epoch is not None:
-        raise ValueError("taskwise_refined forbids checkpoint_epoch")
+    taskwise_refined = checkpoint_epoch is None
     epoch = config.training.epochs if checkpoint_epoch is None else checkpoint_epoch
     if epoch <= 0:
         raise ValueError("Stage 3 checkpoint epoch must be positive")
@@ -704,7 +702,6 @@ def resolve_stage3_evaluation_identity(
     checkpoint_epoch: int | None = None,
     task_subset: Sequence[str] | None = None,
     fold: int | None = None,
-    taskwise_refined: bool = False,
 ) -> dict[str, Any]:
     """Resolve and validate the semantic identity of an evaluation request."""
     if split not in {"valid", "test"}:
@@ -720,8 +717,7 @@ def resolve_stage3_evaluation_identity(
     tasks = tuple(task_subset) if task_subset is not None else enabled
     if not tasks or set(tasks) - set(enabled):
         raise ValueError("Stage 3 evaluation task subset is invalid")
-    if taskwise_refined and checkpoint_epoch is not None:
-        raise ValueError("taskwise_refined forbids checkpoint_epoch")
+    taskwise_refined = checkpoint_epoch is None
     epoch = config.training.epochs if checkpoint_epoch is None else checkpoint_epoch
     if epoch <= 0:
         raise ValueError("Stage 3 checkpoint epoch must be positive")

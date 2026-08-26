@@ -197,7 +197,6 @@ python scripts/stage3/evaluate.py \
   --checkpoint-dir outputs/experiments_v1/stage3/formal/<scale> \
   --split test \
   --ensemble-folds \
-  --taskwise-refined \
   --study-id capacity-v1-<scale> \
   --output outputs/experiments_v1/stage3/test/<scale>
 ```

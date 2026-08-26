@@ -11,6 +11,7 @@ import pytest
 import torch
 from rdkit import Chem
 
+import scripts.stage2.evaluate as stage2_evaluate_launcher
 from common.io import sha256_file
 from common.identity import IDENTITY_CONTRACT_VERSION
 from stage1.identity import metadata_identity
@@ -713,3 +714,22 @@ def test_prepare_train_checkpoint_and_encoder_export(tiny_stage2_setup, tmp_path
     resumed = torch.load(resume_output / "checkpoint_epoch_00002.pt", map_location="cpu", weights_only=False)
     assert resumed["scheduler_geometry"]["gradient_accumulation_steps"] == 1
     assert (resume_output / "stage2_encoder.pt").is_file()
+
+
+def test_stage2_evaluate_defaults_to_refined_and_rejects_removed_flag() -> None:
+    parser = stage2_evaluate_launcher._build_parser()
+    parsed = parser.parse_args([
+        "--config", "base.yaml", "--checkpoint-dir", "train",
+        "--output", "evaluate",
+    ])
+    assert parsed.checkpoint_epoch is None
+    parsed_epoch = parser.parse_args([
+        "--config", "base.yaml", "--checkpoint-dir", "train",
+        "--checkpoint-epoch", "5", "--output", "evaluate",
+    ])
+    assert parsed_epoch.checkpoint_epoch == 5
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "--config", "base.yaml", "--checkpoint-dir", "train",
+            "--taskwise-refined", "--output", "evaluate",
+        ])

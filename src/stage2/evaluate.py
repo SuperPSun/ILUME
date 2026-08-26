@@ -196,11 +196,9 @@ def resolve_stage2_evaluation_identity(
     checkpoint_dir: str | Path,
     *,
     checkpoint_epoch: int | None = None,
-    taskwise_refined: bool = False,
 ) -> dict[str, Any]:
     identity, _ = resolve_stage2_evaluation_contract(
         config, checkpoint_dir, checkpoint_epoch=checkpoint_epoch,
-        taskwise_refined=taskwise_refined,
     )
     return identity
 
@@ -256,10 +254,8 @@ def resolve_stage2_evaluation_contract(
     checkpoint_dir: str | Path,
     *,
     checkpoint_epoch: int | None = None,
-    taskwise_refined: bool = False,
 ) -> tuple[dict[str, Any], PartialChargeBenchmark]:
-    if taskwise_refined and checkpoint_epoch is not None:
-        raise ValueError("taskwise_refined forbids checkpoint_epoch")
+    taskwise_refined = checkpoint_epoch is None
     path = resolve_checkpoint_path(checkpoint_dir, checkpoint_epoch)
     checkpoint, registry, _ = _load_checkpoint_contract(config, path)
     model_path = path
@@ -301,7 +297,11 @@ def _evaluation_identity(
         "stage2.evaluation.v1",
         {
             "checkpoint_sha256": sha256_file(checkpoint_path),
-            "checkpoint_epoch": int(checkpoint["completed_epoch"]),
+            "checkpoint_epoch": (
+                None
+                if model_selector == "taskwise_refined"
+                else int(checkpoint["completed_epoch"])
+            ),
             "model_selector": model_selector,
             "model_state_hash": model_state_hash,
             "selection_manifest_sha256": selection_manifest_hash,
@@ -484,10 +484,8 @@ def evaluate_stage2_checkpoints(
     expected_evaluation_identity: Mapping[str, Any] | None = None,
     partial_charge_benchmark: PartialChargeBenchmark | None = None,
     reporter: ProgressReporter | None = None,
-    taskwise_refined: bool = False,
 ) -> dict[str, Any]:
-    if taskwise_refined and checkpoint_epoch is not None:
-        raise ValueError("taskwise_refined forbids checkpoint_epoch")
+    taskwise_refined = checkpoint_epoch is None
     checkpoint_path = resolve_checkpoint_path(checkpoint_dir, checkpoint_epoch)
     checkpoint, registry, _ = _load_checkpoint_contract(config, checkpoint_path)
     model_payload = checkpoint
@@ -803,6 +801,8 @@ def evaluate_stage2_checkpoints(
         for target in registry.by_id(task).target_columns
     ]
     epoch = int(checkpoint["completed_epoch"])
+    selected_epoch = None if taskwise_refined else epoch
+    model_selector = "taskwise_refined" if taskwise_refined else "epoch_checkpoint"
     core_value = sum(scalar_values) / len(scalar_values)
     partial_public = task_metrics[PARTIAL_CHARGE_TASK]
     partial_complete = partial_public["status"] == "complete"
@@ -820,12 +820,14 @@ def evaluate_stage2_checkpoints(
     reporting_protocol = {
         "split": "test",
         "ensemble": False,
-        "checkpoint_epoch": epoch,
+        "checkpoint_epoch": selected_epoch,
+        "model_selector": model_selector,
         "checkpoint_sha256": sha256_file(checkpoint_path),
     }
     return {
         "split": "test",
-        "checkpoint_epoch": epoch,
+        "checkpoint_epoch": selected_epoch,
+        "model_selector": model_selector,
         "tasks": task_metrics,
         "core_macro_normalized_mae": {
             "value": core_value,

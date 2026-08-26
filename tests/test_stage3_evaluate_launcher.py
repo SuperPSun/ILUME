@@ -54,6 +54,16 @@ def test_validation_fold_cli_is_multi_value_and_ordered() -> None:
         "--fold", "3", "1", "5", "--output", "evaluate",
     )
     assert launcher._validate_request(parsed) == (3, 1, 5)
+    assert parsed.checkpoint_epoch is None
+
+
+def test_removed_taskwise_refined_flag_is_rejected() -> None:
+    with pytest.raises(SystemExit):
+        _args(
+            "--config", "base.yaml", "--checkpoint-dir", "train",
+            "--split", "valid", "--fold", "1", "--taskwise-refined",
+            "--output", "evaluate",
+        )
 
 
 def test_validation_schedule_is_sequential(
@@ -209,8 +219,7 @@ def test_test_path_remains_one_root_ensemble_run(
             "fold": None,
             "predictions_dir": Path("/repo/evaluate_test/predictions"),
             "reporting_study_id": None,
-                "expected_evaluation_identity": EVALUATION_IDENTITY,
-                "taskwise_refined": False,
+            "expected_evaluation_identity": EVALUATION_IDENTITY,
         }
     ]
     assert run.completed == {"split": "test"}
@@ -230,3 +239,6 @@ def test_default_validation_study_id_keeps_existing_fold_independent_rule(
     assert resolve_stage3_reporting_study_id(
         config, checkpoint_epoch=10
     ) == f"ilume-stage3-{prepared_identity['hash']}-epoch10"
+    assert resolve_stage3_reporting_study_id(
+        config
+    ) == f"ilume-stage3-{prepared_identity['hash']}-taskwise-refined"

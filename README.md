@@ -57,11 +57,10 @@ python scripts/stage2/train.py \
 python scripts/stage2/evaluate.py \
   --config configs/v1/stage2/base.yaml \
   --checkpoint-dir outputs/v1/stage2/base/train \
-  --taskwise-refined \
   --output outputs/v1/stage2/base/evaluate/test_benchmark_suite_v2
 ```
 
-Evaluator 分别发布 Core、Partial Charge 和 Full 三榜；评分及 eligibility 合同见 [ADR-0023/0024/0025](docs/adr/README.md)。Stage 2 只从完整 Object v3 epoch 恢复，旧 Object v2 和缺少现役合同的开发期 v3 输出不迁移。
+Evaluator 默认加载 `taskwise_refined.pt`；只有显式传入 `--checkpoint-epoch N` 时才加载普通历史 checkpoint。它分别发布 Core、Partial Charge 和 Full 三榜；评分及 eligibility 合同见 [ADR-0023/0024/0025](docs/adr/README.md)。Stage 2 只从完整 Object v3 epoch 恢复，旧 Object v2 和缺少现役合同的开发期 v3 输出不迁移。
 
 ## Stage 3
 
@@ -86,15 +85,18 @@ python scripts/stage3/train.py \
 python scripts/stage3/evaluate.py \
   --config configs/v1/stage3/base.yaml \
   --checkpoint-dir outputs/v1/stage3/base/train \
-  --split valid --fold 1 2 3 4 5 --taskwise-refined \
+  --split valid --fold 1 2 3 4 5 \
   --output outputs/v1/stage3/base/evaluate_valid
 
 python scripts/stage3/evaluate.py \
   --config configs/v1/stage3/base.yaml \
   --checkpoint-dir outputs/v1/stage3/base/train \
-  --split test --ensemble-folds --taskwise-refined \
+  --split test --ensemble-folds \
   --output outputs/v1/stage3/base/evaluate_test
 ```
+
+Stage 3 evaluator 同样默认加载每个 fold 的 `taskwise_refined.pt`；显式
+`--checkpoint-epoch N` 才选择对应普通 epoch checkpoint。
 
 独立的 Capacity v1 研究不替换正式 v1 合同；设计见 [ADR-0026](docs/adr/0026-capacity-v1-pipeline-study.md)，正式命令集中在 [Capacity v1 操作手册](docs/capacity-v1-runbook.md)。
 
