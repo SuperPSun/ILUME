@@ -1,4 +1,4 @@
 rank,run,model,macro_normalized_mae,valid_tasks,total_tasks,per_task_wins,source_run,checkpoint_epoch
-1,mlp@outputs/benchmarks/v1/mlp,MLP,0.21428538724080334,21,21,10,outputs/benchmarks/v1/mlp,
-2,ilume@study:ilume-stage3-0eef3e178870794998d44abfb324762ef344a71ac6cf15c85b6863dd42cea472-epoch100,ILUME,0.21477346912108122,21,21,11,outputs/v1/stage3/base/evaluate/fold1;outputs/v1/stage3/base/evaluate/fold2;outputs/v1/stage3/base/evaluate/fold3;outputs/v1/stage3/base/evaluate/fold4;outputs/v1/stage3/base/evaluate/fold5,100
+1,mlp@outputs/benchmarks/v1/mlp,MLP,0.21428538724080334,21,21,9,outputs/benchmarks/v1/mlp,
+2,ilume@study:ilume-stage3-841f5923a1996dee7fdb52b9e2dea23eabe2ab2814b59be4e52f5c7f8fe97e57-epoch100,ILUME,0.2202696562264191,21,21,12,outputs/v1/stage3/base/evaluate/fold1;outputs/v1/stage3/base/evaluate/fold2;outputs/v1/stage3/base/evaluate/fold3;outputs/v1/stage3/base/evaluate/fold4;outputs/v1/stage3/base/evaluate/fold5,100
 3,ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost,ECFP+XGBoost,0.30209580088402943,21,21,0,outputs/benchmarks/v1/ecfp_xgboost,
