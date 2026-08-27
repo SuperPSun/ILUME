@@ -17,6 +17,12 @@ python scripts/stage1/prepare.py \
 
 prepare 完整成功后，四个训练命令可分别显式绑定一张同型 GPU：
 
+四份 Capacity Stage 1 YAML 已共同冻结为 global batch 512、LR `4e-4`。这是从原
+batch 128 约 20GB 显存占用线性估算得到的 84GB 单卡配置，目标峰值约 80GB；它不是
+自动调参，也不适用于 48GB 卡。正式运行前确认目标 GPU 空闲且为同类 84GB 硬件，并在
+训练日志中记录实际 peak VRAM、吞吐和稳定性。若出现 OOM/NaN/divergence，停止研究，
+不得改 batch、LR、gradient checkpointing 或 horizon 后续跑。
+
 ```bash
 CUDA_VISIBLE_DEVICES=0 python scripts/stage1/train.py --config configs/experiments_v1/stage1/s.yaml --output outputs/experiments_v1/stage1/s/train
 CUDA_VISIBLE_DEVICES=1 python scripts/stage1/train.py --config configs/experiments_v1/stage1/base.yaml --output outputs/experiments_v1/stage1/base/train

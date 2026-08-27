@@ -5,6 +5,11 @@
 - 适用范围：`configs/experiments_v1/{stage1,stage2,stage3}` 与 `outputs/experiments_v1`
 
 > 2026-08-26：Stage 2/3 late task-wise refinement、Capacity report schema v2 与 stitched validation 评分由 [ADR-0027](0027-late-taskwise-refinement.md) 修订；trial wave、搜索空间、人工决策与 seed 规则不变。
+>
+> 2026-08-27：Capacity Stage 1 的目标硬件为单卡 84GB。基于原 global batch 128 约占
+> 20GB 的线性显存估算，四规模共同改为 global batch 512、LR `4e-4`，估计峰值约 80GB；
+> 不通过脚本自动探测或回退。该估算只适用于同类空闲 84GB GPU，首次正式运行须记录实际
+> 峰值显存、吞吐和结果稳定性。
 
 ## 背景
 
@@ -27,8 +32,9 @@ encoder 的单独因果效应。Stage 2 ObjectEncoder 和 Stage 3 HoME 宽度均
    - L：640、10 heads、10/10、2560、1280；
    - XL：768、12 heads、12/12、3072、1536。
 2. 四规模均固定 graph depth 6、head dim 64、descriptor blocks 2，并保持现役数据、
-   masking、loss、batch、optimizer、LR、dropout 和数值合同。每个 scale 从头训练
-   15 epochs；所有 epoch checkpoint 保留，但 Stage 2 只消费 epoch 15。
+   masking、loss、optimizer、dropout 和数值合同。共同 global batch 为 512，LR 为
+   `4e-4`（相对 128/`1e-4` 线性缩放）；每个 scale 从头训练 15 epochs。所有 epoch
+   checkpoint 保留，但 Stage 2 只消费 epoch 15。
 3. 每个 scale 跑 Conservative、Default、Aggressive 三个 Stage 2 recipe，共 12 runs。
    `object_layers=2`、`object_ffn_dim=2*d_model`、dropout 0.1，固定训练 10 epochs，
    Stage 3 只消费 epoch 10 自动导出的 encoder。三档依次为：

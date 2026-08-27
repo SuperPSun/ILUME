@@ -67,9 +67,9 @@ loss:
   - 2.0
   - 1.0
 training:
-  batch_size: 128
+  batch_size: 512
   epochs: 15
-  learning_rate: 0.0001
+  learning_rate: 0.0004
   weight_decay: 0.01
   warmup_fraction: 0.05
   max_grad_norm: 1.0
