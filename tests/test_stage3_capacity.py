@@ -347,7 +347,7 @@ def test_capacity_v1_static_configs_cover_base_r1_to_r8_selection() -> None:
 
     expected_widths = {"s": 384, "base": 512, "l": 640, "xl": 768}
     shared_corpus = Path(
-        "outputs/experiments_v1/stage1/base/prepare/artifacts"
+        "outputs/experiments_v1/stage1/prepare/artifacts"
     )
     source = semantic_identity(
         "test.stage1-source", {"sources": {"source": {"sha256": "test"}}}
@@ -365,7 +365,7 @@ def test_capacity_v1_static_configs_cover_base_r1_to_r8_selection() -> None:
         assert config.model.feedforward_dim == 4 * config.model.d_model
         assert config.model.descriptor_hidden_dim == 2 * config.model.d_model
         assert config.model.graph_depth == 6
-        assert config.training.epochs == 15
+        assert config.training.epochs == 10
         assert config.data.artifacts_dir == shared_corpus
         corpus_identities.append(build_stage1_corpus_identity(config, source_audit))
     assert all(identity == corpus_identities[0] for identity in corpus_identities)
@@ -389,7 +389,7 @@ def test_capacity_v1_static_configs_cover_base_r1_to_r8_selection() -> None:
         assert recipe in expected_recipes
         assert config.data.pretrain_artifacts_dir == shared_corpus
         assert config.initialization.checkpoint == Path(
-            "outputs/experiments_v1/stage1/base/train/checkpoint_epoch_00015.pt"
+            "outputs/experiments_v1/stage1/base/train/checkpoint_epoch_00010.pt"
         )
         assert (
             config.training.backbone_frozen_epochs,

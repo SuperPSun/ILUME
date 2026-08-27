@@ -1,7 +1,7 @@
 data:
   data_root: data
   task_catalog_path: data/task_catalog.csv
-  pretrain_artifacts_dir: outputs/experiments_v1/stage1/base/prepare/artifacts
+  pretrain_artifacts_dir: outputs/experiments_v1/stage1/prepare/artifacts
   artifacts_dir: outputs/experiments_v1/stage2/prepare/artifacts
   entity_shard_size: 4096
   seed: 42
@@ -11,7 +11,7 @@ preparation:
   workers: 8
   teacher_batch_size: 512
 initialization:
-  checkpoint: outputs/experiments_v1/stage1/base/train/checkpoint_epoch_00015.pt
+  checkpoint: outputs/experiments_v1/stage1/base/train/checkpoint_epoch_00010.pt
 model:
   object_layers: 2
   object_ffn_dim: 1024

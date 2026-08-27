@@ -6,12 +6,12 @@
 
 ## 1. Stage 1 Base selection
 
-只用 Base 配置 prepare 一次实验 corpus；R1–R8 selection 只使用 Base epoch-15 checkpoint：
+只用 Base 配置 prepare 一次实验 corpus；R1–R8 selection 只使用 Base epoch-10 checkpoint：
 
 ```bash
 python scripts/stage1/prepare.py \
   --config configs/experiments_v1/stage1/base.yaml \
-  --output outputs/experiments_v1/stage1/base/prepare
+  --output outputs/experiments_v1/stage1/prepare
 ```
 
 prepare 完整成功后，先训练 Base：
@@ -31,7 +31,7 @@ checkpoint，因此 Base 训练从 epoch 0 开始。
 CUDA_VISIBLE_DEVICES=0 python scripts/stage1/train.py --config configs/experiments_v1/stage1/base.yaml --output outputs/experiments_v1/stage1/base/train
 ```
 
-确认 Base epoch-15 full validation 与 checkpoint 完整。OOM/NaN 时停止研究，不改 batch 或
+确认 Base epoch-10 full validation 与 checkpoint 完整。OOM/NaN 时停止研究，不改 batch 或
 gradient checkpointing 后续跑。S/L/XL 只在 Base winner 后按另行冻结的 promotion 配置训练。
 
 ## 2. Stage 2 Base selection prepare 与 8 runs

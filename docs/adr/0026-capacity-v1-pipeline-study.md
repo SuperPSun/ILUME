@@ -33,9 +33,9 @@ encoder 的单独因果效应。Stage 2 ObjectEncoder 和 Stage 3 HoME 宽度均
    - XL：768、12 heads、12/12、3072、1536。
 2. 四规模均固定 graph depth 6、head dim 64、descriptor blocks 2，并保持现役数据、
    masking、loss、optimizer、dropout 和数值合同。共同 global batch 为 512，LR 为
-   `4e-4`（相对 128/`1e-4` 线性缩放）；每个 scale 从头训练 15 epochs。所有 epoch
-   checkpoint 保留，但 Stage 2 只消费 epoch 15。
-3. Stage 2 hyperparameter selection 固定只使用 Stage 1 Base epoch-15 encoder，跑 R1–R8
+   `4e-4`（相对 128/`1e-4` 线性缩放）；每个 scale 从头训练 10 epochs。所有 epoch
+   checkpoint 保留，但 Stage 2 只消费 epoch 10。
+3. Stage 2 hyperparameter selection 固定只使用 Stage 1 Base epoch-10 encoder，跑 R1–R8
    八个 recipe。`object_layers=2`、`object_ffn_dim=1024`、dropout 0.1，均先完成 10 个 joint
    epochs，再对 ADR-0027 的四个核心物理任务额外执行 10 个 head-only refinement epochs。
    Stage 3 只消费 joint epoch-10 边界导出的 encoder。LR 顺序为 backbone/ObjectEncoder/task head：
@@ -48,7 +48,7 @@ encoder 的单独因果效应。Stage 2 ObjectEncoder 和 Stage 3 HoME 宽度均
    - R7：freeze 0，LR `2e-5/6e-5/2e-4`，teacher λ 0.05；
    - R8：freeze 0，LR `3e-5/9e-5/3e-4`，teacher λ 0.03。
 4. 仅用 `configs/experiments_v1/stage1/base.yaml` prepare 一次 Stage 1 corpus；Base selection 的
-   Stage 2 prepare 与八个 recipe 共用 `outputs/experiments_v1/stage1/base/prepare/artifacts`、一个
+   Stage 2 prepare 与八个 recipe 共用 `outputs/experiments_v1/stage1/prepare/artifacts`、一个
    Stage 2 data artifact 和同一内容寻址 teacher cache。
 
 ### Probe、HPO 与正式比较
