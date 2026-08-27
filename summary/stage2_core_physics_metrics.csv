@@ -6,6 +6,13 @@ ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost,ECFP+XGBoost,simulation/homo,HOM
 ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost,ECFP+XGBoost,simulation/lumo,LUMO_eV,anion,744,0.2694680622361275,,,,,outputs/benchmarks/v1/ecfp_xgboost
 ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost,ECFP+XGBoost,simulation/lumo,LUMO_eV,cation,917,0.4108142983103888,,,,,outputs/benchmarks/v1/ecfp_xgboost
 ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost,ECFP+XGBoost,simulation/lumo,LUMO_eV,pooled,1661,0.34750207697429586,0.5456975912391558,0.9782540703736791,0.09394831292947536,0.14753111265688726,outputs/benchmarks/v1/ecfp_xgboost
+ilume@outputs/v1/stage2/base/evaluate,ILUME,simulation/heat_of_vaporization,heat_of_vaporization_kJ/mol,pooled,2684,5.424674558033649,7.331445136731264,0.9333772839194507,0.19496075656236866,0.26348937162245883,outputs/v1/stage2/base/evaluate
+ilume@outputs/v1/stage2/base/evaluate,ILUME,simulation/homo,HOMO_eV,anion,744,0.205269896332628,,,,,outputs/v1/stage2/base/evaluate
+ilume@outputs/v1/stage2/base/evaluate,ILUME,simulation/homo,HOMO_eV,cation,917,0.3021138077500538,,,,,outputs/v1/stage2/base/evaluate
+ilume@outputs/v1/stage2/base/evaluate,ILUME,simulation/homo,HOMO_eV,pooled,1661,0.25873519842159814,0.3369742770169216,0.9911362478463908,0.0718574746473565,0.09358649582767183,outputs/v1/stage2/base/evaluate
+ilume@outputs/v1/stage2/base/evaluate,ILUME,simulation/lumo,LUMO_eV,anion,744,0.23119472063818122,,,,,outputs/v1/stage2/base/evaluate
+ilume@outputs/v1/stage2/base/evaluate,ILUME,simulation/lumo,LUMO_eV,cation,917,0.276209592614595,,,,,outputs/v1/stage2/base/evaluate
+ilume@outputs/v1/stage2/base/evaluate,ILUME,simulation/lumo,LUMO_eV,pooled,1661,0.2560463989057137,0.3377173618924971,0.9916712336107488,0.06922297391229286,0.0913029834901967,outputs/v1/stage2/base/evaluate
 mlp@outputs/benchmarks/v1/mlp,MLP,simulation/heat_of_vaporization,heat_of_vaporization_kJ/mol,pooled,2684,2.1076093920421632,3.026044250962918,0.9886500563517432,0.07574668622322638,0.10875488847256987,outputs/benchmarks/v1/mlp
 mlp@outputs/benchmarks/v1/mlp,MLP,simulation/homo,HOMO_eV,anion,744,0.18427873391917685,,,,,outputs/benchmarks/v1/mlp
 mlp@outputs/benchmarks/v1/mlp,MLP,simulation/homo,HOMO_eV,cation,917,0.2974268654473661,,,,,outputs/benchmarks/v1/mlp
