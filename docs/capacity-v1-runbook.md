@@ -23,6 +23,11 @@ batch 128 约 20GB 显存占用线性估算得到的 84GB 单卡配置，目标�
 训练日志中记录实际 peak VRAM、吞吐和稳定性。若出现 OOM/NaN/divergence，停止研究，
 不得改 batch、LR、gradient checkpointing 或 horizon 后续跑。
 
+现有共享 corpus 仍可直接复用：它在此前的 prepare run 中记录了 batch 128/LR `1e-4`，
+但这两个训练字段不进入 corpus identity。不得仅因本次 batch/LR 变化重新 prepare；反之，
+任何不同 global batch 的 Stage 1 checkpoint 都不能 resume。本仓库当前没有 Capacity Stage 1
+checkpoint，因此四个训练均从 epoch 0 开始。
+
 ```bash
 CUDA_VISIBLE_DEVICES=0 python scripts/stage1/train.py --config configs/experiments_v1/stage1/s.yaml --output outputs/experiments_v1/stage1/s/train
 CUDA_VISIBLE_DEVICES=1 python scripts/stage1/train.py --config configs/experiments_v1/stage1/base.yaml --output outputs/experiments_v1/stage1/base/train
