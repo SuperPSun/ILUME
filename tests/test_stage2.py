@@ -36,7 +36,8 @@ from stage2.data import (
     pack_stage2_batch,
 )
 from stage2.model import (
-    ObjectEncoder, Stage2ObjectModel, molecule_equal_smooth_l1_loss,
+    ObjectEncoder, RegressionHead, Stage2ObjectModel,
+    molecule_equal_smooth_l1_loss,
 )
 from stage2.evaluate import _load_refined_artifact, resolve_checkpoint_path
 from stage2.prepare import (
@@ -249,7 +250,20 @@ def test_registry_is_catalog_driven_and_model_independent(tiny_stage2_setup):
     model = Stage2ObjectModel(loaded.model, registry, object_layers=1, object_ffn_dim=32, dropout=0.0)
     assert registry.registry_hash == original
     assert model.model_contract["d_model"] == 16
+    assert model.model_contract["regression_head_hidden_dims"] == [16, 8]
     assert model.model_contract["tasks"]["simulation/partial_atomic_charge"]["head_family"] == "atom"
+
+
+def test_regression_head_has_two_hidden_layers():
+    head = RegressionHead(input_dim=5, hidden_dim=8, output_dim=3, dropout=0.0)
+    linear_layers = [layer for layer in head.layers if isinstance(layer, torch.nn.Linear)]
+    assert [(layer.in_features, layer.out_features) for layer in linear_layers] == [
+        (5, 8), (8, 4), (4, 3),
+    ]
+    assert head(torch.randn(2, 5)).shape == (2, 3)
+
+    with pytest.raises(ValueError, match="must be even"):
+        RegressionHead(input_dim=5, hidden_dim=7, output_dim=3, dropout=0.0)
 
 
 def test_config_normalizes_relative_weights(tiny_stage2_setup):

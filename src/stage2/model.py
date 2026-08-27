@@ -41,6 +41,7 @@ def build_model_contract(
     return {
         "d_model": d_model, "n_heads": n_heads,
         "object_encoder": {"layers": object_layers, "ffn_dim": object_ffn_dim, "dropout": dropout},
+        "regression_head_hidden_dims": [d_model, d_model // 2],
         "role_to_id": dict(ROLE_TO_ID), "tasks": tasks,
     }
 
@@ -91,9 +92,12 @@ class ObjectEncoder(nn.Module):
 class RegressionHead(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, dropout: float) -> None:
         super().__init__()
+        if hidden_dim % 2 != 0:
+            raise ValueError("RegressionHead hidden_dim must be even")
         self.layers = nn.Sequential(
             nn.LayerNorm(input_dim), nn.Linear(input_dim, hidden_dim), nn.GELU(),
-            nn.Dropout(dropout), nn.Linear(hidden_dim, output_dim),
+            nn.Dropout(dropout), nn.Linear(hidden_dim, hidden_dim // 2), nn.GELU(),
+            nn.Dropout(dropout), nn.Linear(hidden_dim // 2, output_dim),
         )
 
     def forward(self, values: torch.Tensor) -> torch.Tensor:
