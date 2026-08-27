@@ -9,7 +9,7 @@ class DescriptorMLP(nn.Module):
         self,
         input_dim: int,
         output_dim: int,
-        hidden_dims: tuple[int, ...] = (512, 256, 128),
+        hidden_dims: tuple[int, ...] = (256, 128),
         dropout: float = 0.1,
     ):
         super().__init__()
@@ -30,4 +30,3 @@ class DescriptorMLP(nn.Module):
 
 
 __all__ = ["DescriptorMLP"]
-
