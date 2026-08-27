@@ -264,7 +264,7 @@ def test_stage2_refinement_config_contract(tiny_stage2_setup):
         Path("configs/v1/stage2/base.yaml"),
         *sorted(Path("configs/experiments_v1/stage2").glob("*.yaml")),
     ]
-    assert len(paths) == 13
+    assert len(paths) == 9
     for index, path in enumerate(paths):
         config = load_stage2_config(path)
         assert config.training.epochs == (5 if index == 0 else 10)

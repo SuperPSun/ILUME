@@ -35,27 +35,30 @@ encoder 的单独因果效应。Stage 2 ObjectEncoder 和 Stage 3 HoME 宽度均
    masking、loss、optimizer、dropout 和数值合同。共同 global batch 为 512，LR 为
    `4e-4`（相对 128/`1e-4` 线性缩放）；每个 scale 从头训练 15 epochs。所有 epoch
    checkpoint 保留，但 Stage 2 只消费 epoch 15。
-3. 每个 scale 跑 Conservative、Default、Aggressive 三个 Stage 2 recipe，共 12 runs。
-   `object_layers=2`、`object_ffn_dim=2*d_model`、dropout 0.1，先固定完成 10 个 joint
+3. Stage 2 hyperparameter selection 固定只使用 Stage 1 Base epoch-15 encoder，跑 R1–R8
+   八个 recipe。`object_layers=2`、`object_ffn_dim=1024`、dropout 0.1，均先完成 10 个 joint
    epochs，再对 ADR-0027 的四个核心物理任务额外执行 10 个 head-only refinement epochs。
-   Stage 3 只消费 joint epoch 10 边界导出的 encoder。三档依次为：
-   - Conservative：freeze 3，LR `5e-6/1.5e-5/5e-5`，teacher λ 0.20；
-   - Default：freeze 1，LR `1e-5/3e-5/1e-4`，teacher λ 0.10；
-   - Aggressive：freeze 0，LR `2e-5/6e-5/2e-4`，teacher λ 0.05。
-4. 仅用 `configs/experiments_v1/stage1/base.yaml` prepare 一次 Stage 1 corpus，四规模共享
-   `outputs/experiments_v1/stage1/base/prepare/artifacts`。Stage 2 在新的实验 artifact root
-   发布一份 data artifact、每个 Stage 1 encoder 一份内容寻址 teacher cache，三个
-   recipe 复用。
+   Stage 3 只消费 joint epoch-10 边界导出的 encoder。LR 顺序为 backbone/ObjectEncoder/task head：
+   - R1：freeze 4，LR `3e-6/1e-5/3e-5`，teacher λ 0.30；
+   - R2：freeze 3，LR `5e-6/1.5e-5/5e-5`，teacher λ 0.20；
+   - R3：freeze 2，LR `7e-6/2e-5/7e-5`，teacher λ 0.15；
+   - R4：freeze 1，LR `1e-5/3e-5/1e-4`，teacher λ 0.10；
+   - R5：freeze 0，LR `1e-5/3e-5/1e-4`，teacher λ 0.10；
+   - R6：freeze 0，LR `1.5e-5/4.5e-5/1.5e-4`，teacher λ 0.075；
+   - R7：freeze 0，LR `2e-5/6e-5/2e-4`，teacher λ 0.05；
+   - R8：freeze 0，LR `3e-5/9e-5/3e-4`，teacher λ 0.03。
+4. 仅用 `configs/experiments_v1/stage1/base.yaml` prepare 一次 Stage 1 corpus；Base selection 的
+   Stage 2 prepare 与八个 recipe 共用 `outputs/experiments_v1/stage1/base/prepare/artifacts`、一个
+   Stage 2 data artifact 和同一内容寻址 teacher cache。
 
 ### Probe、HPO 与正式比较
 
-5. 12 个 Stage 2 candidate 全部跑 Stage 3 folds 1/2 × 30 epochs。每 fold 的 proxy
+5. 8 个 Base Stage 2 candidate 全部跑 Stage 3 folds 1/2 × 30 epochs。每 fold 的 proxy
    固定为 taskwise-refined stitched validation 的
-   `macro_task_equal.normalized_mae.value`；candidate 再跨 fold 平均。每 scale 选择最低分
-   recipe，精确并列时依次优先 Default、Conservative、Aggressive。
-6. 四个 scale winner 之间的 anchor 由人工 Pareto 决策，证据限于 validation、曲线、
-   参数量、显存、吞吐、wall time 与失败记录；必须先发布带理由的 anchor decision，
-   HPO 入口才接受运行。test 不参与。
+   `macro_task_equal.normalized_mae.value`；candidate 再跨 fold 平均并选择唯一 Base winner。
+   精确并列时依次优先 R4、R3、R5、R2、R6、R1、R7、R8。
+6. Base winner 是唯一可进入 Anchor HPO 的配置。anchor decision 仍须记录 validation、曲线、
+   参数量、显存、吞吐、wall time 与失败证据；HPO 入口拒绝未选中的 Base recipe。test 不参与。
 7. Anchor HPO 固定 40 attempted trials、Optuna seeded TPE、trial 0 Base、前 10 个
    startup trials、不 pruning。搜索 7 个变量：global/group/private expert 数、expert
    hidden ratio、dropout、LR 和 weight decay。两 trial 为同步 wave，每 trial folds 1/2，
@@ -68,11 +71,11 @@ encoder 的单独因果效应。Stage 2 ObjectEncoder 和 Stage 3 HoME 宽度均
    并进入 training identity，不进入 prepared identity。robustness 固定 seeds
    `42/10042/20042/30042/40042`、folds 1/2 × 20 epochs，结果由人工复核；拒绝时停止，
    不自动换 recipe、加 seed 或重启 HPO。
-10. 最终 recipe 原样迁移到四个 scale，expert 数固定、ratio 按各自 `d_model` 解析。
+10. Base selection winner 不隐式复用于 S/L/XL：进入四规模正式比较前，必须另行冻结每个
+    scale 的 Stage 2 训练、encoder artifact 与对应 Stage 3 配置，再物化 final recipe。
     四规模从头跑 5 folds × 50 epochs、seed 42，固定使用各 fold taskwise-refined artifact；
-    30-epoch run 不恢复到 50 epochs。先按 validation/resource Pareto 冻结主 scale，再
-    一次性评估四规模 refined 五折 test ensemble。test 不得反向改变 scale、recipe 或 artifact；本轮
-    不追加 100-epoch 训练。
+    30-epoch run 不恢复到 50 epochs。test 不得反向改变 scale、recipe 或 artifact；本轮不追加
+    100-epoch 训练。
 
 ### 失败、身份与报告
 
@@ -80,12 +83,12 @@ encoder 的单独因果效应。Stage 2 ObjectEncoder 和 Stage 3 HoME 宽度均
     OOM、NaN、divergence 或不完整 validation 不触发 batch、LR、checkpointing 或 horizon
     自动调整。若要改变合同，必须形成新的预注册决定。
 12. 报告包含 task/group 指标、完整曲线、fold/seed 波动、参数量、显存、吞吐、wall
-    time、失败和人工理由。结论固定称为“经每 scale 独立 Stage 2 recipe 选择、共享
+    time、失败和人工理由。结论固定称为“经 Stage 1 Base 上的 Stage 2 recipe 选择、共享
     Stage 3 recipe 后的端到端容量趋势”。
 
 ## 后果与取舍
 
-- Final-only 将 Stage 2 candidate 从 24 减为 12，删除两层主观中间 checkpoint 选择，
+- Final-only 将 Stage 2 selection candidate 从 24 减为 8，删除两层主观中间 checkpoint 选择，
   也无需增加任意 Stage 2 checkpoint 导出接口。
 - 每个 Stage 2 candidate 的共享表示仍比较同一 10-epoch joint horizon；额外 10 epochs
   只更新四个核心 task head，不进入 Stage 3 encoder。

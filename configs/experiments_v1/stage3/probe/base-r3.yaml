@@ -1,7 +1,7 @@
 data:
   stage3_dir: data/stage3
   task_catalog: data/task_catalog.csv
-  artifacts_dir: outputs/experiments_v1/stage3/prepare/xl-default/artifacts
+  artifacts_dir: outputs/experiments_v1/stage3/prepare/base-r3/artifacts
   split_policy: prefer_il
   split_strategies: {}
   cv_repeat: 1
@@ -9,9 +9,9 @@ data:
   seed: 42
 preparation:
   encoding_batch_size: 256
-  cache_dir: outputs/experiments_v1/stage3/prepare/xl-default/object_cache
+  cache_dir: outputs/experiments_v1/stage3/prepare/base-r3/object_cache
 initialization:
-  stage2_encoder: outputs/experiments_v1/stage2/xl/default/train/stage2_encoder.pt
+  stage2_encoder: outputs/experiments_v1/stage2/base/r3/train/stage2_encoder.pt
   plugin: null
 model:
   global_experts: 2

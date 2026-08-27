@@ -15,7 +15,16 @@ from .config import Stage3Config
 
 
 PRIMARY_METRIC_PATH = "taskwise_refinement.validation.macro_task_equal.normalized_mae.value"
-RECIPE_TIE_PRIORITY = {"default": 0, "conservative": 1, "aggressive": 2}
+RECIPE_TIE_PRIORITY = {
+    "r4": 0,
+    "r3": 1,
+    "r5": 2,
+    "r2": 3,
+    "r6": 4,
+    "r1": 5,
+    "r7": 6,
+    "r8": 7,
+}
 
 
 @dataclass(frozen=True)
@@ -330,7 +339,7 @@ def select_probe_winners(candidates: Sequence[Mapping[str, Any]]) -> list[dict[s
         scale = str(candidate["scale"])
         recipe = str(candidate["recipe"]).lower()
         if recipe not in RECIPE_TIE_PRIORITY:
-            raise ValueError(f"Unknown Stage 2 capacity recipe: {recipe}")
+            raise ValueError(f"Unknown Stage 2 Base selection recipe: {recipe}")
         _finite_float(candidate.get("score"), f"{scale}/{recipe} score")
         by_scale.setdefault(scale, []).append(candidate)
     winners = []

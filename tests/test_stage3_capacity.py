@@ -109,14 +109,14 @@ def test_fold_aggregation_and_probe_tie_priority() -> None:
     assert aggregate["group_scores"]["g"] == pytest.approx(0.25)
     winners = select_probe_winners(
         [
-            {"scale": "S", "recipe": "aggressive", "score": 0.2},
-            {"scale": "S", "recipe": "default", "score": 0.2},
-            {"scale": "Base", "recipe": "conservative", "score": 0.1},
+            {"scale": "S", "recipe": "r8", "score": 0.2},
+            {"scale": "S", "recipe": "r4", "score": 0.2},
+            {"scale": "Base", "recipe": "r2", "score": 0.1},
         ]
     )
     assert [(row["scale"], row["recipe"]) for row in winners] == [
-        ("Base", "conservative"),
-        ("S", "default"),
+        ("Base", "r2"),
+        ("S", "r4"),
     ]
 
 
@@ -257,7 +257,7 @@ def test_capacity_study_runs_synchronous_waves_and_resumes(tmp_path: Path) -> No
     assert calls == []
 
     decision = tmp_path / "final-recipe.yaml"
-    probe_config = "configs/experiments_v1/stage3/probe/base-default.yaml"
+    probe_config = "configs/experiments_v1/stage3/probe/base-r4.yaml"
     decision.write_text(
         __import__("yaml").safe_dump(
             {
@@ -332,14 +332,18 @@ def test_capacity_wave_retries_failed_fold_once(
     assert roots[0][2] == trial_root / "search/attempt0/fold2"
 
 
-def test_capacity_v1_static_configs_cover_four_by_three_matrix() -> None:
+def test_capacity_v1_static_configs_cover_base_r1_to_r8_selection() -> None:
     root = Path("configs/experiments_v1")
     stage1_paths = sorted((root / "stage1").glob("*.yaml"))
     stage2_paths = sorted((root / "stage2").glob("*.yaml"))
     probe_paths = sorted((root / "stage3/probe").glob("*.yaml"))
     assert [path.stem for path in stage1_paths] == ["base", "l", "s", "xl"]
-    assert len(stage2_paths) == 12
-    assert len(probe_paths) == 12
+    assert [path.stem for path in stage2_paths] == [
+        "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8"
+    ]
+    assert [path.stem for path in probe_paths] == [
+        "base-r1", "base-r2", "base-r3", "base-r4", "base-r5", "base-r6", "base-r7", "base-r8"
+    ]
 
     expected_widths = {"s": 384, "base": 512, "l": 640, "xl": 768}
     shared_corpus = Path(
@@ -366,26 +370,46 @@ def test_capacity_v1_static_configs_cover_four_by_three_matrix() -> None:
         corpus_identities.append(build_stage1_corpus_identity(config, source_audit))
     assert all(identity == corpus_identities[0] for identity in corpus_identities)
 
+    expected_recipes = {
+        "r1": (4, 3.0e-06, 1.0e-05, 3.0e-05, 0.30),
+        "r2": (3, 5.0e-06, 1.5e-05, 5.0e-05, 0.20),
+        "r3": (2, 7.0e-06, 2.0e-05, 7.0e-05, 0.15),
+        "r4": (1, 1.0e-05, 3.0e-05, 1.0e-04, 0.10),
+        "r5": (0, 1.0e-05, 3.0e-05, 1.0e-04, 0.10),
+        "r6": (0, 1.5e-05, 4.5e-05, 1.5e-04, 0.075),
+        "r7": (0, 2.0e-05, 6.0e-05, 2.0e-04, 0.05),
+        "r8": (0, 3.0e-05, 9.0e-05, 3.0e-04, 0.03),
+    }
     for path in stage2_paths:
-        scale, recipe = path.stem.split("-", 1)
+        recipe = path.stem
         config = load_stage2_config(path)
-        assert config.model.object_ffn_dim == 2 * expected_widths[scale]
+        assert config.model.object_ffn_dim == 1024
         assert config.model.object_layers == 2
         assert config.training.epochs == 10
-        assert recipe in {"conservative", "default", "aggressive"}
+        assert recipe in expected_recipes
         assert config.data.pretrain_artifacts_dir == shared_corpus
         assert config.initialization.checkpoint == Path(
-            f"outputs/experiments_v1/stage1/{scale}/train/"
-            "checkpoint_epoch_00015.pt"
+            "outputs/experiments_v1/stage1/base/train/checkpoint_epoch_00015.pt"
         )
+        assert (
+            config.training.backbone_frozen_epochs,
+            config.training.backbone_learning_rate,
+            config.training.object_encoder_learning_rate,
+            config.training.task_head_learning_rate,
+            config.loss.lambda_teacher,
+        ) == pytest.approx(expected_recipes[recipe])
 
     for path in probe_paths:
         config = load_stage3_config(path)
+        recipe = path.stem.removeprefix("base-")
         assert config.training.seed == 42
         assert config.training.epochs == 30
         assert config.training.checkpoint_interval_epochs == 10
         assert str(config.data.artifacts_dir).startswith(
             "outputs/experiments_v1/"
+        )
+        assert config.initialization.stage2_encoder == Path(
+            f"outputs/experiments_v1/stage2/base/{recipe}/train/stage2_encoder.pt"
         )
 
     study = load_capacity_study_config(
@@ -396,7 +420,7 @@ def test_capacity_v1_static_configs_cover_four_by_three_matrix() -> None:
     assert study.baseline["learning_rate"] == pytest.approx(3.0e-4)
 
     all_paths = sorted(root.rglob("*.yaml"))
-    assert len(all_paths) == 30
+    assert len(all_paths) == 22
 
     def strings(value):
         if isinstance(value, dict):
