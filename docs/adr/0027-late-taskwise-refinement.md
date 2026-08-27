@@ -19,7 +19,7 @@ Stage 2 的 `training.epochs` 只表示完整 joint epochs，并显式配置
 `training.refinement_epochs`、`training.refinement_tasks` 与
 `training.refinement_lr_multiplier`。现役 v1 为 5 joint + 10 refinement；Capacity Stage 2
 为 10 joint + 10 refinement。Stage 3 继续使用 `training.refinement_ratio: 0.20`：
-20-epoch probe 为 16+4，50-epoch formal 为 40+10，Stage 3 v1 为 80+20。相关字段进入
+30-epoch probe 为 24+6，50-epoch formal 为 40+10，Stage 3 v1 为 80+20。相关字段进入
 training identity，但不进入 HPO 搜索空间。
 
 joint phase 的 warmup+cosine 在 boundary 前的真实 update 数内完整走完。refinement 不

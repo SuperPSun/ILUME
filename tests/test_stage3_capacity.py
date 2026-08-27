@@ -382,7 +382,7 @@ def test_capacity_v1_static_configs_cover_four_by_three_matrix() -> None:
     for path in probe_paths:
         config = load_stage3_config(path)
         assert config.training.seed == 42
-        assert config.training.epochs == 20
+        assert config.training.epochs == 30
         assert config.training.checkpoint_interval_epochs == 10
         assert str(config.data.artifacts_dir).startswith(
             "outputs/experiments_v1/"

@@ -261,8 +261,8 @@ training:
   composite_batch_size: 2048
   microbatch_size: 1024
   virtual_min_size: 1000
-  epochs: 20
-  learning_rate: 0.0003
+  epochs: 30
+  learning_rate: 0.0002
   weight_decay: 0.01
   betas:
   - 0.9

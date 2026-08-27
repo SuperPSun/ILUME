@@ -1,6 +1,6 @@
 schema_version: 2
 kind: probe
-expected_epochs: 20
+expected_epochs: 30
 candidates:
   - {id: s-conservative, scale: S, recipe: conservative, folds: {1: outputs/experiments_v1/stage3/probe/s/conservative/fold1, 2: outputs/experiments_v1/stage3/probe/s/conservative/fold2}}
   - {id: s-default, scale: S, recipe: default, folds: {1: outputs/experiments_v1/stage3/probe/s/default/fold1, 2: outputs/experiments_v1/stage3/probe/s/default/fold2}}

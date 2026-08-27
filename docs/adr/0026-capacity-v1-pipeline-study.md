@@ -39,9 +39,9 @@ encoder 的单独因果效应。Stage 2 ObjectEncoder 和 Stage 3 HoME 宽度均
    `object_layers=2`、`object_ffn_dim=2*d_model`、dropout 0.1，先固定完成 10 个 joint
    epochs，再对 ADR-0027 的四个核心物理任务额外执行 10 个 head-only refinement epochs。
    Stage 3 只消费 joint epoch 10 边界导出的 encoder。三档依次为：
-   - Conservative：freeze 4，LR `3e-6/9e-6/3e-5`，teacher λ 0.30；
-   - Default：freeze 2，LR `1e-5/3e-5/1e-4`，teacher λ 0.10；
-   - Aggressive：freeze 0，LR `3e-5/9e-5/3e-4`，teacher λ 0.03。
+   - Conservative：freeze 3，LR `5e-6/1.5e-5/5e-5`，teacher λ 0.20；
+   - Default：freeze 1，LR `1e-5/3e-5/1e-4`，teacher λ 0.10；
+   - Aggressive：freeze 0，LR `2e-5/6e-5/2e-4`，teacher λ 0.05。
 4. 仅用 `configs/experiments_v1/stage1/base.yaml` prepare 一次 Stage 1 corpus，四规模共享
    `outputs/experiments_v1/stage1/base/prepare/artifacts`。Stage 2 在新的实验 artifact root
    发布一份 data artifact、每个 Stage 1 encoder 一份内容寻址 teacher cache，三个
@@ -49,7 +49,7 @@ encoder 的单独因果效应。Stage 2 ObjectEncoder 和 Stage 3 HoME 宽度均
 
 ### Probe、HPO 与正式比较
 
-5. 12 个 Stage 2 candidate 全部跑 Stage 3 folds 1/2 × 20 epochs。每 fold 的 proxy
+5. 12 个 Stage 2 candidate 全部跑 Stage 3 folds 1/2 × 30 epochs。每 fold 的 proxy
    固定为 taskwise-refined stitched validation 的
    `macro_task_equal.normalized_mae.value`；candidate 再跨 fold 平均。每 scale 选择最低分
    recipe，精确并列时依次优先 Default、Conservative、Aggressive。
@@ -70,7 +70,7 @@ encoder 的单独因果效应。Stage 2 ObjectEncoder 和 Stage 3 HoME 宽度均
    不自动换 recipe、加 seed 或重启 HPO。
 10. 最终 recipe 原样迁移到四个 scale，expert 数固定、ratio 按各自 `d_model` 解析。
     四规模从头跑 5 folds × 50 epochs、seed 42，固定使用各 fold taskwise-refined artifact；
-    20-epoch run 不恢复到 50 epochs。先按 validation/resource Pareto 冻结主 scale，再
+    30-epoch run 不恢复到 50 epochs。先按 validation/resource Pareto 冻结主 scale，再
     一次性评估四规模 refined 五折 test ensemble。test 不得反向改变 scale、recipe 或 artifact；本轮
     不追加 100-epoch 训练。
 
@@ -89,7 +89,7 @@ encoder 的单独因果效应。Stage 2 ObjectEncoder 和 Stage 3 HoME 宽度均
   也无需增加任意 Stage 2 checkpoint 导出接口。
 - 每个 Stage 2 candidate 的共享表示仍比较同一 10-epoch joint horizon；额外 10 epochs
   只更新四个核心 task head，不进入 Stage 3 encoder。
-- 20-epoch probe/HPO 和 50-epoch formal 是不同 scheduler trajectory，不能 resume 或
+- 30-epoch probe/HPO 和 50-epoch formal 是不同 scheduler trajectory，不能 resume 或
   解释为同一训练的前后段；现役 100-epoch Base 也只作历史/健康参考。
 - Anchor HPO 不为其他 scale 各自优化 Stage 3，因此四点回答的是受控、可负担的主模型
   选择问题，而不是每个 scale 的性能上界。
@@ -102,7 +102,7 @@ encoder 的单独因果效应。Stage 2 ObjectEncoder 和 Stage 3 HoME 宽度均
   checkpoint 选择自由度。
 - 拒绝 fixed-width Stage 3 adapter：它能更接近 encoder-only 因果比较，但改变本研究的
   端到端主模型目标和现役 HoME 接口。
-- 拒绝以 20 epochs 作为正式终点或在选定 scale 后追加 100 epochs：前者证据不足，后者
+- 拒绝以 30 epochs 作为正式终点或在选定 scale 后追加 100 epochs：前者证据不足，后者
   超出本轮已接受预算并形成第三条 scheduler 合同。
 
 ## 参考
