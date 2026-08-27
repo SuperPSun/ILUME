@@ -25,8 +25,9 @@ from stage1.model import EncodedEntityStates, MultimodalPretrainModel, load_stag
 from stage1.prepare import prepare_corpus
 from stage1.tokenizer import SmilesTokenizer
 from stage2.config import (
+    DEFAULT_REFINEMENT_TASKS, STAGE2_CHECKPOINT_VERSION,
     Stage2Config, Stage2DataConfig, Stage2InitializationConfig,
-    Stage2PreparationConfig, Stage2TrainingConfig,
+    Stage2PreparationConfig, Stage2TrainingConfig, load_stage2_config,
 )
 from stage2.data import (
     STAGE2_PREPARATION_CONTRACT_VERSION, Stage2BatchDescriptor,
@@ -37,13 +38,14 @@ from stage2.data import (
 from stage2.model import (
     ObjectEncoder, Stage2ObjectModel, molecule_equal_smooth_l1_loss,
 )
+from stage2.evaluate import _load_refined_artifact, resolve_checkpoint_path
 from stage2.prepare import (
     prepare_stage2_data, prepare_teacher_cache,
     stage1_encoder_identity, teacher_cache_identity,
 )
 from stage2.registry import load_stage2_registry
 from stage2.train import (
-    _batch_output,
+    STAGE2_REFINED_VERSION, _batch_output,
     load_stage2_encoder_artifact, run_stage2_training,
 )
 from stage2 import FrozenObjectSpec, load_frozen_object_encoder
@@ -235,7 +237,7 @@ def tiny_stage2_setup(tmp_path: Path) -> Stage2Config:
         ),
         preparation=Stage2PreparationConfig(workers=1, teacher_batch_size=4),
         initialization=Stage2InitializationConfig(checkpoint=checkpoint),
-        training=Stage2TrainingConfig(batch_size=2, epochs=2, backbone_frozen_epochs=1, packing_workers=2, packing_prefetch_batches=2, cuda_prefetch_batches=1, log_every_batches=3, device="cpu", amp_dtype="none"),
+        training=Stage2TrainingConfig(batch_size=2, epochs=2, backbone_frozen_epochs=1, packing_workers=2, packing_prefetch_batches=2, cuda_prefetch_batches=1, log_every_batches=3, device="cpu", amp_dtype="none", refinement_epochs=2),
     )
 
 
@@ -255,6 +257,51 @@ def test_config_normalizes_relative_weights(tiny_stage2_setup):
     normalized = tiny_stage2_setup.normalized_task_weights(registry)
     scaled = replace(tiny_stage2_setup, loss=replace(tiny_stage2_setup.loss, task_weights={key: value * 10 for key, value in tiny_stage2_setup.loss.task_weights.items()}))
     assert scaled.normalized_task_weights(registry) == pytest.approx(normalized)
+
+
+def test_stage2_refinement_config_contract(tiny_stage2_setup):
+    paths = [
+        Path("configs/v1/stage2/base.yaml"),
+        *sorted(Path("configs/experiments_v1/stage2").glob("*.yaml")),
+    ]
+    assert len(paths) == 13
+    for index, path in enumerate(paths):
+        config = load_stage2_config(path)
+        assert config.training.epochs == (5 if index == 0 else 10)
+        assert config.training.refinement_epochs == 10
+        assert config.training.refinement_tasks == DEFAULT_REFINEMENT_TASKS
+        assert config.to_dict()["training"]["refinement_tasks"] == list(
+            DEFAULT_REFINEMENT_TASKS
+        )
+
+    with pytest.raises(ValueError, match="positive"):
+        replace(
+            tiny_stage2_setup,
+            training=replace(tiny_stage2_setup.training, refinement_epochs=0),
+        ).validate()
+    with pytest.raises(ValueError, match="duplicates"):
+        replace(
+            tiny_stage2_setup,
+            training=replace(
+                tiny_stage2_setup.training,
+                refinement_tasks=("simulation/homo", "simulation/homo"),
+            ),
+        ).validate()
+    with pytest.raises(ValueError, match="non-empty"):
+        replace(
+            tiny_stage2_setup,
+            training=replace(tiny_stage2_setup.training, refinement_tasks=()),
+        ).validate()
+    unknown = replace(
+        tiny_stage2_setup,
+        training=replace(
+            tiny_stage2_setup.training,
+            refinement_tasks=("simulation/unknown",),
+        ),
+    )
+    unknown.validate()
+    with pytest.raises(ValueError, match="unknown"):
+        unknown.validate_registry(load_stage2_registry(unknown.data.task_catalog_path))
 
 
 def test_prepare_v3_task_local_scalers_and_ragged_atoms(tiny_stage2_setup):
@@ -642,13 +689,39 @@ def test_prepare_train_checkpoint_and_encoder_export(tiny_stage2_setup, tmp_path
     run_stage2_training(tiny_stage2_setup, output_dir=output)
     assert (output / "checkpoint_epoch_00001.pt").is_file()
     boundary_checkpoint = torch.load(
-        output / "checkpoint_epoch_00001.pt", map_location="cpu", weights_only=False
+        output / "checkpoint_epoch_00002.pt", map_location="cpu", weights_only=False
     )
     assert boundary_checkpoint["optimizer"]["state"]
     assert boundary_checkpoint["refinement"]["optimizers"] == {}
-    final_checkpoint = torch.load(output / "checkpoint_epoch_00002.pt", map_location="cpu", weights_only=False)
-    assert final_checkpoint["format_version"] == 4
-    assert final_checkpoint["completed_epoch"] == 2
+    assert boundary_checkpoint["phase"] == "boundary"
+    assert boundary_checkpoint["refinement"]["task_updates"] == {
+        task: 0 for task in DEFAULT_REFINEMENT_TASKS
+    }
+    final_checkpoint = torch.load(output / "checkpoint_epoch_00004.pt", map_location="cpu", weights_only=False)
+    assert final_checkpoint["format_version"] == STAGE2_CHECKPOINT_VERSION
+    assert final_checkpoint["completed_epoch"] == 4
+    task_batches = final_checkpoint["task_batches"]
+    steps_per_epoch = sum(task_batches.values())
+    refinement_steps_per_epoch = sum(
+        task_batches[task] for task in DEFAULT_REFINEMENT_TASKS
+    )
+    assert final_checkpoint["scheduler_geometry"] == {
+        "gradient_accumulation_steps": 1,
+        "steps_per_epoch": steps_per_epoch,
+        "total_steps": 2 * steps_per_epoch,
+        "backbone_unfreeze_step": steps_per_epoch,
+        "joint_epochs": 2,
+        "refinement_epochs": 2,
+        "refinement_steps_per_epoch": refinement_steps_per_epoch,
+        "total_epochs": 4,
+    }
+    assert final_checkpoint["refinement"]["task_updates"] == {
+        task: 2 * task_batches[task] for task in DEFAULT_REFINEMENT_TASKS
+    }
+    assert (
+        final_checkpoint["refinement"]["shared_state_hash"]
+        == boundary_checkpoint["refinement"]["shared_state_hash"]
+    )
     assert final_checkpoint["registry_hash"] == load_artifact_registry(tiny_stage2_setup.data.artifacts_dir).registry_hash
     assert final_checkpoint["model_contract"]["object_encoder"] == {
         "layers": tiny_stage2_setup.model.object_layers,
@@ -661,9 +734,30 @@ def test_prepare_train_checkpoint_and_encoder_export(tiny_stage2_setup, tmp_path
     refined_payload = torch.load(
         output / "taskwise_refined.pt", map_location="cpu", weights_only=False
     )
+    assert refined_payload["format_version"] == STAGE2_REFINED_VERSION
+    assert tuple(refined_payload["refined_tasks"]) == DEFAULT_REFINEMENT_TASKS
+    assert set(refined_payload["unrefined_tasks"]) == set(TASKS) - set(
+        DEFAULT_REFINEMENT_TASKS
+    )
     assert set(refined_payload["private_state_hashes"]) == set(
         load_artifact_registry(tiny_stage2_setup.data.artifacts_dir).task_ids
     )
+    assert set(refined_payload["selected_tasks"]) == set(DEFAULT_REFINEMENT_TASKS)
+    for selection in refined_payload["selected_tasks"].values():
+        assert selection["selected_refinement_epoch"] in {0, 1, 2}
+        assert [candidate["refinement_epoch"] for candidate in selection["candidates"]] == [0, 1, 2]
+    for task in refined_payload["unrefined_tasks"]:
+        assert (
+            refined_payload["private_state_hashes"][task]
+            == boundary_checkpoint["refinement"]["unrefined_task_state_hashes"][task]
+        )
+    assert resolve_checkpoint_path(output) == output / "checkpoint_epoch_00004.pt"
+    assert resolve_checkpoint_path(output, 2) == output / "checkpoint_epoch_00002.pt"
+    loaded_path, loaded_refined, _ = _load_refined_artifact(
+        output, final_checkpoint
+    )
+    assert loaded_path == output / "taskwise_refined.pt"
+    assert loaded_refined["model_state_hash"] == refined_payload["model_state_hash"]
     frozen = load_frozen_object_encoder(encoder_path, device="cpu")
     assert not frozen.backbone.training
     assert not frozen.object_encoder.training
@@ -688,12 +782,15 @@ def test_prepare_train_checkpoint_and_encoder_export(tiny_stage2_setup, tmp_path
     assert encoder["kind"] == "ilume_stage2_encoder"
     assert not any("head" in key for key in encoder["stage1_backbone"])
     assert set(encoder) >= {"stage1_backbone", "object_encoder", "model_contract", "state_hashes", "provenance"}
+    assert encoder["provenance"]["stage2_checkpoint_hash"] == sha256_file(
+        output / "checkpoint_epoch_00002.pt"
+    )
     resume_output = tmp_path / "resume"
     resume_output.mkdir()
     rows = [json.loads(line) for line in (output / "metrics.jsonl").read_text(encoding="utf-8").splitlines()]
-    epoch_one = [row for row in rows if int(row.get("epoch", 0)) <= 1]
+    boundary_rows = [row for row in rows if int(row.get("epoch", 0)) <= 2]
     (resume_output / "metrics.jsonl").write_text(
-        "\n".join(json.dumps(row, sort_keys=True) for row in epoch_one) + "\n",
+        "\n".join(json.dumps(row, sort_keys=True) for row in boundary_rows) + "\n",
         encoding="utf-8",
     )
     resume_config = replace(
@@ -709,11 +806,37 @@ def test_prepare_train_checkpoint_and_encoder_export(tiny_stage2_setup, tmp_path
     run_stage2_training(
         resume_config,
         output_dir=resume_output,
-        resume_from=output / "checkpoint_epoch_00001.pt",
+        resume_from=output / "checkpoint_epoch_00002.pt",
     )
-    resumed = torch.load(resume_output / "checkpoint_epoch_00002.pt", map_location="cpu", weights_only=False)
+    resumed = torch.load(resume_output / "checkpoint_epoch_00004.pt", map_location="cpu", weights_only=False)
     assert resumed["scheduler_geometry"]["gradient_accumulation_steps"] == 1
+    assert resumed["refinement"]["task_updates"] == {
+        task: 2 * task_batches[task] for task in DEFAULT_REFINEMENT_TASKS
+    }
     assert (resume_output / "stage2_encoder.pt").is_file()
+    resumed_refined = torch.load(
+        resume_output / "taskwise_refined.pt", map_location="cpu", weights_only=False
+    )
+    assert resumed_refined["model_state_hash"] == refined_payload["model_state_hash"]
+
+    mid_resume_output = tmp_path / "resume_mid_refinement"
+    mid_resume_output.mkdir()
+    mid_rows = [row for row in rows if int(row.get("epoch", 0)) <= 3]
+    (mid_resume_output / "metrics.jsonl").write_text(
+        "\n".join(json.dumps(row, sort_keys=True) for row in mid_rows) + "\n",
+        encoding="utf-8",
+    )
+    run_stage2_training(
+        resume_config,
+        output_dir=mid_resume_output,
+        resume_from=output / "checkpoint_epoch_00003.pt",
+    )
+    mid_resumed_refined = torch.load(
+        mid_resume_output / "taskwise_refined.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    assert mid_resumed_refined["model_state_hash"] == refined_payload["model_state_hash"]
 
 
 def test_stage2_evaluate_defaults_to_refined_and_rejects_removed_flag() -> None:

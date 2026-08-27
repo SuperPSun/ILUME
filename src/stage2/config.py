@@ -21,7 +21,14 @@ DEFAULT_TASK_WEIGHTS = {
     "simulation/transfer_organic": 0.5,
 }
 
-STAGE2_CHECKPOINT_VERSION = 4
+DEFAULT_REFINEMENT_TASKS = (
+    "simulation/heat_of_vaporization",
+    "simulation/homo",
+    "simulation/lumo",
+    "simulation/partial_atomic_charge",
+)
+
+STAGE2_CHECKPOINT_VERSION = 5
 STAGE2_CHECKPOINT_KIND = "ilume_stage2_object"
 
 
@@ -83,7 +90,8 @@ class Stage2TrainingConfig:
     log_every_batches: int = 50
     device: str = "auto"
     amp_dtype: str = "bf16"
-    refinement_ratio: float = 0.20
+    refinement_epochs: int = 10
+    refinement_tasks: tuple[str, ...] = DEFAULT_REFINEMENT_TASKS
     refinement_lr_multiplier: float = 0.10
 
 
@@ -137,8 +145,12 @@ class Stage2Config:
             raise ValueError("Stage 2 Object v3 requires cuda_prefetch_batches == 1")
         if training.amp_dtype not in {"bf16", "fp16", "none"}:
             raise ValueError("training.amp_dtype must be bf16, fp16, or none")
-        from common.refinement import refinement_geometry
-        refinement_geometry(training.epochs, training.refinement_ratio)
+        if training.refinement_epochs <= 0:
+            raise ValueError("refinement_epochs must be positive")
+        if not training.refinement_tasks:
+            raise ValueError("refinement_tasks must be non-empty")
+        if len(set(training.refinement_tasks)) != len(training.refinement_tasks):
+            raise ValueError("refinement_tasks must not contain duplicates")
         if training.refinement_lr_multiplier <= 0:
             raise ValueError("refinement_lr_multiplier must be positive")
 
@@ -152,6 +164,8 @@ class Stage2Config:
             raise ValueError(
                 "data.target_materialization_modes contains an unknown Stage 2 task"
             )
+        if not set(self.training.refinement_tasks).issubset(expected):
+            raise ValueError("training.refinement_tasks contains an unknown Stage 2 task")
         for task in registry.tasks:
             mode = self.loss.task_loss_modes.get(task.task_id, "element_mean")
             materialization = self.data.target_materialization_modes.get(
@@ -167,6 +181,11 @@ class Stage2Config:
                     "masked_target_macro loss"
                 )
 
+    def ordered_refinement_tasks(self, registry: Stage2Registry) -> tuple[str, ...]:
+        self.validate_registry(registry)
+        selected = set(self.training.refinement_tasks)
+        return tuple(task_id for task_id in registry.task_ids if task_id in selected)
+
     def normalized_task_weights(self, registry: Stage2Registry) -> dict[str, float]:
         self.validate_registry(registry)
         total = sum(self.loss.task_weights.values())
@@ -178,7 +197,7 @@ class Stage2Config:
                 return str(value)
             if isinstance(value, dict):
                 return {key: convert(item) for key, item in value.items()}
-            if isinstance(value, list):
+            if isinstance(value, (list, tuple)):
                 return [convert(item) for item in value]
             return value
         return convert(asdict(self))
@@ -215,6 +234,10 @@ def _construct(section_type: type, values: dict[str, Any] | None) -> Any:
                 values[key] = Path(values[key])
     elif section_type is Stage2InitializationConfig and "checkpoint" in values:
         values["checkpoint"] = Path(values["checkpoint"])
+    elif section_type is Stage2TrainingConfig and "refinement_tasks" in values:
+        if not isinstance(values["refinement_tasks"], list):
+            raise ValueError("training.refinement_tasks must be a list")
+        values["refinement_tasks"] = tuple(values["refinement_tasks"])
     return section_type(**values)
 
 

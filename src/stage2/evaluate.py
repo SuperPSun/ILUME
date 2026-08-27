@@ -41,7 +41,7 @@ from .config import STAGE2_CHECKPOINT_KIND, STAGE2_CHECKPOINT_VERSION, Stage2Con
 from .data import load_artifact_registry
 from .identity import metadata_identity
 from .model import Stage2ObjectModel
-from .train import STAGE2_REFINED_KIND
+from .train import STAGE2_REFINED_KIND, STAGE2_REFINED_VERSION
 from .registry import (
     ORBITAL_TASK_TARGETS,
     orbital_audit_columns,
@@ -220,12 +220,15 @@ def _load_refined_artifact(
     if (
         not isinstance(manifest, dict)
         or manifest.get("kind") != STAGE2_REFINED_KIND
-        or manifest.get("format_version") != 1
+        or manifest.get("format_version") != STAGE2_REFINED_VERSION
         or manifest.get("artifact") != artifact_path.name
         or manifest.get("artifact_sha256") != sha256_file(artifact_path)
     ):
         raise ValueError("Stage 2 refinement manifest/artifact integrity mismatch")
-    if refined.get("kind") != STAGE2_REFINED_KIND or refined.get("format_version") != 1:
+    if (
+        refined.get("kind") != STAGE2_REFINED_KIND
+        or refined.get("format_version") != STAGE2_REFINED_VERSION
+    ):
         raise ValueError("Unsupported Stage 2 refined artifact")
     require_compatible_identity(
         checkpoint["training_identity"],
@@ -235,8 +238,9 @@ def _load_refined_artifact(
     if manifest.get("ordinary_final_epoch") != checkpoint.get("completed_epoch"):
         raise ValueError("Stage 2 refinement manifest final epoch mismatch")
     for key in (
-        "boundary_epoch", "shared_state_hash", "private_state_hashes",
-        "selected_tasks", "validation",
+        "boundary_epoch", "refined_tasks", "unrefined_tasks",
+        "shared_state_hash", "private_state_hashes", "selected_tasks",
+        "validation",
     ):
         if json.dumps(manifest.get(key), sort_keys=True) != json.dumps(
             refined.get(key), sort_keys=True

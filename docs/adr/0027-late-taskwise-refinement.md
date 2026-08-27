@@ -8,16 +8,18 @@
 
 联合多任务训练能在共享参数中迁移知识，但训练末期继续更新 shared state 与使用跨任务
 梯度平衡，会限制单任务参数独立收敛。部分任务因此不能超过对应单任务 MLP baseline。
-本决定在总 epoch 预算不变的前提下，把末期训练改为共享表示固定、任务私有参数独立收尾。
+本决定把 refinement 纳入正式训练合同：Stage 2 先完成原定完整 joint horizon，再额外对
+核心物理任务做 head-only refinement；Stage 3 继续在既定总 epoch 内进行末期 refinement。
 
 ## 决定
 
 ### 共同训练几何
 
-Stage 2 与 Stage 3 配置显式包含 `training.refinement_ratio: 0.20` 和
-`training.refinement_lr_multiplier: 0.10`。`refinement_epochs = ceil(epochs * ratio)`，且
-至少保留一个完整 joint epoch。现役 Stage 2 v1 为 4+1，Capacity Stage 2 为 8+2，
-20-epoch Stage 3 为 16+4，Capacity formal 为 40+10，Stage 3 v1 为 80+20。两字段进入
+Stage 2 的 `training.epochs` 只表示完整 joint epochs，并显式配置
+`training.refinement_epochs`、`training.refinement_tasks` 与
+`training.refinement_lr_multiplier`。现役 v1 为 5 joint + 10 refinement；Capacity Stage 2
+为 10 joint + 10 refinement。Stage 3 继续使用 `training.refinement_ratio: 0.20`：
+20-epoch probe 为 16+4，50-epoch formal 为 40+10，Stage 3 v1 为 80+20。相关字段进入
 training identity，但不进入 HPO 搜索空间。
 
 joint phase 的 warmup+cosine 在 boundary 前的真实 update 数内完整走完。refinement 不
@@ -27,12 +29,13 @@ warmup；进入 boundary 后，为每个 task 新建互相独立的 AdamW 与 co
 
 ### Stage 2
 
-boundary 后冻结 backbone 与共享 ObjectEncoder，并将共享模块置为 eval；只将当前 task
-head 置为 train。HEAD ownership 来自 registry-backed 模型 API，必须完整覆盖且互不
-重叠，不按参数名推断。冻结梯度与 forward 路径分离：所有 object/atom task 都继续运行
-boundary 时的 student backbone -> ObjectEncoder，禁止使用 teacher embedding 替代路径。
-每个 task 仅对原始 physics loss 反向，不使用 task compensation weight，也不加入 teacher
-loss。
+完整 joint training 后冻结 backbone 与共享 ObjectEncoder，并将共享模块置为 eval；只对
+`simulation/heat_of_vaporization`、`simulation/homo`、`simulation/lumo` 与
+`simulation/partial_atomic_charge` 逐任务调度，且只将当前 task head 置为 train。HEAD
+ownership 来自 registry-backed 模型 API，必须互不重叠，不按参数名推断。冻结梯度与
+forward 路径分离：四个任务都继续运行 boundary 时的 student backbone -> ObjectEncoder，
+禁止使用 teacher embedding 替代路径。每个 task 仅对原始 physics loss 反向，不使用 task
+compensation weight，也不加入 teacher loss。
 
 `stage2_encoder.pt` 继续只导出 boundary 后不再变化的 backbone/ObjectEncoder，并记录
 refinement boundary、shared state hash 与 provenance；head refinement 不改变 Stage 3 表示。
@@ -47,21 +50,25 @@ batch allocation、microbatch、normalized SmoothL1 与确定性顺序不变；�
 
 ### 选择与 artifact
 
-每个 task 的候选为 boundary state 与每个 refinement epoch 结束后的 private state。每个
-候选都必须有完整且有限的 validation 主指标；严格变小时才替换，精确并列保留更早候选。
+Stage 2 四个 refinement task 与 Stage 3 每个 task 的候选为 boundary state
+（refinement epoch 0）与每个 refinement epoch 结束后的 private state。每个候选都必须有
+完整且有限的 validation 主指标；严格变小时才替换，精确并列保留更早候选。
 Partial Charge 使用 molecule-macro normalized MAE；HOMO/LUMO 使用 pooled sample-micro
 raw MAE；其余 Stage 2 与全部 Stage 3 task 使用 task validation normalized MAE。test 不得
 参与选择。
 
-最后一个普通 epoch checkpoint 先保存真实历史状态；随后将同一 frozen shared state 与各
-task validation-best private state stitching，重新运行完整 validation，并原子发布：
+最后一个普通 epoch checkpoint 先保存真实历史状态；随后将同一 frozen shared state 与
+refinement task 的 validation-best private state stitching，未 refinement 的 Stage 2 head
+保持 joint boundary 状态，重新运行完整 validation，并原子发布：
 
-- `taskwise_refined.pt`：独立 kind、format v1、完整 stitched model、source training
-  identity、shared/private hashes、boundary、选择记录与 stitched validation；
+- `taskwise_refined.pt`：独立 kind（Stage 2 format v2、Stage 3 format v1）、完整 stitched
+  model、source training identity、shared/private hashes、boundary、选择记录与 stitched
+  validation；
 - `taskwise_refinement.json`：公开安全 manifest，记录 boundary/best metric、候选、是否严格
   改善、artifact hash 与 stitched validation。
 
-Stage 2 checkpoint 升级到 format v4，Stage 3 checkpoint 升级到 format v2，保存 phase、
+Stage 2 checkpoint 升级到 format v5，Stage 2 refined artifact 升级到 format v2；Stage 3
+checkpoint 维持 format v2，保存 phase、
 per-task optimizer/scheduler、update counters 与 best-state cache。支持 boundary、
 mid-refinement 和 finalization 恢复；旧 checkpoint 不迁移。evaluate 默认选择
 taskwise-refined artifact；只有显式提供 `--checkpoint-epoch N` 才选择
@@ -82,7 +89,8 @@ prepared物理格式不因本决定改变，但新的 Stage 2 encoder identity �
 
 ## 后果
 
-- 总 epoch 数不增加，代价是最后 20% 不再改善 shared representation。
+- Stage 2 每个 run 在完整 joint horizon 后额外增加 10 epochs 的四任务 head-only 计算；
+  Stage 3 总 epoch 预算不变。
 - 最终评估 artifact 不对应单一历史 epoch；不同 task 可来自不同 refinement epoch，但共享
   完全相同的 frozen state。
 - 普通 checkpoint 与 taskwise-refined artifact 的用途明确分离，恢复、完整性与报告管理更
@@ -92,7 +100,7 @@ prepared物理格式不因本决定改变，但新的 Stage 2 encoder identity �
 
 ## 备选方案
 
-- 拒绝增加 epoch：会改变已注册计算预算。
+- 拒绝继续用 Stage 2 的 80/20 切分：会缩短 shared representation 的 joint 训练 horizon。
 - 拒绝在 refinement 继续 joint optimizer/PCGrad：残留 optimizer 动量和共享梯度平衡会
   破坏任务独立收尾语义。
 - 拒绝只取最后 epoch：不同任务的最佳 private state 不必出现在同一候选 epoch。

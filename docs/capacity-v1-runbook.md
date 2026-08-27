@@ -58,8 +58,10 @@ python scripts/stage2/train.py \
   --output outputs/experiments_v1/stage2/<scale>/<recipe>/train
 ```
 
-每次发布历史 epoch-10 checkpoint、boundary-frozen `stage2_encoder.pt` 和 Stage 2 自身的
-`taskwise_refined.pt`；Stage 3 只消费 encoder，Stage 2 validation 不淘汰 candidate。
+每次先完成 10 个 joint epochs，再完成 YAML 指定的 10 个四任务 head-only refinement
+epochs；连续发布 epoch 1–20 历史 checkpoint、joint epoch-10 boundary 的
+`stage2_encoder.pt` 和 Stage 2 自身的 `taskwise_refined.pt`。Stage 3 只消费 encoder，
+Stage 2 validation 不淘汰 candidate。
 
 ## 3. Stage 3 prepare、probe 与自动选 recipe
 

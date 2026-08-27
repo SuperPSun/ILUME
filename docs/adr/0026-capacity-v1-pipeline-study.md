@@ -36,8 +36,9 @@ encoder 的单独因果效应。Stage 2 ObjectEncoder 和 Stage 3 HoME 宽度均
    `4e-4`（相对 128/`1e-4` 线性缩放）；每个 scale 从头训练 15 epochs。所有 epoch
    checkpoint 保留，但 Stage 2 只消费 epoch 15。
 3. 每个 scale 跑 Conservative、Default、Aggressive 三个 Stage 2 recipe，共 12 runs。
-   `object_layers=2`、`object_ffn_dim=2*d_model`、dropout 0.1，固定训练 10 epochs，
-   Stage 3 只消费 epoch 10 自动导出的 encoder。三档依次为：
+   `object_layers=2`、`object_ffn_dim=2*d_model`、dropout 0.1，先固定完成 10 个 joint
+   epochs，再对 ADR-0027 的四个核心物理任务额外执行 10 个 head-only refinement epochs。
+   Stage 3 只消费 joint epoch 10 边界导出的 encoder。三档依次为：
    - Conservative：freeze 4，LR `3e-6/9e-6/3e-5`，teacher λ 0.30；
    - Default：freeze 2，LR `1e-5/3e-5/1e-4`，teacher λ 0.10；
    - Aggressive：freeze 0，LR `3e-5/9e-5/3e-4`，teacher λ 0.03。
@@ -86,6 +87,8 @@ encoder 的单独因果效应。Stage 2 ObjectEncoder 和 Stage 3 HoME 宽度均
 
 - Final-only 将 Stage 2 candidate 从 24 减为 12，删除两层主观中间 checkpoint 选择，
   也无需增加任意 Stage 2 checkpoint 导出接口。
+- 每个 Stage 2 candidate 的共享表示仍比较同一 10-epoch joint horizon；额外 10 epochs
+  只更新四个核心 task head，不进入 Stage 3 encoder。
 - 20-epoch probe/HPO 和 50-epoch formal 是不同 scheduler trajectory，不能 resume 或
   解释为同一训练的前后段；现役 100-epoch Base 也只作历史/健康参考。
 - Anchor HPO 不为其他 scale 各自优化 Stage 3，因此四点回答的是受控、可负担的主模型
