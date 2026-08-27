@@ -14,24 +14,25 @@ Coverage: 11 test tasks / 21 enabled Stage 3 tasks.
 ## Stage 2 CORE
 
 1. MLP — macro normalized MAE 0.0676515
-2. ILUME — macro normalized MAE 0.112014
+2. ILUME — macro normalized MAE 0.0883141
 3. ECFP+XGBoost — macro normalized MAE 0.134703
 
 ## Partial Charge
 
-1. ILUME — macro normalized MAE 0.141553
+1. ILUME — macro normalized MAE 0.141587
 Not evaluated: ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost, mlp@outputs/benchmarks/v1/mlp
 Not eligible: None
 
 ## Stage 2 FULL
 
-1. ILUME — macro normalized MAE 0.119398
+1. ILUME — macro normalized MAE 0.101632
 Not evaluated: ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost, mlp@outputs/benchmarks/v1/mlp
 Not eligible: None
 
 ## Core task wins
 
-- mlp@outputs/benchmarks/v1/mlp: 3
+- ilume@outputs/v1/stage2/base/evaluate: 1
+- mlp@outputs/benchmarks/v1/mlp: 2
 
 ## Experiment health
 
