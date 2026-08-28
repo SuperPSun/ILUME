@@ -39,14 +39,14 @@ gradient checkpointing 后续跑。S/L/XL 只在 Base winner 后按另行冻结�
 先以 R4 调用一次 reusable prepare root，物化共享 data 与 Stage 1 Base encoder 的 teacher cache：
 
 ```bash
-python scripts/stage2/prepare.py --config configs/experiments_v1/stage2/r4.yaml --output outputs/experiments_v1/stage2/prepare
+python scripts/stage2/prepare.py --config configs/experiments_v1/stage2/base-e09-r4.yaml --output outputs/experiments_v1/stage2/prepare
 ```
 
 随后对 R1–R8 的八个 YAML 分别运行：
 
 ```bash
 python scripts/stage2/train.py \
-  --config configs/experiments_v1/stage2/rN.yaml \
+  --config configs/experiments_v1/stage2/base-e09-rN.yaml \
   --output outputs/experiments_v1/stage2/base/rN/train
 ```
 

@@ -35,4 +35,6 @@ Capacity v1 是 ADR-0026/0027 和 `configs/experiments_v1/{stage1,stage2,stage3}
 
 修改后运行 `pytest -q`，并按风险检查九个 Stage script 与四个 benchmark script 的 `--help`、`compileall`、`git diff --check`、Markdown 链接、ignore 白名单与旧入口搜索。只使用临时小数据；除非用户明确要求，不执行正式 prepare、教师缓存、训练或五折 evaluation。
 
+测试默认不随代码修改自动增长。新增测试前必须确认：它保护此前未覆盖且会造成实质损失的科研行为、checkpoint/resume、artifact/identity、CLI/reporting 或高风险调度合同，并且现有测试无法合理覆盖。优先复用、修改或合并现有测试；只有答案明确时才新增一个最小行为测试。不要为 private helper 返回值、内部调用关系、函数搬家、简单重构、coverage 数字或近似重复参数组合增加测试。`tests/` 按 Stage、benchmark、common 与 architecture 集中组织；`conftest.py` 只放真正跨文件复用的小型 fixture，不建立通用测试框架。
+
 `trash/` 不进入 Git。移动旧 artifact、旧 YAML、未消费数据或删除机器缓存前，必须先报告精确文件数、大小、目标和冲突策略，并等待用户明确确认。不得覆盖、重排或删除既有 `trash/` 内容。

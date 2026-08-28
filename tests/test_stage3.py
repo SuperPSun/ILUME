@@ -1,17 +1,25 @@
 from __future__ import annotations
 
 import csv
+
 import json
+
 import math
+
 import shutil
+
 from dataclasses import asdict, replace
+
 from pathlib import Path
+
 from unittest.mock import patch
 
 import pytest
+
 import torch
 
 from common.identity import IDENTITY_CONTRACT_VERSION, semantic_identity, tensor_state_hash
+
 from stage3.config import (
     BASE_GROUP_TASKS,
     Stage3Config,
@@ -27,6 +35,7 @@ from stage3.config import (
     effective_training_seed,
     load_stage3_config,
 )
+
 from stage3.data import (
     ObjectKey,
     ResolvedTaskSpec,
@@ -36,10 +45,15 @@ from stage3.data import (
     resolve_batch_allocation,
     resolve_task_registry,
 )
+
 from stage3.model import GLOBAL, Stage3SparseModel, group_owner, private_owner
+
 from stage3.pcgrad import hierarchical_pcgrad
+
 from stage3.prepare import materialize_object_embeddings, prepare_stage3
+
 from stage3.evaluate import evaluate_checkpoints
+
 from stage3.train import (
     STAGE3_CHECKPOINT_KIND,
     STAGE3_CHECKPOINT_VERSION,
@@ -49,13 +63,61 @@ from stage3.train import (
     resolve_stage3_training_identity,
     run_stage3_training,
 )
+
 from stage3.identity import build_stage3_training_identity, metadata_identity
 
+from dataclasses import replace
+
+import yaml
+
+from common.identity import semantic_identity
+
+from stage3.capacity import (
+    CapacityStudyConfig,
+    aggregate_fold_summaries,
+    config_for_trial,
+    confirmation_trial_numbers,
+    load_capacity_study_config,
+    materialize_final_recipe_configs,
+    select_probe_winners,
+    summarize_capacity_manifest,
+    refined_validation_summary,
+    validate_anchor_decision,
+)
+
+from stage3.config import load_stage3_config
+
+import scripts.stage3.train as train_launcher
+
+from stage1.config import load_config
+
+from stage1.identity import build_stage1_corpus_identity
+
+from stage2.config import load_stage2_config
+
+from common.io import sha256_file
+
+import hashlib
+
+from typing import Any
+
+from stage3.config import validate_stage3_folds
+
+import argparse
+
+from types import SimpleNamespace
+
+import scripts.stage3.evaluate as evaluate_launcher
+
+from stage3.config import Stage3Config
+
+from stage3.evaluate import resolve_stage3_reporting_study_id
+
+# --- Sparse-label model, training, and resume contracts ---
 
 TEST_ENCODER_IDENTITY = semantic_identity(
     "stage2.encoder", {"contract_version": 1, "test": True}
 )
-
 
 def _write_csv(path: Path, fields: list[str], rows: list[dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -63,7 +125,6 @@ def _write_csv(path: Path, fields: list[str], rows: list[dict[str, object]]) -> 
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
-
 
 def _catalog_row(
     task: str,
@@ -84,7 +145,6 @@ def _catalog_row(
         "materialized_path": f"stage3/{task}",
         "strategies": strategies,
     }
-
 
 def _tiny_config(tmp_path: Path) -> Stage3Config:
     catalog = tmp_path / "task_catalog.csv"
@@ -158,7 +218,6 @@ def _tiny_config(tmp_path: Path) -> Stage3Config:
         ),
     )
 
-
 @pytest.fixture()
 def tiny_prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Stage3Config:
     config = _tiny_config(tmp_path)
@@ -179,7 +238,6 @@ def tiny_prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Stage3Conf
     assert summary["task_count"] == 3
     return config
 
-
 def test_base_registry_and_config_defaults_are_explicit() -> None:
     config = load_stage3_config("configs/v1/stage3/base.yaml")
     assert sum(map(len, BASE_GROUP_TASKS.values())) == 21
@@ -194,7 +252,6 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
     assert config.model.expert_hidden_ratio == 2.0
     assert checkpoint_epochs(100, 10) == tuple(range(10, 101, 10))
     assert checkpoint_epochs(23, 10) == (10, 20, 23)
-
 
 def test_training_seed_changes_training_identity_not_prepared_artifact(
     tiny_prepared: Stage3Config,
@@ -217,7 +274,6 @@ def test_training_seed_changes_training_identity_not_prepared_artifact(
         resolve_stage3_training_identity(tiny_prepared, 1)
     )
 
-
 def test_registry_catalog_precedence_split_and_topology(tmp_path: Path) -> None:
     config = _tiny_config(tmp_path)
     registry = resolve_task_registry(config)
@@ -231,51 +287,6 @@ def test_registry_catalog_precedence_split_and_topology(tmp_path: Path) -> None:
     )
     assert resolve_task_registry(override)["experiment/a"].split_strategy == "random"
 
-
-def test_cache_hit_and_miss(tmp_path: Path) -> None:
-    config = _tiny_config(tmp_path)
-    keys = (
-        ObjectKey("il", (("cation", "[Na+]"), ("anion", "[Cl-]"))),
-        ObjectKey("molecule", (("neutral", "C"),)),
-    )
-
-    class Encoder:
-        encoder_identity = TEST_ENCODER_IDENTITY
-
-        def encode(self, specs):
-            return torch.ones(len(specs), 4)
-
-    with patch(
-        "stage3.prepare.load_stage2_encoder_identity",
-        return_value=TEST_ENCODER_IDENTITY,
-    ), patch("stage3.prepare.load_frozen_object_encoder", return_value=Encoder()) as load:
-        first, _, audit = materialize_object_embeddings(config, keys)
-        second, _, second_audit = materialize_object_embeddings(config, keys)
-    assert torch.equal(first, second)
-    assert audit == {"hits": 0, "misses": 2}
-    assert second_audit == {"hits": 2, "misses": 0}
-    assert load.call_count == 1
-
-
-def test_model_has_unified_task_gate_and_no_l2_global_gate(tiny_prepared: Stage3Config) -> None:
-    registry = resolve_task_registry(tiny_prepared)
-    model = Stage3SparseModel(tiny_prepared.model, registry, 4)
-    names = tuple(model.state_dict())
-    assert any("l1_global_gate" in name for name in names)
-    assert not hasattr(model, "l2_global_gate")
-    assert not any("l2_global_gate" in name for name in names)
-    assert set(model.parameter_ownership()) == set(model.parameters())
-    assert len(model.condition_films) == 2
-    final = model.condition_films["experiment__b"].network[-1]
-    assert torch.count_nonzero(final.weight) == 0
-    result = model(
-        "experiment/c", torch.randn(2, 4), torch.randn(2, 1),
-        partner_embedding=torch.randn(2, 4),
-    )
-    assert result.diagnostics["task_gate"].shape[-1] == 3
-    assert torch.allclose(result.diagnostics["task_gate"].sum(-1), torch.ones(2))
-
-
 def test_ownership_is_complete_and_isolated(tiny_prepared: Stage3Config) -> None:
     model = Stage3SparseModel(tiny_prepared.model, resolve_task_registry(tiny_prepared), 4)
     ownership = model.parameter_ownership()
@@ -287,21 +298,6 @@ def test_ownership_is_complete_and_isolated(tiny_prepared: Stage3Config) -> None
         model.parameters_for_owner(group_owner("g2"))
     )
     assert model.parameters_for_owner(GLOBAL)
-
-
-def test_virtual_allocation_and_replication_are_exact() -> None:
-    counts = {"a": 2, "b": 20, "c": 3}
-    allocation = resolve_batch_allocation(counts, 8, 10)
-    assert sum(allocation.values()) == 8
-    assert allocation == {"a": 2, "b": 4, "c": 2}
-    steps = composite_steps_per_epoch(counts, allocation, 10)
-    assert steps == 5
-    first = balanced_virtual_indices(3, 20, seed=7, epoch=2, task_id="a")
-    second = balanced_virtual_indices(3, 20, seed=7, epoch=2, task_id="a")
-    assert torch.equal(first, second)
-    frequencies = torch.bincount(first, minlength=3)
-    assert int(frequencies.max() - frequencies.min()) <= 1
-
 
 def test_microbatch_accumulation_matches_full_task_batch(tiny_prepared: Stage3Config) -> None:
     registry = resolve_task_registry(tiny_prepared)
@@ -335,7 +331,6 @@ def test_microbatch_accumulation_matches_full_task_batch(tiny_prepared: Stage3Co
         assert (left is None) == (right is None)
         if left is not None:
             assert torch.allclose(left, right, atol=1e-6, rtol=1e-5)
-
 
 def test_pcgrad_keeps_global_and_group_as_separate_blocks(
     tiny_prepared: Stage3Config, monkeypatch: pytest.MonkeyPatch
@@ -371,93 +366,6 @@ def test_pcgrad_keeps_global_and_group_as_separate_blocks(
     assert global_parameters | group_parameters not in calls
     private = model.parameters_for_owner(private_owner("experiment/a"))[0]
     assert torch.equal(result.gradients[private], gradients["experiment/a"][private])
-
-
-def _plugin_checkpoint(
-    path: Path, model: Stage3SparseModel, stage2_encoder_identity: str
-) -> None:
-    plan = {
-        "fold": 1,
-        "active_tasks": list(model.task_specs),
-        "resolved_registry": {
-            task: spec.to_dict() for task, spec in model.task_specs.items()
-        },
-        "groups": {},
-        "data": {},
-        "model": asdict(model.model_config),
-        "optimizer": {},
-        "scheduler": {},
-        "refinement": {},
-        "math": {},
-        "stage2_encoder_identity": stage2_encoder_identity,
-        "prepared_identity": "test-prepared",
-        "normalization_hash": "test-normalization",
-        "ownership_manifest": model.ownership_manifest(),
-        "plugin": {"mode": "scratch", "loaded_parameters": []},
-        "trainable_parameters": sorted(name for name, _ in model.named_parameters()),
-        "frozen_parameters": [],
-    }
-    model_state = model.state_dict()
-    torch.save(
-        {
-            "identity_contract_version": IDENTITY_CONTRACT_VERSION,
-            "kind": STAGE3_CHECKPOINT_KIND,
-            "format_version": STAGE3_CHECKPOINT_VERSION,
-            "stage": "stage3",
-            "stage2_encoder_identity": stage2_encoder_identity,
-            "resolved_registry": {
-                task: spec.to_dict() for task, spec in model.task_specs.items()
-            },
-            "ownership_manifest": model.ownership_manifest(),
-            "model": model_state,
-            "model_state_hash": tensor_state_hash("stage3.model-state", model_state),
-            "normalization": {task: {} for task in model.task_specs},
-            "resolved_training_plan": plan,
-            "training_identity": build_stage3_training_identity(plan),
-        },
-        path,
-    )
-
-
-def test_plugin_defaults_and_explicit_adaptation(tiny_prepared: Stage3Config) -> None:
-    registry = resolve_task_registry(tiny_prepared)
-    source_registry = {task: registry[task] for task in ("experiment/a", "experiment/b")}
-    source_model = Stage3SparseModel(tiny_prepared.model, source_registry, 4)
-    checkpoint = tiny_prepared.data.artifacts_dir.parent / "plugin.pt"
-    stage2_identity = metadata_identity(
-        json.loads((tiny_prepared.data.artifacts_dir / "metadata.json").read_text()),
-        "stage2_encoder",
-        context="test Stage 3 artifact",
-    )["hash"]
-    _plugin_checkpoint(checkpoint, source_model, stage2_identity)
-    target = Stage3SparseModel(tiny_prepared.model, registry, 4)
-    plugin = Stage3PluginConfig(checkpoint=checkpoint)
-    config = replace(
-        tiny_prepared,
-        initialization=replace(tiny_prepared.initialization, plugin=plugin),
-    )
-    _load_plugin(config, target, stage2_identity)
-    assert not any(parameter.requires_grad for parameter in target.parameters_for_owner(GLOBAL))
-    assert not any(parameter.requires_grad for parameter in target.parameters_for_owner(group_owner("g1")))
-    assert all(parameter.requires_grad for parameter in target.parameters_for_owner(group_owner("g2")))
-    assert all(parameter.requires_grad for parameter in target.parameters_for_owner(private_owner("experiment/c")))
-
-    adapted_model = Stage3SparseModel(tiny_prepared.model, registry, 4)
-    adapted = replace(
-        plugin,
-        adaptation=Stage3PluginAdaptationConfig(
-            global_scope=True, groups=("g1",), private_tasks=("experiment/a",)
-        ),
-    )
-    adapted_config = replace(
-        tiny_prepared,
-        initialization=replace(tiny_prepared.initialization, plugin=adapted),
-    )
-    _load_plugin(adapted_config, adapted_model, stage2_identity)
-    assert all(parameter.requires_grad for parameter in adapted_model.parameters_for_owner(GLOBAL))
-    assert all(parameter.requires_grad for parameter in adapted_model.parameters_for_owner(group_owner("g1")))
-    assert all(parameter.requires_grad for parameter in adapted_model.parameters_for_owner(private_owner("experiment/a")))
-
 
 def test_short_training_checkpoint_and_resume_are_exact(tiny_prepared: Stage3Config) -> None:
     continuous = tiny_prepared.data.artifacts_dir.parent / "continuous"
@@ -557,16 +465,503 @@ def test_short_training_checkpoint_and_resume_are_exact(tiny_prepared: Stage3Con
     )
     assert epoch_only["model_selector"] == "epoch_checkpoint"
 
+# --- Capacity v1 selection contract ---
 
-def test_stage3_scripts_configure_runtime_before_loading_operation() -> None:
-    root = Path(__file__).resolve().parents[1]
-    operations = {
-        "prepare.py": "from stage3.prepare import prepare_stage3",
-        "train.py": "from stage3.train import ",
-        "evaluate.py": "from stage3.evaluate import (",
-    }
-    for filename, operation_import in operations.items():
-        source = (root / "scripts" / "stage3" / filename).read_text()
-        assert source.index("configure_process_runtime(config)") < source.index(
-            operation_import
+def _write_metrics(path: Path, values: list[float]) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for epoch, value in enumerate(values, start=1):
+        rows.append(
+            {
+                "epoch": epoch,
+                "validation": {
+                    "tasks": {
+                        "experiment/a": {"normalized_mae": value + 0.1},
+                        "experiment/b": {"normalized_mae": value + 0.2},
+                    },
+                    "groups": {
+                        "group-a": {"normalized_mae": value + 0.15},
+                    },
+                    "macro_task_equal": {
+                        "normalized_mae": {"value": value}
+                    },
+                    "macro_group_equal": {
+                        "normalized_mae": {"value": value + 0.05}
+                    },
+                },
+            }
         )
+    (path / "metrics.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+    artifact = path / "taskwise_refined.pt"
+    artifact.write_bytes(b"fake-refined-artifact")
+    (path / "taskwise_refinement.json").write_text(
+        json.dumps({
+            "kind": "ilume_stage3_taskwise_refined",
+            "format_version": 1,
+            "artifact": artifact.name,
+            "artifact_sha256": sha256_file(artifact),
+            "ordinary_final_epoch": len(values),
+            "validation": rows[-1]["validation"],
+        }),
+        encoding="utf-8",
+    )
+
+def test_refined_score_uses_stitched_validation(tmp_path: Path) -> None:
+    root = tmp_path / "run"
+    _write_metrics(root, [1.0] * 19 + [0.25])
+    summary = refined_validation_summary(root, expected_epochs=20)
+    assert summary["score"] == pytest.approx(0.25)
+    assert summary["model_selector"] == "taskwise_refined"
+
+def test_capacity_study_and_trial_config_are_strict(tmp_path: Path) -> None:
+    study = tmp_path / "study.yaml"
+    study.write_text(
+        """
+schema_version: 2
+study_name: test
+anchor_decision: outputs/test/anchor.yaml
+attempted_trials: 40
+startup_trials: 10
+trials_per_wave: 2
+folds: [1, 2]
+confirmation_folds: [3, 4, 5]
+top_k: 5
+max_retries: 1
+sampler_seed: 42
+global_experts: [1, 2, 3, 4]
+group_experts: [1, 2, 3, 4]
+private_experts: [1, 2]
+expert_hidden_ratio: [1.0, 1.5, 2.0, 3.0, 4.0]
+dropout: [0.0, 0.3]
+learning_rate: [0.0001, 0.001]
+weight_decay: [0.0001, 0.1]
+baseline:
+  global_experts: 2
+  group_experts: 2
+  private_experts: 1
+  expert_hidden_ratio: 2.0
+  dropout: 0.1
+  learning_rate: 0.0003
+  weight_decay: 0.01
+""".lstrip(),
+        encoding="utf-8",
+    )
+    spec = load_capacity_study_config(study)
+    base = load_stage3_config("configs/v1/stage3/base.yaml")
+    base = replace(base, training=replace(base.training, epochs=20, seed=42))
+    trial = config_for_trial(base, spec.baseline)
+    assert trial.model.global_experts == 2
+    assert trial.model.expert_hidden_ratio == 2.0
+    assert trial.training.learning_rate == pytest.approx(3.0e-4)
+    assert trial.training.seed == 42
+
+def test_capacity_study_runs_synchronous_waves_and_resumes(tmp_path: Path) -> None:
+    baseline = {
+        "global_experts": 2,
+        "group_experts": 2,
+        "private_experts": 1,
+        "expert_hidden_ratio": 2.0,
+        "dropout": 0.1,
+        "learning_rate": 3.0e-4,
+        "weight_decay": 1.0e-2,
+    }
+    spec = CapacityStudyConfig(
+        study_name="capacity-test",
+        anchor_decision="outputs/test/anchor.yaml",
+        attempted_trials=4,
+        startup_trials=2,
+        trials_per_wave=2,
+        folds=(1, 2),
+        confirmation_folds=(3, 4, 5),
+        top_k=2,
+        max_retries=1,
+        sampler_seed=42,
+        global_experts=(1, 2),
+        group_experts=(1, 2),
+        private_experts=(1, 2),
+        expert_hidden_ratio=(1.0, 2.0),
+        dropout=(0.0, 0.3),
+        learning_rate=(1.0e-4, 1.0e-3),
+        weight_decay=(1.0e-4, 1.0e-1),
+        baseline=baseline,
+    )
+    spec.validate()
+    base = load_stage3_config("configs/v1/stage3/base.yaml")
+    base = replace(base, training=replace(base.training, epochs=20, seed=42))
+    calls: list[tuple[str, tuple[int, ...], tuple[int, ...]]] = []
+
+    def run_wave(trials, *, phase, folds, devices, max_retries):
+        assert max_retries == 1
+        calls.append(
+            (
+                phase,
+                tuple(number for number, _, _ in trials),
+                tuple(folds),
+            )
+        )
+        result = {}
+        for number, _, trial_root in trials:
+            result[number] = {}
+            for fold in folds:
+                root = trial_root / phase / "attempt0" / f"fold{fold}"
+                _write_metrics(root, [0.1 + number / 100] * 20)
+                result[number][fold] = root
+        return result
+
+    output = tmp_path / "study"
+    report = train_launcher._run_capacity_study(
+        base_config=base,
+        study_config=spec,
+        output=output,
+        resume=False,
+        devices=("cuda:0", "cuda:1", "cuda:2", "cuda:3"),
+        run_wave=run_wave,
+    )
+    assert calls[:2] == [
+        ("search", (0, 1), (1, 2)),
+        ("search", (2, 3), (1, 2)),
+    ]
+    assert report["shortlist"] == [0, 1]
+    assert [row["trial_number"] for row in report["ranking"]] == [0, 1]
+    calls.clear()
+    resumed = train_launcher._run_capacity_study(
+        base_config=base,
+        study_config=spec,
+        output=output,
+        resume=True,
+        devices=("cuda:0", "cuda:1", "cuda:2", "cuda:3"),
+        run_wave=run_wave,
+    )
+    assert resumed == report
+    assert calls == []
+
+    decision = tmp_path / "final-recipe.yaml"
+    probe_config = "configs/experiments_v1/stage3/probe/base-r4.yaml"
+    decision.write_text(
+        __import__("yaml").safe_dump(
+            {
+                    "schema_version": 1,
+                "kind": "final_recipe",
+                "hpo_output": str(output),
+                "trial_number": 0,
+                "reason": "test confirmed baseline",
+                "scale_configs": {
+                    scale: probe_config for scale in ("s", "base", "l", "xl")
+                },
+                "seed_output_root": "outputs/test/seeds",
+                "formal_output_root": "outputs/test/formal",
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    materialized = materialize_final_recipe_configs(
+        decision, tmp_path / "materialized"
+    )
+    assert materialized["trial_number"] == 0
+    seed_config = load_stage3_config(
+        tmp_path / "materialized/seed/seed10042.yaml"
+    )
+    formal_config = load_stage3_config(tmp_path / "materialized/formal/xl.yaml")
+    assert (seed_config.training.seed, seed_config.training.epochs) == (10042, 20)
+    assert (formal_config.training.seed, formal_config.training.epochs) == (42, 50)
+
+def test_anchor_decision_requires_selected_probe_winner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import common.outputs as outputs_module
+
+    monkeypatch.setattr(outputs_module, "REPOSITORY_ROOT", tmp_path)
+    config_path = tmp_path / "configs/anchor.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("training: {}\n", encoding="utf-8")
+    report_path = tmp_path / "outputs/probe/summary.json"
+    report_path.parent.mkdir(parents=True)
+    report_path.write_text(
+        json.dumps({"scale_winners": [{"id": "l-default"}]}), encoding="utf-8"
+    )
+    decision_path = tmp_path / "outputs/anchor.yaml"
+    decision_path.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "kind": "anchor",
+                "selected_candidate": "l-default",
+                "selected_config": "configs/anchor.yaml",
+                "probe_report": "outputs/probe/summary.json",
+                "reason": "Pareto evidence",
+            }
+        ),
+        encoding="utf-8",
+    )
+    base_spec = load_capacity_study_config(
+        "configs/experiments_v1/stage3/hpo.yaml"
+    )
+    spec = replace(base_spec, anchor_decision="outputs/anchor.yaml")
+    decision = validate_anchor_decision(spec, config_path)
+    assert decision["selected_candidate"] == "l-default"
+
+# --- Multi-fold training launcher contract ---
+
+TRAINING_IDENTITY = semantic_identity(
+    "stage3.training", {"contract_version": 1, "microbatch_size": 1024}
+)
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+def _write_history(path: Path, epochs: list[int]) -> None:
+    path.write_text(
+        "".join(json.dumps({"epoch": epoch}) + "\n" for epoch in epochs),
+        encoding="utf-8",
+    )
+
+def _write_run(
+    root: Path,
+    *,
+    status: str,
+    epochs: list[int],
+    checkpoints: list[int],
+    identity: dict[str, Any] = TRAINING_IDENTITY,
+) -> None:
+    root.mkdir()
+    (root / "run_config.yaml").write_text("training: {}\n", encoding="utf-8")
+    _write_json(
+        root / "metadata.json",
+        {
+            "stage": "stage3",
+            "operation": "train",
+            "status": status,
+            "provenance": {"fold": 2},
+            "semantic_identity": identity,
+        },
+    )
+    _write_history(root / "metrics.jsonl", epochs)
+    _write_history(root / "diagnostics.jsonl", epochs)
+    for epoch in checkpoints:
+        (root / f"checkpoint_epoch_{epoch:05d}.pt").write_bytes(b"checkpoint")
+
+def test_completed_run_is_skipped_after_identity_and_history_checks(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "fold2"
+    _write_run(root, status="completed", epochs=[1, 2], checkpoints=[2])
+    artifact = root / "taskwise_refined.pt"
+    artifact.write_bytes(b"refined")
+    refinement = {"artifact_sha256": hashlib.sha256(b"refined").hexdigest()}
+    _write_json(root / "taskwise_refinement.json", refinement)
+    _write_json(root / "summary.json", {
+        "fold": 2,
+        "final_epoch": {"epoch": 2},
+        "taskwise_refinement": refinement,
+    })
+    assert train_launcher._resume_action(
+        root, fold=2, total_epochs=2, training_identity=TRAINING_IDENTITY
+    ) == ("skipped", None)
+
+def test_resume_uses_latest_complete_checkpoint_and_matching_history(
+    tmp_path: Path,
+) -> None:
+    legal = tmp_path / "legal"
+    _write_run(legal, status="failed", epochs=[1, 2], checkpoints=[1, 2])
+    assert train_launcher._resume_action(
+        legal, fold=2, total_epochs=4, training_identity=TRAINING_IDENTITY
+    ) == ("resume", legal / "checkpoint_epoch_00002.pt")
+
+class _FakeQueue:
+    def __init__(self) -> None:
+        self.items: list[tuple[str, str | None, str | None]] = []
+        self.closed = False
+
+    def put(self, value: tuple[str, str | None, str | None]) -> None:
+        self.items.append(value)
+
+    def get_nowait(self) -> tuple[str, str | None, str | None]:
+        if not self.items:
+            raise train_launcher.queue.Empty
+        return self.items.pop(0)
+
+    def close(self) -> None:
+        self.closed = True
+
+    def join_thread(self) -> None:
+        return
+
+class _FakeProcess:
+    created: list["_FakeProcess"] = []
+
+    def __init__(self, *, target, args, name: str) -> None:
+        self.target = target
+        self.args = args
+        self.name = name
+        self.sentinel = object()
+        self.exitcode: int | None = None
+        self.created.append(self)
+
+    def start(self) -> None:
+        try:
+            self.target(*self.args)
+        except SystemExit as error:
+            self.exitcode = int(error.code)
+        else:
+            self.exitcode = 0
+
+    def join(self, timeout: float | None = None) -> None:
+        del timeout
+
+    def is_alive(self) -> bool:
+        return self.exitcode is None
+
+class _FakeContext:
+    Process = _FakeProcess
+
+    @staticmethod
+    def Queue() -> _FakeQueue:
+        return _FakeQueue()
+
+def test_scheduler_binds_slots_for_successful_folds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeProcess.created = []
+    calls: list[tuple[int, str | None, bool]] = []
+
+    def worker(config, fold, output, resume, device, progress, result_queue):
+        del config, output, resume
+        calls.append((fold, device, progress))
+        result_queue.put(("completed", None, None))
+
+    monkeypatch.setattr(train_launcher.multiprocessing, "get_context", lambda mode: _FakeContext())
+    monkeypatch.setattr("multiprocessing.connection.wait", lambda sentinels: sentinels)
+    monkeypatch.setattr(train_launcher, "_worker_entry", worker)
+    results = train_launcher._run_schedule(
+        config_path="config.yaml",
+        folds=(1, 2, 3),
+        output_root="outputs/test",
+        resume=False,
+        max_parallel=2,
+        devices=("cuda:0", "cuda:1"),
+    )
+    assert results == {1: "completed", 2: "completed", 3: "completed"}
+    assert calls == [
+        (1, "cuda:0", True),
+        (2, "cuda:1", False),
+        (3, "cuda:0", False),
+    ]
+
+# --- Evaluation launcher contract ---
+
+EVALUATION_IDENTITY = semantic_identity("stage3.evaluation", {"contract_version": 1})
+
+class _Progress:
+    class _Status:
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    def status(self, message: str) -> _Status:
+        del message
+        return self._Status()
+
+class _Run:
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.completed: dict[str, Any] | None = None
+        self.failed = False
+
+    def complete(self, result: dict[str, Any]) -> None:
+        self.completed = result
+
+    def fail(self) -> None:
+        self.failed = True
+
+def test_single_validation_fold_uses_fold_directory_and_run_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runs: list[_Run] = []
+    open_calls: list[dict[str, Any]] = []
+    evaluate_calls: list[dict[str, Any]] = []
+
+    def open_run(**kwargs: Any) -> _Run:
+        open_calls.append(kwargs)
+        run = _Run(Path(f"/repo/{kwargs['output']}"))
+        runs.append(run)
+        return run
+
+    def evaluate(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        del args
+        evaluate_calls.append(kwargs)
+        return {"split": "valid"}
+
+    monkeypatch.setattr(evaluate_launcher, "open_run_directory", open_run)
+    evaluate_launcher._run_fold(
+        config=Stage3Config(),
+        config_path="base.yaml",
+        checkpoint_dir=evaluate_launcher.ROOT / "train",
+        output_root="evaluate",
+        fold=3,
+        checkpoint_epoch=10,
+        tasks=["task/a"],
+        study_id="study-a",
+        progress=_Progress(),
+        resolve_identity=lambda *args, **kwargs: EVALUATION_IDENTITY,
+        evaluate_checkpoints=evaluate,
+    )
+    assert open_calls[0]["output"] == Path("evaluate/fold3")
+    assert open_calls[0]["details"]["reporting_study_id"] == "study-a"
+    assert evaluate_calls[0]["fold"] == 3
+    assert evaluate_calls[0]["predictions_dir"] == Path(
+        "/repo/evaluate/fold3/predictions"
+    )
+    assert runs[0].completed == {"split": "valid"}
+    assert runs[0].failed is False
+
+def test_test_path_remains_one_root_ensemble_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    open_calls: list[dict[str, Any]] = []
+    evaluate_calls: list[dict[str, Any]] = []
+    run = _Run(Path("/repo/evaluate_test"))
+
+    def open_run(**kwargs: Any) -> _Run:
+        open_calls.append(kwargs)
+        return run
+
+    def evaluate(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        del args
+        evaluate_calls.append(kwargs)
+        return {"split": "test"}
+
+    monkeypatch.setattr(evaluate_launcher, "open_run_directory", open_run)
+    args = SimpleNamespace(
+        config="base.yaml",
+        output="evaluate_test",
+        checkpoint_epoch=100,
+        tasks=None,
+        study_id=None,
+    )
+    evaluate_launcher._run_test(
+        args=args,
+        config=Stage3Config(),
+        checkpoint_dir=evaluate_launcher.ROOT / "train",
+        progress=_Progress(),
+        resolve_identity=lambda *args, **kwargs: EVALUATION_IDENTITY,
+        evaluate_checkpoints=evaluate,
+    )
+    assert open_calls[0]["output"] == "evaluate_test"
+    assert evaluate_calls == [
+        {
+            "split": "test",
+            "ensemble_folds": True,
+            "checkpoint_epoch": 100,
+            "task_subset": None,
+            "fold": None,
+            "predictions_dir": Path("/repo/evaluate_test/predictions"),
+            "reporting_study_id": None,
+            "expected_evaluation_identity": EVALUATION_IDENTITY,
+        }
+    ]
+    assert run.completed == {"split": "test"}

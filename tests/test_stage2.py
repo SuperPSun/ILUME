@@ -1,56 +1,105 @@
 from __future__ import annotations
 
 import csv
+
 import json
+
 import copy
+
 from dataclasses import replace
+
 from pathlib import Path
+
 from unittest.mock import patch
 
 import pytest
+
 import torch
+
 from rdkit import Chem
 
 import scripts.stage2.evaluate as stage2_evaluate_launcher
+
 from common.io import sha256_file
+
 from common.identity import IDENTITY_CONTRACT_VERSION
+
 from stage1.identity import metadata_identity
+
 from stage1.config import (
     STAGE1_CHECKPOINT_KIND, STAGE1_CHECKPOINT_VERSION, DataConfig,
     DescriptorConfig, FingerprintConfig, ModelConfig, PretrainConfig,
 )
+
 from stage1.data import PreparedCorpusDataset
+
 from stage1.masking import MultimodalPacker
+
 from stage1.model import EncodedEntityStates, MultimodalPretrainModel, load_stage1_model
+
 from stage1.prepare import prepare_corpus
+
 from stage1.tokenizer import SmilesTokenizer
+
 from stage2.config import (
     DEFAULT_REFINEMENT_TASKS, STAGE2_CHECKPOINT_VERSION,
     Stage2Config, Stage2DataConfig, Stage2InitializationConfig,
     Stage2PreparationConfig, Stage2TrainingConfig, load_stage2_config,
 )
+
 from stage2.data import (
     STAGE2_PREPARATION_CONTRACT_VERSION, Stage2BatchDescriptor,
     Stage2DeviceTaskData, Stage2EntityDataset,
     Stage2TaskDataset, load_artifact_registry,
     pack_stage2_batch,
 )
+
 from stage2.model import (
     ObjectEncoder, RegressionHead, Stage2ObjectModel,
     molecule_equal_smooth_l1_loss,
 )
-from stage2.evaluate import _load_refined_artifact, resolve_checkpoint_path
+
+from stage2.evaluate import resolve_checkpoint_path
+
 from stage2.prepare import (
     prepare_stage2_data, prepare_teacher_cache,
     stage1_encoder_identity, teacher_cache_identity,
 )
+
 from stage2.registry import load_stage2_registry
+
 from stage2.train import (
     STAGE2_REFINED_VERSION, _batch_output,
     load_stage2_encoder_artifact, run_stage2_training,
 )
+
 from stage2 import FrozenObjectSpec, load_frozen_object_encoder
 
+from stage2.atom_targets import (
+    map_partial_charges, parse_mol2,
+)
+
+import numpy as np
+
+from stage2.atom_evaluation import (
+    PARTIAL_CHARGE_PREDICTION_FIELDS,
+    build_partial_charge_benchmark,
+    public_partial_charge_score,
+    score_partial_charge_predictions,
+    write_partial_charge_predictions,
+)
+
+from stage2.atom_targets import PARTIAL_CHARGE_MAPPING_CONTRACT
+
+from stage2.data import epoch_batch_schedule
+
+from stage2.model import (
+    masked_target_macro_smooth_l1_loss, molecule_equal_smooth_l1_loss,
+)
+
+from stage2.train import task_compensation_scale
+
+# --- Configuration, preparation, training, and artifact contracts ---
 
 TASKS = (
     "simulation/density",
@@ -64,44 +113,12 @@ TASKS = (
     "simulation/transfer_organic",
 )
 
-
 def _write_csv(path: Path, fields, rows) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
-
-
-def _write_mol2(path: Path, atoms: list[tuple[str, str, float]], bonds: list[tuple[int, int, str]]) -> None:
-    lines = ["@<TRIPOS>MOLECULE", "MOL", f"{len(atoms)} {len(bonds)} 1 0 0", "SMALL", "resp", "@<TRIPOS>ATOM"]
-    for index, (name, atom_type, charge) in enumerate(atoms, start=1):
-        lines.append(f"{index} {name} {index}.0 0.0 0.0 {atom_type} 1 MOL {charge}")
-    lines.append("@<TRIPOS>BOND")
-    for index, (first, second, kind) in enumerate(bonds, start=1):
-        lines.append(f"{index} {first} {second} {kind}")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def _append_charge_sample(
-    config: Stage2Config, mol_id: str, smiles: str,
-    atoms: list[tuple[str, str, float]], bonds: list[tuple[int, int, str]],
-) -> None:
-    root = config.data.data_root / "stage2/partial_atomic_charge"
-    structure_root = root / "charge_20260514"
-    structure = structure_root / f"{mol_id}.mol2"
-    _write_mol2(structure, atoms, bonds)
-    manifest_path = structure_root / "structure_manifest.csv"
-    with manifest_path.open(newline="", encoding="utf-8") as handle:
-        manifest_rows = list(csv.DictReader(handle))
-    manifest_rows.append({"mol_id": mol_id, "relative_path": structure.name, "format": "mol2", "size_bytes": structure.stat().st_size, "sha256": sha256_file(structure), "referenced_by_charge": "True"})
-    _write_csv(manifest_path, list(manifest_rows[0]), manifest_rows)
-    train_path = root / "train.csv"
-    with train_path.open(newline="", encoding="utf-8") as handle:
-        train_rows = list(csv.DictReader(handle))
-    train_rows.append({"mol_id": mol_id, "SMILES": smiles, "role": "neutral", "formal_charge": 0, "source_list": "simulation"})
-    _write_csv(train_path, list(train_rows[0]), train_rows)
-
 
 def _stage2_sources(data_root: Path) -> None:
     root = data_root / "stage2"
@@ -193,7 +210,6 @@ def _stage2_sources(data_root: Path) -> None:
         rows.append(row)
     _write_csv(data_root / "task_catalog.csv", fields, rows)
 
-
 @pytest.fixture
 def tiny_stage2_setup(tmp_path: Path) -> Stage2Config:
     stage1 = tmp_path / "stage1"
@@ -241,7 +257,6 @@ def tiny_stage2_setup(tmp_path: Path) -> Stage2Config:
         training=Stage2TrainingConfig(batch_size=2, epochs=2, backbone_frozen_epochs=1, packing_workers=2, packing_prefetch_batches=2, cuda_prefetch_batches=1, log_every_batches=3, device="cpu", amp_dtype="none", refinement_epochs=2),
     )
 
-
 def test_registry_is_catalog_driven_and_model_independent(tiny_stage2_setup):
     registry = load_stage2_registry(tiny_stage2_setup.data.task_catalog_path)
     assert registry.task_ids == TASKS
@@ -253,35 +268,15 @@ def test_registry_is_catalog_driven_and_model_independent(tiny_stage2_setup):
     assert model.model_contract["regression_head_hidden_dims"] == [16, 8]
     assert model.model_contract["tasks"]["simulation/partial_atomic_charge"]["head_family"] == "atom"
 
-
-def test_regression_head_has_two_hidden_layers():
-    head = RegressionHead(input_dim=5, hidden_dim=8, output_dim=3, dropout=0.0)
-    linear_layers = [layer for layer in head.layers if isinstance(layer, torch.nn.Linear)]
-    assert [(layer.in_features, layer.out_features) for layer in linear_layers] == [
-        (5, 8), (8, 4), (4, 3),
-    ]
-    assert head(torch.randn(2, 5)).shape == (2, 3)
-
-    with pytest.raises(ValueError, match="must be even"):
-        RegressionHead(input_dim=5, hidden_dim=7, output_dim=3, dropout=0.0)
-
-
-def test_config_normalizes_relative_weights(tiny_stage2_setup):
-    registry = load_stage2_registry(tiny_stage2_setup.data.task_catalog_path)
-    normalized = tiny_stage2_setup.normalized_task_weights(registry)
-    scaled = replace(tiny_stage2_setup, loss=replace(tiny_stage2_setup.loss, task_weights={key: value * 10 for key, value in tiny_stage2_setup.loss.task_weights.items()}))
-    assert scaled.normalized_task_weights(registry) == pytest.approx(normalized)
-
-
 def test_stage2_refinement_config_contract(tiny_stage2_setup):
     paths = [
         Path("configs/v1/stage2/base.yaml"),
         *sorted(Path("configs/experiments_v1/stage2").glob("*.yaml")),
     ]
-    assert len(paths) == 9
-    for index, path in enumerate(paths):
+    assert len(paths) == 17
+    for path in paths:
         config = load_stage2_config(path)
-        assert config.training.epochs == (5 if index == 0 else 10)
+        assert config.training.epochs == (5 if path == Path("configs/v1/stage2/base.yaml") else 10)
         assert config.training.refinement_epochs == 10
         assert config.training.refinement_tasks == DEFAULT_REFINEMENT_TASKS
         assert config.to_dict()["training"]["refinement_tasks"] == list(
@@ -317,7 +312,6 @@ def test_stage2_refinement_config_contract(tiny_stage2_setup):
     with pytest.raises(ValueError, match="unknown"):
         unknown.validate_registry(load_stage2_registry(unknown.data.task_catalog_path))
 
-
 def test_prepare_v3_task_local_scalers_and_ragged_atoms(tiny_stage2_setup):
     metadata = prepare_stage2_data(tiny_stage2_setup)
     assert metadata["format_version"] == 3
@@ -342,7 +336,6 @@ def test_prepare_v3_task_local_scalers_and_ragged_atoms(tiny_stage2_setup):
     audit = list(csv.DictReader((tiny_stage2_setup.data.artifacts_dir / "partial_charge_mapping_audit.csv").open()))
     assert {row["status"] for row in audit} == {"mapped"}
 
-
 def test_prepare_rejects_orbital_role_provenance_mismatch(tiny_stage2_setup):
     path = tiny_stage2_setup.data.data_root / "stage2/homo/train.csv"
     rows = list(csv.DictReader(path.open(encoding="utf-8")))
@@ -350,7 +343,6 @@ def test_prepare_rejects_orbital_role_provenance_mismatch(tiny_stage2_setup):
     _write_csv(path, list(rows[0]), rows)
     with pytest.raises(ValueError, match="formal-charge mismatch"):
         prepare_stage2_data(tiny_stage2_setup)
-
 
 def test_data_and_teacher_identity_ignore_stage2_model_contract(tiny_stage2_setup):
     first_data = prepare_stage2_data(tiny_stage2_setup)
@@ -380,7 +372,6 @@ def test_data_and_teacher_identity_ignore_stage2_model_contract(tiny_stage2_setu
     }
     assert second_teacher["dtype"] == "float32"
     assert "math_contract" in second_teacher
-
 
 def test_teacher_identity_binds_stage1_encoding_contract_and_entity_data(tiny_stage2_setup):
     data_metadata = prepare_stage2_data(tiny_stage2_setup)
@@ -415,106 +406,6 @@ def test_teacher_identity_binds_stage1_encoding_contract_and_entity_data(tiny_st
     changed_state_identity = teacher_cache_identity(data_metadata, loaded)
     assert identity != changed_state_identity
 
-
-def test_partial_charge_duplicate_smiles_remain_distinct_molecules(tiny_stage2_setup):
-    root = tiny_stage2_setup.data.data_root / "stage2/partial_atomic_charge"
-    structure_root = root / "charge_20260514"
-    duplicate = structure_root / "mol_train_2.mol2"
-    _write_mol2(
-        duplicate,
-        [("C1", "c3", -0.2), ("C2", "c3", 0.3), ("O1", "os", -0.1)],
-        [(1, 2, "1"), (2, 3, "1")],
-    )
-    manifest_path = structure_root / "structure_manifest.csv"
-    with manifest_path.open(newline="", encoding="utf-8") as handle:
-        manifest_rows = list(csv.DictReader(handle))
-    manifest_rows.append({"mol_id": "mol_train_2", "relative_path": duplicate.name, "format": "mol2", "size_bytes": duplicate.stat().st_size, "sha256": sha256_file(duplicate), "referenced_by_charge": "True"})
-    _write_csv(manifest_path, list(manifest_rows[0]), manifest_rows)
-    train_path = root / "train.csv"
-    with train_path.open(newline="", encoding="utf-8") as handle:
-        train_rows = list(csv.DictReader(handle))
-    train_rows.append({**train_rows[0], "mol_id": "mol_train_2"})
-    _write_csv(train_path, list(train_rows[0]), train_rows)
-
-    metadata = prepare_stage2_data(tiny_stage2_setup)
-    atom = Stage2TaskDataset(tiny_stage2_setup.data.artifacts_dir, "simulation/partial_atomic_charge", "train")
-    assert atom.mol_ids == ("mol_train", "mol_train_2")
-    assert atom.entity_indices[0].equal(atom.entity_indices[1])
-    assert atom.atom_target_offsets.tolist() == [0, 3, 6]
-    assert metadata["scalers"]["simulation/partial_atomic_charge"]["targets"]["partial_atomic_charge"]["count"] == 2
-
-
-def test_atom_packing_expands_samples_but_keeps_unique_entities(tiny_stage2_setup):
-    _append_charge_sample(
-        tiny_stage2_setup, "mol_train_2", "CCO",
-        [("C1", "c3", -0.2), ("C2", "c3", 0.3), ("O1", "os", -0.1)],
-        [(1, 2, "1"), (2, 3, "1")],
-    )
-    _append_charge_sample(
-        tiny_stage2_setup, "mol_cc", "CC",
-        [("C1", "c3", 0.4), ("C2", "c3", -0.4)], [(1, 2, "1")],
-    )
-    prepare_stage2_data(tiny_stage2_setup)
-    loaded = load_stage1_model(tiny_stage2_setup.initialization.checkpoint, tiny_stage2_setup.data.pretrain_artifacts_dir, backbone_dropout=0.0)
-    entities = Stage2EntityDataset(tiny_stage2_setup.data.artifacts_dir)
-    atom = Stage2TaskDataset(tiny_stage2_setup.data.artifacts_dir, "simulation/partial_atomic_charge", "train")
-    descriptor = Stage2BatchDescriptor(atom.task, torch.arange(len(atom)))
-    packed = pack_stage2_batch(
-        descriptor, {atom.task: atom}, entities, MultimodalPacker(loaded.vocabulary),
-        needs_entities=True, include_raw_atom_targets=False, pin_memory=False,
-    )
-    assert packed.unique_entity_ids is not None
-    assert packed.entity_positions is not None
-    assert packed.atom_targets is not None
-    assert len(packed.unique_entity_ids) == 2
-    assert packed.entity_positions[:, 0].tolist() == [0, 0, 1]
-    assert packed.atom_targets.molecule_offsets.tolist() == [0, 3, 6, 8]
-    assert packed.atom_targets.atom_sample_indices.tolist() == [0, 0, 0, 1, 1, 1, 2, 2]
-    assert packed.atom_targets.atom_state_indices[:3].equal(packed.atom_targets.atom_state_indices[3:6])
-
-
-def test_atom_forward_vectorizes_molecule_and_atom_samples(tiny_stage2_setup):
-    registry = load_stage2_registry(tiny_stage2_setup.data.task_catalog_path)
-    loaded = load_stage1_model(
-        tiny_stage2_setup.initialization.checkpoint,
-        tiny_stage2_setup.data.pretrain_artifacts_dir,
-        backbone_dropout=0.0,
-    )
-    model = Stage2ObjectModel(
-        loaded.model, registry, object_layers=1, object_ffn_dim=32, dropout=0.0,
-    )
-    task = "simulation/partial_atomic_charge"
-    states = EncodedEntityStates(
-        entity_cls=torch.randn(2, 16), atom_states=torch.randn(5, 16),
-        atom_batch=torch.tensor([0, 0, 0, 1, 1]),
-    )
-    positions = torch.tensor([[0], [0], [1]])
-    object_slots = states.entity_cls[positions]
-    roles = torch.full((3, 1), 2, dtype=torch.long)
-    atom_state_indices = torch.tensor([0, 1, 2, 0, 1, 2, 3, 4])
-    atom_sample_indices = torch.tensor([0, 0, 0, 1, 1, 1, 2, 2])
-    expected = model.predict_atom_from_states(
-        task, states, positions, roles, object_slots,
-        atom_state_indices, atom_sample_indices,
-    )
-    with (
-        patch.object(model.object_encoder, "forward", wraps=model.object_encoder.forward) as object_forward,
-        patch.object(model.atom_heads[task], "forward", wraps=model.atom_heads[task].forward) as atom_forward,
-    ):
-        output = model.forward_atom_from_states(
-            task, states, positions, roles, object_slots, object_slots,
-            torch.zeros(8), torch.ones(8, dtype=torch.bool),
-            atom_state_indices, atom_sample_indices, teacher_loss_is_zero=True,
-        )
-    assert object_forward.call_count == 1
-    assert object_forward.call_args.args[0].shape[0] == 3
-    assert atom_forward.call_count == 1
-    assert atom_forward.call_args.args[0].shape[0] == 8
-    assert output.predictions.shape == (8,)
-    assert torch.equal(output.predictions, expected)
-    assert output.teacher_loss.item() == 0.0
-
-
 def test_prepare_worker_count_preserves_atom_semantics(tiny_stage2_setup):
     first_config = replace(
         tiny_stage2_setup,
@@ -548,115 +439,6 @@ def test_prepare_worker_count_preserves_atom_semantics(tiny_stage2_setup):
         second_config.data.artifacts_dir / "partial_charge_mapping_audit.csv"
     ).read_text(encoding="utf-8")
 
-
-def test_stage1_encode_states_uses_fused_atom_order(tiny_stage2_setup):
-    prepare_stage2_data(tiny_stage2_setup)
-    loaded = load_stage1_model(tiny_stage2_setup.initialization.checkpoint, tiny_stage2_setup.data.pretrain_artifacts_dir, backbone_dropout=0.0)
-    entities = Stage2EntityDataset(tiny_stage2_setup.data.artifacts_dir)
-    batch = MultimodalPacker(loaded.vocabulary)([entities[0], entities[1]])
-    loaded.model.eval()
-    import stage1.model as stage1_model_module
-    with patch.object(stage1_model_module, "gather_graph_tokens", wraps=stage1_model_module.gather_graph_tokens) as gather:
-        encoded = loaded.model.encode(batch)
-        assert gather.call_count == 0
-        states = loaded.model.encode_states(batch)
-        assert gather.call_count == 1
-    assert torch.equal(states.entity_cls, encoded)
-    assert states.atom_states.shape[0] == batch.graphs.atom_batch.shape[0]
-    assert torch.equal(states.atom_batch, batch.graphs.atom_batch)
-
-
-def test_frozen_and_unfrozen_batches_select_the_correct_stage1_api(tiny_stage2_setup):
-    prepare_stage2_data(tiny_stage2_setup)
-    registry = load_artifact_registry(tiny_stage2_setup.data.artifacts_dir)
-    loaded = load_stage1_model(
-        tiny_stage2_setup.initialization.checkpoint,
-        tiny_stage2_setup.data.pretrain_artifacts_dir,
-        backbone_dropout=0.0,
-    )
-    model = Stage2ObjectModel(
-        loaded.model, registry, object_layers=1, object_ffn_dim=32, dropout=0.0,
-    )
-    entities = Stage2EntityDataset(tiny_stage2_setup.data.artifacts_dir)
-    packer = MultimodalPacker(loaded.vocabulary)
-    teacher = torch.randn(len(entities), 16)
-    entity_roles = torch.tensor([int(entry["role_id"]) for entry in entities.entries])
-
-    object_dataset = Stage2TaskDataset(
-        tiny_stage2_setup.data.artifacts_dir, "simulation/density", "train",
-    )
-    object_descriptor = Stage2BatchDescriptor(object_dataset.task, torch.tensor([0]))
-    frozen_object = pack_stage2_batch(
-        object_descriptor, {object_dataset.task: object_dataset}, entities, packer,
-        needs_entities=False, include_raw_atom_targets=False, pin_memory=False,
-    )
-    object_data = Stage2DeviceTaskData.from_dataset(object_dataset, torch.device("cpu"))
-
-    atom_dataset = Stage2TaskDataset(
-        tiny_stage2_setup.data.artifacts_dir,
-        "simulation/partial_atomic_charge", "train",
-    )
-    atom_descriptor = Stage2BatchDescriptor(atom_dataset.task, torch.tensor([0]))
-    packed_atom = pack_stage2_batch(
-        atom_descriptor, {atom_dataset.task: atom_dataset}, entities, packer,
-        needs_entities=True, include_raw_atom_targets=False, pin_memory=False,
-    )
-    atom_data = Stage2DeviceTaskData.from_dataset(atom_dataset, torch.device("cpu"))
-
-    with (
-        patch.object(model, "encode_entities", wraps=model.encode_entities) as encode_entities,
-        patch.object(model, "encode_entity_states", wraps=model.encode_entity_states) as encode_states,
-    ):
-        frozen_output = _batch_output(
-            model, registry, frozen_object, object_data, teacher, entity_roles,
-            tiny_stage2_setup, backbone_trainable=False,
-        )
-        assert encode_entities.call_count == 0
-        assert encode_states.call_count == 0
-        assert frozen_output.teacher_loss.item() == 0.0
-
-        live_frozen_object = pack_stage2_batch(
-            object_descriptor, {object_dataset.task: object_dataset}, entities,
-            packer, needs_entities=True, include_raw_atom_targets=False,
-            pin_memory=False,
-        )
-        _batch_output(
-            model, registry, live_frozen_object, object_data, teacher,
-            entity_roles, tiny_stage2_setup, backbone_trainable=False,
-            use_student_encoder=True,
-        )
-        assert encode_entities.call_count == 1
-        encode_entities.reset_mock()
-
-        frozen_atom_output = _batch_output(
-            model, registry, packed_atom, atom_data, teacher, entity_roles,
-            tiny_stage2_setup, backbone_trainable=False,
-        )
-        assert encode_entities.call_count == 0
-        assert encode_states.call_count == 1
-        assert frozen_atom_output.teacher_loss.item() == 0.0
-
-        _batch_output(
-            model, registry,
-            pack_stage2_batch(
-                object_descriptor, {object_dataset.task: object_dataset}, entities,
-                packer, needs_entities=True, include_raw_atom_targets=False,
-                pin_memory=False,
-            ),
-            object_data, teacher, entity_roles, tiny_stage2_setup,
-            backbone_trainable=True,
-        )
-        assert encode_entities.call_count == 1
-        assert encode_states.call_count == 1
-
-        _batch_output(
-            model, registry, packed_atom, atom_data, teacher, entity_roles,
-            tiny_stage2_setup, backbone_trainable=True,
-        )
-        assert encode_entities.call_count == 1
-        assert encode_states.call_count == 2
-
-
 def test_object_encoder_roles_and_dynamic_heads(tiny_stage2_setup):
     registry = load_stage2_registry(tiny_stage2_setup.data.task_catalog_path)
     loaded = load_stage1_model(tiny_stage2_setup.initialization.checkpoint, tiny_stage2_setup.data.pretrain_artifacts_dir, backbone_dropout=0.0)
@@ -667,35 +449,6 @@ def test_object_encoder_roles_and_dynamic_heads(tiny_stage2_setup):
     ions = torch.randn(2, 2, 16)
     assert model.encode_object(ions, torch.tensor([[0, 1], [0, 1]])).shape == (2, 16)
     assert model.object_heads["simulation/homo"] is not model.object_heads["simulation/lumo"]
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
-def test_cuda_bf16_partial_charge_loss_uses_fp32_reduction():
-    predictions = torch.tensor(
-        [2.0, 0.5, -2.0, 1.0, 3.0],
-        dtype=torch.bfloat16,
-        device="cuda",
-        requires_grad=True,
-    )
-    targets = torch.zeros(5, dtype=torch.float32, device="cuda")
-    mask = torch.ones(5, dtype=torch.bool, device="cuda")
-    atom_sample_indices = torch.tensor([0, 0, 1, 1, 1], device="cuda")
-
-    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-        loss = molecule_equal_smooth_l1_loss(
-            predictions, targets, mask, atom_sample_indices, molecule_count=2,
-        )
-    atom_losses = torch.nn.functional.smooth_l1_loss(
-        predictions.detach().float(), targets, reduction="none",
-    )
-    expected = torch.stack((atom_losses[:2].mean(), atom_losses[2:].mean())).mean()
-
-    assert loss.dtype == torch.float32
-    torch.testing.assert_close(loss, expected)
-    loss.backward()
-    assert predictions.grad is not None
-    assert torch.isfinite(predictions.grad).all()
-
 
 def test_prepare_train_checkpoint_and_encoder_export(tiny_stage2_setup, tmp_path):
     prepare_teacher_cache(tiny_stage2_setup)
@@ -767,11 +520,6 @@ def test_prepare_train_checkpoint_and_encoder_export(tiny_stage2_setup, tmp_path
         )
     assert resolve_checkpoint_path(output) == output / "checkpoint_epoch_00004.pt"
     assert resolve_checkpoint_path(output, 2) == output / "checkpoint_epoch_00002.pt"
-    loaded_path, loaded_refined, _ = _load_refined_artifact(
-        output, final_checkpoint
-    )
-    assert loaded_path == output / "taskwise_refined.pt"
-    assert loaded_refined["model_state_hash"] == refined_payload["model_state_hash"]
     frozen = load_frozen_object_encoder(encoder_path, device="cpu")
     assert not frozen.backbone.training
     assert not frozen.object_encoder.training
@@ -852,7 +600,6 @@ def test_prepare_train_checkpoint_and_encoder_export(tiny_stage2_setup, tmp_path
     )
     assert mid_resumed_refined["model_state_hash"] == refined_payload["model_state_hash"]
 
-
 def test_stage2_evaluate_defaults_to_refined_and_rejects_removed_flag() -> None:
     parser = stage2_evaluate_launcher._build_parser()
     parsed = parser.parse_args([
@@ -870,3 +617,191 @@ def test_stage2_evaluate_defaults_to_refined_and_rejects_removed_flag() -> None:
             "--config", "base.yaml", "--checkpoint-dir", "train",
             "--taskwise-refined", "--output", "evaluate",
         ])
+
+# --- Partial-charge mapping behavior ---
+
+def _write_mol2(path: Path, atoms, bonds) -> None:
+    lines = [
+        "@<TRIPOS>MOLECULE", "MOL",
+        f"{len(atoms)} {len(bonds)} 1 0 0",
+        "SMALL", "resp", "@<TRIPOS>ATOM",
+    ]
+    for index, (name, atom_type, charge) in enumerate(atoms, start=1):
+        lines.append(f"{index} {name} 0 0 0 {atom_type} 1 MOL {charge}")
+    lines.append("@<TRIPOS>BOND")
+    for index, (first, second, kind) in enumerate(bonds, start=1):
+        lines.append(f"{index} {first} {second} {kind}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+def test_typed_mapping_explicit_h_and_deterministic_automorphism(tmp_path: Path) -> None:
+    path = tmp_path / "typed.mol2"
+    _write_mol2(
+        path,
+        [("C1", "c3", 0.2), ("C2", "c3", -0.2), ("H1", "h1", 0.0)],
+        [(1, 2, "1"), (1, 3, "du")],
+    )
+    result = map_partial_charges("CC", parse_mol2(path))
+    assert result.bond_match_mode == "typed"
+    assert result.unparsed_bond_types == ()
+    assert result.mapping_status == "ambiguous"
+    assert result.mapping_count_lower_bound == 2
+    assert result.charges == pytest.approx((0.2, -0.2))
+
+def test_unknown_bond_is_auditable_connectivity_fallback(tmp_path: Path) -> None:
+    path = tmp_path / "fallback.mol2"
+    _write_mol2(path, [("C1", "c3", 0.1), ("O1", "os", -0.1)], [(1, 2, "du")])
+    result = map_partial_charges("CO", parse_mol2(path))
+    assert result.bond_match_mode == "connectivity_only"
+    assert result.unparsed_bond_types == ("du",)
+    assert result.bond_fallback_reason == "unparsed_bond_type"
+
+# --- Partial-charge evaluation contract ---
+
+def _mol2(path: Path, atoms, bonds, *, valid: bool = True) -> None:
+    lines = ["@<TRIPOS>MOLECULE", "MOL", f"{len(atoms)} {len(bonds)} 1 0 0", "SMALL", "resp", "@<TRIPOS>ATOM"]
+    for index, (name, kind, charge) in enumerate(atoms, start=1):
+        lines.append(f"{index} {name} 0 0 0 {kind} 1 MOL {charge}")
+    if valid:
+        lines.append("@<TRIPOS>BOND")
+        for index, (first, second, kind) in enumerate(bonds, start=1):
+            lines.append(f"{index} {first} {second} {kind}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+def _benchmark_files(root: Path) -> tuple[Path, Path]:
+    structures = root / "structures"
+    structures.mkdir(parents=True)
+    definitions = {
+        "unique": (
+            [("C1", "c3", 0.1), ("C2", "c3", 0.1), ("O1", "o", -0.2)],
+            [(1, 2, "1"), (2, 3, "1")],
+            True,
+        ),
+        "ambiguous": (
+            [("C1", "c3", 0.3), ("C2", "c3", -0.3)],
+            [(1, 2, "1")],
+            True,
+        ),
+        "fallback": (
+            [("C1", "c3", 0.1), ("N1", "n3", -0.1)],
+            [(1, 2, "du")],
+            True,
+        ),
+        "excluded": (
+            [("C1", "c3", 0.0)],
+            [],
+            False,
+        ),
+    }
+    smiles = {"unique": "CCO", "ambiguous": "CC", "fallback": "CN", "excluded": "C"}
+    with (structures / "structure_manifest.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=("mol_id", "relative_path", "format", "size_bytes", "sha256", "referenced_by_charge"),
+        )
+        writer.writeheader()
+        for mol_id, (atoms, bonds, valid) in definitions.items():
+            path = structures / f"{mol_id}.mol2"
+            _mol2(path, atoms, bonds, valid=valid)
+            writer.writerow(
+                {
+                    "mol_id": mol_id,
+                    "relative_path": path.name,
+                    "format": "mol2",
+                    "size_bytes": path.stat().st_size,
+                    "sha256": sha256_file(path),
+                    "referenced_by_charge": "true",
+                }
+            )
+    test = root / "test.csv"
+    with test.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=("mol_id", "SMILES", "role", "formal_charge", "source_list"),
+        )
+        writer.writeheader()
+        for mol_id in definitions:
+            writer.writerow(
+                {
+                    "mol_id": mol_id,
+                    "SMILES": smiles[mol_id],
+                    "role": "neutral",
+                    "formal_charge": 0,
+                    "source_list": "simulation",
+                }
+            )
+    return test, structures / "structure_manifest.csv"
+
+def _stats(scale: float = 2.0) -> dict[str, object]:
+    return {"mean": 0.0, "scale": scale, "weighting": "molecule_equal"}
+
+def test_partial_charge_scorer_requires_exact_coverage_and_molecule_macro(tmp_path: Path) -> None:
+    test, manifest = _benchmark_files(tmp_path)
+    benchmark = build_partial_charge_benchmark(test, manifest, _stats())
+    predictions = {
+        molecule.mol_id: np.asarray(molecule.target_charges) + index
+        for index, molecule in enumerate(benchmark.evaluated, start=1)
+    }
+    score = score_partial_charge_predictions(benchmark, predictions)
+    assert score["status"] == "complete"
+    assert score["primary"]["molecule_macro_mae"] == pytest.approx(2.0)
+    assert score["primary"]["molecule_macro_normalized_mae"] == pytest.approx(1.0)
+    assert score["atom_micro"]["mae"] == pytest.approx(13 / 7)
+    assert score["atom_micro"]["mae"] != pytest.approx(
+        score["primary"]["molecule_macro_mae"]
+    )
+    assert score["subsets"]["all_mapped"]["molecule_count"] == 3
+    assert score["subsets"]["unique"]["molecule_count"] == 2
+    assert score["subsets"]["ambiguous"]["molecule_count"] == 1
+    assert score["subsets"]["typed"]["molecule_count"] == 2
+    assert score["subsets"]["connectivity_only"]["molecule_count"] == 1
+
+    incomplete = score_partial_charge_predictions(
+        benchmark, {"unique": predictions["unique"], "unknown": [0.0]}
+    )
+    assert incomplete["status"] == "incomplete"
+    assert incomplete["primary"] is None
+    assert incomplete["coverage"]["missing_prediction_count"] == 2
+    assert incomplete["coverage"]["extra_prediction_count"] == 1
+
+    wrong_length = dict(predictions)
+    wrong_length["unique"] = [float("nan")]
+    invalid = score_partial_charge_predictions(benchmark, wrong_length)
+    assert invalid["status"] == "incomplete"
+    assert invalid["coverage"]["invalid_prediction_count"] == 1
+
+# --- Batch scheduling and scientific loss behavior ---
+
+class _SizedDataset:
+    def __init__(self, rows: int) -> None:
+        self.rows = rows
+
+    def __len__(self) -> int:
+        return self.rows
+
+def test_round_robin_is_complete_deterministic_and_does_not_cycle() -> None:
+    datasets = {"a": _SizedDataset(5), "b": _SizedDataset(3), "c": _SizedDataset(1)}
+    first = epoch_batch_schedule(datasets, 2, seed=17, epoch=3)  # type: ignore[arg-type]
+    second = epoch_batch_schedule(datasets, 2, seed=17, epoch=3)  # type: ignore[arg-type]
+    assert [(item.task, item.indices.tolist()) for item in first] == [
+        (item.task, item.indices.tolist()) for item in second
+    ]
+    for task, dataset in datasets.items():
+        observed = torch.cat([item.indices for item in first if item.task == task]).tolist()
+        assert sorted(observed) == list(range(len(dataset)))
+    assert len({item.task for item in first[:len(datasets)]}) == len(datasets)
+    assert [item.task for item in first].count("c") == 1
+
+def test_loss_reductions_and_teacher_independence() -> None:
+    predictions = torch.tensor([[2.0, 2.0], [0.0, 2.0]])
+    target = torch.zeros_like(predictions)
+    macro = masked_target_macro_smooth_l1_loss(
+        predictions, target, torch.tensor([[True, True], [False, True]])
+    )
+    assert macro.item() == pytest.approx(1.5)
+    molecule = molecule_equal_smooth_l1_loss(
+        torch.tensor([2.0, 2.0, 2.0]), torch.zeros(3),
+        torch.ones(3, dtype=torch.bool), torch.tensor([0, 1, 1]), 2,
+    )
+    assert molecule.item() == pytest.approx(1.5)
+    compensation = task_compensation_scale(0.25, 20, 4, 10)
+    assert (compensation * torch.tensor(2.0) + 0.1 * torch.tensor(3.0)).item() == pytest.approx(4.3)

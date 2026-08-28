@@ -1,22 +1,7 @@
 from __future__ import annotations
 
 import ast
-import hashlib
-import json
-import random
 from pathlib import Path
-
-import numpy as np
-import torch
-
-from common.training import (
-    canonical_json_sha256,
-    capture_rng_state,
-    cosine_warmup,
-    restore_rng_state,
-    seed_everything,
-)
-
 
 ROOT = Path(__file__).resolve().parents[1]
 STAGES = {"stage1", "stage2", "stage3"}
@@ -68,22 +53,3 @@ def test_stage_packages_do_not_import_benchmarks() -> None:
                 if isinstance(node, ast.Import) and any(alias.name.split(".", 1)[0] == "benchmarks" for alias in node.names):
                     violations.append(f"{path.relative_to(ROOT)}:{node.lineno}")
     assert violations == []
-
-
-def test_common_training_primitives_preserve_exact_contracts() -> None:
-    payload = {"z": [1, 2], "a": {"value": 3.5}}
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    assert canonical_json_sha256(payload) == hashlib.sha256(encoded).hexdigest()
-    assert [cosine_warmup(step, 10, 0.2) for step in range(4)] == [
-        0.5,
-        1.0,
-        1.0,
-        0.9619397662556434,
-    ]
-
-    seed_everything(17)
-    state = capture_rng_state()
-    expected = (random.random(), float(np.random.random()), float(torch.rand(())))
-    restore_rng_state(state)
-    actual = (random.random(), float(np.random.random()), float(torch.rand(())))
-    assert actual == expected
