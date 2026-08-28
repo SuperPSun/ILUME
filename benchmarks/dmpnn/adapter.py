@@ -486,19 +486,23 @@ def train_dmpnn_bundle(
 
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
+    torch.set_float32_matmul_precision("high")
     pl.seed_everything(config.seed, workers=True)
     model = build_dmpnn_model(config, bundle)
+    for dataset in (bundle.train_dataset, bundle.valid_dataset):
+        for component_dataset in getattr(dataset, "datasets", (dataset,)):
+            component_dataset.cache = True
     train_loader = build_dataloader(
         bundle.train_dataset,
         batch_size=int(config.training["batch_size"]),
-        num_workers=0,
+        num_workers=8,
         seed=config.seed,
         shuffle=True,
     )
     valid_loader = build_dataloader(
         bundle.valid_dataset,
         batch_size=int(config.training["batch_size"]),
-        num_workers=0,
+        num_workers=8,
         shuffle=False,
     )
     monitor = "atom_val/mae" if bundle.target_level == "atom" else "val/mae"
