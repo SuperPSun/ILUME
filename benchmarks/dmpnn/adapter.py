@@ -539,7 +539,6 @@ def train_dmpnn_bundle(
             callbacks=[history, checkpoint, early_stopping],
             deterministic=True,
             logger=False,
-            suggest_integrations=False,
             enable_model_summary=False,
             enable_progress_bar=(
                 os.environ.get("ILUME_DISABLE_PROGRESS") != "1"
@@ -620,6 +619,8 @@ def _predict(model: Any, dataset: Any, *, atom: bool) -> np.ndarray:
     from chemprop.data import build_dataloader
     from lightning import pytorch as pl
 
+    torch.set_float32_matmul_precision("high")
+
     loader = build_dataloader(dataset, batch_size=64, num_workers=8, shuffle=False, drop_last=False)
     trainer = pl.Trainer(
         accelerator="gpu",
@@ -628,7 +629,6 @@ def _predict(model: Any, dataset: Any, *, atom: bool) -> np.ndarray:
         logger=False,
         enable_model_summary=False,
         enable_progress_bar=False,
-        suggest_integrations=False,
     )
     outputs = trainer.predict(model, dataloaders=loader)
     if atom:
