@@ -13,7 +13,13 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 import torch
 from rdkit import Chem
+import logging
 import warnings
+
+# Hide Lightning INFO messages while keeping warnings/errors.
+logging.getLogger("lightning").setLevel(logging.WARNING)
+logging.getLogger("lightning.pytorch").setLevel(logging.WARNING)
+logging.getLogger("lightning.fabric").setLevel(logging.WARNING)
 
 warnings.filterwarnings(
     "ignore",
