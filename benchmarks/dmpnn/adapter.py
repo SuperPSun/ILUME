@@ -13,6 +13,14 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 import torch
 from rdkit import Chem
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"Please use the new API settings to control TF32 behavior.*",
+    category=UserWarning,
+)
+
 
 from common.identity import require_compatible_identity, semantic_identity, tensor_state_hash
 from common.io import atomic_json, sha256_file
@@ -33,7 +41,6 @@ from benchmarks.common.config import BenchmarkConfig, BenchmarkName
 from benchmarks.common.data import BenchmarkTask, RawDataset, load_split, resolve_task
 from benchmarks.common.engine import EvaluationResult, TargetStats
 from benchmarks.common.metrics import target_metrics
-
 
 DMPNN_GRAPH_CONTRACT = {
     "implementation": "chemprop",
@@ -498,12 +505,14 @@ def train_dmpnn_bundle(
         num_workers=8,
         seed=config.seed,
         shuffle=True,
+        drop_last=False,
     )
     valid_loader = build_dataloader(
         bundle.valid_dataset,
         batch_size=int(config.training["batch_size"]),
         num_workers=8,
         shuffle=False,
+        drop_last=False,
     )
     monitor = "atom_val/mae" if bundle.target_level == "atom" else "val/mae"
     history = _HistoryCallback()
@@ -530,6 +539,7 @@ def train_dmpnn_bundle(
             callbacks=[history, checkpoint, early_stopping],
             deterministic=True,
             logger=False,
+            suggest_integrations=False,
             enable_model_summary=False,
             enable_progress_bar=(
                 os.environ.get("ILUME_DISABLE_PROGRESS") != "1"
@@ -610,7 +620,7 @@ def _predict(model: Any, dataset: Any, *, atom: bool) -> np.ndarray:
     from chemprop.data import build_dataloader
     from lightning import pytorch as pl
 
-    loader = build_dataloader(dataset, batch_size=64, num_workers=0, shuffle=False)
+    loader = build_dataloader(dataset, batch_size=64, num_workers=8, shuffle=False, drop_last=False)
     trainer = pl.Trainer(
         accelerator="gpu",
         devices=1,
@@ -618,6 +628,7 @@ def _predict(model: Any, dataset: Any, *, atom: bool) -> np.ndarray:
         logger=False,
         enable_model_summary=False,
         enable_progress_bar=False,
+        suggest_integrations=False,
     )
     outputs = trainer.predict(model, dataloaders=loader)
     if atom:
