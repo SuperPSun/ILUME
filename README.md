@@ -102,7 +102,7 @@ Stage 3 evaluator 同样默认加载每个 fold 的 `taskwise_refined.pt`；显�
 
 ## Baselines
 
-MLP、ECFP4-XGBoost 与 Chemprop D-MPNN 位于 `benchmarks/`，与 Stage 代码隔离；合同见 [ADR-0022](docs/adr/0022-mlp-ecfp-xgboost-baselines.md) 和 [ADR-0028](docs/adr/0028-chemprop-dmpnn-baseline.md)。
+MLP、ECFP4-XGBoost、Chemprop D-MPNN 与 MoLFormer 位于 `benchmarks/`，与 Stage 代码隔离；合同见 [ADR-0022](docs/adr/0022-mlp-ecfp-xgboost-baselines.md)、[ADR-0028](docs/adr/0028-chemprop-dmpnn-baseline.md) 和 [ADR-0029](docs/adr/0029-molformer-baseline.md)。
 
 ```bash
 python -m pip install -e ".[benchmarks]"
@@ -147,7 +147,41 @@ python scripts/benchmarks/sweep.py \
   --max-workers 1
 ```
 
-`--max-workers 1` 保持串行行为。MLP 与 D-MPNN 多 GPU sweep 可通过 `--devices cuda:0,cuda:1,...` 分配逻辑 job；XGBoost 的 CPU 并行度由 YAML 中的 `training.n_jobs` 控制。D-MPNN 正式 sweep 共 109 个单 seed 训练任务；上述命令不会 resume，失败任务由 sweep 在新 attempt 中完整重跑。
+`--max-workers 1` 保持串行行为。MLP、D-MPNN 与 MoLFormer 多 GPU sweep 可通过 `--devices cuda:0,cuda:1,...` 分配逻辑 job；XGBoost 的 CPU 并行度由 YAML 中的 `training.n_jobs` 控制。D-MPNN 正式 sweep 共 109 个单 seed 训练任务；上述命令不会 resume，失败任务由 sweep 在新 attempt 中完整重跑。
+
+MoLFormer同样使用独立hash-lock环境。先显式安装环境并下载固定HF snapshot；正式launcher只使用本地cache，不会自动联网或切换revision。
+
+```bash
+conda env create -f benchmarks/molformer/environment.yml
+conda run --no-capture-output -n ilume-molformer \
+  python -m pip install --require-hashes \
+  -r benchmarks/molformer/requirements-linux-x86_64-cu128.lock
+conda run --no-capture-output -n ilume-molformer \
+  python -m pip install --no-deps --no-build-isolation -e .
+conda run --no-capture-output -n ilume-molformer \
+  hf download ibm-research/MoLFormer-XL-both-10pct \
+  --revision 361063d0ad524ef77cf39b08469f6be770dc550f
+
+ILUME_BENCHMARK_ENVIRONMENT=ilume-molformer \
+conda run --no-capture-output -n ilume-molformer \
+  python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_molformer_environment; validate_molformer_environment(load_benchmark_config("configs/benchmarks/molformer.yaml"))'
+```
+
+单任务与完整108-job sweep：
+
+```bash
+python scripts/benchmarks/train.py \
+  --config configs/benchmarks/molformer.yaml \
+  --benchmark stage3 --task experiment/density --fold 1 \
+  --output outputs/benchmarks/v1/molformer/stage3/experiment__density/fold1/attempt-001
+
+python scripts/benchmarks/sweep.py \
+  --config configs/benchmarks/molformer.yaml \
+  --output outputs/benchmarks/v1/molformer \
+  --max-workers 1
+```
+
+MoLFormer的超长train row整行跳过且不进入scaler；valid/test显式截断到202 tokens并在结果中审计。多GPU sweep可使用`--devices cuda:0,cuda:1,...`。Partial Charge与Stage 2 Full保持unsupported。
 
 ## 输出与结果汇总
 

@@ -1,4 +1,5 @@
 run,model,stage,operation,status,completeness,checkpoint_epoch,enabled_tasks,expected_tasks,available_tasks,available_folds,failed_jobs,stage2_core_eligibility,stage2_partial_eligibility,stage2_full_eligibility,source_run,issues
+dmpnn@outputs/benchmarks/v1/dmpnn,D-MPNN,benchmark,sweep,completed,complete,,,stage2_core_physics:3;stage2_partial_charge:0;stage2_physics_full:0;stage3_test:11;stage3_validation:21,stage3_test:21;stage3_validation:21;stage2_physics:3,1;2;3;4;5,0,eligible,eligible,eligible,outputs/benchmarks/v1/dmpnn,
 ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost,ECFP+XGBoost,benchmark,sweep,completed,complete,,,stage2_core_physics:3;stage2_partial_charge:0;stage2_physics_full:0;stage3_test:11;stage3_validation:21,stage3_test:21;stage3_validation:21;stage2_physics:3,1;2;3;4;5,0,eligible,not_evaluated,not_evaluated,outputs/benchmarks/v1/ecfp_xgboost,
 ilume@outputs/v1/stage2/base/evaluate,ILUME,stage2,evaluate,completed,complete,,,3,4,,,eligible,eligible,eligible,outputs/v1/stage2/base/evaluate,
 ilume@outputs/v1/stage3/base/evaluate/fold1,ILUME,stage3,evaluate,completed,complete,,0,21,21,1,,,,,outputs/v1/stage3/base/evaluate/fold1,

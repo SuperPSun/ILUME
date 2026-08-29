@@ -1,4 +1,5 @@
 rank,run,model,macro_normalized_mae,valid_tasks,total_tasks,per_task_wins,source_run,checkpoint_epoch
-1,ilume@study:ilume-stage3-6e0b193154d4b81545dc1bac0bb187e872a34548b7cee0723f681a7c5105f31d-taskwise-refined,ILUME,0.21559429915694361,21,21,13,outputs/v1/stage3/base/evaluate/fold1;outputs/v1/stage3/base/evaluate/fold2;outputs/v1/stage3/base/evaluate/fold3;outputs/v1/stage3/base/evaluate/fold4;outputs/v1/stage3/base/evaluate/fold5,
+1,ilume@study:ilume-stage3-6e0b193154d4b81545dc1bac0bb187e872a34548b7cee0723f681a7c5105f31d-taskwise-refined,ILUME,0.21559429915694361,21,21,12,outputs/v1/stage3/base/evaluate/fold1;outputs/v1/stage3/base/evaluate/fold2;outputs/v1/stage3/base/evaluate/fold3;outputs/v1/stage3/base/evaluate/fold4;outputs/v1/stage3/base/evaluate/fold5,
 2,mlp@outputs/benchmarks/v1/mlp,MLP,0.220095891657771,21,21,8,outputs/benchmarks/v1/mlp,
-3,ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost,ECFP+XGBoost,0.30209580088402943,21,21,0,outputs/benchmarks/v1/ecfp_xgboost,
+3,dmpnn@outputs/benchmarks/v1/dmpnn,D-MPNN,0.24832205541435884,21,21,1,outputs/benchmarks/v1/dmpnn,
+4,ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost,ECFP+XGBoost,0.30209580088402943,21,21,0,outputs/benchmarks/v1/ecfp_xgboost,

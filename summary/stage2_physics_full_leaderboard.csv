@@ -1,2 +1,3 @@
 rank,run,model,macro_normalized_mae,valid_units,total_units,source_run,checkpoint_epoch
-1,ilume@outputs/v1/stage2/base/evaluate,ILUME,0.10163228248407366,4,4,outputs/v1/stage2/base/evaluate,
+1,dmpnn@outputs/benchmarks/v1/dmpnn,D-MPNN,0.07334303895022716,4,4,outputs/benchmarks/v1/dmpnn,
+2,ilume@outputs/v1/stage2/base/evaluate,ILUME,0.10163228248407366,4,4,outputs/v1/stage2/base/evaluate,

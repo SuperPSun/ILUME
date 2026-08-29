@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from common.identity import validate_semantic_identity
+from common.identity import semantic_identity
 from common.io import atomic_json
 from common.reporting import (
     REPORTING_SCHEMA_VERSION,
@@ -33,6 +34,35 @@ SUMMARY_FILES = (
     "sweep_status.csv",
     "summary.json",
 )
+
+_PARTIAL_CHARGE_PREDICTION_FIELDS = (
+    "source_row",
+    "mol_id",
+    "canonical_smiles",
+    "role",
+    "formal_charge",
+    "evaluation_status",
+    "exclusion_reason",
+    "atom_count",
+    "atom_indices",
+    "elements",
+    "target_charges",
+    "predicted_charges",
+    "absolute_errors",
+    "molecule_mae",
+    "mapping_status",
+    "mapping_count_lower_bound",
+    "selected_mapping_rank",
+    "bond_match_mode",
+    "unparsed_bond_types",
+    "bond_fallback_reason",
+)
+_PARTIAL_CHARGE_RUNTIME_FIELDS = {
+    "canonical_smiles",
+    "predicted_charges",
+    "absolute_errors",
+    "molecule_mae",
+}
 
 
 @dataclass(frozen=True)
@@ -182,6 +212,93 @@ def _validate_comparison(value: Any, context: str) -> None:
     validate_semantic_identity(value)
     if value.get("type") != "reporting.comparison.v1":
         raise ValueError(f"{context} has unsupported comparison identity")
+
+
+def _partial_charge_comparison_key(
+    candidate: Candidate, section: Mapping[str, Any]
+) -> str:
+    identity = section["comparison_identity"]
+    payload = identity["payload"]
+    sources = dict(payload["sources"])
+    task = "simulation/partial_atomic_charge"
+    sources.pop(f"{task}:mapping_audit", None)
+    sources.pop(f"{task}:evaluated_subset", None)
+    reporting = candidate.summary["reporting"]
+    prediction_root = candidate.root
+    prediction = next(
+        (
+            item for item in reporting.get("predictions", ())
+            if item.get("task") == task
+        ),
+        None,
+    )
+    if prediction is None:
+        source_run = reporting.get("source_runs", {}).get("stage2_physics", {}).get(task)
+        try:
+            relative = Path(str(source_run)).relative_to(Path(candidate.source_run))
+        except ValueError:
+            relative = None
+        if relative is not None:
+            source_root = candidate.root / relative
+            summary_path = source_root / "summary.json"
+            if summary_path.is_file():
+                source_summary = _json(summary_path)
+                prediction = next(
+                    (
+                        item
+                        for item in source_summary.get("reporting", {}).get("predictions", ())
+                        if item.get("task") == task
+                    ),
+                    None,
+                )
+                prediction_root = source_root
+    if not isinstance(prediction, Mapping) or not isinstance(prediction.get("path"), str):
+        return str(identity["hash"])
+    path = (prediction_root / prediction["path"]).resolve()
+    if not _is_within(path, prediction_root.resolve()) or not path.is_file():
+        return str(identity["hash"])
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        if tuple(reader.fieldnames or ()) != _PARTIAL_CHARGE_PREDICTION_FIELDS:
+            return str(identity["hash"])
+        rows = [
+            {
+                name: row[name]
+                for name in _PARTIAL_CHARGE_PREDICTION_FIELDS
+                if name not in _PARTIAL_CHARGE_RUNTIME_FIELDS
+            }
+            for row in reader
+        ]
+    return semantic_identity(
+        "reporting.partial-charge-comparison.v2",
+        {
+            "comparison": {
+                "benchmark": payload["benchmark"],
+                "split": payload["split"],
+                "expected": payload["expected"],
+                "sources": sources,
+                "normalization": payload["normalization"],
+                "folds": payload["folds"],
+                "ensemble": payload["ensemble"],
+            },
+            "evaluation_rows": rows,
+        },
+    )["hash"]
+
+
+def _stage2_full_comparison_key(
+    candidate: Candidate,
+    section: Mapping[str, Any],
+    partial_section: Mapping[str, Any],
+) -> str:
+    identity = section["comparison_identity"]
+    payload = dict(identity["payload"])
+    component_hashes = dict(payload["component_hashes"])
+    component_hashes["stage2_partial_charge"] = _partial_charge_comparison_key(
+        candidate, partial_section
+    )
+    payload["component_hashes"] = component_hashes
+    return semantic_identity("reporting.stage2-full-comparison.v2", payload)["hash"]
 
 
 def _validate_stage2_suite(reporting: Mapping[str, Any]) -> None:
@@ -977,7 +1094,9 @@ def _stage2_partial(
                     "checkpoint_epoch": candidate.summary.get("checkpoint_epoch", ""),
                 }
             )
-            comparisons.setdefault(section["comparison_identity"]["hash"], []).append(run)
+            comparisons.setdefault(
+                _partial_charge_comparison_key(candidate, section), []
+            ).append(run)
             continue
         metrics_rows = [row for row in metrics_rows if row["run"] != run]
     _require_one_comparison(comparisons, "Stage 2 Partial Charge")
@@ -1038,7 +1157,9 @@ def _stage2_full(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
                 "checkpoint_epoch": summary.get("checkpoint_epoch", ""),
             }
         )
-        comparisons.setdefault(section["comparison_identity"]["hash"], []).append(run)
+        comparisons.setdefault(
+            _stage2_full_comparison_key(candidate, section, partial_section), []
+        ).append(run)
     _require_one_comparison(comparisons, "Stage 2 Full physics")
     return _rank(leaders, "macro_normalized_mae")
 

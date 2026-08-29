@@ -48,7 +48,7 @@ class Stage2PhysicsConfig:
 
 @dataclass(frozen=True)
 class BenchmarkConfig:
-    name: Literal["mlp", "ecfp_xgboost", "dmpnn"]
+    name: Literal["mlp", "ecfp_xgboost", "dmpnn", "molformer"]
     data: DataConfig
     features: FeatureConfig | None
     environment: EnvironmentConfig | None
@@ -60,7 +60,7 @@ class BenchmarkConfig:
     display_name: str = ""
 
     def validate(self) -> None:
-        if self.name not in {"mlp", "ecfp_xgboost", "dmpnn"}:
+        if self.name not in {"mlp", "ecfp_xgboost", "dmpnn", "molformer"}:
             raise ValueError(f"Unknown benchmark model: {self.name}")
         if not self.display_name:
             raise ValueError("Benchmark display_name must be non-empty")
@@ -76,12 +76,15 @@ class BenchmarkConfig:
             self.features.radius <= 0 or self.features.n_bits <= 0
         ):
             raise ValueError("Fingerprint radius and n_bits must be positive")
-        if self.name != "dmpnn" and self.data.feature_cache is None:
+        advanced = self.name in {"dmpnn", "molformer"}
+        if not advanced and self.data.feature_cache is None:
             raise ValueError("Feature baselines require data.feature_cache")
-        if self.name != "dmpnn" and self.environment is not None:
-            raise ValueError("Only D-MPNN uses a dedicated benchmark environment")
+        if not advanced and self.environment is not None:
+            raise ValueError("Only advanced baselines use a dedicated environment")
         if self.name == "dmpnn":
             self._validate_dmpnn()
+        if self.name == "molformer":
+            self._validate_molformer()
         if not self.model or not self.training or self.seed < 0:
             raise ValueError("Benchmark model/training contract is incomplete")
         if not self.stage3.folds or any(fold not in range(1, 6) for fold in self.stage3.folds):
@@ -135,6 +138,52 @@ class BenchmarkConfig:
         }
         if self.training != expected_training:
             raise ValueError("D-MPNN training must match the registered Chemprop recipe")
+
+    def _validate_molformer(self) -> None:
+        if self.features is not None:
+            raise ValueError("MoLFormer tokenizes SMILES and does not accept features")
+        if self.environment is None or not all(
+            (self.environment.name, str(self.environment.definition), str(self.environment.lock))
+        ):
+            raise ValueError("MoLFormer requires a dedicated environment definition and lock")
+        if self.environment.name != "ilume-molformer":
+            raise ValueError("MoLFormer environment name must be ilume-molformer")
+        if self.data.stage2_authority_config is not None:
+            raise ValueError("MoLFormer does not use a Stage 2 prepare authority")
+        expected_model = {
+            "repository": "ibm-research/MoLFormer-XL-both-10pct",
+            "revision": "361063d0ad524ef77cf39b08469f6be770dc550f",
+            "trust_remote_code": True,
+            "pretrained": True,
+            "full_fine_tuning": True,
+            "deterministic_eval": True,
+            "remove_stereochemistry": True,
+            "max_input_tokens": 202,
+            "hidden_dim": 768,
+            "shared_backbone": True,
+            "fusion": "ordered_concat_linear",
+            "regression_head": "official_sequence_classification",
+        }
+        if self.model != expected_model:
+            raise ValueError("MoLFormer model must match the registered pretrained recipe")
+        expected_training = {
+            "optimizer": "adamw",
+            "encoder_learning_rate": 1.0e-5,
+            "new_parameter_learning_rate": 1.0e-4,
+            "weight_decay": 1.0e-2,
+            "scheduler": "cosine",
+            "warmup_fraction": 0.05,
+            "batch_size": 32,
+            "gradient_accumulation_steps": 1,
+            "max_epochs": 100,
+            "early_stopping_patience": 15,
+            "loss": "mse",
+            "selection_metric": "validation_mae",
+            "device": "cuda",
+            "precision": "fp32",
+        }
+        if self.training != expected_training:
+            raise ValueError("MoLFormer training must match the registered fine-tuning recipe")
 
     def to_dict(self) -> dict[str, Any]:
         def convert(value: Any) -> Any:

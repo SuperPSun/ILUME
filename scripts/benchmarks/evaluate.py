@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from benchmarks.common.config import load_benchmark_config
 from benchmarks.common.environment import (
     ensure_benchmark_environment,
+    environment_run_details,
     write_environment_snapshot,
 )
 from benchmarks.common.engine import ensemble_evaluation, evaluate_checkpoint
@@ -261,6 +262,17 @@ def main() -> None:
         else evaluation_task.valid_paths[0]
     )
     evaluation_source_hash = _source_hash(evaluation_source)
+    input_audit = None
+    if config.name == "molformer":
+        from benchmarks.molformer.adapter import molformer_evaluation_audit
+
+        input_audit = molformer_evaluation_audit(
+            config,
+            args.benchmark,
+            args.task,
+            config.stage3.folds[0] if args.ensemble_folds else selector_fold,
+            args.split,
+        )
     evaluation_identity = semantic_identity(
         "benchmark.evaluation.v1",
         {
@@ -272,6 +284,7 @@ def main() -> None:
             "ensemble_folds": args.ensemble_folds,
             "checkpoints": checkpoint_fingerprints,
             "evaluation_source_sha256": evaluation_source_hash,
+            "input_audit": input_audit,
         },
     )
     run = open_run_directory(
@@ -294,15 +307,7 @@ def main() -> None:
             "benchmark": args.benchmark, "task": args.task, "split": args.split,
             "fold": selector_fold, "ensemble_folds": args.ensemble_folds,
             "checkpoints": [repository_relative(path) for path in checkpoints],
-            **(
-                {}
-                if environment_snapshot is None
-                else {
-                    "benchmark_environment": environment_snapshot["environment_name"],
-                    "environment_lock_sha256": environment_snapshot["environment_lock_sha256"],
-                    "chemprop_version": environment_snapshot["direct_versions"]["chemprop"],
-                }
-            ),
+            **environment_run_details(environment_snapshot),
         },
     )
     try:
@@ -380,6 +385,10 @@ def main() -> None:
         if [_checkpoint_fingerprint(path) for path in checkpoints] != checkpoint_fingerprints:
             raise ValueError("Benchmark checkpoint changed during evaluation")
         first = results[0]
+        if input_audit is not None and any(
+            result.input_audit != input_audit for result in results
+        ):
+            raise ValueError("MoLFormer evaluation input audit changed during evaluation")
         if args.ensemble_folds:
             prediction, ensemble_metrics = ensemble_evaluation(results, tuple(first.metrics))
             summary: dict[str, Any] = {
@@ -395,6 +404,8 @@ def main() -> None:
                 "fold": selector_fold, "targets": first.metrics,
             }
             extras = None
+        if input_audit is not None:
+            summary["input_audit"] = input_audit
         prediction_manifest = _write_task_predictions(
             run.root / "predictions" / f"{sanitize_task_id(args.task)}.csv",
             evaluation_task,

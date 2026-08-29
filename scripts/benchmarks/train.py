@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from benchmarks.common.config import load_benchmark_config
 from benchmarks.common.environment import (
     ensure_benchmark_environment,
+    environment_run_details,
     write_environment_snapshot,
 )
 from benchmarks.common.engine import prepare_training, train_bundle
@@ -45,15 +46,7 @@ def main() -> None:
             "benchmark": args.benchmark,
             "task": args.task,
             "fold": args.fold,
-            **(
-                {}
-                if environment_snapshot is None
-                else {
-                    "benchmark_environment": environment_snapshot["environment_name"],
-                    "environment_lock_sha256": environment_snapshot["environment_lock_sha256"],
-                    "chemprop_version": environment_snapshot["direct_versions"]["chemprop"],
-                }
-            ),
+            **environment_run_details(environment_snapshot),
         },
     )
     try:

@@ -4,40 +4,45 @@
 
 1. ILUME — macro normalized MAE 0.186134
 2. MLP — macro normalized MAE 0.199194
-3. ECFP+XGBoost — macro normalized MAE 0.269395
+3. D-MPNN — macro normalized MAE 0.244526
+4. ECFP+XGBoost — macro normalized MAE 0.269395
 Coverage: 11 test tasks / 21 enabled Stage 3 tasks.
 
 ## Stage 3 VALIDATION (5-fold mean)
 
 1. ILUME — macro normalized MAE 0.215594
 2. MLP — macro normalized MAE 0.220096
-3. ECFP+XGBoost — macro normalized MAE 0.302096
+3. D-MPNN — macro normalized MAE 0.248322
+4. ECFP+XGBoost — macro normalized MAE 0.302096
 
 ## Stage 2 CORE
 
-1. MLP — macro normalized MAE 0.0676515
-2. ILUME — macro normalized MAE 0.0883141
-3. ECFP+XGBoost — macro normalized MAE 0.134703
+1. D-MPNN — macro normalized MAE 0.0570515
+2. MLP — macro normalized MAE 0.0676515
+3. ILUME — macro normalized MAE 0.0883141
+4. ECFP+XGBoost — macro normalized MAE 0.134703
 
 ## Partial Charge
 
-1. ILUME — macro normalized MAE 0.141587
+1. D-MPNN — macro normalized MAE 0.122218
+2. ILUME — macro normalized MAE 0.141587
 Not evaluated: ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost, mlp@outputs/benchmarks/v1/mlp
 Not eligible: None
 
 ## Stage 2 FULL
 
-1. ILUME — macro normalized MAE 0.101632
+1. D-MPNN — macro normalized MAE 0.073343
+2. ILUME — macro normalized MAE 0.101632
 Not evaluated: ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost, mlp@outputs/benchmarks/v1/mlp
 Not eligible: None
 
 ## Core task wins
 
-- ilume@outputs/v1/stage2/base/evaluate: 1
-- mlp@outputs/benchmarks/v1/mlp: 2
+- dmpnn@outputs/benchmarks/v1/dmpnn: 3
 
 ## Experiment health
 
+- ✓ dmpnn@outputs/benchmarks/v1/dmpnn: complete
 - ✓ ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost: complete
 - ✓ ilume@outputs/v1/stage2/base/evaluate: complete
 - ✓ ilume@outputs/v1/stage3/base/evaluate/fold1: complete

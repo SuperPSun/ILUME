@@ -23,6 +23,7 @@ from benchmarks.common.config import load_benchmark_config
 from benchmarks.common.data import configured_tasks, has_test_rows, resolve_task
 from benchmarks.common.environment import (
     ensure_benchmark_environment,
+    environment_run_details,
     write_environment_snapshot,
 )
 from benchmarks.common.metrics import macro_normalized_mae, mean_sample_std
@@ -768,7 +769,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--devices",
-        help=("optional MLP/D-MPNN GPU list such as cuda:0,cuda:1; logical job chains are "
+        help=("optional MLP/D-MPNN/MoLFormer GPU list such as cuda:0,cuda:1; logical job chains are "
               "assigned round-robin via CUDA_VISIBLE_DEVICES"),
     )
     args = parser.parse_args()
@@ -778,7 +779,7 @@ def main() -> None:
         devices = _parse_devices(args.devices)
     except ValueError as error:
         parser.error(str(error))
-    if devices and config.name not in {"mlp", "dmpnn"}:
+    if devices and config.name not in {"mlp", "dmpnn", "molformer"}:
         parser.error("--devices is only supported for GPU neural-network benchmarks")
     if devices and config.training.get("device") != "cuda":
         parser.error("--devices requires training.device: cuda")
@@ -793,15 +794,7 @@ def main() -> None:
         details={
             "reporting_schema_version": REPORTING_SCHEMA_VERSION,
             "reporting_contract": STAGE2_BENCHMARK_SUITE_CONTRACT,
-            **(
-                {}
-                if environment_snapshot is None
-                else {
-                    "benchmark_environment": environment_snapshot["environment_name"],
-                    "environment_lock_sha256": environment_snapshot["environment_lock_sha256"],
-                    "chemprop_version": environment_snapshot["direct_versions"]["chemprop"],
-                }
-            ),
+            **environment_run_details(environment_snapshot),
         },
     )
     if environment_snapshot is not None:
