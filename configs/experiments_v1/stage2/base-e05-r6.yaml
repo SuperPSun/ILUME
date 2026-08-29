@@ -2,7 +2,7 @@ data:
   data_root: data
   task_catalog_path: data/task_catalog.csv
   pretrain_artifacts_dir: outputs/experiments_v1/stage1/prepare/artifacts
-  artifacts_dir: outputs/experiments_v1/stage2/prepare/artifacts
+  artifacts_dir: outputs/experiments_v1/stage2/prepare/base-e05/artifacts
   entity_shard_size: 4096
   seed: 42
   target_materialization_modes:
