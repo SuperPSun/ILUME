@@ -102,7 +102,7 @@ Stage 3 evaluator 同样默认加载每个 fold 的 `taskwise_refined.pt`；显�
 
 ## Baselines
 
-MLP、ECFP4-XGBoost、Chemprop D-MPNN 与 MoLFormer 位于 `benchmarks/`，与 Stage 代码隔离；合同见 [ADR-0022](docs/adr/0022-mlp-ecfp-xgboost-baselines.md)、[ADR-0028](docs/adr/0028-chemprop-dmpnn-baseline.md) 和 [ADR-0029](docs/adr/0029-molformer-baseline.md)。
+MLP、ECFP4-XGBoost、Chemprop D-MPNN 与 MoLFormer 位于 `benchmarks/`，与 Stage 代码隔离；合同见 [ADR-0022](docs/adr/0022-mlp-ecfp-xgboost-baselines.md)、[ADR-0028](docs/adr/0028-chemprop-dmpnn-baseline.md)、[ADR-0029](docs/adr/0029-molformer-baseline.md) 和 [ADR-0030](docs/adr/0030-molformer-throughput-contract.md)。
 
 ```bash
 python -m pip install -e ".[benchmarks]"
@@ -181,7 +181,7 @@ python scripts/benchmarks/sweep.py \
   --max-workers 1
 ```
 
-MoLFormer的超长train row整行跳过且不进入scaler；valid/test显式截断到202 tokens并在结果中审计。多GPU sweep可使用`--devices cuda:0,cuda:1,...`。Partial Charge与Stage 2 Full保持unsupported。
+MoLFormer的超长train row整行跳过且不进入scaler；valid/test显式截断到202 tokens并在结果中审计。训练前为unique SMILES建立run-local内存token cache，多组分合并为一次共享backbone forward；正式合同固定batch 256、50 epochs、patience 8和TF32，OOM/NaN不自动缩批或回退。多GPU sweep可使用`--devices cuda:0,cuda:1,...`。Partial Charge与Stage 2 Full保持unsupported。
 
 ## 输出与结果汇总
 

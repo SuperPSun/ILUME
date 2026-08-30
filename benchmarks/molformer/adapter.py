@@ -32,7 +32,14 @@ MOLFORMER_INPUT_CONTRACT = {
     "validation_overlength": "truncate_component",
     "test_overlength": "truncate_component",
     "truncation_keeps_row_eligible": True,
+    "input_cache": "unique_smiles_memory_token_cache",
+    "component_forward": "merged_component_backbone_forward",
 }
+MOLFORMER_TRAINING_ORDER_CONTRACT = "sortish_length_bucketing_v1"
+TokenCache = dict[
+    str,
+    tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+]
 _SNAPSHOT_FILES = (
     "config.json",
     "configuration_molformer.py",
@@ -97,6 +104,8 @@ class MolFormerTrainingBundle:
     source_hashes: dict[str, Any]
     training_identity: dict[str, Any]
     snapshot: dict[str, Any]
+    token_cache: TokenCache
+    pad_token_id: int
 
 
 class SharedMolFormerRegressor(torch.nn.Module):
@@ -127,15 +136,19 @@ class SharedMolFormerRegressor(torch.nn.Module):
 
     def forward(
         self,
-        component_inputs: Sequence[Mapping[str, torch.Tensor]],
+        component_inputs: Mapping[str, torch.Tensor],
         conditions: torch.Tensor,
     ) -> torch.Tensor:
-        if len(component_inputs) != self.component_count:
-            raise ValueError("MoLFormer component count differs from model topology")
-        pooled = [self.backbone(**inputs).pooler_output for inputs in component_inputs]
-        representation = pooled[0]
+        batch_size = int(conditions.shape[0])
+        pooled = self.backbone(**component_inputs).pooler_output
+        if int(pooled.shape[0]) != self.component_count * batch_size:
+            raise ValueError("MoLFormer merged molecular batch differs from model topology")
+        ordered = pooled.reshape(self.component_count, batch_size, -1).transpose(0, 1)
+        representation = ordered[:, 0]
         if self.fusion is not None:
-            representation = self.fusion(torch.cat([*pooled, conditions], dim=1))
+            representation = self.fusion(
+                torch.cat([ordered.reshape(batch_size, -1), conditions], dim=1)
+            )
         return self.classifier(representation)
 
 
@@ -191,17 +204,66 @@ def model_input_smiles(smiles: str) -> str:
     return Chem.MolToSmiles(molecule, canonical=True, isomericSmiles=False)
 
 
-def _token_length(tokenizer: Any, smiles: str) -> int:
-    encoded = tokenizer(
-        smiles,
-        add_special_tokens=True,
-        truncation=False,
-        padding=False,
-    )
-    values = encoded["input_ids"]
-    if values and isinstance(values[0], list):
-        values = values[0]
-    return len(values)
+def _populate_token_cache(
+    tokenizer: Any,
+    smiles_values: Sequence[str],
+    token_cache: TokenCache,
+    *,
+    max_tokens: int = 202,
+) -> None:
+    missing = sorted(set(smiles_values) - set(token_cache))
+    for start in range(0, len(missing), 4096):
+        values = missing[start : start + 4096]
+        encoded = tokenizer(
+            values,
+            add_special_tokens=True,
+            truncation=False,
+            padding=False,
+            return_attention_mask=True,
+        )
+        masks = encoded.get("attention_mask")
+        for index, smiles in enumerate(values):
+            input_ids = torch.as_tensor(encoded["input_ids"][index], dtype=torch.long)
+            attention_mask = (
+                torch.ones_like(input_ids)
+                if masks is None
+                else torch.as_tensor(masks[index], dtype=torch.long)
+            )
+            if input_ids.ndim != 1 or not len(input_ids):
+                raise ValueError("MoLFormer tokenizer returned an empty or non-vector input")
+            if attention_mask.shape != input_ids.shape:
+                raise ValueError("MoLFormer tokenizer returned a mismatched attention mask")
+            truncated_ids = input_ids
+            truncated_mask = attention_mask
+            if len(input_ids) > max_tokens:
+                if (
+                    tokenizer.truncation_side != "right"
+                    or tokenizer.eos_token_id is None
+                    or int(input_ids[-1]) != int(tokenizer.eos_token_id)
+                ):
+                    raise ValueError("MoLFormer tokenizer truncation contract is unsupported")
+                truncated_ids = torch.cat(
+                    (input_ids[: max_tokens - 1], input_ids[-1:])
+                )
+                truncated_mask = torch.cat(
+                    (attention_mask[: max_tokens - 1], attention_mask[-1:])
+                )
+            token_cache[smiles] = (
+                input_ids,
+                attention_mask,
+                truncated_ids,
+                truncated_mask,
+            )
+
+
+def _token_cache_audit(token_cache: TokenCache) -> dict[str, int | str]:
+    lengths = [len(values[0]) for values in token_cache.values()]
+    return {
+        "contract": "unique_smiles_memory_token_cache",
+        "unique_model_inputs": len(lengths),
+        "total_tokens": sum(lengths),
+        "maximum_token_length": max(lengths, default=0),
+    }
 
 
 def _input_audit(
@@ -209,6 +271,7 @@ def _input_audit(
     task: BenchmarkTask,
     split: str,
     tokenizer: Any,
+    token_cache: TokenCache,
     *,
     max_tokens: int,
 ) -> tuple[tuple[tuple[str, ...], ...], dict[str, Any]]:
@@ -227,10 +290,10 @@ def _input_audit(
         if len(benchmark_smiles) > 1
     }
     collision_inputs = set(collisions)
-    lengths = {
-        smiles: _token_length(tokenizer, smiles)
-        for smiles in sorted(mapping)
-    }
+    _populate_token_cache(
+        tokenizer, tuple(mapping), token_cache, max_tokens=max_tokens
+    )
+    lengths = {smiles: len(token_cache[smiles][0]) for smiles in mapping}
     overlength: list[dict[str, Any]] = []
     collision_rows: set[str] = set()
     overlength_rows: set[str] = set()
@@ -264,6 +327,7 @@ def _input_audit(
         "total_rows": len(raw),
         "unique_benchmark_molecules": len(unique_benchmark),
         "unique_model_inputs": len(mapping),
+        "unique_model_input_tokens": sum(lengths.values()),
         "maximum_token_length": max(lengths.values(), default=0),
         "collision_group_count": len(collisions),
         "collision_affected_molecules": len(affected_molecules),
@@ -296,12 +360,13 @@ def _prepare_split(
     task: BenchmarkTask,
     split: str,
     tokenizer: Any,
+    token_cache: TokenCache,
     condition_stats: ConditionStats | None,
     *,
     max_tokens: int,
 ) -> PreparedSplit:
     model_components, audit = _input_audit(
-        raw, task, split, tokenizer, max_tokens=max_tokens
+        raw, task, split, tokenizer, token_cache, max_tokens=max_tokens
     )
     if split == "train" and audit["skipped_rows"]:
         skipped = set(audit["skipped_rows"])
@@ -339,10 +404,19 @@ def prepare_molformer_training(
     if len(task.target_columns) != 1:
         raise ValueError("MoLFormer baseline requires one scalar target per task")
     tokenizer = _tokenizer(config)
+    if tokenizer.pad_token_id is None:
+        raise ValueError("MoLFormer tokenizer does not define a pad token")
+    token_cache: TokenCache = {}
     max_tokens = int(config.model["max_input_tokens"])
     raw_train = load_split(task, "train")
     provisional_train = _prepare_split(
-        raw_train, task, "train", tokenizer, None, max_tokens=max_tokens
+        raw_train,
+        task,
+        "train",
+        tokenizer,
+        token_cache,
+        None,
+        max_tokens=max_tokens,
     )
     condition_stats = ConditionStats.fit(provisional_train.raw.conditions)
     train = PreparedSplit(
@@ -357,6 +431,7 @@ def prepare_molformer_training(
         task,
         "valid",
         tokenizer,
+        token_cache,
         condition_stats,
         max_tokens=max_tokens,
     )
@@ -376,6 +451,8 @@ def prepare_molformer_training(
             "component_order": list(task.slots),
             "source_hashes": source_hashes,
             "input_contract": MOLFORMER_INPUT_CONTRACT,
+            "training_order_contract": MOLFORMER_TRAINING_ORDER_CONTRACT,
+            "token_cache_audit": _token_cache_audit(token_cache),
             "train_input_audit": train.audit,
             "valid_input_audit": valid.audit,
             "condition_statistics": condition_stats.to_dict(),
@@ -396,6 +473,8 @@ def prepare_molformer_training(
         source_hashes=source_hashes,
         training_identity=identity,
         snapshot=snapshot,
+        token_cache=token_cache,
+        pad_token_id=int(tokenizer.pad_token_id),
     )
 
 
@@ -432,80 +511,173 @@ def build_molformer_model(
 
 def _collate(
     prepared: PreparedSplit,
-    tokenizer: Any,
+    token_cache: TokenCache,
     target_stats: TargetStats,
     *,
     truncate: bool,
     max_tokens: int,
+    pad_token_id: int,
 ) -> Any:
-    def collate(indices: Sequence[int]) -> tuple[list[dict[str, torch.Tensor]], torch.Tensor, torch.Tensor]:
-        components = []
+    def collate(
+        indices: Sequence[int],
+    ) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor]:
+        input_ids: list[torch.Tensor] = []
+        attention_masks: list[torch.Tensor] = []
         for component_index in range(prepared.raw.component_count):
-            values = [prepared.model_components[index][component_index] for index in indices]
-            kwargs: dict[str, Any] = {
-                "padding": True,
-                "truncation": truncate,
-                "add_special_tokens": True,
-                "return_tensors": "pt",
-            }
-            if truncate:
-                kwargs["max_length"] = max_tokens
-            encoded = tokenizer(values, **kwargs)
-            if int(encoded["input_ids"].shape[1]) > max_tokens:
-                raise ValueError("MoLFormer tokenizer exceeded the registered sequence length")
-            components.append(dict(encoded))
+            for index in indices:
+                smiles = prepared.model_components[index][component_index]
+                cached = token_cache[smiles]
+                ids, mask = (
+                    (cached[2], cached[3])
+                    if truncate
+                    else (cached[0], cached[1])
+                )
+                if len(ids) > max_tokens:
+                    raise ValueError(
+                        "MoLFormer cached input exceeded the registered sequence length"
+                    )
+                input_ids.append(ids)
+                attention_masks.append(mask)
+        encoded = {
+            "input_ids": torch.nn.utils.rnn.pad_sequence(
+                input_ids, batch_first=True, padding_value=pad_token_id
+            ),
+            "attention_mask": torch.nn.utils.rnn.pad_sequence(
+                attention_masks, batch_first=True, padding_value=0
+            ),
+        }
         conditions = torch.from_numpy(prepared.normalized_conditions[np.asarray(indices)])
         targets = torch.from_numpy(
             target_stats.normalize(prepared.raw.targets[np.asarray(indices)])
         )
-        return components, conditions, targets
+        return encoded, conditions, targets
 
     return collate
 
 
 def _move_inputs(
-    components: Sequence[Mapping[str, torch.Tensor]],
+    components: Mapping[str, torch.Tensor],
     device: torch.device,
-) -> list[dict[str, torch.Tensor]]:
-    return [
-        {name: value.to(device) for name, value in inputs.items()}
-        for inputs in components
-    ]
+    *,
+    non_blocking: bool,
+) -> dict[str, torch.Tensor]:
+    return {
+        name: value.to(device, non_blocking=non_blocking)
+        for name, value in components.items()
+    }
+
+
+class SortishBatchSampler(torch.utils.data.Sampler[list[int]]):
+    def __init__(
+        self,
+        lengths: Sequence[int],
+        *,
+        batch_size: int,
+        window_batches: int,
+        seed: int,
+    ) -> None:
+        self.lengths = tuple(int(value) for value in lengths)
+        self.batch_size = batch_size
+        self.window_batches = window_batches
+        self.seed = seed
+        self.epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+    def __len__(self) -> int:
+        return math.ceil(len(self.lengths) / self.batch_size)
+
+    def __iter__(self) -> Any:
+        generator = torch.Generator().manual_seed(self.seed + self.epoch)
+        permutation = torch.randperm(len(self.lengths), generator=generator).tolist()
+        window_size = self.window_batches * self.batch_size
+        batches: list[list[int]] = []
+        for start in range(0, len(permutation), window_size):
+            window = permutation[start : start + window_size]
+            window.sort(key=self.lengths.__getitem__)
+            batches.extend(
+                window[offset : offset + self.batch_size]
+                for offset in range(0, len(window), self.batch_size)
+            )
+        order = torch.randperm(len(batches), generator=generator).tolist()
+        return iter(batches[index] for index in order)
+
+
+def _row_token_lengths(
+    prepared: PreparedSplit,
+    token_cache: TokenCache,
+    *,
+    max_tokens: int,
+) -> tuple[int, ...]:
+    return tuple(
+        max(min(len(token_cache[smiles][0]), max_tokens) for smiles in components)
+        for components in prepared.model_components
+    )
+
+
+def _data_loader(
+    config: BenchmarkConfig,
+    prepared: PreparedSplit,
+    token_cache: TokenCache,
+    target_stats: TargetStats,
+    *,
+    pad_token_id: int,
+    batch_sampler: SortishBatchSampler | None = None,
+) -> torch.utils.data.DataLoader:
+    runtime = config.runtime
+    common = {
+        "num_workers": int(runtime["num_workers"]),
+        "pin_memory": bool(runtime["pin_memory"]),
+        "persistent_workers": bool(runtime["persistent_workers"]),
+        "prefetch_factor": int(runtime["prefetch_factor"]),
+        "collate_fn": _collate(
+            prepared,
+            token_cache,
+            target_stats,
+            truncate=prepared.audit["split"] != "train",
+            max_tokens=int(config.model["max_input_tokens"]),
+            pad_token_id=pad_token_id,
+        ),
+    }
+    if batch_sampler is not None:
+        return torch.utils.data.DataLoader(
+            range(len(prepared.raw)), batch_sampler=batch_sampler, **common
+        )
+    return torch.utils.data.DataLoader(
+        range(len(prepared.raw)),
+        batch_size=int(config.training["batch_size"]),
+        shuffle=False,
+        **common,
+    )
 
 
 def _predict_normalized(
     model: SharedMolFormerRegressor,
-    prepared: PreparedSplit,
-    tokenizer: Any,
-    target_stats: TargetStats,
+    loader: torch.utils.data.DataLoader,
+    row_count: int,
     *,
-    batch_size: int,
-    max_tokens: int,
     device: torch.device,
+    non_blocking: bool,
 ) -> np.ndarray:
-    if not len(prepared.raw):
+    if not row_count:
         return np.empty((0, 1), dtype=np.float32)
-    loader = torch.utils.data.DataLoader(
-        range(len(prepared.raw)),
-        batch_size=batch_size,
-        shuffle=False,
-        collate_fn=_collate(
-            prepared,
-            tokenizer,
-            target_stats,
-            truncate=True,
-            max_tokens=max_tokens,
-        ),
-    )
     values = []
     model.eval()
     with torch.inference_mode():
         for components, conditions, _ in loader:
             prediction = model(
-                _move_inputs(components, device), conditions.to(device)
+                _move_inputs(components, device, non_blocking=non_blocking),
+                conditions.to(device, non_blocking=non_blocking),
             )
             values.append(prediction.float().cpu())
     return torch.cat(values).numpy()
+
+
+def _configure_tf32(enabled: bool) -> None:
+    precision = "tf32" if enabled else "ieee"
+    torch.backends.cuda.matmul.fp32_precision = precision
+    torch.backends.cudnn.conv.fp32_precision = precision
 
 
 def train_molformer_bundle(
@@ -520,8 +692,7 @@ def train_molformer_bundle(
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
     seed_benchmark(config.seed)
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cudnn.allow_tf32 = False
+    _configure_tf32(bool(config.training["tf32"]))
     device = torch.device(str(config.training["device"]))
     if device.type != "cuda" or not torch.cuda.is_available():
         raise RuntimeError("MoLFormer requires CUDA; no silent CPU fallback")
@@ -544,7 +715,17 @@ def train_molformer_bundle(
     )
     batch_size = int(config.training["batch_size"])
     max_epochs = int(config.training["max_epochs"])
-    steps_per_epoch = math.ceil(len(bundle.train.raw) / batch_size)
+    train_sampler = SortishBatchSampler(
+        _row_token_lengths(
+            bundle.train,
+            bundle.token_cache,
+            max_tokens=int(config.model["max_input_tokens"]),
+        ),
+        batch_size=batch_size,
+        window_batches=int(config.training["bucket_window_batches"]),
+        seed=config.seed,
+    )
+    steps_per_epoch = len(train_sampler)
     total_steps = max_epochs * steps_per_epoch
     warmup_steps = math.ceil(float(config.training["warmup_fraction"]) * total_steps)
     scheduler = get_cosine_schedule_with_warmup(
@@ -553,21 +734,22 @@ def train_molformer_bundle(
         num_training_steps=total_steps,
         num_cycles=0.5,
     )
-    tokenizer = _tokenizer(config)
-    generator = torch.Generator().manual_seed(config.seed)
-    train_loader = torch.utils.data.DataLoader(
-        range(len(bundle.train.raw)),
-        batch_size=batch_size,
-        shuffle=True,
-        generator=generator,
-        collate_fn=_collate(
-            bundle.train,
-            tokenizer,
-            bundle.target_stats,
-            truncate=False,
-            max_tokens=int(config.model["max_input_tokens"]),
-        ),
+    train_loader = _data_loader(
+        config,
+        bundle.train,
+        bundle.token_cache,
+        bundle.target_stats,
+        pad_token_id=bundle.pad_token_id,
+        batch_sampler=train_sampler,
     )
+    valid_loader = _data_loader(
+        config,
+        bundle.valid,
+        bundle.token_cache,
+        bundle.target_stats,
+        pad_token_id=bundle.pad_token_id,
+    )
+    non_blocking = bool(config.runtime["non_blocking_transfer"])
     best_score = float("inf")
     best_epoch = 0
     best_state: dict[str, torch.Tensor] | None = None
@@ -580,15 +762,19 @@ def train_molformer_bundle(
     )
     try:
         for epoch in range(1, max_epochs + 1):
+            train_sampler.set_epoch(epoch - 1)
             model.train()
             loss_sum = 0.0
             seen = 0
             for components, conditions, targets in train_loader:
                 optimizer.zero_grad(set_to_none=True)
                 prediction = model(
-                    _move_inputs(components, device), conditions.to(device)
+                    _move_inputs(components, device, non_blocking=non_blocking),
+                    conditions.to(device, non_blocking=non_blocking),
                 )
-                loss = torch.nn.functional.mse_loss(prediction, targets.to(device))
+                loss = torch.nn.functional.mse_loss(
+                    prediction, targets.to(device, non_blocking=non_blocking)
+                )
                 if not torch.isfinite(loss):
                     raise RuntimeError("MoLFormer training produced a non-finite loss")
                 loss.backward()
@@ -599,12 +785,10 @@ def train_molformer_bundle(
                 seen += size
             normalized = _predict_normalized(
                 model,
-                bundle.valid,
-                tokenizer,
-                bundle.target_stats,
-                batch_size=batch_size,
-                max_tokens=int(config.model["max_input_tokens"]),
+                valid_loader,
+                len(bundle.valid.raw),
                 device=device,
+                non_blocking=non_blocking,
             )
             normalized_mae = float(
                 np.abs(
@@ -671,6 +855,8 @@ def train_molformer_bundle(
         "max_total_optimizer_steps": total_steps,
         "model_state_hash": state_hash,
         "pretrained_snapshot": bundle.snapshot,
+        "token_cache_audit": _token_cache_audit(bundle.token_cache),
+        "runtime": config.runtime,
         "input_audit": {"train": bundle.train.audit, "valid": bundle.valid.audit},
         "integrity": {
             path.name: {"sha256": sha256_file(path), "size": path.stat().st_size}
@@ -719,11 +905,13 @@ def molformer_evaluation_audit(
         raise ValueError("MoLFormer evaluation split must be valid or test")
     task = resolve_task(config, benchmark, task_id, fold)
     raw = load_split(task, split)  # Test is opened only by the evaluation entrypoint.
+    token_cache: TokenCache = {}
     _, audit = _input_audit(
         raw,
         task,
         split,
         _tokenizer(config),
+        token_cache,
         max_tokens=int(config.model["max_input_tokens"]),
     )
     return audit
@@ -748,8 +936,7 @@ def evaluate_molformer_checkpoint(
         context="MoLFormer evaluation checkpoint",
     )
     seed_benchmark(config.seed)
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cudnn.allow_tf32 = False
+    _configure_tf32(bool(config.training["tf32"]))
     raw = load_split(bundle.task, split)
     tokenizer = _tokenizer(config)
     prepared = _prepare_split(
@@ -757,6 +944,7 @@ def evaluate_molformer_checkpoint(
         bundle.task,
         split,
         tokenizer,
+        bundle.token_cache,
         bundle.condition_stats,
         max_tokens=int(config.model["max_input_tokens"]),
     )
@@ -769,14 +957,19 @@ def evaluate_molformer_checkpoint(
     if device.type != "cuda" or not torch.cuda.is_available():
         raise RuntimeError("MoLFormer evaluation requires CUDA; no silent CPU fallback")
     model.to(device)
+    loader = _data_loader(
+        config,
+        prepared,
+        bundle.token_cache,
+        bundle.target_stats,
+        pad_token_id=bundle.pad_token_id,
+    )
     normalized = _predict_normalized(
         model,
-        prepared,
-        tokenizer,
-        bundle.target_stats,
-        batch_size=int(config.training["batch_size"]),
-        max_tokens=int(config.model["max_input_tokens"]),
+        loader,
+        len(prepared.raw),
         device=device,
+        non_blocking=bool(config.runtime["non_blocking_transfer"]),
     )
     predictions = bundle.target_stats.denormalize(normalized)
     metrics = target_metrics(

@@ -22,6 +22,8 @@ model:
   shared_backbone: true
   fusion: ordered_concat_linear
   regression_head: official_sequence_classification
+  input_cache: unique_smiles_memory_token_cache
+  component_forward: merged_component_backbone_forward
 training:
   optimizer: adamw
   encoder_learning_rate: 1.0e-5
@@ -29,14 +31,23 @@ training:
   weight_decay: 1.0e-2
   scheduler: cosine
   warmup_fraction: 0.05
-  batch_size: 32
+  batch_size: 256
   gradient_accumulation_steps: 1
-  max_epochs: 100
-  early_stopping_patience: 15
+  max_epochs: 50
+  early_stopping_patience: 8
+  tf32: true
+  length_bucketing: sortish_length_bucketing_v1
+  bucket_window_batches: 20
   loss: mse
   selection_metric: validation_mae
   device: cuda
   precision: fp32
+runtime:
+  num_workers: 4
+  prefetch_factor: 2
+  persistent_workers: true
+  pin_memory: true
+  non_blocking_transfer: true
 stage3:
   enabled: true
   tasks: all

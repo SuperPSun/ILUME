@@ -54,6 +54,7 @@ class BenchmarkConfig:
     environment: EnvironmentConfig | None
     model: dict[str, Any]
     training: dict[str, Any]
+    runtime: dict[str, Any]
     stage3: Stage3BenchmarkConfig
     stage2_physics: Stage2PhysicsConfig
     seed: int
@@ -85,6 +86,8 @@ class BenchmarkConfig:
             self._validate_dmpnn()
         if self.name == "molformer":
             self._validate_molformer()
+        elif self.runtime:
+            raise ValueError("Only MoLFormer currently declares benchmark runtime settings")
         if not self.model or not self.training or self.seed < 0:
             raise ValueError("Benchmark model/training contract is incomplete")
         if not self.stage3.folds or any(fold not in range(1, 6) for fold in self.stage3.folds):
@@ -163,6 +166,8 @@ class BenchmarkConfig:
             "shared_backbone": True,
             "fusion": "ordered_concat_linear",
             "regression_head": "official_sequence_classification",
+            "input_cache": "unique_smiles_memory_token_cache",
+            "component_forward": "merged_component_backbone_forward",
         }
         if self.model != expected_model:
             raise ValueError("MoLFormer model must match the registered pretrained recipe")
@@ -173,10 +178,13 @@ class BenchmarkConfig:
             "weight_decay": 1.0e-2,
             "scheduler": "cosine",
             "warmup_fraction": 0.05,
-            "batch_size": 32,
+            "batch_size": 256,
             "gradient_accumulation_steps": 1,
-            "max_epochs": 100,
-            "early_stopping_patience": 15,
+            "max_epochs": 50,
+            "early_stopping_patience": 8,
+            "tf32": True,
+            "length_bucketing": "sortish_length_bucketing_v1",
+            "bucket_window_batches": 20,
             "loss": "mse",
             "selection_metric": "validation_mae",
             "device": "cuda",
@@ -184,6 +192,15 @@ class BenchmarkConfig:
         }
         if self.training != expected_training:
             raise ValueError("MoLFormer training must match the registered fine-tuning recipe")
+        expected_runtime = {
+            "num_workers": 4,
+            "prefetch_factor": 2,
+            "persistent_workers": True,
+            "pin_memory": True,
+            "non_blocking_transfer": True,
+        }
+        if self.runtime != expected_runtime:
+            raise ValueError("MoLFormer runtime must match the registered throughput recipe")
 
     def to_dict(self) -> dict[str, Any]:
         def convert(value: Any) -> Any:
@@ -195,7 +212,10 @@ class BenchmarkConfig:
                 return {key: convert(item) for key, item in value.items()}
             return value
 
-        return convert(asdict(self))
+        payload = convert(asdict(self))
+        if not payload["runtime"]:
+            payload.pop("runtime")
+        return payload
 
 
 def _mapping(raw: Any, context: str) -> dict[str, Any]:
@@ -213,7 +233,7 @@ def _only(values: dict[str, Any], allowed: set[str], context: str) -> None:
 def benchmark_config_from_dict(raw: dict[str, Any]) -> BenchmarkConfig:
     _only(
         raw,
-        {"name", "display_name", "seed", "data", "features", "environment", "model", "training", "stage3", "stage2_physics"},
+        {"name", "display_name", "seed", "data", "features", "environment", "model", "training", "runtime", "stage3", "stage2_physics"},
         "benchmark config",
     )
     data = _mapping(raw.get("data"), "data")
@@ -282,6 +302,7 @@ def benchmark_config_from_dict(raw: dict[str, Any]) -> BenchmarkConfig:
         ),
         model=_mapping(raw.get("model"), "model"),
         training=_mapping(raw.get("training"), "training"),
+        runtime=_mapping(raw.get("runtime", {}), "runtime"),
         stage3=Stage3BenchmarkConfig(
             enabled=bool(stage3.get("enabled", False)),
             tasks=tasks,

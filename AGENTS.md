@@ -19,7 +19,7 @@ Capacity v1 是 ADR-0026/0027 和 `configs/experiments_v1/{stage1,stage2,stage3}
 - 科研参数与 prepare 执行参数都写入完整自包含 YAML；`preparation` 不进入实验身份。正式 v1 配置位于 `configs/v1`；预注册实验配置位于 `configs/experiments_v1/<stage>`。
 - `--output`、`--resume`、Stage 3 fold 和 evaluation selector 是运行参数，不进入科研 config schema。
 - Stage 3 train 的 `--fold` 可接收一个或多个 fold，`--output` 始终是共同 root，实际 run contract 位于 `foldN/`。多 fold 只允许由该入口使用 spawn worker 和显式设备槽调度；不得把并发下沉到 `src/stage3`，也不得恢复独立 fold/matrix runner。
-- Baseline 以 ADR-0022/0028/0029 为准，只复用现役 registry、split、canonical SMILES、condition/target 与评估口径；不得改变或被解释为 Stage 1/2/3 数值训练合同。Baseline v1 不支持 resume，失败由 sweep 在新 attempt 目录完整重跑。高级 baseline 可使用独立 hash-lock 环境，但不得修改主环境依赖、自动安装或静默回退。
+- Baseline 以 ADR-0022/0028/0029/0030 为准，只复用现役 registry、split、canonical SMILES、condition/target 与评估口径；不得改变或被解释为 Stage 1/2/3 数值训练合同。Baseline v1 不支持 resume，失败由 sweep 在新 attempt 目录完整重跑。高级 baseline 可使用独立 hash-lock 环境，但不得修改主环境依赖、自动安装或静默回退。
 - Evaluation reporting 与汇总以 ADR-0023/0024/0025/0028 为准：Stage 2 固定分为 Core、Partial Charge、Full 三榜；Core 是 heat of vaporization、HOMO、LUMO 三任务等权，Full 再与 Partial Charge 组成四单元等权。缺少 `stage2-benchmark-suite-v2` 的旧 Stage 2 reporting 只进入 health，禁止跨 run 拼接 Full。D-MPNN 的 Partial/Full 为 supported；MLP 与 ECFP+XGBoost 仍为 unsupported。
 
 ## 数据、输出与恢复

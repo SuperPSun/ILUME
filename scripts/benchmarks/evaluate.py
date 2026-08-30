@@ -338,7 +338,7 @@ def main() -> None:
                     "config": {
                         key: value
                         for key, value in config.to_dict().items()
-                        if key != "display_name"
+                        if key not in {"display_name", "runtime"}
                     },
                 },
             )["hash"]
@@ -428,7 +428,7 @@ def main() -> None:
                 "config": {
                     key: value
                     for key, value in config.to_dict().items()
-                    if key != "display_name"
+                    if key not in {"display_name", "runtime"}
                 },
             },
         )["hash"]

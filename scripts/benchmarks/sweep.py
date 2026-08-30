@@ -735,6 +735,7 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
 def _scientific_config(config: Any) -> dict[str, Any]:
     payload = config.to_dict()
     payload.pop("display_name", None)
+    payload.pop("runtime", None)
     return payload
 
 
