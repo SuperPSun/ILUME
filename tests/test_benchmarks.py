@@ -854,6 +854,13 @@ def test_summary_publishes_radar_and_marks_unsupported_partial_charge_zero(
     )
     assert match is not None
     assert float(match.group(1).split(",")[-1]) == 0.0
+    match = re.search(
+        r'<polygon class="series" data-panel="stage2_test" '
+        r'data-run="ilume@inputs/ilume" data-scores="([^"]+)"',
+        radar,
+    )
+    assert match is not None
+    assert float(match.group(1).split(",")[-1]) == 1.0
 
 # --- D-MPNN runtime smoke ---
 

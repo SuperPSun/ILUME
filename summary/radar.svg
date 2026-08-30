@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="900" viewBox="0 0 1920 900">
+<rect width="1920" height="900" fill="white"/>
+<text x="960" y="42" text-anchor="middle" font-family="sans-serif" font-size="26" font-weight="bold">ILUME benchmark radar scores</text>
+<text x="960" y="70" text-anchor="middle" font-family="sans-serif" font-size="14">Score = best normalized MAE / model normalized MAE; higher is better. Unsupported Stage 2 partial charge = 0.</text>
+<text x="330.0" y="122" text-anchor="middle" font-family="sans-serif" font-size="20" font-weight="bold">Stage 2 test</text>
+<polygon points="330.00,510.00 390.00,570.00 330.00,630.00 270.00,570.00" fill="none" stroke="#c7c7c7" stroke-width="1"/>
+<text x="335.00" y="514.00" font-family="sans-serif" font-size="9" fill="#666">0.25</text>
+<polygon points="330.00,450.00 450.00,570.00 330.00,690.00 210.00,570.00" fill="none" stroke="#c7c7c7" stroke-width="1"/>
+<text x="335.00" y="454.00" font-family="sans-serif" font-size="9" fill="#666">0.5</text>
+<polygon points="330.00,390.00 510.00,570.00 330.00,750.00 150.00,570.00" fill="none" stroke="#c7c7c7" stroke-width="1"/>
+<text x="335.00" y="394.00" font-family="sans-serif" font-size="9" fill="#666">0.75</text>
+<polygon points="330.00,330.00 570.00,570.00 330.00,810.00 90.00,570.00" fill="none" stroke="#c7c7c7" stroke-width="1"/>
+<text x="335.00" y="334.00" font-family="sans-serif" font-size="9" fill="#666">1</text>
+<text x="335.00" y="574.00" font-family="sans-serif" font-size="9" fill="#666">0</text>
+<line x1="330.00" y1="570.00" x2="330.00" y2="330.00" stroke="#c7c7c7" stroke-width="1"/>
+<text x="330.00" y="306.00" text-anchor="middle" font-family="sans-serif" font-size="10">heat of vaporization</text>
+<line x1="330.00" y1="570.00" x2="570.00" y2="570.00" stroke="#c7c7c7" stroke-width="1"/>
+<text x="594.00" y="570.00" text-anchor="start" font-family="sans-serif" font-size="10">homo</text>
+<line x1="330.00" y1="570.00" x2="330.00" y2="810.00" stroke="#c7c7c7" stroke-width="1"/>
+<text x="330.00" y="834.00" text-anchor="middle" font-family="sans-serif" font-size="10">lumo</text>
+<line x1="330.00" y1="570.00" x2="90.00" y2="570.00" stroke="#c7c7c7" stroke-width="1"/>
+<text x="66.00" y="570.00" text-anchor="end" font-family="sans-serif" font-size="10">partial atomic charge</text>
+<polygon class="series" data-panel="stage2_test" data-run="dmpnn@outputs/benchmarks/v1/dmpnn" data-scores="1,1,1,0" points="330.00,330.00 570.00,570.00 330.00,810.00 330.00,570.00" fill="#0072b2" fill-opacity="0.12" stroke="#0072b2" stroke-width="2"/>
+<line x1="90.0" y1="160" x2="108.0" y2="160" stroke="#0072b2" stroke-width="3"/>
+<text x="114.0" y="164" font-family="sans-serif" font-size="12">D-MPNN</text>
+<polygon class="series" data-panel="stage2_test" data-run="mlp@outputs/benchmarks/v1/mlp" data-scores="0.962248,0.77109,0.774135,0" points="330.00,339.06 515.06,570.00 330.00,755.79 330.00,570.00" fill="#cc79a7" fill-opacity="0.12" stroke="#cc79a7" stroke-width="2"/>
+<line x1="90.0" y1="180" x2="108.0" y2="180" stroke="#cc79a7" stroke-width="3"/>
+<text x="114.0" y="184" font-family="sans-serif" font-size="12">MLP</text>
+<polygon class="series" data-panel="stage2_test" data-run="ilume@outputs/v1/stage2/base/evaluate" data-scores="0.550177,0.784682,0.697555,0" points="330.00,437.96 518.32,570.00 330.00,737.41 330.00,570.00" fill="#009e73" fill-opacity="0.12" stroke="#009e73" stroke-width="2"/>
+<line x1="90.0" y1="200" x2="108.0" y2="200" stroke="#009e73" stroke-width="3"/>
+<text x="114.0" y="204" font-family="sans-serif" font-size="12">ILUME</text>
+<polygon class="series" data-panel="stage2_test" data-run="ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost" data-scores="0.358219,0.49528,0.483526,0" points="330.00,484.03 448.87,570.00 330.00,686.05 330.00,570.00" fill="#d55e00" fill-opacity="0.12" stroke="#d55e00" stroke-width="2"/>
+<line x1="90.0" y1="220" x2="108.0" y2="220" stroke="#d55e00" stroke-width="3"/>
+<text x="114.0" y="224" font-family="sans-serif" font-size="12">ECFP+XGBoost</text>
+<text x="960.0" y="122" text-anchor="middle" font-family="sans-serif" font-size="20" font-weight="bold">Stage 3 test</text>
+<polygon points="960.00,510.00 992.44,519.52 1014.58,545.08 1019.39,578.54 1005.34,609.29 976.90,627.57 943.10,627.57 914.66,609.29 900.61,578.54 905.42,545.08 927.56,519.52" fill="none" stroke="#c7c7c7" stroke-width="1"/>
+<text x="965.00" y="514.00" font-family="sans-serif" font-size="9" fill="#666">0.25</text>
+<polygon points="960.00,450.00 1024.88,469.05 1069.16,520.15 1078.78,587.08 1050.69,648.58 993.81,685.14 926.19,685.14 869.31,648.58 841.22,587.08 850.84,520.15 895.12,469.05" fill="none" stroke="#c7c7c7" stroke-width="1"/>
+<text x="965.00" y="454.00" font-family="sans-serif" font-size="9" fill="#666">0.5</text>
+<polygon points="960.00,390.00 1057.32,418.57 1123.73,495.23 1138.17,595.62 1096.03,687.87 1010.71,742.71 909.29,742.71 823.97,687.87 781.83,595.62 796.27,495.23 862.68,418.57" fill="none" stroke="#c7c7c7" stroke-width="1"/>
+<text x="965.00" y="394.00" font-family="sans-serif" font-size="9" fill="#666">0.75</text>
+<polygon points="960.00,330.00 1089.75,368.10 1178.31,470.30 1197.56,604.16 1141.38,727.17 1027.62,800.28 892.38,800.28 778.62,727.17 722.44,604.16 741.69,470.30 830.25,368.10" fill="none" stroke="#c7c7c7" stroke-width="1"/>
+<text x="965.00" y="334.00" font-family="sans-serif" font-size="9" fill="#666">1</text>
+<text x="965.00" y="574.00" font-family="sans-serif" font-size="9" fill="#666">0</text>
+<line x1="960.00" y1="570.00" x2="960.00" y2="330.00" stroke="#c7c7c7" stroke-width="1"/>
+<text x="960.00" y="306.00" text-anchor="middle" font-family="sans-serif" font-size="10">density</text>
+<line x1="960.00" y1="570.00" x2="1089.75" y2="368.10" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1102.73" y="347.91" text-anchor="start" font-family="sans-serif" font-size="10">electrical conductivity</text>
+<line x1="960.00" y1="570.00" x2="1178.31" y2="470.30" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1200.14" y="460.33" text-anchor="start" font-family="sans-serif" font-size="10">glass transition temperature</text>
+<line x1="960.00" y1="570.00" x2="1197.56" y2="604.16" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1221.31" y="607.57" text-anchor="start" font-family="sans-serif" font-size="10">melting point</text>
+<line x1="960.00" y1="570.00" x2="1141.38" y2="727.17" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1159.52" y="742.88" text-anchor="start" font-family="sans-serif" font-size="10">refractive index</text>
+<line x1="960.00" y1="570.00" x2="1027.62" y2="800.28" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1034.38" y="823.31" text-anchor="start" font-family="sans-serif" font-size="10">solvation</text>
+<line x1="960.00" y1="570.00" x2="892.38" y2="800.28" stroke="#c7c7c7" stroke-width="1"/>
+<text x="885.62" y="823.31" text-anchor="end" font-family="sans-serif" font-size="10">surface tension</text>
+<line x1="960.00" y1="570.00" x2="778.62" y2="727.17" stroke="#c7c7c7" stroke-width="1"/>
+<text x="760.48" y="742.88" text-anchor="end" font-family="sans-serif" font-size="10">thermal decomposition temperature</text>
+<line x1="960.00" y1="570.00" x2="722.44" y2="604.16" stroke="#c7c7c7" stroke-width="1"/>
+<text x="698.69" y="607.57" text-anchor="end" font-family="sans-serif" font-size="10">transfer</text>
+<line x1="960.00" y1="570.00" x2="741.69" y2="470.30" stroke="#c7c7c7" stroke-width="1"/>
+<text x="719.86" y="460.33" text-anchor="end" font-family="sans-serif" font-size="10">transfer organic</text>
+<line x1="960.00" y1="570.00" x2="830.25" y2="368.10" stroke="#c7c7c7" stroke-width="1"/>
+<text x="817.27" y="347.91" text-anchor="end" font-family="sans-serif" font-size="10">viscosity</text>
+<polygon class="series" data-panel="stage3_test" data-run="ilume@outputs/v1/stage3/base/test" data-scores="1,1,1,0.901385,1,1,1,0.947019,1,1,1" points="960.00,330.00 1089.75,368.10 1178.31,470.30 1174.13,600.79 1141.38,727.17 1027.62,800.28 892.38,800.28 788.23,718.84 722.44,604.16 741.69,470.30 830.25,368.10" fill="#009e73" fill-opacity="0.12" stroke="#009e73" stroke-width="2"/>
+<line x1="720.0" y1="160" x2="738.0" y2="160" stroke="#009e73" stroke-width="3"/>
+<text x="744.0" y="164" font-family="sans-serif" font-size="12">ILUME</text>
+<polygon class="series" data-panel="stage3_test" data-run="mlp@outputs/benchmarks/v1/mlp" data-scores="0.899427,0.94381,0.914143,1,0.916843,0.598041,0.853107,1,0.539519,0.870647,0.945819" points="960.00,354.14 1082.46,379.44 1159.57,478.86 1197.56,604.16 1126.30,714.10 1000.44,707.72 902.32,766.45 778.62,727.17 831.83,588.43 769.93,483.20 837.28,379.04" fill="#cc79a7" fill-opacity="0.12" stroke="#cc79a7" stroke-width="2"/>
+<line x1="720.0" y1="180" x2="738.0" y2="180" stroke="#cc79a7" stroke-width="3"/>
+<text x="744.0" y="184" font-family="sans-serif" font-size="12">MLP</text>
+<polygon class="series" data-panel="stage3_test" data-run="dmpnn@outputs/benchmarks/v1/dmpnn" data-scores="0.916096,0.82668,0.657776,0.920491,0.560354,0.555743,0.725643,0.841327,0.395984,0.467131,0.966994" points="960.00,350.14 1067.26,403.09 1103.60,504.42 1178.67,601.44 1061.64,658.07 997.58,697.98 910.94,737.10 807.40,702.23 865.93,583.53 858.02,523.43 834.53,374.76" fill="#0072b2" fill-opacity="0.12" stroke="#0072b2" stroke-width="2"/>
+<line x1="720.0" y1="200" x2="738.0" y2="200" stroke="#0072b2" stroke-width="3"/>
+<text x="744.0" y="204" font-family="sans-serif" font-size="12">D-MPNN</text>
+<polygon class="series" data-panel="stage3_test" data-run="ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost" data-scores="0.555179,0.691517,0.667808,0.896236,0.454073,0.287445,0.739444,0.880969,0.371397,0.475997,0.783078" points="960.00,436.76 1049.73,430.38 1105.79,503.42 1172.91,600.61 1042.36,641.37 979.44,636.19 910.00,740.28 800.21,708.46 871.77,582.69 856.08,522.54 858.39,411.90" fill="#d55e00" fill-opacity="0.12" stroke="#d55e00" stroke-width="2"/>
+<line x1="720.0" y1="220" x2="738.0" y2="220" stroke="#d55e00" stroke-width="3"/>
+<text x="744.0" y="224" font-family="sans-serif" font-size="12">ECFP+XGBoost</text>
+<text x="1590.0" y="122" text-anchor="middle" font-family="sans-serif" font-size="20" font-weight="bold">Stage 3 validation</text>
+<polygon points="1590.00,510.00 1607.69,512.67 1623.80,520.43 1636.91,532.59 1645.85,548.08 1649.83,565.52 1648.50,583.35 1641.96,600.00 1630.81,613.98 1616.03,624.06 1598.94,629.33 1581.06,629.33 1563.97,624.06 1549.19,613.98 1538.04,600.00 1531.50,583.35 1530.17,565.52 1534.15,548.08 1543.09,532.59 1556.20,520.43 1572.31,512.67" fill="none" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1595.00" y="514.00" font-family="sans-serif" font-size="9" fill="#666">0.25</text>
+<polygon points="1590.00,450.00 1625.37,455.33 1657.60,470.85 1683.82,495.18 1701.70,526.16 1709.66,561.03 1706.99,596.70 1693.92,630.00 1671.62,657.97 1642.07,678.12 1607.89,688.66 1572.11,688.66 1537.93,678.12 1508.38,657.97 1486.08,630.00 1473.01,596.70 1470.34,561.03 1478.30,526.16 1496.18,495.18 1522.40,470.85 1554.63,455.33" fill="none" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1595.00" y="454.00" font-family="sans-serif" font-size="9" fill="#666">0.5</text>
+<polygon points="1590.00,390.00 1643.06,398.00 1691.40,421.28 1730.73,457.77 1757.56,504.24 1769.50,556.55 1765.49,610.05 1745.88,660.00 1712.43,701.95 1668.10,732.17 1616.83,747.99 1563.17,747.99 1511.90,732.17 1467.57,701.95 1434.12,660.00 1414.51,610.05 1410.50,556.55 1422.44,504.24 1449.27,457.77 1488.60,421.28 1536.94,398.00" fill="none" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1595.00" y="394.00" font-family="sans-serif" font-size="9" fill="#666">0.75</text>
+<polygon points="1590.00,330.00 1660.74,340.66 1725.20,371.70 1777.64,420.36 1813.41,482.32 1829.33,552.06 1823.98,623.41 1797.85,690.00 1753.24,745.93 1694.13,786.23 1625.77,807.32 1554.23,807.32 1485.87,786.23 1426.76,745.93 1382.15,690.00 1356.02,623.41 1350.67,552.06 1366.59,482.32 1402.36,420.36 1454.80,371.70 1519.26,340.66" fill="none" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1595.00" y="334.00" font-family="sans-serif" font-size="9" fill="#666">1</text>
+<text x="1595.00" y="574.00" font-family="sans-serif" font-size="9" fill="#666">0</text>
+<line x1="1590.00" y1="570.00" x2="1590.00" y2="330.00" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1590.00" y="306.00" text-anchor="middle" font-family="sans-serif" font-size="10">density</text>
+<line x1="1590.00" y1="570.00" x2="1660.74" y2="340.66" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1667.82" y="317.73" text-anchor="start" font-family="sans-serif" font-size="10">dynamic relative permittivity</text>
+<line x1="1590.00" y1="570.00" x2="1725.20" y2="371.70" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1738.72" y="351.87" text-anchor="start" font-family="sans-serif" font-size="10">electrical conductivity</text>
+<line x1="1590.00" y1="570.00" x2="1777.64" y2="420.36" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1796.40" y="405.40" text-anchor="start" font-family="sans-serif" font-size="10">equilibrium pressure</text>
+<line x1="1590.00" y1="570.00" x2="1813.41" y2="482.32" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1835.75" y="473.55" text-anchor="start" font-family="sans-serif" font-size="10">glass transition temperature</text>
+<line x1="1590.00" y1="570.00" x2="1829.33" y2="552.06" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1853.26" y="550.27" text-anchor="start" font-family="sans-serif" font-size="10">heat capacity</text>
+<line x1="1590.00" y1="570.00" x2="1823.98" y2="623.41" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1847.38" y="628.75" text-anchor="start" font-family="sans-serif" font-size="10">isobaric coefficient of volume expansion</text>
+<line x1="1590.00" y1="570.00" x2="1797.85" y2="690.00" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1818.63" y="702.00" text-anchor="start" font-family="sans-serif" font-size="10">melting point</text>
+<line x1="1590.00" y1="570.00" x2="1753.24" y2="745.93" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1769.57" y="763.53" text-anchor="start" font-family="sans-serif" font-size="10">pec50</text>
+<line x1="1590.00" y1="570.00" x2="1694.13" y2="786.23" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1704.55" y="807.86" text-anchor="start" font-family="sans-serif" font-size="10">refractive index</text>
+<line x1="1590.00" y1="570.00" x2="1625.77" y2="807.32" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1629.35" y="831.05" text-anchor="middle" font-family="sans-serif" font-size="10">self diffusion coefficient</text>
+<line x1="1590.00" y1="570.00" x2="1554.23" y2="807.32" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1550.65" y="831.05" text-anchor="middle" font-family="sans-serif" font-size="10">solvation</text>
+<line x1="1590.00" y1="570.00" x2="1485.87" y2="786.23" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1475.45" y="807.86" text-anchor="end" font-family="sans-serif" font-size="10">speed of sound</text>
+<line x1="1590.00" y1="570.00" x2="1426.76" y2="745.93" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1410.43" y="763.53" text-anchor="end" font-family="sans-serif" font-size="10">static relative permittivity</text>
+<line x1="1590.00" y1="570.00" x2="1382.15" y2="690.00" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1361.37" y="702.00" text-anchor="end" font-family="sans-serif" font-size="10">surface tension</text>
+<line x1="1590.00" y1="570.00" x2="1356.02" y2="623.41" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1332.62" y="628.75" text-anchor="end" font-family="sans-serif" font-size="10">thermal conductivity</text>
+<line x1="1590.00" y1="570.00" x2="1350.67" y2="552.06" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1326.74" y="550.27" text-anchor="end" font-family="sans-serif" font-size="10">thermal decomposition temperature</text>
+<line x1="1590.00" y1="570.00" x2="1366.59" y2="482.32" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1344.25" y="473.55" text-anchor="end" font-family="sans-serif" font-size="10">transfer</text>
+<line x1="1590.00" y1="570.00" x2="1402.36" y2="420.36" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1383.60" y="405.40" text-anchor="end" font-family="sans-serif" font-size="10">transfer organic</text>
+<line x1="1590.00" y1="570.00" x2="1454.80" y2="371.70" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1441.28" y="351.87" text-anchor="end" font-family="sans-serif" font-size="10">viscosity</text>
+<line x1="1590.00" y1="570.00" x2="1519.26" y2="340.66" stroke="#c7c7c7" stroke-width="1"/>
+<text x="1512.18" y="317.73" text-anchor="end" font-family="sans-serif" font-size="10">x co2</text>
+<polygon class="series" data-panel="stage3_validation" data-run="ilume@study:ilume-stage3-6e0b193154d4b81545dc1bac0bb187e872a34548b7cee0723f681a7c5105f31d-taskwise-refined" data-scores="1,0.920683,1,1,0.985543,0.949709,1,0.961391,0.984833,1,1,1,0.952053,0.659287,1,0.875185,0.942174,1,1,1,1" points="1590.00,330.00 1655.13,358.85 1725.20,371.70 1777.64,420.36 1810.18,483.59 1817.29,552.97 1823.98,623.41 1789.82,685.37 1750.77,743.26 1694.13,786.23 1625.77,807.32 1554.23,807.32 1490.86,775.86 1482.38,685.99 1382.15,690.00 1385.22,616.74 1364.51,553.10 1366.59,482.32 1402.36,420.36 1454.80,371.70 1519.26,340.66" fill="#009e73" fill-opacity="0.12" stroke="#009e73" stroke-width="2"/>
+<line x1="1350.0" y1="160" x2="1368.0" y2="160" stroke="#009e73" stroke-width="3"/>
+<text x="1374.0" y="164" font-family="sans-serif" font-size="12">ILUME</text>
+<polygon class="series" data-panel="stage3_validation" data-run="mlp@outputs/benchmarks/v1/mlp" data-scores="0.972481,1,0.918706,0.921776,1,1,0.618145,1,1,0.933924,0.862821,0.812717,0.935528,1,0.964822,1,1,0.679511,0.855966,0.966434,0.758141" points="1590.00,336.60 1660.74,340.66 1714.21,387.82 1762.96,432.07 1813.41,482.32 1829.33,552.06 1734.64,603.01 1797.85,690.00 1753.24,745.93 1687.25,771.94 1620.86,774.76 1560.93,762.87 1492.58,772.29 1426.76,745.93 1389.47,685.78 1356.02,623.41 1350.67,552.06 1438.19,510.42 1429.39,441.92 1459.34,378.36 1536.37,396.13" fill="#cc79a7" fill-opacity="0.12" stroke="#cc79a7" stroke-width="2"/>
+<line x1="1350.0" y1="180" x2="1368.0" y2="180" stroke="#cc79a7" stroke-width="3"/>
+<text x="1374.0" y="184" font-family="sans-serif" font-size="12">MLP</text>
+<polygon class="series" data-panel="stage3_validation" data-run="dmpnn@outputs/benchmarks/v1/dmpnn" data-scores="0.940943,0.964409,0.778757,0.799695,0.813274,0.965222,0.962289,0.896577,0.794354,0.731471,0.678191,0.89255,1,0.570915,0.840575,0.860188,0.849128,0.735392,0.572371,0.914598,0.930034" points="1590.00,344.17 1658.22,348.82 1695.29,415.57 1740.05,450.34 1771.69,498.69 1821.01,552.69 1815.16,621.39 1776.35,677.59 1719.67,709.75 1666.17,728.17 1614.26,730.95 1558.07,781.82 1485.87,786.23 1496.80,670.44 1415.29,670.87 1388.73,615.94 1386.78,554.77 1425.71,505.52 1482.60,484.35 1466.35,388.64 1524.21,356.71" fill="#0072b2" fill-opacity="0.12" stroke="#0072b2" stroke-width="2"/>
+<line x1="1350.0" y1="200" x2="1368.0" y2="200" stroke="#0072b2" stroke-width="3"/>
+<text x="1374.0" y="204" font-family="sans-serif" font-size="12">D-MPNN</text>
+<polygon class="series" data-panel="stage3_validation" data-run="ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost" data-scores="0.444185,0.656533,0.704894,0.78655,0.864042,0.462309,0.285232,0.929496,0.746304,0.709031,0.781694,0.55731,0.558114,0.884249,0.704962,0.700041,0.901767,0.567408,0.54792,0.681048,0.900673" points="1590.00,463.40 1636.44,419.43 1685.30,430.22 1737.59,452.30 1783.04,494.24 1700.64,561.71 1656.74,585.23 1783.19,681.54 1711.83,701.30 1663.83,723.32 1617.96,755.51 1570.06,702.26 1531.88,690.68 1445.65,725.57 1443.48,654.60 1426.20,607.39 1374.18,553.83 1463.24,520.25 1487.19,488.01 1497.92,434.95 1526.29,363.44" fill="#d55e00" fill-opacity="0.12" stroke="#d55e00" stroke-width="2"/>
+<line x1="1350.0" y1="220" x2="1368.0" y2="220" stroke="#d55e00" stroke-width="3"/>
+<text x="1374.0" y="224" font-family="sans-serif" font-size="12">ECFP+XGBoost</text>
+</svg>

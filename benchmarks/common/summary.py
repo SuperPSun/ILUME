@@ -1303,6 +1303,7 @@ def _radar_panel_data(
     metric_key: str,
     tasks: Sequence[str] | None = None,
     partial_rows: Sequence[Mapping[str, Any]] = (),
+    partial_metric_key: str | None = None,
 ) -> tuple[tuple[str, ...], list[dict[str, Any]]]:
     model_by_run = {str(row["run"]): str(row["model"]) for row in leaders}
     ordered_runs = [str(row["run"]) for row in leaders]
@@ -1314,7 +1315,7 @@ def _radar_panel_data(
     for row in partial_rows:
         if row.get("run") not in model_by_run or row.get("subset") != "all_mapped":
             continue
-        value = row.get(metric_key)
+        value = row.get(partial_metric_key or metric_key)
         if _finite(value):
             values[str(row["run"]), "simulation/partial_atomic_charge"] = float(value)
     axes = tuple(tasks) if tasks is not None else tuple(sorted({
@@ -1366,6 +1367,7 @@ def _radar_svg(payload: Mapping[str, Any]) -> str:
                 metric_key="normalized_mae",
                 tasks=stage2_tasks,
                 partial_rows=metrics["stage2_partial_charge"],
+                partial_metric_key="molecule_macro_normalized_mae",
             ),
         ),
         (
