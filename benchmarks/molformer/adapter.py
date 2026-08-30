@@ -50,6 +50,13 @@ _SNAPSHOT_FILES = (
 )
 
 
+def _silence_transformers_output() -> None:
+    from transformers.utils import logging as transformers_logging
+
+    transformers_logging.set_verbosity_error()
+    transformers_logging.disable_progress_bar()
+
+
 @dataclass(frozen=True)
 class ConditionStats:
     mean: tuple[float, ...]
@@ -187,6 +194,7 @@ def _snapshot(config: BenchmarkConfig) -> tuple[Path, dict[str, Any]]:
 
 
 def _tokenizer(config: BenchmarkConfig) -> Any:
+    _silence_transformers_output()
     from transformers import AutoTokenizer
 
     return AutoTokenizer.from_pretrained(
@@ -482,6 +490,7 @@ def build_molformer_model(
     config: BenchmarkConfig,
     bundle: MolFormerTrainingBundle,
 ) -> SharedMolFormerRegressor:
+    _silence_transformers_output()
     from transformers import AutoModelForSequenceClassification
 
     official = AutoModelForSequenceClassification.from_pretrained(
