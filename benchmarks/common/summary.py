@@ -9,6 +9,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
+from xml.sax.saxutils import escape
 
 from common.identity import validate_semantic_identity
 from common.identity import semantic_identity
@@ -22,6 +23,7 @@ from common.reporting import (
 SUMMARY_SCHEMA_VERSION = 1
 SUMMARY_FILES = (
     "overview.md",
+    "radar.svg",
     "stage3_test_leaderboard.csv",
     "stage3_validation_leaderboard.csv",
     "stage2_core_physics_leaderboard.csv",
@@ -1287,6 +1289,168 @@ def _overview(
     return "\n".join(lines) + "\n"
 
 
+def _radar_score(value: float, best: float) -> float:
+    if best == 0.0:
+        return 1.0 if value == 0.0 else 0.0
+    return best / value
+
+
+def _radar_panel_data(
+    rows: Sequence[Mapping[str, Any]],
+    leaders: Sequence[Mapping[str, Any]],
+    *,
+    task_key: str,
+    metric_key: str,
+    tasks: Sequence[str] | None = None,
+    partial_rows: Sequence[Mapping[str, Any]] = (),
+) -> tuple[tuple[str, ...], list[dict[str, Any]]]:
+    model_by_run = {str(row["run"]): str(row["model"]) for row in leaders}
+    ordered_runs = [str(row["run"]) for row in leaders]
+    values: dict[tuple[str, str], float] = {}
+    for row in rows:
+        if row.get("run") not in model_by_run or not _finite(row.get(metric_key)):
+            continue
+        values[str(row["run"]), str(row[task_key])] = float(row[metric_key])
+    for row in partial_rows:
+        if row.get("run") not in model_by_run or row.get("subset") != "all_mapped":
+            continue
+        value = row.get(metric_key)
+        if _finite(value):
+            values[str(row["run"]), "simulation/partial_atomic_charge"] = float(value)
+    axes = tuple(tasks) if tasks is not None else tuple(sorted({
+        task for run, task in values if run in model_by_run
+    }))
+    series: list[dict[str, Any]] = []
+    for run in ordered_runs:
+        scores: list[float] = []
+        for task in axes:
+            available = [
+                value for (candidate_run, candidate_task), value in values.items()
+                if candidate_task == task and candidate_run in model_by_run
+            ]
+            value = values.get((run, task))
+            scores.append(
+                _radar_score(value, min(available))
+                if value is not None and available else 0.0
+            )
+        series.append({"run": run, "model": model_by_run[run], "scores": scores})
+    return axes, series
+
+
+def _svg_text(value: object) -> str:
+    return escape(str(value), {'"': "&quot;"})
+
+
+def _radar_point(center_x: float, center_y: float, radius: float, angle: float) -> tuple[float, float]:
+    return (
+        center_x + radius * math.sin(angle),
+        center_y - radius * math.cos(angle),
+    )
+
+
+def _radar_svg(payload: Mapping[str, Any]) -> str:
+    leaderboards = payload["leaderboards"]
+    metrics = payload["metrics"]
+    stage2_tasks = (
+        "simulation/heat_of_vaporization",
+        "simulation/homo",
+        "simulation/lumo",
+        "simulation/partial_atomic_charge",
+    )
+    panels = (
+        (
+            "stage2_test", "Stage 2 test", *_radar_panel_data(
+                metrics["stage2_core_physics"],
+                leaderboards["stage2_core_physics"],
+                task_key="task",
+                metric_key="normalized_mae",
+                tasks=stage2_tasks,
+                partial_rows=metrics["stage2_partial_charge"],
+            ),
+        ),
+        (
+            "stage3_test", "Stage 3 test", *_radar_panel_data(
+                metrics["stage3_test"], leaderboards["stage3_test"],
+                task_key="task", metric_key="normalized_mae",
+            ),
+        ),
+        (
+            "stage3_validation", "Stage 3 validation", *_radar_panel_data(
+                metrics["stage3_validation"], leaderboards["stage3_validation"],
+                task_key="task", metric_key="normalized_mae_mean",
+            ),
+        ),
+    )
+    palette = ("#0072b2", "#d55e00", "#009e73", "#cc79a7", "#e69f00", "#56b4e9")
+    models = sorted({series["model"] for _, _, _, items in panels for series in items})
+    colors = {model: palette[index % len(palette)] for index, model in enumerate(models)}
+    centers = ((330.0, 570.0), (960.0, 570.0), (1590.0, 570.0))
+    radius = 240.0
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="900" viewBox="0 0 1920 900">',
+        '<rect width="1920" height="900" fill="white"/>',
+        '<text x="960" y="42" text-anchor="middle" font-family="sans-serif" font-size="26" font-weight="bold">ILUME benchmark radar scores</text>',
+        '<text x="960" y="70" text-anchor="middle" font-family="sans-serif" font-size="14">Score = best normalized MAE / model normalized MAE; higher is better. Unsupported Stage 2 partial charge = 0.</text>',
+    ]
+    for (panel_id, title, tasks, series), (center_x, center_y) in zip(panels, centers, strict=True):
+        lines.append(
+            f'<text x="{center_x:.1f}" y="122" text-anchor="middle" font-family="sans-serif" font-size="20" font-weight="bold">{_svg_text(title)}</text>'
+        )
+        if not tasks or not series:
+            lines.append(
+                f'<text x="{center_x:.1f}" y="{center_y:.1f}" text-anchor="middle" font-family="sans-serif" font-size="16">No eligible run.</text>'
+            )
+            continue
+        angles = tuple(2.0 * math.pi * index / len(tasks) for index in range(len(tasks)))
+        for fraction in (0.25, 0.5, 0.75, 1.0):
+            points = " ".join(
+                f"{x:.2f},{y:.2f}"
+                for x, y in (
+                    _radar_point(center_x, center_y, radius * fraction, angle)
+                    for angle in angles
+                )
+            )
+            lines.append(
+                f'<polygon points="{points}" fill="none" stroke="#c7c7c7" stroke-width="1"/>'
+            )
+            lines.append(
+                f'<text x="{center_x + 5:.2f}" y="{center_y - radius * fraction + 4:.2f}" font-family="sans-serif" font-size="9" fill="#666">{fraction:g}</text>'
+            )
+        lines.append(
+            f'<text x="{center_x + 5:.2f}" y="{center_y + 4:.2f}" font-family="sans-serif" font-size="9" fill="#666">0</text>'
+        )
+        for task, angle in zip(tasks, angles, strict=True):
+            x, y = _radar_point(center_x, center_y, radius, angle)
+            label_x, label_y = _radar_point(center_x, center_y, radius + 24.0, angle)
+            anchor = "middle" if abs(math.sin(angle)) < 0.2 else ("start" if math.sin(angle) > 0 else "end")
+            label = task.rsplit("/", 1)[-1].replace("_", " ")
+            lines.extend((
+                f'<line x1="{center_x:.2f}" y1="{center_y:.2f}" x2="{x:.2f}" y2="{y:.2f}" stroke="#c7c7c7" stroke-width="1"/>',
+                f'<text x="{label_x:.2f}" y="{label_y:.2f}" text-anchor="{anchor}" font-family="sans-serif" font-size="10">{_svg_text(label)}</text>',
+            ))
+        for index, series_item in enumerate(series):
+            points = " ".join(
+                f"{x:.2f},{y:.2f}"
+                for x, y in (
+                    _radar_point(center_x, center_y, radius * score, angle)
+                    for score, angle in zip(series_item["scores"], angles, strict=True)
+                )
+            )
+            score_text = ",".join(f"{score:.6g}" for score in series_item["scores"])
+            color = colors[series_item["model"]]
+            lines.append(
+                f'<polygon class="series" data-panel="{panel_id}" data-run="{_svg_text(series_item["run"])}" data-scores="{score_text}" points="{points}" fill="{color}" fill-opacity="0.12" stroke="{color}" stroke-width="2"/>'
+            )
+            legend_y = 160 + index * 20
+            lines.extend((
+                f'<line x1="{center_x - radius:.1f}" y1="{legend_y}" x2="{center_x - radius + 18:.1f}" y2="{legend_y}" stroke="{color}" stroke-width="3"/>',
+                f'<text x="{center_x - radius + 24:.1f}" y="{legend_y + 4}" font-family="sans-serif" font-size="12">{_svg_text(series_item["model"])}</text>',
+            ))
+    lines.append("</svg>")
+    return "\n".join(lines) + "\n"
+
+
 def build_summary(
     input_roots: Path | Sequence[Path],
     repository_root: Path,
@@ -1452,6 +1616,7 @@ def write_summary_snapshot(payload: Mapping[str, Any], destination: Path) -> Non
         ),
         encoding="utf-8",
     )
+    (destination / "radar.svg").write_text(_radar_svg(payload), encoding="utf-8")
     atomic_json(destination / "summary.json", payload)
     actual = tuple(sorted(path.name for path in destination.iterdir()))
     if actual != tuple(sorted(SUMMARY_FILES)):

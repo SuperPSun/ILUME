@@ -4,6 +4,8 @@ import csv
 
 import json
 
+import re
+
 import sys
 
 import tempfile
@@ -826,6 +828,32 @@ def test_stage2_suite_v1_is_health_only_after_breaking_contract(tmp_path: Path) 
     health = {row["source_run"]: row for row in payload["health"]}
     assert health["outputs/legacy"]["stage2_core_eligibility"] == "legacy"
     assert "legacy_stage2_reporting_contract" in health["outputs/legacy"]["issues"]
+
+
+def test_summary_publishes_radar_and_marks_unsupported_partial_charge_zero(
+    tmp_path: Path,
+) -> None:
+    inputs = tmp_path / "inputs"
+    ilume = _stage2_summary("ilume", "ILUME", 0.2)
+    mlp = _stage2_summary("mlp", "MLP", 0.4)
+    for name in ("stage2_partial_charge", "stage2_physics_full"):
+        mlp["reporting"]["capabilities"][name] = "unsupported"
+        mlp["reporting"]["benchmarks"][name]["status"] = "unsupported"
+    _write_run(inputs / "ilume", ilume)
+    _write_run(inputs / "mlp", mlp)
+
+    publish_summary(inputs, tmp_path / "summary", tmp_path)
+
+    radar = (tmp_path / "summary" / "radar.svg").read_text(encoding="utf-8")
+    assert radar.startswith("<?xml")
+    assert set(path.name for path in (tmp_path / "summary").iterdir()) == set(SUMMARY_FILES)
+    match = re.search(
+        r'<polygon class="series" data-panel="stage2_test" '
+        r'data-run="mlp@inputs/mlp" data-scores="([^"]+)"',
+        radar,
+    )
+    assert match is not None
+    assert float(match.group(1).split(",")[-1]) == 0.0
 
 # --- D-MPNN runtime smoke ---
 
