@@ -2,11 +2,19 @@ schema_version: 2
 kind: probe
 expected_epochs: 30
 candidates:
-  - {id: base-r1, scale: Base, recipe: r1, folds: {1: outputs/experiments_v1/stage3/probe/base/r1/fold1, 2: outputs/experiments_v1/stage3/probe/base/r1/fold2}}
-  - {id: base-r2, scale: Base, recipe: r2, folds: {1: outputs/experiments_v1/stage3/probe/base/r2/fold1, 2: outputs/experiments_v1/stage3/probe/base/r2/fold2}}
-  - {id: base-r3, scale: Base, recipe: r3, folds: {1: outputs/experiments_v1/stage3/probe/base/r3/fold1, 2: outputs/experiments_v1/stage3/probe/base/r3/fold2}}
-  - {id: base-r4, scale: Base, recipe: r4, folds: {1: outputs/experiments_v1/stage3/probe/base/r4/fold1, 2: outputs/experiments_v1/stage3/probe/base/r4/fold2}}
-  - {id: base-r5, scale: Base, recipe: r5, folds: {1: outputs/experiments_v1/stage3/probe/base/r5/fold1, 2: outputs/experiments_v1/stage3/probe/base/r5/fold2}}
-  - {id: base-r6, scale: Base, recipe: r6, folds: {1: outputs/experiments_v1/stage3/probe/base/r6/fold1, 2: outputs/experiments_v1/stage3/probe/base/r6/fold2}}
-  - {id: base-r7, scale: Base, recipe: r7, folds: {1: outputs/experiments_v1/stage3/probe/base/r7/fold1, 2: outputs/experiments_v1/stage3/probe/base/r7/fold2}}
-  - {id: base-r8, scale: Base, recipe: r8, folds: {1: outputs/experiments_v1/stage3/probe/base/r8/fold1, 2: outputs/experiments_v1/stage3/probe/base/r8/fold2}}
+  - {id: base-e05-r1, scale: Base, recipe: r1, folds: {1: outputs/experiments_v1/stage3/probe/base/e05-r1/fold1, 2: outputs/experiments_v1/stage3/probe/base/e05-r1/fold2}}
+  - {id: base-e05-r2, scale: Base, recipe: r2, folds: {1: outputs/experiments_v1/stage3/probe/base/e05-r2/fold1, 2: outputs/experiments_v1/stage3/probe/base/e05-r2/fold2}}
+  - {id: base-e05-r3, scale: Base, recipe: r3, folds: {1: outputs/experiments_v1/stage3/probe/base/e05-r3/fold1, 2: outputs/experiments_v1/stage3/probe/base/e05-r3/fold2}}
+  - {id: base-e05-r4, scale: Base, recipe: r4, folds: {1: outputs/experiments_v1/stage3/probe/base/e05-r4/fold1, 2: outputs/experiments_v1/stage3/probe/base/e05-r4/fold2}}
+  - {id: base-e05-r5, scale: Base, recipe: r5, folds: {1: outputs/experiments_v1/stage3/probe/base/e05-r5/fold1, 2: outputs/experiments_v1/stage3/probe/base/e05-r5/fold2}}
+  - {id: base-e05-r6, scale: Base, recipe: r6, folds: {1: outputs/experiments_v1/stage3/probe/base/e05-r6/fold1, 2: outputs/experiments_v1/stage3/probe/base/e05-r6/fold2}}
+  - {id: base-e05-r7, scale: Base, recipe: r7, folds: {1: outputs/experiments_v1/stage3/probe/base/e05-r7/fold1, 2: outputs/experiments_v1/stage3/probe/base/e05-r7/fold2}}
+  - {id: base-e05-r8, scale: Base, recipe: r8, folds: {1: outputs/experiments_v1/stage3/probe/base/e05-r8/fold1, 2: outputs/experiments_v1/stage3/probe/base/e05-r8/fold2}}
+  - {id: base-e09-r1, scale: Base, recipe: r1, folds: {1: outputs/experiments_v1/stage3/probe/base/e09-r1/fold1, 2: outputs/experiments_v1/stage3/probe/base/e09-r1/fold2}}
+  - {id: base-e09-r2, scale: Base, recipe: r2, folds: {1: outputs/experiments_v1/stage3/probe/base/e09-r2/fold1, 2: outputs/experiments_v1/stage3/probe/base/e09-r2/fold2}}
+  - {id: base-e09-r3, scale: Base, recipe: r3, folds: {1: outputs/experiments_v1/stage3/probe/base/e09-r3/fold1, 2: outputs/experiments_v1/stage3/probe/base/e09-r3/fold2}}
+  - {id: base-e09-r4, scale: Base, recipe: r4, folds: {1: outputs/experiments_v1/stage3/probe/base/e09-r4/fold1, 2: outputs/experiments_v1/stage3/probe/base/e09-r4/fold2}}
+  - {id: base-e09-r5, scale: Base, recipe: r5, folds: {1: outputs/experiments_v1/stage3/probe/base/e09-r5/fold1, 2: outputs/experiments_v1/stage3/probe/base/e09-r5/fold2}}
+  - {id: base-e09-r6, scale: Base, recipe: r6, folds: {1: outputs/experiments_v1/stage3/probe/base/e09-r6/fold1, 2: outputs/experiments_v1/stage3/probe/base/e09-r6/fold2}}
+  - {id: base-e09-r7, scale: Base, recipe: r7, folds: {1: outputs/experiments_v1/stage3/probe/base/e09-r7/fold1, 2: outputs/experiments_v1/stage3/probe/base/e09-r7/fold2}}
+  - {id: base-e09-r8, scale: Base, recipe: r8, folds: {1: outputs/experiments_v1/stage3/probe/base/e09-r8/fold1, 2: outputs/experiments_v1/stage3/probe/base/e09-r8/fold2}}
