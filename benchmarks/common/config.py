@@ -173,12 +173,12 @@ class BenchmarkConfig:
             raise ValueError("MoLFormer model must match the registered pretrained recipe")
         expected_training = {
             "optimizer": "adamw",
-            "encoder_learning_rate": 1.0e-5,
-            "new_parameter_learning_rate": 1.0e-4,
+            "encoder_learning_rate": 5.0e-6,
+            "new_parameter_learning_rate": 5.0e-5,
             "weight_decay": 1.0e-2,
             "scheduler": "cosine",
             "warmup_fraction": 0.05,
-            "batch_size": 256,
+            "batch_size": 128,
             "gradient_accumulation_steps": 1,
             "max_epochs": 50,
             "early_stopping_patience": 8,

@@ -106,7 +106,9 @@ def test_formal_molformer_config_resolves_108_training_jobs() -> None:
         "simulation/lumo",
     )
     assert len(stage3) * len(config.stage3.folds) + len(stage2) == 108
-    assert config.training["batch_size"] == 256
+    assert config.training["batch_size"] == 128
+    assert config.training["encoder_learning_rate"] == 5.0e-6
+    assert config.training["new_parameter_learning_rate"] == 5.0e-5
     assert config.training["max_epochs"] == 50
     assert config.training["early_stopping_patience"] == 8
     assert config.training["tf32"] is True

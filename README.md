@@ -181,7 +181,7 @@ python scripts/benchmarks/sweep.py \
   --max-workers 1
 ```
 
-MoLFormer的超长train row整行跳过且不进入scaler；valid/test显式截断到202 tokens并在结果中审计。训练前为unique SMILES建立run-local内存token cache，多组分合并为一次共享backbone forward；正式合同固定batch 256、50 epochs、patience 8和TF32，OOM/NaN不自动缩批或回退。多GPU sweep可使用`--devices cuda:0,cuda:1,...`。Partial Charge与Stage 2 Full保持unsupported。
+MoLFormer的超长train row整行跳过且不进入scaler；valid/test显式截断到202 tokens并在结果中审计。训练前为unique SMILES建立run-local内存token cache，多组分合并为一次共享backbone forward；正式合同固定batch 128、encoder/head learning rate `5e-6/5e-5`、50 epochs、patience 8和TF32，OOM/NaN不自动缩批或回退。多GPU sweep可使用`--devices cuda:0,cuda:1,...`。Partial Charge与Stage 2 Full保持unsupported。
 
 ## 输出与结果汇总
 
