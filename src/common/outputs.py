@@ -46,7 +46,7 @@ def repository_relative(value: str | Path) -> str:
 def _validate_public_paths(value: Any, key: str = "") -> None:
     if isinstance(value, dict):
         for name, item in value.items():
-            _validate_public_paths(item, name)
+            _validate_public_paths(item, str(name))
     elif isinstance(value, list):
         for item in value:
             _validate_public_paths(item, key)
