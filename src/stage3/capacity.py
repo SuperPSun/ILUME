@@ -288,7 +288,7 @@ def aggregate_fold_summaries(
     if not summaries:
         raise ValueError("At least one fold summary is required")
     fold_scores = {
-        int(fold): _finite_float(summary.get("score"), f"fold{fold} score")
+        str(fold): _finite_float(summary.get("score"), f"fold{fold} score")
         for fold, summary in sorted(summaries.items())
     }
     values = list(fold_scores.values())
