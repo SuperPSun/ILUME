@@ -21,13 +21,13 @@
 <text x="330.00" y="834.00" text-anchor="middle" font-family="sans-serif" font-size="10">lumo</text>
 <line x1="330.00" y1="570.00" x2="90.00" y2="570.00" stroke="#c7c7c7" stroke-width="1"/>
 <text x="66.00" y="570.00" text-anchor="end" font-family="sans-serif" font-size="10">partial atomic charge</text>
-<polygon class="series" data-panel="stage2_test" data-run="dmpnn@outputs/benchmarks/v1/dmpnn" data-scores="1,1,1,0" points="330.00,330.00 570.00,570.00 330.00,810.00 330.00,570.00" fill="#0072b2" fill-opacity="0.12" stroke="#0072b2" stroke-width="2"/>
+<polygon class="series" data-panel="stage2_test" data-run="dmpnn@outputs/benchmarks/v1/dmpnn" data-scores="1,1,1,1" points="330.00,330.00 570.00,570.00 330.00,810.00 90.00,570.00" fill="#0072b2" fill-opacity="0.12" stroke="#0072b2" stroke-width="2"/>
 <line x1="90.0" y1="160" x2="108.0" y2="160" stroke="#0072b2" stroke-width="3"/>
 <text x="114.0" y="164" font-family="sans-serif" font-size="12">D-MPNN</text>
 <polygon class="series" data-panel="stage2_test" data-run="mlp@outputs/benchmarks/v1/mlp" data-scores="0.962248,0.77109,0.774135,0" points="330.00,339.06 515.06,570.00 330.00,755.79 330.00,570.00" fill="#cc79a7" fill-opacity="0.12" stroke="#cc79a7" stroke-width="2"/>
 <line x1="90.0" y1="180" x2="108.0" y2="180" stroke="#cc79a7" stroke-width="3"/>
 <text x="114.0" y="184" font-family="sans-serif" font-size="12">MLP</text>
-<polygon class="series" data-panel="stage2_test" data-run="ilume@outputs/v1/stage2/base/evaluate" data-scores="0.550177,0.784682,0.697555,0" points="330.00,437.96 518.32,570.00 330.00,737.41 330.00,570.00" fill="#009e73" fill-opacity="0.12" stroke="#009e73" stroke-width="2"/>
+<polygon class="series" data-panel="stage2_test" data-run="ilume@outputs/v1/stage2/base/evaluate" data-scores="0.550177,0.784682,0.697555,0.863199" points="330.00,437.96 518.32,570.00 330.00,737.41 122.83,570.00" fill="#009e73" fill-opacity="0.12" stroke="#009e73" stroke-width="2"/>
 <line x1="90.0" y1="200" x2="108.0" y2="200" stroke="#009e73" stroke-width="3"/>
 <text x="114.0" y="204" font-family="sans-serif" font-size="12">ILUME</text>
 <polygon class="series" data-panel="stage2_test" data-run="ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost" data-scores="0.358219,0.49528,0.483526,0" points="330.00,484.03 448.87,570.00 330.00,686.05 330.00,570.00" fill="#d55e00" fill-opacity="0.12" stroke="#d55e00" stroke-width="2"/>
