@@ -31,7 +31,7 @@ loss:
   task_loss_modes:
     simulation/simulated_qm_elec_hf: masked_target_macro
 training:
-  batch_size: 256
+  batch_size: 128
   gradient_accumulation_steps: 1
   epochs: 10
   backbone_frozen_epochs: 0
