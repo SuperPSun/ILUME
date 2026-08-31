@@ -4,18 +4,20 @@
 
 1. ILUME — macro normalized MAE 0.186134
 2. MLP — macro normalized MAE 0.199194
-3. D-MPNN — macro normalized MAE 0.244526
-4. ECFP+XGBoost — macro normalized MAE 0.269395
-5. MoLFormer-XL-both-10pct — macro normalized MAE 0.270395
+3. ILUME Stage3 Single-task MLP — macro normalized MAE 0.217962
+4. D-MPNN — macro normalized MAE 0.244526
+5. ECFP+XGBoost — macro normalized MAE 0.269395
+6. MoLFormer-XL-both-10pct — macro normalized MAE 0.270395
 Coverage: 11 test tasks / 21 enabled Stage 3 tasks.
 
 ## Stage 3 VALIDATION (5-fold mean)
 
 1. ILUME — macro normalized MAE 0.215594
 2. MLP — macro normalized MAE 0.220096
-3. D-MPNN — macro normalized MAE 0.248322
-4. ECFP+XGBoost — macro normalized MAE 0.302096
-5. MoLFormer-XL-both-10pct — macro normalized MAE 0.303961
+3. ILUME Stage3 Single-task MLP — macro normalized MAE 0.223073
+4. D-MPNN — macro normalized MAE 0.248322
+5. ECFP+XGBoost — macro normalized MAE 0.302096
+6. MoLFormer-XL-both-10pct — macro normalized MAE 0.303961
 
 ## Stage 2 CORE
 
@@ -54,5 +56,6 @@ Not eligible: None
 - ✓ ilume@outputs/v1/stage3/base/evaluate/fold4: complete
 - ✓ ilume@outputs/v1/stage3/base/evaluate/fold5: complete
 - ✓ ilume@outputs/v1/stage3/base/test: complete
+- ✓ ilume_stage3_single_task_mlp@outputs/benchmarks/v1/ilume_stage3_single_task_mlp: complete
 - ✓ mlp@outputs/benchmarks/v1/mlp: complete
 - ✓ molformer@outputs/benchmarks/v1/molformer: complete
