@@ -200,7 +200,7 @@ python scripts/benchmarks/summarize.py \
   --output summary
 ```
 
-只有 schema 完整且 comparison identity 一致的 completed run 进入榜单；其他 run 进入 health。损坏的选中正式结果会使发布失败，已有 `summary/` 保持不变。详细 reporting 合同见 [ADR-0023/0024/0025](docs/adr/README.md)。
+只有 schema 完整且 comparison identity 兼容的 completed run 进入榜单；Stage 3 按 ADR-0031 允许 train-only normalization 不同，但 valid/test source 与其余协议必须一致。其他 run 进入 health。损坏的选中正式结果会使发布失败，已有 `summary/` 保持不变。详细 reporting 合同见 [ADR-0023/0024/0025/0031](docs/adr/README.md)。
 
 ## 验证
 

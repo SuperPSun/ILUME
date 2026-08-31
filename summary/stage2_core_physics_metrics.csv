@@ -27,3 +27,10 @@ mlp@outputs/benchmarks/v1/mlp,MLP,simulation/homo,HOMO_eV,pooled,1661,0.24674522
 mlp@outputs/benchmarks/v1/mlp,MLP,simulation/lumo,LUMO_eV,anion,744,0.17347528479109775,,,,,outputs/benchmarks/v1/mlp
 mlp@outputs/benchmarks/v1/mlp,MLP,simulation/lumo,LUMO_eV,cation,917,0.25240477021608104,,,,,outputs/benchmarks/v1/mlp
 mlp@outputs/benchmarks/v1/mlp,MLP,simulation/lumo,LUMO_eV,pooled,1661,0.21705044321054973,0.2999596252363076,0.9934294835133154,0.05868029088566965,0.08109505699441694,outputs/benchmarks/v1/mlp
+molformer@outputs/benchmarks/v1/molformer,MoLFormer-XL-both-10pct,simulation/heat_of_vaporization,heat_of_vaporization_kJ/mol,pooled,2684,2.404799572112924,3.297318857297468,0.986523874439656,0.08642758914738345,0.11850439545613968,outputs/benchmarks/v1/molformer
+molformer@outputs/benchmarks/v1/molformer,MoLFormer-XL-both-10pct,simulation/homo,HOMO_eV,anion,744,0.3349989577460225,,,,,outputs/benchmarks/v1/molformer
+molformer@outputs/benchmarks/v1/molformer,MoLFormer-XL-both-10pct,simulation/homo,HOMO_eV,cation,917,0.3687960365731006,,,,,outputs/benchmarks/v1/molformer
+molformer@outputs/benchmarks/v1/molformer,MoLFormer-XL-both-10pct,simulation/homo,HOMO_eV,pooled,1661,0.3536575497294244,0.4601790314815595,0.9834698134443091,0.09821987332438249,0.1278036513379577,outputs/benchmarks/v1/molformer
+molformer@outputs/benchmarks/v1/molformer,MoLFormer-XL-both-10pct,simulation/lumo,LUMO_eV,anion,744,0.36330453716151706,,,,,outputs/benchmarks/v1/molformer
+molformer@outputs/benchmarks/v1/molformer,MoLFormer-XL-both-10pct,simulation/lumo,LUMO_eV,cation,917,0.35067819569256203,,,,,outputs/benchmarks/v1/molformer
+molformer@outputs/benchmarks/v1/molformer,MoLFormer-XL-both-10pct,simulation/lumo,LUMO_eV,pooled,1661,0.35633382365939076,0.47545256446136214,0.9834922344160125,0.09633600427368143,0.12854014196997626,outputs/benchmarks/v1/molformer

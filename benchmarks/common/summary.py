@@ -216,6 +216,16 @@ def _validate_comparison(value: Any, context: str) -> None:
         raise ValueError(f"{context} has unsupported comparison identity")
 
 
+def _stage3_comparison_key(identity: Mapping[str, Any]) -> str:
+    payload = dict(identity["payload"])
+    if payload.get("benchmark") != "stage3_property":
+        return str(identity["hash"])
+    payload.pop("normalization", None)
+    return semantic_identity(
+        "reporting.stage3-comparison-without-normalization.v1", payload
+    )["hash"]
+
+
 def _partial_charge_comparison_key(
     candidate: Candidate, section: Mapping[str, Any]
 ) -> str:
@@ -785,7 +795,9 @@ def _stage3_test(
         display = reporting["model_display_name"]
         run = _run_id(model_id, candidate.source_run)
         values = [float(metrics[task]["normalized_mae"]) for task in expected]
-        comparison_hash = section["comparison_identity"]["hash"]
+        comparison_hash = _stage3_comparison_key(
+            section["comparison_identity"]
+        )
         comparisons.setdefault(comparison_hash, []).append(run)
         for task in expected:
             value = metrics[task]
@@ -878,7 +890,9 @@ def _stage3_validation(
         if not complete:
             metrics_rows = [row for row in metrics_rows if row["run"] != run]
             continue
-        comparison_hash = first_reporting["comparison_identity"]["hash"]
+        comparison_hash = _stage3_comparison_key(
+            first_reporting["comparison_identity"]
+        )
         comparisons.setdefault(comparison_hash, []).append(run)
         leaders.append(
             {
@@ -916,7 +930,9 @@ def _stage3_validation(
                 row[f"{metric}_std"] = value[metric]["std"]
             metrics_rows.append(row)
             task_values.append(float(value["normalized_mae"]["mean"]))
-        comparisons.setdefault(section["comparison_identity"]["hash"], []).append(run)
+        comparisons.setdefault(
+            _stage3_comparison_key(section["comparison_identity"]), []
+        ).append(run)
         leaders.append(
             {
                 "run": run, "model": display,

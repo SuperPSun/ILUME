@@ -792,7 +792,7 @@ def _write_run(
     metadata = {
         "schema_version": 1,
         "stage": stage,
-        "operation": "evaluate",
+        "operation": "sweep" if stage == "benchmark" else "evaluate",
         "status": "completed",
         "semantic_identity": semantic_identity(
             "test.reporting-run", {"root": root.name}
@@ -801,6 +801,108 @@ def _write_run(
     }
     (root / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
     (root / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+
+
+def _stage3_benchmark_summary(
+    model: str, *, scale: float, source: str = "shared"
+) -> dict[str, object]:
+    task = "experiment/example"
+    sources = {
+        **{f"{task}:fold{fold}": source for fold in range(1, 6)},
+        f"{task}:test": source,
+    }
+    normalization = {
+        f"{task}:fold{fold}": {"scale": scale} for fold in range(1, 6)
+    }
+    test_comparison = comparison_identity(
+        "stage3_property", split="test", expected=[task], sources=sources,
+        normalization=normalization, folds=range(1, 6), ensemble=True,
+    )
+    valid_comparison = comparison_identity(
+        "stage3_property", split="valid", expected=[task],
+        sources={
+            key: value
+            for key, value in sources.items()
+            if not key.endswith(":test")
+        },
+        normalization=normalization, folds=range(1, 6),
+    )
+    metrics = {
+        "count": 5, "mae": scale, "rmse": scale, "r2": 0.5,
+        "normalized_mae": 1.0, "normalized_rmse": 1.0,
+    }
+    aggregate = {
+        name: {"count": 5, "mean": value, "std": 0.0}
+        for name, value in (
+            ("mae", scale), ("rmse", scale), ("r2", 0.5),
+            ("normalized_mae", 1.0), ("normalized_rmse", 1.0),
+        )
+    }
+    return {
+        "jobs": {"failed": 0},
+        "stage3_property_benchmark": {
+            "test_ensemble": {task: metrics},
+            "validation_five_fold": {task: aggregate},
+        },
+        "stage2_physics_benchmark": {"test": {}},
+        "reporting": {
+            "schema_version": REPORTING_SCHEMA_VERSION,
+            "model_id": model,
+            "model_display_name": model.upper(),
+            "study_id": f"{model}-study",
+            "source_runs": {},
+            "benchmarks": {
+                "stage3_test": {
+                    "status": "complete",
+                    "protocol": {
+                        "expected_tasks": [task], "enabled_tasks": [task],
+                        "folds": list(range(1, 6)), "ensemble": True,
+                    },
+                    "comparison_identity": test_comparison,
+                },
+                "stage3_validation": {
+                    "status": "complete",
+                    "protocol": {
+                        "expected_tasks": [task],
+                        "folds": list(range(1, 6)), "ensemble": False,
+                    },
+                    "comparison_identity": valid_comparison,
+                },
+            },
+        },
+    }
+
+
+def test_stage3_summary_ignores_normalization_but_requires_shared_sources(
+    tmp_path: Path,
+) -> None:
+    inputs = tmp_path / "inputs"
+    _write_run(
+        inputs / "one", _stage3_benchmark_summary("one", scale=1.0),
+        stage="benchmark",
+    )
+    _write_run(
+        inputs / "two", _stage3_benchmark_summary("two", scale=2.0),
+        stage="benchmark",
+    )
+
+    payload = publish_summary(inputs, tmp_path / "summary", tmp_path)
+    assert len(payload["leaderboards"]["stage3_test"]) == 2
+    assert len(payload["leaderboards"]["stage3_validation"]) == 2
+
+    incompatible = tmp_path / "incompatible"
+    _write_run(
+        incompatible / "one", _stage3_benchmark_summary("one", scale=1.0),
+        stage="benchmark",
+    )
+    _write_run(
+        incompatible / "two",
+        _stage3_benchmark_summary("two", scale=2.0, source="different"),
+        stage="benchmark",
+    )
+    with pytest.raises(ValueError, match="incompatible comparison identities"):
+        publish_summary(incompatible, tmp_path / "bad-summary", tmp_path)
+
 
 def test_prediction_csv_is_atomic_and_records_integrity(tmp_path: Path) -> None:
     path = tmp_path / "predictions" / "task.csv"

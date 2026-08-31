@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "inputs": [
+    "3f6166e829b96159a7da4f5b7bdca1326a7132b144c66d8ddb47eeac2be75970",
     "772064943a15af694fd5b8de4017dd7fe71820d42dc8a4a4a28d60391f15ec44",
     "7c3e32a792430f09367e47c7bbc927218fa92a5a83ac93e9d569ea15f53debcc",
     "8ffcf16f6bb33319f296e359c7c8ff14e7c68d27c228db7eba49b25afb805158",
@@ -14,6 +15,276 @@
   ],
   "comparison_identities": {
     "stage3_test": [
+      {
+        "identity": {
+          "identity_contract_version": 1,
+          "type": "reporting.comparison.v1",
+          "payload": {
+            "benchmark": "stage3_property",
+            "split": "test",
+            "expected": [
+              "experiment/electrical_conductivity",
+              "experiment/viscosity",
+              "experiment/density",
+              "experiment/surface_tension",
+              "experiment/glass_transition_temperature",
+              "experiment/melting_point",
+              "experiment/thermal_decomposition_temperature",
+              "experiment/refractive_index",
+              "experiment/solvation",
+              "experiment/transfer",
+              "experiment/transfer_organic"
+            ],
+            "sources": {
+              "experiment/electrical_conductivity:fold2": "893050cfc4ebb34ccfd5b7b7bdceff1c99c961a4991e15bed1b24f8e7199e828",
+              "experiment/electrical_conductivity:fold3": "c181c35661370d8b9532787fa1a0e88708da6133c573fd531ec1f56442c4e27f",
+              "experiment/electrical_conductivity:fold4": "a6f5ebbe2a277dfea5142f13cfcc1760d1a601974c15112a3c69aff26fd83190",
+              "experiment/electrical_conductivity:fold5": "24ea1c874e5f601aa41db5da98f5e1928257a20228bca96e7ae82ff8ec02dfe1",
+              "experiment/electrical_conductivity:fold1": "dfdf7dba384bb57aa59b292e5ed4e9ca67fdd4aa9aafcf37cb6ea61444769cda",
+              "experiment/electrical_conductivity:test": "bf8f58cc615e582d92d9702bc1717a198b94721490a84425118eb9b43af2b779",
+              "experiment/viscosity:fold2": "f2b92625878f05666405c2283ff5182b2d7043d174efdc653439a96c3aa285a7",
+              "experiment/viscosity:fold3": "53942e831c4ed0a4723cc77fa438fa0cb9b67331a6b611613f94558e5ba5b33d",
+              "experiment/viscosity:fold4": "15b85b142d5c5d5bd2c8de1d9c71be55cb5f71894780fa0906cee65c98c05ab2",
+              "experiment/viscosity:fold5": "150769a1193c7db76e21b3e959ef84df0c2186c9e4303ae3a0d748d5ce47a7f5",
+              "experiment/viscosity:fold1": "e92ac7369a148fa7af96355af18120f341f4f353c7f39e45980569ee4c8bc2c0",
+              "experiment/viscosity:test": "9d7b91a1c1f65d02daa11ce5d2a0d41a6e6c75518c627307b4fa6a7524efc29d",
+              "experiment/density:fold2": "ef4459353c249ca0e41b0131d25c9b16c871e9196255e11cdcaa52604ed3e4f4",
+              "experiment/density:fold3": "d15755534959d29e9ae7785b4012006293db9c04f0f1c2673fe565b25081672c",
+              "experiment/density:fold4": "fa632e5163bf1975f583d0a64955e0b36313e8bc885a9ea03f3aeec1d194cb70",
+              "experiment/density:fold5": "34f973afa89b7cad459c6bc3e3398bb522518164727c3e5720f0854f72cc4b51",
+              "experiment/density:fold1": "a963652c09a1782e8ede3274babb8aea53f3c8d0e197b6efc2d47210a58aa271",
+              "experiment/density:test": "0792aaa07a84f13720a4005e13270c5e4e75a991074b4f251ea34b74f0caa47d",
+              "experiment/surface_tension:fold2": "68181b78055d41aace54692309fde930e287155eb92f9fa8038db14229afb6d9",
+              "experiment/surface_tension:fold3": "82d55378eaab730fe0e43cc897739d6fabbbef19cf3d37e287a59d7034ad137f",
+              "experiment/surface_tension:fold4": "674bc44724fc9e57a29b9d0fa61732ee979fc4b49b44601931086d3d63f55a73",
+              "experiment/surface_tension:fold5": "18fd6b3abdf0c6f8b2454af3c39b508772ebf6c78cdd835ef755db082adc57c5",
+              "experiment/surface_tension:fold1": "3c5773d40848ddcabc73abc9c32dd6cd504b517d1eac495afd95a58d34b00b60",
+              "experiment/surface_tension:test": "3cc86ede62d2dc9495bb0755c1b950a8344bb3e667c93198faea4ad26e26619f",
+              "experiment/glass_transition_temperature:fold2": "b4ac86bb208937aba7b383b11acf49bb575f60bf247a62b55c7197fb7c8f9f75",
+              "experiment/glass_transition_temperature:fold3": "f8fdb5da6ba15d1bae40ea9a74a9d012f0a2fe38314ed7e08360289c5bca828e",
+              "experiment/glass_transition_temperature:fold4": "0193bdcef48d5872a9c7eb3540909cc8fc8ec3a59a9b7325d9cfc9ac303acb4b",
+              "experiment/glass_transition_temperature:fold5": "50870c95f22b7c620d3228182de16db21d5bad9e30d9193af6add60d7770b582",
+              "experiment/glass_transition_temperature:fold1": "e816cbfb78c1e1f9226fca4c562165f5129ec781b410ee47fd79ba046d00a33b",
+              "experiment/glass_transition_temperature:test": "d759e538a5ac7a9d9d5d8fd5176e1cedfe403ed44916cfcc75f5202032d95d6c",
+              "experiment/melting_point:fold2": "48ffb763f4fad1b90a233b1ec9032de37146c49939307ee532eb503249ccbf90",
+              "experiment/melting_point:fold3": "d2216e99a11ba504d04c8c8872a3d9172f7e32480abb57382f66f8bd014d29c6",
+              "experiment/melting_point:fold4": "8219748660caa2573f9ba3c57d98971f2ff5360f4e1840408c9194dc3908b2e5",
+              "experiment/melting_point:fold5": "da96b045e6a1d82c6ff05c29817a25d5b5b4e8635c9a9b364a64db4510a2d6fe",
+              "experiment/melting_point:fold1": "c72887aa6a8ab914208414e34238b5e2926194177a7f1a70cf7be19eafa2b5e6",
+              "experiment/melting_point:test": "99dbdd8165c1a44f85ab820590e83a00bbd6897d40aae2ac9802fa8c41928abe",
+              "experiment/thermal_decomposition_temperature:fold2": "d189c87c5ddad4aa675a2923354959c734397061622334b069764215213398c5",
+              "experiment/thermal_decomposition_temperature:fold3": "1cdf9db7e6097f2d9409f0dff9f6594ea2ddfc8e96990021b30a01e25b7a1c37",
+              "experiment/thermal_decomposition_temperature:fold4": "6c316eb481b59e5dc9fd4706164f9bbdab1bd70a4a8dc3abf2006bc4ad2fad51",
+              "experiment/thermal_decomposition_temperature:fold5": "1de4c3ce3f1d937c7025a6955d0ce7bfa4bc665b89a4f8c2a66f5a9404240304",
+              "experiment/thermal_decomposition_temperature:fold1": "e9c888b70a6d1eed92c51bf973b4478eede20af32a038795c5e62c7f880942dd",
+              "experiment/thermal_decomposition_temperature:test": "a2dd97ecfebc381a3fe198d1b7285e10593db17eb8b625d1e0519c01f2c4bd18",
+              "experiment/refractive_index:fold2": "57a510fcac89effc38b593d6881007e8a1c90d929b2fdafdeb047ec22b88287a",
+              "experiment/refractive_index:fold3": "93b6341bdd1c18e42d6e0fa87d73f0c2eec4bdc2d2492e0f9e09ac4346842d47",
+              "experiment/refractive_index:fold4": "e22d01f58808aad738e2de022a0d63fdb3d13295e037cf5b92307108e4ccdd83",
+              "experiment/refractive_index:fold5": "84a8fd45c6cb71db9c0c1133258338b1654ef818f3d53d6a63726fb3edc92ae3",
+              "experiment/refractive_index:fold1": "37d6b9ed7bda050a0110f77327d9d0bf144fb2d56b33da413c1ea4da3909bcf3",
+              "experiment/refractive_index:test": "687a9ffa8971c0f4ef3ace91e69881e2800dcece4c217b79720299b7d516b877",
+              "experiment/solvation:fold2": "1271f55ff094584a052220ba7ee5df19eafb663026c1413f8bb266b70c9f99c9",
+              "experiment/solvation:fold3": "1334761bce63593b1d3965827ce3ae400c7f73b23cf829900439a05165b4e941",
+              "experiment/solvation:fold4": "99717f1968c3d777f81b37cdfc9b58dd40e29af5f29b99dda9444a14b2740dc7",
+              "experiment/solvation:fold5": "1fa7ae2835ff2ad6fab9d2d033c1d171a8b6e97905d4a501fce17bada4c7e6e0",
+              "experiment/solvation:fold1": "a0a2dd0867012bef8ca371d67e2fcf240b75ccf1097db3dab7b056eebf71e6a3",
+              "experiment/solvation:test": "22268222a6d5723e5d9b645bc770111fae6859259c44ebca15996e7fa6dd02e2",
+              "experiment/transfer:fold2": "901b89ead5007d7b4885cfc5f7a71a1a82d0cf9f88050a934ea635c232fefe90",
+              "experiment/transfer:fold3": "da5c5c5dbbc221ef5f1887e9f0b31acf493c1639b9fc3575fe165fd6e953b316",
+              "experiment/transfer:fold4": "91a42c7fa5b9a3b1f3cebc0d8363f950bf626b506adcfdfa20bdfcd9bc56a8ac",
+              "experiment/transfer:fold5": "524a2d625bcadc13659fc6b29f38860d7413deae0f05a4abef539fcbd19e2c07",
+              "experiment/transfer:fold1": "711efd888e087e65f6042273fc73f56e3548745c866234ef7766c5198c203dd6",
+              "experiment/transfer:test": "9c23c2c6b28448118661f4e3f42767daec7ac95855c44f2982dfc6ff6098b96a",
+              "experiment/transfer_organic:fold2": "138157892ea83a810e7cfdc2bb88490019dea96e38842d9ac163e7d43b9ec7c4",
+              "experiment/transfer_organic:fold3": "f132ccbc13630a123ba500a5e84ad8f4ca256c17e74ec2617d4cc024310232ee",
+              "experiment/transfer_organic:fold4": "d4353ea45728994b50b5f2b117ac5561890467ce7529e8b81a0c9fba86455693",
+              "experiment/transfer_organic:fold5": "c1f207533dafc8d39a8cf00aaa476e0e8d118d0983025c4137bc86198eac5dc6",
+              "experiment/transfer_organic:fold1": "62598fca332629a54e16c1730d107a4e27fa1479325f22b0f2fbdb9cab83a67a",
+              "experiment/transfer_organic:test": "c6c4a42f84c4bb0629ba5f391dc9049f41f8e778fb246af81430319ca459f569"
+            },
+            "normalization": {
+              "experiment/electrical_conductivity:fold1": {
+                "scale": 1.33811739709
+              },
+              "experiment/electrical_conductivity:fold2": {
+                "scale": 1.54536754141
+              },
+              "experiment/electrical_conductivity:fold3": {
+                "scale": 1.56526757572
+              },
+              "experiment/electrical_conductivity:fold4": {
+                "scale": 1.41899433832
+              },
+              "experiment/electrical_conductivity:fold5": {
+                "scale": 1.44419624698
+              },
+              "experiment/viscosity:fold1": {
+                "scale": 0.74442618578
+              },
+              "experiment/viscosity:fold2": {
+                "scale": 0.738025662832
+              },
+              "experiment/viscosity:fold3": {
+                "scale": 0.755086103642
+              },
+              "experiment/viscosity:fold4": {
+                "scale": 0.728855575809
+              },
+              "experiment/viscosity:fold5": {
+                "scale": 0.768503591943
+              },
+              "experiment/density:fold1": {
+                "scale": 0.179863109451
+              },
+              "experiment/density:fold2": {
+                "scale": 0.181073735871
+              },
+              "experiment/density:fold3": {
+                "scale": 0.176288379582
+              },
+              "experiment/density:fold4": {
+                "scale": 0.177671069533
+              },
+              "experiment/density:fold5": {
+                "scale": 0.18095495494
+              },
+              "experiment/surface_tension:fold1": {
+                "scale": 8.56674157864
+              },
+              "experiment/surface_tension:fold2": {
+                "scale": 8.94114776019
+              },
+              "experiment/surface_tension:fold3": {
+                "scale": 9.1054851903
+              },
+              "experiment/surface_tension:fold4": {
+                "scale": 8.80602503313
+              },
+              "experiment/surface_tension:fold5": {
+                "scale": 8.88997232784
+              },
+              "experiment/glass_transition_temperature:fold1": {
+                "scale": 28.6418606732
+              },
+              "experiment/glass_transition_temperature:fold2": {
+                "scale": 28.7607435976
+              },
+              "experiment/glass_transition_temperature:fold3": {
+                "scale": 29.786862205
+              },
+              "experiment/glass_transition_temperature:fold4": {
+                "scale": 29.6274340588
+              },
+              "experiment/glass_transition_temperature:fold5": {
+                "scale": 29.23436423
+              },
+              "experiment/melting_point:fold1": {
+                "scale": 70.9028352394
+              },
+              "experiment/melting_point:fold2": {
+                "scale": 70.9863426889
+              },
+              "experiment/melting_point:fold3": {
+                "scale": 71.1512595585
+              },
+              "experiment/melting_point:fold4": {
+                "scale": 71.9248565426
+              },
+              "experiment/melting_point:fold5": {
+                "scale": 71.4324477268
+              },
+              "experiment/thermal_decomposition_temperature:fold1": {
+                "scale": 75.1909711804
+              },
+              "experiment/thermal_decomposition_temperature:fold2": {
+                "scale": 75.6541107381
+              },
+              "experiment/thermal_decomposition_temperature:fold3": {
+                "scale": 75.3043561501
+              },
+              "experiment/thermal_decomposition_temperature:fold4": {
+                "scale": 76.5235067509
+              },
+              "experiment/thermal_decomposition_temperature:fold5": {
+                "scale": 75.4908767887
+              },
+              "experiment/refractive_index:fold1": {
+                "scale": 0.0406228106759
+              },
+              "experiment/refractive_index:fold2": {
+                "scale": 0.0396649832244
+              },
+              "experiment/refractive_index:fold3": {
+                "scale": 0.038658015929
+              },
+              "experiment/refractive_index:fold4": {
+                "scale": 0.039771751926
+              },
+              "experiment/refractive_index:fold5": {
+                "scale": 0.039092600057
+              },
+              "experiment/solvation:fold1": {
+                "scale": 1.10202100195
+              },
+              "experiment/solvation:fold2": {
+                "scale": 1.10338689641
+              },
+              "experiment/solvation:fold3": {
+                "scale": 1.09095255321
+              },
+              "experiment/solvation:fold4": {
+                "scale": 1.08195271949
+              },
+              "experiment/solvation:fold5": {
+                "scale": 1.09951206163
+              },
+              "experiment/transfer:fold1": {
+                "scale": 2.28540029114
+              },
+              "experiment/transfer:fold2": {
+                "scale": 2.29822897946
+              },
+              "experiment/transfer:fold3": {
+                "scale": 2.32730198556
+              },
+              "experiment/transfer:fold4": {
+                "scale": 2.31075401607
+              },
+              "experiment/transfer:fold5": {
+                "scale": 2.30720394127
+              },
+              "experiment/transfer_organic:fold1": {
+                "scale": 2.39309598484
+              },
+              "experiment/transfer_organic:fold2": {
+                "scale": 2.33121993997
+              },
+              "experiment/transfer_organic:fold3": {
+                "scale": 2.35874779917
+              },
+              "experiment/transfer_organic:fold4": {
+                "scale": 2.30315612444
+              },
+              "experiment/transfer_organic:fold5": {
+                "scale": 2.33973223999
+              }
+            },
+            "folds": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "ensemble": true
+          },
+          "hash": "19b6908fed4a09c10048ef0c60173cfae8ecbe6146987f5c5ffe3b078ceb323b"
+        },
+        "source_runs": [
+          "outputs/benchmarks/v1/molformer"
+        ]
+      },
       {
         "identity": {
           "identity_contract_version": 1,
@@ -289,6 +560,475 @@
       }
     ],
     "stage3_validation": [
+      {
+        "identity": {
+          "identity_contract_version": 1,
+          "type": "reporting.comparison.v1",
+          "payload": {
+            "benchmark": "stage3_property",
+            "split": "valid",
+            "expected": [
+              "experiment/electrical_conductivity",
+              "experiment/self_diffusion_coefficient",
+              "experiment/viscosity",
+              "experiment/thermal_conductivity",
+              "experiment/density",
+              "experiment/heat_capacity",
+              "experiment/isobaric_coefficient_of_volume_expansion",
+              "experiment/speed_of_sound",
+              "experiment/surface_tension",
+              "experiment/equilibrium_pressure",
+              "experiment/glass_transition_temperature",
+              "experiment/melting_point",
+              "experiment/thermal_decomposition_temperature",
+              "experiment/dynamic_relative_permittivity",
+              "experiment/static_relative_permittivity",
+              "experiment/refractive_index",
+              "experiment/solvation",
+              "experiment/transfer",
+              "experiment/transfer_organic",
+              "experiment/x_co2",
+              "experiment/pec50"
+            ],
+            "sources": {
+              "experiment/electrical_conductivity:fold2": "893050cfc4ebb34ccfd5b7b7bdceff1c99c961a4991e15bed1b24f8e7199e828",
+              "experiment/electrical_conductivity:fold3": "c181c35661370d8b9532787fa1a0e88708da6133c573fd531ec1f56442c4e27f",
+              "experiment/electrical_conductivity:fold4": "a6f5ebbe2a277dfea5142f13cfcc1760d1a601974c15112a3c69aff26fd83190",
+              "experiment/electrical_conductivity:fold5": "24ea1c874e5f601aa41db5da98f5e1928257a20228bca96e7ae82ff8ec02dfe1",
+              "experiment/electrical_conductivity:fold1": "dfdf7dba384bb57aa59b292e5ed4e9ca67fdd4aa9aafcf37cb6ea61444769cda",
+              "experiment/self_diffusion_coefficient:fold2": "b66eaf5e5b11d5b19a793ab5997aa2439b3ff63e290820abecbaa8aed88deed2",
+              "experiment/self_diffusion_coefficient:fold3": "11618c2d16db2e750c96d132e7d9a674419b4368e2171c4e64204111de379f62",
+              "experiment/self_diffusion_coefficient:fold4": "b33529b1cd19564757940dbc73495b752f1915dcaf13b9f0fd81c5e623986e33",
+              "experiment/self_diffusion_coefficient:fold5": "77bdc048f29b32c4f86e47c7058f8e0549830b3abfe0ba5f9645820d231e01f4",
+              "experiment/self_diffusion_coefficient:fold1": "5d2e0e4046837105b99b944e372aef1be0bfb90c33028bd03e69f265d2d5aa0d",
+              "experiment/viscosity:fold2": "f2b92625878f05666405c2283ff5182b2d7043d174efdc653439a96c3aa285a7",
+              "experiment/viscosity:fold3": "53942e831c4ed0a4723cc77fa438fa0cb9b67331a6b611613f94558e5ba5b33d",
+              "experiment/viscosity:fold4": "15b85b142d5c5d5bd2c8de1d9c71be55cb5f71894780fa0906cee65c98c05ab2",
+              "experiment/viscosity:fold5": "150769a1193c7db76e21b3e959ef84df0c2186c9e4303ae3a0d748d5ce47a7f5",
+              "experiment/viscosity:fold1": "e92ac7369a148fa7af96355af18120f341f4f353c7f39e45980569ee4c8bc2c0",
+              "experiment/thermal_conductivity:fold2": "f906c483ff5ea5fc2b7cd838d4f3b9ff59cf90124cdcc83680cf1b813414165d",
+              "experiment/thermal_conductivity:fold3": "340ed36d12f9d65459ac1f1870b7d423bd361266ae9717c21f73376a8550f64f",
+              "experiment/thermal_conductivity:fold4": "0db6948cf7c2e911a622bd13fa89717ab7b3dac972ec0204088ee9d8f293e0ca",
+              "experiment/thermal_conductivity:fold5": "b686edf753b3e23e0082f7b0586e44090fd9925fb16bf7d0b0d8dff0163a8ab2",
+              "experiment/thermal_conductivity:fold1": "ac2279081ce72a2b2cd4bce773b54ee477d9eb8a56212dc615236cbc550a686d",
+              "experiment/density:fold2": "ef4459353c249ca0e41b0131d25c9b16c871e9196255e11cdcaa52604ed3e4f4",
+              "experiment/density:fold3": "d15755534959d29e9ae7785b4012006293db9c04f0f1c2673fe565b25081672c",
+              "experiment/density:fold4": "fa632e5163bf1975f583d0a64955e0b36313e8bc885a9ea03f3aeec1d194cb70",
+              "experiment/density:fold5": "34f973afa89b7cad459c6bc3e3398bb522518164727c3e5720f0854f72cc4b51",
+              "experiment/density:fold1": "a963652c09a1782e8ede3274babb8aea53f3c8d0e197b6efc2d47210a58aa271",
+              "experiment/heat_capacity:fold2": "742bcc04fad9d9bb15440b41f40b39f9b09beb2b03294adda90451f449796400",
+              "experiment/heat_capacity:fold3": "b094605caf722ad118f03cbc838b40b4c00cc6375607fe449fe9624073142127",
+              "experiment/heat_capacity:fold4": "2da6c1112df6a59ff1242d13db3b3c4be0c5d98c117fbc2437b39755a4ed4e43",
+              "experiment/heat_capacity:fold5": "a158d3df986962d541fd9a49a2c0346edc31cfe6f2d14464f44b737bd67e5173",
+              "experiment/heat_capacity:fold1": "a73ba14b2491e5a00f825b475418e55b9fb706b87876e32aa4b6910d6dd50a60",
+              "experiment/isobaric_coefficient_of_volume_expansion:fold2": "3e28e87392adb7580efa7973a5ec20bb9408eb8a6f00f36972f9411d3c99f11a",
+              "experiment/isobaric_coefficient_of_volume_expansion:fold3": "28b69202aef0c622e8606529dd76f5e4ac8b293f4e461f38f2758d8981af63e6",
+              "experiment/isobaric_coefficient_of_volume_expansion:fold4": "146e95e7c26560e11f04ac5f60163ab601ce3617cb83b89d6e9f001c13dc821c",
+              "experiment/isobaric_coefficient_of_volume_expansion:fold5": "36a74a328f3d1c3a90fa691953c556834fc5cedc0e433847c1ade165eac98b24",
+              "experiment/isobaric_coefficient_of_volume_expansion:fold1": "0d5dc74b977de7fdfb98d02a7382465adde7dc7f2f1de56becd151048650364f",
+              "experiment/speed_of_sound:fold2": "77204bdf5d305560991f74a94e3a66adaec0ee093da4bf4309aa37a9fe367a70",
+              "experiment/speed_of_sound:fold3": "05e0a416800d753fd860c94d876a1b92d4ee7e35458a4b38b365ee0eb8b47868",
+              "experiment/speed_of_sound:fold4": "9bdd19d3e7a34ab22585668f818b81bdda2038f6bf8cf3cb89d0360cd5ea2f5b",
+              "experiment/speed_of_sound:fold5": "ad910a4146cedbafa90a1a54159db26644637ceee8acfda67ef6757abd9bed27",
+              "experiment/speed_of_sound:fold1": "20358ce341b5a3de4f1991b464f0edbb2deabf1d90c26ad9fc179906745610f5",
+              "experiment/surface_tension:fold2": "68181b78055d41aace54692309fde930e287155eb92f9fa8038db14229afb6d9",
+              "experiment/surface_tension:fold3": "82d55378eaab730fe0e43cc897739d6fabbbef19cf3d37e287a59d7034ad137f",
+              "experiment/surface_tension:fold4": "674bc44724fc9e57a29b9d0fa61732ee979fc4b49b44601931086d3d63f55a73",
+              "experiment/surface_tension:fold5": "18fd6b3abdf0c6f8b2454af3c39b508772ebf6c78cdd835ef755db082adc57c5",
+              "experiment/surface_tension:fold1": "3c5773d40848ddcabc73abc9c32dd6cd504b517d1eac495afd95a58d34b00b60",
+              "experiment/equilibrium_pressure:fold2": "698295d79c5802c02d06daecb298761259a86b83c77c843047ddff8fdc70a037",
+              "experiment/equilibrium_pressure:fold3": "170defe82d580b17f22558d23997e58170d4f33d2be532f262927d74166f7d30",
+              "experiment/equilibrium_pressure:fold4": "246d4c205aa495db2784a200d647b00bd1a875229fdec1fd2c8d3aad01ae09ef",
+              "experiment/equilibrium_pressure:fold5": "40a3c36ad96500c84c7be8b98f4e76b2b34064b13caa6c8a785c474c72c11d95",
+              "experiment/equilibrium_pressure:fold1": "411ed325b6fe08f5ec8d5c3660d5ee14796a4e4808148adf254e564edec8a865",
+              "experiment/glass_transition_temperature:fold2": "b4ac86bb208937aba7b383b11acf49bb575f60bf247a62b55c7197fb7c8f9f75",
+              "experiment/glass_transition_temperature:fold3": "f8fdb5da6ba15d1bae40ea9a74a9d012f0a2fe38314ed7e08360289c5bca828e",
+              "experiment/glass_transition_temperature:fold4": "0193bdcef48d5872a9c7eb3540909cc8fc8ec3a59a9b7325d9cfc9ac303acb4b",
+              "experiment/glass_transition_temperature:fold5": "50870c95f22b7c620d3228182de16db21d5bad9e30d9193af6add60d7770b582",
+              "experiment/glass_transition_temperature:fold1": "e816cbfb78c1e1f9226fca4c562165f5129ec781b410ee47fd79ba046d00a33b",
+              "experiment/melting_point:fold2": "48ffb763f4fad1b90a233b1ec9032de37146c49939307ee532eb503249ccbf90",
+              "experiment/melting_point:fold3": "d2216e99a11ba504d04c8c8872a3d9172f7e32480abb57382f66f8bd014d29c6",
+              "experiment/melting_point:fold4": "8219748660caa2573f9ba3c57d98971f2ff5360f4e1840408c9194dc3908b2e5",
+              "experiment/melting_point:fold5": "da96b045e6a1d82c6ff05c29817a25d5b5b4e8635c9a9b364a64db4510a2d6fe",
+              "experiment/melting_point:fold1": "c72887aa6a8ab914208414e34238b5e2926194177a7f1a70cf7be19eafa2b5e6",
+              "experiment/thermal_decomposition_temperature:fold2": "d189c87c5ddad4aa675a2923354959c734397061622334b069764215213398c5",
+              "experiment/thermal_decomposition_temperature:fold3": "1cdf9db7e6097f2d9409f0dff9f6594ea2ddfc8e96990021b30a01e25b7a1c37",
+              "experiment/thermal_decomposition_temperature:fold4": "6c316eb481b59e5dc9fd4706164f9bbdab1bd70a4a8dc3abf2006bc4ad2fad51",
+              "experiment/thermal_decomposition_temperature:fold5": "1de4c3ce3f1d937c7025a6955d0ce7bfa4bc665b89a4f8c2a66f5a9404240304",
+              "experiment/thermal_decomposition_temperature:fold1": "e9c888b70a6d1eed92c51bf973b4478eede20af32a038795c5e62c7f880942dd",
+              "experiment/dynamic_relative_permittivity:fold2": "55dd1defded6eb989a528245b96304ef254c0c897422315569a50f669411ac94",
+              "experiment/dynamic_relative_permittivity:fold3": "29cf3b1e1f6680c0386632705f4cc12d80b876408df4f74f8f43efb6be30f16c",
+              "experiment/dynamic_relative_permittivity:fold4": "bc977800de070b9c4743f343ce1ec537ea9e2d7640caa44e5790c848afb058f3",
+              "experiment/dynamic_relative_permittivity:fold5": "f1872702c2ec54a270f1c17c99d1936c2f7032b00cdf81765420b4d7bb52f344",
+              "experiment/dynamic_relative_permittivity:fold1": "9ed05d6912501a30e24ec69db4f9cb8125cfed28bb3a582c1acbfd8f814c6753",
+              "experiment/static_relative_permittivity:fold2": "f7ff74349bdff41eadaf8547bd8db91269cce0a945bae18643d9790c195d3123",
+              "experiment/static_relative_permittivity:fold3": "b521bb4cad327eecec64e54e5a1ccc6513112f91eebcda521147955a94c7807a",
+              "experiment/static_relative_permittivity:fold4": "b2fe80cb8f412d4c3da3e405479cd591ebaa3eac263365524686d44c10ad8e38",
+              "experiment/static_relative_permittivity:fold5": "20cb6ab477b19a9c5022ef73284e7c921a5c158276c6fd70f8063306c229d430",
+              "experiment/static_relative_permittivity:fold1": "451893503221e1fbafe194c649d35e6207f68b11a74bf8ba51a67035bd3f5e1a",
+              "experiment/refractive_index:fold2": "57a510fcac89effc38b593d6881007e8a1c90d929b2fdafdeb047ec22b88287a",
+              "experiment/refractive_index:fold3": "93b6341bdd1c18e42d6e0fa87d73f0c2eec4bdc2d2492e0f9e09ac4346842d47",
+              "experiment/refractive_index:fold4": "e22d01f58808aad738e2de022a0d63fdb3d13295e037cf5b92307108e4ccdd83",
+              "experiment/refractive_index:fold5": "84a8fd45c6cb71db9c0c1133258338b1654ef818f3d53d6a63726fb3edc92ae3",
+              "experiment/refractive_index:fold1": "37d6b9ed7bda050a0110f77327d9d0bf144fb2d56b33da413c1ea4da3909bcf3",
+              "experiment/solvation:fold2": "1271f55ff094584a052220ba7ee5df19eafb663026c1413f8bb266b70c9f99c9",
+              "experiment/solvation:fold3": "1334761bce63593b1d3965827ce3ae400c7f73b23cf829900439a05165b4e941",
+              "experiment/solvation:fold4": "99717f1968c3d777f81b37cdfc9b58dd40e29af5f29b99dda9444a14b2740dc7",
+              "experiment/solvation:fold5": "1fa7ae2835ff2ad6fab9d2d033c1d171a8b6e97905d4a501fce17bada4c7e6e0",
+              "experiment/solvation:fold1": "a0a2dd0867012bef8ca371d67e2fcf240b75ccf1097db3dab7b056eebf71e6a3",
+              "experiment/transfer:fold2": "901b89ead5007d7b4885cfc5f7a71a1a82d0cf9f88050a934ea635c232fefe90",
+              "experiment/transfer:fold3": "da5c5c5dbbc221ef5f1887e9f0b31acf493c1639b9fc3575fe165fd6e953b316",
+              "experiment/transfer:fold4": "91a42c7fa5b9a3b1f3cebc0d8363f950bf626b506adcfdfa20bdfcd9bc56a8ac",
+              "experiment/transfer:fold5": "524a2d625bcadc13659fc6b29f38860d7413deae0f05a4abef539fcbd19e2c07",
+              "experiment/transfer:fold1": "711efd888e087e65f6042273fc73f56e3548745c866234ef7766c5198c203dd6",
+              "experiment/transfer_organic:fold2": "138157892ea83a810e7cfdc2bb88490019dea96e38842d9ac163e7d43b9ec7c4",
+              "experiment/transfer_organic:fold3": "f132ccbc13630a123ba500a5e84ad8f4ca256c17e74ec2617d4cc024310232ee",
+              "experiment/transfer_organic:fold4": "d4353ea45728994b50b5f2b117ac5561890467ce7529e8b81a0c9fba86455693",
+              "experiment/transfer_organic:fold5": "c1f207533dafc8d39a8cf00aaa476e0e8d118d0983025c4137bc86198eac5dc6",
+              "experiment/transfer_organic:fold1": "62598fca332629a54e16c1730d107a4e27fa1479325f22b0f2fbdb9cab83a67a",
+              "experiment/x_co2:fold2": "e4e953c04965b582cd0ba02494b1f327e2f0509ea2c133da55dab5d1273eb09d",
+              "experiment/x_co2:fold3": "5c347bd61768ea2f6304c8999bf4a9d4f31a74adeb55e1a03eabddfabf3c4e17",
+              "experiment/x_co2:fold4": "baf48b5658b5e8cd045ca51fb6a29325c54b5834fac1580e41af24d23fb7e876",
+              "experiment/x_co2:fold5": "b35160d9a645c80cf03e71bd68f071d5fb7a1ff1b53e42d8fbb726081ab5f362",
+              "experiment/x_co2:fold1": "c01c6f28636962b948db5cf70ecd864182e9b56e5243fcc8675b3d3395abef3b",
+              "experiment/pec50:fold2": "40f796831b5d2eb5cfa535dc0f2c34f699200acb59531acf3e6c830b5f5bc30c",
+              "experiment/pec50:fold3": "41988ccac291bc9c574a9c3645e5e725e1a68f82c063f83f0601e5c3db8ea383",
+              "experiment/pec50:fold4": "7a08533eb0a7d8ff834a5b1eb6952a2044e9f0dd8e1743618d8191513b4c999b",
+              "experiment/pec50:fold5": "90e4d5c79f8bcee2a0af1392c11ffe519b238fde4f4b9a8e1248f5f9f1630f32",
+              "experiment/pec50:fold1": "e71c1b24577cada4be6305de4b7a783de4f8ca6b580cbd8da7a76c167ab99c5a"
+            },
+            "normalization": {
+              "experiment/electrical_conductivity:fold1": {
+                "scale": 1.33811739709
+              },
+              "experiment/electrical_conductivity:fold2": {
+                "scale": 1.54536754141
+              },
+              "experiment/electrical_conductivity:fold3": {
+                "scale": 1.56526757572
+              },
+              "experiment/electrical_conductivity:fold4": {
+                "scale": 1.41899433832
+              },
+              "experiment/electrical_conductivity:fold5": {
+                "scale": 1.44419624698
+              },
+              "experiment/self_diffusion_coefficient:fold1": {
+                "scale": 0.976708127388
+              },
+              "experiment/self_diffusion_coefficient:fold2": {
+                "scale": 0.605656999343
+              },
+              "experiment/self_diffusion_coefficient:fold3": {
+                "scale": 0.997005287035
+              },
+              "experiment/self_diffusion_coefficient:fold4": {
+                "scale": 0.986097466016
+              },
+              "experiment/self_diffusion_coefficient:fold5": {
+                "scale": 0.978184771421
+              },
+              "experiment/viscosity:fold1": {
+                "scale": 0.74442618578
+              },
+              "experiment/viscosity:fold2": {
+                "scale": 0.738025662832
+              },
+              "experiment/viscosity:fold3": {
+                "scale": 0.755086103642
+              },
+              "experiment/viscosity:fold4": {
+                "scale": 0.728855575809
+              },
+              "experiment/viscosity:fold5": {
+                "scale": 0.768503591943
+              },
+              "experiment/thermal_conductivity:fold1": {
+                "scale": 0.0266078060103
+              },
+              "experiment/thermal_conductivity:fold2": {
+                "scale": 0.0265695471043
+              },
+              "experiment/thermal_conductivity:fold3": {
+                "scale": 0.0263807691901
+              },
+              "experiment/thermal_conductivity:fold4": {
+                "scale": 0.0268684816707
+              },
+              "experiment/thermal_conductivity:fold5": {
+                "scale": 0.0247033828212
+              },
+              "experiment/density:fold1": {
+                "scale": 0.179863109451
+              },
+              "experiment/density:fold2": {
+                "scale": 0.181073735871
+              },
+              "experiment/density:fold3": {
+                "scale": 0.176288379582
+              },
+              "experiment/density:fold4": {
+                "scale": 0.177671069533
+              },
+              "experiment/density:fold5": {
+                "scale": 0.18095495494
+              },
+              "experiment/heat_capacity:fold1": {
+                "scale": 229.29905287
+              },
+              "experiment/heat_capacity:fold2": {
+                "scale": 241.91187363
+              },
+              "experiment/heat_capacity:fold3": {
+                "scale": 214.594865387
+              },
+              "experiment/heat_capacity:fold4": {
+                "scale": 253.117727055
+              },
+              "experiment/heat_capacity:fold5": {
+                "scale": 251.961369146
+              },
+              "experiment/isobaric_coefficient_of_volume_expansion:fold1": {
+                "scale": 4.67944661141e-05
+              },
+              "experiment/isobaric_coefficient_of_volume_expansion:fold2": {
+                "scale": 3.98846491104e-05
+              },
+              "experiment/isobaric_coefficient_of_volume_expansion:fold3": {
+                "scale": 4.62755200588e-05
+              },
+              "experiment/isobaric_coefficient_of_volume_expansion:fold4": {
+                "scale": 3.99509476158e-05
+              },
+              "experiment/isobaric_coefficient_of_volume_expansion:fold5": {
+                "scale": 4.57125600964e-05
+              },
+              "experiment/speed_of_sound:fold1": {
+                "scale": 201.850173567
+              },
+              "experiment/speed_of_sound:fold2": {
+                "scale": 217.120798166
+              },
+              "experiment/speed_of_sound:fold3": {
+                "scale": 202.110507034
+              },
+              "experiment/speed_of_sound:fold4": {
+                "scale": 211.200595804
+              },
+              "experiment/speed_of_sound:fold5": {
+                "scale": 192.853470328
+              },
+              "experiment/surface_tension:fold1": {
+                "scale": 8.56674157864
+              },
+              "experiment/surface_tension:fold2": {
+                "scale": 8.94114776019
+              },
+              "experiment/surface_tension:fold3": {
+                "scale": 9.1054851903
+              },
+              "experiment/surface_tension:fold4": {
+                "scale": 8.80602503313
+              },
+              "experiment/surface_tension:fold5": {
+                "scale": 8.88997232784
+              },
+              "experiment/equilibrium_pressure:fold1": {
+                "scale": 1.83250587032
+              },
+              "experiment/equilibrium_pressure:fold2": {
+                "scale": 2.08901426014
+              },
+              "experiment/equilibrium_pressure:fold3": {
+                "scale": 2.09825113204
+              },
+              "experiment/equilibrium_pressure:fold4": {
+                "scale": 2.05165012736
+              },
+              "experiment/equilibrium_pressure:fold5": {
+                "scale": 2.08490319983
+              },
+              "experiment/glass_transition_temperature:fold1": {
+                "scale": 28.6418606732
+              },
+              "experiment/glass_transition_temperature:fold2": {
+                "scale": 28.7607435976
+              },
+              "experiment/glass_transition_temperature:fold3": {
+                "scale": 29.786862205
+              },
+              "experiment/glass_transition_temperature:fold4": {
+                "scale": 29.6274340588
+              },
+              "experiment/glass_transition_temperature:fold5": {
+                "scale": 29.23436423
+              },
+              "experiment/melting_point:fold1": {
+                "scale": 70.9028352394
+              },
+              "experiment/melting_point:fold2": {
+                "scale": 70.9863426889
+              },
+              "experiment/melting_point:fold3": {
+                "scale": 71.1512595585
+              },
+              "experiment/melting_point:fold4": {
+                "scale": 71.9248565426
+              },
+              "experiment/melting_point:fold5": {
+                "scale": 71.4324477268
+              },
+              "experiment/thermal_decomposition_temperature:fold1": {
+                "scale": 75.1909711804
+              },
+              "experiment/thermal_decomposition_temperature:fold2": {
+                "scale": 75.6541107381
+              },
+              "experiment/thermal_decomposition_temperature:fold3": {
+                "scale": 75.3043561501
+              },
+              "experiment/thermal_decomposition_temperature:fold4": {
+                "scale": 76.5235067509
+              },
+              "experiment/thermal_decomposition_temperature:fold5": {
+                "scale": 75.4908767887
+              },
+              "experiment/dynamic_relative_permittivity:fold1": {
+                "scale": 1.74950130126
+              },
+              "experiment/dynamic_relative_permittivity:fold2": {
+                "scale": 1.98890746282
+              },
+              "experiment/dynamic_relative_permittivity:fold3": {
+                "scale": 2.03354503153
+              },
+              "experiment/dynamic_relative_permittivity:fold4": {
+                "scale": 2.02505417026
+              },
+              "experiment/dynamic_relative_permittivity:fold5": {
+                "scale": 1.92782818938
+              },
+              "experiment/static_relative_permittivity:fold1": {
+                "scale": 9.55670526554
+              },
+              "experiment/static_relative_permittivity:fold2": {
+                "scale": 13.0211240698
+              },
+              "experiment/static_relative_permittivity:fold3": {
+                "scale": 13.2938288254
+              },
+              "experiment/static_relative_permittivity:fold4": {
+                "scale": 13.1301540367
+              },
+              "experiment/static_relative_permittivity:fold5": {
+                "scale": 11.7659553707
+              },
+              "experiment/refractive_index:fold1": {
+                "scale": 0.0406228106759
+              },
+              "experiment/refractive_index:fold2": {
+                "scale": 0.0396649832244
+              },
+              "experiment/refractive_index:fold3": {
+                "scale": 0.038658015929
+              },
+              "experiment/refractive_index:fold4": {
+                "scale": 0.039771751926
+              },
+              "experiment/refractive_index:fold5": {
+                "scale": 0.039092600057
+              },
+              "experiment/solvation:fold1": {
+                "scale": 1.10202100195
+              },
+              "experiment/solvation:fold2": {
+                "scale": 1.10338689641
+              },
+              "experiment/solvation:fold3": {
+                "scale": 1.09095255321
+              },
+              "experiment/solvation:fold4": {
+                "scale": 1.08195271949
+              },
+              "experiment/solvation:fold5": {
+                "scale": 1.09951206163
+              },
+              "experiment/transfer:fold1": {
+                "scale": 2.28540029114
+              },
+              "experiment/transfer:fold2": {
+                "scale": 2.29822897946
+              },
+              "experiment/transfer:fold3": {
+                "scale": 2.32730198556
+              },
+              "experiment/transfer:fold4": {
+                "scale": 2.31075401607
+              },
+              "experiment/transfer:fold5": {
+                "scale": 2.30720394127
+              },
+              "experiment/transfer_organic:fold1": {
+                "scale": 2.39309598484
+              },
+              "experiment/transfer_organic:fold2": {
+                "scale": 2.33121993997
+              },
+              "experiment/transfer_organic:fold3": {
+                "scale": 2.35874779917
+              },
+              "experiment/transfer_organic:fold4": {
+                "scale": 2.30315612444
+              },
+              "experiment/transfer_organic:fold5": {
+                "scale": 2.33973223999
+              },
+              "experiment/x_co2:fold1": {
+                "scale": 0.233849814622
+              },
+              "experiment/x_co2:fold2": {
+                "scale": 0.235249783338
+              },
+              "experiment/x_co2:fold3": {
+                "scale": 0.231379582877
+              },
+              "experiment/x_co2:fold4": {
+                "scale": 0.234747682575
+              },
+              "experiment/x_co2:fold5": {
+                "scale": 0.227336939548
+              },
+              "experiment/pec50:fold1": {
+                "scale": 1.0906964597
+              },
+              "experiment/pec50:fold2": {
+                "scale": 1.08167582147
+              },
+              "experiment/pec50:fold3": {
+                "scale": 1.00734530947
+              },
+              "experiment/pec50:fold4": {
+                "scale": 1.08026588062
+              },
+              "experiment/pec50:fold5": {
+                "scale": 1.10458622877
+              }
+            },
+            "folds": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "ensemble": false
+          },
+          "hash": "2ada1510633069991e6b0cf07c9baafdf50ab807b3bb5fea1f7ae85a3b479a6c"
+        },
+        "source_runs": [
+          "outputs/benchmarks/v1/molformer"
+        ]
+      },
       {
         "identity": {
           "identity_contract_version": 1,
@@ -807,6 +1547,7 @@
           "outputs/benchmarks/v1/dmpnn",
           "outputs/benchmarks/v1/ecfp_xgboost",
           "outputs/benchmarks/v1/mlp",
+          "outputs/benchmarks/v1/molformer",
           "outputs/v1/stage2/base/evaluate"
         ]
       }
@@ -979,6 +1720,18 @@
         "checkpoint_epoch": "",
         "enabled_tasks": 21,
         "rank": 4
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "macro_normalized_mae": 0.27039470013497935,
+        "valid_tasks": 11,
+        "total_tasks": 11,
+        "per_task_wins": 0,
+        "source_run": "outputs/benchmarks/v1/molformer",
+        "checkpoint_epoch": "",
+        "enabled_tasks": 21,
+        "rank": 5
       }
     ],
     "stage3_validation": [
@@ -1025,6 +1778,17 @@
         "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "checkpoint_epoch": "",
         "rank": 4
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "macro_normalized_mae": 0.30396116218103647,
+        "valid_tasks": 21,
+        "total_tasks": 21,
+        "per_task_wins": 0,
+        "source_run": "outputs/benchmarks/v1/molformer",
+        "checkpoint_epoch": "",
+        "rank": 5
       }
     ],
     "stage2_core_physics": [
@@ -1062,6 +1826,17 @@
         "rank": 3
       },
       {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "macro_normalized_mae": 0.0936611555818158,
+        "valid_tasks": 3,
+        "total_tasks": 3,
+        "per_task_wins": 0,
+        "source_run": "outputs/benchmarks/v1/molformer",
+        "checkpoint_epoch": "",
+        "rank": 4
+      },
+      {
         "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "macro_normalized_mae": 0.13470258857254386,
@@ -1070,7 +1845,7 @@
         "per_task_wins": 0,
         "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "checkpoint_epoch": "",
-        "rank": 4
+        "rank": 5
       }
     ],
     "stage2_partial_charge": [
@@ -1649,6 +2424,138 @@
         "normalized_mae": 0.23513862986620737,
         "normalized_rmse": 0.3829621827488395,
         "source_run": "outputs/benchmarks/v1/mlp"
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/density",
+        "count": 4918,
+        "mae": 0.020017818048374467,
+        "rmse": 0.03289519641730366,
+        "r2": 0.965494177741943,
+        "normalized_mae": 0.11172512212439323,
+        "normalized_rmse": 0.18359742446193317,
+        "source_run": "outputs/benchmarks/v1/molformer"
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/electrical_conductivity",
+        "count": 467,
+        "mae": 0.22826137113961192,
+        "rmse": 0.3833077056112589,
+        "r2": 0.7926892250096839,
+        "normalized_mae": 0.1560880384551014,
+        "normalized_rmse": 0.2621107005310727,
+        "source_run": "outputs/benchmarks/v1/molformer"
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/glass_transition_temperature",
+        "count": 79,
+        "mae": 16.202628045861267,
+        "rmse": 20.123507742483433,
+        "r2": 0.16639120548973074,
+        "normalized_mae": 0.5546897547234769,
+        "normalized_rmse": 0.6889193248317133,
+        "source_run": "outputs/benchmarks/v1/molformer"
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/melting_point",
+        "count": 524,
+        "mae": 29.190276803120028,
+        "rmse": 40.50648434645123,
+        "r2": 0.42850256592869407,
+        "normalized_mae": 0.40951826264781144,
+        "normalized_rmse": 0.5682763889980118,
+        "source_run": "outputs/benchmarks/v1/molformer"
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/refractive_index",
+        "count": 579,
+        "mae": 0.010092522786934403,
+        "rmse": 0.013037154219987824,
+        "r2": 0.8947820104567148,
+        "normalized_mae": 0.2551062770099943,
+        "normalized_rmse": 0.3295370192447648,
+        "source_run": "outputs/benchmarks/v1/molformer"
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/solvation",
+        "count": 2379,
+        "mae": 0.10432332272298006,
+        "rmse": 0.18282325012376735,
+        "r2": 0.9731613152865483,
+        "normalized_mae": 0.09522330331075983,
+        "normalized_rmse": 0.16687576032276427,
+        "source_run": "outputs/benchmarks/v1/molformer"
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/surface_tension",
+        "count": 545,
+        "mae": 3.285508231472167,
+        "rmse": 4.708562264499868,
+        "r2": 0.7627871718735469,
+        "normalized_mae": 0.37074642353549336,
+        "normalized_rmse": 0.5313280310289487,
+        "source_run": "outputs/benchmarks/v1/molformer"
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/thermal_decomposition_temperature",
+        "count": 276,
+        "mae": 34.313332038866946,
+        "rmse": 43.635714716798844,
+        "r2": 0.6794921845546695,
+        "normalized_mae": 0.45368343133598643,
+        "normalized_rmse": 0.5769419524484398,
+        "source_run": "outputs/benchmarks/v1/molformer"
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/transfer",
+        "count": 308,
+        "mae": 0.2910627442540239,
+        "rmse": 0.41664235281100337,
+        "r2": 0.9643754549246323,
+        "normalized_mae": 0.1262319113592298,
+        "normalized_rmse": 0.18069492433095008,
+        "source_run": "outputs/benchmarks/v1/molformer"
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/transfer_organic",
+        "count": 191,
+        "mae": 0.5040977142538325,
+        "rmse": 0.7450756222307195,
+        "r2": 0.8902953235046787,
+        "normalized_mae": 0.21494958808175793,
+        "normalized_rmse": 0.31770367839360825,
+        "source_run": "outputs/benchmarks/v1/molformer"
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/viscosity",
+        "count": 2459,
+        "mae": 0.16910089492272862,
+        "rmse": 0.2639165824800641,
+        "r2": 0.8493316287003388,
+        "normalized_mae": 0.22637958890076842,
+        "normalized_rmse": 0.3533117164946616,
+        "source_run": "outputs/benchmarks/v1/molformer"
       }
     ],
     "stage3_validation": [
@@ -2995,6 +3902,342 @@
         "normalized_mae_std": 0.02800107646529294,
         "normalized_rmse_mean": 0.2710970745429684,
         "normalized_rmse_std": 0.043651708167635916
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/density",
+        "source_run": "outputs/benchmarks/v1/molformer",
+        "mae_mean": 0.01559704583408066,
+        "mae_std": 0.0017692911443920472,
+        "rmse_mean": 0.031040555245553984,
+        "rmse_std": 0.0033940896479610215,
+        "r2_mean": 0.9694172104602152,
+        "r2_std": 0.006238886288665371,
+        "normalized_mae_mean": 0.08712929673446865,
+        "normalized_mae_std": 0.010609580269059938,
+        "normalized_rmse_mean": 0.1733322517720229,
+        "normalized_rmse_std": 0.01975586671036046
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/dynamic_relative_permittivity",
+        "source_run": "outputs/benchmarks/v1/molformer",
+        "mae_mean": 0.8202469822780218,
+        "mae_std": 0.3395509664254999,
+        "rmse_mean": 1.2194800856074794,
+        "rmse_std": 0.5704744625381423,
+        "r2_mean": 0.5164475363886285,
+        "r2_std": 0.22482053240793184,
+        "normalized_mae_mean": 0.4317473623447265,
+        "normalized_mae_std": 0.21464645284735145,
+        "normalized_rmse_mean": 0.642953258144369,
+        "normalized_rmse_std": 0.3536827643968853
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/electrical_conductivity",
+        "source_run": "outputs/benchmarks/v1/molformer",
+        "mae_mean": 0.27778709412996305,
+        "mae_std": 0.037123348967853284,
+        "rmse_mean": 0.5213000749163795,
+        "rmse_std": 0.12134369356987366,
+        "r2_mean": 0.8472282619724044,
+        "r2_std": 0.04388334921438247,
+        "normalized_mae_mean": 0.19179506440408062,
+        "normalized_mae_std": 0.03757392247633314,
+        "normalized_rmse_mean": 0.36177129052817775,
+        "normalized_rmse_std": 0.1055219268191557
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/equilibrium_pressure",
+        "source_run": "outputs/benchmarks/v1/molformer",
+        "mae_mean": 0.6531796984905964,
+        "mae_std": 0.2215550810755238,
+        "rmse_mean": 0.9449698893378571,
+        "rmse_std": 0.3660076682350459,
+        "r2_mean": 0.7422816972855993,
+        "r2_std": 0.17514744718230227,
+        "normalized_mae_mean": 0.3255187260922457,
+        "normalized_mae_std": 0.12277784714847363,
+        "normalized_rmse_mean": 0.47077927800047253,
+        "normalized_rmse_std": 0.19603781455084163
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/glass_transition_temperature",
+        "source_run": "outputs/benchmarks/v1/molformer",
+        "mae_mean": 13.097058562693814,
+        "mae_std": 0.6849569564832358,
+        "rmse_mean": 19.960333469353266,
+        "rmse_std": 2.001913894365756,
+        "r2_mean": 0.5332682645420649,
+        "r2_std": 0.04986931318147962,
+        "normalized_mae_mean": 0.44842287116568347,
+        "normalized_mae_std": 0.02345986719706868,
+        "normalized_rmse_mean": 0.6843332199138237,
+        "normalized_rmse_std": 0.07905712979515274
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/heat_capacity",
+        "source_run": "outputs/benchmarks/v1/molformer",
+        "mae_mean": 36.16408241774611,
+        "mae_std": 9.048951488945521,
+        "rmse_mean": 64.29515400075748,
+        "rmse_std": 18.90353228643002,
+        "r2_mean": 0.9161707588066648,
+        "r2_std": 0.037310550255081995,
+        "normalized_mae_mean": 0.15321821707925254,
+        "normalized_mae_std": 0.04195158016136989,
+        "normalized_rmse_mean": 0.2728560196276799,
+        "normalized_rmse_std": 0.08783010945037203
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/isobaric_coefficient_of_volume_expansion",
+        "source_run": "outputs/benchmarks/v1/molformer",
+        "mae_mean": 1.815221992068656e-05,
+        "mae_std": 1.604405673717933e-05,
+        "rmse_mean": 2.4228708391183138e-05,
+        "rmse_std": 1.871031782448939e-05,
+        "r2_mean": 0.6498738055867883,
+        "r2_std": 0.3265454284575792,
+        "normalized_mae_mean": 0.43546448321835596,
+        "normalized_mae_std": 0.4151325337804143,
+        "normalized_rmse_mean": 0.5810607573858817,
+        "normalized_rmse_std": 0.4891169499972916
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/melting_point",
+        "source_run": "outputs/benchmarks/v1/molformer",
+        "mae_mean": 31.27714378988989,
+        "mae_std": 2.2049267674722737,
+        "rmse_mean": 41.20894980550609,
+        "rmse_std": 2.664829752757565,
+        "r2_mean": 0.663322070035931,
+        "r2_std": 0.04529391003895354,
+        "normalized_mae_mean": 0.43877511325249313,
+        "normalized_mae_std": 0.030542911023088697,
+        "normalized_rmse_mean": 0.5781415326324013,
+        "normalized_rmse_std": 0.03748861494227487
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/pec50",
+        "source_run": "outputs/benchmarks/v1/molformer",
+        "mae_mean": 0.41219859897677874,
+        "mae_std": 0.04013294341507451,
+        "rmse_mean": 0.5395685884825854,
+        "rmse_std": 0.0359724722658703,
+        "r2_mean": 0.7383036626119066,
+        "r2_std": 0.035535544775922134,
+        "normalized_mae_mean": 0.38558586620450347,
+        "normalized_mae_std": 0.051928960547846494,
+        "normalized_rmse_mean": 0.5043694072865612,
+        "normalized_rmse_std": 0.05314861837586285
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/refractive_index",
+        "source_run": "outputs/benchmarks/v1/molformer",
+        "mae_mean": 0.0077826481116389,
+        "mae_std": 0.0015815854506951341,
+        "rmse_mean": 0.01274454159145621,
+        "rmse_std": 0.0032502768170153268,
+        "r2_mean": 0.8909932466486093,
+        "r2_std": 0.04642505318069187,
+        "normalized_mae_mean": 0.19723192184139307,
+        "normalized_mae_std": 0.04278703346682608,
+        "normalized_rmse_mean": 0.32306248312010355,
+        "normalized_rmse_std": 0.08597956098926718
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/self_diffusion_coefficient",
+        "source_run": "outputs/benchmarks/v1/molformer",
+        "mae_mean": 0.46193733418319943,
+        "mae_std": 0.15390291312421786,
+        "rmse_mean": 0.5951752148262283,
+        "rmse_std": 0.21085888838545244,
+        "r2_mean": 0.11382172560481277,
+        "r2_std": 0.5461638060382122,
+        "normalized_mae_mean": 0.551856010028078,
+        "normalized_mae_std": 0.3142770666757853,
+        "normalized_rmse_mean": 0.7175132331007933,
+        "normalized_rmse_std": 0.4417507039043088
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/solvation",
+        "source_run": "outputs/benchmarks/v1/molformer",
+        "mae_mean": 0.18823546727481308,
+        "mae_std": 0.023255187144347874,
+        "rmse_mean": 0.2810917900752396,
+        "rmse_std": 0.049032117072307556,
+        "r2_mean": 0.9324273202637714,
+        "r2_std": 0.019467236106920756,
+        "normalized_mae_mean": 0.17196474948980173,
+        "normalized_mae_std": 0.02277160740953197,
+        "normalized_rmse_mean": 0.2568749206211266,
+        "normalized_rmse_std": 0.04696144476703925
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/speed_of_sound",
+        "source_run": "outputs/benchmarks/v1/molformer",
+        "mae_mean": 42.0995586326022,
+        "mae_std": 10.701334506085225,
+        "rmse_mean": 59.738722881299665,
+        "rmse_std": 11.53190128337592,
+        "r2_mean": 0.8980847587944701,
+        "r2_std": 0.06530490641965052,
+        "normalized_mae_mean": 0.20502857905399913,
+        "normalized_mae_std": 0.04983590596848823,
+        "normalized_rmse_mean": 0.29090804535765724,
+        "normalized_rmse_std": 0.05144870747372774
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/static_relative_permittivity",
+        "source_run": "outputs/benchmarks/v1/molformer",
+        "mae_mean": 4.917792277520815,
+        "mae_std": 2.3358247542521036,
+        "rmse_mean": 8.812621905326207,
+        "rmse_std": 4.941295123392715,
+        "r2_mean": 0.22843672365367845,
+        "r2_std": 0.5410675872418882,
+        "normalized_mae_mean": 0.4207818423254489,
+        "normalized_mae_std": 0.22093154686530825,
+        "normalized_rmse_mean": 0.7720602387336937,
+        "normalized_rmse_std": 0.5100993768627895
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/surface_tension",
+        "source_run": "outputs/benchmarks/v1/molformer",
+        "mae_mean": 2.66180300278794,
+        "mae_std": 0.2856751253257953,
+        "rmse_mean": 4.173359873756894,
+        "rmse_std": 0.4680799828189138,
+        "r2_mean": 0.770242350348719,
+        "r2_std": 0.0701238998777789,
+        "normalized_mae_mean": 0.3004828593267172,
+        "normalized_mae_std": 0.032770205099370564,
+        "normalized_rmse_mean": 0.47118471343785345,
+        "normalized_rmse_std": 0.05448398637280372
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/thermal_conductivity",
+        "source_run": "outputs/benchmarks/v1/molformer",
+        "mae_mean": 0.008312967423866136,
+        "mae_std": 0.0017081771607114122,
+        "rmse_mean": 0.011491633043205949,
+        "rmse_std": 0.0017621488251030612,
+        "r2_mean": 0.7900732891976843,
+        "r2_std": 0.0636369102636329,
+        "normalized_mae_mean": 0.3167468781337624,
+        "normalized_mae_std": 0.062449587608252796,
+        "normalized_rmse_mean": 0.43845158857419564,
+        "normalized_rmse_std": 0.06666239424975778
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/thermal_decomposition_temperature",
+        "source_run": "outputs/benchmarks/v1/molformer",
+        "mae_mean": 32.718601297993,
+        "mae_std": 0.9638676167841863,
+        "rmse_mean": 42.48992536778336,
+        "rmse_std": 2.5005348272013497,
+        "r2_mean": 0.6825880169929748,
+        "r2_std": 0.03594922280737572,
+        "normalized_mae_mean": 0.4326347431192761,
+        "normalized_mae_std": 0.013886809805873583,
+        "normalized_rmse_mean": 0.5618660606371991,
+        "normalized_rmse_std": 0.03443873640964159
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/transfer",
+        "source_run": "outputs/benchmarks/v1/molformer",
+        "mae_mean": 0.424564545287277,
+        "mae_std": 0.06848673488237995,
+        "rmse_mean": 0.5758001117069453,
+        "rmse_std": 0.10906789726739363,
+        "r2_mean": 0.9354688453232172,
+        "r2_std": 0.027417495664319592,
+        "normalized_mae_mean": 0.18407294673507946,
+        "normalized_mae_std": 0.02924252138353213,
+        "normalized_rmse_mean": 0.2496573744909943,
+        "normalized_rmse_std": 0.04681902577562775
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/transfer_organic",
+        "source_run": "outputs/benchmarks/v1/molformer",
+        "mae_mean": 0.5865168050142268,
+        "mae_std": 0.08288317018771972,
+        "rmse_mean": 0.7908444876675629,
+        "rmse_std": 0.10563505613867652,
+        "r2_mean": 0.884457459653752,
+        "r2_std": 0.028608363894593498,
+        "normalized_mae_mean": 0.25025208125122805,
+        "normalized_mae_std": 0.036560036839664835,
+        "normalized_rmse_mean": 0.3374779754439609,
+        "normalized_rmse_std": 0.04718993682203927
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/viscosity",
+        "source_run": "outputs/benchmarks/v1/molformer",
+        "mae_mean": 0.15118975798446538,
+        "mae_std": 0.017514481687376755,
+        "rmse_mean": 0.26188123568154675,
+        "rmse_std": 0.029979919451374515,
+        "r2_mean": 0.872103065100827,
+        "r2_std": 0.0381803952966835,
+        "normalized_mae_mean": 0.20233793124198218,
+        "normalized_mae_std": 0.022174350165904223,
+        "normalized_rmse_mean": 0.3507461473544145,
+        "normalized_rmse_std": 0.0410186953853021
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "experiment/x_co2",
+        "source_run": "outputs/benchmarks/v1/molformer",
+        "mae_mean": 0.05852618152262616,
+        "mae_std": 0.01081199770237927,
+        "rmse_mean": 0.07883471527931071,
+        "rmse_std": 0.014884118573377653,
+        "r2_mean": 0.8800717311281149,
+        "r2_std": 0.036041984278159835,
+        "normalized_mae_mean": 0.2521368627591891,
+        "normalized_mae_std": 0.04915895742955423,
+        "normalized_rmse_mean": 0.33962363320149513,
+        "normalized_rmse_std": 0.0674699315245221
       }
     ],
     "stage2_core_physics": [
@@ -3325,6 +4568,88 @@
         "normalized_mae": 0.05868029088566965,
         "normalized_rmse": 0.08109505699441694,
         "source_run": "outputs/benchmarks/v1/mlp"
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "simulation/heat_of_vaporization",
+        "target": "heat_of_vaporization_kJ/mol",
+        "subset": "pooled",
+        "count": 2684,
+        "mae": 2.404799572112924,
+        "rmse": 3.297318857297468,
+        "r2": 0.986523874439656,
+        "normalized_mae": 0.08642758914738345,
+        "normalized_rmse": 0.11850439545613968,
+        "source_run": "outputs/benchmarks/v1/molformer"
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "simulation/homo",
+        "target": "HOMO_eV",
+        "subset": "anion",
+        "count": 744,
+        "mae": 0.3349989577460225,
+        "source_run": "outputs/benchmarks/v1/molformer"
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "simulation/homo",
+        "target": "HOMO_eV",
+        "subset": "cation",
+        "count": 917,
+        "mae": 0.3687960365731006,
+        "source_run": "outputs/benchmarks/v1/molformer"
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "simulation/homo",
+        "target": "HOMO_eV",
+        "subset": "pooled",
+        "count": 1661,
+        "mae": 0.3536575497294244,
+        "rmse": 0.4601790314815595,
+        "r2": 0.9834698134443091,
+        "normalized_mae": 0.09821987332438249,
+        "normalized_rmse": 0.1278036513379577,
+        "source_run": "outputs/benchmarks/v1/molformer"
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "simulation/lumo",
+        "target": "LUMO_eV",
+        "subset": "anion",
+        "count": 744,
+        "mae": 0.36330453716151706,
+        "source_run": "outputs/benchmarks/v1/molformer"
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "simulation/lumo",
+        "target": "LUMO_eV",
+        "subset": "cation",
+        "count": 917,
+        "mae": 0.35067819569256203,
+        "source_run": "outputs/benchmarks/v1/molformer"
+      },
+      {
+        "run": "molformer@outputs/benchmarks/v1/molformer",
+        "model": "MoLFormer-XL-both-10pct",
+        "task": "simulation/lumo",
+        "target": "LUMO_eV",
+        "subset": "pooled",
+        "count": 1661,
+        "mae": 0.35633382365939076,
+        "rmse": 0.47545256446136214,
+        "r2": 0.9834922344160125,
+        "normalized_mae": 0.09633600427368143,
+        "normalized_rmse": 0.12854014196997626,
+        "source_run": "outputs/benchmarks/v1/molformer"
       }
     ],
     "stage2_partial_charge": [
@@ -3695,6 +5020,25 @@
       "stage2_partial_eligibility": "not_evaluated",
       "stage2_full_eligibility": "not_evaluated",
       "source_run": "outputs/benchmarks/v1/mlp",
+      "issues": ""
+    },
+    {
+      "run": "molformer@outputs/benchmarks/v1/molformer",
+      "model": "MoLFormer-XL-both-10pct",
+      "stage": "benchmark",
+      "operation": "sweep",
+      "status": "completed",
+      "completeness": "complete",
+      "checkpoint_epoch": "",
+      "enabled_tasks": "",
+      "expected_tasks": "stage2_core_physics:3;stage2_partial_charge:0;stage2_physics_full:0;stage3_test:11;stage3_validation:21",
+      "available_tasks": "stage3_test:21;stage3_validation:21;stage2_physics:3",
+      "available_folds": "1;2;3;4;5",
+      "failed_jobs": 0,
+      "stage2_core_eligibility": "eligible",
+      "stage2_partial_eligibility": "not_evaluated",
+      "stage2_full_eligibility": "not_evaluated",
+      "source_run": "outputs/benchmarks/v1/molformer",
       "issues": ""
     }
   ]

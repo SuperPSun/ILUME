@@ -30,9 +30,12 @@
 <polygon class="series" data-panel="stage2_test" data-run="ilume@outputs/v1/stage2/base/evaluate" data-scores="0.550177,0.784682,0.697555,0.863199" points="330.00,437.96 518.32,570.00 330.00,737.41 122.83,570.00" fill="#009e73" fill-opacity="0.12" stroke="#009e73" stroke-width="2"/>
 <line x1="90.0" y1="200" x2="108.0" y2="200" stroke="#009e73" stroke-width="3"/>
 <text x="114.0" y="204" font-family="sans-serif" font-size="12">ILUME</text>
+<polygon class="series" data-panel="stage2_test" data-run="molformer@outputs/benchmarks/v1/molformer" data-scores="0.843331,0.537986,0.471542,0" points="330.00,367.60 459.12,570.00 330.00,683.17 330.00,570.00" fill="#e69f00" fill-opacity="0.12" stroke="#e69f00" stroke-width="2"/>
+<line x1="90.0" y1="220" x2="108.0" y2="220" stroke="#e69f00" stroke-width="3"/>
+<text x="114.0" y="224" font-family="sans-serif" font-size="12">MoLFormer-XL-both-10pct</text>
 <polygon class="series" data-panel="stage2_test" data-run="ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost" data-scores="0.358219,0.49528,0.483526,0" points="330.00,484.03 448.87,570.00 330.00,686.05 330.00,570.00" fill="#d55e00" fill-opacity="0.12" stroke="#d55e00" stroke-width="2"/>
-<line x1="90.0" y1="220" x2="108.0" y2="220" stroke="#d55e00" stroke-width="3"/>
-<text x="114.0" y="224" font-family="sans-serif" font-size="12">ECFP+XGBoost</text>
+<line x1="90.0" y1="240" x2="108.0" y2="240" stroke="#d55e00" stroke-width="3"/>
+<text x="114.0" y="244" font-family="sans-serif" font-size="12">ECFP+XGBoost</text>
 <text x="960.0" y="122" text-anchor="middle" font-family="sans-serif" font-size="20" font-weight="bold">Stage 3 test</text>
 <polygon points="960.00,510.00 992.44,519.52 1014.58,545.08 1019.39,578.54 1005.34,609.29 976.90,627.57 943.10,627.57 914.66,609.29 900.61,578.54 905.42,545.08 927.56,519.52" fill="none" stroke="#c7c7c7" stroke-width="1"/>
 <text x="965.00" y="514.00" font-family="sans-serif" font-size="9" fill="#666">0.25</text>
@@ -77,6 +80,9 @@
 <polygon class="series" data-panel="stage3_test" data-run="ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost" data-scores="0.555179,0.691517,0.667808,0.896236,0.454073,0.287445,0.739444,0.880969,0.371397,0.475997,0.783078" points="960.00,436.76 1049.73,430.38 1105.79,503.42 1172.91,600.61 1042.36,641.37 979.44,636.19 910.00,740.28 800.21,708.46 871.77,582.69 856.08,522.54 858.39,411.90" fill="#d55e00" fill-opacity="0.12" stroke="#d55e00" stroke-width="2"/>
 <line x1="720.0" y1="220" x2="738.0" y2="220" stroke="#d55e00" stroke-width="3"/>
 <text x="744.0" y="224" font-family="sans-serif" font-size="12">ECFP+XGBoost</text>
+<polygon class="series" data-panel="stage3_test" data-run="molformer@outputs/benchmarks/v1/molformer" data-scores="0.806071,0.704947,0.559693,0.885276,0.540489,0.552115,0.730913,0.68437,0.330303,0.378393,0.982415" points="960.00,376.54 1051.47,427.67 1082.19,514.20 1170.30,600.24 1058.03,654.95 997.33,697.14 910.58,738.31 835.87,677.56 881.53,581.28 877.39,532.27 832.53,371.65" fill="#e69f00" fill-opacity="0.12" stroke="#e69f00" stroke-width="2"/>
+<line x1="720.0" y1="240" x2="738.0" y2="240" stroke="#e69f00" stroke-width="3"/>
+<text x="744.0" y="244" font-family="sans-serif" font-size="12">MoLFormer-XL-both-10pct</text>
 <text x="1590.0" y="122" text-anchor="middle" font-family="sans-serif" font-size="20" font-weight="bold">Stage 3 validation</text>
 <polygon points="1590.00,510.00 1607.69,512.67 1623.80,520.43 1636.91,532.59 1645.85,548.08 1649.83,565.52 1648.50,583.35 1641.96,600.00 1630.81,613.98 1616.03,624.06 1598.94,629.33 1581.06,629.33 1563.97,624.06 1549.19,613.98 1538.04,600.00 1531.50,583.35 1530.17,565.52 1534.15,548.08 1543.09,532.59 1556.20,520.43 1572.31,512.67" fill="none" stroke="#c7c7c7" stroke-width="1"/>
 <text x="1595.00" y="514.00" font-family="sans-serif" font-size="9" fill="#666">0.25</text>
@@ -141,4 +147,7 @@
 <polygon class="series" data-panel="stage3_validation" data-run="ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost" data-scores="0.444185,0.656533,0.704894,0.78655,0.864042,0.462309,0.285232,0.929496,0.746304,0.709031,0.781694,0.55731,0.558114,0.884249,0.704962,0.700041,0.901767,0.567408,0.54792,0.681048,0.900673" points="1590.00,463.40 1636.44,419.43 1685.30,430.22 1737.59,452.30 1783.04,494.24 1700.64,561.71 1656.74,585.23 1783.19,681.54 1711.83,701.30 1663.83,723.32 1617.96,755.51 1570.06,702.26 1531.88,690.68 1445.65,725.57 1443.48,654.60 1426.20,607.39 1374.18,553.83 1463.24,520.25 1487.19,488.01 1497.92,434.95 1526.29,363.44" fill="#d55e00" fill-opacity="0.12" stroke="#d55e00" stroke-width="2"/>
 <line x1="1350.0" y1="220" x2="1368.0" y2="220" stroke="#d55e00" stroke-width="3"/>
 <text x="1374.0" y="224" font-family="sans-serif" font-size="12">ECFP+XGBoost</text>
+<polygon class="series" data-panel="stage3_validation" data-run="molformer@outputs/benchmarks/v1/molformer" data-scores="0.82697,0.895054,0.632131,0.526373,0.789318,0.811831,0.501244,0.842227,0.73276,0.59171,0.407309,0.828803,0.637004,0.70826,0.771771,0.661325,0.714666,0.529032,0.378395,0.78859,0.551948" points="1590.00,371.53 1653.32,364.73 1675.46,444.65 1688.77,491.23 1766.34,500.79 1784.29,555.44 1707.28,596.77 1765.05,671.07 1709.62,698.92 1651.62,697.95 1604.57,666.66 1560.35,766.69 1523.67,707.74 1474.38,694.61 1429.59,662.61 1435.26,605.32 1418.96,557.18 1471.81,523.61 1519.00,513.38 1483.39,413.62 1550.95,443.42" fill="#e69f00" fill-opacity="0.12" stroke="#e69f00" stroke-width="2"/>
+<line x1="1350.0" y1="240" x2="1368.0" y2="240" stroke="#e69f00" stroke-width="3"/>
+<text x="1374.0" y="244" font-family="sans-serif" font-size="12">MoLFormer-XL-both-10pct</text>
 </svg>

@@ -3,3 +3,4 @@ rank,run,model,macro_normalized_mae,valid_tasks,total_tasks,per_task_wins,source
 2,mlp@outputs/benchmarks/v1/mlp,MLP,0.220095891657771,21,21,8,outputs/benchmarks/v1/mlp,
 3,dmpnn@outputs/benchmarks/v1/dmpnn,D-MPNN,0.24832205541435884,21,21,1,outputs/benchmarks/v1/dmpnn,
 4,ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost,ECFP+XGBoost,0.30209580088402943,21,21,0,outputs/benchmarks/v1/ecfp_xgboost,
+5,molformer@outputs/benchmarks/v1/molformer,MoLFormer-XL-both-10pct,0.30396116218103647,21,21,0,outputs/benchmarks/v1/molformer,
