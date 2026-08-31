@@ -98,6 +98,11 @@ from benchmarks.common.config import load_benchmark_config
 from benchmarks.common.data import BenchmarkTask, RawDataset
 
 from benchmarks.common.engine import TargetStats
+from benchmarks.stage3_single_task_mlp.adapter import (
+    _run_training_epochs,
+    build_input_features,
+)
+from benchmarks.stage3_single_task_mlp.model import Stage3SingleTaskMLP
 
 from benchmarks.common.environment import validate_dmpnn_environment
 
@@ -357,6 +362,99 @@ def test_formal_configs_and_registry_resolution(tmp_path: Path) -> None:
         )
     assert matrix.shape == (0, 2 * 217 + 2)
     assert reporter.bars == []
+
+
+def test_stage3_single_task_mlp_config_and_ordered_concat() -> None:
+    config = load_benchmark_config(
+        "configs/benchmarks/ilume_stage3_single_task_mlp.yaml"
+    )
+    assert config.display_name == "ILUME Stage3 Single-task MLP"
+    assert len(configured_tasks(config, "stage3")) == 21
+    assert configured_tasks(config, "stage2_physics") == ()
+    assert config.data.feature_cache is None and config.features is None
+    with pytest.raises(ValueError, match="registered recipe"):
+        replace(config, model={**config.model, "dropout": 0.2}).validate()
+
+    embeddings = torch.arange(4 * 512, dtype=torch.float32).reshape(4, 512)
+    class Dataset:
+        conditions = torch.tensor([[0.25, -0.5], [1.0, 2.0]])
+        primary_object_ids = torch.tensor([0, 1])
+        partner_object_ids = torch.tensor([2, 3])
+
+        def __len__(self) -> int:
+            return 2
+
+    dataset = Dataset()
+    spec = SimpleNamespace(
+        task_id="experiment/partner",
+        condition_columns=("temperature_K", "pressure_kPa"),
+        partner_slots=("solute",),
+    )
+    features = build_input_features(dataset, embeddings, spec)
+    assert features.shape == (2, 1026)
+    torch.testing.assert_close(features[:, :512], embeddings[[0, 1]])
+    torch.testing.assert_close(features[:, 512:1024], embeddings[[2, 3]])
+    torch.testing.assert_close(features[:, 1024:], dataset.conditions)
+    first_model = Stage3SingleTaskMLP(features.shape[1])
+    second_model = Stage3SingleTaskMLP(features.shape[1])
+    assert {
+        id(parameter) for parameter in first_model.parameters()
+    }.isdisjoint(id(parameter) for parameter in second_model.parameters())
+
+    condition_only = SimpleNamespace(
+        task_id="experiment/condition",
+        condition_columns=("temperature_K", "pressure_kPa"),
+        partner_slots=(),
+    )
+    dataset.partner_object_ids = torch.full((2,), -1)
+    assert build_input_features(dataset, embeddings, condition_only).shape == (2, 514)
+    with pytest.raises(ValueError, match="partner embedding is missing"):
+        build_input_features(dataset, embeddings, spec)
+
+    ordinary = SimpleNamespace(
+        task_id="experiment/plain", condition_columns=(), partner_slots=()
+    )
+    dataset.conditions = torch.empty((2, 0))
+    dataset.partner_object_ids = torch.full((2,), -1)
+    assert build_input_features(dataset, embeddings, ordinary).shape == (2, 512)
+
+
+def test_stage3_single_task_mlp_runs_full_budget_and_selects_best() -> None:
+    config = load_benchmark_config(
+        "configs/benchmarks/ilume_stage3_single_task_mlp.yaml"
+    )
+    config = replace(
+        config,
+        training={**config.training, "batch_size": 2, "max_epochs": 3},
+    )
+    torch.manual_seed(7)
+    model = Stage3SingleTaskMLP(4)
+    train_features = torch.randn(6, 4)
+    train_targets = torch.linspace(-1.0, 1.0, 6)
+    valid_features = torch.randn(3, 4)
+    valid_targets = torch.tensor([-0.5, 0.0, 0.5])
+    reporter = RecordingReporter()
+    history, best_state, best_epoch, best_score = _run_training_epochs(
+        model,
+        train_features,
+        train_targets,
+        valid_features,
+        valid_targets,
+        config,
+        training_seed=123,
+        device=torch.device("cpu"),
+        use_bf16=False,
+        reporter=reporter,
+    )
+    assert [row["epoch"] for row in history] == [1, 2, 3]
+    assert best_score == min(row["valid_normalized_mae"] for row in history)
+    assert best_epoch == next(
+        row["epoch"] for row in history
+        if row["valid_normalized_mae"] == best_score
+    )
+    restored = Stage3SingleTaskMLP(4)
+    restored.load_state_dict(best_state, strict=True)
+    assert reporter.bars[0].n == 3 and reporter.bars[0].closed
 
 def test_formal_dmpnn_config_resolves_109_training_jobs() -> None:
     config = load_benchmark_config("configs/benchmarks/dmpnn.yaml")
@@ -676,6 +774,108 @@ def test_dmpnn_full_requires_complete_core_and_partial_from_same_sweep(
     assert incomplete["reporting"]["benchmarks"]["stage2_physics_full"][
         "status"
     ] == "incomplete"
+
+
+def test_stage3_only_ablation_aggregate_has_one_model_and_no_stage2_sections(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_benchmark_config(
+        "configs/benchmarks/ilume_stage3_single_task_mlp.yaml"
+    )
+    task = "experiment/example"
+    study_id = f"{config.name}-{semantic_identity(
+        'benchmark.reporting-study.v1',
+        {'model': config.name, 'config': sweep_module._scientific_config(config)},
+    )['hash']}"
+    monkeypatch.setattr(
+        sweep_module,
+        "configured_tasks",
+        lambda _config, benchmark: (task,) if benchmark == "stage3" else (),
+    )
+    monkeypatch.setattr(sweep_module, "resolve_task", lambda *_args: object())
+    monkeypatch.setattr(sweep_module, "has_test_rows", lambda _task: True)
+    monkeypatch.setattr(
+        sweep_module, "repository_relative", lambda value: Path(value).as_posix()
+    )
+    sources = {
+        **{f"{task}:fold{fold}": f"source-{fold}" for fold in range(1, 6)},
+        f"{task}:test": "test-source",
+    }
+    metric = {
+        "count": 2, "mae": 1.0, "rmse": 1.0, "r2": 0.0,
+        "normalized_mae": 0.5, "normalized_rmse": 0.5,
+    }
+
+    def completed(path: Path, payload: dict[str, object]) -> None:
+        run = path / "attempt-001"
+        run.mkdir(parents=True)
+        (run / "metadata.json").write_text(
+            '{"status":"completed"}\n', encoding="utf-8"
+        )
+        (run / "summary.json").write_text(
+            json.dumps(payload), encoding="utf-8"
+        )
+
+    task_root = tmp_path / "stage3" / "experiment__example"
+    for fold in range(1, 6):
+        comparison = comparison_identity(
+            "stage3_property",
+            split="valid",
+            expected=[task],
+            sources={key: value for key, value in sources.items() if not key.endswith(":test")},
+            normalization={f"{task}:fold{fold}": {"scale": 2.0}},
+            folds=range(1, 6),
+        )
+        completed(
+            task_root / f"evaluate_valid_fold{fold}",
+            {
+                "targets": {"value": metric},
+                "reporting": {
+                    "schema_version": 1,
+                    "study_id": study_id,
+                    "protocol": {"expected_tasks": [task]},
+                    "comparison_identity": comparison,
+                },
+            },
+        )
+    completed(
+        task_root / "evaluate_test",
+        {
+            "ensemble": {"targets": {"value": metric}},
+            "reporting": {
+                "schema_version": 1,
+                "study_id": study_id,
+                "protocol": {"expected_tasks": [task]},
+                "comparison_identity": comparison_identity(
+                    "stage3_property",
+                    split="test",
+                    expected=[task],
+                    sources=sources,
+                    normalization={
+                        f"{task}:fold{fold}": {"scale": 2.0}
+                        for fold in range(1, 6)
+                    },
+                    folds=range(1, 6),
+                    ensemble=True,
+                ),
+            },
+        },
+    )
+    summary = _aggregate(tmp_path, config)
+    assert set(summary["reporting"]["benchmarks"]) == {
+        "stage3_test", "stage3_validation"
+    }
+    assert summary["reporting"]["model_id"] == config.name
+    assert summary["reporting"]["model_display_name"] == config.display_name
+    assert summary["model_selector"] == "validation_best"
+    assert summary["checkpoint_epoch"] is None
+    _write_run(tmp_path / "published", summary, stage="benchmark")
+    published = publish_summary(
+        tmp_path / "published", tmp_path / "leaderboard", tmp_path
+    )
+    assert len(published["leaderboards"]["stage3_test"]) == 1
+    assert len(published["leaderboards"]["stage3_validation"]) == 1
+    assert "legacy_stage2_reporting_contract" not in published["health"][0]["issues"]
 
 # --- Reporting contract ---
 

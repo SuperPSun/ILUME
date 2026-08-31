@@ -491,7 +491,10 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
         summary = candidate.summary or {}
         issues = list(candidate.issues)
         reporting = summary.get("reporting", {})
-        has_stage2 = candidate.metadata.get("stage") in {"stage2", "benchmark"}
+        has_stage2 = candidate.metadata.get("stage") == "stage2" or (
+            candidate.metadata.get("stage") == "benchmark"
+            and reporting.get("contract") == STAGE2_BENCHMARK_SUITE_CONTRACT
+        )
         eligibility = (
             _stage2_eligibility(reporting) if has_stage2 and reporting else ("", "", "")
         )
@@ -516,13 +519,15 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
                     f"{name}:{len(value['protocol'].get('expected_tasks', ())) }"
                     for name, value in sorted(sections.items())
                 )
-                available = ";".join(
-                    (
-                        f"stage3_test:{len(summary['stage3_property_benchmark']['test_ensemble'])}",
-                        f"stage3_validation:{len(summary['stage3_property_benchmark']['validation_five_fold'])}",
-                        f"stage2_physics:{len(summary['stage2_physics_benchmark']['test'])}",
+                available_items = [
+                    f"stage3_test:{len(summary['stage3_property_benchmark']['test_ensemble'])}",
+                    f"stage3_validation:{len(summary['stage3_property_benchmark']['validation_five_fold'])}",
+                ]
+                if "stage2_physics_benchmark" in summary:
+                    available_items.append(
+                        f"stage2_physics:{len(summary['stage2_physics_benchmark']['test'])}"
                     )
-                )
+                available = ";".join(available_items)
                 folds = ";".join(map(str, sections["stage3_validation"]["protocol"]["folds"]))
             elif candidate.metadata["stage"] == "stage3":
                 protocol = reporting["protocol"]

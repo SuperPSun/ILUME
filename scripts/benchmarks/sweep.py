@@ -559,6 +559,65 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
     )["hash"]
     if study_ids - {study_id}:
         raise ValueError("Benchmark sweep contains incompatible reporting study identities")
+    stage3_sections = {
+        "stage3_test": {
+            "benchmark": "stage3_property",
+            "protocol": {
+                "split": "test", "folds": list(config.stage3.folds),
+                "ensemble": True, "expected_tasks": test_expected,
+                "enabled_tasks": valid_expected,
+                **(
+                    {"model_selector": "validation_best", "checkpoint_epoch": None}
+                    if config.name == "ilume_stage3_single_task_mlp"
+                    else {}
+                ),
+            },
+            "comparison_identity": merged_comparison(
+                [
+                    item for item in stage3_test_reporting
+                    if item["protocol"]["expected_tasks"][0] in test_expected
+                ],
+                benchmark="stage3_property", split="test",
+                expected=test_expected, ensemble=True,
+            ),
+        },
+        "stage3_validation": {
+            "benchmark": "stage3_property",
+            "protocol": {
+                "split": "valid", "folds": list(config.stage3.folds),
+                "ensemble": False, "expected_tasks": valid_expected,
+                **(
+                    {"model_selector": "validation_best", "checkpoint_epoch": None}
+                    if config.name == "ilume_stage3_single_task_mlp"
+                    else {}
+                ),
+            },
+            "comparison_identity": merged_comparison(
+                stage3_valid_reporting,
+                benchmark="stage3_property", split="valid",
+                expected=valid_expected, ensemble=False,
+            ),
+        },
+    }
+    if not configured_stage2:
+        return {
+            "model": config.name,
+            "model_selector": "validation_best",
+            "checkpoint_epoch": None,
+            "stage3_property_benchmark": {
+                "validation_five_fold": stage3_valid,
+                "test_ensemble": stage3_test,
+                "macro_normalized_mae": macro_normalized_mae(stage3_test),
+            },
+            "reporting": {
+                "schema_version": REPORTING_SCHEMA_VERSION,
+                "model_id": config.name,
+                "model_display_name": config.display_name,
+                "study_id": study_id,
+                "benchmarks": stage3_sections,
+                "source_runs": source_runs,
+            },
+        }
     partial_supported = PARTIAL_CHARGE_TASK in configured_stage2
     partial_complete = bool(
         partial_supported
@@ -616,34 +675,7 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
             "model_display_name": config.display_name,
             "study_id": study_id,
             "benchmarks": {
-                "stage3_test": {
-                    "benchmark": "stage3_property",
-                    "protocol": {
-                        "split": "test", "folds": list(config.stage3.folds),
-                        "ensemble": True, "expected_tasks": test_expected,
-                        "enabled_tasks": valid_expected,
-                    },
-                    "comparison_identity": merged_comparison(
-                        [
-                            item for item in stage3_test_reporting
-                            if item["protocol"]["expected_tasks"][0] in test_expected
-                        ],
-                        benchmark="stage3_property", split="test",
-                        expected=test_expected, ensemble=True,
-                    ),
-                },
-                "stage3_validation": {
-                    "benchmark": "stage3_property",
-                    "protocol": {
-                        "split": "valid", "folds": list(config.stage3.folds),
-                        "ensemble": False, "expected_tasks": valid_expected,
-                    },
-                    "comparison_identity": merged_comparison(
-                        stage3_valid_reporting,
-                        benchmark="stage3_property", split="valid",
-                        expected=valid_expected, ensemble=False,
-                    ),
-                },
+                **stage3_sections,
                 "stage2_core_physics": {
                     "status": "complete" if stage2_complete else "incomplete",
                     "benchmark": "stage2_physics",
@@ -780,7 +812,10 @@ def main() -> None:
         devices = _parse_devices(args.devices)
     except ValueError as error:
         parser.error(str(error))
-    if devices and config.name not in {"mlp", "dmpnn", "molformer", "ilbert"}:
+    if devices and config.name not in {
+        "mlp", "dmpnn", "molformer", "ilbert",
+        "ilume_stage3_single_task_mlp",
+    }:
         parser.error("--devices is only supported for GPU neural-network benchmarks")
     if devices and config.training.get("device") != "cuda":
         parser.error("--devices requires training.device: cuda")
@@ -794,7 +829,11 @@ def main() -> None:
         data_metadata=["data/task_catalog.csv", "data/stage2/metadata.json"],
         details={
             "reporting_schema_version": REPORTING_SCHEMA_VERSION,
-            "reporting_contract": STAGE2_BENCHMARK_SUITE_CONTRACT,
+            **(
+                {"reporting_contract": STAGE2_BENCHMARK_SUITE_CONTRACT}
+                if config.stage2_physics.enabled
+                else {}
+            ),
             **environment_run_details(environment_snapshot),
         },
     )

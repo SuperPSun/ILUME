@@ -8,7 +8,7 @@
 - Stage 2：[ADR-0019](0019-stage2-catalog-object-v3.md) 定义 Object v3；[ADR-0025](0025-stage2-homo-lumo-scalar-tasks.md) 定义现役 HOMO/LUMO 与 reporting v2；[ADR-0027](0027-late-taskwise-refinement.md) 修订末期训练和最终评估 artifact。
 - Stage 3：[ADR-0020](0020-stage3-v1-sparse-home-pcgrad.md) 定义 sparse-label HoME 与 hierarchical PCGrad；末期 PRIVATE-only refinement 由 [ADR-0027](0027-late-taskwise-refinement.md) 定义。
 - 跨 Stage identity/audit：[ADR-0021](0021-identity-audit-contract-v1.md)、[ADR-0027](0027-late-taskwise-refinement.md)。
-- Baseline 与 reporting：[ADR-0022](0022-mlp-ecfp-xgboost-baselines.md)、[0023](0023-unified-evaluation-reporting.md)、[0024](0024-stage2-partial-charge-benchmark-suite.md)、[0025](0025-stage2-homo-lumo-scalar-tasks.md)、[0028](0028-chemprop-dmpnn-baseline.md)、[0029](0029-molformer-baseline.md)、[0030](0030-molformer-throughput-contract.md)、[0031](0031-stage3-summary-normalization-relaxation.md)、[0032](0032-ilbert-baseline.md)。
+- Baseline、消融与 reporting：[ADR-0022](0022-mlp-ecfp-xgboost-baselines.md)、[0023](0023-unified-evaluation-reporting.md)、[0024](0024-stage2-partial-charge-benchmark-suite.md)、[0025](0025-stage2-homo-lumo-scalar-tasks.md)、[0028](0028-chemprop-dmpnn-baseline.md)、[0029](0029-molformer-baseline.md)、[0030](0030-molformer-throughput-contract.md)、[0031](0031-stage3-summary-normalization-relaxation.md)、[0032](0032-ilbert-baseline.md)、[0033](0033-stage3-single-task-mlp-ablation.md)。
 
 ## 预注册实验
 

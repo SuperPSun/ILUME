@@ -17,6 +17,7 @@ class DataConfig:
     stage3_authority_config: Path
     feature_cache: Path | None
     stage2_authority_config: Path | None = None
+    stage3_prepared_artifacts: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -48,7 +49,10 @@ class Stage2PhysicsConfig:
 
 @dataclass(frozen=True)
 class BenchmarkConfig:
-    name: Literal["mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert"]
+    name: Literal[
+        "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert",
+        "ilume_stage3_single_task_mlp",
+    ]
     data: DataConfig
     features: FeatureConfig | None
     environment: EnvironmentConfig | None
@@ -61,7 +65,10 @@ class BenchmarkConfig:
     display_name: str = ""
 
     def validate(self) -> None:
-        if self.name not in {"mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert"}:
+        if self.name not in {
+            "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert",
+            "ilume_stage3_single_task_mlp",
+        }:
             raise ValueError(f"Unknown benchmark model: {self.name}")
         if not self.display_name:
             raise ValueError("Benchmark display_name must be non-empty")
@@ -77,7 +84,11 @@ class BenchmarkConfig:
             self.features.radius <= 0 or self.features.n_bits <= 0
         ):
             raise ValueError("Fingerprint radius and n_bits must be positive")
-        advanced = self.name in {"dmpnn", "molformer", "ilbert"}
+        if self.name == "ilume_stage3_single_task_mlp":
+            self._validate_ilume_stage3_single_task_mlp()
+        advanced = self.name in {
+            "dmpnn", "molformer", "ilbert", "ilume_stage3_single_task_mlp"
+        }
         if not advanced and self.data.feature_cache is None:
             raise ValueError("Feature baselines require data.feature_cache")
         if not advanced and self.environment is not None:
@@ -100,6 +111,63 @@ class BenchmarkConfig:
             raise ValueError("Enabled Stage 3 benchmark has no tasks")
         if self.stage2_physics.enabled and not self.stage2_physics.tasks:
             raise ValueError("Enabled Stage 2 physics benchmark has no tasks")
+
+    def _validate_ilume_stage3_single_task_mlp(self) -> None:
+        if self.features is not None or self.environment is not None:
+            raise ValueError(
+                "ILUME Stage3 Single-task MLP uses prepared embeddings in the main environment"
+            )
+        if self.data.feature_cache is not None:
+            raise ValueError(
+                "ILUME Stage3 Single-task MLP does not use a feature cache"
+            )
+        if self.data.stage3_prepared_artifacts is None:
+            raise ValueError(
+                "ILUME Stage3 Single-task MLP requires prepared Stage 3 artifacts"
+            )
+        if not self.stage3.enabled or self.stage3.tasks != "all":
+            raise ValueError(
+                "ILUME Stage3 Single-task MLP requires all Stage 3 tasks"
+            )
+        if self.stage3.folds != (1, 2, 3, 4, 5):
+            raise ValueError(
+                "ILUME Stage3 Single-task MLP requires folds [1, 2, 3, 4, 5]"
+            )
+        if self.stage2_physics.enabled or self.stage2_physics.tasks:
+            raise ValueError(
+                "ILUME Stage3 Single-task MLP is a Stage 3-only ablation"
+            )
+        expected_model = {
+            "hidden_dims": [512, 256],
+            "activation": "silu",
+            "dropout": 0.1,
+        }
+        if self.model != expected_model:
+            raise ValueError(
+                "ILUME Stage3 Single-task MLP model must match the registered recipe"
+            )
+        expected_training = {
+            "optimizer": "adamw",
+            "learning_rate": 3.0e-4,
+            "weight_decay": 1.0e-2,
+            "betas": [0.9, 0.999],
+            "eps": 1.0e-8,
+            "scheduler": "linear_warmup_cosine",
+            "warmup_ratio": 0.05,
+            "min_lr_ratio": 0.05,
+            "batch_size": 128,
+            "max_epochs": 100,
+            "loss": "normalized_smooth_l1",
+            "smooth_l1_beta": 1.0,
+            "max_grad_norm": 1.0,
+            "selection_metric": "validation_normalized_mae",
+            "device": "cuda",
+            "precision": "bf16",
+        }
+        if self.training != expected_training:
+            raise ValueError(
+                "ILUME Stage3 Single-task MLP training must match the registered recipe"
+            )
 
     def _validate_dmpnn(self) -> None:
         if self.features is not None:
@@ -287,6 +355,8 @@ class BenchmarkConfig:
             return value
 
         payload = convert(asdict(self))
+        if payload["data"].get("stage3_prepared_artifacts") is None:
+            payload["data"].pop("stage3_prepared_artifacts")
         if not payload["runtime"]:
             payload.pop("runtime")
         return payload
@@ -313,7 +383,11 @@ def benchmark_config_from_dict(raw: dict[str, Any]) -> BenchmarkConfig:
     data = _mapping(raw.get("data"), "data")
     _only(
         data,
-        {"data_root", "task_catalog", "stage3_authority_config", "feature_cache", "stage2_authority_config"},
+        {
+            "data_root", "task_catalog", "stage3_authority_config",
+            "feature_cache", "stage2_authority_config",
+            "stage3_prepared_artifacts",
+        },
         "data",
     )
     features_raw = raw.get("features")
@@ -354,6 +428,11 @@ def benchmark_config_from_dict(raw: dict[str, Any]) -> BenchmarkConfig:
                 None
                 if data.get("stage2_authority_config") is None
                 else Path(data["stage2_authority_config"])
+            ),
+            stage3_prepared_artifacts=(
+                None
+                if data.get("stage3_prepared_artifacts") is None
+                else Path(data["stage3_prepared_artifacts"])
             ),
         ),
         features=(

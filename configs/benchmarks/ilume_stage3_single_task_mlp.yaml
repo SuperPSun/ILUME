@@ -1,0 +1,37 @@
+name: ilume_stage3_single_task_mlp
+display_name: ILUME Stage3 Single-task MLP
+seed: 42
+data:
+  data_root: data
+  task_catalog: data/task_catalog.csv
+  stage3_authority_config: configs/v1/stage3/base.yaml
+  stage3_prepared_artifacts: outputs/v1/stage3/base/prepare/artifacts
+  feature_cache: null
+model:
+  hidden_dims: [512, 256]
+  activation: silu
+  dropout: 0.1
+training:
+  optimizer: adamw
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+  scheduler: linear_warmup_cosine
+  warmup_ratio: 0.05
+  min_lr_ratio: 0.05
+  batch_size: 128
+  max_epochs: 100
+  loss: normalized_smooth_l1
+  smooth_l1_beta: 1.0
+  max_grad_norm: 1.0
+  selection_metric: validation_normalized_mae
+  device: cuda
+  precision: bf16
+stage3:
+  enabled: true
+  tasks: all
+  folds: [1, 2, 3, 4, 5]
+stage2_physics:
+  enabled: false
+  tasks: []

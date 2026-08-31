@@ -227,6 +227,7 @@ def main() -> None:
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     config = load_benchmark_config(args.config)
+    validation_best = config.name == "ilume_stage3_single_task_mlp"
     environment_snapshot = ensure_benchmark_environment(config)
     reporter = ProgressReporter()
     partial_charge = args.task == PARTIAL_CHARGE_TASK
@@ -317,6 +318,11 @@ def main() -> None:
             "benchmark": args.benchmark, "task": args.task, "split": args.split,
             "fold": selector_fold, "ensemble_folds": args.ensemble_folds,
             "checkpoints": [repository_relative(path) for path in checkpoints],
+            **(
+                {"model_selector": "validation_best", "checkpoint_epoch": None}
+                if validation_best
+                else {}
+            ),
             **environment_run_details(environment_snapshot),
         },
     )
@@ -414,6 +420,10 @@ def main() -> None:
                 "fold": selector_fold, "targets": first.metrics,
             }
             extras = None
+        if validation_best:
+            summary.update(
+                {"model_selector": "validation_best", "checkpoint_epoch": None}
+            )
         if input_audit is not None:
             summary["input_audit"] = input_audit
         prediction_manifest = _write_task_predictions(
@@ -456,6 +466,11 @@ def main() -> None:
                 "folds": list(config.stage3.folds) if args.benchmark == "stage3" else [],
                 "ensemble": args.ensemble_folds,
                 "expected_tasks": [args.task],
+                **(
+                    {"model_selector": "validation_best", "checkpoint_epoch": None}
+                    if validation_best
+                    else {}
+                ),
             },
             comparison=comparison,
             study_id=f"{config.name}-{study}",

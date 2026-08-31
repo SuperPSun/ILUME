@@ -102,7 +102,7 @@ Stage 3 evaluator 同样默认加载每个 fold 的 `taskwise_refined.pt`；显�
 
 ## Baselines
 
-MLP、ECFP4-XGBoost、Chemprop D-MPNN、MoLFormer 与 ILBERT 位于 `benchmarks/`，与 Stage 代码隔离；合同见 [ADR-0022](docs/adr/0022-mlp-ecfp-xgboost-baselines.md)、[ADR-0028](docs/adr/0028-chemprop-dmpnn-baseline.md)、[ADR-0029](docs/adr/0029-molformer-baseline.md)、[ADR-0030](docs/adr/0030-molformer-throughput-contract.md) 和 [ADR-0032](docs/adr/0032-ilbert-baseline.md)。
+MLP、ECFP4-XGBoost、Chemprop D-MPNN、MoLFormer、ILBERT 与 Stage3 Single-task MLP 消融位于 `benchmarks/`，与 Stage 代码隔离；合同见 [ADR-0022](docs/adr/0022-mlp-ecfp-xgboost-baselines.md)、[ADR-0028](docs/adr/0028-chemprop-dmpnn-baseline.md)、[ADR-0029](docs/adr/0029-molformer-baseline.md)、[ADR-0030](docs/adr/0030-molformer-throughput-contract.md)、[ADR-0032](docs/adr/0032-ilbert-baseline.md) 和 [ADR-0033](docs/adr/0033-stage3-single-task-mlp-ablation.md)。
 
 ```bash
 python -m pip install -e ".[benchmarks]"
@@ -116,7 +116,18 @@ python scripts/benchmarks/sweep.py \
   --config configs/benchmarks/ecfp_xgboost.yaml \
   --output outputs/benchmarks/v1/ecfp_xgboost \
   --max-workers 1
+
+python scripts/benchmarks/sweep.py \
+  --config configs/benchmarks/ilume_stage3_single_task_mlp.yaml \
+  --output outputs/benchmarks/v1/ilume_stage3_single_task_mlp \
+  --max-workers 1
 ```
+
+Stage3 Single-task MLP 直接读取现役 Base prepared artifact，以冻结的 primary/partner
+Object embedding 和 normalized conditions 做有序 concat。21 个 task × 5 folds 各自训练
+完全独立的 `input -> 512 -> 256 -> 1` MLP，并由一个 Stage3-only sweep/reporting identity
+汇总。它同时移除 HoME routing、跨任务共享、PCGrad 与 composite sampling，因此只能解释为
+整体架构消融，不能解释成某个单组件的贡献。
 
 D-MPNN 使用独立 hash-lock 环境，不修改主环境。环境只由以下显式命令创建和安装；普通运行会通过 `conda run` 自动进入已有环境，不要求 `conda activate`，也不会自动安装或更新依赖。
 
@@ -242,6 +253,7 @@ python scripts/benchmarks/summarize.py \
     outputs/v1/stage2/base/evaluate/test_benchmark_suite_v2 \
     outputs/benchmarks/v1/mlp \
     outputs/benchmarks/v1/ecfp_xgboost \
+    outputs/benchmarks/v1/ilume_stage3_single_task_mlp \
   --output summary
 ```
 

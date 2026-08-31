@@ -116,6 +116,14 @@ def prepare_training(
     *,
     reporter: ProgressReporter | None = None,
 ) -> TrainingBundle:
+    if config.name == "ilume_stage3_single_task_mlp":
+        from benchmarks.stage3_single_task_mlp.adapter import (
+            prepare_stage3_single_task_mlp_training,
+        )
+
+        return prepare_stage3_single_task_mlp_training(  # type: ignore[return-value]
+            config, benchmark, task_id, fold
+        )
     if config.name == "dmpnn":
         from benchmarks.dmpnn.adapter import prepare_dmpnn_training
 
@@ -422,6 +430,14 @@ def train_bundle(
     *,
     reporter: ProgressReporter | None = None,
 ) -> dict[str, Any]:
+    if config.name == "ilume_stage3_single_task_mlp":
+        from benchmarks.stage3_single_task_mlp.adapter import (
+            train_stage3_single_task_mlp_bundle,
+        )
+
+        return train_stage3_single_task_mlp_bundle(  # type: ignore[arg-type]
+            config, bundle, output_dir, reporter=reporter
+        )
     if config.name == "dmpnn":
         from benchmarks.dmpnn.adapter import train_dmpnn_bundle
 
@@ -533,6 +549,14 @@ def evaluate_checkpoint(
     *,
     reporter: ProgressReporter | None = None,
 ) -> EvaluationResult:
+    if config.name == "ilume_stage3_single_task_mlp":
+        from benchmarks.stage3_single_task_mlp.adapter import (
+            evaluate_stage3_single_task_mlp_checkpoint,
+        )
+
+        return evaluate_stage3_single_task_mlp_checkpoint(
+            config, benchmark, task_id, fold, checkpoint_dir, split
+        )
     if config.name == "dmpnn":
         from benchmarks.dmpnn.adapter import evaluate_dmpnn_checkpoint
 
