@@ -273,6 +273,16 @@ def main() -> None:
             config.stage3.folds[0] if args.ensemble_folds else selector_fold,
             args.split,
         )
+    if config.name == "ilbert":
+        from benchmarks.ilbert.adapter import ilbert_evaluation_audit
+
+        input_audit = ilbert_evaluation_audit(
+            config,
+            args.benchmark,
+            args.task,
+            config.stage3.folds[0] if args.ensemble_folds else selector_fold,
+            args.split,
+        )
     evaluation_identity = semantic_identity(
         "benchmark.evaluation.v1",
         {
@@ -388,7 +398,7 @@ def main() -> None:
         if input_audit is not None and any(
             result.input_audit != input_audit for result in results
         ):
-            raise ValueError("MoLFormer evaluation input audit changed during evaluation")
+            raise ValueError("Token-baseline evaluation input audit changed during evaluation")
         if args.ensemble_folds:
             prediction, ensemble_metrics = ensemble_evaluation(results, tuple(first.metrics))
             summary: dict[str, Any] = {

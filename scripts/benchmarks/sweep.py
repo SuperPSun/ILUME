@@ -780,7 +780,7 @@ def main() -> None:
         devices = _parse_devices(args.devices)
     except ValueError as error:
         parser.error(str(error))
-    if devices and config.name not in {"mlp", "dmpnn", "molformer"}:
+    if devices and config.name not in {"mlp", "dmpnn", "molformer", "ilbert"}:
         parser.error("--devices is only supported for GPU neural-network benchmarks")
     if devices and config.training.get("device") != "cuda":
         parser.error("--devices requires training.device: cuda")

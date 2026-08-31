@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+import importlib.util
 import json
 import os
 import platform
@@ -39,7 +40,7 @@ def _locked_versions(path: Path) -> dict[str, str]:
 def environment_command(
     config: BenchmarkConfig, argv: Sequence[str], *, conda: str | None = None
 ) -> list[str]:
-    if config.name not in {"dmpnn", "molformer"} or config.environment is None:
+    if config.name not in {"dmpnn", "molformer", "ilbert"} or config.environment is None:
         raise ValueError("Environment dispatch is only defined for advanced baselines")
     executable = conda or shutil.which("conda")
     if executable is None:
@@ -61,7 +62,7 @@ def environment_command(
 def ensure_benchmark_environment(
     config: BenchmarkConfig, argv: Sequence[str] | None = None
 ) -> dict[str, Any] | None:
-    if config.name not in {"dmpnn", "molformer"}:
+    if config.name not in {"dmpnn", "molformer", "ilbert"}:
         return None
     if config.environment is None:
         raise ValueError(f"{config.display_name} environment contract is missing")
@@ -80,11 +81,11 @@ def ensure_benchmark_environment(
         raise RuntimeError(
             f"Benchmark environment marker mismatch: expected {config.environment.name}, got {marker}"
         )
-    return (
-        validate_dmpnn_environment(config)
-        if config.name == "dmpnn"
-        else validate_molformer_environment(config)
-    )
+    if config.name == "dmpnn":
+        return validate_dmpnn_environment(config)
+    if config.name == "molformer":
+        return validate_molformer_environment(config)
+    return validate_ilbert_environment(config)
 
 
 def _installed_versions() -> dict[str, str]:
@@ -268,6 +269,139 @@ def validate_molformer_environment(config: BenchmarkConfig) -> dict[str, Any]:
     }
 
 
+def _load_ilbert_tokenizer_class(path: Path) -> Any:
+    spec = importlib.util.spec_from_file_location(
+        "ilume_pinned_ilbert_tokenizer", path
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Cannot load pinned ILBERT tokenizer source")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.SMILES_Atomwise_Tokenizer
+
+
+def ilbert_asset_snapshot(config: BenchmarkConfig) -> dict[str, Any]:
+    if config.name != "ilbert":
+        raise ValueError("ILBERT asset validation requires an ILBERT config")
+    checkout = repository_path(str(config.model["checkout"]))
+    model_source = checkout / "ILBERT" / "model.py"
+    tokenizer_source = checkout / "ILBERT" / "ILtokenizer.py"
+    vocab = checkout / "ILBERT" / "merged_vocab.txt"
+    checkpoint = repository_path(str(config.model["pretrained_checkpoint"]))
+    required = {
+        "model.py": (model_source, str(config.model["model_source_sha256"])),
+        "ILtokenizer.py": (
+            tokenizer_source,
+            str(config.model["tokenizer_source_sha256"]),
+        ),
+        "merged_vocab.txt": (vocab, str(config.model["vocab_sha256"])),
+        "pretrained_model.pth": (
+            checkpoint,
+            str(config.model["pretrained_sha256"]),
+        ),
+    }
+    missing = sorted(name for name, (path, _) in required.items() if not path.is_file())
+    if missing:
+        raise FileNotFoundError("ILBERT local assets are incomplete: " + ", ".join(missing))
+    mismatches = {
+        name: {"expected": expected, "actual": sha256_file(path)}
+        for name, (path, expected) in required.items()
+        if sha256_file(path) != expected
+    }
+    if mismatches:
+        raise RuntimeError(
+            "ILBERT local asset hash mismatch: "
+            + json.dumps(mismatches, sort_keys=True)
+        )
+    revision = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    actual_revision = revision.stdout.strip()
+    if revision.returncode != 0 or actual_revision != str(config.model["revision"]):
+        raise RuntimeError(
+            "ILBERT checkout revision mismatch: "
+            f"expected {config.model['revision']}, got {actual_revision or 'unavailable'}"
+        )
+    tokenizer_class = _load_ilbert_tokenizer_class(tokenizer_source)
+    tokenizer = tokenizer_class(str(vocab))
+    special_ids = {
+        "pad": tokenizer.pad_token_id,
+        "unk": tokenizer.unk_token_id,
+        "cls": tokenizer.cls_token_id,
+        "sep": tokenizer.sep_token_id,
+        "mask": tokenizer.mask_token_id,
+    }
+    if int(tokenizer.vocab_size) != 2000 or special_ids != {
+        "pad": 0,
+        "unk": 1,
+        "cls": 2,
+        "sep": 3,
+        "mask": 4,
+    }:
+        raise RuntimeError("ILBERT tokenizer vocabulary or special IDs differ from upstream")
+    return {
+        "repository": str(config.model["repository"]),
+        "revision": actual_revision,
+        "files": {
+            name: {"sha256": expected, "size": path.stat().st_size}
+            for name, (path, expected) in sorted(required.items())
+        },
+        "tokenizer": {"vocab_size": 2000, "special_token_ids": special_ids},
+    }
+
+
+def validate_ilbert_environment(config: BenchmarkConfig) -> dict[str, Any]:
+    if config.name != "ilbert" or config.environment is None:
+        raise ValueError("ILBERT environment validation requires an ILBERT config")
+    try:
+        import atomInSmiles
+        import numpy
+        from rdkit import rdBase
+        import tokenizers
+        import torch
+        import transformers
+    except ImportError as error:
+        raise RuntimeError("ILBERT environment cannot import its locked runtime") from error
+    direct = {
+        "python": platform.python_version(),
+        "pip": importlib.metadata.version("pip"),
+        "atominsmiles": importlib.metadata.version("atomInSmiles"),
+        "numpy": numpy.__version__,
+        "transformers": transformers.__version__,
+        "tokenizers": tokenizers.__version__,
+        "pytorch": torch.__version__,
+        "cuda": torch.version.cuda,
+        "rdkit": rdBase.rdkitVersion,
+    }
+    expected_direct = {
+        "python": "3.11.9",
+        "pip": "25.2",
+        "atominsmiles": "1.0.2",
+        "numpy": "1.26.4",
+        "transformers": "4.39.1",
+        "tokenizers": "0.15.2",
+        "pytorch": "2.2.1+cu121",
+        "cuda": "12.1",
+        "rdkit": "2023.09.5",
+    }
+    definition, lock, installed = _validate_lock(
+        config, expected_direct=expected_direct, direct=direct
+    )
+    return {
+        "environment_name": config.environment.name,
+        "environment_definition": repository_relative(definition),
+        "environment_lock": repository_relative(lock),
+        "environment_lock_sha256": sha256_file(lock),
+        "direct_versions": direct,
+        "resolved_packages": dict(sorted(installed.items())),
+        "gpu": _gpu_snapshot(torch),
+        "pretrained_snapshot": ilbert_asset_snapshot(config),
+    }
+
+
 def environment_run_details(snapshot: dict[str, Any] | None) -> dict[str, Any]:
     if snapshot is None:
         return {}
@@ -278,9 +412,12 @@ def environment_run_details(snapshot: dict[str, Any] | None) -> dict[str, Any]:
     direct = snapshot["direct_versions"]
     if "chemprop" in direct:
         details["chemprop_version"] = direct["chemprop"]
-    if "transformers" in direct:
+    if "transformers" in direct and snapshot["environment_name"] == "ilume-molformer":
         details["transformers_version"] = direct["transformers"]
         details["hf_revision"] = snapshot["pretrained_snapshot"]["revision"]
+    if snapshot["environment_name"] == "ilume-ilbert":
+        details["transformers_version"] = direct["transformers"]
+        details["upstream_revision"] = snapshot["pretrained_snapshot"]["revision"]
     return details
 
 
@@ -293,7 +430,9 @@ __all__ = [
     "ensure_benchmark_environment",
     "environment_run_details",
     "environment_command",
+    "ilbert_asset_snapshot",
     "validate_dmpnn_environment",
+    "validate_ilbert_environment",
     "validate_molformer_environment",
     "write_environment_snapshot",
 ]

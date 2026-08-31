@@ -102,7 +102,7 @@ Stage 3 evaluator 同样默认加载每个 fold 的 `taskwise_refined.pt`；显�
 
 ## Baselines
 
-MLP、ECFP4-XGBoost、Chemprop D-MPNN 与 MoLFormer 位于 `benchmarks/`，与 Stage 代码隔离；合同见 [ADR-0022](docs/adr/0022-mlp-ecfp-xgboost-baselines.md)、[ADR-0028](docs/adr/0028-chemprop-dmpnn-baseline.md)、[ADR-0029](docs/adr/0029-molformer-baseline.md) 和 [ADR-0030](docs/adr/0030-molformer-throughput-contract.md)。
+MLP、ECFP4-XGBoost、Chemprop D-MPNN、MoLFormer 与 ILBERT 位于 `benchmarks/`，与 Stage 代码隔离；合同见 [ADR-0022](docs/adr/0022-mlp-ecfp-xgboost-baselines.md)、[ADR-0028](docs/adr/0028-chemprop-dmpnn-baseline.md)、[ADR-0029](docs/adr/0029-molformer-baseline.md)、[ADR-0030](docs/adr/0030-molformer-throughput-contract.md) 和 [ADR-0032](docs/adr/0032-ilbert-baseline.md)。
 
 ```bash
 python -m pip install -e ".[benchmarks]"
@@ -147,7 +147,7 @@ python scripts/benchmarks/sweep.py \
   --max-workers 1
 ```
 
-`--max-workers 1` 保持串行行为。MLP、D-MPNN 与 MoLFormer 多 GPU sweep 可通过 `--devices cuda:0,cuda:1,...` 分配逻辑 job；XGBoost 的 CPU 并行度由 YAML 中的 `training.n_jobs` 控制。D-MPNN 正式 sweep 共 109 个单 seed 训练任务；上述命令不会 resume，失败任务由 sweep 在新 attempt 中完整重跑。
+`--max-workers 1` 保持串行行为。MLP、D-MPNN、MoLFormer 与 ILBERT 多 GPU sweep 可通过 `--devices cuda:0,cuda:1,...` 分配逻辑 job；XGBoost 的 CPU 并行度由 YAML 中的 `training.n_jobs` 控制。D-MPNN 正式 sweep 共 109 个单 seed 训练任务；上述命令不会 resume，失败任务由 sweep 在新 attempt 中完整重跑。
 
 MoLFormer同样使用独立hash-lock环境。先显式安装环境并下载固定HF snapshot；正式launcher只使用本地cache，不会自动联网或切换revision。
 
@@ -182,6 +182,51 @@ python scripts/benchmarks/sweep.py \
 ```
 
 MoLFormer的超长train row整行跳过且不进入scaler；valid/test显式截断到202 tokens并在结果中审计。训练前为unique SMILES建立run-local内存token cache，多组分合并为一次共享backbone forward；正式合同固定batch 128、encoder/head learning rate `5e-6/5e-5`、50 epochs、patience 8和TF32，OOM/NaN不自动缩批或回退。多GPU sweep可使用`--devices cuda:0,cuda:1,...`。Partial Charge与Stage 2 Full保持unsupported。
+
+ILBERT使用独立hash-lock环境和用户本地准备的固定上游资产。上游目前没有显式LICENSE，因此仓库不复制或再分发其源码与权重。
+
+```bash
+conda env create -f benchmarks/ilbert/environment.yml
+conda run --no-capture-output -n ilume-ilbert \
+  python -m pip install --require-hashes \
+  -r benchmarks/ilbert/requirements-linux-x86_64-cu121.lock
+
+mkdir -p artifacts/benchmarks/ilbert
+git clone https://github.com/Yu-Xin-Qiu/ILBERT.git \
+  artifacts/benchmarks/ilbert/upstream
+git -C artifacts/benchmarks/ilbert/upstream \
+  checkout --detach f9dc6f1b23a40b6988480735f3724a6332f68c12
+curl --fail --location \
+  https://zenodo.org/api/records/14601320/files/pretrained_model.pth/content \
+  --output artifacts/benchmarks/ilbert/pretrained_model.pth
+
+git -C artifacts/benchmarks/ilbert/upstream rev-parse HEAD
+sha256sum \
+  artifacts/benchmarks/ilbert/upstream/ILBERT/model.py \
+  artifacts/benchmarks/ilbert/upstream/ILBERT/ILtokenizer.py \
+  artifacts/benchmarks/ilbert/upstream/ILBERT/merged_vocab.txt \
+  artifacts/benchmarks/ilbert/pretrained_model.pth
+
+PYTHONPATH=src:. ILUME_BENCHMARK_ENVIRONMENT=ilume-ilbert \
+conda run --no-capture-output -n ilume-ilbert \
+  python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_ilbert_environment; validate_ilbert_environment(load_benchmark_config("configs/benchmarks/ilbert.yaml"))'
+```
+
+单任务与完整108-job sweep：
+
+```bash
+python scripts/benchmarks/train.py \
+  --config configs/benchmarks/ilbert.yaml \
+  --benchmark stage3 --task experiment/density --fold 1 \
+  --output outputs/benchmarks/v1/ilbert/stage3/experiment__density/fold1/attempt-001
+
+python scripts/benchmarks/sweep.py \
+  --config configs/benchmarks/ilbert.yaml \
+  --output outputs/benchmarks/v1/ilbert \
+  --max-workers 1
+```
+
+ILBERT普通离子液体输入为单条`cation.anion` AIS sequence；solvation/transfer只增加共享backbone的有序双view。所有输入固定padding/truncation到100 tokens并公开审计，数值条件保持registry顺序和原始物理单位。Partial Charge与Stage 2 Full为unsupported。
 
 ## 输出与结果汇总
 

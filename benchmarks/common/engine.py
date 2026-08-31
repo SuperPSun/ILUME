@@ -124,6 +124,10 @@ def prepare_training(
         from benchmarks.molformer.adapter import prepare_molformer_training
 
         return prepare_molformer_training(config, benchmark, task_id, fold)  # type: ignore[return-value]
+    if config.name == "ilbert":
+        from benchmarks.ilbert.adapter import prepare_ilbert_training
+
+        return prepare_ilbert_training(config, benchmark, task_id, fold)  # type: ignore[return-value]
     task = resolve_task(config, benchmark, task_id, fold)
     train = load_split(task, "train")
     valid = load_split(task, "valid")
@@ -428,6 +432,12 @@ def train_bundle(
         return train_molformer_bundle(  # type: ignore[arg-type]
             config, bundle, output_dir, reporter=reporter
         )
+    if config.name == "ilbert":
+        from benchmarks.ilbert.adapter import train_ilbert_bundle
+
+        return train_ilbert_bundle(  # type: ignore[arg-type]
+            config, bundle, output_dir, reporter=reporter
+        )
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
     if config.name == "mlp":
@@ -533,6 +543,12 @@ def evaluate_checkpoint(
         from benchmarks.molformer.adapter import evaluate_molformer_checkpoint
 
         return evaluate_molformer_checkpoint(
+            config, benchmark, task_id, fold, checkpoint_dir, split
+        )
+    if config.name == "ilbert":
+        from benchmarks.ilbert.adapter import evaluate_ilbert_checkpoint
+
+        return evaluate_ilbert_checkpoint(
             config, benchmark, task_id, fold, checkpoint_dir, split
         )
     if split not in {"valid", "test"}:

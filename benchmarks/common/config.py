@@ -48,7 +48,7 @@ class Stage2PhysicsConfig:
 
 @dataclass(frozen=True)
 class BenchmarkConfig:
-    name: Literal["mlp", "ecfp_xgboost", "dmpnn", "molformer"]
+    name: Literal["mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert"]
     data: DataConfig
     features: FeatureConfig | None
     environment: EnvironmentConfig | None
@@ -61,7 +61,7 @@ class BenchmarkConfig:
     display_name: str = ""
 
     def validate(self) -> None:
-        if self.name not in {"mlp", "ecfp_xgboost", "dmpnn", "molformer"}:
+        if self.name not in {"mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert"}:
             raise ValueError(f"Unknown benchmark model: {self.name}")
         if not self.display_name:
             raise ValueError("Benchmark display_name must be non-empty")
@@ -77,7 +77,7 @@ class BenchmarkConfig:
             self.features.radius <= 0 or self.features.n_bits <= 0
         ):
             raise ValueError("Fingerprint radius and n_bits must be positive")
-        advanced = self.name in {"dmpnn", "molformer"}
+        advanced = self.name in {"dmpnn", "molformer", "ilbert"}
         if not advanced and self.data.feature_cache is None:
             raise ValueError("Feature baselines require data.feature_cache")
         if not advanced and self.environment is not None:
@@ -86,8 +86,10 @@ class BenchmarkConfig:
             self._validate_dmpnn()
         if self.name == "molformer":
             self._validate_molformer()
-        elif self.runtime:
-            raise ValueError("Only MoLFormer currently declares benchmark runtime settings")
+        if self.name == "ilbert":
+            self._validate_ilbert()
+        elif self.name not in {"molformer", "ilbert"} and self.runtime:
+            raise ValueError("Only token baselines currently declare benchmark runtime settings")
         if not self.model or not self.training or self.seed < 0:
             raise ValueError("Benchmark model/training contract is incomplete")
         if not self.stage3.folds or any(fold not in range(1, 6) for fold in self.stage3.folds):
@@ -201,6 +203,78 @@ class BenchmarkConfig:
         }
         if self.runtime != expected_runtime:
             raise ValueError("MoLFormer runtime must match the registered throughput recipe")
+
+    def _validate_ilbert(self) -> None:
+        if self.features is not None:
+            raise ValueError("ILBERT tokenizes SMILES and does not accept features")
+        if self.environment is None or not all(
+            (self.environment.name, str(self.environment.definition), str(self.environment.lock))
+        ):
+            raise ValueError("ILBERT requires a dedicated environment definition and lock")
+        if self.environment.name != "ilume-ilbert":
+            raise ValueError("ILBERT environment name must be ilume-ilbert")
+        if self.data.stage2_authority_config is not None:
+            raise ValueError("ILBERT does not use a Stage 2 prepare authority")
+        expected_model = {
+            "repository": "Yu-Xin-Qiu/ILBERT",
+            "revision": "f9dc6f1b23a40b6988480735f3724a6332f68c12",
+            "checkout": "artifacts/benchmarks/ilbert/upstream",
+            "model_source_sha256": "ed4c1441bc479eb3e999f77a52b4ae70eec4069da9f15bb87603afa02d8ccbc8",
+            "tokenizer_source_sha256": "f435f4fed84d740061f3d85982441a47ea0aae596d2618cb902947311911d84d",
+            "vocab_sha256": "87dd3943b31b42d179912220497516f6422483e021c45a994302e634311cd44f",
+            "pretrained_checkpoint": "artifacts/benchmarks/ilbert/pretrained_model.pth",
+            "pretrained_sha256": "556d0f63d206de786a6589e8ad4e3f05fc31ed744cb3234fd13e4eff7c397f7c",
+            "pretrained": True,
+            "full_fine_tuning": True,
+            "tokenizer": "official_ais_atomwise",
+            "vocab_size": 2000,
+            "hidden_dim": 512,
+            "layers": 6,
+            "heads": 4,
+            "ffn_hidden_dim": 1024,
+            "dropout": 0.0,
+            "textcnn_kernel_sizes": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15],
+            "textcnn_filters": [100, 200, 200, 200, 200, 100, 100, 100, 100, 100, 160],
+            "max_length": 100,
+            "truncation": True,
+            "padding": "max_length",
+            "shared_backbone": True,
+            "component_forward": "merged_sequence_view_forward",
+            "fusion": "ordered_concat_native_predictor",
+        }
+        if self.model != expected_model:
+            raise ValueError("ILBERT model must match the registered upstream recipe")
+        expected_training = {
+            "optimizer": "adam",
+            "learning_rate": 1.0e-4,
+            "weight_decay": 0.0,
+            "scheduler": "reduce_on_plateau",
+            "scheduler_metric": "validation_raw_rmse",
+            "scheduler_patience": 7,
+            "scheduler_factor": 0.3,
+            "minimum_learning_rate": 3.0e-5,
+            "batch_size": 16,
+            "gradient_accumulation_steps": 1,
+            "max_epochs": 100,
+            "early_stopping_patience": 15,
+            "tf32": True,
+            "loss": "mse",
+            "selection_metric": "validation_raw_mae",
+            "condition_transform": "raw_physical_units",
+            "device": "cuda",
+            "precision": "fp32",
+        }
+        if self.training != expected_training:
+            raise ValueError("ILBERT training must match the registered fine-tuning recipe")
+        expected_runtime = {
+            "num_workers": 4,
+            "prefetch_factor": 2,
+            "persistent_workers": True,
+            "pin_memory": True,
+            "non_blocking_transfer": True,
+        }
+        if self.runtime != expected_runtime:
+            raise ValueError("ILBERT runtime must match the registered loader recipe")
 
     def to_dict(self) -> dict[str, Any]:
         def convert(value: Any) -> Any:
