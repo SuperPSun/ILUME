@@ -1,0 +1,25 @@
+data:
+  stage3_dir: data/stage3
+  task_catalog: data/task_catalog.csv
+  artifacts_dir: outputs/experiments_v1/stage3/prepare/base-e09-r6/artifacts
+  split_policy: prefer_il
+  split_strategies: {}
+  cv_repeat: 1
+  cv_repeats: {}
+  seed: 42
+preparation:
+  encoding_batch_size: 256
+  cache_dir: outputs/experiments_v1/stage3/prepare/base-e09-r6/object_cache
+initialization:
+  stage2_encoder: outputs/experiments_v1/stage2/base/e09-r6/train/stage2_encoder.pt
+model:
+  global_experts: 1
+  group_experts: 3
+  private_experts: 1
+  expert_hidden_ratio: 2.0
+  dropout: 0.12510111233746077
+training:
+  seed: 42
+  epochs: 50
+  learning_rate: 0.0003770450037093997
+  weight_decay: 0.008154860947671032
