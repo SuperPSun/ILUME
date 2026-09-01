@@ -20,6 +20,6 @@ model:
   dropout: 0.12510111233746077
 training:
   seed: 42
-  epochs: 50
+  epochs: 100
   learning_rate: 0.0003770450037093997
   weight_decay: 0.008154860947671032
