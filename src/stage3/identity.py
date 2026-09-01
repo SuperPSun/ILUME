@@ -98,18 +98,53 @@ def build_stage3_prepared_identity(
     )
 
 
+def build_stage3_rdkit_prepared_identity(
+    config: Stage3Config,
+    registry: Mapping[str, ResolvedTaskSpec],
+    objects: Sequence[ObjectKey],
+    normalization: Mapping[str, Any],
+    descriptor_contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    return semantic_identity(
+        "stage3.rdkit-prepared-data",
+        {
+            "contract_version": 1,
+            "source_content": _source_content(config, registry),
+            "resolved_registry": {
+                task: spec.to_dict() for task, spec in sorted(registry.items())
+            },
+            "split": {
+                "policy": config.data.split_policy,
+                "strategies": dict(config.data.split_strategies),
+                "cv_repeat": config.data.cv_repeat,
+                "cv_repeats": dict(config.data.cv_repeats),
+                "seed": config.data.seed,
+            },
+            "normalization": dict(normalization),
+            "objects": [key.to_dict() for key in objects],
+            "representation": dict(descriptor_contract),
+        },
+    )
+
+
 def resolve_stage3_prepared_identity(
     config: Stage3Config,
     registry: Mapping[str, ResolvedTaskSpec],
     objects: Sequence[ObjectKey],
 ) -> dict[str, Any]:
+    if config.representation is not None:
+        from .rdkit import resolve_rdkit_materialization
+
+        return resolve_rdkit_materialization(config, registry, objects)[
+            "prepared_identity"
+        ]
     normalization = {
         f"fold{fold}": fit_normalization(config, registry, fold)
         for fold in range(1, 6)
     }
-    encoder_identity = load_stage2_encoder_identity(
-        config.initialization.stage2_encoder
-    )
+    encoder_path = config.initialization.stage2_encoder
+    assert encoder_path is not None
+    encoder_identity = load_stage2_encoder_identity(encoder_path)
     return build_stage3_prepared_identity(
         config, registry, objects, normalization, encoder_identity
     )
@@ -129,7 +164,6 @@ def build_stage3_training_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
             "scheduler",
             "refinement",
             "math",
-            "stage2_encoder_identity",
             "prepared_identity",
             "normalization_hash",
             "ownership_manifest",
@@ -138,6 +172,10 @@ def build_stage3_training_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
             "frozen_parameters",
         )
     }
+    if "representation" in plan:
+        semantic_plan["representation"] = plan["representation"]
+    else:
+        semantic_plan["stage2_encoder_identity"] = plan["stage2_encoder_identity"]
     if "training_seed" in plan:
         semantic_plan["training_seed"] = plan["training_seed"]
     return semantic_identity(
@@ -187,6 +225,7 @@ def build_stage3_evaluation_identity(
 __all__ = [
     "build_stage3_evaluation_identity",
     "build_stage3_prepared_identity",
+    "build_stage3_rdkit_prepared_identity",
     "build_stage3_training_identity",
     "metadata_identity",
     "resolve_stage3_prepared_identity",

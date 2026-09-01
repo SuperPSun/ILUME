@@ -16,8 +16,11 @@ from unittest.mock import patch
 
 import pytest
 
+import numpy as np
 import torch
+from rdkit import Chem
 
+from common.descriptor_preprocessing import FeaturePreprocessor
 from common.identity import IDENTITY_CONTRACT_VERSION, semantic_identity, tensor_state_hash
 
 from stage3.config import (
@@ -30,6 +33,7 @@ from stage3.config import (
     Stage3PluginAdaptationConfig,
     Stage3PluginConfig,
     Stage3PreparationConfig,
+    Stage3RepresentationConfig,
     Stage3TaskConfig,
     Stage3TrainingConfig,
     effective_training_seed,
@@ -40,6 +44,7 @@ from stage3.data import (
     ObjectKey,
     ResolvedTaskSpec,
     Stage3TaskDataset,
+    Stage3RepresentationStore,
     balanced_virtual_indices,
     composite_steps_per_epoch,
     resolve_batch_allocation,
@@ -50,13 +55,19 @@ from stage3.model import GLOBAL, Stage3SparseModel, group_owner, private_owner
 
 from stage3.pcgrad import hierarchical_pcgrad
 
-from stage3.prepare import materialize_object_embeddings, prepare_stage3
+from stage3.prepare import (
+    load_prepared_stage3,
+    materialize_object_embeddings,
+    prepare_stage3,
+)
 
 from stage3.evaluate import evaluate_checkpoints
 
 from stage3.train import (
     STAGE3_CHECKPOINT_KIND,
     STAGE3_CHECKPOINT_VERSION,
+    STAGE3_RDKIT_CHECKPOINT_KIND,
+    STAGE3_RDKIT_REFINED_KIND,
     _load_plugin,
     checkpoint_epochs,
     compute_task_gradient,
@@ -90,6 +101,7 @@ from stage3.config import load_stage3_config
 import scripts.stage3.train as train_launcher
 
 from stage1.config import load_config
+from stage1.descriptors import calculate_descriptors, rdkit_descriptor_names
 
 from stage1.identity import build_stage1_corpus_identity
 
@@ -238,6 +250,40 @@ def tiny_prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Stage3Conf
     assert summary["task_count"] == 3
     return config
 
+
+@pytest.fixture()
+def tiny_rdkit_prepared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Stage3Config:
+    config = _tiny_config(tmp_path)
+    config = replace(
+        config,
+        data=replace(config.data, artifacts_dir=tmp_path / "rdkit-artifacts"),
+        preparation=replace(
+            config.preparation, cache_dir=tmp_path / "rdkit-cache"
+        ),
+        initialization=Stage3InitializationConfig(
+            stage2_encoder=None, plugin=None
+        ),
+        representation=Stage3RepresentationConfig(
+            kind="rdkit_2d_adapter",
+            descriptor_family="rdkit_2d",
+            adapter="linear_layernorm",
+            output_dim=512,
+        ),
+    )
+    monkeypatch.setattr(
+        "stage3.prepare.load_stage2_encoder_identity",
+        lambda *_: pytest.fail("RDKit prepare loaded a Stage 2 identity"),
+    )
+    monkeypatch.setattr(
+        "stage3.prepare.load_frozen_object_encoder",
+        lambda *_args, **_kwargs: pytest.fail("RDKit prepare loaded Stage 2"),
+    )
+    summary = prepare_stage3(config)
+    assert summary["artifact_kind"] == "ilume_stage3_rdkit_sparse_data"
+    return config
+
 def test_base_registry_and_config_defaults_are_explicit() -> None:
     config = load_stage3_config("configs/v1/stage3/base.yaml")
     assert sum(map(len, BASE_GROUP_TASKS.values())) == 21
@@ -250,8 +296,23 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
     assert effective_training_seed(config) == config.data.seed
     assert config.model.dropout == 0.10
     assert config.model.expert_hidden_ratio == 2.0
+    assert config.representation is None
+    assert "representation" not in config.to_dict()
     assert checkpoint_epochs(100, 10) == tuple(range(10, 101, 10))
     assert checkpoint_epochs(23, 10) == (10, 20, 23)
+
+    ablation = load_stage3_config(
+        "configs/ablations/stage1_stage2_rdkit_home.yaml"
+    )
+    assert len(ablation.enabled_task_ids) == 21
+    assert ablation.representation == Stage3RepresentationConfig(
+        kind="rdkit_2d_adapter",
+        descriptor_family="rdkit_2d",
+        adapter="linear_layernorm",
+        output_dim=512,
+    )
+    assert ablation.initialization.stage2_encoder is None
+    assert ablation.initialization.plugin is None
 
 def test_training_seed_changes_training_identity_not_prepared_artifact(
     tiny_prepared: Stage3Config,
@@ -298,6 +359,147 @@ def test_ownership_is_complete_and_isolated(tiny_prepared: Stage3Config) -> None
         model.parameters_for_owner(group_owner("g2"))
     )
     assert model.parameters_for_owner(GLOBAL)
+
+
+def test_rdkit_prepare_adapter_refinement_and_reporting_contract(
+    tiny_rdkit_prepared: Stage3Config,
+) -> None:
+    metadata = json.loads(
+        (tiny_rdkit_prepared.data.artifacts_dir / "metadata.json").read_text()
+    )
+    assert metadata["kind"] == "ilume_stage3_rdkit_sparse_data"
+    assert "stage2_encoder_identity" not in metadata
+    contract = metadata["descriptor_contract"]
+    assert contract["fit_scope"] == "joint_training_rows"
+    assert contract["clip"] == [-10.0, 10.0]
+    assert set(contract["fold_preprocessing"]) == {
+        f"fold{fold}" for fold in range(1, 6)
+    }
+    names = rdkit_descriptor_names()
+    descriptor = lambda smiles: calculate_descriptors(
+        Chem.MolFromSmiles(smiles), names
+    )
+    expected_il = FeaturePreprocessor.fit(
+        np.stack(
+            [
+                np.concatenate((descriptor("[Na+]"), descriptor("[Cl-]"))),
+                np.concatenate((descriptor("[K+]"), descriptor("[Br-]"))),
+            ]
+            * 8
+        )
+    )
+    expected_single = FeaturePreprocessor.fit(
+        np.stack(
+            [descriptor(smiles) for smiles in ("C", "O", "CC", "CO")] * 4
+        )
+    )
+    fold1 = contract["fold_preprocessing"]["fold1"]
+    assert FeaturePreprocessor.from_dict(fold1["il"]) == expected_il
+    assert FeaturePreprocessor.from_dict(fold1["single"]) == expected_single
+    assert len(fold1["il"]["finite_mask"]) == 2 * len(names)
+    assert len(fold1["single"]["finite_mask"]) == len(names)
+
+    prepared_objects = {
+        "objects": json.loads(
+            (tiny_rdkit_prepared.data.artifacts_dir / "objects.json").read_text()
+        )
+    }
+    store = Stage3RepresentationStore(
+        tiny_rdkit_prepared.data.artifacts_dir,
+        1,
+        prepared_objects,
+        metadata["kind"],
+    )
+    registry = resolve_task_registry(tiny_rdkit_prepared)
+    model = Stage3SparseModel(
+        tiny_rdkit_prepared.model,
+        registry,
+        store.output_dim,
+        descriptor_input_dims=store.input_dims,
+    )
+    assert list(model.descriptor_adapters) == ["il", "molecule"]
+    for adapter in model.descriptor_adapters.values():
+        assert [type(layer) for layer in adapter] == [
+            torch.nn.Linear,
+            torch.nn.LayerNorm,
+        ]
+        assert all(
+            model.parameter_ownership()[parameter] == GLOBAL
+            for parameter in adapter.parameters()
+        )
+
+    output = tiny_rdkit_prepared.data.artifacts_dir.parent / "rdkit-train"
+    run_stage3_training(tiny_rdkit_prepared, 1, output_dir=output)
+    boundary = torch.load(
+        output / "checkpoint_epoch_00001.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    final = torch.load(
+        output / "checkpoint_epoch_00002.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    assert boundary["kind"] == STAGE3_RDKIT_CHECKPOINT_KIND
+    assert "stage2_encoder_identity" not in boundary
+    assert boundary["representation"]["kind"] == "rdkit_2d_adapter"
+    adapter_names = [
+        name for name in boundary["model"] if name.startswith("descriptor_adapters.")
+    ]
+    assert adapter_names
+    assert all(
+        torch.equal(boundary["model"][name], final["model"][name])
+        for name in adapter_names
+    )
+    refined = torch.load(
+        output / "taskwise_refined.pt", map_location="cpu", weights_only=False
+    )
+    assert refined["kind"] == STAGE3_RDKIT_REFINED_KIND
+    resumed = tiny_rdkit_prepared.data.artifacts_dir.parent / "rdkit-resumed"
+    resumed.mkdir()
+    shutil.copy(output / "resolved_training_plan.json", resumed)
+    (resumed / "metrics.jsonl").write_text(
+        (output / "metrics.jsonl").read_text().splitlines()[0] + "\n"
+    )
+    (resumed / "diagnostics.jsonl").write_text(
+        (output / "diagnostics.jsonl").read_text().splitlines()[0] + "\n"
+    )
+    run_stage3_training(
+        tiny_rdkit_prepared,
+        1,
+        output_dir=resumed,
+        resume_from=output / "checkpoint_epoch_00001.pt",
+    )
+    resumed_final = torch.load(
+        resumed / "checkpoint_epoch_00002.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    assert all(
+        torch.equal(final["model"][name], resumed_final["model"][name])
+        for name in final["model"]
+    )
+    evaluation = evaluate_checkpoints(
+        tiny_rdkit_prepared,
+        output,
+        split="valid",
+        ensemble_folds=False,
+        task_subset=("experiment/a",),
+        fold=1,
+    )
+    assert evaluation["reporting"]["model_id"] == "rdkit_2d_home"
+    assert evaluation["reporting"]["model_display_name"] == "RDKit 2D + HoME"
+
+    object_config = replace(
+        tiny_rdkit_prepared,
+        representation=None,
+        initialization=Stage3InitializationConfig(
+            stage2_encoder=tiny_rdkit_prepared.data.task_catalog,
+            plugin=None,
+        ),
+    )
+    with pytest.raises(ValueError, match="requires RDKit representation config"):
+        load_prepared_stage3(object_config)
 
 def test_microbatch_accumulation_matches_full_task_batch(tiny_prepared: Stage3Config) -> None:
     registry = resolve_task_registry(tiny_prepared)

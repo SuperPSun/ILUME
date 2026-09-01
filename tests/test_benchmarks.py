@@ -98,11 +98,11 @@ from benchmarks.common.config import load_benchmark_config
 from benchmarks.common.data import BenchmarkTask, RawDataset
 
 from benchmarks.common.engine import TargetStats
-from benchmarks.stage3_single_task_mlp.adapter import (
+from ablations.stage3_single_task_mlp.adapter import (
     _run_training_epochs,
     build_input_features,
 )
-from benchmarks.stage3_single_task_mlp.model import Stage3SingleTaskMLP
+from ablations.stage3_single_task_mlp.model import Stage3SingleTaskMLP
 
 from benchmarks.common.environment import validate_dmpnn_environment
 
@@ -366,7 +366,7 @@ def test_formal_configs_and_registry_resolution(tmp_path: Path) -> None:
 
 def test_stage3_single_task_mlp_config_and_ordered_concat() -> None:
     config = load_benchmark_config(
-        "configs/benchmarks/ilume_stage3_single_task_mlp.yaml"
+        "configs/ablations/ilume_stage3_single_task_mlp.yaml"
     )
     assert config.display_name == "ILUME Stage3 Single-task MLP"
     assert len(configured_tasks(config, "stage3")) == 21
@@ -421,7 +421,7 @@ def test_stage3_single_task_mlp_config_and_ordered_concat() -> None:
 
 def test_stage3_single_task_mlp_runs_full_budget_and_selects_best() -> None:
     config = load_benchmark_config(
-        "configs/benchmarks/ilume_stage3_single_task_mlp.yaml"
+        "configs/ablations/ilume_stage3_single_task_mlp.yaml"
     )
     config = replace(
         config,
@@ -780,7 +780,7 @@ def test_stage3_only_ablation_aggregate_has_one_model_and_no_stage2_sections(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = load_benchmark_config(
-        "configs/benchmarks/ilume_stage3_single_task_mlp.yaml"
+        "configs/ablations/ilume_stage3_single_task_mlp.yaml"
     )
     task = "experiment/example"
     study_id = f"{config.name}-{semantic_identity(

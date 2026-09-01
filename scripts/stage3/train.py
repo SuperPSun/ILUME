@@ -235,8 +235,14 @@ def _run_fold(
         resume=resume_from,
         details={
             "fold": fold,
-            "stage2_encoder": repository_relative(
-                config.initialization.stage2_encoder
+            **(
+                {"representation": "rdkit_2d_adapter"}
+                if config.representation is not None
+                else {
+                    "stage2_encoder": repository_relative(
+                        config.initialization.stage2_encoder
+                    )
+                }
             ),
             "assigned_device": device or config.training.device,
         },
@@ -908,6 +914,8 @@ def main() -> int:
     config = load_stage3_config(args.config)
     output = repository_path(args.output)
     if args.study_config is not None:
+        if config.representation is not None:
+            parser.error("RDKit Stage1+2 representation ablation forbids HPO studies")
         if args.fold is not None:
             parser.error("--study-config forbids --fold")
         if args.max_parallel != 1:

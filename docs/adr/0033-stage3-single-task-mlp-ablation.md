@@ -18,7 +18,10 @@ representation 输入。因此本实验使用独立 model/reporting identity，�
 
 1. 方法 ID 固定为 `ilume_stage3_single_task_mlp`，显示名为
    `ILUME Stage3 Single-task MLP`。它是 Stage3-only 内部 ablation，不提供 Stage2
-   Core、Partial Charge 或 Full capability。
+   Core、Partial Charge 或 Full capability。专用实现位于
+   `ablations/stage3_single_task_mlp`，配置位于
+   `configs/ablations/ilume_stage3_single_task_mlp.yaml`；运行与 reporting 继续复用
+   `scripts/benchmarks` 和 `benchmarks/common`。
 2. 训练直接读取 `configs/v1/stage3/base.yaml` 指向的现役 Stage3 prepared artifact。
    必须校验完整 prepared identity、Stage2 encoder identity、registry、source 和 artifact
    hashes；不得重新加载、微调或重算 Stage2 encoder。
@@ -48,4 +51,5 @@ representation 输入。因此本实验使用独立 model/reporting identity，�
   因为同时移除了共享、routing、PCGrad 和 sampling，它不是纯 HoME 或纯 PCGrad 消融。
 - 不要求与 HoME 参数量或计算量匹配，也不代表 MLP 的任务特定调参上限。
 - 现役 Stage1/2/3 配置、HoME checkpoint、prepared artifact 和正式输出均不改变。
-
+- 既有 `outputs/benchmarks/v1/ilume_stage3_single_task_mlp` 保持原位且兼容；迁移不提供
+  旧 Python import 或旧配置路径的 alias、symlink 或 fallback。

@@ -117,7 +117,7 @@ def prepare_training(
     reporter: ProgressReporter | None = None,
 ) -> TrainingBundle:
     if config.name == "ilume_stage3_single_task_mlp":
-        from benchmarks.stage3_single_task_mlp.adapter import (
+        from ablations.stage3_single_task_mlp.adapter import (
             prepare_stage3_single_task_mlp_training,
         )
 
@@ -431,7 +431,7 @@ def train_bundle(
     reporter: ProgressReporter | None = None,
 ) -> dict[str, Any]:
     if config.name == "ilume_stage3_single_task_mlp":
-        from benchmarks.stage3_single_task_mlp.adapter import (
+        from ablations.stage3_single_task_mlp.adapter import (
             train_stage3_single_task_mlp_bundle,
         )
 
@@ -550,7 +550,7 @@ def evaluate_checkpoint(
     reporter: ProgressReporter | None = None,
 ) -> EvaluationResult:
     if config.name == "ilume_stage3_single_task_mlp":
-        from benchmarks.stage3_single_task_mlp.adapter import (
+        from ablations.stage3_single_task_mlp.adapter import (
             evaluate_stage3_single_task_mlp_checkpoint,
         )
 

@@ -81,6 +81,17 @@ def _git_state() -> tuple[str | None, bool | None]:
 def _runtime_metadata() -> dict[str, Any]:
     commit, dirty = _git_state()
     cuda_available = torch.cuda.is_available()
+    matmul_precision = None
+    cudnn_precision = None
+    if cuda_available:
+        matmul = torch.backends.cuda.matmul
+        matmul_precision = getattr(matmul, "fp32_precision", None)
+        if matmul_precision is None:
+            matmul_precision = "tf32" if matmul.allow_tf32 else "ieee"
+        cudnn_conv = getattr(torch.backends.cudnn, "conv", None)
+        cudnn_precision = getattr(cudnn_conv, "fp32_precision", None)
+        if cudnn_precision is None:
+            cudnn_precision = "tf32" if torch.backends.cudnn.allow_tf32 else "ieee"
     return {
         "repository_commit": commit,
         "repository_dirty": dirty,
@@ -93,15 +104,9 @@ def _runtime_metadata() -> dict[str, Any]:
             list(torch.cuda.get_device_capability(0)) if cuda_available else None
         ),
         "cudnn_version": torch.backends.cudnn.version(),
-        "float32_matmul_precision": (
-            torch.backends.cuda.matmul.fp32_precision if cuda_available else None
-        ),
-        "cuda_matmul_fp32_precision": (
-            torch.backends.cuda.matmul.fp32_precision if cuda_available else None
-        ),
-        "cudnn_conv_fp32_precision": (
-            torch.backends.cudnn.conv.fp32_precision if cuda_available else None
-        ),
+        "float32_matmul_precision": matmul_precision,
+        "cuda_matmul_fp32_precision": matmul_precision,
+        "cudnn_conv_fp32_precision": cudnn_precision,
         "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
     }
 

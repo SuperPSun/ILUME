@@ -34,6 +34,8 @@ from common.training import (
 )
 from .config import Stage3Config, effective_training_seed
 from .data import (
+    STAGE3_ARTIFACT_KIND,
+    Stage3RepresentationStore,
     Stage3TaskDataset,
     balanced_virtual_indices,
     composite_steps_per_epoch,
@@ -53,6 +55,24 @@ from .identity import (
 STAGE3_CHECKPOINT_VERSION = 2
 STAGE3_CHECKPOINT_KIND = "ilume_stage3_sparse_model"
 STAGE3_REFINED_KIND = "ilume_stage3_taskwise_refined"
+STAGE3_RDKIT_CHECKPOINT_KIND = "ilume_stage3_rdkit_home_model"
+STAGE3_RDKIT_REFINED_KIND = "ilume_stage3_rdkit_home_taskwise_refined"
+
+
+def _is_rdkit_plan(plan: Mapping[str, Any]) -> bool:
+    return plan.get("representation", {}).get("kind") == "rdkit_2d_adapter"
+
+
+def _checkpoint_kind(plan: Mapping[str, Any], *, refined: bool) -> str:
+    if _is_rdkit_plan(plan):
+        return STAGE3_RDKIT_REFINED_KIND if refined else STAGE3_RDKIT_CHECKPOINT_KIND
+    return STAGE3_REFINED_KIND if refined else STAGE3_CHECKPOINT_KIND
+
+
+def _representation_checkpoint_fields(plan: Mapping[str, Any]) -> dict[str, Any]:
+    if _is_rdkit_plan(plan):
+        return {"representation": dict(plan["representation"])}
+    return {"stage2_encoder_identity": plan["stage2_encoder_identity"]}
 
 
 def checkpoint_epochs(total_epochs: int, interval: int) -> tuple[int, ...]:
@@ -349,9 +369,6 @@ def build_resolved_training_plan(
             "microbatch_size": config.training.microbatch_size,
             "pcgrad": "hierarchical_ownership_blocks_v1",
         },
-        "stage2_encoder_identity": metadata_identity(
-            prepared["metadata"], "stage2_encoder", context="Stage 3 prepared artifact"
-        )["hash"],
         "prepared_identity": metadata_identity(
             prepared["metadata"], "prepared", context="Stage 3 prepared artifact"
         )["hash"],
@@ -374,6 +391,31 @@ def build_resolved_training_plan(
             "debug_pcgrad_traces": config.training.debug_pcgrad_traces,
         },
     }
+    if prepared["metadata"].get("kind") == STAGE3_ARTIFACT_KIND:
+        plan["stage2_encoder_identity"] = metadata_identity(
+            prepared["metadata"],
+            "stage2_encoder",
+            context="Stage 3 prepared artifact",
+        )["hash"]
+    else:
+        contract = prepared["metadata"].get("descriptor_contract")
+        if not isinstance(contract, dict):
+            raise ValueError("RDKit Stage 3 artifact lacks descriptor contract")
+        input_dims = dict(contract["fold_input_dims"][f"fold{fold}"])
+        actual_dims = {
+            "il": int(model.descriptor_adapters["il"][0].in_features),
+            "single": int(
+                model.descriptor_adapters["molecule"][0].in_features
+            ),
+        }
+        if input_dims != actual_dims:
+            raise ValueError("RDKit Stage 3 adapter/artifact input widths differ")
+        plan["representation"] = {
+            "kind": "rdkit_2d_adapter",
+            "contract_sha256": canonical_json_sha256(contract),
+            "input_dims": input_dims,
+            "output_dim": 512,
+        }
     if config.training.seed is not None:
         plan["training_seed"] = effective_training_seed(config)
     return plan
@@ -582,7 +624,7 @@ def _publish_stage3_refined(
     atomic_torch_save(
         artifact_path,
         {
-            "kind": STAGE3_REFINED_KIND,
+            "kind": _checkpoint_kind(plan, refined=True),
             "format_version": TASKWISE_REFINED_FORMAT_VERSION,
             "fold": fold,
             "model": model_state,
@@ -600,11 +642,11 @@ def _publish_stage3_refined(
             "normalization": dict(normalizations),
             "normalization_hash": plan["normalization_hash"],
             "ownership_manifest": model.ownership_manifest(),
-            "stage2_encoder_identity": plan["stage2_encoder_identity"],
+            **_representation_checkpoint_fields(plan),
         },
     )
     manifest = {
-        "kind": STAGE3_REFINED_KIND,
+        "kind": _checkpoint_kind(plan, refined=True),
         "format_version": TASKWISE_REFINED_FORMAT_VERSION,
         "fold": fold,
         "artifact": artifact_path.name,
@@ -631,15 +673,29 @@ def _lr_factor(step: int, warmup: int, total: int, floor: float) -> float:
 def _batch(
     dataset: Stage3TaskDataset,
     indices: torch.Tensor,
-    embeddings: torch.Tensor,
+    representations: Stage3RepresentationStore | torch.Tensor,
+    task_spec: Any,
     normalization: Mapping[str, Any],
     device: torch.device,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor]:
     cpu_indices = indices.cpu()
-    primary = embeddings[dataset.primary_object_ids[cpu_indices]].to(device)
+    primary_topology = (
+        "il" if tuple(task_spec.primary_slots) == ("cation", "anion") else "molecule"
+    )
+    primary = (
+        representations[dataset.primary_object_ids[cpu_indices]]
+        if isinstance(representations, torch.Tensor)
+        else representations.values(
+            dataset.primary_object_ids[cpu_indices], primary_topology
+        )
+    ).to(device)
     partner_ids = dataset.partner_object_ids[cpu_indices]
     partner = (
-        embeddings[partner_ids].to(device)
+        (
+            representations[partner_ids]
+            if isinstance(representations, torch.Tensor)
+            else representations.values(partner_ids, "molecule")
+        ).to(device)
         if len(partner_ids) and bool((partner_ids >= 0).all())
         else None
     )
@@ -656,7 +712,7 @@ def compute_task_gradient(
     task_id: str,
     dataset: Stage3TaskDataset,
     indices: torch.Tensor,
-    embeddings: torch.Tensor,
+    representations: Stage3RepresentationStore | torch.Tensor,
     normalization: Mapping[str, Any],
     config: Stage3Config,
     device: torch.device,
@@ -668,7 +724,12 @@ def compute_task_gradient(
     for start in range(0, task_batch_size, config.training.microbatch_size):
         micro = indices[start : start + config.training.microbatch_size]
         primary, conditions, partner, targets = _batch(
-            dataset, micro, embeddings, normalization, device
+            dataset,
+            micro,
+            representations,
+            model.task_specs[task_id],
+            normalization,
+            device,
         )
         with torch.autocast(
             device_type=device.type,
@@ -734,7 +795,7 @@ def regression_metrics(
 def validate_tasks(
     model: Stage3SparseModel,
     datasets: Mapping[str, Stage3TaskDataset],
-    embeddings: torch.Tensor,
+    representations: Stage3RepresentationStore | torch.Tensor,
     normalizations: Mapping[str, Any],
     config: Stage3Config,
     device: torch.device,
@@ -747,7 +808,12 @@ def validate_tasks(
         for start in range(0, len(dataset), config.training.microbatch_size):
             indices = torch.arange(start, min(len(dataset), start + config.training.microbatch_size))
             primary, conditions, partner, target = _batch(
-                dataset, indices, embeddings, normalizations[task_id], device
+                dataset,
+                indices,
+                representations,
+                model.task_specs[task_id],
+                normalizations[task_id],
+                device,
             )
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=config.training.amp_dtype == "bf16"):
                 prediction = model(task_id, primary, conditions, partner_embedding=partner).predictions
@@ -831,7 +897,8 @@ def _checkpoint_payload(
     model_state = model.state_dict()
     return {
         "identity_contract_version": IDENTITY_CONTRACT_VERSION,
-        "format_version": STAGE3_CHECKPOINT_VERSION, "kind": STAGE3_CHECKPOINT_KIND,
+        "format_version": STAGE3_CHECKPOINT_VERSION,
+        "kind": _checkpoint_kind(plan, refined=False),
         "stage": "stage3",
         "config": config.to_dict(), "fold": fold, "completed_epoch": epoch,
         "global_step": global_step, "model": model_state,
@@ -839,7 +906,7 @@ def _checkpoint_payload(
         "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(),
         "rng": capture_rng_state(), "pcgrad_rng": pcgrad_rng.getstate(),
         "task_order_rng": task_order_rng.getstate(),
-        "stage2_encoder_identity": plan["stage2_encoder_identity"],
+        **_representation_checkpoint_fields(plan),
         "training_identity": build_stage3_training_identity(plan),
         "resolved_registry": plan["resolved_registry"], "resolved_training_plan": dict(plan),
         "normalization": dict(normalizations),
@@ -884,16 +951,35 @@ def run_stage3_training(
     training_seed = effective_training_seed(config)
     seed_everything(training_seed + fold)
     prepared = load_prepared_stage3(config)
-    embedding_matrix = prepared["objects"]["embeddings"].float()
-    d_model = int(embedding_matrix.shape[1])
+    representations = Stage3RepresentationStore(
+        config.data.artifacts_dir,
+        fold,
+        prepared["objects"],
+        str(prepared["metadata"]["kind"]),
+    )
+    d_model = representations.output_dim
     registry = prepared["registry"]
-    model = Stage3SparseModel(config.model, registry, d_model).to(device)
+    model = Stage3SparseModel(
+        config.model,
+        registry,
+        d_model,
+        descriptor_input_dims=representations.input_dims,
+    ).to(device)
+    representation_source_identity = (
+        metadata_identity(
+            prepared["metadata"],
+            "stage2_encoder",
+            context="Stage 3 prepared artifact",
+        )["hash"]
+        if prepared["metadata"].get("kind") == STAGE3_ARTIFACT_KIND
+        else metadata_identity(
+            prepared["metadata"], "prepared", context="RDKit Stage 3 artifact"
+        )["hash"]
+    )
     source, plugin_plan = _load_plugin(
         config,
         model,
-        metadata_identity(
-            prepared["metadata"], "stage2_encoder", context="Stage 3 prepared artifact"
-        )["hash"],
+        representation_source_identity,
         fold=fold,
     )
     enabled = tuple(task for task, spec in registry.items() if spec.enabled)
@@ -953,11 +1039,12 @@ def run_stage3_training(
         checkpoint = torch.load(resume_from, map_location="cpu", weights_only=False)
         expected = {
             "identity_contract_version": IDENTITY_CONTRACT_VERSION,
-            "kind": STAGE3_CHECKPOINT_KIND, "format_version": STAGE3_CHECKPOINT_VERSION,
+            "kind": _checkpoint_kind(plan, refined=False),
+            "format_version": STAGE3_CHECKPOINT_VERSION,
             "stage": "stage3",
             "fold": fold,
             "ownership_manifest": model.ownership_manifest(),
-            "stage2_encoder_identity": plan["stage2_encoder_identity"],
+            **_representation_checkpoint_fields(plan),
         }
         for key, value in expected.items():
             if checkpoint.get(key) != value:
@@ -1082,7 +1169,7 @@ def run_stage3_training(
                     begin = step * allocation[task]
                     indices = sequences[task][begin : begin + allocation[task]]
                     gradient, loss = compute_task_gradient(
-                        model, task, train_data[task], indices, embedding_matrix,
+                        model, task, train_data[task], indices, representations,
                         normalizations[task], config, device,
                     )
                     epoch_loss[task] += loss
@@ -1157,7 +1244,7 @@ def run_stage3_training(
             validation = validate_tasks(
                 model,
                 valid_data,
-                embedding_matrix,
+                representations,
                 normalizations,
                 config,
                 device,
@@ -1269,7 +1356,7 @@ def run_stage3_training(
     for selected in refinement_state["selected_tasks"].values():
         _load_owned_state(model, selected["best_state"])
     stitched_validation = validate_tasks(
-        model, valid_data, embedding_matrix, normalizations, config, device
+        model, valid_data, representations, normalizations, config, device
     )
     _publish_stage3_refined(
         output,
@@ -1291,11 +1378,29 @@ def resolve_stage3_training_identity(
     if fold not in range(1, 6):
         raise ValueError("Stage 3 fold must be in 1..5")
     prepared = load_prepared_stage3(config)
-    d_model = int(prepared["objects"]["embeddings"].shape[1])
-    model = Stage3SparseModel(config.model, prepared["registry"], d_model)
-    encoder_identity = metadata_identity(
-        prepared["metadata"], "stage2_encoder", context="Stage 3 prepared artifact"
-    )["hash"]
+    representations = Stage3RepresentationStore(
+        config.data.artifacts_dir,
+        fold,
+        prepared["objects"],
+        str(prepared["metadata"]["kind"]),
+    )
+    model = Stage3SparseModel(
+        config.model,
+        prepared["registry"],
+        representations.output_dim,
+        descriptor_input_dims=representations.input_dims,
+    )
+    encoder_identity = (
+        metadata_identity(
+            prepared["metadata"],
+            "stage2_encoder",
+            context="Stage 3 prepared artifact",
+        )["hash"]
+        if prepared["metadata"].get("kind") == STAGE3_ARTIFACT_KIND
+        else metadata_identity(
+            prepared["metadata"], "prepared", context="RDKit Stage 3 artifact"
+        )["hash"]
+    )
     source, plugin_plan = _load_plugin(
         config, model, encoder_identity, fold=fold
     )
@@ -1327,6 +1432,9 @@ def resolve_stage3_training_identity(
 __all__ = [
     "STAGE3_CHECKPOINT_KIND",
     "STAGE3_CHECKPOINT_VERSION",
+    "STAGE3_RDKIT_CHECKPOINT_KIND",
+    "STAGE3_RDKIT_REFINED_KIND",
+    "STAGE3_REFINED_KIND",
     "build_resolved_training_plan",
     "checkpoint_epochs",
     "compute_task_gradient",

@@ -59,3 +59,4 @@ Not eligible: None
 - ✓ ilume_stage3_single_task_mlp@outputs/benchmarks/v1/ilume_stage3_single_task_mlp: complete
 - ✓ mlp@outputs/benchmarks/v1/mlp: complete
 - ✓ molformer@outputs/benchmarks/v1/molformer: complete
+- ⚠ unknown@outputs/benchmarks/v1/ilbert: running

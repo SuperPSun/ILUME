@@ -26,24 +26,41 @@ def main() -> None:
 
     registry = resolve_task_registry(config)
     objects = collect_object_keys(config, registry)
-    prepared_identity = resolve_stage3_prepared_identity(config, registry, objects)
+    rdkit_materialization = None
+    if config.representation is not None:
+        from stage3.rdkit import resolve_rdkit_materialization
+
+        rdkit_materialization = resolve_rdkit_materialization(
+            config, registry, objects
+        )
+        prepared_identity = rdkit_materialization["prepared_identity"]
+    else:
+        prepared_identity = resolve_stage3_prepared_identity(
+            config, registry, objects
+        )
     run = open_run_directory(
         stage="stage3", operation="prepare", config_path=args.config,
         config_payload=config.to_dict(), output=args.output, seed=config.data.seed,
         semantic_identity=prepared_identity,
         reusable=False,
-        details={
-            "stage2_encoder": repository_relative(
-                config.initialization.stage2_encoder
-            )
-        },
+        details=(
+            {"representation": "rdkit_2d_adapter"}
+            if config.representation is not None
+            else {
+                "stage2_encoder": repository_relative(
+                    config.initialization.stage2_encoder
+                )
+            }
+        ),
     )
     effective = replace(config, data=replace(config.data, artifacts_dir=run.artifacts))
     registry = resolve_task_registry(effective)
     sources = [Path(path) for path in source_hashes(effective, registry)]
     try:
         write_data_identity(ROOT, "stage3", sources)
-        result = prepare_stage3(effective)
+        result = prepare_stage3(
+            effective, rdkit_materialization=rdkit_materialization
+        )
         run.complete(result)
     except BaseException:
         run.fail()

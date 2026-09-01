@@ -166,6 +166,8 @@ class Stage3SparseModel(nn.Module):
         model_config: Stage3ModelConfig,
         task_specs: Mapping[str, ResolvedTaskSpec],
         d_model: int,
+        *,
+        descriptor_input_dims: Mapping[str, int] | None = None,
     ) -> None:
         super().__init__()
         self.model_config = model_config
@@ -175,6 +177,18 @@ class Stage3SparseModel(nn.Module):
             sorted({spec.meta_group for spec in self.task_specs.values() if spec.enabled})
         )
         self._ownership_by_parameter: dict[nn.Parameter, Ownership] = {}
+        self.descriptor_adapters = nn.ModuleDict()
+        if descriptor_input_dims is not None:
+            if d_model != 512 or set(descriptor_input_dims) != {"il", "molecule"}:
+                raise ValueError("RDKit Stage 3 adapter contract is invalid")
+            if any(int(width) <= 0 for width in descriptor_input_dims.values()):
+                raise ValueError("RDKit Stage 3 adapter inputs must be positive")
+            for topology in ("il", "molecule"):
+                self.descriptor_adapters[topology] = nn.Sequential(
+                    nn.Linear(int(descriptor_input_dims[topology]), d_model),
+                    nn.LayerNorm(d_model),
+                )
+            self._own_modules(GLOBAL, self.descriptor_adapters)
 
         expert_kwargs = {
             "hidden_ratio": model_config.expert_hidden_ratio,
@@ -341,6 +355,19 @@ class Stage3SparseModel(nn.Module):
         spec = self.task_specs.get(task_id)
         if spec is None or not spec.enabled:
             raise ValueError(f"Inactive Stage 3 task: {task_id}")
+        if self.descriptor_adapters:
+            primary_topology = (
+                "il"
+                if tuple(spec.primary_slots) == ("cation", "anion")
+                else "molecule"
+            )
+            primary_embedding = self.descriptor_adapters[primary_topology](
+                primary_embedding
+            )
+            if partner_embedding is not None:
+                partner_embedding = self.descriptor_adapters["molecule"](
+                    partner_embedding
+                )
         key = sanitize_task(task_id)
         z_global, l1_global_weights = _mixture(
             self.l1_global_experts,

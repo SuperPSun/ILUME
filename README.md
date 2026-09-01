@@ -100,9 +100,49 @@ Stage 3 evaluator 同样默认加载每个 fold 的 `taskwise_refined.pt`；显�
 
 独立的 Capacity v1 研究不替换正式 v1 合同；设计见 [ADR-0026](docs/adr/0026-capacity-v1-pipeline-study.md)，正式命令集中在 [Capacity v1 操作手册](docs/capacity-v1-runbook.md)。
 
-## Baselines
+### RDKit 2D → HoME representation ablation
 
-MLP、ECFP4-XGBoost、Chemprop D-MPNN、MoLFormer、ILBERT 与 Stage3 Single-task MLP 消融位于 `benchmarks/`，与 Stage 代码隔离；合同见 [ADR-0022](docs/adr/0022-mlp-ecfp-xgboost-baselines.md)、[ADR-0028](docs/adr/0028-chemprop-dmpnn-baseline.md)、[ADR-0029](docs/adr/0029-molformer-baseline.md)、[ADR-0030](docs/adr/0030-molformer-throughput-contract.md)、[ADR-0032](docs/adr/0032-ilbert-baseline.md) 和 [ADR-0033](docs/adr/0033-stage3-single-task-mlp-ablation.md)。
+[ADR-0034](docs/adr/0034-rdkit-2d-home-representation-ablation.md) 只用
+RDKit 2D descriptors 与两个可训练的 `Linear → LayerNorm` adapter 替换 frozen
+Stage2 Object representation；HoME、PCGrad、sampling、refinement 和 evaluation 保持
+Stage3 Base 合同。该实验不读取 Stage1/2 checkpoint，也不单独 HPO。
+
+```bash
+python scripts/stage3/prepare.py \
+  --config configs/ablations/stage1_stage2_rdkit_home.yaml \
+  --output outputs/ablations/stage1_stage2_rdkit_home/prepare
+
+python scripts/stage3/train.py \
+  --config configs/ablations/stage1_stage2_rdkit_home.yaml \
+  --fold 1 2 3 4 5 \
+  --output outputs/ablations/stage1_stage2_rdkit_home/train
+
+python scripts/stage3/evaluate.py \
+  --config configs/ablations/stage1_stage2_rdkit_home.yaml \
+  --checkpoint-dir outputs/ablations/stage1_stage2_rdkit_home/train \
+  --split valid --fold 1 2 3 4 5 \
+  --output outputs/ablations/stage1_stage2_rdkit_home/evaluate/valid
+
+python scripts/stage3/evaluate.py \
+  --config configs/ablations/stage1_stage2_rdkit_home.yaml \
+  --checkpoint-dir outputs/ablations/stage1_stage2_rdkit_home/train \
+  --split test --ensemble-folds \
+  --output outputs/ablations/stage1_stage2_rdkit_home/evaluate/test
+
+python scripts/benchmarks/summarize.py \
+  --input outputs/v1 outputs/benchmarks outputs/ablations \
+  --output summary
+```
+
+五折训练命令默认串行；如需显式多 GPU 调度，只增加 `--max-parallel` 与 `--devices`，
+不改变 scientific identity。正式执行前应保证对应输出目录不存在；恢复必须显式添加
+`--resume`。
+
+## Baselines and Ablations
+
+MLP、ECFP4-XGBoost、Chemprop D-MPNN、MoLFormer 与 ILBERT 位于 `benchmarks/`；
+Stage3 Single-task MLP 内部消融位于 `ablations/`。二者均与 Stage 代码隔离，并继续
+复用 benchmark 运行与 reporting 入口；合同见 [ADR-0022](docs/adr/0022-mlp-ecfp-xgboost-baselines.md)、[ADR-0028](docs/adr/0028-chemprop-dmpnn-baseline.md)、[ADR-0029](docs/adr/0029-molformer-baseline.md)、[ADR-0030](docs/adr/0030-molformer-throughput-contract.md)、[ADR-0032](docs/adr/0032-ilbert-baseline.md) 和 [ADR-0033](docs/adr/0033-stage3-single-task-mlp-ablation.md)。
 
 ```bash
 python -m pip install -e ".[benchmarks]"
@@ -118,7 +158,7 @@ python scripts/benchmarks/sweep.py \
   --max-workers 1
 
 python scripts/benchmarks/sweep.py \
-  --config configs/benchmarks/ilume_stage3_single_task_mlp.yaml \
+  --config configs/ablations/ilume_stage3_single_task_mlp.yaml \
   --output outputs/benchmarks/v1/ilume_stage3_single_task_mlp \
   --max-workers 1
 ```

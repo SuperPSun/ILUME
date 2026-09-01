@@ -103,6 +103,7 @@ def materialize_object_embeddings(
     reporter: ProgressReporter | None = None,
 ) -> tuple[torch.Tensor, dict[str, Any], dict[str, int]]:
     encoder_path = config.initialization.stage2_encoder
+    assert encoder_path is not None
     stage2_identity = load_stage2_encoder_identity(encoder_path)
     embeddings: list[torch.Tensor | None] = [None] * len(object_keys)
     misses: dict[str, list[int]] = {}
@@ -265,8 +266,21 @@ def prepare_stage3(
     config: Stage3Config,
     *,
     reporter: ProgressReporter | None = None,
+    rdkit_materialization: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     config.validate()
+    if config.representation is not None:
+        from .rdkit import prepare_rdkit_stage3
+
+        registry = resolve_task_registry(config)
+        objects = collect_object_keys(config, registry)
+        return prepare_rdkit_stage3(
+            config,
+            registry,
+            objects,
+            reporter=reporter,
+            materialization=rdkit_materialization,
+        )
     destination = config.data.artifacts_dir
     if destination.exists():
         raise FileExistsError(f"Stage 3 artifact output already exists: {destination}")
@@ -303,6 +317,16 @@ def prepare_stage3(
 def load_prepared_stage3(config: Stage3Config) -> dict[str, Any]:
     root = config.data.artifacts_dir
     metadata = json.loads((root / "metadata.json").read_text(encoding="utf-8"))
+    if metadata.get("kind") == "ilume_stage3_rdkit_sparse_data":
+        if config.representation is None:
+            raise ValueError("RDKit Stage 3 artifact requires RDKit representation config")
+        from .rdkit import load_prepared_rdkit_stage3
+
+        return load_prepared_rdkit_stage3(
+            config, metadata, resolve_task_registry(config)
+        )
+    if config.representation is not None:
+        raise ValueError("RDKit representation cannot load Stage 2 Object artifact")
     if (
         metadata.get("format_version") != STAGE3_ARTIFACT_VERSION
         or metadata.get("kind") != STAGE3_ARTIFACT_KIND
@@ -320,9 +344,9 @@ def load_prepared_stage3(config: Stage3Config) -> dict[str, Any]:
         raise ValueError("Stage 3 artifact registry mismatch")
     if metadata.get("source_hashes") != source_hashes(config, registry):
         raise ValueError("Stage 3 artifact source hash mismatch")
-    expected_stage2_identity = load_stage2_encoder_identity(
-        config.initialization.stage2_encoder
-    )
+    encoder_path = config.initialization.stage2_encoder
+    assert encoder_path is not None
+    expected_stage2_identity = load_stage2_encoder_identity(encoder_path)
     stored_stage2_identity = metadata.get("stage2_encoder_identity")
     if not isinstance(stored_stage2_identity, dict):
         raise ValueError("Stage 3 artifact lacks Stage 2 encoder identity")

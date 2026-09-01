@@ -1,0 +1,95 @@
+data:
+  stage3_dir: data/stage3
+  task_catalog: data/task_catalog.csv
+  artifacts_dir: outputs/ablations/stage1_stage2_rdkit_home/prepare/artifacts
+  split_policy: prefer_il
+  split_strategies: {}
+  cv_repeat: 1
+  cv_repeats: {}
+  seed: 42
+preparation:
+  encoding_batch_size: 256
+  cache_dir: outputs/ablations/stage1_stage2_rdkit_home/cache/rdkit_2d
+initialization:
+  stage2_encoder: null
+  plugin: null
+representation:
+  kind: rdkit_2d_adapter
+  descriptor_family: rdkit_2d
+  adapter: linear_layernorm
+  output_dim: 512
+model:
+  global_experts: 2
+  group_experts: 2
+  private_experts: 1
+  dropout: 0.10
+  activation: silu
+  expert_hidden_ratio: 2.0
+  interaction_hidden_ratio: 2.0
+  film_hidden_ratio: 1.0
+  tower_hidden_ratio: 1.0
+  l2_residual: true
+groups:
+  transport: {enabled: true, group_weight: 1.0}
+  thermophysical: {enabled: true, group_weight: 1.0}
+  phase_stability: {enabled: true, group_weight: 1.0}
+  dielectric_optical: {enabled: true, group_weight: 1.0}
+  solvation: {enabled: true, group_weight: 1.0}
+  biological: {enabled: true, group_weight: 1.0}
+tasks:
+  experiment/electrical_conductivity: {meta_group: transport}
+  experiment/self_diffusion_coefficient: {meta_group: transport}
+  experiment/viscosity: {meta_group: transport}
+  experiment/thermal_conductivity: {meta_group: transport}
+  experiment/density: {meta_group: thermophysical}
+  experiment/heat_capacity: {meta_group: thermophysical}
+  experiment/isobaric_coefficient_of_volume_expansion: {meta_group: thermophysical}
+  experiment/speed_of_sound: {meta_group: thermophysical}
+  experiment/surface_tension: {meta_group: thermophysical}
+  experiment/equilibrium_pressure: {meta_group: phase_stability}
+  experiment/glass_transition_temperature: {meta_group: phase_stability}
+  experiment/melting_point: {meta_group: phase_stability}
+  experiment/thermal_decomposition_temperature: {meta_group: phase_stability}
+  experiment/dynamic_relative_permittivity: {meta_group: dielectric_optical}
+  experiment/static_relative_permittivity: {meta_group: dielectric_optical}
+  experiment/refractive_index: {meta_group: dielectric_optical}
+  experiment/solvation:
+    meta_group: solvation
+    partner_mode: interaction
+    primary_slots: [cation, anion]
+    partner_slots: [solute]
+  experiment/transfer:
+    meta_group: solvation
+    partner_mode: interaction
+    primary_slots: [cation, anion]
+    partner_slots: [solute]
+  experiment/transfer_organic:
+    meta_group: solvation
+    partner_mode: interaction
+    primary_slots: [solute]
+    partner_slots: [solvent]
+  experiment/x_co2: {meta_group: solvation}
+  experiment/pec50: {meta_group: biological}
+training:
+  composite_batch_size: 2048
+  microbatch_size: 1024
+  virtual_min_size: 1000
+  epochs: 100
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+  warmup_ratio: 0.05
+  min_lr_ratio: 0.05
+  max_grad_norm: 1.0
+  smooth_l1_beta: 1.0
+  amp_dtype: bf16
+  optimizer_implementation: single_tensor
+  active_tasks: auto
+  checkpoint_interval_epochs: 10
+  device: cuda
+  cpu_threads: 4
+  cpu_interop_threads: 1
+  debug_pcgrad_traces: false
+  refinement_ratio: 0.20
+  refinement_lr_multiplier: 0.10

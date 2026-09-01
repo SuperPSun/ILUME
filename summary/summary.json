@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "inputs": [
+    "1196142b92a1f98f2866d7a562b79b54ee1c2d8fab2136613eda94bc955180fc",
     "3f6166e829b96159a7da4f5b7bdca1326a7132b144c66d8ddb47eeac2be75970",
     "4c9f6e5ad8fd3c22c5f9b0948b5a536f84e57d6436c3e41a1d68a901cb693337",
     "772064943a15af694fd5b8de4017dd7fe71820d42dc8a4a4a28d60391f15ec44",
@@ -5554,6 +5555,25 @@
       "stage2_partial_eligibility": "not_evaluated",
       "stage2_full_eligibility": "not_evaluated",
       "source_run": "outputs/benchmarks/v1/molformer",
+      "issues": ""
+    },
+    {
+      "run": "unknown@outputs/benchmarks/v1/ilbert",
+      "model": "unknown",
+      "stage": "benchmark",
+      "operation": "sweep",
+      "status": "running",
+      "completeness": "running",
+      "checkpoint_epoch": "",
+      "enabled_tasks": "",
+      "expected_tasks": "",
+      "available_tasks": "",
+      "available_folds": "",
+      "failed_jobs": "",
+      "stage2_core_eligibility": "",
+      "stage2_partial_eligibility": "",
+      "stage2_full_eligibility": "",
+      "source_run": "outputs/benchmarks/v1/ilbert",
       "issues": ""
     }
   ]
