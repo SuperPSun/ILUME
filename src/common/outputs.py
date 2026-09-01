@@ -78,6 +78,13 @@ def _git_state() -> tuple[str | None, bool | None]:
     return commit, dirty
 
 
+def _optional_backend_attribute(backend: Any, name: str) -> Any:
+    try:
+        return getattr(backend, name)
+    except (AttributeError, AssertionError):
+        return None
+
+
 def _runtime_metadata() -> dict[str, Any]:
     commit, dirty = _git_state()
     cuda_available = torch.cuda.is_available()
@@ -85,11 +92,11 @@ def _runtime_metadata() -> dict[str, Any]:
     cudnn_precision = None
     if cuda_available:
         matmul = torch.backends.cuda.matmul
-        matmul_precision = getattr(matmul, "fp32_precision", None)
+        matmul_precision = _optional_backend_attribute(matmul, "fp32_precision")
         if matmul_precision is None:
             matmul_precision = "tf32" if matmul.allow_tf32 else "ieee"
         cudnn_conv = getattr(torch.backends.cudnn, "conv", None)
-        cudnn_precision = getattr(cudnn_conv, "fp32_precision", None)
+        cudnn_precision = _optional_backend_attribute(cudnn_conv, "fp32_precision")
         if cudnn_precision is None:
             cudnn_precision = "tf32" if torch.backends.cudnn.allow_tf32 else "ieee"
     return {
