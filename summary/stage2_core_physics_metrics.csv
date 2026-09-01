@@ -13,6 +13,13 @@ ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost,ECFP+XGBoost,simulation/homo,HOM
 ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost,ECFP+XGBoost,simulation/lumo,LUMO_eV,anion,744,0.2694680622361275,,,,,outputs/benchmarks/v1/ecfp_xgboost
 ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost,ECFP+XGBoost,simulation/lumo,LUMO_eV,cation,917,0.4108142983103888,,,,,outputs/benchmarks/v1/ecfp_xgboost
 ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost,ECFP+XGBoost,simulation/lumo,LUMO_eV,pooled,1661,0.34750207697429586,0.5456975912391558,0.9782540703736791,0.09394831292947536,0.14753111265688726,outputs/benchmarks/v1/ecfp_xgboost
+ilbert@outputs/benchmarks/v1/ilbert,ILBERT,simulation/heat_of_vaporization,heat_of_vaporization_kJ/mol,pooled,2684,1.9404793408619998,2.79232730727944,0.9903355798292677,0.06974009525195102,0.10035518971193266,outputs/benchmarks/v1/ilbert
+ilbert@outputs/benchmarks/v1/ilbert,ILBERT,simulation/homo,HOMO_eV,anion,744,0.1813895458438855,,,,,outputs/benchmarks/v1/ilbert
+ilbert@outputs/benchmarks/v1/ilbert,ILBERT,simulation/homo,HOMO_eV,cation,917,0.21133377084173974,,,,,outputs/benchmarks/v1/ilbert
+ilbert@outputs/benchmarks/v1/ilbert,ILBERT,simulation/homo,HOMO_eV,pooled,1661,0.19792106560489245,0.2749646116033156,0.994098292115373,0.05496781280878149,0.07636480358196267,outputs/benchmarks/v1/ilbert
+ilbert@outputs/benchmarks/v1/ilbert,ILBERT,simulation/lumo,LUMO_eV,anion,744,0.23328600288203258,,,,,outputs/benchmarks/v1/ilbert
+ilbert@outputs/benchmarks/v1/ilbert,ILBERT,simulation/lumo,LUMO_eV,cation,917,0.20196530513063932,,,,,outputs/benchmarks/v1/ilbert
+ilbert@outputs/benchmarks/v1/ilbert,ILBERT,simulation/lumo,LUMO_eV,pooled,1661,0.21599456408731413,0.28996218804462315,0.9938601658337377,0.058394830542096585,0.07839221744319716,outputs/benchmarks/v1/ilbert
 ilume@outputs/v1/stage2/base/evaluate,ILUME,simulation/heat_of_vaporization,heat_of_vaporization_kJ/mol,pooled,2684,3.6861633107413883,5.038494151831594,0.9685337728277741,0.13247931837870244,0.1810815784923746,outputs/v1/stage2/base/evaluate
 ilume@outputs/v1/stage2/base/evaluate,ILUME,simulation/homo,HOMO_eV,anion,744,0.18717216191027736,,,,,outputs/v1/stage2/base/evaluate
 ilume@outputs/v1/stage2/base/evaluate,ILUME,simulation/homo,HOMO_eV,cation,917,0.28733764123455685,,,,,outputs/v1/stage2/base/evaluate
