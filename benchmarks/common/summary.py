@@ -444,11 +444,30 @@ def _run_id(model: str, source_run: str) -> str:
     return f"{model}@{source_run}"
 
 
+def _display_name(candidate: Candidate, reporting: Mapping[str, Any]) -> str:
+    """Return a human-readable model label without changing reporting identity."""
+    display = str(reporting["model_display_name"])
+    source = Path(candidate.source_run).parts
+    marker = ("outputs", "experiments_v1", "stage3", "formal")
+    for index in range(len(source) - len(marker)):
+        if source[index:index + len(marker)] != marker:
+            continue
+        scale = source[index + len(marker)]
+        scale_label = {"s": "S", "base": "Base", "l": "L", "xl": "XL"}
+        if (
+            candidate.metadata.get("stage") == "stage3"
+            and reporting.get("model_id") == "ilume"
+            and scale in scale_label
+        ):
+            return f"{display} Capacity v1 ({scale_label[scale]})"
+    return display
+
+
 def _model(candidate: Candidate) -> tuple[str, str]:
     if candidate.summary:
         reporting = candidate.summary.get("reporting", {})
         if reporting.get("model_id") and reporting.get("model_display_name"):
-            return str(reporting["model_id"]), str(reporting["model_display_name"])
+            return str(reporting["model_id"]), _display_name(candidate, reporting)
         if candidate.metadata.get("stage") == "benchmark" and candidate.summary.get("model"):
             model = str(candidate.summary["model"])
             return model, model
@@ -480,7 +499,7 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
         provenance = candidate.metadata.get("provenance", {})
         signatures.append(
             (
-                model,
+                display,
                 str(candidate.metadata.get("stage", "")),
                 str(candidate.metadata.get("operation", "")),
                 str((candidate.summary or {}).get("split", provenance.get("split", ""))),
@@ -797,7 +816,7 @@ def _stage3_test(
         ) != (1, 2, 3, 4, 5):
             continue
         model_id = reporting["model_id"]
-        display = reporting["model_display_name"]
+        display = _display_name(candidate, reporting)
         run = _run_id(model_id, candidate.source_run)
         values = [float(metrics[task]["normalized_mae"]) for task in expected]
         comparison_hash = _stage3_comparison_key(
@@ -868,7 +887,7 @@ def _stage3_validation(
         ):
             continue
         run = f"{model_id}@study:{study_id}"
-        display = first_reporting["model_display_name"]
+        display = _display_name(items[0], first_reporting)
         source = ";".join(item.source_run for item in items)
         checkpoints = {item.summary["checkpoint_epoch"] for item in items}
         if len(checkpoints) != 1:
@@ -924,7 +943,7 @@ def _stage3_validation(
         ):
             continue
         model_id = reporting["model_id"]
-        display = reporting["model_display_name"]
+        display = _display_name(candidate, reporting)
         run = _run_id(model_id, candidate.source_run)
         task_values = []
         for task in expected:

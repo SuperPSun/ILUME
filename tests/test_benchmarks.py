@@ -1164,6 +1164,87 @@ def test_summary_publishes_radar_and_marks_unsupported_partial_charge_zero(
     assert match is not None
     assert float(match.group(1).split(",")[-1]) == 1.0
 
+
+def test_summary_labels_capacity_v1_stage3_scales(tmp_path: Path) -> None:
+    inputs = tmp_path / "outputs"
+    task = "experiment/example"
+    comparison = comparison_identity(
+        "stage3_property",
+        split="test",
+        expected=[task],
+        sources={
+            **{f"{task}:fold{fold}": "shared" for fold in range(1, 6)},
+            f"{task}:test": "shared",
+        },
+        normalization={
+            f"{task}:fold{fold}": {"scale": 1.0} for fold in range(1, 6)
+        },
+        folds=range(1, 6),
+        ensemble=True,
+    )
+    metric = {
+        "count": 5, "mae": 1.0, "rmse": 1.0, "r2": 0.5,
+        "normalized_mae": 1.0, "normalized_rmse": 1.0,
+    }
+    for scale in ("s", "base", "l", "xl"):
+        root = inputs / "experiments_v1" / "stage3" / "formal" / scale
+        reporting = {
+            "schema_version": REPORTING_SCHEMA_VERSION,
+            "model_id": "ilume",
+            "model_display_name": "ILUME",
+            "study_id": f"ilume-capacity-v1-{scale}",
+            "comparison_identity": comparison,
+        }
+        _write_run(
+            root / "test",
+            {
+                "split": "test",
+                "checkpoint_epoch": None,
+                "ensemble": {"tasks": {task: metric}},
+                "reporting": {
+                    **reporting,
+                    "protocol": {
+                        "split": "test", "folds": list(range(1, 6)),
+                        "ensemble": True, "expected_tasks": [task],
+                    },
+                },
+            },
+            stage="stage3",
+        )
+        for fold in range(1, 6):
+            _write_run(
+                root / "validation" / f"fold{fold}",
+                {
+                    "split": "valid",
+                    "checkpoint_epoch": None,
+                    "tasks": {task: metric},
+                    "reporting": {
+                        **reporting,
+                        "protocol": {
+                            "split": "valid", "fold": fold,
+                            "folds": list(range(1, 6)), "ensemble": False,
+                            "expected_tasks": [task],
+                        },
+                    },
+                },
+                stage="stage3",
+            )
+
+    payload = publish_summary(inputs, tmp_path / "summary", tmp_path)
+
+    expected = {
+        "ILUME Capacity v1 (S)", "ILUME Capacity v1 (Base)",
+        "ILUME Capacity v1 (L)", "ILUME Capacity v1 (XL)",
+    }
+    assert {row["model"] for row in payload["leaderboards"]["stage3_test"]} == expected
+    assert {row["model"] for row in payload["leaderboards"]["stage3_validation"]} == expected
+    assert all("alternative_run" not in row["issues"] for row in payload["health"])
+    overview = (tmp_path / "summary" / "overview.md").read_text(encoding="utf-8")
+    radar = (tmp_path / "summary" / "radar.svg").read_text(encoding="utf-8")
+    for label in expected:
+        assert label in overview
+        assert label in radar
+
 # --- D-MPNN runtime smoke ---
 
 def _task(component_count: int, *, atom: bool = False) -> BenchmarkTask:
@@ -1255,3 +1336,252 @@ def test_one_epoch_scalar_and_multicomponent_save_reload_smoke(
         checkpoint["best_valid_normalized_mae"]
         * checkpoint["target_statistics"]["scale"][0]
     )
+
+
+# --- SPMM baseline contracts ---
+
+from benchmarks.spmm.adapter import (
+    ConditionStats as SPMMConditionStats,
+    SharedSPMMRegressor,
+    _collate as spmm_collate,
+    _load_pretrained_encoder,
+    _prepare_split as prepare_spmm_split,
+    _scheduled_learning_rate,
+    build_spmm_model,
+)
+
+
+class FakeSPMMTokenizer:
+    pad_token_id = 0
+    cls_token_id = 2
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, bool]] = []
+
+    def encode(self, sequence: str, **kwargs):
+        truncated = bool(kwargs.get("truncation"))
+        self.calls.append((sequence, truncated))
+        smiles = sequence.removeprefix("[CLS]")
+        content = 101 if len(smiles) > 100 else max(1, len(smiles))
+        values = [2, 2, *([5] * content), 3]
+        if truncated and len(values) > int(kwargs["max_length"]):
+            values = values[: int(kwargs["max_length"]) - 1] + [3]
+        return values
+
+
+def _spmm_task() -> BenchmarkTask:
+    return BenchmarkTask(
+        benchmark="stage3",
+        task_id="experiment/spmm_tiny",
+        slots=("cation", "anion"),
+        condition_columns=("temperature_K",),
+        target_columns=("value",),
+        audit_columns=(),
+        train_paths=(),
+        valid_paths=(),
+        test_path=Path("test.csv"),
+        fold=1,
+        meta_group="tiny",
+        registry_payload={"task_id": "experiment/spmm_tiny"},
+    )
+
+
+def _spmm_raw() -> RawDataset:
+    return RawDataset(
+        components=(
+            ("F[C@H](Cl)Br", "[Cl-]"),
+            ("F[C@@H](Cl)Br", "[Cl-]"),
+            ("C" * 101, "[Cl-]"),
+        ),
+        component_count=2,
+        conditions=np.asarray([[290.0], [300.0], [310.0]]),
+        targets=np.asarray([[1.0], [2.0], [4.0]]),
+        source_rows=("tiny.csv:2", "tiny.csv:3", "tiny.csv:4"),
+        audit_rows=({}, {}, {}),
+    )
+
+
+def test_formal_spmm_config_resolves_108_jobs_and_is_strict() -> None:
+    config = load_benchmark_config("configs/benchmarks/spmm.yaml")
+    stage3 = configured_tasks(config, "stage3")
+    stage2 = configured_tasks(config, "stage2_physics")
+    assert len(stage3) == 21
+    assert stage2 == (
+        "simulation/heat_of_vaporization",
+        "simulation/homo",
+        "simulation/lumo",
+    )
+    assert len(stage3) * len(config.stage3.folds) + len(stage2) == 108
+    assert config.training["batch_size"] == 8
+    changed = config.to_dict()
+    changed["training"]["batch_size"] = 16
+    with pytest.raises(ValueError, match="registered fine-tuning recipe"):
+        benchmark_config_from_dict(changed)
+    runtime_variant = replace(config, runtime={**config.runtime, "num_workers": 8})
+    assert sweep_module._scientific_config(runtime_variant) == sweep_module._scientific_config(config)
+
+
+def test_spmm_environment_dispatches_to_dedicated_environment() -> None:
+    config = load_benchmark_config("configs/benchmarks/spmm.yaml")
+    command = environment_command(
+        config,
+        ("scripts/benchmarks/train.py", "--config", "configs/benchmarks/spmm.yaml"),
+        conda="/conda",
+    )
+    assert command[:6] == [
+        "/conda", "run", "--no-capture-output", "-n", "ilume-spmm", "python"
+    ]
+
+
+def test_spmm_official_token_path_cache_truncation_collision_and_conditions() -> None:
+    raw = _spmm_raw()
+    task = _spmm_task()
+    tokenizer = FakeSPMMTokenizer()
+    cache = {}
+    condition_stats = SPMMConditionStats.fit(raw.conditions)
+    prepared = prepare_spmm_split(
+        raw,
+        task,
+        "train",
+        tokenizer,
+        cache,
+        condition_stats,
+        max_length=100,
+    )
+    assert prepared.audit["collision_group_count"] == 1
+    assert prepared.audit["collision_affected_rows"] == 2
+    assert prepared.audit["truncated_rows"] == ["tiny.csv:4"]
+    assert max(len(values) for values, _ in cache.values()) == 99
+    assert all(int(values[0]) == 2 for values, _ in cache.values())
+    call_count = len(tokenizer.calls)
+    prepare_spmm_split(
+        raw,
+        task,
+        "valid",
+        tokenizer,
+        cache,
+        condition_stats,
+        max_length=100,
+    )
+    assert len(tokenizer.calls) == call_count
+    collate = spmm_collate(
+        prepared, cache, TargetStats.fit(raw.targets), pad_token_id=0
+    )
+    input_ids, attention_mask, conditions, targets = collate([0, 1, 2])
+    assert input_ids.shape == attention_mask.shape == (6, 99)
+    assert conditions[:, 0].tolist() == pytest.approx([-1.2247449, 0.0, 1.2247449])
+    assert targets.shape == (3, 1)
+
+
+class FakeSPMMBert(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.ones(1))
+        self.calls = 0
+
+    def forward(self, input_ids, attention_mask, return_dict, mode):
+        self.calls += 1
+        assert mode == "text"
+        states = input_ids.float().unsqueeze(-1).repeat(1, 1, 4) * self.weight
+        return SimpleNamespace(last_hidden_state=states)
+
+
+class FakeSPMMTextEncoder(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.bert = FakeSPMMBert()
+
+
+def test_spmm_multicomponent_uses_one_shared_forward_in_registry_order() -> None:
+    encoder = FakeSPMMTextEncoder()
+    predictor = torch.nn.Linear(9, 1)
+    model = SharedSPMMRegressor(
+        encoder,
+        predictor,
+        component_count=2,
+        condition_dim=1,
+        hidden_dim=4,
+        load_audit={"loaded": True},
+    )
+    input_ids = torch.cat(
+        (
+            torch.ones((2, 3), dtype=torch.long),
+            torch.ones((2, 3), dtype=torch.long) * 2,
+        )
+    )
+    output = model(
+        input_ids,
+        torch.ones_like(input_ids),
+        torch.asarray([[10.0], [20.0]]),
+    )
+    assert output.shape == (2, 1)
+    assert encoder.bert.calls == 1
+    assert model.text_encoder is encoder
+
+
+def test_spmm_checkpoint_filters_exact_used_text_encoder_state(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = load_benchmark_config("configs/benchmarks/spmm.yaml")
+    checkpoint_path = tmp_path / "checkpoint.ckpt"
+    checkpoint_path.write_bytes(b"x")
+    config = replace(
+        config,
+        model={
+            **config.model,
+            "pretrained_checkpoint": checkpoint_path.as_posix(),
+            "pretrained_sha256": "trusted",
+            "pretrained_size": 1,
+        },
+    )
+    target = {f"bert.used.{index}": torch.zeros(1) for index in range(102)}
+
+    class Encoder:
+        def state_dict(self):
+            return target
+
+        def load_state_dict(self, values, strict):
+            assert strict is True
+            assert set(values) == set(target)
+
+    source = {
+        f"text_encoder.{key}": value.clone() for key, value in target.items()
+    }
+    source.update(
+        {f"text_encoder_m.ignored.{index}": torch.zeros(1) for index in range(656)}
+    )
+    monkeypatch.setattr(
+        "benchmarks.spmm.adapter._upstream_paths",
+        lambda config: (Path("xbert"), Path("vocab"), Path("config"), checkpoint_path),
+    )
+    monkeypatch.setattr("benchmarks.spmm.adapter.sha256_file", lambda path: "trusted")
+    monkeypatch.setattr(
+        "benchmarks.spmm.adapter.torch.load", lambda *args, **kwargs: {"state_dict": source}
+    )
+    audit = _load_pretrained_encoder(config, Encoder())
+    assert audit["source_state_entries"] == 758
+    assert audit["loaded_text_encoder_entries"] == 102
+    source.pop("text_encoder.bert.used.0")
+    source["other.ignored"] = torch.zeros(1)
+    with pytest.raises(RuntimeError, match="load contract mismatch"):
+        _load_pretrained_encoder(config, Encoder())
+
+
+def test_spmm_scheduler_has_exact_warmup_peak_and_cosine_floor() -> None:
+    values = [
+        _scheduled_learning_rate(
+            step,
+            total_steps=100,
+            warmup_steps=10,
+            warmup_learning_rate=5.0e-6,
+            peak_learning_rate=5.0e-5,
+            minimum_learning_rate=3.0e-6,
+        )
+        for step in range(100)
+    ]
+    assert values[0] == pytest.approx(5.0e-6)
+    assert values[9] == pytest.approx(5.0e-5)
+    assert values[10] == pytest.approx(5.0e-5)
+    assert values[-1] == pytest.approx(3.0e-6)
+    assert all(left <= right for left, right in zip(values[:9], values[1:10]))
+    assert all(left >= right for left, right in zip(values[10:-1], values[11:]))
