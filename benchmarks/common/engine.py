@@ -136,6 +136,10 @@ def prepare_training(
         from benchmarks.ilbert.adapter import prepare_ilbert_training
 
         return prepare_ilbert_training(config, benchmark, task_id, fold)  # type: ignore[return-value]
+    if config.name == "spmm":
+        from benchmarks.spmm.adapter import prepare_spmm_training
+
+        return prepare_spmm_training(config, benchmark, task_id, fold)  # type: ignore[return-value]
     task = resolve_task(config, benchmark, task_id, fold)
     train = load_split(task, "train")
     valid = load_split(task, "valid")
@@ -454,6 +458,12 @@ def train_bundle(
         return train_ilbert_bundle(  # type: ignore[arg-type]
             config, bundle, output_dir, reporter=reporter
         )
+    if config.name == "spmm":
+        from benchmarks.spmm.adapter import train_spmm_bundle
+
+        return train_spmm_bundle(  # type: ignore[arg-type]
+            config, bundle, output_dir, reporter=reporter
+        )
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
     if config.name == "mlp":
@@ -573,6 +583,12 @@ def evaluate_checkpoint(
         from benchmarks.ilbert.adapter import evaluate_ilbert_checkpoint
 
         return evaluate_ilbert_checkpoint(
+            config, benchmark, task_id, fold, checkpoint_dir, split
+        )
+    if config.name == "spmm":
+        from benchmarks.spmm.adapter import evaluate_spmm_checkpoint
+
+        return evaluate_spmm_checkpoint(
             config, benchmark, task_id, fold, checkpoint_dir, split
         )
     if split not in {"valid", "test"}:

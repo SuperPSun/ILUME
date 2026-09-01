@@ -802,7 +802,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--devices",
-        help=("optional MLP/D-MPNN/MoLFormer GPU list such as cuda:0,cuda:1; logical job chains are "
+        help=("optional neural-baseline GPU list such as cuda:0,cuda:1; logical job chains are "
               "assigned round-robin via CUDA_VISIBLE_DEVICES"),
     )
     args = parser.parse_args()
@@ -813,7 +813,7 @@ def main() -> None:
     except ValueError as error:
         parser.error(str(error))
     if devices and config.name not in {
-        "mlp", "dmpnn", "molformer", "ilbert",
+        "mlp", "dmpnn", "molformer", "ilbert", "spmm",
         "ilume_stage3_single_task_mlp",
     }:
         parser.error("--devices is only supported for GPU neural-network benchmarks")

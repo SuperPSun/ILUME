@@ -50,7 +50,7 @@ class Stage2PhysicsConfig:
 @dataclass(frozen=True)
 class BenchmarkConfig:
     name: Literal[
-        "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert",
+        "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm",
         "ilume_stage3_single_task_mlp",
     ]
     data: DataConfig
@@ -66,7 +66,7 @@ class BenchmarkConfig:
 
     def validate(self) -> None:
         if self.name not in {
-            "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert",
+            "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm",
             "ilume_stage3_single_task_mlp",
         }:
             raise ValueError(f"Unknown benchmark model: {self.name}")
@@ -87,7 +87,8 @@ class BenchmarkConfig:
         if self.name == "ilume_stage3_single_task_mlp":
             self._validate_ilume_stage3_single_task_mlp()
         advanced = self.name in {
-            "dmpnn", "molformer", "ilbert", "ilume_stage3_single_task_mlp"
+            "dmpnn", "molformer", "ilbert", "spmm",
+            "ilume_stage3_single_task_mlp",
         }
         if not advanced and self.data.feature_cache is None:
             raise ValueError("Feature baselines require data.feature_cache")
@@ -99,7 +100,9 @@ class BenchmarkConfig:
             self._validate_molformer()
         if self.name == "ilbert":
             self._validate_ilbert()
-        elif self.name not in {"molformer", "ilbert"} and self.runtime:
+        if self.name == "spmm":
+            self._validate_spmm()
+        elif self.name not in {"molformer", "ilbert", "spmm"} and self.runtime:
             raise ValueError("Only token baselines currently declare benchmark runtime settings")
         if not self.model or not self.training or self.seed < 0:
             raise ValueError("Benchmark model/training contract is incomplete")
@@ -343,6 +346,84 @@ class BenchmarkConfig:
         }
         if self.runtime != expected_runtime:
             raise ValueError("ILBERT runtime must match the registered loader recipe")
+
+    def _validate_spmm(self) -> None:
+        if self.features is not None:
+            raise ValueError("SPMM tokenizes SMILES and does not accept features")
+        if self.environment is None or not all(
+            (self.environment.name, str(self.environment.definition), str(self.environment.lock))
+        ):
+            raise ValueError("SPMM requires a dedicated environment definition and lock")
+        if self.environment.name != "ilume-spmm":
+            raise ValueError("SPMM environment name must be ilume-spmm")
+        if self.data.stage2_authority_config is not None:
+            raise ValueError("SPMM does not use a Stage 2 prepare authority")
+        expected_model = {
+            "repository": "jinhojsk515/SPMM",
+            "revision": "046976484f31b3cbc862b8f2094e38df72fcfce7",
+            "checkout": "artifacts/benchmarks/spmm/upstream",
+            "spmm_source_sha256": "6adddd7db6287151fd594fdf01325d614dcedebd2309839bad6193d1c53e1ff2",
+            "xbert_source_sha256": "13d205f5f50699d9e58b165eda932150c371c9bcaf3d35740b7f8df16335c04a",
+            "regression_source_sha256": "c18c74660ca8c201ad1b06a39379c4522c7eef4f380bd06aecb9e5ef2b25b384",
+            "vocab_sha256": "760a96b6855fcdc10c384d520c8be6e66140e2db98dde3cb930467c51b0f102a",
+            "bert_config_sha256": "85a090cea9435faac75c08eae698754198123d528a78cdad1819066e5c9a7376",
+            "pretrained_checkpoint": "artifacts/benchmarks/spmm/checkpoint_SPMM.ckpt",
+            "pretrained_sha256": "6b8eafd693eba42680e20ea06e3bf4efde640ac54ee1068ab34e6934bd0aca01",
+            "pretrained_size": 2358591924,
+            "pretrained": True,
+            "full_fine_tuning": True,
+            "modality": "smiles_text_only",
+            "remove_stereochemistry": True,
+            "tokenizer": "official_bert_wordpiece",
+            "vocab_size": 300,
+            "hidden_dim": 768,
+            "text_layers": 6,
+            "heads": 12,
+            "ffn_hidden_dim": 3072,
+            "dropout": 0.1,
+            "max_length": 100,
+            "encoder_max_length": 99,
+            "truncation": True,
+            "padding": "longest",
+            "shared_backbone": True,
+            "component_forward": "merged_component_backbone_forward",
+            "fusion": "ordered_concat_native_regression_head",
+            "input_cache": "unique_smiles_memory_token_cache",
+        }
+        if self.model != expected_model:
+            raise ValueError("SPMM model must match the registered upstream recipe")
+        expected_training = {
+            "optimizer": "adamw",
+            "learning_rate": 5.0e-5,
+            "weight_decay": 2.0e-2,
+            "scheduler": "linear_warmup_cosine",
+            "warmup_epochs": 1,
+            "warmup_learning_rate": 5.0e-6,
+            "minimum_learning_rate": 3.0e-6,
+            "batch_size": 8,
+            "gradient_accumulation_steps": 1,
+            "max_epochs": 50,
+            "early_stopping_patience": 10,
+            "loss": "mse",
+            "selection_metric": "validation_raw_mae",
+            "condition_transform": "train_only_zscore",
+            "device": "cuda",
+            "precision": "fp32",
+            "cuda_matmul_tf32": False,
+            "cudnn_tf32": True,
+            "cudnn_benchmark": True,
+        }
+        if self.training != expected_training:
+            raise ValueError("SPMM training must match the registered fine-tuning recipe")
+        expected_runtime = {
+            "num_workers": 4,
+            "prefetch_factor": 2,
+            "persistent_workers": True,
+            "pin_memory": True,
+            "non_blocking_transfer": True,
+        }
+        if self.runtime != expected_runtime:
+            raise ValueError("SPMM runtime must match the registered loader recipe")
 
     def to_dict(self) -> dict[str, Any]:
         def convert(value: Any) -> Any:

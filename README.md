@@ -140,9 +140,9 @@ python scripts/benchmarks/summarize.py \
 
 ## Baselines and Ablations
 
-MLP、ECFP4-XGBoost、Chemprop D-MPNN、MoLFormer 与 ILBERT 位于 `benchmarks/`；
+MLP、ECFP4-XGBoost、Chemprop D-MPNN、MoLFormer、ILBERT 与 SPMM 位于 `benchmarks/`；
 Stage3 Single-task MLP 内部消融位于 `ablations/`。二者均与 Stage 代码隔离，并继续
-复用 benchmark 运行与 reporting 入口；合同见 [ADR-0022](docs/adr/0022-mlp-ecfp-xgboost-baselines.md)、[ADR-0028](docs/adr/0028-chemprop-dmpnn-baseline.md)、[ADR-0029](docs/adr/0029-molformer-baseline.md)、[ADR-0030](docs/adr/0030-molformer-throughput-contract.md)、[ADR-0032](docs/adr/0032-ilbert-baseline.md) 和 [ADR-0033](docs/adr/0033-stage3-single-task-mlp-ablation.md)。
+复用 benchmark 运行与 reporting 入口；合同见 [ADR-0022](docs/adr/0022-mlp-ecfp-xgboost-baselines.md)、[ADR-0028](docs/adr/0028-chemprop-dmpnn-baseline.md)、[ADR-0029](docs/adr/0029-molformer-baseline.md)、[ADR-0030](docs/adr/0030-molformer-throughput-contract.md)、[ADR-0032](docs/adr/0032-ilbert-baseline.md)、[ADR-0033](docs/adr/0033-stage3-single-task-mlp-ablation.md) 和 [ADR-0035](docs/adr/0035-spmm-baseline.md)。
 
 ```bash
 python -m pip install -e ".[benchmarks]"
@@ -198,7 +198,7 @@ python scripts/benchmarks/sweep.py \
   --max-workers 1
 ```
 
-`--max-workers 1` 保持串行行为。MLP、D-MPNN、MoLFormer 与 ILBERT 多 GPU sweep 可通过 `--devices cuda:0,cuda:1,...` 分配逻辑 job；XGBoost 的 CPU 并行度由 YAML 中的 `training.n_jobs` 控制。D-MPNN 正式 sweep 共 109 个单 seed 训练任务；上述命令不会 resume，失败任务由 sweep 在新 attempt 中完整重跑。
+`--max-workers 1` 保持串行行为。MLP、D-MPNN、MoLFormer、ILBERT 与 SPMM 多 GPU sweep 可通过 `--devices cuda:0,cuda:1,...` 分配逻辑 job；XGBoost 的 CPU 并行度由 YAML 中的 `training.n_jobs` 控制。D-MPNN 正式 sweep 共 109 个单 seed 训练任务；上述命令不会 resume，失败任务由 sweep 在新 attempt 中完整重跑。
 
 MoLFormer同样使用独立hash-lock环境。先显式安装环境并下载固定HF snapshot；正式launcher只使用本地cache，不会自动联网或切换revision。
 
@@ -278,6 +278,48 @@ python scripts/benchmarks/sweep.py \
 ```
 
 ILBERT普通离子液体输入为单条`cation.anion` AIS sequence；solvation/transfer只增加共享backbone的有序双view。所有输入固定padding/truncation到100 tokens并公开审计，数值条件保持registry顺序和原始物理单位。Partial Charge与Stage 2 Full为unsupported。
+
+SPMM使用独立hash-lock环境和固定的官方Apache-2.0上游checkout。仓库不复制或提交约2.20 GiB的官方Lightning checkpoint；运行前会校验commit、源码、vocab、config、checkpoint SHA和字节数。
+该环境为兼容PyTorch 1.13固定Python 3.10，因此不执行要求Python ≥3.11的ILUME editable install；四个benchmark脚本会从仓库根显式引导`src`和`benchmarks`导入。
+
+```bash
+conda env create -f benchmarks/spmm/environment.yml
+conda run --no-capture-output -n ilume-spmm \
+  python -m pip install --require-hashes \
+  -r benchmarks/spmm/requirements-linux-x86_64-cu117.lock
+
+mkdir -p artifacts/benchmarks/spmm
+git clone https://github.com/jinhojsk515/SPMM.git \
+  artifacts/benchmarks/spmm/upstream
+git -C artifacts/benchmarks/spmm/upstream \
+  checkout --detach 046976484f31b3cbc862b8f2094e38df72fcfce7
+curl --fail --location --retry 5 --continue-at - \
+  'https://drive.usercontent.google.com/download?id=1jNVII-ktlV17p6bCdzw0TiPsb6lGNgWY&export=download&confirm=t' \
+  --output artifacts/benchmarks/spmm/checkpoint_SPMM.ckpt
+
+sha256sum artifacts/benchmarks/spmm/checkpoint_SPMM.ckpt
+stat --format='%s bytes' artifacts/benchmarks/spmm/checkpoint_SPMM.ckpt
+
+PYTHONPATH=src:. ILUME_BENCHMARK_ENVIRONMENT=ilume-spmm \
+conda run --no-capture-output -n ilume-spmm \
+  python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_spmm_environment; validate_spmm_environment(load_benchmark_config("configs/benchmarks/spmm.yaml"))'
+```
+
+单任务与完整108-job sweep：
+
+```bash
+python scripts/benchmarks/train.py \
+  --config configs/benchmarks/spmm.yaml \
+  --benchmark stage3 --task experiment/density --fold 1 \
+  --output outputs/benchmarks/v1/spmm/stage3/experiment__density/fold1/attempt-001
+
+python scripts/benchmarks/sweep.py \
+  --config configs/benchmarks/spmm.yaml \
+  --output outputs/benchmarks/v1/spmm \
+  --max-workers 1
+```
+
+SPMM只使用官方text-mode前6层和768维`[CLS]`表示；各分子component由同一encoder分别编码并合并为一次forward，随后只扩宽官方regression head第一层。模型输入去除立体信息，严格继承官方100-token tokenizer加首token切片路径，实际encoder上限为99；collision和truncation均公开审计。Partial Charge与Stage 2 Full为unsupported。
 
 ## 输出与结果汇总
 

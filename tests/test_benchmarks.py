@@ -1347,8 +1347,8 @@ from benchmarks.spmm.adapter import (
     _load_pretrained_encoder,
     _prepare_split as prepare_spmm_split,
     _scheduled_learning_rate,
-    build_spmm_model,
 )
+from benchmarks.common.environment import spmm_asset_snapshot
 
 
 class FakeSPMMTokenizer:
@@ -1431,6 +1431,68 @@ def test_spmm_environment_dispatches_to_dedicated_environment() -> None:
     assert command[:6] == [
         "/conda", "run", "--no-capture-output", "-n", "ilume-spmm", "python"
     ]
+
+
+def test_spmm_asset_snapshot_rejects_hash_mismatch(tmp_path: Path, monkeypatch) -> None:
+    config = load_benchmark_config("configs/benchmarks/spmm.yaml")
+    checkout = tmp_path / "upstream"
+    checkout.mkdir()
+    checkpoint = tmp_path / "checkpoint_SPMM.ckpt"
+    checkpoint.write_bytes(b"x")
+    names = (
+        "SPMM_models.py",
+        "xbert.py",
+        "d_regression.py",
+        "vocab_bpe_300.txt",
+        "config_bert.json",
+    )
+    for name in names:
+        (checkout / name).write_text("fixture", encoding="utf-8")
+    config = replace(
+        config,
+        model={
+            **config.model,
+            "pretrained_checkpoint": checkpoint.as_posix(),
+            "pretrained_size": 1,
+        },
+    )
+    expected = {
+        "SPMM_models.py": config.model["spmm_source_sha256"],
+        "xbert.py": config.model["xbert_source_sha256"],
+        "d_regression.py": config.model["regression_source_sha256"],
+        "vocab_bpe_300.txt": config.model["vocab_sha256"],
+        "config_bert.json": config.model["bert_config_sha256"],
+        "checkpoint_SPMM.ckpt": config.model["pretrained_sha256"],
+    }
+    monkeypatch.setattr(
+        "benchmarks.common.environment.repository_path",
+        lambda value: checkpoint if str(value).endswith(".ckpt") else checkout,
+    )
+    monkeypatch.setattr(
+        "benchmarks.common.environment.sha256_file", lambda path: expected[path.name]
+    )
+    monkeypatch.setattr(
+        "benchmarks.common.environment.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0, stdout=f"{config.model['revision']}\n"
+        ),
+    )
+
+    class Tokenizer:
+        vocab_size = 300
+        pad_token_id = 0
+        unk_token_id = 1
+        cls_token_id = 2
+        sep_token_id = 3
+        mask_token_id = 1
+
+    monkeypatch.setattr(
+        "benchmarks.common.environment._spmm_tokenizer", lambda path: Tokenizer()
+    )
+    assert spmm_asset_snapshot(config)["revision"] == config.model["revision"]
+    expected["xbert.py"] = "wrong"
+    with pytest.raises(RuntimeError, match="asset hash mismatch"):
+        spmm_asset_snapshot(config)
 
 
 def test_spmm_official_token_path_cache_truncation_collision_and_conditions() -> None:

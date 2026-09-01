@@ -40,7 +40,7 @@ def _locked_versions(path: Path) -> dict[str, str]:
 def environment_command(
     config: BenchmarkConfig, argv: Sequence[str], *, conda: str | None = None
 ) -> list[str]:
-    if config.name not in {"dmpnn", "molformer", "ilbert"} or config.environment is None:
+    if config.name not in {"dmpnn", "molformer", "ilbert", "spmm"} or config.environment is None:
         raise ValueError("Environment dispatch is only defined for advanced baselines")
     executable = conda or shutil.which("conda")
     if executable is None:
@@ -62,7 +62,7 @@ def environment_command(
 def ensure_benchmark_environment(
     config: BenchmarkConfig, argv: Sequence[str] | None = None
 ) -> dict[str, Any] | None:
-    if config.name not in {"dmpnn", "molformer", "ilbert"}:
+    if config.name not in {"dmpnn", "molformer", "ilbert", "spmm"}:
         return None
     if config.environment is None:
         raise ValueError(f"{config.display_name} environment contract is missing")
@@ -85,7 +85,9 @@ def ensure_benchmark_environment(
         return validate_dmpnn_environment(config)
     if config.name == "molformer":
         return validate_molformer_environment(config)
-    return validate_ilbert_environment(config)
+    if config.name == "ilbert":
+        return validate_ilbert_environment(config)
+    return validate_spmm_environment(config)
 
 
 def _installed_versions() -> dict[str, str]:
@@ -402,6 +404,151 @@ def validate_ilbert_environment(config: BenchmarkConfig) -> dict[str, Any]:
     }
 
 
+def spmm_asset_snapshot(config: BenchmarkConfig) -> dict[str, Any]:
+    if config.name != "spmm":
+        raise ValueError("SPMM asset validation requires an SPMM config")
+    checkout = repository_path(str(config.model["checkout"]))
+    checkpoint = repository_path(str(config.model["pretrained_checkpoint"]))
+    required = {
+        "SPMM_models.py": (
+            checkout / "SPMM_models.py", str(config.model["spmm_source_sha256"])
+        ),
+        "xbert.py": (
+            checkout / "xbert.py", str(config.model["xbert_source_sha256"])
+        ),
+        "d_regression.py": (
+            checkout / "d_regression.py",
+            str(config.model["regression_source_sha256"]),
+        ),
+        "vocab_bpe_300.txt": (
+            checkout / "vocab_bpe_300.txt", str(config.model["vocab_sha256"])
+        ),
+        "config_bert.json": (
+            checkout / "config_bert.json", str(config.model["bert_config_sha256"])
+        ),
+        "checkpoint_SPMM.ckpt": (
+            checkpoint, str(config.model["pretrained_sha256"])
+        ),
+    }
+    missing = sorted(name for name, (path, _) in required.items() if not path.is_file())
+    if missing:
+        raise FileNotFoundError("SPMM local assets are incomplete: " + ", ".join(missing))
+    if checkpoint.stat().st_size != int(config.model["pretrained_size"]):
+        raise RuntimeError(
+            "SPMM pretrained checkpoint size mismatch: "
+            f"expected {config.model['pretrained_size']}, got {checkpoint.stat().st_size}"
+        )
+    actual_hashes = {name: sha256_file(path) for name, (path, _) in required.items()}
+    mismatches = {
+        name: {"expected": expected, "actual": actual_hashes[name]}
+        for name, (_, expected) in required.items()
+        if actual_hashes[name] != expected
+    }
+    if mismatches:
+        raise RuntimeError(
+            "SPMM local asset hash mismatch: " + json.dumps(mismatches, sort_keys=True)
+        )
+    revision = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    actual_revision = revision.stdout.strip()
+    if revision.returncode != 0 or actual_revision != str(config.model["revision"]):
+        raise RuntimeError(
+            "SPMM checkout revision mismatch: "
+            f"expected {config.model['revision']}, got {actual_revision or 'unavailable'}"
+        )
+    vocab = checkout / "vocab_bpe_300.txt"
+    tokenizer = _spmm_tokenizer(vocab)
+    special_ids = {
+        "pad": tokenizer.pad_token_id,
+        "unk": tokenizer.unk_token_id,
+        "cls": tokenizer.cls_token_id,
+        "sep": tokenizer.sep_token_id,
+        "mask": tokenizer.mask_token_id,
+    }
+    if int(tokenizer.vocab_size) != 300 or special_ids != {
+        "pad": 0,
+        "unk": 1,
+        "cls": 2,
+        "sep": 3,
+        "mask": 1,
+    }:
+        raise RuntimeError("SPMM tokenizer vocabulary or special IDs differ from upstream")
+    return {
+        "repository": str(config.model["repository"]),
+        "revision": actual_revision,
+        "files": {
+            name: {"sha256": actual_hashes[name], "size": path.stat().st_size}
+            for name, (path, _) in sorted(required.items())
+        },
+        "tokenizer": {"vocab_size": 300, "special_token_ids": special_ids},
+        "checkpoint_trust": "pinned_official_lightning_pickle",
+    }
+
+
+def _spmm_tokenizer(vocab: Path) -> Any:
+    from transformers import BertTokenizer, WordpieceTokenizer
+
+    tokenizer = BertTokenizer(
+        vocab_file=str(vocab), do_lower_case=False, do_basic_tokenize=False
+    )
+    tokenizer.wordpiece_tokenizer = WordpieceTokenizer(
+        vocab=tokenizer.vocab,
+        unk_token=tokenizer.unk_token,
+        max_input_chars_per_word=250,
+    )
+    return tokenizer
+
+
+def validate_spmm_environment(config: BenchmarkConfig) -> dict[str, Any]:
+    if config.name != "spmm" or config.environment is None:
+        raise ValueError("SPMM environment validation requires an SPMM config")
+    try:
+        import numpy
+        from rdkit import rdBase
+        import tokenizers
+        import torch
+        import transformers
+    except ImportError as error:
+        raise RuntimeError("SPMM environment cannot import its locked runtime") from error
+    direct = {
+        "python": platform.python_version(),
+        "pip": importlib.metadata.version("pip"),
+        "numpy": numpy.__version__,
+        "transformers": transformers.__version__,
+        "tokenizers": tokenizers.__version__,
+        "pytorch": torch.__version__,
+        "cuda": torch.version.cuda,
+        "rdkit": rdBase.rdkitVersion,
+    }
+    expected_direct = {
+        "python": "3.10.14",
+        "pip": "25.2",
+        "numpy": "1.24.3",
+        "transformers": "4.30.1",
+        "tokenizers": "0.13.3",
+        "pytorch": "1.13.1+cu117",
+        "cuda": "11.7",
+        "rdkit": "2023.03.1",
+    }
+    definition, lock, installed = _validate_lock(
+        config, expected_direct=expected_direct, direct=direct
+    )
+    return {
+        "environment_name": config.environment.name,
+        "environment_definition": repository_relative(definition),
+        "environment_lock": repository_relative(lock),
+        "environment_lock_sha256": sha256_file(lock),
+        "direct_versions": direct,
+        "resolved_packages": dict(sorted(installed.items())),
+        "gpu": _gpu_snapshot(torch),
+        "pretrained_snapshot": spmm_asset_snapshot(config),
+    }
+
+
 def environment_run_details(snapshot: dict[str, Any] | None) -> dict[str, Any]:
     if snapshot is None:
         return {}
@@ -418,6 +565,9 @@ def environment_run_details(snapshot: dict[str, Any] | None) -> dict[str, Any]:
     if snapshot["environment_name"] == "ilume-ilbert":
         details["transformers_version"] = direct["transformers"]
         details["upstream_revision"] = snapshot["pretrained_snapshot"]["revision"]
+    if snapshot["environment_name"] == "ilume-spmm":
+        details["transformers_version"] = direct["transformers"]
+        details["upstream_revision"] = snapshot["pretrained_snapshot"]["revision"]
     return details
 
 
@@ -431,8 +581,10 @@ __all__ = [
     "environment_run_details",
     "environment_command",
     "ilbert_asset_snapshot",
+    "spmm_asset_snapshot",
     "validate_dmpnn_environment",
     "validate_ilbert_environment",
     "validate_molformer_environment",
+    "validate_spmm_environment",
     "write_environment_snapshot",
 ]

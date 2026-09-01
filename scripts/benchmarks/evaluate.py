@@ -284,6 +284,16 @@ def main() -> None:
             config.stage3.folds[0] if args.ensemble_folds else selector_fold,
             args.split,
         )
+    if config.name == "spmm":
+        from benchmarks.spmm.adapter import spmm_evaluation_audit
+
+        input_audit = spmm_evaluation_audit(
+            config,
+            args.benchmark,
+            args.task,
+            config.stage3.folds[0] if args.ensemble_folds else selector_fold,
+            args.split,
+        )
     evaluation_identity = semantic_identity(
         "benchmark.evaluation.v1",
         {
