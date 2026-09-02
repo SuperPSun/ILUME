@@ -3,9 +3,36 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from stage1.config import load_config as load_stage1_config
+from stage2.config import load_stage2_config
+from stage3.config import load_stage3_config
+
 ROOT = Path(__file__).resolve().parents[1]
 STAGES = {"stage1", "stage2", "stage3"}
 EXTERNAL_PACKAGES = {"ablations", "benchmarks"}
+
+
+def test_global_rdkit_v2_base_configs_are_isolated() -> None:
+    stage1 = load_stage1_config(ROOT / "configs/v2/stage1/base.yaml")
+    stage2 = load_stage2_config(ROOT / "configs/v2/stage2/base.yaml")
+    stage3 = load_stage3_config(ROOT / "configs/v2/stage3/base.yaml")
+    legacy_stage3 = load_stage3_config(ROOT / "configs/v1/stage3/base.yaml")
+
+    assert stage1.architecture.kind == "global_rdkit_v2"
+    assert stage1.data.descriptor_dim == 217
+    assert stage1.descriptor.mode == "full"
+    assert stage1.descriptor.token_count == 1
+    assert stage1.model.d_model == 512
+    assert "fingerprint" not in stage1.to_dict()
+    assert stage2.model.object_layers == 2
+    assert stage2.model.object_ffn_dim == 2048
+    assert stage2.loss.lambda_teacher == 0.10
+    assert "outputs/v2" in str(stage2.initialization.checkpoint)
+    assert stage3.model == legacy_stage3.model
+    assert stage3.groups == legacy_stage3.groups
+    assert stage3.tasks == legacy_stage3.tasks
+    assert stage3.training == legacy_stage3.training
+    assert "outputs/v2" in str(stage3.initialization.stage2_encoder)
 
 
 def _cross_stage_private_imports(

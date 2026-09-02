@@ -27,7 +27,6 @@ from common.training import (
 )
 from .config import (
     STAGE1_CHECKPOINT_KIND,
-    STAGE1_CHECKPOINT_VERSION,
     PretrainConfig,
     config_from_dict,
 )
@@ -165,13 +164,15 @@ def _loader_options(config: PretrainConfig, device: torch.device) -> dict[str, A
 
 
 def _loss_lambdas(config: PretrainConfig) -> dict[str, float]:
-    return {
+    values = {
         "smiles": config.loss.lambda_smiles,
         "descriptor": config.loss.lambda_descriptor,
         "atom": config.loss.lambda_atom,
         "bond": config.loss.lambda_bond,
-        "fingerprint": config.loss.lambda_fingerprint,
     }
+    if not config.is_global_rdkit:
+        values["fingerprint"] = config.loss.lambda_fingerprint
+    return values
 
 
 def _global_training_losses(
@@ -394,7 +395,7 @@ def _checkpoint_payload(
 ) -> dict[str, Any]:
     return {
         "kind": STAGE1_CHECKPOINT_KIND,
-        "format_version": STAGE1_CHECKPOINT_VERSION,
+        "format_version": config.checkpoint_version,
         "identity_contract_version": IDENTITY_CONTRACT_VERSION,
         "model": model.state_dict(),
         "optimizer": optimizer.state_dict(),
@@ -466,7 +467,7 @@ def _load_checkpoint(
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     if (
         checkpoint.get("kind") != STAGE1_CHECKPOINT_KIND
-        or checkpoint.get("format_version") != STAGE1_CHECKPOINT_VERSION
+        or checkpoint.get("format_version") != config.checkpoint_version
     ):
         raise ValueError("Unsupported Stage 1 pretraining checkpoint")
     checkpoint_identity = checkpoint.get("training_identity")

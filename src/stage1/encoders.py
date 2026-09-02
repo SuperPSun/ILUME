@@ -298,6 +298,47 @@ class DescriptorEncoder(nn.Module):
         return torch.stack(tokens, dim=1) + self.empty_group_tokens.sum() * 0.0
 
 
+class WholeVectorDescriptorEncoder(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int,
+        blocks: int,
+        d_model: int,
+        dropout: float,
+    ) -> None:
+        super().__init__()
+        if input_dim != 217:
+            raise ValueError("global_rdkit_v2 requires exactly 217 descriptors")
+        self.input_dim = input_dim
+        self.input_projection = nn.Sequential(
+            nn.Linear(input_dim * 2, hidden_dim),
+            nn.GELU(),
+            nn.LayerNorm(hidden_dim),
+        )
+        self.residual_blocks = nn.Sequential(
+            *[ResidualMLPBlock(hidden_dim, dropout) for _ in range(blocks)]
+        )
+        self.output_projection = nn.Linear(hidden_dim, d_model)
+        self.output_norm = nn.LayerNorm(d_model)
+
+    def forward(
+        self,
+        values: torch.Tensor,
+        mask_indicator: torch.Tensor,
+    ) -> torch.Tensor:
+        if values.ndim != 2 or values.shape != mask_indicator.shape:
+            raise ValueError("RDKit values and mask indicator must be aligned matrices")
+        if values.shape[1] != self.input_dim:
+            raise ValueError("RDKit descriptor input width mismatch")
+        masked_values = values.masked_fill(mask_indicator, 0.0)
+        hidden = self.input_projection(
+            torch.cat([masked_values, mask_indicator.float()], dim=-1)
+        )
+        hidden = self.residual_blocks(hidden)
+        return self.output_norm(self.output_projection(hidden)).unsqueeze(1)
+
+
 class FingerprintEncoder(nn.Module):
     def __init__(
         self,

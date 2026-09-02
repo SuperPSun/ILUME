@@ -11,6 +11,8 @@ import json
 import pytest
 
 from stage1.config import (
+    ArchitectureConfig,
+    GLOBAL_RDKIT_STAGE1_CHECKPOINT_VERSION,
     STAGE1_CHECKPOINT_KIND,
     STAGE1_CHECKPOINT_VERSION,
     config_from_dict,
@@ -70,6 +72,7 @@ import stage1.prepare as prepare_module
 from stage1.data import (
     CORPUS_FORMAT_VERSION,
     CORPUS_KIND,
+    GLOBAL_RDKIT_CORPUS_FORMAT_VERSION,
     PreparedCorpusDataset,
 )
 
@@ -116,6 +119,57 @@ from stage1.encoders import DirectedMessagePassingEncoder
 from stage1.fusion import FusionTransformer
 
 from stage1.graph import featurize_mol, pack_graphs
+
+
+def test_global_rdkit_v2_representation_and_losses(
+    tiny_config, tiny_samples
+) -> None:
+    vocabulary, legacy_samples = tiny_samples
+    config = replace(
+        tiny_config,
+        architecture=ArchitectureConfig(kind="global_rdkit_v2"),
+        descriptor=DescriptorConfig(mode="full", token_count=1),
+        model=replace(tiny_config.model, descriptor_blocks=2),
+    )
+    config.validate()
+    samples = [
+        {key: value for key, value in sample.items() if key != "fingerprints"}
+        for sample in legacy_samples
+    ]
+    schema = DescriptorSchema.fit(
+        np.stack([sample["descriptors"].numpy() for sample in samples]),
+        rdkit_descriptor_names(),
+        "full",
+        1,
+    )
+    model = MultimodalPretrainModel(config, vocabulary, schema)
+    packed = MultimodalPacker(vocabulary)(samples)
+    encoded = model.encode_entity(packed)
+
+    assert config.checkpoint_version == GLOBAL_RDKIT_STAGE1_CHECKPOINT_VERSION
+    assert "fingerprint" not in config.to_dict()
+    assert (model.token_dim, model.atom_dim, model.entity_dim) == (32, 32, 64)
+    assert model.fusion.modality_embedding.num_embeddings == 4
+    assert encoded.cls_embedding.shape == (3, 32)
+    assert encoded.rdkit_embedding.shape == (3, 32)
+    assert encoded.entity_embedding.shape == (3, 64)
+    assert torch.equal(
+        encoded.entity_embedding,
+        torch.cat((encoded.cls_embedding, encoded.rdkit_embedding), dim=-1),
+    )
+    assert torch.equal(model.encode(packed), encoded.cls_embedding)
+    assert not any("fingerprint" in name for name, _ in model.named_parameters())
+
+    masked = MultimodalMasker(vocabulary, config.masking).apply(packed)
+    output = model(masked)
+    assert masked.masks.modality_dropped.shape == (3, 3)
+    assert set(output.losses) == {"smiles", "descriptor", "atom", "bond"}
+    assert set(output.logits) == {"smiles", "descriptor", "atom", "bond"}
+    assert output.logits["descriptor"].shape == (3, 217)
+    invalid = config.to_dict()
+    invalid["fingerprint"] = {"kind": "none"}
+    with pytest.raises(ValueError, match="forbids fingerprint"):
+        config_from_dict(invalid)
 
 # --- Configuration, identity, and checkpoint/resume contracts ---
 
@@ -206,6 +260,56 @@ def _write_smiles(path, values) -> None:
         writer = csv.DictWriter(handle, fieldnames=["SMILES"])
         writer.writeheader()
         writer.writerows({"SMILES": value} for value in values)
+
+
+def test_global_rdkit_v2_corpus_uses_format3_without_fingerprints(
+    tmp_path, capsys
+) -> None:
+    source = tmp_path / "stage1"
+    source.mkdir()
+    _write_smiles(source / "cation.csv", ["[Na+]", "C[NH3+]"])
+    _write_smiles(source / "anion.csv", ["[Cl-]", "C(=O)[O-]"])
+    _write_smiles(source / "molecule.csv", ["O", "CC"])
+    artifacts = tmp_path / "prepared"
+    base = PretrainConfig()
+    config = replace(
+        base,
+        architecture=ArchitectureConfig(kind="global_rdkit_v2"),
+        data=replace(
+            base.data,
+            stage1_dir=source,
+            artifacts_dir=artifacts,
+            valid_fraction=0.5,
+            max_smiles_tokens=64,
+            shard_size=2,
+        ),
+        descriptor=DescriptorConfig(mode="full", token_count=1),
+        model=replace(
+            base.model,
+            d_model=16,
+            n_heads=4,
+            smiles_layers=1,
+            graph_depth=2,
+            descriptor_hidden_dim=32,
+            descriptor_blocks=2,
+            fusion_layers=1,
+            feedforward_dim=32,
+            dropout=0.0,
+        ),
+    )
+
+    prepare_corpus(config)
+    capsys.readouterr()
+    metadata = json.loads((artifacts / "metadata.json").read_text())
+    dataset = PreparedCorpusDataset(artifacts, "train")
+
+    assert metadata["format_version"] == GLOBAL_RDKIT_CORPUS_FORMAT_VERSION
+    assert metadata["descriptor_dim"] == 217
+    assert metadata["descriptor_token_count"] == 1
+    assert "fingerprint_kind" not in metadata
+    assert "fingerprint_contract" not in metadata
+    assert dataset.format_version == GLOBAL_RDKIT_CORPUS_FORMAT_VERSION
+    assert "fingerprints" not in dataset[0]
 
 def _ddp_training_worker(
     rank: int,

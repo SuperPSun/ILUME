@@ -694,6 +694,18 @@ def _export_encoder(path: Path, *, model: Stage2ObjectModel, config: Stage2Confi
             "feature_generation_contract"
         ],
     }
+    if model.backbone.config.is_global_rdkit:
+        stage1_contract.update(
+            {
+                "encoding_api": "encode-entity-v2",
+                "representation": {
+                    "kind": model.backbone.representation_kind,
+                    "token_dim": model.backbone.token_dim,
+                    "atom_dim": model.backbone.atom_dim,
+                    "entity_dim": model.backbone.entity_dim,
+                },
+            }
+        )
     encoder_identity = build_stage2_encoder_identity(
         stage1_feature_identity=feature_identity,
         stage1_encoding_contract=stage1_contract,
@@ -943,7 +955,13 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
         raise ValueError("Stage 2 data artifact does not match Stage 1 features")
     if data_metadata.get("registry_hash") != registry.registry_hash:
         raise ValueError("Stage 2 data artifact registry mismatch")
-    teacher_cpu, teacher_metadata = load_teacher_embeddings(config, loaded, data_metadata, expected_count=len(entity_dataset), expected_dim=loaded.config.model.d_model)
+    teacher_cpu, teacher_metadata = load_teacher_embeddings(
+        config,
+        loaded,
+        data_metadata,
+        expected_count=len(entity_dataset),
+        expected_dim=loaded.model.entity_dim,
+    )
     teacher_embeddings = teacher_cpu.to(device)
     del teacher_cpu
     train_datasets = {task: Stage2TaskDataset(config.data.artifacts_dir, task, "train") for task in registry.task_ids}

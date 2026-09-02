@@ -18,6 +18,7 @@ from .graph import GraphRecord, PackedGraph
 
 
 CORPUS_FORMAT_VERSION = 2
+GLOBAL_RDKIT_CORPUS_FORMAT_VERSION = 3
 CORPUS_KIND = "ilume_stage1_corpus"
 CORPUS_SHARD_KIND = "ilume_stage1_corpus_shard"
 INDEX_DTYPE = np.dtype(
@@ -197,12 +198,14 @@ class PreparedCorpusDataset(Dataset):
         self.metadata = json.loads((path / "metadata.json").read_text(encoding="utf-8"))
         if (
             self.metadata.get("kind") != CORPUS_KIND
-            or self.metadata.get("format_version") != CORPUS_FORMAT_VERSION
+            or self.metadata.get("format_version")
+            not in {CORPUS_FORMAT_VERSION, GLOBAL_RDKIT_CORPUS_FORMAT_VERSION}
         ):
             raise ValueError(
                 "Unsupported Stage 1 corpus artifact version; "
-                "rerun scripts/stage1/prepare.py to create corpus v2"
+                "rerun scripts/stage1/prepare.py with a supported architecture"
             )
+        self.format_version = int(self.metadata["format_version"])
         if self.metadata.get("identity_contract_version") != IDENTITY_CONTRACT_VERSION:
             raise ValueError(
                 "Stage 1 corpus predates identity contract v1; regenerate the corpus"
@@ -225,7 +228,7 @@ class PreparedCorpusDataset(Dataset):
         )
         if (
             shard_manifest.get("kind") != CORPUS_KIND
-            or shard_manifest.get("format_version") != CORPUS_FORMAT_VERSION
+            or shard_manifest.get("format_version") != self.format_version
         ):
             raise ValueError("Unsupported Stage 1 shard manifest")
         self.shards = tuple(shard_manifest["shards"])
@@ -288,7 +291,7 @@ class PreparedCorpusDataset(Dataset):
         payload = torch.load(shard_path, map_location="cpu", weights_only=False)
         if (
             payload.get("kind") != CORPUS_SHARD_KIND
-            or payload.get("format_version") != CORPUS_FORMAT_VERSION
+            or payload.get("format_version") != self.format_version
         ):
             raise ValueError(f"Unsupported shard format: {relative_path}")
         samples = payload["samples"]

@@ -23,7 +23,6 @@ SMILES_MODALITY = 0
 GRAPH_MODALITY = 1
 DESCRIPTOR_MODALITY = 2
 FINGERPRINT_MODALITY = 3
-MODALITY_COUNT = 4
 
 
 def _sample_positions(
@@ -48,16 +47,17 @@ def curriculum_dropout_probability(progress: float) -> float:
     return 0.05 + (progress - 0.60) / 0.40 * 0.05
 
 
-def _dropout_probabilities(config: MaskingConfig, progress: float) -> torch.Tensor:
-    maxima = torch.tensor(
-        [
-            config.smiles_dropout,
-            config.graph_dropout,
-            config.descriptor_dropout,
-            config.fingerprint_dropout,
-        ],
-        dtype=torch.float32,
-    )
+def _dropout_probabilities(
+    config: MaskingConfig, progress: float, *, fingerprint_active: bool
+) -> torch.Tensor:
+    values = [
+        config.smiles_dropout,
+        config.graph_dropout,
+        config.descriptor_dropout,
+    ]
+    if fingerprint_active:
+        values.append(config.fingerprint_dropout)
+    maxima = torch.tensor(values, dtype=torch.float32)
     if config.dropout_schedule == "off":
         return torch.zeros_like(maxima)
     if config.dropout_schedule == "static":
@@ -73,13 +73,15 @@ def sample_modality_dropout(
     progress: float = 1.0,
     fingerprint_active: bool = True,
 ) -> torch.Tensor:
-    probabilities = _dropout_probabilities(config, progress).to(generator.device)
+    probabilities = _dropout_probabilities(
+        config, progress, fingerprint_active=fingerprint_active
+    ).to(generator.device)
     active = [SMILES_MODALITY, GRAPH_MODALITY, DESCRIPTOR_MODALITY]
     if fingerprint_active:
         active.append(FINGERPRINT_MODALITY)
     device = generator.device
     dropped = torch.ones(
-        (batch_size, MODALITY_COUNT), dtype=torch.bool, device=device
+        (batch_size, len(active)), dtype=torch.bool, device=device
     )
     draws = torch.rand(
         (batch_size, len(active)), generator=generator, device=device

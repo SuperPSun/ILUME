@@ -27,6 +27,7 @@ _RECONSTRUCTION_MODULES = (
     "atom_heads",
     "bond_heads",
     "descriptor_heads",
+    "descriptor_decoder",
     "fingerprint_heads",
 )
 
@@ -48,7 +49,7 @@ def _source_identity(source_audit: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def feature_generation_contract(config: PretrainConfig) -> dict[str, Any]:
-    return {
+    contract = {
         "contract_version": STAGE1_FEATURE_CONTRACT_VERSION,
         "rdkit_version": rdBase.rdkitVersion,
         "rdkit_descriptor_names_contract": "rdkit-runtime-order-v1",
@@ -59,6 +60,9 @@ def feature_generation_contract(config: PretrainConfig) -> dict[str, Any]:
         "atom_in_smiles_version": importlib.metadata.version("atomInSmiles"),
         "graph_contract": "stage1-rdkit-graph-v1",
     }
+    if config.is_global_rdkit:
+        contract["architecture"] = config.architecture.kind
+    return contract
 
 
 def build_stage1_corpus_identity(
@@ -73,18 +77,20 @@ def build_stage1_corpus_identity(
         "shard_cache_size",
     ):
         data.pop(name, None)
+    payload = {
+        "source_identity": _source_identity(source_audit)["hash"],
+        "data": data,
+        "tokenizer": raw["tokenizer"],
+        "descriptor": raw["descriptor"],
+        "feature_generation_contract": feature_generation_contract(config),
+        "corpus_kind": "ilume_stage1_corpus",
+        "corpus_format_version": 3 if config.is_global_rdkit else 2,
+    }
+    if not config.is_global_rdkit:
+        payload["fingerprint"] = raw["fingerprint"]
     return semantic_identity(
         "stage1.corpus",
-        {
-            "source_identity": _source_identity(source_audit)["hash"],
-            "data": data,
-            "tokenizer": raw["tokenizer"],
-            "descriptor": raw["descriptor"],
-            "fingerprint": raw["fingerprint"],
-            "feature_generation_contract": feature_generation_contract(config),
-            "corpus_kind": "ilume_stage1_corpus",
-            "corpus_format_version": 2,
-        },
+        payload,
     )
 
 
@@ -121,17 +127,19 @@ def build_stage1_feature_identity(
         raise ValueError(
             "Stage 1 corpus predates identity contract v1; regenerate the corpus"
         )
+    payload = {
+        "contract_version": STAGE1_FEATURE_CONTRACT_VERSION,
+        "generation": dict(generation),
+        "tokenizer": payloads["tokenizer.json"],
+        "descriptor_schema": payloads["descriptor_schema.json"],
+        "descriptor_scaler": payloads["descriptor_scaler.json"],
+        "max_smiles_tokens": int(metadata["max_smiles_tokens"]),
+    }
+    if generation.get("architecture") != "global_rdkit_v2":
+        payload["fingerprint"] = metadata["fingerprint_contract"]
     return semantic_identity(
         "stage1.feature-artifact",
-        {
-            "contract_version": STAGE1_FEATURE_CONTRACT_VERSION,
-            "generation": dict(generation),
-            "tokenizer": payloads["tokenizer.json"],
-            "descriptor_schema": payloads["descriptor_schema.json"],
-            "descriptor_scaler": payloads["descriptor_scaler.json"],
-            "fingerprint": metadata["fingerprint_contract"],
-            "max_smiles_tokens": int(metadata["max_smiles_tokens"]),
-        },
+        payload,
     )
 
 
@@ -230,9 +238,7 @@ def build_stage1_encoder_identity(
 ) -> dict[str, Any]:
     raw = config.to_dict()
     model_config = raw["model"]
-    return semantic_identity(
-        "stage1.encoder",
-        {
+    payload = {
             "contract_version": STAGE1_ENCODING_CONTRACT_VERSION,
             "feature_identity": feature_identity["hash"],
             "encoding_state_hash": encoding_state_hash(model),
@@ -254,8 +260,17 @@ def build_stage1_encoder_identity(
                     "gradient_checkpointing",
                 )
             },
-        },
-    )
+        }
+    if config.is_global_rdkit:
+        payload["contract_version"] = 2
+        payload["encoding_api"] = "encode-entity-v2"
+        payload["representation"] = {
+            "kind": model.representation_kind,
+            "token_dim": model.token_dim,
+            "atom_dim": model.atom_dim,
+            "entity_dim": model.entity_dim,
+        }
+    return semantic_identity("stage1.encoder", payload)
 
 
 __all__ = [

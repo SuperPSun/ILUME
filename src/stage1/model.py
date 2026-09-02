@@ -10,6 +10,7 @@ from torch import nn
 
 from common.identity import require_compatible_identity
 from .config import (
+    GLOBAL_RDKIT_STAGE1_CHECKPOINT_VERSION,
     STAGE1_CHECKPOINT_KIND,
     STAGE1_CHECKPOINT_VERSION,
     PretrainConfig,
@@ -22,6 +23,7 @@ from .encoders import (
     DirectedMessagePassingEncoder,
     FingerprintEncoder,
     SmilesEncoder,
+    WholeVectorDescriptorEncoder,
 )
 from .fingerprints import fingerprint_families
 from .fusion import (
@@ -53,6 +55,15 @@ class PretrainOutput:
 @dataclass(frozen=True)
 class EncodedEntityStates:
     entity_cls: torch.Tensor
+    atom_states: torch.Tensor
+    atom_batch: torch.Tensor
+
+
+@dataclass(frozen=True)
+class EntityEncoding:
+    cls_embedding: torch.Tensor
+    rdkit_embedding: torch.Tensor
+    entity_embedding: torch.Tensor
     atom_states: torch.Tensor
     atom_batch: torch.Tensor
 
@@ -210,6 +221,16 @@ class MultimodalPretrainModel(nn.Module):
             config.data.descriptor_dim, config.descriptor.token_count
         )
         model_config = config.model
+        self.token_dim = model_config.d_model
+        self.atom_dim = model_config.d_model
+        self.entity_dim = (
+            model_config.d_model * 2
+            if config.is_global_rdkit
+            else model_config.d_model
+        )
+        self.representation_kind = (
+            "cls_rdkit_concat_v2" if config.is_global_rdkit else "cls_v1"
+        )
         self.smiles_encoder = SmilesEncoder(
             vocab_size=len(vocabulary.tokens),
             max_length=config.data.max_smiles_tokens,
@@ -225,26 +246,36 @@ class MultimodalPretrainModel(nn.Module):
             depth=model_config.graph_depth,
             dropout=model_config.dropout,
         )
-        self.descriptor_encoder = DescriptorEncoder(
-            schema=self.descriptor_schema,
-            hidden_dim=model_config.descriptor_hidden_dim,
-            blocks=model_config.descriptor_blocks,
-            d_model=model_config.d_model,
-            dropout=model_config.dropout,
-        )
-        self.fingerprint_families = fingerprint_families(config.fingerprint.kind)
-        fingerprint_dimensions = {
-            "morgan": config.fingerprint.morgan_bits,
-            "maccs": config.fingerprint.maccs_bits,
-        }
-        self.fingerprint_encoder = FingerprintEncoder(
-            families=self.fingerprint_families,
-            dimensions=fingerprint_dimensions,
-            chunk_size=config.fingerprint.chunk_size,
-            hidden_dim=model_config.descriptor_hidden_dim,
-            d_model=model_config.d_model,
-            dropout=model_config.dropout,
-        )
+        if config.is_global_rdkit:
+            self.descriptor_encoder = WholeVectorDescriptorEncoder(
+                input_dim=self.descriptor_schema.selected_dim,
+                hidden_dim=model_config.descriptor_hidden_dim,
+                blocks=model_config.descriptor_blocks,
+                d_model=model_config.d_model,
+                dropout=model_config.dropout,
+            )
+            self.fingerprint_families = ()
+        else:
+            self.descriptor_encoder = DescriptorEncoder(
+                schema=self.descriptor_schema,
+                hidden_dim=model_config.descriptor_hidden_dim,
+                blocks=model_config.descriptor_blocks,
+                d_model=model_config.d_model,
+                dropout=model_config.dropout,
+            )
+            self.fingerprint_families = fingerprint_families(config.fingerprint.kind)
+            fingerprint_dimensions = {
+                "morgan": config.fingerprint.morgan_bits,
+                "maccs": config.fingerprint.maccs_bits,
+            }
+            self.fingerprint_encoder = FingerprintEncoder(
+                families=self.fingerprint_families,
+                dimensions=fingerprint_dimensions,
+                chunk_size=config.fingerprint.chunk_size,
+                hidden_dim=model_config.descriptor_hidden_dim,
+                d_model=model_config.d_model,
+                dropout=model_config.dropout,
+            )
         self.fusion = FusionTransformer(
             d_model=model_config.d_model,
             n_heads=model_config.n_heads,
@@ -253,6 +284,7 @@ class MultimodalPretrainModel(nn.Module):
             dropout=model_config.dropout,
             role_embedding=model_config.role_embedding,
             gradient_checkpointing=model_config.gradient_checkpointing,
+            fingerprint_enabled=not config.is_global_rdkit,
         )
         self.smiles_head = TiedMLMHead(
             model_config.d_model, self.smiles_encoder.token_embedding
@@ -279,22 +311,31 @@ class MultimodalPretrainModel(nn.Module):
                 )
             }
         )
-        self.descriptor_heads = nn.ModuleList(
-            [
-                nn.Linear(model_config.d_model, len(indices))
-                if indices
-                else nn.Identity()
-                for indices in self.descriptor_schema.group_indices
-            ]
-        )
-        self.fingerprint_heads = nn.ModuleDict(
-            {
-                family: nn.Linear(model_config.d_model, config.fingerprint.chunk_size)
-                for family in self.fingerprint_families
-            }
-        )
+        if config.is_global_rdkit:
+            self.descriptor_decoder = nn.Linear(
+                model_config.d_model, self.descriptor_schema.selected_dim
+            )
+        else:
+            self.descriptor_heads = nn.ModuleList(
+                [
+                    nn.Linear(model_config.d_model, len(indices))
+                    if indices
+                    else nn.Identity()
+                    for indices in self.descriptor_schema.group_indices
+                ]
+            )
+            self.fingerprint_heads = nn.ModuleDict(
+                {
+                    family: nn.Linear(model_config.d_model, config.fingerprint.chunk_size)
+                    for family in self.fingerprint_families
+                }
+            )
 
     def _descriptor_logits(self, hidden: torch.Tensor) -> torch.Tensor:
+        if self.config.is_global_rdkit:
+            if hidden.shape[1] != 1:
+                raise ValueError("global_rdkit_v2 requires one fused RDKit token")
+            return self.descriptor_decoder(hidden[:, 0])
         result = hidden.new_zeros(
             (hidden.shape[0], self.descriptor_schema.selected_dim)
         )
@@ -345,11 +386,17 @@ class MultimodalPretrainModel(nn.Module):
         descriptor_tokens = self.descriptor_encoder(
             batch.descriptors, descriptor_indicator
         )
-        fingerprint_tokens, family_slices = self.fingerprint_encoder(
-            batch.fingerprints,
-            fingerprint_indicator,
-            descriptor_tokens,
-        )
+        if self.config.is_global_rdkit:
+            fingerprint_tokens = descriptor_tokens.new_empty(
+                (descriptor_tokens.shape[0], 0, descriptor_tokens.shape[-1])
+            )
+            family_slices: dict[str, slice] = {}
+        else:
+            fingerprint_tokens, family_slices = self.fingerprint_encoder(
+                batch.fingerprints,
+                fingerprint_indicator,
+                descriptor_tokens,
+            )
         fused, layout = self.fusion(
             smiles_tokens,
             batch.token_padding_mask,
@@ -403,6 +450,24 @@ class MultimodalPretrainModel(nn.Module):
         fused, _ = self._encode_unmasked_fused(batch)
         return fused[:, 0]
 
+    def encode_entity(self, batch: MultimodalBatch) -> EntityEncoding:
+        """Return the explicit Global-RDKit v2 entity representation."""
+        if not self.config.is_global_rdkit:
+            raise ValueError("encode_entity is only defined for global_rdkit_v2")
+        fused, layout = self._encode_unmasked_fused(batch)
+        rdkit = gather_group_tokens(fused, layout.descriptor_indices)[:, 0]
+        atoms = gather_graph_tokens(
+            fused, layout.atom_indices, batch.graphs.atom_batch
+        )
+        cls = fused[:, 0]
+        return EntityEncoding(
+            cls_embedding=cls,
+            rdkit_embedding=rdkit,
+            entity_embedding=torch.cat((cls, rdkit), dim=-1),
+            atom_states=atoms,
+            atom_batch=batch.graphs.atom_batch,
+        )
+
     def forward(self, batch: MultimodalBatch) -> PretrainOutput:
         if batch.masks is None:
             raise ValueError("MultimodalPretrainModel requires a dynamically masked batch")
@@ -436,8 +501,10 @@ class MultimodalPretrainModel(nn.Module):
             name: head(fused_bonds) for name, head in self.bond_heads.items()
         }
         descriptor_logits = self._descriptor_logits(fused_descriptors)
-        fingerprint_logits = self._fingerprint_logits(
-            fused_fingerprints, family_slices
+        fingerprint_logits = (
+            {}
+            if self.config.is_global_rdkit
+            else self._fingerprint_logits(fused_fingerprints, family_slices)
         )
 
         role_weights = torch.as_tensor(
@@ -514,17 +581,16 @@ class MultimodalPretrainModel(nn.Module):
                     loss_mask,
                 )
             )
-        fingerprint_statistics = _statistics(
-            fingerprint_components, fused, len(self.fingerprint_families)
-        )
-
         loss_statistics = {
             "smiles": smiles_statistics,
             "descriptor": descriptor_statistics,
             "atom": atom_statistics,
             "bond": bond_statistics,
-            "fingerprint": fingerprint_statistics,
         }
+        if not self.config.is_global_rdkit:
+            loss_statistics["fingerprint"] = _statistics(
+                fingerprint_components, fused, len(self.fingerprint_families)
+            )
         losses = {name: stats.mean() for name, stats in loss_statistics.items()}
         weights = self.config.loss
         total = (
@@ -532,19 +598,22 @@ class MultimodalPretrainModel(nn.Module):
             + weights.lambda_descriptor * losses["descriptor"]
             + weights.lambda_atom * losses["atom"]
             + weights.lambda_bond * losses["bond"]
-            + weights.lambda_fingerprint * losses["fingerprint"]
         )
+        if not self.config.is_global_rdkit:
+            total = total + weights.lambda_fingerprint * losses["fingerprint"]
+        logits: dict[str, torch.Tensor | dict[str, torch.Tensor]] = {
+            "smiles": smiles_logits,
+            "atom": atom_logits,
+            "bond": bond_logits,
+            "descriptor": descriptor_logits,
+        }
+        if not self.config.is_global_rdkit:
+            logits["fingerprint"] = fingerprint_logits
         return PretrainOutput(
             loss=total,
             losses=losses,
             loss_statistics=loss_statistics,
-            logits={
-                "smiles": smiles_logits,
-                "atom": atom_logits,
-                "bond": bond_logits,
-                "descriptor": descriptor_logits,
-                "fingerprint": fingerprint_logits,
-            },
+            logits=logits,
             fused_cls=fused[:, 0],
         )
 
@@ -563,12 +632,17 @@ def load_stage1_model(
         map_location="cpu",
         weights_only=False,
     )
+    config = config_from_dict(checkpoint["config"])
     if (
         checkpoint.get("kind") != STAGE1_CHECKPOINT_KIND
-        or checkpoint.get("format_version") != STAGE1_CHECKPOINT_VERSION
+        or checkpoint.get("format_version") != config.checkpoint_version
+        or checkpoint.get("format_version")
+        not in {
+            STAGE1_CHECKPOINT_VERSION,
+            GLOBAL_RDKIT_STAGE1_CHECKPOINT_VERSION,
+        }
     ):
-        raise ValueError("Stage 2 requires a Stage 1 pretraining checkpoint v2")
-    config = config_from_dict(checkpoint["config"])
+        raise ValueError("Stage 1 checkpoint architecture/version mismatch")
     metadata = json.loads(
         (artifact_dir / "metadata.json").read_text(encoding="utf-8")
     )

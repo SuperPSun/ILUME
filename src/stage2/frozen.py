@@ -60,7 +60,7 @@ class FrozenStage2ObjectEncoder:
 
     @property
     def embedding_dim(self) -> int:
-        return int(self.pretrain_config.model.d_model)
+        return int(self.object_encoder.d_model)
 
     def _sample(self, role: str, canonical_smiles: str) -> dict[str, Any]:
         if role not in ROLE_TO_ID:
@@ -116,7 +116,11 @@ class FrozenStage2ObjectEncoder:
                 for role, smiles in item.slots
             ]
         ).to(self.device)
-        entity_cls = self.backbone.encode(packed).reshape(
+        entity_cls = (
+            self.backbone.encode_entity(packed).entity_embedding
+            if self.pretrain_config.is_global_rdkit
+            else self.backbone.encode(packed)
+        ).reshape(
             len(objects), slot_count, self.embedding_dim
         )
         roles = torch.tensor(
@@ -317,7 +321,7 @@ def load_frozen_object_encoder(
         raise ValueError("Stage 2 encoder Stage 1 state contract mismatch")
     object_config = payload["object_encoder_config"]
     object_encoder = ObjectEncoder(
-        config.model.d_model,
+        int(payload["model_contract"]["d_model"]),
         config.model.n_heads,
         num_layers=int(object_config["layers"]),
         feedforward_dim=int(object_config["ffn_dim"]),

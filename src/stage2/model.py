@@ -16,7 +16,7 @@ from .registry import Stage2Registry, TaskSpec
 
 RECONSTRUCTION_MODULES = (
     "smiles_head", "atom_trunk", "bond_trunk", "atom_heads", "bond_heads",
-    "descriptor_heads", "fingerprint_heads",
+    "descriptor_heads", "descriptor_decoder", "fingerprint_heads",
 )
 
 
@@ -25,26 +25,49 @@ def build_model_contract(
     n_heads: int,
     registry: Stage2Registry,
     *,
+    atom_dim: int | None = None,
+    representation_kind: str = "cls_v1",
     object_layers: int,
     object_ffn_dim: int,
     dropout: float,
 ) -> dict[str, Any]:
+    atom_dim = d_model if atom_dim is None else atom_dim
     tasks: dict[str, Any] = {}
     for spec in registry.tasks:
         family = "atom" if spec.target_level == "atom" else ("interaction" if spec.topology == "interaction" else "object")
-        input_dim = d_model if family == "atom" else d_model + len(spec.condition_columns)
-        tasks[spec.task_id] = {
+        input_dim = (
+            atom_dim
+            if family == "atom" and representation_kind == "cls_rdkit_concat_v2"
+            else d_model + (0 if family == "atom" else len(spec.condition_columns))
+        )
+        task_contract = {
             "topology": spec.topology, "head_family": family,
             "condition_dim": len(spec.condition_columns), "input_dim": input_dim,
             "output_dim": len(spec.target_columns),
-            **({"atom_dim": d_model, "object_projection_dim": d_model} if family == "atom" else {}),
         }
-    return {
-        "d_model": d_model, "n_heads": n_heads,
+        if family == "atom":
+            task_contract.update(
+                {"atom_dim": atom_dim, "object_projection_dim": atom_dim}
+            )
+            if representation_kind == "cls_rdkit_concat_v2":
+                task_contract["object_context_dim"] = d_model
+        tasks[spec.task_id] = task_contract
+    contract = {
+        "d_model": d_model,
+        "n_heads": n_heads,
         "object_encoder": {"layers": object_layers, "ffn_dim": object_ffn_dim, "dropout": dropout},
         "regression_head_hidden_dims": [d_model, d_model // 2],
         "role_to_id": dict(ROLE_TO_ID), "tasks": tasks,
     }
+    if representation_kind == "cls_rdkit_concat_v2":
+        contract.update(
+            {
+                "entity_dim": d_model,
+                "atom_dim": atom_dim,
+                "representation_kind": representation_kind,
+            }
+        )
+    return contract
 
 
 class ObjectEncoder(nn.Module):
@@ -112,6 +135,9 @@ class RDKitDescriptorBackbone(nn.Module):
         self.config = SimpleNamespace(
             model=SimpleNamespace(d_model=output_dim, n_heads=8)
         )
+        self.entity_dim = output_dim
+        self.atom_dim = output_dim
+        self.representation_kind = "rdkit_2d_stage2"
 
     def encode(self, values: torch.Tensor) -> torch.Tensor:
         if values.ndim != 2 or values.shape[1] != self.layers[0].in_features:
@@ -153,15 +179,15 @@ class InteractionHead(nn.Module):
 
 
 class AtomPropertyHead(nn.Module):
-    def __init__(self, d_model: int, dropout: float) -> None:
+    def __init__(self, atom_dim: int, object_dim: int, dropout: float) -> None:
         super().__init__()
-        self.object_projection = nn.Linear(d_model, d_model)
+        self.object_projection = nn.Linear(object_dim, atom_dim)
         nn.init.zeros_(self.object_projection.weight)
         nn.init.zeros_(self.object_projection.bias)
-        self.normalization = nn.LayerNorm(d_model)
+        self.normalization = nn.LayerNorm(atom_dim)
         self.regressor = nn.Sequential(
-            nn.Linear(d_model, d_model), nn.GELU(), nn.Dropout(dropout),
-            nn.Linear(d_model, 1),
+            nn.Linear(atom_dim, atom_dim), nn.GELU(), nn.Dropout(dropout),
+            nn.Linear(atom_dim, 1),
         )
 
     def forward(self, atoms: torch.Tensor, object_state: torch.Tensor) -> torch.Tensor:
@@ -225,14 +251,17 @@ class Stage2ObjectModel(nn.Module):
         self.registry = registry
         self.specs = {task.task_id: task for task in registry.tasks}
         config = backbone.config.model
-        d_model = config.d_model
+        d_model = backbone.entity_dim
+        atom_dim = backbone.atom_dim
         self.object_encoder = ObjectEncoder(d_model, config.n_heads, num_layers=object_layers, feedforward_dim=object_ffn_dim, dropout=dropout)
         self.object_heads = nn.ModuleDict()
         self.interaction_heads = nn.ModuleDict()
         self.atom_heads = nn.ModuleDict()
         for task in registry.tasks:
             if task.target_level == "atom":
-                self.atom_heads[task.task_id] = AtomPropertyHead(d_model, dropout)
+                self.atom_heads[task.task_id] = AtomPropertyHead(
+                    atom_dim, d_model, dropout
+                )
             elif task.topology == "interaction":
                 self.interaction_heads[task.task_id] = InteractionHead(d_model, len(task.condition_columns), len(task.target_columns), dropout)
             else:
@@ -243,18 +272,29 @@ class Stage2ObjectModel(nn.Module):
     @property
     def model_contract(self) -> dict[str, Any]:
         return build_model_contract(
-            self.backbone.config.model.d_model,
+            self.backbone.entity_dim,
             self.backbone.config.model.n_heads,
             self.registry,
+            atom_dim=self.backbone.atom_dim,
+            representation_kind=self.backbone.representation_kind,
             object_layers=self._object_config["layers"],
             object_ffn_dim=self._object_config["ffn_dim"],
             dropout=self._object_config["dropout"],
         )
 
     def encode_entities(self, batch: Any) -> torch.Tensor:
+        if getattr(self.backbone.config, "is_global_rdkit", False):
+            return self.backbone.encode_entity(batch).entity_embedding
         return self.backbone.encode(batch)
 
     def encode_entity_states(self, batch: MultimodalBatch) -> EncodedEntityStates:
+        if getattr(self.backbone.config, "is_global_rdkit", False):
+            encoded = self.backbone.encode_entity(batch)
+            return EncodedEntityStates(
+                entity_cls=encoded.entity_embedding,
+                atom_states=encoded.atom_states,
+                atom_batch=encoded.atom_batch,
+            )
         return self.backbone.encode_states(batch)
 
     def encode_object(self, entity_cls: torch.Tensor, roles: torch.Tensor) -> torch.Tensor:

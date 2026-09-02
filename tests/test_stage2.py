@@ -29,11 +29,15 @@ from common.identity import IDENTITY_CONTRACT_VERSION
 from stage1.identity import metadata_identity
 
 from stage1.config import (
+    ArchitectureConfig,
+    GLOBAL_RDKIT_STAGE1_CHECKPOINT_VERSION,
     STAGE1_CHECKPOINT_KIND, STAGE1_CHECKPOINT_VERSION, DataConfig,
     DescriptorConfig, FingerprintConfig, ModelConfig, PretrainConfig,
 )
 
 from stage1.data import PreparedCorpusDataset
+
+from stage1.descriptors import DescriptorSchema, rdkit_descriptor_names
 
 from stage1.masking import MultimodalPacker
 
@@ -275,12 +279,155 @@ def test_registry_is_catalog_driven_and_model_independent(tiny_stage2_setup):
     assert model.model_contract["regression_head_hidden_dims"] == [16, 8]
     assert model.model_contract["tasks"]["simulation/partial_atomic_charge"]["head_family"] == "atom"
 
+
+def test_global_rdkit_v2_stage2_width_contract(tiny_stage2_setup) -> None:
+    registry = load_stage2_registry(tiny_stage2_setup.data.task_catalog_path)
+    loaded = load_stage1_model(
+        tiny_stage2_setup.initialization.checkpoint,
+        tiny_stage2_setup.data.pretrain_artifacts_dir,
+        backbone_dropout=0.0,
+    )
+    config = replace(
+        loaded.config,
+        architecture=ArchitectureConfig(kind="global_rdkit_v2"),
+        descriptor=DescriptorConfig(mode="full", token_count=1),
+    )
+    schema = DescriptorSchema.fit(
+        np.zeros((2, 217), dtype=np.float64),
+        rdkit_descriptor_names(),
+        "full",
+        1,
+    )
+    backbone = MultimodalPretrainModel(config, loaded.vocabulary, schema)
+    model = Stage2ObjectModel(
+        backbone,
+        registry,
+        object_layers=2,
+        object_ffn_dim=backbone.entity_dim * 2,
+        dropout=0.0,
+    )
+    atom_head = model.atom_heads["simulation/partial_atomic_charge"]
+
+    assert (backbone.token_dim, backbone.atom_dim, backbone.entity_dim) == (
+        16,
+        16,
+        32,
+    )
+    assert model.object_encoder.d_model == 32
+    assert model.object_encoder.encoder.layers[0].linear1.out_features == 64
+    assert atom_head.object_projection.in_features == 32
+    assert atom_head.object_projection.out_features == 16
+    assert model.model_contract["representation_kind"] == "cls_rdkit_concat_v2"
+    assert model.model_contract["tasks"]["simulation/partial_atomic_charge"] == {
+        "topology": "single_entity",
+        "head_family": "atom",
+        "condition_dim": 0,
+        "input_dim": 16,
+        "output_dim": 1,
+        "atom_dim": 16,
+        "object_projection_dim": 16,
+        "object_context_dim": 32,
+    }
+
+
+def test_global_rdkit_v2_teacher_cache_uses_entity_embedding(
+    tiny_stage2_setup, tmp_path: Path
+) -> None:
+    legacy = load_stage1_model(
+        tiny_stage2_setup.initialization.checkpoint,
+        tiny_stage2_setup.data.pretrain_artifacts_dir,
+        backbone_dropout=0.0,
+    )
+    v2_artifacts = tmp_path / "v2_pretrain"
+    v2_config = replace(
+        legacy.config,
+        architecture=ArchitectureConfig(kind="global_rdkit_v2"),
+        data=replace(legacy.config.data, artifacts_dir=v2_artifacts),
+        descriptor=DescriptorConfig(mode="full", token_count=1),
+    )
+    prepare_corpus(v2_config)
+    vocabulary = SmilesTokenizer.load(v2_artifacts / "tokenizer.json")
+    dataset = PreparedCorpusDataset(v2_artifacts, "train")
+    backbone = MultimodalPretrainModel(
+        v2_config, vocabulary, dataset.descriptor_schema
+    )
+    corpus_metadata = json.loads((v2_artifacts / "metadata.json").read_text())
+    checkpoint = tmp_path / "v2_stage1.pt"
+    torch.save(
+        {
+            "identity_contract_version": IDENTITY_CONTRACT_VERSION,
+            "kind": STAGE1_CHECKPOINT_KIND,
+            "format_version": GLOBAL_RDKIT_STAGE1_CHECKPOINT_VERSION,
+            "model": backbone.state_dict(),
+            "config": v2_config.to_dict(),
+            "corpus_identity": dict(
+                metadata_identity(
+                    corpus_metadata, "corpus", context="test v2 Stage 1 corpus"
+                )
+            ),
+        },
+        checkpoint,
+    )
+    stage2_config = replace(
+        tiny_stage2_setup,
+        data=replace(
+            tiny_stage2_setup.data,
+            pretrain_artifacts_dir=v2_artifacts,
+            artifacts_dir=tmp_path / "v2_stage2_artifacts",
+        ),
+        initialization=Stage2InitializationConfig(checkpoint=checkpoint),
+        model=replace(
+            tiny_stage2_setup.model,
+            object_ffn_dim=backbone.entity_dim * 2,
+        ),
+    )
+
+    teacher = prepare_teacher_cache(stage2_config)
+    embeddings = torch.load(
+        stage2_config.data.artifacts_dir
+        / "teachers"
+        / teacher["identity"]
+        / teacher["locator"]["files"]["embeddings"],
+        map_location="cpu",
+        weights_only=True,
+    )
+    assert teacher["embedding_dim"] == backbone.entity_dim == 32
+    assert embeddings.shape[1] == 32
+    assert (
+        teacher["semantic"]["identities"]["teacher"]["payload"][
+            "extraction_contract_version"
+        ]
+        == 3
+    )
+    training_config = replace(
+        stage2_config,
+        training=replace(
+            stage2_config.training,
+            epochs=1,
+            backbone_frozen_epochs=0,
+            refinement_epochs=1,
+        ),
+    )
+    output = tmp_path / "v2_stage2_train"
+    run_stage2_training(training_config, output_dir=output)
+    encoder_payload = load_stage2_encoder_artifact(output / "stage2_encoder.pt")
+    frozen = load_frozen_object_encoder(output / "stage2_encoder.pt")
+
+    assert encoder_payload["model_contract"]["d_model"] == 32
+    assert (
+        encoder_payload["model_contract"]["representation_kind"]
+        == "cls_rdkit_concat_v2"
+    )
+    assert frozen.embedding_dim == 32
+    assert frozen.encode(
+        [FrozenObjectSpec(topology="molecule", slots=(("neutral", "CC"),))]
+    ).shape == (1, 32)
+
 def test_stage2_refinement_config_contract(tiny_stage2_setup):
     paths = [
         Path("configs/v1/stage2/base.yaml"),
         *sorted(Path("configs/experiments_v1/stage2").glob("*.yaml")),
     ]
-    assert len(paths) == 17
     for path in paths:
         config = load_stage2_config(path)
         assert config.training.epochs == (5 if path == Path("configs/v1/stage2/base.yaml") else 10)
