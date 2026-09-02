@@ -7,14 +7,8 @@ build/
 dist/
 .vscode/
 
-# Local data: retain only stage identity files
-/data/**
-!/data/stage1/
-!/data/stage2/
-!/data/stage3/
-!/data/stage1/metadata.json
-!/data/stage2/metadata.json
-!/data/stage3/metadata.json
+# Local data
+/data/
 
 # Runtime experiment outputs
 # Includes run_config.yaml, metadata.json, summary.json,

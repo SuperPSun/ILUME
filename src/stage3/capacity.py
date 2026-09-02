@@ -9,11 +9,22 @@ from typing import Any, Mapping, Sequence
 
 import yaml
 
+from common.io import sha256_file
+
 from .config import Stage3Config
 
 
-PRIMARY_METRIC_PATH = "validation.macro_task_equal.normalized_mae.value"
-RECIPE_TIE_PRIORITY = {"default": 0, "conservative": 1, "aggressive": 2}
+PRIMARY_METRIC_PATH = "taskwise_refinement.validation.macro_task_equal.normalized_mae.value"
+RECIPE_TIE_PRIORITY = {
+    "r4": 0,
+    "r3": 1,
+    "r5": 2,
+    "r2": 3,
+    "r6": 4,
+    "r1": 5,
+    "r7": 6,
+    "r8": 7,
+}
 
 
 @dataclass(frozen=True)
@@ -26,7 +37,6 @@ class CapacityStudyConfig:
     folds: tuple[int, ...]
     confirmation_folds: tuple[int, ...]
     top_k: int
-    tail_epochs: int
     max_retries: int
     sampler_seed: int
     global_experts: tuple[int, ...]
@@ -51,8 +61,8 @@ class CapacityStudyConfig:
             raise ValueError("capacity v1 requires trials_per_wave == 2")
         if self.folds != (1, 2) or self.confirmation_folds != (3, 4, 5):
             raise ValueError("capacity v1 fixes search folds 1/2 and confirmation folds 3/4/5")
-        if self.top_k <= 0 or self.tail_epochs <= 0:
-            raise ValueError("capacity top_k and tail_epochs must be positive")
+        if self.top_k <= 0:
+            raise ValueError("capacity top_k must be positive")
         if self.max_retries != 1:
             raise ValueError("capacity v1 permits exactly one identical retry")
         for name in (
@@ -99,8 +109,8 @@ class CapacityStudyConfig:
 def load_capacity_study_config(path: str | Path) -> CapacityStudyConfig:
     with Path(path).open(encoding="utf-8") as handle:
         raw = yaml.safe_load(handle) or {}
-    if not isinstance(raw, dict) or raw.pop("schema_version", None) != 1:
-        raise ValueError("capacity study requires schema_version: 1")
+    if not isinstance(raw, dict) or raw.pop("schema_version", None) != 2:
+        raise ValueError("capacity study requires schema_version: 2")
     allowed = set(CapacityStudyConfig.__dataclass_fields__)
     unknown = set(raw) - allowed
     if unknown:
@@ -218,90 +228,57 @@ def _nested_metric(row: Mapping[str, Any], keys: Sequence[str], context: str) ->
     return _finite_float(value, context)
 
 
-def tail_validation_summary(
-    run_root: str | Path,
-    *,
-    expected_epochs: int,
-    tail_epochs: int = 3,
+def refined_validation_summary(
+    run_root: str | Path, *, expected_epochs: int
 ) -> dict[str, Any]:
-    if tail_epochs <= 0 or tail_epochs > expected_epochs:
-        raise ValueError("tail_epochs must be in [1, expected_epochs]")
-    path = Path(run_root) / "metrics.jsonl"
+    path = Path(run_root) / "taskwise_refinement.json"
     if not path.is_file():
-        raise FileNotFoundError(f"Stage 3 metrics are missing: {path}")
-    rows: list[dict[str, Any]] = []
+        raise FileNotFoundError(f"Stage 3 refinement manifest is missing: {path}")
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line:
-                continue
-            row = json.loads(line)
-            if not isinstance(row, dict):
-                raise ValueError
-            rows.append(row)
-    except (OSError, json.JSONDecodeError, ValueError) as error:
-        raise ValueError(f"Stage 3 metrics are unreadable: {path}") from error
-    epochs = [row.get("epoch") for row in rows]
-    if epochs != list(range(1, expected_epochs + 1)):
-        raise ValueError(
-            "Stage 3 metrics must contain one continuous row per expected epoch"
-        )
-    selected = rows[-tail_epochs:]
-    primary = [
-        _nested_metric(
-            row,
-            ("validation", "macro_task_equal", "normalized_mae", "value"),
-            f"epoch {row['epoch']} primary metric",
-        )
-        for row in selected
-    ]
-    task_ids = tuple(sorted(selected[0]["validation"]["tasks"]))
-    if any(tuple(sorted(row["validation"]["tasks"])) != task_ids for row in selected):
-        raise ValueError("Stage 3 tail epochs have inconsistent task sets")
-    task_means = {
-        task: statistics.fmean(
-            _nested_metric(
-                row,
-                ("validation", "tasks", task, "normalized_mae"),
-                f"epoch {row['epoch']} {task} normalized MAE",
-            )
-            for row in selected
-        )
-        for task in task_ids
-    }
-    group_ids = tuple(sorted(selected[0]["validation"].get("groups", {})))
-    if any(
-        tuple(sorted(row["validation"].get("groups", {}))) != group_ids
-        for row in selected
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"Stage 3 refinement manifest is unreadable: {path}") from error
+    if not isinstance(payload, dict) or payload.get("kind") != "ilume_stage3_taskwise_refined":
+        raise ValueError("Stage 3 refinement manifest has the wrong contract")
+    artifact = Path(run_root) / str(payload.get("artifact", ""))
+    if (
+        artifact.name != "taskwise_refined.pt"
+        or not artifact.is_file()
+        or payload.get("artifact_sha256") != sha256_file(artifact)
     ):
-        raise ValueError("Stage 3 tail epochs have inconsistent group sets")
-    group_means = {
-        group: statistics.fmean(
-            _nested_metric(
-                row,
-                ("validation", "groups", group, "normalized_mae"),
-                f"epoch {row['epoch']} {group} normalized MAE",
-            )
-            for row in selected
-        )
-        for group in group_ids
-    }
-    group_values = [
-        _nested_metric(
-            row,
-            ("validation", "macro_group_equal", "normalized_mae", "value"),
-            f"epoch {row['epoch']} group-equal normalized MAE",
-        )
-        for row in selected
-    ]
+        raise ValueError("Stage 3 refined artifact is missing or corrupt")
+    if payload.get("ordinary_final_epoch") != expected_epochs:
+        raise ValueError("Stage 3 refinement manifest has the wrong epoch budget")
+    validation = payload.get("validation")
+    if not isinstance(validation, Mapping):
+        raise ValueError("Stage 3 refinement manifest lacks stitched validation")
+    score = _nested_metric(
+        validation,
+        ("macro_task_equal", "normalized_mae", "value"),
+        "stitched validation primary metric",
+    )
+    tasks = validation.get("tasks")
+    groups = validation.get("groups")
+    if not isinstance(tasks, Mapping) or not isinstance(groups, Mapping):
+        raise ValueError("Stage 3 stitched validation lacks task/group metrics")
     return {
         "run_root": str(run_root),
         "expected_epochs": expected_epochs,
-        "tail_epoch_numbers": [int(row["epoch"]) for row in selected],
-        "tail_primary_values": primary,
-        "score": statistics.fmean(primary),
-        "group_equal_score": statistics.fmean(group_values),
-        "task_scores": task_means,
-        "group_scores": group_means,
+        "model_selector": "taskwise_refined",
+        "score": score,
+        "group_equal_score": _nested_metric(
+            validation,
+            ("macro_group_equal", "normalized_mae", "value"),
+            "stitched validation group-equal metric",
+        ),
+        "task_scores": {
+            task: _finite_float(values["normalized_mae"], f"{task} normalized MAE")
+            for task, values in tasks.items()
+        },
+        "group_scores": {
+            group: _finite_float(values["normalized_mae"], f"{group} normalized MAE")
+            for group, values in groups.items()
+        },
     }
 
 
@@ -311,7 +288,7 @@ def aggregate_fold_summaries(
     if not summaries:
         raise ValueError("At least one fold summary is required")
     fold_scores = {
-        int(fold): _finite_float(summary.get("score"), f"fold{fold} score")
+        str(fold): _finite_float(summary.get("score"), f"fold{fold} score")
         for fold, summary in sorted(summaries.items())
     }
     values = list(fold_scores.values())
@@ -362,7 +339,7 @@ def select_probe_winners(candidates: Sequence[Mapping[str, Any]]) -> list[dict[s
         scale = str(candidate["scale"])
         recipe = str(candidate["recipe"]).lower()
         if recipe not in RECIPE_TIE_PRIORITY:
-            raise ValueError(f"Unknown Stage 2 capacity recipe: {recipe}")
+            raise ValueError(f"Unknown Stage 2 Base selection recipe: {recipe}")
         _finite_float(candidate.get("score"), f"{scale}/{recipe} score")
         by_scale.setdefault(scale, []).append(candidate)
     winners = []
@@ -400,13 +377,12 @@ def confirmation_trial_numbers(
 def summarize_capacity_manifest(path: str | Path) -> dict[str, Any]:
     with Path(path).open(encoding="utf-8") as handle:
         raw = yaml.safe_load(handle) or {}
-    if not isinstance(raw, dict) or raw.get("schema_version") != 1:
-        raise ValueError("capacity report manifest requires schema_version: 1")
+    if not isinstance(raw, dict) or raw.get("schema_version") != 2:
+        raise ValueError("capacity report manifest requires schema_version: 2")
     kind = raw.get("kind")
     expected_epochs = int(raw.get("expected_epochs", 0))
-    tail_epochs = int(raw.get("tail_epochs", 0))
-    if expected_epochs <= 0 or tail_epochs <= 0:
-        raise ValueError("capacity report epoch counts must be positive")
+    if expected_epochs <= 0:
+        raise ValueError("capacity report epoch count must be positive")
     if kind in {"probe", "comparison"}:
         candidates = raw.get("candidates")
         if not isinstance(candidates, list) or not candidates:
@@ -418,10 +394,9 @@ def summarize_capacity_manifest(path: str | Path) -> dict[str, Any]:
             ):
                 raise ValueError("capacity candidate requires fold paths")
             fold_summaries = {
-                int(fold): tail_validation_summary(
+                int(fold): refined_validation_summary(
                     run_root,
                     expected_epochs=expected_epochs,
-                    tail_epochs=tail_epochs,
                 )
                 for fold, run_root in candidate["folds"].items()
             }
@@ -443,10 +418,10 @@ def summarize_capacity_manifest(path: str | Path) -> dict[str, Any]:
             key=lambda row: (float(row["score"]), str(row.get("id", ""))),
         )
         result: dict[str, Any] = {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": kind,
             "expected_epochs": expected_epochs,
-            "tail_epochs": tail_epochs,
+            "model_selector": "taskwise_refined",
             "ranking": ranking,
         }
         if kind == "probe":
@@ -464,10 +439,9 @@ def summarize_capacity_manifest(path: str | Path) -> dict[str, Any]:
             seed, fold = int(run["seed"]), int(run["fold"])
             if fold in by_seed.setdefault(seed, {}):
                 raise ValueError(f"duplicate robustness seed/fold: {seed}/{fold}")
-            by_seed[seed][fold] = tail_validation_summary(
+            by_seed[seed][fold] = refined_validation_summary(
                 run["path"],
                 expected_epochs=expected_epochs,
-                tail_epochs=tail_epochs,
             )
             run_paths[f"seed{seed}/fold{fold}"] = str(run["path"])
         seed_summaries = {
@@ -481,10 +455,10 @@ def summarize_capacity_manifest(path: str | Path) -> dict[str, Any]:
             )
         )
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": kind,
             "expected_epochs": expected_epochs,
-            "tail_epochs": tail_epochs,
+            "model_selector": "taskwise_refined",
             "run_paths": run_paths,
             "seeds": {str(seed): value for seed, value in seed_summaries.items()},
             "seed_score_mean": statistics.fmean(seed_scores),
@@ -626,20 +600,20 @@ def materialize_final_recipe_configs(
     freeze(
         output_dir / "robustness-report.yaml",
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "robustness",
             "expected_epochs": 20,
-            "tail_epochs": 3,
+            "model_selector": "taskwise_refined",
             "runs": robustness_runs,
         },
     )
     freeze(
         output_dir / "formal-report.yaml",
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "comparison",
             "expected_epochs": 50,
-            "tail_epochs": 3,
+            "model_selector": "taskwise_refined",
             "candidates": [
                 {
                     "id": scale,
@@ -672,6 +646,6 @@ __all__ = [
     "select_probe_winners",
     "suggest_trial_parameters",
     "summarize_capacity_manifest",
-    "tail_validation_summary",
+    "refined_validation_summary",
     "validate_anchor_decision",
 ]

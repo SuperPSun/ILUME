@@ -7,13 +7,14 @@
 | `reference.yaml`、`il21/aux6` domain registry | 删除，改为 catalog fact + YAML task/group registry | `configs/v1/stage3/base.yaml`、`src/stage3/config.py`、`src/stage3/data.py` |
 | fixed condition/phase、dense task assumptions | 删除，改为 task-local variable-width condition 与 sparse observation payload | `src/stage3/data.py` |
 | Stage 2 migration rejection、旧 frozen entity/pair tables | 替换为公开 frozen Object v3 checkpoint loader 和内容寻址 object cache | `src/stage2/frozen.py`、`src/stage3/prepare.py` |
+| Stage1+2 representation 消融 | 隔离的 RDKit 2D backend 使用 fold-local preprocessing 与两个 GLOBAL Linear→LayerNorm adapter；HoME 后半段不变 | `configs/ablations/stage1_stage2_rdkit_home.yaml`、`src/stage3/rdkit.py`、`src/stage3/model.py` |
 | AdaTT、IndependentTaskHead、FeatureGate、SelfGate、BatchNorm expert | 删除，改为 registry-driven dynamic HoME | `src/stage3/model.py` |
 | late-solute special branch | 替换为通用 primary/partner slot 与 group-shared interaction | `src/stage3/data.py`、`src/stage3/model.py` |
 | domain loss aggregation/backward | 替换为 task gradient、sample-weighted microbatch accumulation 与 composite step | `src/stage3/train.py` |
-| domain isolation optimizer | 替换为显式 GLOBAL/GROUP/PRIVATE ownership 与 hierarchical PCGrad | `src/stage3/model.py`、`src/stage3/pcgrad.py` |
-| early stopping、best/domain-best、rolling/last checkpoint | 删除，改为 interval full-epoch checkpoint 与固定 final epoch | `src/stage3/train.py` |
+| domain isolation optimizer | 替换为显式 GLOBAL/GROUP/PRIVATE ownership；joint phase 使用 hierarchical PCGrad，refinement 使用 per-task PRIVATE optimizer | `src/stage3/model.py`、`src/stage3/pcgrad.py`、`src/stage3/train.py` |
+| early stopping、best/domain-best、rolling/last checkpoint | 删除；保留 interval full-epoch checkpoint，并额外发布 validation-best PRIVATE stitching artifact | `src/stage3/train.py` |
 | 外部 matrix/fold launcher | 不恢复；唯一 train 入口使用 spawn worker 和显式设备槽调度独立 fold | `scripts/stage3/train.py` |
-| 旧 valid/test best checkpoint loader | 替换为 full v1 checkpoint 严格加载与显式 epoch/task selector | `src/stage3/evaluate.py` |
+| 旧 valid/test best checkpoint loader | 替换为默认 taskwise-refined artifact；显式 `--checkpoint-epoch N` 才严格加载普通 checkpoint | `src/stage3/evaluate.py` |
 | phase/adaptation-style staged expansion | 替换为 load scopes 与 adaptation scopes 分离的 plugin 初始化 | `src/stage3/train.py` |
 
-现役 v1 的训练与评估入口保持为 `scripts/stage3/prepare.py`、`train.py`、`evaluate.py`。Capacity v1 另有只负责报告和配置物化的 `scripts/stage3/capacity.py`；HPO 仍由 `train.py --study-config` 执行，不建立独立 fold/matrix runner。`train.py --fold` 接收一个或多个 fold，`--output` 始终是共同 root，实际 run contract 位于 `foldN/`；布尔 `--resume` 只恢复 identity 一致且 checkpoint/metrics/diagnostics 尾部严格对齐的 fold。旧 artifact/config/checkpoint 不提供兼容解析器。
+现役 v1 与 ADR-0034 消融的训练、评估入口都保持为 `scripts/stage3/prepare.py`、`train.py`、`evaluate.py`。Capacity v1 另有只负责报告和配置物化的 `scripts/stage3/capacity.py`；HPO 仍由 `train.py --study-config` 执行，不建立独立 fold/matrix runner。`train.py --fold` 接收一个或多个 fold，`--output` 始终是共同 root，实际 run contract 位于 `foldN/`；布尔 `--resume` 只恢复 identity 一致且 checkpoint/metrics/diagnostics 尾部严格对齐的 fold。Object 与 RDKit artifact/checkpoint 不提供交叉兼容解析器。

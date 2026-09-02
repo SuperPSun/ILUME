@@ -4,6 +4,8 @@
 - 日期：2026-08-20
 - 取代范围：ADR-0013、0014、0015、0019、0020 中分散的 identity、artifact lineage、run reuse/resume 与 audit 规则
 
+> 2026-08-26：Stage 2/3 refinement identity、checkpoint 版本、taskwise-refined artifact 与 evaluation selector 由 [ADR-0027](0027-late-taskwise-refinement.md) 增补；本文四层 identity 模型继续有效。
+
 ## 背景
 
 旧实现混合了资源位置、文件完整性、科学语义和运行环境：移动 artifact、改变 worker 或 Git dirty 状态可能阻断复用，而 metadata 文件重新序列化又可能改变跨 Stage 身份。完整 checkpoint SHA 还把 optimizer、RNG 和序列化细节错误带入模型身份。与此同时，AMP dtype、TF32 策略与 optimizer implementation 会改变数值训练，不能降为普通运行记录。
@@ -47,6 +49,6 @@ Plugin 绑定源 training identity、模型 state hash、normalization、load/ad
 
 ## 迁移与后果
 
-Corpus v2、Stage 1 checkpoint v2、Stage 2 data/checkpoint v3、Stage 2 encoder v1 和 Stage 3 v1 的物理格式版本不变。缺少 identity contract v1 block 的旧 artifact/cache/checkpoint 一律明确拒绝；不推导旧 identity，不生成 sidecar，不静默迁移。
+Corpus v2、Stage 1 checkpoint v2、Stage 2 data v3、Stage 2 encoder v1 与 Stage 3 prepared v1 的物理格式保持不变；ADR-0027 将 Stage 2 checkpoint 升级为 v4、Stage 3 checkpoint 升级为 v2，并新增两 Stage 各自的 taskwise-refined artifact v1。缺少现役 identity/refinement contract 的旧 artifact/cache/checkpoint 一律明确拒绝；不推导旧 identity，不生成 sidecar，不静默迁移。
 
 启用本合同需要按 Stage 1 prepare/train、Stage 2 prepare/teacher/train、Stage 3 prepare/five-fold train/evaluate 的顺序正式重跑。归档旧正式输出前必须先报告精确路径、文件数和大小，并等待用户单独确认；目标使用全新且不冲突的 `trash/pre-identity-contract-v1-<timestamp>/`。实现验收只使用临时小数据。

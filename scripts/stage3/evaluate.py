@@ -30,7 +30,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--split", required=True, choices=("valid", "test"))
     parser.add_argument("--ensemble-folds", action="store_true")
     parser.add_argument("--fold", type=int, nargs="+")
-    parser.add_argument("--checkpoint-epoch", type=int)
+    parser.add_argument(
+        "--checkpoint-epoch",
+        type=int,
+        help="Evaluate ordinary fold epoch checkpoints; omitted loads taskwise_refined.pt.",
+    )
     parser.add_argument("--tasks", nargs="+")
     parser.add_argument("--study-id")
     parser.add_argument("--output", required=True)
@@ -65,6 +69,7 @@ def _run_fold(
     resolve_identity: ResolveIdentity,
     evaluate_checkpoints: EvaluateCheckpoints,
 ) -> None:
+    taskwise_refined = checkpoint_epoch is None
     with progress.status(f"Resolving Stage 3 fold{fold} evaluation identity"):
         evaluation_identity = resolve_identity(
             config,
@@ -91,6 +96,7 @@ def _run_fold(
             "ensemble_folds": False,
             "fold": fold,
             "checkpoint_epoch": checkpoint_epoch,
+            "model_selector": "taskwise_refined" if taskwise_refined else "epoch_checkpoint",
             "tasks": tasks,
             "reporting_study_id": study_id,
         },
@@ -167,6 +173,7 @@ def _run_test(
     resolve_identity: ResolveIdentity,
     evaluate_checkpoints: EvaluateCheckpoints,
 ) -> None:
+    taskwise_refined = args.checkpoint_epoch is None
     with progress.status("Resolving Stage 3 evaluation identity"):
         evaluation_identity = resolve_identity(
             config,
@@ -192,6 +199,7 @@ def _run_test(
             "ensemble_folds": True,
             "fold": None,
             "checkpoint_epoch": args.checkpoint_epoch,
+            "model_selector": "taskwise_refined" if taskwise_refined else "epoch_checkpoint",
             "tasks": args.tasks,
             "reporting_study_id": args.study_id,
         },
@@ -250,7 +258,7 @@ def main() -> int:
     if study_id is None:
         with progress.status("Resolving Stage 3 validation study identity"):
             study_id = resolve_stage3_reporting_study_id(
-                config, checkpoint_epoch=args.checkpoint_epoch
+                config, checkpoint_epoch=args.checkpoint_epoch,
             )
     try:
         results = _run_validation_schedule(

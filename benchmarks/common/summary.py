@@ -9,8 +9,10 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
+from xml.sax.saxutils import escape
 
 from common.identity import validate_semantic_identity
+from common.identity import semantic_identity
 from common.io import atomic_json
 from common.reporting import (
     REPORTING_SCHEMA_VERSION,
@@ -21,6 +23,7 @@ from common.reporting import (
 SUMMARY_SCHEMA_VERSION = 1
 SUMMARY_FILES = (
     "overview.md",
+    "radar.svg",
     "stage3_test_leaderboard.csv",
     "stage3_validation_leaderboard.csv",
     "stage2_core_physics_leaderboard.csv",
@@ -33,6 +36,35 @@ SUMMARY_FILES = (
     "sweep_status.csv",
     "summary.json",
 )
+
+_PARTIAL_CHARGE_PREDICTION_FIELDS = (
+    "source_row",
+    "mol_id",
+    "canonical_smiles",
+    "role",
+    "formal_charge",
+    "evaluation_status",
+    "exclusion_reason",
+    "atom_count",
+    "atom_indices",
+    "elements",
+    "target_charges",
+    "predicted_charges",
+    "absolute_errors",
+    "molecule_mae",
+    "mapping_status",
+    "mapping_count_lower_bound",
+    "selected_mapping_rank",
+    "bond_match_mode",
+    "unparsed_bond_types",
+    "bond_fallback_reason",
+)
+_PARTIAL_CHARGE_RUNTIME_FIELDS = {
+    "canonical_smiles",
+    "predicted_charges",
+    "absolute_errors",
+    "molecule_mae",
+}
 
 
 @dataclass(frozen=True)
@@ -184,6 +216,103 @@ def _validate_comparison(value: Any, context: str) -> None:
         raise ValueError(f"{context} has unsupported comparison identity")
 
 
+def _stage3_comparison_key(identity: Mapping[str, Any]) -> str:
+    payload = dict(identity["payload"])
+    if payload.get("benchmark") != "stage3_property":
+        return str(identity["hash"])
+    payload.pop("normalization", None)
+    return semantic_identity(
+        "reporting.stage3-comparison-without-normalization.v1", payload
+    )["hash"]
+
+
+def _partial_charge_comparison_key(
+    candidate: Candidate, section: Mapping[str, Any]
+) -> str:
+    identity = section["comparison_identity"]
+    payload = identity["payload"]
+    sources = dict(payload["sources"])
+    task = "simulation/partial_atomic_charge"
+    sources.pop(f"{task}:mapping_audit", None)
+    sources.pop(f"{task}:evaluated_subset", None)
+    reporting = candidate.summary["reporting"]
+    prediction_root = candidate.root
+    prediction = next(
+        (
+            item for item in reporting.get("predictions", ())
+            if item.get("task") == task
+        ),
+        None,
+    )
+    if prediction is None:
+        source_run = reporting.get("source_runs", {}).get("stage2_physics", {}).get(task)
+        try:
+            relative = Path(str(source_run)).relative_to(Path(candidate.source_run))
+        except ValueError:
+            relative = None
+        if relative is not None:
+            source_root = candidate.root / relative
+            summary_path = source_root / "summary.json"
+            if summary_path.is_file():
+                source_summary = _json(summary_path)
+                prediction = next(
+                    (
+                        item
+                        for item in source_summary.get("reporting", {}).get("predictions", ())
+                        if item.get("task") == task
+                    ),
+                    None,
+                )
+                prediction_root = source_root
+    if not isinstance(prediction, Mapping) or not isinstance(prediction.get("path"), str):
+        return str(identity["hash"])
+    path = (prediction_root / prediction["path"]).resolve()
+    if not _is_within(path, prediction_root.resolve()) or not path.is_file():
+        return str(identity["hash"])
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        if tuple(reader.fieldnames or ()) != _PARTIAL_CHARGE_PREDICTION_FIELDS:
+            return str(identity["hash"])
+        rows = [
+            {
+                name: row[name]
+                for name in _PARTIAL_CHARGE_PREDICTION_FIELDS
+                if name not in _PARTIAL_CHARGE_RUNTIME_FIELDS
+            }
+            for row in reader
+        ]
+    return semantic_identity(
+        "reporting.partial-charge-comparison.v2",
+        {
+            "comparison": {
+                "benchmark": payload["benchmark"],
+                "split": payload["split"],
+                "expected": payload["expected"],
+                "sources": sources,
+                "normalization": payload["normalization"],
+                "folds": payload["folds"],
+                "ensemble": payload["ensemble"],
+            },
+            "evaluation_rows": rows,
+        },
+    )["hash"]
+
+
+def _stage2_full_comparison_key(
+    candidate: Candidate,
+    section: Mapping[str, Any],
+    partial_section: Mapping[str, Any],
+) -> str:
+    identity = section["comparison_identity"]
+    payload = dict(identity["payload"])
+    component_hashes = dict(payload["component_hashes"])
+    component_hashes["stage2_partial_charge"] = _partial_charge_comparison_key(
+        candidate, partial_section
+    )
+    payload["component_hashes"] = component_hashes
+    return semantic_identity("reporting.stage2-full-comparison.v2", payload)["hash"]
+
+
 def _validate_stage2_suite(reporting: Mapping[str, Any]) -> None:
     capabilities = reporting.get("capabilities")
     sections = reporting.get("benchmarks")
@@ -287,7 +416,7 @@ def _validate_current(candidate: Candidate) -> None:
             checkpoint_epochs = {item.get("checkpoint_epoch") for item in protocols}
             if (
                 len(checkpoint_hashes) != 1 or None in checkpoint_hashes
-                or len(checkpoint_epochs) != 1 or None in checkpoint_epochs
+                or len(checkpoint_epochs) != 1
             ):
                 raise ValueError("ILUME Stage 2 suite checkpoint binding is inconsistent")
         for name, value in benchmarks.items():
@@ -315,11 +444,30 @@ def _run_id(model: str, source_run: str) -> str:
     return f"{model}@{source_run}"
 
 
+def _display_name(candidate: Candidate, reporting: Mapping[str, Any]) -> str:
+    """Return a human-readable model label without changing reporting identity."""
+    display = str(reporting["model_display_name"])
+    source = Path(candidate.source_run).parts
+    marker = ("outputs", "experiments_v1", "stage3", "formal")
+    for index in range(len(source) - len(marker)):
+        if source[index:index + len(marker)] != marker:
+            continue
+        scale = source[index + len(marker)]
+        scale_label = {"s": "S", "base": "Base", "l": "L", "xl": "XL"}
+        if (
+            candidate.metadata.get("stage") == "stage3"
+            and reporting.get("model_id") == "ilume"
+            and scale in scale_label
+        ):
+            return f"{display} Capacity v1 ({scale_label[scale]})"
+    return display
+
+
 def _model(candidate: Candidate) -> tuple[str, str]:
     if candidate.summary:
         reporting = candidate.summary.get("reporting", {})
         if reporting.get("model_id") and reporting.get("model_display_name"):
-            return str(reporting["model_id"]), str(reporting["model_display_name"])
+            return str(reporting["model_id"]), _display_name(candidate, reporting)
         if candidate.metadata.get("stage") == "benchmark" and candidate.summary.get("model"):
             model = str(candidate.summary["model"])
             return model, model
@@ -351,7 +499,7 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
         provenance = candidate.metadata.get("provenance", {})
         signatures.append(
             (
-                model,
+                display,
                 str(candidate.metadata.get("stage", "")),
                 str(candidate.metadata.get("operation", "")),
                 str((candidate.summary or {}).get("split", provenance.get("split", ""))),
@@ -362,7 +510,10 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
         summary = candidate.summary or {}
         issues = list(candidate.issues)
         reporting = summary.get("reporting", {})
-        has_stage2 = candidate.metadata.get("stage") in {"stage2", "benchmark"}
+        has_stage2 = candidate.metadata.get("stage") == "stage2" or (
+            candidate.metadata.get("stage") == "benchmark"
+            and reporting.get("contract") == STAGE2_BENCHMARK_SUITE_CONTRACT
+        )
         eligibility = (
             _stage2_eligibility(reporting) if has_stage2 and reporting else ("", "", "")
         )
@@ -387,13 +538,15 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
                     f"{name}:{len(value['protocol'].get('expected_tasks', ())) }"
                     for name, value in sorted(sections.items())
                 )
-                available = ";".join(
-                    (
-                        f"stage3_test:{len(summary['stage3_property_benchmark']['test_ensemble'])}",
-                        f"stage3_validation:{len(summary['stage3_property_benchmark']['validation_five_fold'])}",
-                        f"stage2_physics:{len(summary['stage2_physics_benchmark']['test'])}",
+                available_items = [
+                    f"stage3_test:{len(summary['stage3_property_benchmark']['test_ensemble'])}",
+                    f"stage3_validation:{len(summary['stage3_property_benchmark']['validation_five_fold'])}",
+                ]
+                if "stage2_physics_benchmark" in summary:
+                    available_items.append(
+                        f"stage2_physics:{len(summary['stage2_physics_benchmark']['test'])}"
                     )
-                )
+                available = ";".join(available_items)
                 folds = ";".join(map(str, sections["stage3_validation"]["protocol"]["folds"]))
             elif candidate.metadata["stage"] == "stage3":
                 protocol = reporting["protocol"]
@@ -663,10 +816,12 @@ def _stage3_test(
         ) != (1, 2, 3, 4, 5):
             continue
         model_id = reporting["model_id"]
-        display = reporting["model_display_name"]
+        display = _display_name(candidate, reporting)
         run = _run_id(model_id, candidate.source_run)
         values = [float(metrics[task]["normalized_mae"]) for task in expected]
-        comparison_hash = section["comparison_identity"]["hash"]
+        comparison_hash = _stage3_comparison_key(
+            section["comparison_identity"]
+        )
         comparisons.setdefault(comparison_hash, []).append(run)
         for task in expected:
             value = metrics[task]
@@ -732,7 +887,7 @@ def _stage3_validation(
         ):
             continue
         run = f"{model_id}@study:{study_id}"
-        display = first_reporting["model_display_name"]
+        display = _display_name(items[0], first_reporting)
         source = ";".join(item.source_run for item in items)
         checkpoints = {item.summary["checkpoint_epoch"] for item in items}
         if len(checkpoints) != 1:
@@ -759,7 +914,9 @@ def _stage3_validation(
         if not complete:
             metrics_rows = [row for row in metrics_rows if row["run"] != run]
             continue
-        comparison_hash = first_reporting["comparison_identity"]["hash"]
+        comparison_hash = _stage3_comparison_key(
+            first_reporting["comparison_identity"]
+        )
         comparisons.setdefault(comparison_hash, []).append(run)
         leaders.append(
             {
@@ -786,7 +943,7 @@ def _stage3_validation(
         ):
             continue
         model_id = reporting["model_id"]
-        display = reporting["model_display_name"]
+        display = _display_name(candidate, reporting)
         run = _run_id(model_id, candidate.source_run)
         task_values = []
         for task in expected:
@@ -797,7 +954,9 @@ def _stage3_validation(
                 row[f"{metric}_std"] = value[metric]["std"]
             metrics_rows.append(row)
             task_values.append(float(value["normalized_mae"]["mean"]))
-        comparisons.setdefault(section["comparison_identity"]["hash"], []).append(run)
+        comparisons.setdefault(
+            _stage3_comparison_key(section["comparison_identity"]), []
+        ).append(run)
         leaders.append(
             {
                 "run": run, "model": display,
@@ -977,7 +1136,9 @@ def _stage2_partial(
                     "checkpoint_epoch": candidate.summary.get("checkpoint_epoch", ""),
                 }
             )
-            comparisons.setdefault(section["comparison_identity"]["hash"], []).append(run)
+            comparisons.setdefault(
+                _partial_charge_comparison_key(candidate, section), []
+            ).append(run)
             continue
         metrics_rows = [row for row in metrics_rows if row["run"] != run]
     _require_one_comparison(comparisons, "Stage 2 Partial Charge")
@@ -1038,7 +1199,9 @@ def _stage2_full(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
                 "checkpoint_epoch": summary.get("checkpoint_epoch", ""),
             }
         )
-        comparisons.setdefault(section["comparison_identity"]["hash"], []).append(run)
+        comparisons.setdefault(
+            _stage2_full_comparison_key(candidate, section, partial_section), []
+        ).append(run)
     _require_one_comparison(comparisons, "Stage 2 Full physics")
     return _rank(leaders, "macro_normalized_mae")
 
@@ -1163,6 +1326,170 @@ def _overview(
             f"{row['completeness']}"
             + (f" ({row['issues']})" if row["issues"] else "")
         )
+    return "\n".join(lines) + "\n"
+
+
+def _radar_score(value: float, best: float) -> float:
+    if best == 0.0:
+        return 1.0 if value == 0.0 else 0.0
+    return best / value
+
+
+def _radar_panel_data(
+    rows: Sequence[Mapping[str, Any]],
+    leaders: Sequence[Mapping[str, Any]],
+    *,
+    task_key: str,
+    metric_key: str,
+    tasks: Sequence[str] | None = None,
+    partial_rows: Sequence[Mapping[str, Any]] = (),
+    partial_metric_key: str | None = None,
+) -> tuple[tuple[str, ...], list[dict[str, Any]]]:
+    model_by_run = {str(row["run"]): str(row["model"]) for row in leaders}
+    ordered_runs = [str(row["run"]) for row in leaders]
+    values: dict[tuple[str, str], float] = {}
+    for row in rows:
+        if row.get("run") not in model_by_run or not _finite(row.get(metric_key)):
+            continue
+        values[str(row["run"]), str(row[task_key])] = float(row[metric_key])
+    for row in partial_rows:
+        if row.get("run") not in model_by_run or row.get("subset") != "all_mapped":
+            continue
+        value = row.get(partial_metric_key or metric_key)
+        if _finite(value):
+            values[str(row["run"]), "simulation/partial_atomic_charge"] = float(value)
+    axes = tuple(tasks) if tasks is not None else tuple(sorted({
+        task for run, task in values if run in model_by_run
+    }))
+    series: list[dict[str, Any]] = []
+    for run in ordered_runs:
+        scores: list[float] = []
+        for task in axes:
+            available = [
+                value for (candidate_run, candidate_task), value in values.items()
+                if candidate_task == task and candidate_run in model_by_run
+            ]
+            value = values.get((run, task))
+            scores.append(
+                _radar_score(value, min(available))
+                if value is not None and available else 0.0
+            )
+        series.append({"run": run, "model": model_by_run[run], "scores": scores})
+    return axes, series
+
+
+def _svg_text(value: object) -> str:
+    return escape(str(value), {'"': "&quot;"})
+
+
+def _radar_point(center_x: float, center_y: float, radius: float, angle: float) -> tuple[float, float]:
+    return (
+        center_x + radius * math.sin(angle),
+        center_y - radius * math.cos(angle),
+    )
+
+
+def _radar_svg(payload: Mapping[str, Any]) -> str:
+    leaderboards = payload["leaderboards"]
+    metrics = payload["metrics"]
+    stage2_tasks = (
+        "simulation/heat_of_vaporization",
+        "simulation/homo",
+        "simulation/lumo",
+        "simulation/partial_atomic_charge",
+    )
+    panels = (
+        (
+            "stage2_test", "Stage 2 test", *_radar_panel_data(
+                metrics["stage2_core_physics"],
+                leaderboards["stage2_core_physics"],
+                task_key="task",
+                metric_key="normalized_mae",
+                tasks=stage2_tasks,
+                partial_rows=metrics["stage2_partial_charge"],
+                partial_metric_key="molecule_macro_normalized_mae",
+            ),
+        ),
+        (
+            "stage3_test", "Stage 3 test", *_radar_panel_data(
+                metrics["stage3_test"], leaderboards["stage3_test"],
+                task_key="task", metric_key="normalized_mae",
+            ),
+        ),
+        (
+            "stage3_validation", "Stage 3 validation", *_radar_panel_data(
+                metrics["stage3_validation"], leaderboards["stage3_validation"],
+                task_key="task", metric_key="normalized_mae_mean",
+            ),
+        ),
+    )
+    palette = ("#0072b2", "#d55e00", "#009e73", "#cc79a7", "#e69f00", "#56b4e9")
+    models = sorted({series["model"] for _, _, _, items in panels for series in items})
+    colors = {model: palette[index % len(palette)] for index, model in enumerate(models)}
+    centers = ((330.0, 570.0), (960.0, 570.0), (1590.0, 570.0))
+    radius = 240.0
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="900" viewBox="0 0 1920 900">',
+        '<rect width="1920" height="900" fill="white"/>',
+        '<text x="960" y="42" text-anchor="middle" font-family="sans-serif" font-size="26" font-weight="bold">ILUME benchmark radar scores</text>',
+        '<text x="960" y="70" text-anchor="middle" font-family="sans-serif" font-size="14">Score = best normalized MAE / model normalized MAE; higher is better. Unsupported Stage 2 partial charge = 0.</text>',
+    ]
+    for (panel_id, title, tasks, series), (center_x, center_y) in zip(panels, centers, strict=True):
+        lines.append(
+            f'<text x="{center_x:.1f}" y="122" text-anchor="middle" font-family="sans-serif" font-size="20" font-weight="bold">{_svg_text(title)}</text>'
+        )
+        if not tasks or not series:
+            lines.append(
+                f'<text x="{center_x:.1f}" y="{center_y:.1f}" text-anchor="middle" font-family="sans-serif" font-size="16">No eligible run.</text>'
+            )
+            continue
+        angles = tuple(2.0 * math.pi * index / len(tasks) for index in range(len(tasks)))
+        for fraction in (0.25, 0.5, 0.75, 1.0):
+            points = " ".join(
+                f"{x:.2f},{y:.2f}"
+                for x, y in (
+                    _radar_point(center_x, center_y, radius * fraction, angle)
+                    for angle in angles
+                )
+            )
+            lines.append(
+                f'<polygon points="{points}" fill="none" stroke="#c7c7c7" stroke-width="1"/>'
+            )
+            lines.append(
+                f'<text x="{center_x + 5:.2f}" y="{center_y - radius * fraction + 4:.2f}" font-family="sans-serif" font-size="9" fill="#666">{fraction:g}</text>'
+            )
+        lines.append(
+            f'<text x="{center_x + 5:.2f}" y="{center_y + 4:.2f}" font-family="sans-serif" font-size="9" fill="#666">0</text>'
+        )
+        for task, angle in zip(tasks, angles, strict=True):
+            x, y = _radar_point(center_x, center_y, radius, angle)
+            label_x, label_y = _radar_point(center_x, center_y, radius + 24.0, angle)
+            anchor = "middle" if abs(math.sin(angle)) < 0.2 else ("start" if math.sin(angle) > 0 else "end")
+            label = task.rsplit("/", 1)[-1].replace("_", " ")
+            lines.extend((
+                f'<line x1="{center_x:.2f}" y1="{center_y:.2f}" x2="{x:.2f}" y2="{y:.2f}" stroke="#c7c7c7" stroke-width="1"/>',
+                f'<text x="{label_x:.2f}" y="{label_y:.2f}" text-anchor="{anchor}" font-family="sans-serif" font-size="10">{_svg_text(label)}</text>',
+            ))
+        for index, series_item in enumerate(series):
+            points = " ".join(
+                f"{x:.2f},{y:.2f}"
+                for x, y in (
+                    _radar_point(center_x, center_y, radius * score, angle)
+                    for score, angle in zip(series_item["scores"], angles, strict=True)
+                )
+            )
+            score_text = ",".join(f"{score:.6g}" for score in series_item["scores"])
+            color = colors[series_item["model"]]
+            lines.append(
+                f'<polygon class="series" data-panel="{panel_id}" data-run="{_svg_text(series_item["run"])}" data-scores="{score_text}" points="{points}" fill="{color}" fill-opacity="0.12" stroke="{color}" stroke-width="2"/>'
+            )
+            legend_y = 160 + index * 20
+            lines.extend((
+                f'<line x1="{center_x - radius:.1f}" y1="{legend_y}" x2="{center_x - radius + 18:.1f}" y2="{legend_y}" stroke="{color}" stroke-width="3"/>',
+                f'<text x="{center_x - radius + 24:.1f}" y="{legend_y + 4}" font-family="sans-serif" font-size="12">{_svg_text(series_item["model"])}</text>',
+            ))
+    lines.append("</svg>")
     return "\n".join(lines) + "\n"
 
 
@@ -1331,6 +1658,7 @@ def write_summary_snapshot(payload: Mapping[str, Any], destination: Path) -> Non
         ),
         encoding="utf-8",
     )
+    (destination / "radar.svg").write_text(_radar_svg(payload), encoding="utf-8")
     atomic_json(destination / "summary.json", payload)
     actual = tuple(sorted(path.name for path in destination.iterdir()))
     if actual != tuple(sorted(SUMMARY_FILES)):

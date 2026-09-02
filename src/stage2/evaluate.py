@@ -12,7 +12,12 @@ import torch
 from rdkit import Chem
 
 from common.progress import ProgressReporter
-from common.identity import IDENTITY_CONTRACT_VERSION, require_compatible_identity, semantic_identity
+from common.identity import (
+    IDENTITY_CONTRACT_VERSION,
+    require_compatible_identity,
+    semantic_identity,
+    tensor_state_hash,
+)
 from common.io import sha256_file
 from common.reporting import (
     STAGE2_BENCHMARK_SUITE_CONTRACT,
@@ -36,6 +41,7 @@ from .config import STAGE2_CHECKPOINT_KIND, STAGE2_CHECKPOINT_VERSION, Stage2Con
 from .data import load_artifact_registry
 from .identity import metadata_identity
 from .model import Stage2ObjectModel
+from .train import STAGE2_REFINED_KIND, STAGE2_REFINED_VERSION
 from .registry import (
     ORBITAL_TASK_TARGETS,
     orbital_audit_columns,
@@ -192,9 +198,61 @@ def resolve_stage2_evaluation_identity(
     checkpoint_epoch: int | None = None,
 ) -> dict[str, Any]:
     identity, _ = resolve_stage2_evaluation_contract(
-        config, checkpoint_dir, checkpoint_epoch=checkpoint_epoch
+        config, checkpoint_dir, checkpoint_epoch=checkpoint_epoch,
     )
     return identity
+
+
+def _load_refined_artifact(
+    checkpoint_dir: str | Path,
+    checkpoint: Mapping[str, Any],
+    *,
+    artifact_kind: str = STAGE2_REFINED_KIND,
+) -> tuple[Path, dict[str, Any], str]:
+    root = Path(checkpoint_dir)
+    artifact_path = root / "taskwise_refined.pt"
+    manifest_path = root / "taskwise_refinement.json"
+    if not artifact_path.is_file() or not manifest_path.is_file():
+        raise FileNotFoundError("Missing Stage 2 task-wise refined artifact or manifest")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("Stage 2 refinement manifest is unreadable") from error
+    refined = torch.load(artifact_path, map_location="cpu", weights_only=False)
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("kind") != artifact_kind
+        or manifest.get("format_version") != STAGE2_REFINED_VERSION
+        or manifest.get("artifact") != artifact_path.name
+        or manifest.get("artifact_sha256") != sha256_file(artifact_path)
+    ):
+        raise ValueError("Stage 2 refinement manifest/artifact integrity mismatch")
+    if (
+        refined.get("kind") != artifact_kind
+        or refined.get("format_version") != STAGE2_REFINED_VERSION
+    ):
+        raise ValueError("Unsupported Stage 2 refined artifact")
+    require_compatible_identity(
+        checkpoint["training_identity"],
+        refined.get("training_identity", {}),
+        context="Stage 2 refined artifact training identity",
+    )
+    if manifest.get("ordinary_final_epoch") != checkpoint.get("completed_epoch"):
+        raise ValueError("Stage 2 refinement manifest final epoch mismatch")
+    for key in (
+        "boundary_epoch", "refined_tasks", "unrefined_tasks",
+        "shared_state_hash", "private_state_hashes", "selected_tasks",
+        "validation",
+    ):
+        if json.dumps(manifest.get(key), sort_keys=True) != json.dumps(
+            refined.get(key), sort_keys=True
+        ):
+            raise ValueError(f"Stage 2 refinement manifest mismatch: {key}")
+    if refined.get("model_state_hash") != tensor_state_hash(
+        "stage2.taskwise-refined-state", refined["model"]
+    ):
+        raise ValueError("Stage 2 refined artifact model state hash mismatch")
+    return artifact_path, refined, sha256_file(manifest_path)
 
 
 def resolve_stage2_evaluation_contract(
@@ -202,9 +260,24 @@ def resolve_stage2_evaluation_contract(
     checkpoint_dir: str | Path,
     *,
     checkpoint_epoch: int | None = None,
-) -> tuple[dict[str, Any], PartialChargeBenchmark]:
+) -> tuple[dict[str, Any], PartialChargeBenchmark | None]:
+    if config.representation is not None:
+        from .rdkit_evaluate import resolve_rdkit_stage2_evaluation_contract
+
+        return resolve_rdkit_stage2_evaluation_contract(
+            config, checkpoint_dir, checkpoint_epoch=checkpoint_epoch
+        )
+    taskwise_refined = checkpoint_epoch is None
     path = resolve_checkpoint_path(checkpoint_dir, checkpoint_epoch)
     checkpoint, registry, _ = _load_checkpoint_contract(config, path)
+    model_path = path
+    model_state_hash: str | None = None
+    selection_manifest_hash: str | None = None
+    if taskwise_refined:
+        model_path, refined, selection_manifest_hash = _load_refined_artifact(
+            checkpoint_dir, checkpoint
+        )
+        model_state_hash = refined.get("model_state_hash")
     scalers = _scalers(config)
     core_comparison = _comparison(config, registry, scalers)
     partial_benchmark = _partial_benchmark(config, registry, scalers)
@@ -212,8 +285,11 @@ def resolve_stage2_evaluation_contract(
         registry, core_comparison, partial_benchmark.comparison_identity
     )
     identity = _evaluation_identity(
-        path, checkpoint, core_comparison,
+        model_path, checkpoint, core_comparison,
         partial_benchmark.comparison_identity, full_comparison,
+        model_state_hash=model_state_hash,
+        selection_manifest_hash=selection_manifest_hash,
+        model_selector="taskwise_refined" if taskwise_refined else "epoch_checkpoint",
     )
     return identity, partial_benchmark
 
@@ -224,12 +300,23 @@ def _evaluation_identity(
     core_comparison: Mapping[str, Any],
     partial_comparison: Mapping[str, Any],
     full_comparison: Mapping[str, Any],
+    *,
+    model_state_hash: str | None = None,
+    selection_manifest_hash: str | None = None,
+    model_selector: str = "epoch_checkpoint",
 ) -> dict[str, Any]:
     return semantic_identity(
         "stage2.evaluation.v1",
         {
             "checkpoint_sha256": sha256_file(checkpoint_path),
-            "checkpoint_epoch": int(checkpoint["completed_epoch"]),
+            "checkpoint_epoch": (
+                None
+                if model_selector == "taskwise_refined"
+                else int(checkpoint["completed_epoch"])
+            ),
+            "model_selector": model_selector,
+            "model_state_hash": model_state_hash,
+            "selection_manifest_sha256": selection_manifest_hash,
             "training_identity": checkpoint["training_identity"]["hash"],
             "prepared_identity": checkpoint["data_identity"]["hash"],
             "tasks": [*STAGE2_CORE_TASKS, PARTIAL_CHARGE_TASK],
@@ -410,8 +497,29 @@ def evaluate_stage2_checkpoints(
     partial_charge_benchmark: PartialChargeBenchmark | None = None,
     reporter: ProgressReporter | None = None,
 ) -> dict[str, Any]:
+    if config.representation is not None:
+        from .rdkit_evaluate import evaluate_rdkit_stage2_checkpoints
+
+        return evaluate_rdkit_stage2_checkpoints(
+            config,
+            checkpoint_dir,
+            checkpoint_epoch=checkpoint_epoch,
+            predictions_dir=predictions_dir,
+            expected_evaluation_identity=expected_evaluation_identity,
+            reporter=reporter,
+        )
+    taskwise_refined = checkpoint_epoch is None
     checkpoint_path = resolve_checkpoint_path(checkpoint_dir, checkpoint_epoch)
     checkpoint, registry, _ = _load_checkpoint_contract(config, checkpoint_path)
+    model_payload = checkpoint
+    model_path = checkpoint_path
+    model_state_hash: str | None = None
+    selection_manifest_hash: str | None = None
+    if taskwise_refined:
+        model_path, model_payload, selection_manifest_hash = _load_refined_artifact(
+            checkpoint_dir, checkpoint
+        )
+        model_state_hash = model_payload.get("model_state_hash")
     scalers = _scalers(config)
     core_comparison = _comparison(config, registry, scalers)
     partial_benchmark = partial_charge_benchmark or _partial_benchmark(
@@ -421,8 +529,11 @@ def evaluate_stage2_checkpoints(
         registry, core_comparison, partial_benchmark.comparison_identity
     )
     evaluation_identity = _evaluation_identity(
-        checkpoint_path, checkpoint, core_comparison,
+        model_path, checkpoint, core_comparison,
         partial_benchmark.comparison_identity, full_comparison,
+        model_state_hash=model_state_hash,
+        selection_manifest_hash=selection_manifest_hash,
+        model_selector="taskwise_refined" if taskwise_refined else "epoch_checkpoint",
     )
     if expected_evaluation_identity is not None:
         require_compatible_identity(
@@ -451,7 +562,7 @@ def evaluate_stage2_checkpoints(
     ).to(device)
     if checkpoint.get("model_contract") != model.model_contract:
         raise ValueError("Stage 2 evaluation checkpoint model contract mismatch")
-    model.load_state_dict(checkpoint["model"], strict=True)
+    model.load_state_dict(model_payload["model"], strict=True)
     model.eval()
     feature_config, vocabulary, schema, standardizer, feature_hash = (
         load_stage1_feature_inputs(
@@ -713,6 +824,8 @@ def evaluate_stage2_checkpoints(
         for target in registry.by_id(task).target_columns
     ]
     epoch = int(checkpoint["completed_epoch"])
+    selected_epoch = None if taskwise_refined else epoch
+    model_selector = "taskwise_refined" if taskwise_refined else "epoch_checkpoint"
     core_value = sum(scalar_values) / len(scalar_values)
     partial_public = task_metrics[PARTIAL_CHARGE_TASK]
     partial_complete = partial_public["status"] == "complete"
@@ -730,12 +843,14 @@ def evaluate_stage2_checkpoints(
     reporting_protocol = {
         "split": "test",
         "ensemble": False,
-        "checkpoint_epoch": epoch,
+        "checkpoint_epoch": selected_epoch,
+        "model_selector": model_selector,
         "checkpoint_sha256": sha256_file(checkpoint_path),
     }
     return {
         "split": "test",
-        "checkpoint_epoch": epoch,
+        "checkpoint_epoch": selected_epoch,
+        "model_selector": model_selector,
         "tasks": task_metrics,
         "core_macro_normalized_mae": {
             "value": core_value,

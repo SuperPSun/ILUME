@@ -116,9 +116,35 @@ def prepare_training(
     *,
     reporter: ProgressReporter | None = None,
 ) -> TrainingBundle:
+    if config.name == "ilume_stage3_single_task_mlp":
+        from ablations.stage3_single_task_mlp.adapter import (
+            prepare_stage3_single_task_mlp_training,
+        )
+
+        return prepare_stage3_single_task_mlp_training(  # type: ignore[return-value]
+            config, benchmark, task_id, fold
+        )
+    if config.name == "dmpnn":
+        from benchmarks.dmpnn.adapter import prepare_dmpnn_training
+
+        return prepare_dmpnn_training(config, benchmark, task_id, fold)  # type: ignore[return-value]
+    if config.name == "molformer":
+        from benchmarks.molformer.adapter import prepare_molformer_training
+
+        return prepare_molformer_training(config, benchmark, task_id, fold)  # type: ignore[return-value]
+    if config.name == "ilbert":
+        from benchmarks.ilbert.adapter import prepare_ilbert_training
+
+        return prepare_ilbert_training(config, benchmark, task_id, fold)  # type: ignore[return-value]
+    if config.name == "spmm":
+        from benchmarks.spmm.adapter import prepare_spmm_training
+
+        return prepare_spmm_training(config, benchmark, task_id, fold)  # type: ignore[return-value]
     task = resolve_task(config, benchmark, task_id, fold)
     train = load_split(task, "train")
     valid = load_split(task, "valid")
+    if config.features is None or config.data.feature_cache is None:
+        raise ValueError("Feature baseline configuration is incomplete")
     schema = feature_schema(config.features)
     fold_suffix = f" fold{fold}" if fold is not None else ""
     with FeatureCache(config.data.feature_cache) as cache:
@@ -408,6 +434,36 @@ def train_bundle(
     *,
     reporter: ProgressReporter | None = None,
 ) -> dict[str, Any]:
+    if config.name == "ilume_stage3_single_task_mlp":
+        from ablations.stage3_single_task_mlp.adapter import (
+            train_stage3_single_task_mlp_bundle,
+        )
+
+        return train_stage3_single_task_mlp_bundle(  # type: ignore[arg-type]
+            config, bundle, output_dir, reporter=reporter
+        )
+    if config.name == "dmpnn":
+        from benchmarks.dmpnn.adapter import train_dmpnn_bundle
+
+        return train_dmpnn_bundle(config, bundle, output_dir)  # type: ignore[arg-type]
+    if config.name == "molformer":
+        from benchmarks.molformer.adapter import train_molformer_bundle
+
+        return train_molformer_bundle(  # type: ignore[arg-type]
+            config, bundle, output_dir, reporter=reporter
+        )
+    if config.name == "ilbert":
+        from benchmarks.ilbert.adapter import train_ilbert_bundle
+
+        return train_ilbert_bundle(  # type: ignore[arg-type]
+            config, bundle, output_dir, reporter=reporter
+        )
+    if config.name == "spmm":
+        from benchmarks.spmm.adapter import train_spmm_bundle
+
+        return train_spmm_bundle(  # type: ignore[arg-type]
+            config, bundle, output_dir, reporter=reporter
+        )
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
     if config.name == "mlp":
@@ -473,6 +529,7 @@ class EvaluationResult:
     components: tuple[tuple[str, ...], ...] = ()
     conditions: np.ndarray | None = None
     audit_rows: tuple[dict[str, str], ...] = ()
+    input_audit: dict[str, Any] | None = None
 
 
 def ensemble_evaluation(
@@ -502,6 +559,38 @@ def evaluate_checkpoint(
     *,
     reporter: ProgressReporter | None = None,
 ) -> EvaluationResult:
+    if config.name == "ilume_stage3_single_task_mlp":
+        from ablations.stage3_single_task_mlp.adapter import (
+            evaluate_stage3_single_task_mlp_checkpoint,
+        )
+
+        return evaluate_stage3_single_task_mlp_checkpoint(
+            config, benchmark, task_id, fold, checkpoint_dir, split
+        )
+    if config.name == "dmpnn":
+        from benchmarks.dmpnn.adapter import evaluate_dmpnn_checkpoint
+
+        return evaluate_dmpnn_checkpoint(
+            config, benchmark, task_id, fold, checkpoint_dir, split
+        )
+    if config.name == "molformer":
+        from benchmarks.molformer.adapter import evaluate_molformer_checkpoint
+
+        return evaluate_molformer_checkpoint(
+            config, benchmark, task_id, fold, checkpoint_dir, split
+        )
+    if config.name == "ilbert":
+        from benchmarks.ilbert.adapter import evaluate_ilbert_checkpoint
+
+        return evaluate_ilbert_checkpoint(
+            config, benchmark, task_id, fold, checkpoint_dir, split
+        )
+    if config.name == "spmm":
+        from benchmarks.spmm.adapter import evaluate_spmm_checkpoint
+
+        return evaluate_spmm_checkpoint(
+            config, benchmark, task_id, fold, checkpoint_dir, split
+        )
     if split not in {"valid", "test"}:
         raise ValueError("Benchmark evaluation split must be valid or test")
     root = Path(checkpoint_dir)

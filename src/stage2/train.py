@@ -8,7 +8,7 @@ from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import fields, is_dataclass
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
 import numpy as np
 import torch
@@ -20,6 +20,10 @@ from common.identity import (
     tensor_state_hash,
 )
 from common.io import atomic_json, atomic_torch_save, sha256_file
+from common.refinement import (
+    refinement_cosine_factor,
+    selection_record,
+)
 from common.progress import ProgressReporter
 from common.training import canonical_json_sha256, capture_rng_state, cosine_warmup, resolve_device, restore_rng_state, seed_everything
 from stage1.features import ROLE_TO_ID
@@ -56,6 +60,8 @@ from stage1.identity import metadata_identity as stage1_metadata_identity
 
 STAGE2_ENCODER_VERSION = 1
 STAGE2_ENCODER_KIND = "ilume_stage2_encoder"
+STAGE2_REFINED_VERSION = 2
+STAGE2_REFINED_KIND = "ilume_stage2_taskwise_refined"
 
 
 def _config_hash(config: Stage2Config) -> str:
@@ -63,6 +69,10 @@ def _config_hash(config: Stage2Config) -> str:
 
 
 def resolve_stage2_training_identity(config: Stage2Config) -> dict[str, Any]:
+    if config.representation is not None:
+        from .rdkit_train import resolve_rdkit_stage2_training_identity
+
+        return resolve_rdkit_stage2_training_identity(config)
     config.validate()
     runtime_device = resolve_device(config.training.device)
     math_contract = configure_stage2_math(runtime_device)
@@ -146,7 +156,7 @@ def _scheduler_lambdas(config: Stage2Config, total_steps: int, unfreeze_step: in
 def _ordered_packed_batches(
     descriptors: Sequence[Stage2BatchDescriptor], datasets: dict[str, Stage2TaskDataset],
     entities: Stage2EntityDataset, packer: MultimodalPacker, registry: Stage2Registry,
-    *, backbone_trainable: bool, include_raw_atom_targets: bool,
+    *, use_student_encoder: bool, include_raw_atom_targets: bool,
     workers: int, prefetch_batches: int, pin_memory: bool,
 ) -> Iterator[PackedStage2Batch]:
     capacity = max(1, prefetch_batches)
@@ -155,7 +165,7 @@ def _ordered_packed_batches(
         iterator = iter(descriptors)
 
         def submit(descriptor: Stage2BatchDescriptor) -> Future[PackedStage2Batch]:
-            needs_entities = backbone_trainable or registry.by_id(descriptor.task).target_level == "atom"
+            needs_entities = use_student_encoder or registry.by_id(descriptor.task).target_level == "atom"
             return executor.submit(
                 pack_stage2_batch, descriptor, datasets, entities, packer,
                 needs_entities=needs_entities,
@@ -285,14 +295,17 @@ def _descriptor_base(indices: torch.Tensor, data: Stage2DeviceTaskData) -> tuple
 def _batch_output(
     model: Stage2ObjectModel, registry: Stage2Registry, packed: PackedStage2Batch,
     task_data: Stage2DeviceTaskData, teacher_embeddings: torch.Tensor,
-    entity_roles: torch.Tensor, config: Stage2Config, *, backbone_trainable: bool,
+    entity_roles: torch.Tensor, config: Stage2Config, *,
+    backbone_trainable: bool, use_student_encoder: bool | None = None,
 ) -> Stage2ForwardOutput:
+    if use_student_encoder is None:
+        use_student_encoder = backbone_trainable
     descriptor = packed.descriptor
     spec = registry.by_id(descriptor.task)
     indices, global_slots, conditions = _descriptor_base(packed.row_indices, task_data)
     teacher_slots = teacher_embeddings[global_slots]
     loss_mode = config.loss.task_loss_modes.get(spec.task_id, "element_mean")
-    if not backbone_trainable and spec.target_level == "object":
+    if not use_student_encoder and spec.target_level == "object":
         if task_data.targets is None or task_data.target_mask is None:
             raise ValueError("Missing object targets")
         return model.forward_object_from_slots(
@@ -319,12 +332,12 @@ def _batch_output(
     if packed.atom_targets is None:
         raise ValueError("Stage 2 atom batch is missing packed targets")
     atom_targets = packed.atom_targets
-    object_slots = teacher_unique[positions] if not backbone_trainable else states.entity_cls[positions]
+    object_slots = states.entity_cls[positions] if use_student_encoder else teacher_unique[positions]
     return model.forward_atom_from_states(
         spec.task_id, states, positions, entities.roles[positions], object_slots,
         teacher_unique[positions], atom_targets.values, atom_targets.mask,
         atom_targets.atom_state_indices, atom_targets.atom_sample_indices,
-        teacher_loss_is_zero=not backbone_trainable,
+        teacher_loss_is_zero=not use_student_encoder,
     )
 
 
@@ -332,7 +345,257 @@ def _state_hash(state: dict[str, torch.Tensor]) -> str:
     return tensor_state_hash("stage2.encoder-state", state)
 
 
-def _save_epoch_checkpoint(path: Path, *, model: Stage2ObjectModel, optimizer: torch.optim.Optimizer, scheduler: torch.optim.lr_scheduler.LRScheduler, scaler: torch.amp.GradScaler, completed_epoch: int, global_optimizer_step: int, config: Stage2Config, registry: Stage2Registry, normalized_task_weights: dict[str, float], training_identity: dict[str, Any], data_identity: dict[str, Any], teacher_embeddings_hash: str, teacher_cache_identity: dict[str, Any], task_rows: dict[str, int], task_batches: dict[str, int], scheduler_geometry: dict[str, int], validation: dict[str, Any], optimizer_implementation: str, math_contract: dict[str, Any]) -> None:
+def _cpu_state(module: torch.nn.Module) -> dict[str, torch.Tensor]:
+    return {
+        name: tensor.detach().cpu().clone()
+        for name, tensor in module.state_dict().items()
+    }
+
+
+def _shared_state(model: Stage2ObjectModel) -> dict[str, torch.Tensor]:
+    return {
+        **{f"backbone.{name}": value for name, value in _cpu_state(model.backbone).items()},
+        **{
+            f"object_encoder.{name}": value
+            for name, value in _cpu_state(model.object_encoder).items()
+        },
+    }
+
+
+def _task_selection_metric(
+    task_id: str, spec: Any, validation: Mapping[str, Any]
+) -> tuple[str, float]:
+    prefix = f"valid_{task_id}"
+    if task_id == "simulation/partial_atomic_charge":
+        name = "molecule_macro_normalized_mae"
+        key = f"{prefix}_{name}"
+    elif task_id in {"simulation/homo", "simulation/lumo"}:
+        name = "pooled_sample_micro_raw_mae"
+        key = f"{prefix}_{spec.target_columns[0]}_mae"
+    else:
+        name = "normalized_mae"
+        key = f"{prefix}_normalized_mae"
+    value = float(validation[key])
+    if not math.isfinite(value):
+        raise RuntimeError(f"Non-finite Stage 2 refinement metric: {task_id}")
+    return name, value
+
+
+def _refinement_optimizers(
+    model: Stage2ObjectModel,
+    config: Stage2Config,
+    task_batches: Mapping[str, int],
+    refinement_tasks: Sequence[str],
+    device: torch.device,
+) -> tuple[
+    dict[str, torch.optim.AdamW],
+    dict[str, torch.optim.lr_scheduler.LambdaLR],
+]:
+    optimizers: dict[str, torch.optim.AdamW] = {}
+    schedulers: dict[str, torch.optim.lr_scheduler.LambdaLR] = {}
+    seen: set[int] = set()
+    for task_id in refinement_tasks:
+        parameters = model.task_head_parameters_for(task_id)
+        identities = {id(parameter) for parameter in parameters}
+        if not parameters or seen & identities:
+            raise RuntimeError("Stage 2 task head parameter ownership is invalid")
+        seen.update(identities)
+        optimizer = torch.optim.AdamW(
+            parameters,
+            lr=(
+                config.training.task_head_learning_rate
+                * config.training.refinement_lr_multiplier
+            ),
+            weight_decay=config.training.weight_decay,
+            fused=device.type == "cuda",
+            foreach=False if device.type != "cuda" else None,
+        )
+        total_updates = task_batches[task_id] * config.training.refinement_epochs
+        scheduler = torch.optim.lr_scheduler.LambdaLR(
+            optimizer,
+            lambda step, total=total_updates: refinement_cosine_factor(
+                min(step, total), total
+            ),
+        )
+        optimizers[task_id] = optimizer
+        schedulers[task_id] = scheduler
+    return optimizers, schedulers
+
+
+def _initial_refinement_state(
+    model: Stage2ObjectModel,
+    registry: Stage2Registry,
+    refinement_tasks: Sequence[str],
+    validation: Mapping[str, Any],
+    boundary_epoch: int,
+) -> dict[str, Any]:
+    selections: dict[str, Any] = {}
+    selected = set(refinement_tasks)
+    for spec in registry.tasks:
+        if spec.task_id not in selected:
+            continue
+        metric_name, metric = _task_selection_metric(
+            spec.task_id, spec, validation
+        )
+        selections[spec.task_id] = {
+            **selection_record(
+                metric_name=metric_name,
+                boundary_epoch=boundary_epoch,
+                boundary_metric=metric,
+                selected_epoch=boundary_epoch,
+                best_metric=metric,
+            ),
+            "selected_refinement_epoch": 0,
+            "candidates": [
+                {
+                    "global_epoch": boundary_epoch,
+                    "refinement_epoch": 0,
+                    "metric": metric,
+                }
+            ],
+            "best_state": _cpu_state(model.task_head_module(spec.task_id)),
+        }
+    unrefined_tasks = tuple(
+        task_id for task_id in registry.task_ids if task_id not in selected
+    )
+    return {
+        "boundary_epoch": boundary_epoch,
+        "refined_tasks": tuple(refinement_tasks),
+        "unrefined_tasks": unrefined_tasks,
+        "shared_state_hash": tensor_state_hash(
+            "stage2.refinement-shared-state", _shared_state(model)
+        ),
+        "unrefined_task_state_hashes": {
+            task_id: tensor_state_hash(
+                "stage2.refinement-private-state",
+                _cpu_state(model.task_head_module(task_id)),
+            )
+            for task_id in unrefined_tasks
+        },
+        "selected_tasks": selections,
+        "task_updates": {task: 0 for task in refinement_tasks},
+    }
+
+
+def _update_refinement_selection(
+    state: dict[str, Any],
+    model: Stage2ObjectModel,
+    registry: Stage2Registry,
+    validation: Mapping[str, Any],
+    epoch: int,
+    refinement_epoch: int,
+) -> None:
+    current_hash = tensor_state_hash(
+        "stage2.refinement-shared-state", _shared_state(model)
+    )
+    if current_hash != state["shared_state_hash"]:
+        raise RuntimeError("Stage 2 shared state changed during refinement")
+    for task_id in state["refined_tasks"]:
+        spec = registry.by_id(task_id)
+        metric_name, metric = _task_selection_metric(
+            spec.task_id, spec, validation
+        )
+        selected = state["selected_tasks"][spec.task_id]
+        selected["candidates"].append(
+            {
+                "global_epoch": epoch,
+                "refinement_epoch": refinement_epoch,
+                "metric": metric,
+            }
+        )
+        if metric_name != selected["metric"]:
+            raise RuntimeError("Stage 2 refinement selection metric changed")
+        if metric < float(selected["best_metric"]):
+            selected["best_metric"] = metric
+            selected["selected_epoch"] = epoch
+            selected["selected_refinement_epoch"] = refinement_epoch
+            selected["improved"] = metric < float(selected["boundary_metric"])
+            selected["best_state"] = _cpu_state(
+                model.task_head_module(spec.task_id)
+            )
+
+
+def _publish_taskwise_refined(
+    output: Path,
+    model: Stage2ObjectModel,
+    registry: Stage2Registry,
+    state: Mapping[str, Any],
+    validation: Mapping[str, Any],
+    training_identity: Mapping[str, Any],
+    ordinary_final_epoch: int,
+    *,
+    artifact_kind: str = STAGE2_REFINED_KIND,
+) -> dict[str, Any]:
+    if tensor_state_hash(
+        "stage2.refinement-shared-state", _shared_state(model)
+    ) != state["shared_state_hash"]:
+        raise RuntimeError("Stage 2 shared state changed before stitching")
+    for task_id in state["refined_tasks"]:
+        model.task_head_module(task_id).load_state_dict(
+            state["selected_tasks"][task_id]["best_state"], strict=True
+        )
+    for task_id in state["unrefined_tasks"]:
+        current_hash = tensor_state_hash(
+            "stage2.refinement-private-state",
+            _cpu_state(model.task_head_module(task_id)),
+        )
+        if current_hash != state["unrefined_task_state_hashes"][task_id]:
+            raise RuntimeError("Stage 2 unrefined task head changed during refinement")
+    model_state = model.state_dict()
+    selected_public = {}
+    for task, selection in state["selected_tasks"].items():
+        selected_public[task] = {
+            **{key: value for key, value in selection.items() if key != "best_state"},
+            "private_state_hash": tensor_state_hash(
+                "stage2.refinement-private-state", selection["best_state"]
+            ),
+        }
+    private_state_hashes = {
+        task_id: tensor_state_hash(
+            "stage2.refinement-private-state",
+            _cpu_state(model.task_head_module(task_id)),
+        )
+        for task_id in registry.task_ids
+    }
+    artifact_path = output / "taskwise_refined.pt"
+    atomic_torch_save(
+        artifact_path,
+        {
+            "kind": artifact_kind,
+            "format_version": STAGE2_REFINED_VERSION,
+            "model": model_state,
+            "model_state_hash": tensor_state_hash(
+                "stage2.taskwise-refined-state", model_state
+            ),
+            "training_identity": dict(training_identity),
+            "boundary_epoch": state["boundary_epoch"],
+            "refined_tasks": list(state["refined_tasks"]),
+            "unrefined_tasks": list(state["unrefined_tasks"]),
+            "shared_state_hash": state["shared_state_hash"],
+            "private_state_hashes": private_state_hashes,
+            "selected_tasks": selected_public,
+            "validation": dict(validation),
+        },
+    )
+    manifest = {
+        "kind": artifact_kind,
+        "format_version": STAGE2_REFINED_VERSION,
+        "artifact": artifact_path.name,
+        "artifact_sha256": sha256_file(artifact_path),
+        "boundary_epoch": state["boundary_epoch"],
+        "ordinary_final_epoch": ordinary_final_epoch,
+        "refined_tasks": list(state["refined_tasks"]),
+        "unrefined_tasks": list(state["unrefined_tasks"]),
+        "shared_state_hash": state["shared_state_hash"],
+        "private_state_hashes": private_state_hashes,
+        "selected_tasks": selected_public,
+        "validation": dict(validation),
+    }
+    atomic_json(output / "taskwise_refinement.json", manifest)
+    return manifest
+
+
+def _save_epoch_checkpoint(path: Path, *, model: Stage2ObjectModel, optimizer: torch.optim.Optimizer, scheduler: torch.optim.lr_scheduler.LRScheduler, scaler: torch.amp.GradScaler, completed_epoch: int, global_optimizer_step: int, config: Stage2Config, registry: Stage2Registry, normalized_task_weights: dict[str, float], training_identity: dict[str, Any], data_identity: dict[str, Any], teacher_embeddings_hash: str, teacher_cache_identity: dict[str, Any], task_rows: dict[str, int], task_batches: dict[str, int], scheduler_geometry: dict[str, int], validation: dict[str, Any], optimizer_implementation: str, math_contract: dict[str, Any], phase: str, refinement_state: Mapping[str, Any] | None = None, refinement_optimizers: Mapping[str, torch.optim.Optimizer] | None = None, refinement_schedulers: Mapping[str, torch.optim.lr_scheduler.LRScheduler] | None = None) -> None:
     if path.exists():
         raise FileExistsError(f"Stage 2 checkpoint already exists: {path}")
     atomic_torch_save(path, {
@@ -349,7 +612,7 @@ def _save_epoch_checkpoint(path: Path, *, model: Stage2ObjectModel, optimizer: t
         "teacher_cache_identity": teacher_cache_identity, "task_rows": task_rows,
         "task_batches": task_batches, "normalized_task_weights": normalized_task_weights,
         "scheduler_geometry": scheduler_geometry,
-        "execution_contract_version": 2,
+        "execution_contract_version": 3,
         "execution_parameters": {
             "packing_workers": config.training.packing_workers,
             "packing_prefetch_batches": config.training.packing_prefetch_batches,
@@ -358,11 +621,26 @@ def _save_epoch_checkpoint(path: Path, *, model: Stage2ObjectModel, optimizer: t
         },
         "loss_modes": {task: config.loss.task_loss_modes.get(task, "element_mean") for task in registry.task_ids},
         "optimizer_implementation": optimizer_implementation, "math_contract": math_contract,
-        "validation": validation,
+        "validation": validation, "phase": phase,
+        "refinement": (
+            {
+                **dict(refinement_state),
+                "optimizers": {
+                    task: item.state_dict()
+                    for task, item in (refinement_optimizers or {}).items()
+                },
+                "schedulers": {
+                    task: item.state_dict()
+                    for task, item in (refinement_schedulers or {}).items()
+                },
+            }
+            if refinement_state is not None
+            else None
+        ),
     })
 
 
-def _export_encoder(path: Path, *, model: Stage2ObjectModel, config: Stage2Config, registry: Stage2Registry, checkpoint_path: Path, data_identity: dict[str, Any]) -> None:
+def _export_encoder(path: Path, *, model: Stage2ObjectModel, config: Stage2Config, registry: Stage2Registry, checkpoint_path: Path, data_identity: dict[str, Any], refinement_state: Mapping[str, Any]) -> None:
     if path.exists():
         raise FileExistsError(f"Stage 2 encoder artifact already exists: {path}")
     stage1_state = {
@@ -443,6 +721,8 @@ def _export_encoder(path: Path, *, model: Stage2ObjectModel, config: Stage2Confi
             "task_catalog_hash": registry.catalog_sha256,
             "registry_hash": registry.registry_hash,
             "config_hash": _config_hash(config),
+            "refinement_boundary_epoch": refinement_state["boundary_epoch"],
+            "refinement_shared_state_hash": refinement_state["shared_state_hash"],
         },
     })
 
@@ -492,8 +772,10 @@ def evaluate_stage2(
     entity_dataset: Stage2EntityDataset, packer: MultimodalPacker,
     teacher_embeddings: torch.Tensor, entity_roles: torch.Tensor,
     scalers: dict[str, Any], config: Stage2Config, device: torch.device,
-    *, backbone_frozen: bool,
+    *, backbone_frozen: bool, use_student_encoder: bool | None = None,
 ) -> dict[str, float | int | str]:
+    if use_student_encoder is None:
+        use_student_encoder = not backbone_frozen
     was_training = model.training
     model.eval()
     result: dict[str, float | int | str] = {"validation_scope": "full", "validation_backbone_frozen": int(backbone_frozen)}
@@ -522,7 +804,7 @@ def evaluate_stage2(
         ]
         cpu_batches = _ordered_packed_batches(
             descriptors, valid_datasets, entity_dataset, packer, registry,
-            backbone_trainable=not backbone_frozen, include_raw_atom_targets=True,
+            use_student_encoder=use_student_encoder, include_raw_atom_targets=True,
             workers=config.training.packing_workers,
             prefetch_batches=config.training.packing_prefetch_batches,
             pin_memory=device.type == "cuda",
@@ -531,6 +813,7 @@ def evaluate_stage2(
             output = _batch_output(
                 model, registry, packed, data, teacher_embeddings, entity_roles,
                 config, backbone_trainable=not backbone_frozen,
+                use_student_encoder=use_student_encoder,
             )
             selected = packed.row_indices
             batch_rows = selected.numel()
@@ -636,6 +919,15 @@ def evaluate_stage2(
 
 
 def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_from: str | Path | None = None, expected_training_identity: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    if config.representation is not None:
+        from .rdkit_train import run_rdkit_stage2_training
+
+        return run_rdkit_stage2_training(
+            config,
+            output_dir=output_dir,
+            resume_from=resume_from,
+            expected_training_identity=expected_training_identity,
+        )
     config.validate()
     seed_everything(config.data.seed)
     device = resolve_device(config.training.device)
@@ -665,11 +957,20 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
     entity_roles = torch.tensor([int(entry["role_id"]) for entry in entity_dataset.entries], dtype=torch.long, device=device)
     task_rows = {task: len(dataset) for task, dataset in train_datasets.items()}
     task_batches, steps_per_epoch, total_steps, unfreeze_step = _training_geometry(config, train_datasets)
+    boundary_epoch = config.training.epochs
+    refinement_epochs = config.training.refinement_epochs
+    total_epochs = boundary_epoch + refinement_epochs
+    refinement_tasks = config.ordered_refinement_tasks(registry)
+    refinement_steps_per_epoch = sum(task_batches[task] for task in refinement_tasks)
     scheduler_geometry = {
         "gradient_accumulation_steps": 1,
         "steps_per_epoch": steps_per_epoch,
         "total_steps": total_steps,
         "backbone_unfreeze_step": unfreeze_step,
+        "joint_epochs": boundary_epoch,
+        "refinement_epochs": refinement_epochs,
+        "refinement_steps_per_epoch": refinement_steps_per_epoch,
+        "total_epochs": total_epochs,
     }
     total_epoch_batches = sum(task_batches.values())
     normalized_weights = config.normalized_task_weights(registry)
@@ -707,6 +1008,9 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
         parameter for group in optimizer.param_groups for parameter in group["params"]
     ]
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, _scheduler_lambdas(config, total_steps, unfreeze_step))
+    refinement_optimizers, refinement_schedulers = _refinement_optimizers(
+        model, config, task_batches, refinement_tasks, device
+    )
     fp16 = config.training.amp_dtype == "fp16" and device.type == "cuda"
     amp_enabled = config.training.amp_dtype != "none" and device.type == "cuda"
     amp_dtype = torch.float16 if fp16 else torch.bfloat16
@@ -716,19 +1020,22 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
     metrics_path = output / "metrics.jsonl"
     completed_epoch = 0
     global_step = 0
+    refinement_state: dict[str, Any] | None = None
     if resume_from is None:
         if metrics_path.is_file() and metrics_path.stat().st_size:
             raise FileExistsError(f"Stage 2 output already contains metrics: {metrics_path}")
     else:
         checkpoint = torch.load(Path(resume_from), map_location="cpu", weights_only=False)
         if checkpoint.get("format_version") != STAGE2_CHECKPOINT_VERSION or checkpoint.get("kind") != STAGE2_CHECKPOINT_KIND:
-            raise ValueError("Unsupported Stage 2 object checkpoint; Object v2 is not migrated")
+            raise ValueError(
+                "Unsupported Stage 2 checkpoint; older refinement contracts are not migrated"
+            )
         if checkpoint.get("identity_contract_version") != IDENTITY_CONTRACT_VERSION:
             raise ValueError(
                 "Stage 2 checkpoint predates identity contract v1; retrain Stage 2"
             )
-        if checkpoint.get("execution_contract_version") != 2:
-            raise ValueError("Stage 2 checkpoint predates the Object v3 efficiency contract")
+        if checkpoint.get("execution_contract_version") != 3:
+            raise ValueError("Stage 2 checkpoint predates the current refinement contract")
         checkpoint_identity = checkpoint.get("training_identity")
         if not isinstance(checkpoint_identity, dict):
             raise ValueError("Stage 2 checkpoint has no training identity")
@@ -751,29 +1058,83 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
                 raise ValueError(f"Stage 2 checkpoint {key} does not match")
         completed_epoch = int(checkpoint["completed_epoch"])
         global_step = int(checkpoint["global_optimizer_step"])
-        if not 1 <= completed_epoch <= config.training.epochs or global_step != completed_epoch * steps_per_epoch:
+        expected_global_step = (
+            completed_epoch * steps_per_epoch
+            if completed_epoch <= boundary_epoch
+            else boundary_epoch * steps_per_epoch
+            + (completed_epoch - boundary_epoch) * refinement_steps_per_epoch
+        )
+        if not 1 <= completed_epoch <= total_epochs or global_step != expected_global_step:
             raise ValueError("Stage 2 checkpoint is not a valid epoch boundary")
+        expected_phase = (
+            "boundary" if completed_epoch == boundary_epoch
+            else "refinement" if completed_epoch > boundary_epoch
+            else "unfrozen" if completed_epoch > config.training.backbone_frozen_epochs
+            else "frozen"
+        )
+        if checkpoint.get("phase") != expected_phase:
+            raise ValueError("Stage 2 checkpoint phase mismatch")
         model.load_state_dict(checkpoint["model"], strict=True)
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])
         scaler.load_state_dict(checkpoint["scaler"])
         restore_rng_state(checkpoint["rng"])
+        stored_refinement = checkpoint.get("refinement")
+        if completed_epoch >= boundary_epoch:
+            if not isinstance(stored_refinement, dict):
+                raise ValueError("Stage 2 refinement checkpoint has no refinement state")
+            refinement_state = {
+                key: value
+                for key, value in stored_refinement.items()
+                if key not in {"optimizers", "schedulers"}
+            }
+            stored_optimizers = stored_refinement.get("optimizers", {})
+            stored_schedulers = stored_refinement.get("schedulers", {})
+            if completed_epoch > boundary_epoch:
+                if set(stored_optimizers) != set(refinement_tasks) or set(
+                    stored_schedulers
+                ) != set(refinement_tasks):
+                    raise ValueError("Stage 2 refinement optimizer state is incomplete")
+                for task in refinement_tasks:
+                    refinement_optimizers[task].load_state_dict(
+                        stored_optimizers[task]
+                    )
+                    refinement_schedulers[task].load_state_dict(
+                        stored_schedulers[task]
+                    )
         _reconcile_metrics_for_resume(metrics_path, completed_epoch)
-    if completed_epoch == config.training.epochs:
-        raise ValueError("Stage 2 checkpoint already completed all epochs")
     reporter = ProgressReporter()
     results: list[dict[str, Any]] = []
     validation: dict[str, Any] = {}
-    for epoch in range(completed_epoch + 1, config.training.epochs + 1):
+    for epoch in range(completed_epoch + 1, total_epochs + 1):
+        in_refinement = epoch > boundary_epoch
+        refinement_epoch = max(0, epoch - boundary_epoch)
         backbone_trainable = epoch > config.training.backbone_frozen_epochs
-        model.set_backbone_trainable(backbone_trainable)
-        model.train()
-        if not backbone_trainable:
-            model.backbone.eval()
-        schedule = epoch_batch_schedule(train_datasets, config.training.batch_size, seed=config.data.seed, epoch=epoch)
+        if in_refinement:
+            model.set_backbone_trainable(False)
+            for parameter in model.object_encoder_parameters():
+                parameter.requires_grad_(False)
+        else:
+            model.set_backbone_trainable(backbone_trainable)
+            for parameter in model.object_encoder_parameters():
+                parameter.requires_grad_(True)
+            model.train()
+            if not backbone_trainable:
+                model.backbone.eval()
+        epoch_datasets = (
+            {task: train_datasets[task] for task in refinement_tasks}
+            if in_refinement
+            else train_datasets
+        )
+        schedule = epoch_batch_schedule(
+            epoch_datasets,
+            config.training.batch_size,
+            seed=config.data.seed,
+            epoch=epoch,
+        )
         cpu_batches = _ordered_packed_batches(
-            schedule, train_datasets, entity_dataset, packer, registry,
-            backbone_trainable=backbone_trainable, include_raw_atom_targets=False,
+            schedule, epoch_datasets, entity_dataset, packer, registry,
+            use_student_encoder=(in_refinement or backbone_trainable), include_raw_atom_targets=False,
             workers=config.training.packing_workers,
             prefetch_batches=config.training.packing_prefetch_batches,
             pin_memory=device.type == "cuda",
@@ -787,23 +1148,44 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
         with reporter.bar(total=len(schedule), desc=f"Stage 2 object v3 epoch {epoch}", unit="batch") as progress:
             for batch_number, packed in enumerate(packed_iterator, start=1):
                 descriptor = packed.descriptor
-                optimizer.zero_grad(set_to_none=True)
+                active_optimizer = (
+                    refinement_optimizers[descriptor.task]
+                    if in_refinement
+                    else optimizer
+                )
+                if in_refinement:
+                    model.set_task_refinement_mode(descriptor.task)
+                active_optimizer.zero_grad(set_to_none=True)
                 with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp_enabled):
                     batch_output = _batch_output(
                         model, registry, packed, train_device[descriptor.task],
                         teacher_embeddings, entity_roles, config,
-                        backbone_trainable=backbone_trainable,
+                        backbone_trainable=backbone_trainable and not in_refinement,
+                        use_student_encoder=(in_refinement or backbone_trainable),
                     )
-                    compensation = task_compensation_scale(normalized_weights[descriptor.task], total_epoch_batches, int(descriptor.indices.numel()), task_rows[descriptor.task])
-                    loss = compensation * batch_output.physics_loss + config.loss.lambda_teacher * batch_output.teacher_loss
+                    if in_refinement:
+                        loss = batch_output.physics_loss
+                    else:
+                        compensation = task_compensation_scale(normalized_weights[descriptor.task], total_epoch_batches, int(descriptor.indices.numel()), task_rows[descriptor.task])
+                        loss = compensation * batch_output.physics_loss + config.loss.lambda_teacher * batch_output.teacher_loss
                 interval_finite = interval_finite & torch.isfinite(loss.detach())
                 scaler.scale(loss).backward()
                 if config.training.max_grad_norm > 0:
-                    scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(clip_parameters, config.training.max_grad_norm)
-                scaler.step(optimizer)
+                    scaler.unscale_(active_optimizer)
+                    active_clip_parameters = (
+                        model.task_head_parameters_for(descriptor.task)
+                        if in_refinement
+                        else clip_parameters
+                    )
+                    torch.nn.utils.clip_grad_norm_(active_clip_parameters, config.training.max_grad_norm)
+                scaler.step(active_optimizer)
                 scaler.update()
-                scheduler.step()
+                if in_refinement:
+                    refinement_schedulers[descriptor.task].step()
+                    assert refinement_state is not None
+                    refinement_state["task_updates"][descriptor.task] += 1
+                else:
+                    scheduler.step()
                 global_step += 1
                 interval_values.setdefault(
                     descriptor.task,
@@ -830,7 +1212,7 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
                     )).cpu()
                     if not bool(materialized[0]):
                         raise RuntimeError(f"Non-finite Stage 2 loss in epoch {epoch}")
-                    row: dict[str, Any] = {"event": "stage2_train_interval", "epoch": epoch, "global_optimizer_step": global_step, "task_batches": interval_batches, "batches_per_second": interval_batches / max(time.perf_counter() - interval_started, 1e-12), "phase": "unfrozen" if backbone_trainable else "frozen", "backbone_learning_rate": optimizer.param_groups[0]["lr"], "object_encoder_learning_rate": optimizer.param_groups[1]["lr"], "task_head_learning_rate": optimizer.param_groups[2]["lr"]}
+                    row: dict[str, Any] = {"event": "stage2_train_interval", "epoch": epoch, "global_optimizer_step": global_step, "task_batches": interval_batches, "batches_per_second": interval_batches / max(time.perf_counter() - interval_started, 1e-12), "phase": "refinement" if in_refinement else ("unfrozen" if backbone_trainable else "frozen"), "backbone_learning_rate": 0.0 if in_refinement else optimizer.param_groups[0]["lr"], "object_encoder_learning_rate": 0.0 if in_refinement else optimizer.param_groups[1]["lr"], "task_head_learning_rate": active_optimizer.param_groups[0]["lr"] if in_refinement else optimizer.param_groups[2]["lr"]}
                     for task_index, task in enumerate(ordered_tasks):
                         count = int(interval_values[task][3])
                         row[f"{task}_loss_physics"] = float(materialized[1 + task_index * 3]) / count
@@ -842,25 +1224,92 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
                     interval_finite = torch.ones((), dtype=torch.bool, device=device)
                     interval_batches = 0
                     interval_started = time.perf_counter()
-        validation = evaluate_stage2(model, registry, valid_datasets, valid_device, entity_dataset, packer, teacher_embeddings, entity_roles, data_metadata["scalers"], config, device, backbone_frozen=not backbone_trainable)
-        validation.update({"event": "stage2_full_validation", "epoch": epoch, "global_optimizer_step": global_step, "epoch_wall_seconds": time.perf_counter() - epoch_started, "phase": "unfrozen" if backbone_trainable else "frozen"})
+        validation = evaluate_stage2(model, registry, valid_datasets, valid_device, entity_dataset, packer, teacher_embeddings, entity_roles, data_metadata["scalers"], config, device, backbone_frozen=(in_refinement or not backbone_trainable), use_student_encoder=(in_refinement or backbone_trainable))
+        phase = (
+            "boundary" if epoch == boundary_epoch
+            else "refinement" if in_refinement
+            else "unfrozen" if backbone_trainable
+            else "frozen"
+        )
+        validation.update({"event": "stage2_full_validation", "epoch": epoch, "refinement_epoch": refinement_epoch if epoch >= boundary_epoch else None, "global_optimizer_step": global_step, "epoch_wall_seconds": time.perf_counter() - epoch_started, "phase": phase})
+        if epoch == boundary_epoch:
+            refinement_state = _initial_refinement_state(
+                model, registry, refinement_tasks, validation, boundary_epoch
+            )
+        elif in_refinement:
+            assert refinement_state is not None
+            _update_refinement_selection(
+                refinement_state, model, registry, validation, epoch,
+                refinement_epoch,
+            )
         _append_metric(metrics_path, validation)
         reporter.emit_json(validation)
         checkpoint_path = output / f"checkpoint_epoch_{epoch:05d}.pt"
-        _save_epoch_checkpoint(checkpoint_path, model=model, optimizer=optimizer, scheduler=scheduler, scaler=scaler, completed_epoch=epoch, global_optimizer_step=global_step, config=config, registry=registry, normalized_task_weights=normalized_weights, training_identity=training_identity, data_identity=data_identity, teacher_embeddings_hash=teacher_metadata["embeddings_hash"], teacher_cache_identity=teacher_identity, task_rows=task_rows, task_batches=task_batches, scheduler_geometry=scheduler_geometry, validation=validation, optimizer_implementation=optimizer_implementation, math_contract=math_contract)
-        if epoch == config.training.epochs:
-            _export_encoder(output / "stage2_encoder.pt", model=model, config=config, registry=registry, checkpoint_path=checkpoint_path, data_identity=data_identity)
+        _save_epoch_checkpoint(checkpoint_path, model=model, optimizer=optimizer, scheduler=scheduler, scaler=scaler, completed_epoch=epoch, global_optimizer_step=global_step, config=config, registry=registry, normalized_task_weights=normalized_weights, training_identity=training_identity, data_identity=data_identity, teacher_embeddings_hash=teacher_metadata["embeddings_hash"], teacher_cache_identity=teacher_identity, task_rows=task_rows, task_batches=task_batches, scheduler_geometry=scheduler_geometry, validation=validation, optimizer_implementation=optimizer_implementation, math_contract=math_contract, phase=phase, refinement_state=refinement_state, refinement_optimizers=refinement_optimizers if in_refinement else None, refinement_schedulers=refinement_schedulers if in_refinement else None)
+        if epoch == boundary_epoch:
+            assert refinement_state is not None
+            _export_encoder(output / "stage2_encoder.pt", model=model, config=config, registry=registry, checkpoint_path=checkpoint_path, data_identity=data_identity, refinement_state=refinement_state)
         checkpoint_row = {"event": "stage2_checkpoint_complete", "epoch": epoch, "global_optimizer_step": global_step}
         _append_metric(metrics_path, checkpoint_row)
         results.extend((validation, checkpoint_row))
-    final = dict(validation)
-    final["event"] = "stage2_training_complete"
+    if refinement_state is None:
+        raise RuntimeError("Stage 2 refinement boundary was not captured")
+    expected_refinement_updates = {
+        task: task_batches[task] * refinement_epochs for task in refinement_tasks
+    }
+    if refinement_state["task_updates"] != expected_refinement_updates:
+        raise RuntimeError("Stage 2 refinement task update counts are incomplete")
+    if not validation and completed_epoch == total_epochs:
+        validation = dict(checkpoint["validation"])
+    encoder_path = output / "stage2_encoder.pt"
+    if not encoder_path.is_file():
+        source_checkpoint_path = Path(resume_from) if resume_from is not None else (
+            output / f"checkpoint_epoch_{boundary_epoch:05d}.pt"
+        )
+        if not source_checkpoint_path.is_file():
+            raise FileNotFoundError("Stage 2 encoder export requires a checkpoint")
+        _export_encoder(
+            encoder_path,
+            model=model,
+            config=config,
+            registry=registry,
+            checkpoint_path=source_checkpoint_path,
+            data_identity=data_identity,
+            refinement_state=refinement_state,
+        )
+    for task_id in refinement_tasks:
+        model.task_head_module(task_id).load_state_dict(
+            refinement_state["selected_tasks"][task_id]["best_state"], strict=True
+        )
+    stitched_validation = evaluate_stage2(
+        model, registry, valid_datasets, valid_device, entity_dataset, packer,
+        teacher_embeddings, entity_roles, data_metadata["scalers"], config, device,
+        backbone_frozen=True, use_student_encoder=True,
+    )
+    stitched_validation.update({
+        "event": "stage2_taskwise_refined_validation",
+        "epoch": total_epochs,
+        "refinement_epoch": refinement_epochs,
+        "phase": "taskwise_refined",
+    })
+    manifest = _publish_taskwise_refined(
+        output, model, registry, refinement_state, stitched_validation,
+        training_identity,
+        total_epochs,
+    )
+    final = {
+        "event": "stage2_training_complete",
+        "ordinary_final_epoch": total_epochs,
+        "ordinary_final_validation": validation,
+        "taskwise_refinement": manifest,
+    }
     atomic_json(output / "final_metrics.json", final)
     return results
 
 
 __all__ = [
-    "STAGE2_CHECKPOINT_KIND", "STAGE2_CHECKPOINT_VERSION", "evaluate_stage2",
+    "STAGE2_CHECKPOINT_KIND", "STAGE2_CHECKPOINT_VERSION",
+    "STAGE2_REFINED_KIND", "STAGE2_REFINED_VERSION", "evaluate_stage2",
     "load_stage2_encoder_artifact", "resolve_stage2_training_identity",
     "run_stage2_training", "task_compensation_scale",
 ]

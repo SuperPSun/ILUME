@@ -126,8 +126,16 @@ class Stage3PluginConfig:
 
 
 @dataclass(frozen=True)
+class Stage3RepresentationConfig:
+    kind: str
+    descriptor_family: str
+    adapter: str
+    output_dim: int
+
+
+@dataclass(frozen=True)
 class Stage3InitializationConfig:
-    stage2_encoder: Path = Path(
+    stage2_encoder: Path | None = Path(
         "outputs/v1/stage2/base/train/stage2_encoder.pt"
     )
     plugin: Stage3PluginConfig | None = None
@@ -180,6 +188,8 @@ class Stage3TrainingConfig:
     cpu_threads: int = 4
     cpu_interop_threads: int = 1
     debug_pcgrad_traces: bool = False
+    refinement_ratio: float = 0.20
+    refinement_lr_multiplier: float = 0.10
 
 
 @dataclass(frozen=True)
@@ -189,6 +199,7 @@ class Stage3Config:
     initialization: Stage3InitializationConfig = field(
         default_factory=Stage3InitializationConfig
     )
+    representation: Stage3RepresentationConfig | None = None
     model: Stage3ModelConfig = field(default_factory=Stage3ModelConfig)
     groups: dict[str, Stage3GroupConfig] = field(default_factory=_base_groups)
     tasks: dict[str, Stage3TaskConfig] = field(default_factory=_base_task_registry)
@@ -203,6 +214,24 @@ class Stage3Config:
             raise ValueError("Stage 3 cv repeats must be positive")
         if self.preparation.encoding_batch_size <= 0:
             raise ValueError("preparation.encoding_batch_size must be positive")
+        if self.representation is None:
+            if self.initialization.stage2_encoder is None:
+                raise ValueError("Stage 2 Object representation requires stage2_encoder")
+        else:
+            expected = {
+                "kind": "rdkit_2d_adapter",
+                "descriptor_family": "rdkit_2d",
+                "adapter": "linear_layernorm",
+                "output_dim": 512,
+            }
+            if asdict(self.representation) != expected:
+                raise ValueError(
+                    "RDKit Stage 3 representation must match the registered recipe"
+                )
+            if self.initialization.stage2_encoder is not None:
+                raise ValueError("RDKit representation forbids stage2_encoder")
+            if self.initialization.plugin is not None:
+                raise ValueError("RDKit representation forbids plugin initialization")
         if not self.groups or not self.tasks:
             raise ValueError("Stage 3 requires groups and tasks")
         if any(group.group_weight <= 0 for group in self.groups.values()):
@@ -257,6 +286,10 @@ class Stage3Config:
                 raise ValueError(f"training.{name} must be positive")
         if training.microbatch_size > training.composite_batch_size:
             raise ValueError("microbatch_size exceeds composite_batch_size")
+        from common.refinement import refinement_geometry
+        refinement_geometry(training.epochs, training.refinement_ratio)
+        if training.refinement_lr_multiplier <= 0:
+            raise ValueError("refinement_lr_multiplier must be positive")
         if training.learning_rate <= 0 or training.weight_decay < 0:
             raise ValueError("Stage 3 optimizer values are invalid")
         if len(training.betas) != 2 or not all(0 <= x < 1 for x in training.betas):
@@ -307,6 +340,8 @@ class Stage3Config:
             return value
 
         payload = convert(asdict(self))
+        if self.representation is None:
+            payload.pop("representation")
         plugin = payload["initialization"].get("plugin")
         if plugin is not None:
             adaptation = plugin["adaptation"]
@@ -326,7 +361,8 @@ def _construct_dataclass(cls: type, raw: dict[str, Any] | None) -> Any:
 
 def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
     allowed = {
-        "data", "preparation", "initialization", "model", "groups", "tasks", "training"
+        "data", "preparation", "initialization", "representation", "model",
+        "groups", "tasks", "training"
     }
     unknown = set(raw) - allowed
     if unknown:
@@ -339,7 +375,7 @@ def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
     if "cache_dir" in preparation_raw:
         preparation_raw["cache_dir"] = Path(preparation_raw["cache_dir"])
     initialization_raw = dict(raw.get("initialization") or {})
-    if "stage2_encoder" in initialization_raw:
+    if initialization_raw.get("stage2_encoder") is not None:
         initialization_raw["stage2_encoder"] = Path(
             initialization_raw["stage2_encoder"]
         )
@@ -391,6 +427,13 @@ def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
         preparation=_construct_dataclass(Stage3PreparationConfig, preparation_raw),
         initialization=_construct_dataclass(
             Stage3InitializationConfig, initialization_raw
+        ),
+        representation=(
+            None
+            if raw.get("representation") is None
+            else _construct_dataclass(
+                Stage3RepresentationConfig, raw.get("representation")
+            )
         ),
         model=_construct_dataclass(Stage3ModelConfig, raw.get("model")),
         groups=groups,

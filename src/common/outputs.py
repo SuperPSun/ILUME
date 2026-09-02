@@ -46,7 +46,7 @@ def repository_relative(value: str | Path) -> str:
 def _validate_public_paths(value: Any, key: str = "") -> None:
     if isinstance(value, dict):
         for name, item in value.items():
-            _validate_public_paths(item, name)
+            _validate_public_paths(item, str(name))
     elif isinstance(value, list):
         for item in value:
             _validate_public_paths(item, key)
@@ -78,9 +78,27 @@ def _git_state() -> tuple[str | None, bool | None]:
     return commit, dirty
 
 
+def _optional_backend_attribute(backend: Any, name: str) -> Any:
+    try:
+        return getattr(backend, name)
+    except (AttributeError, AssertionError):
+        return None
+
+
 def _runtime_metadata() -> dict[str, Any]:
     commit, dirty = _git_state()
     cuda_available = torch.cuda.is_available()
+    matmul_precision = None
+    cudnn_precision = None
+    if cuda_available:
+        matmul = torch.backends.cuda.matmul
+        matmul_precision = _optional_backend_attribute(matmul, "fp32_precision")
+        if matmul_precision is None:
+            matmul_precision = "tf32" if matmul.allow_tf32 else "ieee"
+        cudnn_conv = getattr(torch.backends.cudnn, "conv", None)
+        cudnn_precision = _optional_backend_attribute(cudnn_conv, "fp32_precision")
+        if cudnn_precision is None:
+            cudnn_precision = "tf32" if torch.backends.cudnn.allow_tf32 else "ieee"
     return {
         "repository_commit": commit,
         "repository_dirty": dirty,
@@ -93,15 +111,9 @@ def _runtime_metadata() -> dict[str, Any]:
             list(torch.cuda.get_device_capability(0)) if cuda_available else None
         ),
         "cudnn_version": torch.backends.cudnn.version(),
-        "float32_matmul_precision": (
-            torch.backends.cuda.matmul.fp32_precision if cuda_available else None
-        ),
-        "cuda_matmul_fp32_precision": (
-            torch.backends.cuda.matmul.fp32_precision if cuda_available else None
-        ),
-        "cudnn_conv_fp32_precision": (
-            torch.backends.cudnn.conv.fp32_precision if cuda_available else None
-        ),
+        "float32_matmul_precision": matmul_precision,
+        "cuda_matmul_fp32_precision": matmul_precision,
+        "cudnn_conv_fp32_precision": cudnn_precision,
         "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
     }
 

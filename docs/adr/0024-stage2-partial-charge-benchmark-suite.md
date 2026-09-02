@@ -37,8 +37,8 @@ RDKit atom order 的确定性 mapping，不能套用 scalar evaluator，也不�
 7. Capability/status 只有三种结果：`supported+complete` 可参榜；`unsupported` 不参 Partial/Full
    且不算错误；`supported+incomplete` 不参 Partial/Full并在 health 记录原因。MLP 与
    ECFP+XGBoost 本合同显式声明 Partial/Full 为 `unsupported`，仍可参加 Core。
-8. `summary/` 原子发布固定 12 文件：Stage 3 test/validation、Stage 2 Core/Partial/Full 三榜，
-   Stage 3 两份 metrics、Core metrics、Partial subset metrics、health、overview 与 JSON。
+8. `summary/` 原子发布固定 13 文件：Stage 3 test/validation、Stage 2 Core/Partial/Full 三榜，
+   Stage 3 两份 metrics、Core metrics、Partial subset metrics、health、overview、雷达图 SVG 与 JSON。
    删除旧 `stage2_physics_{leaderboard,metrics}.csv` 名称。
 
 ## 后果

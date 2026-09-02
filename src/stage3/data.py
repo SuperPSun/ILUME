@@ -488,9 +488,13 @@ class Stage3TaskDataset:
         self.artifact_dir = Path(artifact_dir)
         metadata_path = self.artifact_dir / "metadata.json"
         self.metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        artifact_kind = self.metadata.get("kind")
         if (
             self.metadata.get("format_version") != STAGE3_ARTIFACT_VERSION
-            or self.metadata.get("kind") != STAGE3_ARTIFACT_KIND
+            or artifact_kind not in {
+                STAGE3_ARTIFACT_KIND,
+                "ilume_stage3_rdkit_sparse_data",
+            }
         ):
             raise ValueError("Unsupported Stage 3 sparse artifact")
         relative = f"folds/fold{fold}/{sanitize_task(task_id)}_{split}.pt"
@@ -500,7 +504,7 @@ class Stage3TaskDataset:
         payload = torch.load(path, map_location="cpu", weights_only=True)
         if (
             payload.get("format_version") != STAGE3_ARTIFACT_VERSION
-            or payload.get("kind") != STAGE3_ARTIFACT_KIND
+            or payload.get("kind") != artifact_kind
             or payload.get("task_id") != task_id
             or payload.get("fold") != fold
             or payload.get("split") != split
@@ -514,6 +518,78 @@ class Stage3TaskDataset:
 
     def __len__(self) -> int:
         return int(self.targets.shape[0])
+
+
+class Stage3RepresentationStore:
+    def __init__(
+        self,
+        artifact_dir: str | Path,
+        fold: int,
+        prepared_objects: Mapping[str, Any],
+        artifact_kind: str,
+    ) -> None:
+        self.fold = fold
+        self.artifact_kind = artifact_kind
+        if artifact_kind == STAGE3_ARTIFACT_KIND:
+            embeddings = prepared_objects.get("embeddings")
+            if not isinstance(embeddings, torch.Tensor) or embeddings.ndim != 2:
+                raise ValueError("Stage 3 Object representation matrix is malformed")
+            self.output_dim = int(embeddings.shape[1])
+            self.input_dims: dict[str, int] | None = None
+            self._embeddings = embeddings.float()
+            self._features: dict[str, torch.Tensor] = {}
+            self._lookups: dict[str, torch.Tensor] = {}
+            return
+        if artifact_kind != "ilume_stage3_rdkit_sparse_data":
+            raise ValueError(f"Unsupported Stage 3 representation kind: {artifact_kind}")
+        path = Path(artifact_dir) / "folds" / f"fold{fold}" / "representation.pt"
+        payload = torch.load(path, map_location="cpu", weights_only=True)
+        if (
+            payload.get("kind") != artifact_kind
+            or payload.get("format_version") != STAGE3_ARTIFACT_VERSION
+            or payload.get("fold") != fold
+        ):
+            raise ValueError("RDKit Stage 3 representation identity mismatch")
+        object_count = len(prepared_objects.get("objects", ()))
+        self.output_dim = 512
+        self.input_dims = {}
+        self._embeddings = torch.empty(0)
+        self._features = {}
+        self._lookups = {}
+        for topology, prefix in (("il", "il"), ("molecule", "single")):
+            object_ids = payload[f"{prefix}_object_ids"]
+            features = payload[f"{prefix}_features"]
+            if (
+                not isinstance(object_ids, torch.Tensor)
+                or object_ids.ndim != 1
+                or object_ids.dtype != torch.long
+                or not isinstance(features, torch.Tensor)
+                or features.ndim != 2
+                or features.dtype != torch.float32
+                or len(object_ids) != len(features)
+                or not torch.isfinite(features).all()
+            ):
+                raise ValueError(f"Malformed RDKit Stage 3 {prefix} feature store")
+            lookup = torch.full((object_count,), -1, dtype=torch.long)
+            lookup[object_ids] = torch.arange(len(object_ids), dtype=torch.long)
+            self._features[topology] = features
+            self._lookups[topology] = lookup
+            self.input_dims[topology] = int(features.shape[1])
+
+    @property
+    def is_rdkit(self) -> bool:
+        return self.input_dims is not None
+
+    def values(self, object_ids: torch.Tensor, topology: str) -> torch.Tensor:
+        ids = object_ids.cpu().long()
+        if not self.is_rdkit:
+            return self._embeddings[ids]
+        if topology not in self._features:
+            raise ValueError(f"Unknown RDKit Stage 3 topology: {topology}")
+        positions = self._lookups[topology][ids]
+        if bool((positions < 0).any()):
+            raise ValueError(f"RDKit Stage 3 object/topology mismatch: {topology}")
+        return self._features[topology][positions]
 
 
 def source_hashes(

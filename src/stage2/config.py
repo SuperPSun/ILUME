@@ -6,6 +6,7 @@ from typing import Any
 
 import yaml
 
+from common.training import canonical_json_sha256
 from .registry import Stage2Registry
 
 
@@ -21,7 +22,14 @@ DEFAULT_TASK_WEIGHTS = {
     "simulation/transfer_organic": 0.5,
 }
 
-STAGE2_CHECKPOINT_VERSION = 3
+DEFAULT_REFINEMENT_TASKS = (
+    "simulation/heat_of_vaporization",
+    "simulation/homo",
+    "simulation/lumo",
+    "simulation/partial_atomic_charge",
+)
+
+STAGE2_CHECKPOINT_VERSION = 5
 STAGE2_CHECKPOINT_KIND = "ilume_stage2_object"
 
 
@@ -29,7 +37,7 @@ STAGE2_CHECKPOINT_KIND = "ilume_stage2_object"
 class Stage2DataConfig:
     data_root: Path = Path("data")
     task_catalog_path: Path = Path("data/task_catalog.csv")
-    pretrain_artifacts_dir: Path = Path("outputs/v1/stage1/base/prepare/artifacts")
+    pretrain_artifacts_dir: Path | None = Path("outputs/v1/stage1/base/prepare/artifacts")
     artifacts_dir: Path = Path("outputs/v1/stage2/base/prepare/artifacts")
     entity_shard_size: int = 4096
     seed: int = 42
@@ -41,12 +49,26 @@ class Stage2DataConfig:
 @dataclass(frozen=True)
 class Stage2PreparationConfig:
     workers: int = 8
-    teacher_batch_size: int = 512
+    teacher_batch_size: int | None = 512
 
 
 @dataclass(frozen=True)
 class Stage2InitializationConfig:
-    checkpoint: Path = Path("outputs/v1/stage1/base/train/checkpoint_epoch_00005.pt")
+    checkpoint: Path | None = Path("outputs/v1/stage1/base/train/checkpoint_epoch_00005.pt")
+
+
+@dataclass(frozen=True)
+class Stage2RepresentationConfig:
+    kind: str
+    descriptor_family: str
+    raw_width: int
+    hidden_dim: int
+    output_dim: int
+    activation: str
+    dropout: float
+    normalization: str
+    learning_rate: float
+    unsupported_tasks: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -83,6 +105,9 @@ class Stage2TrainingConfig:
     log_every_batches: int = 50
     device: str = "auto"
     amp_dtype: str = "bf16"
+    refinement_epochs: int = 10
+    refinement_tasks: tuple[str, ...] = DEFAULT_REFINEMENT_TASKS
+    refinement_lr_multiplier: float = 0.10
 
 
 @dataclass(frozen=True)
@@ -90,6 +115,7 @@ class Stage2Config:
     data: Stage2DataConfig = field(default_factory=Stage2DataConfig)
     preparation: Stage2PreparationConfig = field(default_factory=Stage2PreparationConfig)
     initialization: Stage2InitializationConfig = field(default_factory=Stage2InitializationConfig)
+    representation: Stage2RepresentationConfig | None = None
     model: Stage2ModelConfig = field(default_factory=Stage2ModelConfig)
     loss: Stage2LossConfig = field(default_factory=Stage2LossConfig)
     training: Stage2TrainingConfig = field(default_factory=Stage2TrainingConfig)
@@ -104,7 +130,7 @@ class Stage2Config:
             for mode in self.data.target_materialization_modes.values()
         ):
             raise ValueError("Unsupported Stage 2 target materialization mode")
-        if self.preparation.workers <= 0 or self.preparation.teacher_batch_size <= 0:
+        if self.preparation.workers <= 0:
             raise ValueError("Stage 2 preparation sizes must be positive")
         if self.model.object_layers <= 0 or self.model.object_ffn_dim <= 0:
             raise ValueError("Stage 2 ObjectEncoder dimensions must be positive")
@@ -112,6 +138,34 @@ class Stage2Config:
             raise ValueError("model.dropout must be between 0 and 1")
         if self.loss.lambda_teacher < 0.0:
             raise ValueError("loss.lambda_teacher must be non-negative")
+        if self.representation is None:
+            if self.data.pretrain_artifacts_dir is None or self.initialization.checkpoint is None:
+                raise ValueError("Stage 2 Object v3 requires Stage 1 artifacts and checkpoint")
+            if self.preparation.teacher_batch_size is None or self.preparation.teacher_batch_size <= 0:
+                raise ValueError("Stage 2 teacher batch size must be positive")
+        else:
+            expected = {
+                "kind": "rdkit_2d_mlp",
+                "descriptor_family": "rdkit_2d",
+                "raw_width": 217,
+                "hidden_dim": 1024,
+                "output_dim": 512,
+                "activation": "gelu",
+                "dropout": 0.10,
+                "normalization": "layernorm",
+                "learning_rate": 3.0e-5,
+                "unsupported_tasks": ("simulation/partial_atomic_charge",),
+            }
+            if asdict(self.representation) != expected:
+                raise ValueError("RDKit Stage 2 representation must match ADR-0036")
+            if self.data.pretrain_artifacts_dir is not None or self.initialization.checkpoint is not None:
+                raise ValueError("RDKit Stage 2 representation forbids Stage 1 artifacts")
+            if self.loss.lambda_teacher != 0.0:
+                raise ValueError("RDKit Stage 2 representation forbids teacher loss")
+            if self.training.backbone_frozen_epochs != 0:
+                raise ValueError("RDKit Stage 2 representation trains from epoch 1")
+            if self.preparation.teacher_batch_size is not None:
+                raise ValueError("RDKit Stage 2 representation forbids teacher preparation")
         if not self.loss.task_weights or any(value <= 0 for value in self.loss.task_weights.values()):
             raise ValueError("Stage 2 task weights must be positive")
         if any(mode not in {"element_mean", "masked_target_macro"} for mode in self.loss.task_loss_modes.values()):
@@ -135,6 +189,14 @@ class Stage2Config:
             raise ValueError("Stage 2 Object v3 requires cuda_prefetch_batches == 1")
         if training.amp_dtype not in {"bf16", "fp16", "none"}:
             raise ValueError("training.amp_dtype must be bf16, fp16, or none")
+        if training.refinement_epochs <= 0:
+            raise ValueError("refinement_epochs must be positive")
+        if not training.refinement_tasks:
+            raise ValueError("refinement_tasks must be non-empty")
+        if len(set(training.refinement_tasks)) != len(training.refinement_tasks):
+            raise ValueError("refinement_tasks must not contain duplicates")
+        if training.refinement_lr_multiplier <= 0:
+            raise ValueError("refinement_lr_multiplier must be positive")
 
     def validate_registry(self, registry: Stage2Registry) -> None:
         expected = set(registry.task_ids)
@@ -146,6 +208,8 @@ class Stage2Config:
             raise ValueError(
                 "data.target_materialization_modes contains an unknown Stage 2 task"
             )
+        if not set(self.training.refinement_tasks).issubset(expected):
+            raise ValueError("training.refinement_tasks contains an unknown Stage 2 task")
         for task in registry.tasks:
             mode = self.loss.task_loss_modes.get(task.task_id, "element_mean")
             materialization = self.data.target_materialization_modes.get(
@@ -161,6 +225,25 @@ class Stage2Config:
                     "masked_target_macro loss"
                 )
 
+    def resolved_registry(self, registry: Stage2Registry) -> Stage2Registry:
+        if self.representation is None:
+            return registry
+        unsupported = set(self.representation.unsupported_tasks)
+        tasks = tuple(task for task in registry.tasks if task.task_id not in unsupported)
+        if len(tasks) != len(registry.tasks) - len(unsupported):
+            raise ValueError("RDKit Stage 2 unsupported task set does not match catalog")
+        snapshot = [task.to_dict() for task in tasks]
+        return Stage2Registry(
+            tasks,
+            canonical_json_sha256(snapshot),
+            registry.catalog_sha256,
+        )
+
+    def ordered_refinement_tasks(self, registry: Stage2Registry) -> tuple[str, ...]:
+        self.validate_registry(registry)
+        selected = set(self.training.refinement_tasks)
+        return tuple(task_id for task_id in registry.task_ids if task_id in selected)
+
     def normalized_task_weights(self, registry: Stage2Registry) -> dict[str, float]:
         self.validate_registry(registry)
         total = sum(self.loss.task_weights.values())
@@ -172,10 +255,13 @@ class Stage2Config:
                 return str(value)
             if isinstance(value, dict):
                 return {key: convert(item) for key, item in value.items()}
-            if isinstance(value, list):
+            if isinstance(value, (list, tuple)):
                 return [convert(item) for item in value]
             return value
-        return convert(asdict(self))
+        payload = convert(asdict(self))
+        if self.representation is None:
+            payload.pop("representation")
+        return payload
 
     def experiment_dict(self) -> dict[str, Any]:
         payload = self.to_dict()
@@ -192,6 +278,7 @@ _SECTIONS = {
     "data": Stage2DataConfig,
     "preparation": Stage2PreparationConfig,
     "initialization": Stage2InitializationConfig,
+    "representation": Stage2RepresentationConfig,
     "model": Stage2ModelConfig,
     "loss": Stage2LossConfig,
     "training": Stage2TrainingConfig,
@@ -205,10 +292,18 @@ def _construct(section_type: type, values: dict[str, Any] | None) -> Any:
         raise ValueError(f"Unknown {section_type.__name__} fields: " + ", ".join(sorted(unknown)))
     if section_type is Stage2DataConfig:
         for key in ("data_root", "task_catalog_path", "pretrain_artifacts_dir", "artifacts_dir"):
-            if key in values:
+            if values.get(key) is not None:
                 values[key] = Path(values[key])
-    elif section_type is Stage2InitializationConfig and "checkpoint" in values:
+    elif section_type is Stage2InitializationConfig and values.get("checkpoint") is not None:
         values["checkpoint"] = Path(values["checkpoint"])
+    elif section_type is Stage2RepresentationConfig and "unsupported_tasks" in values:
+        if not isinstance(values["unsupported_tasks"], list):
+            raise ValueError("representation.unsupported_tasks must be a list")
+        values["unsupported_tasks"] = tuple(values["unsupported_tasks"])
+    elif section_type is Stage2TrainingConfig and "refinement_tasks" in values:
+        if not isinstance(values["refinement_tasks"], list):
+            raise ValueError("training.refinement_tasks must be a list")
+        values["refinement_tasks"] = tuple(values["refinement_tasks"])
     return section_type(**values)
 
 
@@ -216,7 +311,11 @@ def stage2_config_from_dict(raw: dict[str, Any]) -> Stage2Config:
     unknown = set(raw) - set(_SECTIONS)
     if unknown:
         raise ValueError("Unknown Stage 2 config sections: " + ", ".join(sorted(unknown)))
-    config = Stage2Config(**{name: _construct(section, raw.get(name)) for name, section in _SECTIONS.items()})
+    sections = {
+        name: (None if name == "representation" and raw.get(name) is None else _construct(section, raw.get(name)))
+        for name, section in _SECTIONS.items()
+    }
+    config = Stage2Config(**sections)
     config.validate()
     return config
 

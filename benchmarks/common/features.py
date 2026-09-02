@@ -16,6 +16,7 @@ from rdkit import rdBase
 
 from common.training import canonical_json_sha256
 from common.progress import ProgressReporter
+from common.descriptor_preprocessing import FeaturePreprocessor
 from stage1.descriptors import calculate_descriptors, rdkit_descriptor_names
 
 from .config import FeatureConfig
@@ -198,65 +199,6 @@ def raw_feature_matrix(
     finally:
         progress.close()
     return np.asarray(rows, dtype=np.float64)
-
-
-@dataclass(frozen=True)
-class FeaturePreprocessor:
-    finite_mask: tuple[bool, ...]
-    median: tuple[float, ...]
-    mean: tuple[float, ...]
-    scale: tuple[float, ...]
-
-    @classmethod
-    def fit(cls, train: np.ndarray) -> "FeaturePreprocessor":
-        if train.ndim != 2 or train.shape[0] == 0:
-            raise ValueError("Benchmark feature matrix must be non-empty and rank two")
-        finite_mask_array = np.isfinite(train).any(axis=0)
-        if not finite_mask_array.any():
-            raise ValueError("Every benchmark feature column is invalid in train")
-        retained = np.where(np.isfinite(train[:, finite_mask_array]), train[:, finite_mask_array], np.nan)
-        median = np.nanmedian(retained, axis=0)
-        filled = np.where(np.isfinite(retained), retained, median)
-        mean = filled.mean(axis=0)
-        scale = filled.std(axis=0)
-
-        # Treat numerically near-constant features as constant.
-        # Do NOT divide by tiny std values, otherwise validation OOD values
-        # can explode to extremely large z-scores.
-        min_scale = 1e-8 * np.maximum(1.0, np.abs(mean))
-        scale = np.where(
-            np.isfinite(scale) & (scale > min_scale),
-            scale,
-            1.0,
-        )
-        return cls(
-            finite_mask=tuple(bool(value) for value in finite_mask_array),
-            median=tuple(float(value) for value in median),
-            mean=tuple(float(value) for value in mean),
-            scale=tuple(float(value) for value in scale),
-        )
-
-    def transform(self, values: np.ndarray) -> np.ndarray:
-        mask = np.asarray(self.finite_mask, dtype=bool)
-        if values.ndim != 2 or values.shape[1] != len(mask):
-            raise ValueError("Benchmark feature width differs from preprocessing contract")
-        retained = values[:, mask]
-        median = np.asarray(self.median)
-        filled = np.where(np.isfinite(retained), retained, median)
-        transformed = (filled - np.asarray(self.mean)) / np.asarray(self.scale)
-
-        # Guard against unseen / out-of-distribution validation values.
-        transformed = np.clip(transformed, -10.0, 10.0)
-        if not np.isfinite(transformed).all():
-            raise ValueError("Non-finite feature after benchmark preprocessing")
-        return transformed.astype(np.float32)
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> "FeaturePreprocessor":
-        return cls(**{name: tuple(raw[name]) for name in ("finite_mask", "median", "mean", "scale")})
 
 
 def ensure_finite_raw_features(values: np.ndarray) -> np.ndarray:

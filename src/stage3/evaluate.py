@@ -22,10 +22,24 @@ from common.reporting import (
     write_prediction_csv,
 )
 from .config import Stage3Config
-from .data import Stage3TaskDataset, iter_rows, source_path, test_path
+from .data import (
+    STAGE3_ARTIFACT_KIND,
+    Stage3RepresentationStore,
+    Stage3TaskDataset,
+    iter_rows,
+    source_path,
+    test_path,
+)
 from .model import Stage3SparseModel
 from .prepare import load_prepared_stage3
-from .train import STAGE3_CHECKPOINT_KIND, STAGE3_CHECKPOINT_VERSION, regression_metrics
+from .train import (
+    STAGE3_CHECKPOINT_KIND,
+    STAGE3_CHECKPOINT_VERSION,
+    STAGE3_RDKIT_CHECKPOINT_KIND,
+    STAGE3_RDKIT_REFINED_KIND,
+    STAGE3_REFINED_KIND,
+    regression_metrics,
+)
 from .identity import (
     build_stage3_evaluation_identity,
     build_stage3_training_identity,
@@ -39,6 +53,45 @@ def _checkpoint_path(root: Path, fold: int, epoch: int) -> Path:
     return nested if nested.is_file() else root / filename
 
 
+def _refined_path(root: Path, fold: int) -> Path:
+    nested = root / f"fold{fold}" / "taskwise_refined.pt"
+    return nested if nested.is_file() else root / "taskwise_refined.pt"
+
+
+def _validate_refinement_manifest(
+    artifact_path: Path,
+    artifact: Mapping[str, Any],
+    expected_epoch: int,
+    expected_kind: str,
+) -> str:
+    manifest_path = artifact_path.with_name("taskwise_refinement.json")
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"Missing Stage 3 refinement manifest: {manifest_path}")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("Stage 3 refinement manifest is unreadable") from error
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("kind") != expected_kind
+        or manifest.get("format_version") != 1
+        or manifest.get("artifact") != artifact_path.name
+        or manifest.get("artifact_sha256") != sha256_file(artifact_path)
+        or manifest.get("fold") != artifact.get("fold")
+        or manifest.get("ordinary_final_epoch") != expected_epoch
+    ):
+        raise ValueError("Stage 3 refinement manifest/artifact integrity mismatch")
+    for key in (
+        "boundary_epoch", "shared_state_hash", "private_state_hashes",
+        "selected_tasks", "validation",
+    ):
+        if json.dumps(manifest.get(key), sort_keys=True) != json.dumps(
+            artifact.get(key), sort_keys=True
+        ):
+            raise ValueError(f"Stage 3 refinement manifest mismatch: {key}")
+    return sha256_file(manifest_path)
+
+
 def _load_model(
     config: Stage3Config,
     prepared: Mapping[str, Any],
@@ -46,22 +99,34 @@ def _load_model(
     fold: int,
     epoch: int,
     device: torch.device,
-) -> tuple[Stage3SparseModel, dict[str, Any]]:
+    *,
+    taskwise_refined: bool = False,
+) -> tuple[Stage3SparseModel, dict[str, Any], Stage3RepresentationStore]:
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    rdkit = prepared["metadata"].get("kind") != STAGE3_ARTIFACT_KIND
+    expected_kind = (
+        STAGE3_RDKIT_REFINED_KIND
+        if rdkit and taskwise_refined
+        else STAGE3_RDKIT_CHECKPOINT_KIND
+        if rdkit
+        else STAGE3_REFINED_KIND
+        if taskwise_refined
+        else STAGE3_CHECKPOINT_KIND
+    )
     expected = {
-        "identity_contract_version": IDENTITY_CONTRACT_VERSION,
-        "kind": STAGE3_CHECKPOINT_KIND,
-        "format_version": STAGE3_CHECKPOINT_VERSION,
-        "stage": "stage3",
+        "kind": expected_kind,
+        "format_version": 1 if taskwise_refined else STAGE3_CHECKPOINT_VERSION,
         "fold": fold,
-        "completed_epoch": epoch,
-        "stage2_encoder_identity": metadata_identity(
-            prepared["metadata"], "stage2_encoder", context="Stage 3 prepared artifact"
-        )["hash"],
         "resolved_registry": {
             task_id: spec.to_dict() for task_id, spec in prepared["registry"].items()
         },
     }
+    if not taskwise_refined:
+        expected.update({
+            "identity_contract_version": IDENTITY_CONTRACT_VERSION,
+            "stage": "stage3",
+            "completed_epoch": epoch,
+        })
     for key, value in expected.items():
         if checkpoint.get(key) != value:
             raise ValueError(f"Stage 3 evaluation checkpoint mismatch: {key}")
@@ -84,16 +149,42 @@ def _load_model(
         checkpoint.get("normalization")
     ):
         raise ValueError("Stage 3 checkpoint normalization mismatch")
-    d_model = int(prepared["objects"]["embeddings"].shape[1])
-    model = Stage3SparseModel(config.model, prepared["registry"], d_model)
+    if rdkit:
+        if checkpoint.get("representation") != plan.get("representation"):
+            raise ValueError("RDKit Stage 3 checkpoint representation mismatch")
+    else:
+        expected_encoder = metadata_identity(
+            prepared["metadata"],
+            "stage2_encoder",
+            context="Stage 3 prepared artifact",
+        )["hash"]
+        if checkpoint.get("stage2_encoder_identity") != expected_encoder:
+            raise ValueError("Stage 3 evaluation checkpoint mismatch: stage2_encoder_identity")
+    representations = Stage3RepresentationStore(
+        config.data.artifacts_dir,
+        fold,
+        prepared["objects"],
+        str(prepared["metadata"]["kind"]),
+    )
+    model = Stage3SparseModel(
+        config.model,
+        prepared["registry"],
+        representations.output_dim,
+        descriptor_input_dims=representations.input_dims,
+    )
     if checkpoint.get("ownership_manifest") != model.ownership_manifest():
         raise ValueError("Stage 3 checkpoint ownership mismatch")
+    state_namespace = (
+        "stage3.taskwise-refined-state"
+        if taskwise_refined
+        else "stage3.model-state"
+    )
     if checkpoint.get("model_state_hash") != tensor_state_hash(
-        "stage3.model-state", checkpoint["model"]
+        state_namespace, checkpoint["model"]
     ):
         raise ValueError("Stage 3 evaluation checkpoint model state hash mismatch")
     model.load_state_dict(checkpoint["model"], strict=True)
-    return model.to(device).eval(), checkpoint
+    return model.to(device).eval(), checkpoint, representations
 
 
 @torch.no_grad()
@@ -101,7 +192,7 @@ def _predict(
     model: Stage3SparseModel,
     task_id: str,
     dataset: Stage3TaskDataset,
-    embeddings: torch.Tensor,
+    representations: Stage3RepresentationStore,
     normalization: Mapping[str, Any],
     config: Stage3Config,
     device: torch.device,
@@ -130,10 +221,16 @@ def _predict(
                 refresh=True,
             )
         indices = torch.arange(start, min(len(dataset), start + microbatch_size))
-        primary = embeddings[dataset.primary_object_ids[indices]].to(device)
+        spec = model.task_specs[task_id]
+        primary_topology = (
+            "il" if tuple(spec.primary_slots) == ("cation", "anion") else "molecule"
+        )
+        primary = representations.values(
+            dataset.primary_object_ids[indices], primary_topology
+        ).to(device)
         partner_ids = dataset.partner_object_ids[indices]
         partner = (
-            embeddings[partner_ids].to(device)
+            representations.values(partner_ids, "molecule").to(device)
             if len(partner_ids) and bool((partner_ids >= 0).all())
             else None
         )
@@ -263,21 +360,58 @@ def _reporting_comparison(
 
 
 def _default_reporting_study_id(
-    metadata: Mapping[str, Any], checkpoint_epoch: int
+    metadata: Mapping[str, Any], selector: str
 ) -> str:
+    prefix = (
+        "rdkit-2d-stage2-home-stage3-"
+        if metadata.get("provenance", {}).get("representation")
+        == "rdkit_2d_stage2"
+        else "rdkit-2d-home-stage3-"
+        if metadata.get("kind") != STAGE3_ARTIFACT_KIND
+        else "ilume-stage3-"
+    )
     return (
-        "ilume-stage3-"
+        prefix
         + metadata_identity(
             metadata, "prepared", context="Stage 3 prepared artifact"
         )["hash"]
-        + f"-epoch{checkpoint_epoch}"
+        + f"-{selector}"
     )
 
 
+def _reporting_model(metadata: Mapping[str, Any]) -> tuple[str, str]:
+    if metadata.get("provenance", {}).get("representation") == "rdkit_2d_stage2":
+        return "rdkit_2d_stage2_home", "RDKit 2D MLP + Stage2 + HoME"
+    if metadata.get("kind") != STAGE3_ARTIFACT_KIND:
+        return "rdkit_2d_home", "RDKit 2D + HoME"
+    return "ilume", "ILUME"
+
+
+def _evaluation_tasks(
+    config: Stage3Config,
+    registry: Mapping[str, Any],
+    enabled: Sequence[str],
+    split: str,
+    task_subset: Sequence[str] | None,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    available = tuple(enabled)
+    if split == "test":
+        available = tuple(
+            task
+            for task in enabled
+            if next(iter_rows(config, registry[task], None), None) is not None
+        )
+    tasks = tuple(task_subset) if task_subset is not None else available
+    if not tasks or set(tasks) - set(available):
+        raise ValueError("Stage 3 evaluation task subset is invalid")
+    return tasks, available
+
+
 def resolve_stage3_reporting_study_id(
-    config: Stage3Config, *, checkpoint_epoch: int | None = None
+    config: Stage3Config, *, checkpoint_epoch: int | None = None,
 ) -> str:
     """Resolve the fold-independent default reporting study identifier."""
+    taskwise_refined = checkpoint_epoch is None
     epoch = config.training.epochs if checkpoint_epoch is None else checkpoint_epoch
     if epoch <= 0:
         raise ValueError("Stage 3 checkpoint epoch must be positive")
@@ -286,7 +420,10 @@ def resolve_stage3_reporting_study_id(
     )
     if not isinstance(metadata, dict):
         raise ValueError("Stage 3 prepared metadata must contain a JSON object")
-    return _default_reporting_study_id(metadata, epoch)
+    return _default_reporting_study_id(
+        metadata,
+        "taskwise-refined" if taskwise_refined else f"epoch{epoch}",
+    )
 
 
 def _prediction_context(
@@ -421,15 +558,15 @@ def evaluate_checkpoints(
     enabled = tuple(
         task for task, spec in prepared["registry"].items() if spec.enabled
     )
-    tasks = tuple(task_subset) if task_subset is not None else enabled
-    if not tasks or set(tasks) - set(enabled):
-        raise ValueError("Stage 3 evaluation task subset is invalid")
+    tasks, expected_tasks = _evaluation_tasks(
+        config, prepared["registry"], enabled, split, task_subset
+    )
+    taskwise_refined = checkpoint_epoch is None
     epoch = config.training.epochs if checkpoint_epoch is None else checkpoint_epoch
     if epoch <= 0:
         raise ValueError("Stage 3 checkpoint epoch must be positive")
     folds = range(1, 6) if split == "test" else (fold,)
     root = Path(checkpoint_dir)
-    embeddings = prepared["objects"]["embeddings"].float()
     progress = ProgressReporter()
     evaluation_progress = progress.bar(
         total=len(folds) * len(tasks),
@@ -442,18 +579,30 @@ def evaluate_checkpoints(
     normalizations: dict[str, list[dict[str, Any]]] = {task: [] for task in tasks}
     checkpoint_identities: list[Mapping[str, Any]] = []
     model_state_hashes: list[str] = []
+    selection_manifest_hashes: list[str] = []
     raw_fold_predictions: dict[int, dict[str, torch.Tensor]] = {}
     try:
         for current_fold in folds:
             assert current_fold is not None
-            path = _checkpoint_path(root, current_fold, epoch)
+            path = (
+                _refined_path(root, current_fold)
+                if taskwise_refined
+                else _checkpoint_path(root, current_fold, epoch)
+            )
             if not path.is_file():
                 raise FileNotFoundError(f"Missing Stage 3 checkpoint: {path}")
-            model, checkpoint = _load_model(
-                config, prepared, path, current_fold, epoch, device
+            model, checkpoint, representations = _load_model(
+                config, prepared, path, current_fold, epoch, device,
+                taskwise_refined=taskwise_refined,
             )
             checkpoint_identities.append(checkpoint["training_identity"])
             model_state_hashes.append(checkpoint["model_state_hash"])
+            if taskwise_refined:
+                selection_manifest_hashes.append(
+                    _validate_refinement_manifest(
+                        path, checkpoint, epoch, str(checkpoint["kind"])
+                    )
+                )
             per_task: dict[str, Any] = {}
             raw_fold_predictions[current_fold] = {}
             for task in tasks:
@@ -465,7 +614,7 @@ def evaluate_checkpoints(
                     model,
                     task,
                     dataset,
-                    embeddings,
+                    representations,
                     normalization,
                     config,
                     device,
@@ -499,9 +648,11 @@ def evaluate_checkpoints(
         ),
         checkpoint_identities=checkpoint_identities,
         model_state_hashes=model_state_hashes,
+        selection_manifest_hashes=selection_manifest_hashes,
         split=split,
         fold=fold,
-        checkpoint_epoch=epoch,
+        checkpoint_epoch=None if taskwise_refined else epoch,
+        model_selector="taskwise_refined" if taskwise_refined else "epoch_checkpoint",
         tasks=tasks,
         ensemble_folds=ensemble_folds,
     )
@@ -531,13 +682,18 @@ def evaluate_checkpoints(
         )
         result = {
             "split": split,
-            "checkpoint_epoch": epoch,
+            "checkpoint_epoch": None if taskwise_refined else epoch,
+            "model_selector": "taskwise_refined" if taskwise_refined else "epoch_checkpoint",
             **next(iter(fold_results.values())),
         }
-        default_study_id = _default_reporting_study_id(prepared["metadata"], epoch)
+        default_study_id = _default_reporting_study_id(
+            prepared["metadata"],
+            "taskwise-refined" if taskwise_refined else f"epoch{epoch}",
+        )
+        model_id, model_display_name = _reporting_model(prepared["metadata"])
         result["reporting"] = reporting_block(
-            model_id="ilume",
-            model_display_name="ILUME",
+            model_id=model_id,
+            model_display_name=model_display_name,
             benchmark="stage3_property",
             protocol={
                 "split": "valid",
@@ -545,7 +701,8 @@ def evaluate_checkpoints(
                 "folds": list(range(1, 6)),
                 "ensemble": False,
                 "expected_tasks": list(enabled),
-                "checkpoint_epoch": epoch,
+                "checkpoint_epoch": None if taskwise_refined else epoch,
+                "model_selector": "taskwise_refined" if taskwise_refined else "epoch_checkpoint",
             },
             comparison=comparison,
             study_id=reporting_study_id or default_study_id,
@@ -578,35 +735,36 @@ def evaluate_checkpoints(
         if predictions_dir is not None
         else []
     )
-    expected_test = tuple(
-        task
-        for task in enabled
-        if next(iter_rows(config, prepared["registry"][task], None), None) is not None
-    )
     comparison = _reporting_comparison(
-        config, prepared, split=split, expected_tasks=expected_test
+        config, prepared, split=split, expected_tasks=expected_tasks
     )
     result = {
         "split": split,
-        "checkpoint_epoch": epoch,
+        "checkpoint_epoch": None if taskwise_refined else epoch,
+        "model_selector": "taskwise_refined" if taskwise_refined else "epoch_checkpoint",
         "folds": fold_results,
         "ensemble": {
             "tasks": ensemble,
             **_macro(ensemble, prepared["registry"]),
         },
     }
-    default_study_id = _default_reporting_study_id(prepared["metadata"], epoch)
+    default_study_id = _default_reporting_study_id(
+        prepared["metadata"],
+        "taskwise-refined" if taskwise_refined else f"epoch{epoch}",
+    )
+    model_id, model_display_name = _reporting_model(prepared["metadata"])
     result["reporting"] = reporting_block(
-        model_id="ilume",
-        model_display_name="ILUME",
+        model_id=model_id,
+        model_display_name=model_display_name,
         benchmark="stage3_property",
         protocol={
             "split": "test",
             "folds": list(range(1, 6)),
             "ensemble": True,
-            "expected_tasks": list(expected_test),
+            "expected_tasks": list(expected_tasks),
             "enabled_tasks": list(enabled),
-            "checkpoint_epoch": epoch,
+            "checkpoint_epoch": None if taskwise_refined else epoch,
+            "model_selector": "taskwise_refined" if taskwise_refined else "epoch_checkpoint",
         },
         comparison=comparison,
         study_id=reporting_study_id or default_study_id,
@@ -636,34 +794,49 @@ def resolve_stage3_evaluation_identity(
     enabled = tuple(
         task for task, spec in prepared["registry"].items() if spec.enabled
     )
-    tasks = tuple(task_subset) if task_subset is not None else enabled
-    if not tasks or set(tasks) - set(enabled):
-        raise ValueError("Stage 3 evaluation task subset is invalid")
+    tasks, _ = _evaluation_tasks(
+        config, prepared["registry"], enabled, split, task_subset
+    )
+    taskwise_refined = checkpoint_epoch is None
     epoch = config.training.epochs if checkpoint_epoch is None else checkpoint_epoch
     if epoch <= 0:
         raise ValueError("Stage 3 checkpoint epoch must be positive")
     folds = range(1, 6) if split == "test" else (fold,)
     identities: list[Mapping[str, Any]] = []
     state_hashes: list[str] = []
+    selection_manifest_hashes: list[str] = []
     for current_fold in folds:
         assert current_fold is not None
-        path = _checkpoint_path(Path(checkpoint_dir), current_fold, epoch)
+        path = (
+            _refined_path(Path(checkpoint_dir), current_fold)
+            if taskwise_refined
+            else _checkpoint_path(Path(checkpoint_dir), current_fold, epoch)
+        )
         if not path.is_file():
             raise FileNotFoundError(f"Missing Stage 3 checkpoint: {path}")
-        _, checkpoint = _load_model(
-            config, prepared, path, current_fold, epoch, torch.device("cpu")
+        _, checkpoint, _ = _load_model(
+            config, prepared, path, current_fold, epoch, torch.device("cpu"),
+            taskwise_refined=taskwise_refined,
         )
         identities.append(checkpoint["training_identity"])
         state_hashes.append(checkpoint["model_state_hash"])
+        if taskwise_refined:
+            selection_manifest_hashes.append(
+                _validate_refinement_manifest(
+                    path, checkpoint, epoch, str(checkpoint["kind"])
+                )
+            )
     return build_stage3_evaluation_identity(
         prepared_identity=metadata_identity(
             prepared["metadata"], "prepared", context="Stage 3 prepared artifact"
         ),
         checkpoint_identities=identities,
         model_state_hashes=state_hashes,
+        selection_manifest_hashes=selection_manifest_hashes,
         split=split,
         fold=fold,
-        checkpoint_epoch=epoch,
+        checkpoint_epoch=None if taskwise_refined else epoch,
+        model_selector="taskwise_refined" if taskwise_refined else "epoch_checkpoint",
         tasks=tasks,
         ensemble_folds=ensemble_folds,
     )

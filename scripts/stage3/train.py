@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+import hashlib
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
@@ -44,6 +46,14 @@ def _read_json(path: Path, *, context: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"{context} must contain a JSON object: {path.name}")
     return payload
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _history_epochs(path: Path, *, context: str) -> list[int]:
@@ -142,6 +152,15 @@ def _resume_action(
         final_checkpoint = root / f"checkpoint_epoch_{total_epochs:05d}.pt"
         if not final_checkpoint.is_file():
             raise FileNotFoundError("Completed Stage 3 run is missing its final checkpoint")
+        refinement = _read_json(
+            root / "taskwise_refinement.json",
+            context="Stage 3 task-wise refinement manifest",
+        )
+        artifact = root / "taskwise_refined.pt"
+        if not artifact.is_file() or refinement.get("artifact_sha256") != _sha256(artifact):
+            raise ValueError("Completed Stage 3 refined artifact is missing or corrupt")
+        if summary.get("taskwise_refinement") != refinement:
+            raise ValueError("Completed Stage 3 summary/refinement manifest mismatch")
         return "skipped", None
 
     if status not in {"failed", "running"}:
@@ -216,8 +235,14 @@ def _run_fold(
         resume=resume_from,
         details={
             "fold": fold,
-            "stage2_encoder": repository_relative(
-                config.initialization.stage2_encoder
+            **(
+                {"representation": "rdkit_2d_adapter"}
+                if config.representation is not None
+                else {
+                    "stage2_encoder": repository_relative(
+                        config.initialization.stage2_encoder
+                    )
+                }
             ),
             "assigned_device": device or config.training.device,
         },
@@ -231,7 +256,15 @@ def _run_fold(
             expected_training_identity=training_identity,
         )
         final_epoch = rows[-1] if rows else _last_history_row(run.root / "metrics.jsonl")
-        run.complete({"fold": fold, "final_epoch": final_epoch})
+        refinement = _read_json(
+            run.root / "taskwise_refinement.json",
+            context="Stage 3 task-wise refinement manifest",
+        )
+        run.complete({
+            "fold": fold,
+            "final_epoch": final_epoch,
+            "taskwise_refinement": refinement,
+        })
     except BaseException:
         run.fail()
         raise
@@ -611,11 +644,12 @@ def _run_capacity_study(
     from optuna.trial import TrialState
 
     from stage3.capacity import (
+        PRIMARY_METRIC_PATH,
         aggregate_fold_summaries,
         config_for_trial,
         confirmation_trial_numbers,
         suggest_trial_parameters,
-        tail_validation_summary,
+        refined_validation_summary,
     )
 
     if base_config.training.epochs != 20 or base_config.training.seed != 42:
@@ -631,7 +665,7 @@ def _run_capacity_study(
         raise FileExistsError(f"Capacity study output already exists: {output}")
     output.mkdir(parents=True, exist_ok=True)
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "base_config": base_config.to_dict(),
         "study": study_config.to_dict(),
     }
@@ -707,10 +741,9 @@ def _run_capacity_study(
                 if set(roots.get(number, {})) != set(study_config.folds):
                     raise RuntimeError("one or more search folds failed twice")
                 fold_summaries = {
-                    fold: tail_validation_summary(
+                    fold: refined_validation_summary(
                         roots[number][fold],
                         expected_epochs=base_config.training.epochs,
-                        tail_epochs=study_config.tail_epochs,
                     )
                     for fold in study_config.folds
                 }
@@ -810,10 +843,9 @@ def _run_capacity_study(
             )
             continue
         fold_summaries = {
-            fold: tail_validation_summary(
+            fold: refined_validation_summary(
                 root,
                 expected_epochs=base_config.training.epochs,
-                tail_epochs=study_config.tail_epochs,
             )
             for fold, root in sorted(all_roots.items())
         }
@@ -835,10 +867,10 @@ def _run_capacity_study(
         key=lambda row: (float(row["score"]), int(row["trial_number"])),
     )
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "study_name": study_config.study_name,
-        "primary_metric": "validation.macro_task_equal.normalized_mae.value",
-        "tail_epochs": study_config.tail_epochs,
+        "primary_metric": PRIMARY_METRIC_PATH,
+        "model_selector": "taskwise_refined",
         "shortlist": list(shortlist),
         "confirmation_failed": confirmation_failed,
         "ranking": completed_confirmation,
@@ -882,6 +914,8 @@ def main() -> int:
     config = load_stage3_config(args.config)
     output = repository_path(args.output)
     if args.study_config is not None:
+        if config.representation is not None:
+            parser.error("RDKit Stage1+2 representation ablation forbids HPO studies")
         if args.fold is not None:
             parser.error("--study-config forbids --fold")
         if args.max_parallel != 1:

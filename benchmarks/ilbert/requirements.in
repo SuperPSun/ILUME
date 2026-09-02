@@ -1,0 +1,8 @@
+--extra-index-url https://download.pytorch.org/whl/cu121
+
+atomInSmiles==1.0.2
+numpy==1.26.4
+pytest==8.4.2
+rdkit==2023.9.5
+torch==2.2.1+cu121
+transformers==4.39.1

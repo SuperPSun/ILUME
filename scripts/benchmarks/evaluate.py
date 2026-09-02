@@ -11,6 +11,11 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from benchmarks.common.config import load_benchmark_config
+from benchmarks.common.environment import (
+    ensure_benchmark_environment,
+    environment_run_details,
+    write_environment_snapshot,
+)
 from benchmarks.common.engine import ensemble_evaluation, evaluate_checkpoint
 from benchmarks.common.data import resolve_task
 from common.identity import semantic_identity
@@ -19,11 +24,18 @@ from common.outputs import open_run_directory, repository_path, repository_relat
 from common.progress import ProgressReporter
 from common.reporting import (
     STAGE2_CORE_EVALUATION_CONTRACT,
+    STAGE2_PARTIAL_EVALUATION_CONTRACT,
     REPORTING_SCHEMA_VERSION,
     comparison_identity,
     reporting_block,
     sanitize_task_id,
     write_prediction_csv,
+)
+from stage2.atom_evaluation import (
+    PARTIAL_CHARGE_TASK,
+    PARTIAL_CHARGE_UNIT,
+    public_partial_charge_score,
+    write_partial_charge_predictions,
 )
 
 
@@ -215,7 +227,16 @@ def main() -> None:
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     config = load_benchmark_config(args.config)
+    validation_best = config.name == "ilume_stage3_single_task_mlp"
+    environment_snapshot = ensure_benchmark_environment(config)
     reporter = ProgressReporter()
+    partial_charge = args.task == PARTIAL_CHARGE_TASK
+    if partial_charge and (
+        config.name != "dmpnn"
+        or args.benchmark != "stage2_physics"
+        or args.split != "test"
+    ):
+        raise ValueError("Partial Charge baseline evaluation requires D-MPNN Stage 2 test")
     if args.benchmark == "stage3" and args.split == "test":
         if not args.ensemble_folds or args.fold is not None or not args.checkpoint_dir or args.checkpoint:
             raise ValueError("Stage 3 test requires --checkpoint-dir and --ensemble-folds only")
@@ -242,6 +263,37 @@ def main() -> None:
         else evaluation_task.valid_paths[0]
     )
     evaluation_source_hash = _source_hash(evaluation_source)
+    input_audit = None
+    if config.name == "molformer":
+        from benchmarks.molformer.adapter import molformer_evaluation_audit
+
+        input_audit = molformer_evaluation_audit(
+            config,
+            args.benchmark,
+            args.task,
+            config.stage3.folds[0] if args.ensemble_folds else selector_fold,
+            args.split,
+        )
+    if config.name == "ilbert":
+        from benchmarks.ilbert.adapter import ilbert_evaluation_audit
+
+        input_audit = ilbert_evaluation_audit(
+            config,
+            args.benchmark,
+            args.task,
+            config.stage3.folds[0] if args.ensemble_folds else selector_fold,
+            args.split,
+        )
+    if config.name == "spmm":
+        from benchmarks.spmm.adapter import spmm_evaluation_audit
+
+        input_audit = spmm_evaluation_audit(
+            config,
+            args.benchmark,
+            args.task,
+            config.stage3.folds[0] if args.ensemble_folds else selector_fold,
+            args.split,
+        )
     evaluation_identity = semantic_identity(
         "benchmark.evaluation.v1",
         {
@@ -253,6 +305,7 @@ def main() -> None:
             "ensemble_folds": args.ensemble_folds,
             "checkpoints": checkpoint_fingerprints,
             "evaluation_source_sha256": evaluation_source_hash,
+            "input_audit": input_audit,
         },
     )
     run = open_run_directory(
@@ -263,15 +316,83 @@ def main() -> None:
         details={
             "reporting_schema_version": REPORTING_SCHEMA_VERSION,
             **(
-                {"reporting_contract": STAGE2_CORE_EVALUATION_CONTRACT}
+                {
+                    "reporting_contract": (
+                        STAGE2_PARTIAL_EVALUATION_CONTRACT
+                        if partial_charge
+                        else STAGE2_CORE_EVALUATION_CONTRACT
+                    )
+                }
                 if args.benchmark == "stage2_physics" else {}
             ),
             "benchmark": args.benchmark, "task": args.task, "split": args.split,
             "fold": selector_fold, "ensemble_folds": args.ensemble_folds,
             "checkpoints": [repository_relative(path) for path in checkpoints],
+            **(
+                {"model_selector": "validation_best", "checkpoint_epoch": None}
+                if validation_best
+                else {}
+            ),
+            **environment_run_details(environment_snapshot),
         },
     )
     try:
+        if environment_snapshot is not None:
+            write_environment_snapshot(
+                run.root / "environment.json", environment_snapshot
+            )
+        if partial_charge:
+            from benchmarks.dmpnn.adapter import evaluate_dmpnn_partial
+
+            partial = evaluate_dmpnn_partial(config, checkpoints[0])
+            if _source_hash(evaluation_source) != evaluation_source_hash:
+                raise ValueError("Benchmark evaluation source changed during evaluation")
+            if [_checkpoint_fingerprint(path) for path in checkpoints] != checkpoint_fingerprints:
+                raise ValueError("Benchmark checkpoint changed during evaluation")
+            prediction_manifest = write_partial_charge_predictions(
+                run.root / "predictions" / f"{sanitize_task_id(args.task)}.csv",
+                partial.benchmark,
+                partial.score,
+            )
+            prediction_manifest["path"] = (
+                f"predictions/{sanitize_task_id(args.task)}.csv"
+            )
+            study = semantic_identity(
+                "benchmark.reporting-study.v1",
+                {
+                    "model": config.name,
+                    "config": {
+                        key: value
+                        for key, value in config.to_dict().items()
+                        if key not in {"display_name", "runtime"}
+                    },
+                },
+            )["hash"]
+            summary = {
+                "benchmark": args.benchmark,
+                "task": args.task,
+                "split": args.split,
+                "stage2_partial_charge_benchmark": {
+                    "test": public_partial_charge_score(partial.score)
+                },
+                "reporting": reporting_block(
+                    model_id=config.name,
+                    model_display_name=config.display_name,
+                    benchmark="stage2_partial_charge",
+                    protocol={
+                        "split": "test",
+                        "folds": [],
+                        "ensemble": False,
+                        "expected_units": [PARTIAL_CHARGE_UNIT],
+                    },
+                    comparison=partial.benchmark.comparison_identity,
+                    study_id=f"{config.name}-{study}",
+                    predictions=[prediction_manifest],
+                ),
+            }
+            summary["reporting"]["contract"] = STAGE2_PARTIAL_EVALUATION_CONTRACT
+            run.complete(summary)
+            return
         results = [
             evaluate_checkpoint(
                 config, args.benchmark, args.task,
@@ -290,6 +411,10 @@ def main() -> None:
         if [_checkpoint_fingerprint(path) for path in checkpoints] != checkpoint_fingerprints:
             raise ValueError("Benchmark checkpoint changed during evaluation")
         first = results[0]
+        if input_audit is not None and any(
+            result.input_audit != input_audit for result in results
+        ):
+            raise ValueError("Token-baseline evaluation input audit changed during evaluation")
         if args.ensemble_folds:
             prediction, ensemble_metrics = ensemble_evaluation(results, tuple(first.metrics))
             summary: dict[str, Any] = {
@@ -305,6 +430,12 @@ def main() -> None:
                 "fold": selector_fold, "targets": first.metrics,
             }
             extras = None
+        if validation_best:
+            summary.update(
+                {"model_selector": "validation_best", "checkpoint_epoch": None}
+            )
+        if input_audit is not None:
+            summary["input_audit"] = input_audit
         prediction_manifest = _write_task_predictions(
             run.root / "predictions" / f"{sanitize_task_id(args.task)}.csv",
             evaluation_task,
@@ -327,7 +458,7 @@ def main() -> None:
                 "config": {
                     key: value
                     for key, value in config.to_dict().items()
-                    if key != "display_name"
+                    if key not in {"display_name", "runtime"}
                 },
             },
         )["hash"]
@@ -345,6 +476,11 @@ def main() -> None:
                 "folds": list(config.stage3.folds) if args.benchmark == "stage3" else [],
                 "ensemble": args.ensemble_folds,
                 "expected_tasks": [args.task],
+                **(
+                    {"model_selector": "validation_best", "checkpoint_epoch": None}
+                    if validation_best
+                    else {}
+                ),
             },
             comparison=comparison,
             study_id=f"{config.name}-{study}",

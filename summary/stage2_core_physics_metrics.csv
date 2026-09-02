@@ -1,4 +1,11 @@
 run,model,task,target,subset,count,mae,rmse,r2,normalized_mae,normalized_rmse,source_run
+dmpnn@outputs/benchmarks/v1/dmpnn,D-MPNN,simulation/heat_of_vaporization,heat_of_vaporization_kJ/mol,pooled,2684,2.0280425004148204,2.8604762875950547,0.9898580874832241,0.07288708216347504,0.10280443834779965,outputs/benchmarks/v1/dmpnn
+dmpnn@outputs/benchmarks/v1/dmpnn,D-MPNN,simulation/homo,HOMO_eV,anion,744,0.14579218809581307,,,,,outputs/benchmarks/v1/dmpnn
+dmpnn@outputs/benchmarks/v1/dmpnn,D-MPNN,simulation/homo,HOMO_eV,cation,917,0.2263435817378553,,,,,outputs/benchmarks/v1/dmpnn
+dmpnn@outputs/benchmarks/v1/dmpnn,D-MPNN,simulation/homo,HOMO_eV,pooled,1661,0.19026276483859014,0.2559431574343751,0.9948865837164073,0.05284090407539881,0.07108205245633771,outputs/benchmarks/v1/dmpnn
+dmpnn@outputs/benchmarks/v1/dmpnn,D-MPNN,simulation/lumo,LUMO_eV,anion,744,0.1591929754380659,,,,,outputs/benchmarks/v1/dmpnn
+dmpnn@outputs/benchmarks/v1/dmpnn,D-MPNN,simulation/lumo,LUMO_eV,cation,917,0.17519311621938322,,,,,outputs/benchmarks/v1/dmpnn
+dmpnn@outputs/benchmarks/v1/dmpnn,D-MPNN,simulation/lumo,LUMO_eV,pooled,1661,0.16802628615237536,0.2243587970677657,0.9963241302835318,0.04542645111438739,0.06065612804081809,outputs/benchmarks/v1/dmpnn
 ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost,ECFP+XGBoost,simulation/heat_of_vaporization,heat_of_vaporization_kJ/mol,pooled,2684,5.6614555401635345,9.5359103703066,0.8872886953236472,0.20347057570852525,0.3427170202408998,outputs/benchmarks/v1/ecfp_xgboost
 ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost,ECFP+XGBoost,simulation/homo,HOMO_eV,anion,744,0.2741569086700482,,,,,outputs/benchmarks/v1/ecfp_xgboost
 ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost,ECFP+XGBoost,simulation/homo,HOMO_eV,cation,917,0.4733949380878851,,,,,outputs/benchmarks/v1/ecfp_xgboost
@@ -6,10 +13,38 @@ ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost,ECFP+XGBoost,simulation/homo,HOM
 ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost,ECFP+XGBoost,simulation/lumo,LUMO_eV,anion,744,0.2694680622361275,,,,,outputs/benchmarks/v1/ecfp_xgboost
 ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost,ECFP+XGBoost,simulation/lumo,LUMO_eV,cation,917,0.4108142983103888,,,,,outputs/benchmarks/v1/ecfp_xgboost
 ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost,ECFP+XGBoost,simulation/lumo,LUMO_eV,pooled,1661,0.34750207697429586,0.5456975912391558,0.9782540703736791,0.09394831292947536,0.14753111265688726,outputs/benchmarks/v1/ecfp_xgboost
-mlp@outputs/benchmarks/v1/mlp,MLP,simulation/heat_of_vaporization,heat_of_vaporization_kJ/mol,pooled,2684,2.278852919300507,3.174555039306804,0.9875086643475632,0.08190111397249158,0.11409231016366815,outputs/benchmarks/v1/mlp
-mlp@outputs/benchmarks/v1/mlp,MLP,simulation/homo,HOMO_eV,anion,744,0.18760133552454616,,,,,outputs/benchmarks/v1/mlp
-mlp@outputs/benchmarks/v1/mlp,MLP,simulation/homo,HOMO_eV,cation,917,0.27528779718835983,,,,,outputs/benchmarks/v1/mlp
-mlp@outputs/benchmarks/v1/mlp,MLP,simulation/homo,HOMO_eV,pooled,1661,0.23601101965803029,0.30971991449411806,0.9925120598431728,0.0655463808752431,0.08601725253970974,outputs/benchmarks/v1/mlp
-mlp@outputs/benchmarks/v1/mlp,MLP,simulation/lumo,LUMO_eV,anion,744,0.16748066617358764,,,,,outputs/benchmarks/v1/mlp
-mlp@outputs/benchmarks/v1/mlp,MLP,simulation/lumo,LUMO_eV,cation,917,0.23611158541452984,,,,,outputs/benchmarks/v1/mlp
-mlp@outputs/benchmarks/v1/mlp,MLP,simulation/lumo,LUMO_eV,pooled,1661,0.20537022243123002,0.2793598521344941,0.9943009575876748,0.05552250533683088,0.0755258415626815,outputs/benchmarks/v1/mlp
+ilbert@outputs/benchmarks/v1/ilbert,ILBERT,simulation/heat_of_vaporization,heat_of_vaporization_kJ/mol,pooled,2684,1.9404793408619998,2.79232730727944,0.9903355798292677,0.06974009525195102,0.10035518971193266,outputs/benchmarks/v1/ilbert
+ilbert@outputs/benchmarks/v1/ilbert,ILBERT,simulation/homo,HOMO_eV,anion,744,0.1813895458438855,,,,,outputs/benchmarks/v1/ilbert
+ilbert@outputs/benchmarks/v1/ilbert,ILBERT,simulation/homo,HOMO_eV,cation,917,0.21133377084173974,,,,,outputs/benchmarks/v1/ilbert
+ilbert@outputs/benchmarks/v1/ilbert,ILBERT,simulation/homo,HOMO_eV,pooled,1661,0.19792106560489245,0.2749646116033156,0.994098292115373,0.05496781280878149,0.07636480358196267,outputs/benchmarks/v1/ilbert
+ilbert@outputs/benchmarks/v1/ilbert,ILBERT,simulation/lumo,LUMO_eV,anion,744,0.23328600288203258,,,,,outputs/benchmarks/v1/ilbert
+ilbert@outputs/benchmarks/v1/ilbert,ILBERT,simulation/lumo,LUMO_eV,cation,917,0.20196530513063932,,,,,outputs/benchmarks/v1/ilbert
+ilbert@outputs/benchmarks/v1/ilbert,ILBERT,simulation/lumo,LUMO_eV,pooled,1661,0.21599456408731413,0.28996218804462315,0.9938601658337377,0.058394830542096585,0.07839221744319716,outputs/benchmarks/v1/ilbert
+ilume@outputs/v1/stage2/base/evaluate,ILUME,simulation/heat_of_vaporization,heat_of_vaporization_kJ/mol,pooled,2684,3.6861633107413883,5.038494151831594,0.9685337728277741,0.13247931837870244,0.1810815784923746,outputs/v1/stage2/base/evaluate
+ilume@outputs/v1/stage2/base/evaluate,ILUME,simulation/homo,HOMO_eV,anion,744,0.18717216191027736,,,,,outputs/v1/stage2/base/evaluate
+ilume@outputs/v1/stage2/base/evaluate,ILUME,simulation/homo,HOMO_eV,cation,917,0.28733764123455685,,,,,outputs/v1/stage2/base/evaluate
+ilume@outputs/v1/stage2/base/evaluate,ILUME,simulation/homo,HOMO_eV,pooled,1661,0.24247122545053282,0.3158036776809023,0.9922150026328599,0.06734054756297393,0.0877068713531598,outputs/v1/stage2/base/evaluate
+ilume@outputs/v1/stage2/base/evaluate,ILUME,simulation/lumo,LUMO_eV,anion,744,0.22019818926614168,,,,,outputs/v1/stage2/base/evaluate
+ilume@outputs/v1/stage2/base/evaluate,ILUME,simulation/lumo,LUMO_eV,cation,917,0.25765795592079216,,,,,outputs/v1/stage2/base/evaluate
+ilume@outputs/v1/stage2/base/evaluate,ILUME,simulation/lumo,LUMO_eV,pooled,1661,0.24087886718445264,0.31294197477258195,0.9928484275566622,0.06512238254626722,0.08460487727351687,outputs/v1/stage2/base/evaluate
+mlp@outputs/benchmarks/v1/mlp,MLP,simulation/heat_of_vaporization,heat_of_vaporization_kJ/mol,pooled,2684,2.1076093920421632,3.026044250962918,0.9886500563517432,0.07574668622322638,0.10875488847256987,outputs/benchmarks/v1/mlp
+mlp@outputs/benchmarks/v1/mlp,MLP,simulation/homo,HOMO_eV,anion,744,0.18427873391917685,,,,,outputs/benchmarks/v1/mlp
+mlp@outputs/benchmarks/v1/mlp,MLP,simulation/homo,HOMO_eV,cation,917,0.2974268654473661,,,,,outputs/benchmarks/v1/mlp
+mlp@outputs/benchmarks/v1/mlp,MLP,simulation/homo,HOMO_eV,pooled,1661,0.2467452219452753,0.3261783823047139,0.9916950991385789,0.06852754723150535,0.09058819588506441,outputs/benchmarks/v1/mlp
+mlp@outputs/benchmarks/v1/mlp,MLP,simulation/lumo,LUMO_eV,anion,744,0.17347528479109775,,,,,outputs/benchmarks/v1/mlp
+mlp@outputs/benchmarks/v1/mlp,MLP,simulation/lumo,LUMO_eV,cation,917,0.25240477021608104,,,,,outputs/benchmarks/v1/mlp
+mlp@outputs/benchmarks/v1/mlp,MLP,simulation/lumo,LUMO_eV,pooled,1661,0.21705044321054973,0.2999596252363076,0.9934294835133154,0.05868029088566965,0.08109505699441694,outputs/benchmarks/v1/mlp
+molformer@outputs/benchmarks/v1/molformer,MoLFormer-XL-both-10pct,simulation/heat_of_vaporization,heat_of_vaporization_kJ/mol,pooled,2684,2.404799572112924,3.297318857297468,0.986523874439656,0.08642758914738345,0.11850439545613968,outputs/benchmarks/v1/molformer
+molformer@outputs/benchmarks/v1/molformer,MoLFormer-XL-both-10pct,simulation/homo,HOMO_eV,anion,744,0.3349989577460225,,,,,outputs/benchmarks/v1/molformer
+molformer@outputs/benchmarks/v1/molformer,MoLFormer-XL-both-10pct,simulation/homo,HOMO_eV,cation,917,0.3687960365731006,,,,,outputs/benchmarks/v1/molformer
+molformer@outputs/benchmarks/v1/molformer,MoLFormer-XL-both-10pct,simulation/homo,HOMO_eV,pooled,1661,0.3536575497294244,0.4601790314815595,0.9834698134443091,0.09821987332438249,0.1278036513379577,outputs/benchmarks/v1/molformer
+molformer@outputs/benchmarks/v1/molformer,MoLFormer-XL-both-10pct,simulation/lumo,LUMO_eV,anion,744,0.36330453716151706,,,,,outputs/benchmarks/v1/molformer
+molformer@outputs/benchmarks/v1/molformer,MoLFormer-XL-both-10pct,simulation/lumo,LUMO_eV,cation,917,0.35067819569256203,,,,,outputs/benchmarks/v1/molformer
+molformer@outputs/benchmarks/v1/molformer,MoLFormer-XL-both-10pct,simulation/lumo,LUMO_eV,pooled,1661,0.35633382365939076,0.47545256446136214,0.9834922344160125,0.09633600427368143,0.12854014196997626,outputs/benchmarks/v1/molformer
+rdkit_2d_stage2@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test,RDKit 2D MLP + Stage2,simulation/heat_of_vaporization,heat_of_vaporization_kJ/mol,pooled,2684,3.1291057716515995,4.260668606108936,0.9774991632629472,0.11245888063486041,0.15312682189908772,outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test
+rdkit_2d_stage2@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test,RDKit 2D MLP + Stage2,simulation/homo,HOMO_eV,anion,744,0.2678141396895985,,,,,outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test
+rdkit_2d_stage2@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test,RDKit 2D MLP + Stage2,simulation/homo,HOMO_eV,cation,917,0.33506904127872983,,,,,outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test
+rdkit_2d_stage2@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test,RDKit 2D MLP + Stage2,simulation/homo,HOMO_eV,pooled,1661,0.3049440281647541,0.3920704122681224,0.9880008013791102,0.0846908650480793,0.10888812145160161,outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test
+rdkit_2d_stage2@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test,RDKit 2D MLP + Stage2,simulation/lumo,LUMO_eV,anion,744,0.2299680337137038,,,,,outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test
+rdkit_2d_stage2@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test,RDKit 2D MLP + Stage2,simulation/lumo,LUMO_eV,cation,917,0.3364696128705406,,,,,outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test
+rdkit_2d_stage2@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test,RDKit 2D MLP + Stage2,simulation/lumo,LUMO_eV,pooled,1661,0.28876511263412485,0.38028105945180746,0.9894395288356426,0.0780685842256783,0.10281021709453979,outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test

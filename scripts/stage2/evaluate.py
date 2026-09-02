@@ -18,13 +18,22 @@ from stage2.config import load_stage2_config
 from stage2.runtime import configure_stage2_math
 
 
-def main() -> None:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Evaluate Stage 2 checkpoints on the physics test benchmark.")
     parser.add_argument("--config", required=True)
     parser.add_argument("--checkpoint-dir", required=True)
-    parser.add_argument("--checkpoint-epoch", type=int)
+    parser.add_argument(
+        "--checkpoint-epoch",
+        type=int,
+        help="Evaluate an ordinary epoch checkpoint; omitted loads taskwise_refined.pt.",
+    )
     parser.add_argument("--output", required=True)
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = _build_parser().parse_args()
+    taskwise_refined = args.checkpoint_epoch is None
     config = load_stage2_config(args.config)
     device = resolve_device(config.training.device)
     math_contract = configure_stage2_math(device)
@@ -61,7 +70,12 @@ def main() -> None:
             "reporting_contract": STAGE2_BENCHMARK_SUITE_CONTRACT,
             "checkpoint_dir": repository_relative(checkpoint_dir),
             "checkpoint": repository_relative(checkpoint_path),
-            "checkpoint_epoch": int(checkpoint_path.stem.rsplit("_", 1)[1]),
+            "checkpoint_epoch": args.checkpoint_epoch,
+            "model_selector": "taskwise_refined" if taskwise_refined else "epoch_checkpoint",
+            "refined_artifact": (
+                repository_relative(checkpoint_dir / "taskwise_refined.pt")
+                if taskwise_refined else None
+            ),
             "split": "test",
             "math_contract": math_contract,
         },

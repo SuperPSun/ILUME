@@ -14,6 +14,7 @@ from common.identity import (
     tensor_state_hash,
 )
 from common.io import sha256_file
+from common.descriptor_preprocessing import FeaturePreprocessor
 from stage1.config import config_from_dict
 from stage1.descriptors import (
     DescriptorSchema,
@@ -21,13 +22,18 @@ from stage1.descriptors import (
     calculate_descriptors,
     rdkit_descriptor_names,
 )
+from rdkit import rdBase
 from stage1.features import ROLE_TO_ID, build_entity_sample, inspect_entity_qc
 from stage1.identity import validate_feature_generation_runtime
 from stage1.masking import MultimodalPacker
 from stage1.model import MultimodalPretrainModel
 from stage1.tokenizer import SmilesTokenizer
 from .identity import build_stage2_encoder_identity
-from .model import ObjectEncoder, RECONSTRUCTION_MODULES
+from .model import ObjectEncoder, RDKitDescriptorBackbone, RECONSTRUCTION_MODULES
+from .rdkit_train import (
+    STAGE2_RDKIT_ENCODER_KIND,
+    load_rdkit_stage2_encoder_artifact,
+)
 
 
 STAGE2_ENCODER_VERSION = 1
@@ -124,6 +130,57 @@ class FrozenStage2ObjectEncoder:
         return values
 
 
+@dataclass
+class FrozenRDKitStage2ObjectEncoder:
+    descriptor_encoder: RDKitDescriptorBackbone
+    object_encoder: ObjectEncoder
+    preprocessor: FeaturePreprocessor
+    encoder_identity: dict[str, Any]
+    artifact_hash: str
+    device: torch.device
+
+    @property
+    def embedding_dim(self) -> int:
+        return 512
+
+    @torch.inference_mode()
+    def encode(self, objects: Sequence[FrozenObjectSpec]) -> torch.Tensor:
+        if not objects:
+            return torch.empty((0, self.embedding_dim), dtype=torch.float32)
+        slot_counts = {len(item.slots) for item in objects}
+        if len(slot_counts) != 1:
+            raise ValueError("Frozen RDKit Stage 2 batch must share topology")
+        slot_count = slot_counts.pop()
+        expected_topology = "molecule" if slot_count == 1 else "il"
+        if any(item.topology != expected_topology for item in objects):
+            raise ValueError("Frozen RDKit Stage 2 object topology mismatch")
+        raw_rows = []
+        role_values = []
+        names = rdkit_descriptor_names()
+        for item in objects:
+            for role, smiles in item.slots:
+                if role not in ROLE_TO_ID:
+                    raise ValueError(f"Unsupported frozen Stage 2 role: {role}")
+                molecule = Chem.MolFromSmiles(smiles)
+                if molecule is None:
+                    raise ValueError(f"Invalid canonical Stage 3 SMILES: {smiles}")
+                raw_rows.append(calculate_descriptors(molecule, names))
+                role_values.append(ROLE_TO_ID[role])
+        features = torch.from_numpy(
+            self.preprocessor.transform(np.stack(raw_rows))
+        ).to(self.device)
+        slots = self.descriptor_encoder.encode(features).reshape(
+            len(objects), slot_count, self.embedding_dim
+        )
+        roles = torch.tensor(
+            role_values, dtype=torch.long, device=self.device
+        ).reshape(len(objects), slot_count)
+        values = self.object_encoder(slots, roles).float().cpu()
+        if not torch.isfinite(values).all():
+            raise RuntimeError("Frozen RDKit Stage 2 produced non-finite embeddings")
+        return values
+
+
 def _load_payload(path: Path) -> dict[str, Any]:
     payload = torch.load(path, map_location="cpu", weights_only=False)
     if (
@@ -181,8 +238,51 @@ def load_frozen_object_encoder(
     encoder_path: str | Path,
     *,
     device: torch.device | str = "cpu",
-) -> FrozenStage2ObjectEncoder:
+) -> FrozenStage2ObjectEncoder | FrozenRDKitStage2ObjectEncoder:
     path = Path(encoder_path)
+    kind = torch.load(path, map_location="cpu", weights_only=False).get("kind")
+    if kind == STAGE2_RDKIT_ENCODER_KIND:
+        payload = load_rdkit_stage2_encoder_artifact(path)
+        contract = payload["descriptor_contract"]
+        schema = contract.get("schema", {})
+        if schema.get("descriptor_names") != list(rdkit_descriptor_names()):
+            raise ValueError("RDKit Stage 2 descriptor schema mismatch")
+        if schema.get("rdkit_version") != rdBase.rdkitVersion:
+            raise ValueError("RDKit Stage 2 runtime version mismatch")
+        if payload.get("role_to_id") != ROLE_TO_ID:
+            raise ValueError("RDKit Stage 2 encoder role mapping mismatch")
+        encoder_spec = contract["encoder"]
+        target_device = torch.device(device)
+        descriptor_encoder = RDKitDescriptorBackbone(
+            int(contract["retained_width"]),
+            hidden_dim=int(encoder_spec["hidden_dim"]),
+            output_dim=int(encoder_spec["output_dim"]),
+            dropout=float(encoder_spec["dropout"]),
+        )
+        descriptor_encoder.load_state_dict(
+            payload["descriptor_encoder"], strict=True
+        )
+        object_config = payload["object_encoder_config"]
+        object_encoder = ObjectEncoder(
+            512,
+            8,
+            num_layers=int(object_config["layers"]),
+            feedforward_dim=int(object_config["ffn_dim"]),
+            dropout=float(object_config["dropout"]),
+        )
+        object_encoder.load_state_dict(payload["object_encoder"], strict=True)
+        descriptor_encoder.to(target_device).eval()
+        object_encoder.to(target_device).eval()
+        for parameter in [*descriptor_encoder.parameters(), *object_encoder.parameters()]:
+            parameter.requires_grad_(False)
+        return FrozenRDKitStage2ObjectEncoder(
+            descriptor_encoder=descriptor_encoder,
+            object_encoder=object_encoder,
+            preprocessor=FeaturePreprocessor.from_dict(contract["preprocessing"]),
+            encoder_identity=payload["semantic_identity"],
+            artifact_hash=sha256_file(path),
+            device=target_device,
+        )
     payload = _load_payload(path)
     config = config_from_dict(payload["stage1_config"])
     feature_artifacts = payload["feature_artifacts"]
@@ -242,11 +342,16 @@ def load_frozen_object_encoder(
 
 
 def load_stage2_encoder_identity(path: str | Path) -> dict[str, Any]:
-    return dict(_load_payload(Path(path))["semantic_identity"])
+    resolved = Path(path)
+    kind = torch.load(resolved, map_location="cpu", weights_only=False).get("kind")
+    if kind == STAGE2_RDKIT_ENCODER_KIND:
+        return dict(load_rdkit_stage2_encoder_artifact(resolved)["semantic_identity"])
+    return dict(_load_payload(resolved)["semantic_identity"])
 
 
 __all__ = [
     "FrozenObjectSpec",
+    "FrozenRDKitStage2ObjectEncoder",
     "FrozenStage2ObjectEncoder",
     "load_frozen_object_encoder",
     "load_stage2_encoder_identity",

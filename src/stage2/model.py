@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, Iterator
 
 import torch
@@ -41,6 +42,7 @@ def build_model_contract(
     return {
         "d_model": d_model, "n_heads": n_heads,
         "object_encoder": {"layers": object_layers, "ffn_dim": object_ffn_dim, "dropout": dropout},
+        "regression_head_hidden_dims": [d_model, d_model // 2],
         "role_to_id": dict(ROLE_TO_ID), "tasks": tasks,
     }
 
@@ -88,12 +90,47 @@ class ObjectEncoder(nn.Module):
         return self.output_normalization(residual + self.residual_projection(encoded[:, 0]))
 
 
+class RDKitDescriptorBackbone(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        *,
+        hidden_dim: int = 1024,
+        output_dim: int = 512,
+        dropout: float = 0.10,
+    ) -> None:
+        super().__init__()
+        if input_dim <= 0 or hidden_dim != 1024 or output_dim != 512:
+            raise ValueError("RDKit Stage 2 descriptor encoder contract mismatch")
+        self.layers = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, output_dim),
+            nn.LayerNorm(output_dim),
+        )
+        self.config = SimpleNamespace(
+            model=SimpleNamespace(d_model=output_dim, n_heads=8)
+        )
+
+    def encode(self, values: torch.Tensor) -> torch.Tensor:
+        if values.ndim != 2 or values.shape[1] != self.layers[0].in_features:
+            raise ValueError("RDKit Stage 2 descriptor input width mismatch")
+        return self.layers(values)
+
+    def forward(self, values: torch.Tensor) -> torch.Tensor:
+        return self.encode(values)
+
+
 class RegressionHead(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, dropout: float) -> None:
         super().__init__()
+        if hidden_dim % 2 != 0:
+            raise ValueError("RegressionHead hidden_dim must be even")
         self.layers = nn.Sequential(
             nn.LayerNorm(input_dim), nn.Linear(input_dim, hidden_dim), nn.GELU(),
-            nn.Dropout(dropout), nn.Linear(hidden_dim, output_dim),
+            nn.Dropout(dropout), nn.Linear(hidden_dim, hidden_dim // 2), nn.GELU(),
+            nn.Dropout(dropout), nn.Linear(hidden_dim // 2, output_dim),
         )
 
     def forward(self, values: torch.Tensor) -> torch.Tensor:
@@ -214,7 +251,7 @@ class Stage2ObjectModel(nn.Module):
             dropout=self._object_config["dropout"],
         )
 
-    def encode_entities(self, batch: MultimodalBatch) -> torch.Tensor:
+    def encode_entities(self, batch: Any) -> torch.Tensor:
         return self.backbone.encode(batch)
 
     def encode_entity_states(self, batch: MultimodalBatch) -> EncodedEntityStates:
@@ -240,6 +277,22 @@ class Stage2ObjectModel(nn.Module):
         yield from self.object_heads.parameters()
         yield from self.interaction_heads.parameters()
         yield from self.atom_heads.parameters()
+
+    def task_head_module(self, task_id: str) -> nn.Module:
+        if task_id in self.object_heads:
+            return self.object_heads[task_id]
+        if task_id in self.interaction_heads:
+            return self.interaction_heads[task_id]
+        if task_id in self.atom_heads:
+            return self.atom_heads[task_id]
+        raise KeyError(f"Unknown Stage 2 task head: {task_id}")
+
+    def task_head_parameters_for(self, task_id: str) -> tuple[nn.Parameter, ...]:
+        return tuple(self.task_head_module(task_id).parameters())
+
+    def set_task_refinement_mode(self, task_id: str) -> None:
+        self.eval()
+        self.task_head_module(task_id).train()
 
     def new_module_parameters(self) -> Iterator[nn.Parameter]:
         yield from self.object_encoder_parameters()
@@ -315,7 +368,8 @@ def stage2_optimizer_groups(model: Stage2ObjectModel, *, backbone_learning_rate:
 
 
 __all__ = [
-    "ObjectEncoder", "RECONSTRUCTION_MODULES", "Stage2ForwardOutput", "Stage2ObjectModel",
+    "ObjectEncoder", "RDKitDescriptorBackbone", "RECONSTRUCTION_MODULES",
+    "Stage2ForwardOutput", "Stage2ObjectModel",
     "element_mean_smooth_l1_loss", "masked_smooth_l1_loss", "masked_target_macro_smooth_l1_loss",
     "molecule_equal_smooth_l1_loss", "stage2_optimizer_groups",
     "build_model_contract",

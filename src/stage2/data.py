@@ -21,6 +21,7 @@ from .registry import Stage2Registry
 
 STAGE2_ARTIFACT_VERSION = 3
 STAGE2_ARTIFACT_KIND = "ilume_stage2_object_data"
+STAGE2_RDKIT_ARTIFACT_KIND = "ilume_stage2_rdkit_object_data"
 STAGE2_PREPARATION_CONTRACT_VERSION = 3
 STAGE2_TENSOR_CONTRACT = {
     "conditions": "task_train_normalized_float32",
@@ -32,7 +33,10 @@ STAGE2_TENSOR_CONTRACT = {
 
 def _load_metadata(artifact_dir: Path) -> dict[str, Any]:
     metadata = json.loads((artifact_dir / "metadata.json").read_text(encoding="utf-8"))
-    if metadata.get("format_version") != STAGE2_ARTIFACT_VERSION or metadata.get("kind") != STAGE2_ARTIFACT_KIND:
+    if metadata.get("format_version") != STAGE2_ARTIFACT_VERSION or metadata.get("kind") not in {
+        STAGE2_ARTIFACT_KIND,
+        STAGE2_RDKIT_ARTIFACT_KIND,
+    }:
         raise ValueError("Unsupported Stage 2 object data artifact; rerun prepare for Object v3")
     if metadata.get("preparation_contract_version") != STAGE2_PREPARATION_CONTRACT_VERSION:
         raise ValueError("Stage 2 artifact predates the current Object v3 preparation contract; rerun prepare")
@@ -65,11 +69,34 @@ class Stage2EntityDataset:
     def __init__(self, artifact_dir: str | Path) -> None:
         self.artifact_dir = Path(artifact_dir)
         self.metadata = _load_metadata(self.artifact_dir)
+        self.artifact_kind = str(self.metadata["kind"])
         path = _verify_artifact_file(self.artifact_dir, self.metadata, "entity_index.json")
         payload = json.loads(path.read_text(encoding="utf-8"))
-        if payload.get("format_version") != STAGE2_ARTIFACT_VERSION or payload.get("kind") != STAGE2_ARTIFACT_KIND:
+        if payload.get("format_version") != STAGE2_ARTIFACT_VERSION or payload.get("kind") != self.artifact_kind:
             raise ValueError("Unsupported Stage 2 entity index format")
         self.entries = payload["entries"]
+        self.features: torch.Tensor | None = None
+        if self.artifact_kind == STAGE2_RDKIT_ARTIFACT_KIND:
+            feature_payload = torch.load(
+                _verify_artifact_file(
+                    self.artifact_dir, self.metadata, "entity_features.pt"
+                ),
+                map_location="cpu",
+                weights_only=True,
+            )
+            features = feature_payload.get("features")
+            if (
+                feature_payload.get("kind") != self.artifact_kind
+                or not isinstance(features, torch.Tensor)
+                or features.ndim != 2
+                or features.dtype != torch.float32
+                or len(features) != len(self.entries)
+                or not torch.isfinite(features).all()
+            ):
+                raise ValueError("Malformed Stage 2 RDKit entity features")
+            self.features = features
+            self.samples = ()
+            return
         by_shard: dict[str, list[dict[str, Any]]] = {}
         for expected_id, entry in enumerate(self.entries):
             if int(entry.get("entity_id", -1)) != expected_id:
@@ -90,9 +117,11 @@ class Stage2EntityDataset:
         self.samples = tuple(sample for sample in samples if sample is not None)
 
     def __len__(self) -> int:
-        return len(self.samples)
+        return len(self.entries)
 
     def __getitem__(self, index: int) -> dict[str, Any]:
+        if self.features is not None:
+            raise TypeError("RDKit Stage 2 entities are accessed through features")
         return self.samples[index]
 
 
@@ -108,7 +137,7 @@ class Stage2TaskDataset:
         self.spec = registry.by_id(task)
         relative = f"tasks/{task}/{split}.pt"
         payload = torch.load(_verify_artifact_file(self.artifact_dir, metadata, relative), map_location="cpu", weights_only=False)
-        if payload.get("format_version") != STAGE2_ARTIFACT_VERSION or payload.get("kind") != STAGE2_ARTIFACT_KIND:
+        if payload.get("format_version") != STAGE2_ARTIFACT_VERSION or payload.get("kind") != metadata["kind"]:
             raise ValueError("Unsupported Stage 2 task artifact format")
         if payload.get("task") != task or payload.get("split") != split:
             raise ValueError("Stage 2 task artifact identity mismatch")
@@ -377,6 +406,7 @@ def epoch_batch_schedule(
 
 __all__ = [
     "PackedAtomTargets", "PackedStage2Batch", "STAGE2_ARTIFACT_KIND", "STAGE2_ARTIFACT_VERSION",
+    "STAGE2_RDKIT_ARTIFACT_KIND",
     "STAGE2_PREPARATION_CONTRACT_VERSION",
     "STAGE2_TENSOR_CONTRACT",
     "Stage2BatchDescriptor", "Stage2DeviceTaskData", "Stage2EntityDataset",

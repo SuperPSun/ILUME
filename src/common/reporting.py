@@ -12,6 +12,7 @@ from .io import sha256_file
 REPORTING_SCHEMA_VERSION = 1
 STAGE2_BENCHMARK_SUITE_CONTRACT = "stage2-benchmark-suite-v2"
 STAGE2_CORE_EVALUATION_CONTRACT = "stage2-core-evaluation-v2"
+STAGE2_PARTIAL_EVALUATION_CONTRACT = "stage2-partial-charge-evaluation-v1"
 
 
 def role_mae_diagnostics(
@@ -188,6 +189,7 @@ __all__ = [
     "REPORTING_SCHEMA_VERSION",
     "STAGE2_BENCHMARK_SUITE_CONTRACT",
     "STAGE2_CORE_EVALUATION_CONTRACT",
+    "STAGE2_PARTIAL_EVALUATION_CONTRACT",
     "comparison_identity",
     "reporting_block",
     "role_mae_diagnostics",

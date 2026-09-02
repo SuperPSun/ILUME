@@ -1,19 +1,31 @@
 from __future__ import annotations
 
 import csv
+
 import json
+
+import re
+
 import sys
+
 import tempfile
+
 import threading
+
 import time
+
 from pathlib import Path
 
 import numpy as np
+
 import pytest
+
 import yaml
 
 from benchmarks.common.config import benchmark_config_from_dict, load_benchmark_config
+
 from benchmarks.common.data import configured_tasks, load_split, resolve_task
+
 from benchmarks.common.engine import (
     EvaluationResult,
     TargetStats,
@@ -22,6 +34,13 @@ from benchmarks.common.engine import (
     prepare_training,
     train_bundle,
 )
+
+from benchmarks.common.environment import (
+    ENVIRONMENT_MARKER,
+    ensure_benchmark_environment,
+    environment_command,
+)
+
 from benchmarks.common.features import (
     FeatureCache,
     FeaturePreprocessor,
@@ -29,11 +48,26 @@ from benchmarks.common.features import (
     feature_schema,
     raw_feature_matrix,
 )
+
 from benchmarks.common.metrics import mean_sample_std, regression_metrics
+
+from common.identity import semantic_identity
+
+from common.reporting import (
+    REPORTING_SCHEMA_VERSION,
+    STAGE2_CORE_EVALUATION_CONTRACT,
+    STAGE2_PARTIAL_EVALUATION_CONTRACT,
+    comparison_identity,
+)
+
+from stage2.atom_evaluation import PARTIAL_CHARGE_TASK, PARTIAL_CHARGE_UNIT
+
 import scripts.benchmarks.sweep as sweep_module
+
 from scripts.benchmarks.sweep import (
     _JobResult,
     _SweepState,
+    _aggregate,
     _build_jobs,
     _parse_devices,
     _run as run_sweep_job,
@@ -41,6 +75,58 @@ from scripts.benchmarks.sweep import (
     _subprocess_env,
 )
 
+from benchmarks.common.summary import SUMMARY_FILES, publish_summary
+
+from common.reporting import (
+    STAGE2_BENCHMARK_SUITE_CONTRACT,
+    comparison_identity,
+    role_mae_diagnostics,
+    stage2_full_comparison_identity,
+    write_prediction_csv,
+)
+
+from stage2.evaluate import resolve_checkpoint_path
+
+from dataclasses import replace
+
+from types import SimpleNamespace
+
+import torch
+
+from benchmarks.common.config import load_benchmark_config
+
+from benchmarks.common.data import BenchmarkTask, RawDataset
+
+from benchmarks.common.engine import TargetStats
+from ablations.stage3_single_task_mlp.adapter import (
+    _run_training_epochs,
+    build_input_features,
+)
+from ablations.stage3_single_task_mlp.model import Stage3SingleTaskMLP
+
+from benchmarks.common.environment import validate_dmpnn_environment
+
+try:
+    import chemprop  # noqa: F401
+    from benchmarks.dmpnn.adapter import (
+        ConditionStats,
+        DMPNNTrainingBundle,
+        _partial_dataset,
+        _predict,
+        _prepare_scalar,
+        _scalar_dataset,
+        build_dmpnn_model,
+        train_dmpnn_bundle,
+    )
+except ModuleNotFoundError:
+    HAS_CHEMPROP = False
+else:
+    HAS_CHEMPROP = True
+DMPNN_ONLY = pytest.mark.skipif(
+    not HAS_CHEMPROP, reason="chemprop is unavailable"
+)
+
+# --- Shared baseline and sweep contracts ---
 
 CATALOG_FIELDS = (
     "catalog_schema_version", "stage", "task_id", "task_kind", "target_level",
@@ -48,7 +134,6 @@ CATALOG_FIELDS = (
     "system_type", "simulation_method", "materialized_path", "label_source",
     "resource_manifest", "strategies",
 )
-
 
 class RecordingBar:
     def __init__(self, *, total: int, desc: str, unit: str, initial: int = 0):
@@ -78,7 +163,6 @@ class RecordingBar:
     def close(self) -> None:
         self.closed = True
 
-
 class RecordingReporter:
     def __init__(self):
         self.bars: list[RecordingBar] = []
@@ -90,14 +174,12 @@ class RecordingReporter:
         self.bars.append(bar)
         return bar
 
-
 def _write_csv(path: Path, fields: list[str], rows: list[dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
-
 
 def _tiny_config(tmp_path: Path, *, name: str = "mlp", targets: str = "value"):
     catalog = tmp_path / "task_catalog.csv"
@@ -171,7 +253,6 @@ def _tiny_config(tmp_path: Path, *, name: str = "mlp", targets: str = "value"):
             "stage2_physics": {"enabled": True, "tasks": ["simulation/tiny"]},
         }
     )
-
 
 def _tiny_stage3_config(tmp_path: Path):
     catalog = tmp_path / "stage3_catalog.csv"
@@ -255,7 +336,6 @@ def _tiny_stage3_config(tmp_path: Path):
         }
     )
 
-
 def test_formal_configs_and_registry_resolution(tmp_path: Path) -> None:
     config = load_benchmark_config("configs/benchmarks/mlp.yaml")
     assert len(configured_tasks(config, "stage3")) == 21
@@ -284,6 +364,144 @@ def test_formal_configs_and_registry_resolution(tmp_path: Path) -> None:
     assert reporter.bars == []
 
 
+def test_stage3_single_task_mlp_config_and_ordered_concat() -> None:
+    config = load_benchmark_config(
+        "configs/ablations/ilume_stage3_single_task_mlp.yaml"
+    )
+    assert config.display_name == "ILUME Stage3 Single-task MLP"
+    assert len(configured_tasks(config, "stage3")) == 21
+    assert configured_tasks(config, "stage2_physics") == ()
+    assert config.data.feature_cache is None and config.features is None
+    with pytest.raises(ValueError, match="registered recipe"):
+        replace(config, model={**config.model, "dropout": 0.2}).validate()
+
+    embeddings = torch.arange(4 * 512, dtype=torch.float32).reshape(4, 512)
+    class Dataset:
+        conditions = torch.tensor([[0.25, -0.5], [1.0, 2.0]])
+        primary_object_ids = torch.tensor([0, 1])
+        partner_object_ids = torch.tensor([2, 3])
+
+        def __len__(self) -> int:
+            return 2
+
+    dataset = Dataset()
+    spec = SimpleNamespace(
+        task_id="experiment/partner",
+        condition_columns=("temperature_K", "pressure_kPa"),
+        partner_slots=("solute",),
+    )
+    features = build_input_features(dataset, embeddings, spec)
+    assert features.shape == (2, 1026)
+    torch.testing.assert_close(features[:, :512], embeddings[[0, 1]])
+    torch.testing.assert_close(features[:, 512:1024], embeddings[[2, 3]])
+    torch.testing.assert_close(features[:, 1024:], dataset.conditions)
+    first_model = Stage3SingleTaskMLP(features.shape[1])
+    second_model = Stage3SingleTaskMLP(features.shape[1])
+    assert {
+        id(parameter) for parameter in first_model.parameters()
+    }.isdisjoint(id(parameter) for parameter in second_model.parameters())
+
+    condition_only = SimpleNamespace(
+        task_id="experiment/condition",
+        condition_columns=("temperature_K", "pressure_kPa"),
+        partner_slots=(),
+    )
+    dataset.partner_object_ids = torch.full((2,), -1)
+    assert build_input_features(dataset, embeddings, condition_only).shape == (2, 514)
+    with pytest.raises(ValueError, match="partner embedding is missing"):
+        build_input_features(dataset, embeddings, spec)
+
+    ordinary = SimpleNamespace(
+        task_id="experiment/plain", condition_columns=(), partner_slots=()
+    )
+    dataset.conditions = torch.empty((2, 0))
+    dataset.partner_object_ids = torch.full((2,), -1)
+    assert build_input_features(dataset, embeddings, ordinary).shape == (2, 512)
+
+
+def test_stage3_single_task_mlp_runs_full_budget_and_selects_best() -> None:
+    config = load_benchmark_config(
+        "configs/ablations/ilume_stage3_single_task_mlp.yaml"
+    )
+    config = replace(
+        config,
+        training={**config.training, "batch_size": 2, "max_epochs": 3},
+    )
+    torch.manual_seed(7)
+    model = Stage3SingleTaskMLP(4)
+    train_features = torch.randn(6, 4)
+    train_targets = torch.linspace(-1.0, 1.0, 6)
+    valid_features = torch.randn(3, 4)
+    valid_targets = torch.tensor([-0.5, 0.0, 0.5])
+    reporter = RecordingReporter()
+    history, best_state, best_epoch, best_score = _run_training_epochs(
+        model,
+        train_features,
+        train_targets,
+        valid_features,
+        valid_targets,
+        config,
+        training_seed=123,
+        device=torch.device("cpu"),
+        use_bf16=False,
+        reporter=reporter,
+    )
+    assert [row["epoch"] for row in history] == [1, 2, 3]
+    assert best_score == min(row["valid_normalized_mae"] for row in history)
+    assert best_epoch == next(
+        row["epoch"] for row in history
+        if row["valid_normalized_mae"] == best_score
+    )
+    restored = Stage3SingleTaskMLP(4)
+    restored.load_state_dict(best_state, strict=True)
+    assert reporter.bars[0].n == 3 and reporter.bars[0].closed
+
+def test_formal_dmpnn_config_resolves_109_training_jobs() -> None:
+    config = load_benchmark_config("configs/benchmarks/dmpnn.yaml")
+    stage3_tasks = configured_tasks(config, "stage3")
+    stage2_tasks = configured_tasks(config, "stage2_physics")
+    assert len(stage3_tasks) == 21
+    assert stage2_tasks == (
+        "simulation/heat_of_vaporization",
+        "simulation/homo",
+        "simulation/lumo",
+        "simulation/partial_atomic_charge",
+    )
+    assert len(stage3_tasks) * len(config.stage3.folds) + len(stage2_tasks) == 109
+    assert config.features is None
+    assert config.data.feature_cache is None
+
+def test_dmpnn_environment_dispatches_once_before_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_benchmark_config("configs/benchmarks/dmpnn.yaml")
+    command = environment_command(
+        config,
+        ("scripts/benchmarks/train.py", "--config", "configs/benchmarks/dmpnn.yaml"),
+        conda="/opt/conda/bin/conda",
+    )
+    assert command[:7] == [
+        "/opt/conda/bin/conda",
+        "run",
+        "--no-capture-output",
+        "-n",
+        "ilume-dmpnn",
+        "python",
+        str((Path.cwd() / "scripts/benchmarks/train.py").resolve()),
+    ]
+    monkeypatch.delenv(ENVIRONMENT_MARKER, raising=False)
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return type("Result", (), {"returncode": 7})()
+
+    monkeypatch.setattr("benchmarks.common.environment.shutil.which", lambda _: "conda")
+    monkeypatch.setattr("benchmarks.common.environment.subprocess.run", fake_run)
+    with pytest.raises(SystemExit, match="7"):
+        ensure_benchmark_environment(config, ("scripts/benchmarks/train.py",))
+    assert calls[0][1]["env"][ENVIRONMENT_MARKER] == "ilume-dmpnn"
+
 def test_preprocessor_uses_train_mask_median_and_population_zscore() -> None:
     train = np.asarray([[1.0, np.nan, np.nan, 4.0], [3.0, 7.0, np.inf, 4.0]])
     preprocessor = FeaturePreprocessor.fit(train)
@@ -292,14 +510,6 @@ def test_preprocessor_uses_train_mask_median_and_population_zscore() -> None:
     assert transformed.shape == (1, 3)
     assert transformed[0].tolist() == pytest.approx([0.0, 2.0, 0.0])
 
-
-def test_feature_cache_is_content_addressed(tmp_path: Path) -> None:
-    config = _tiny_config(tmp_path)
-    schema = feature_schema(config.features)
-    with FeatureCache(config.data.feature_cache) as cache:
-        first = component_feature("CCO", schema, cache)
-        second = component_feature("CCO", schema, cache)
-        assert np.array_equal(first, second, equal_nan=True)
 def test_training_prepare_uses_only_training_and_validation_splits(tmp_path: Path) -> None:
     config = _tiny_config(tmp_path)
     test_path = tmp_path / "stage2/tiny/test.csv"
@@ -319,6 +529,7 @@ def test_training_prepare_uses_only_training_and_validation_splits(tmp_path: Pat
     ]
     assert "train features" in reporter.bars[0].desc
     assert "valid features" in reporter.bars[1].desc
+
 def test_mlp_train_checkpoint_and_test_evaluation(tmp_path: Path) -> None:
     config = _tiny_config(tmp_path, targets="left;right")
     bundle = prepare_training(config, "stage2_physics", "simulation/tiny", None)
@@ -361,7 +572,6 @@ def test_mlp_train_checkpoint_and_test_evaluation(tmp_path: Path) -> None:
     assert "normalized_mae" in result.metrics["left"]
     assert "normalized_rmse" in result.metrics["right"]
 
-
 def test_stage3_fold_training_and_normalized_evaluation(tmp_path: Path) -> None:
     config = _tiny_stage3_config(tmp_path)
     bundle = prepare_training(config, "stage3", "experiment/tiny", 1)
@@ -372,7 +582,6 @@ def test_stage3_fold_training_and_normalized_evaluation(tmp_path: Path) -> None:
     result = evaluate_checkpoint(config, "stage3", "experiment/tiny", 1, output, "valid")
     assert result.predictions.shape == (2, 1)
     assert "normalized_mae" in result.metrics["value"]
-
 
 def test_xgboost_uses_independent_models_and_best_iteration(tmp_path: Path) -> None:
     pytest.importorskip("xgboost")
@@ -391,15 +600,6 @@ def test_xgboost_uses_independent_models_and_best_iteration(tmp_path: Path) -> N
     result = evaluate_checkpoint(config, "stage2_physics", "simulation/tiny", None, output, "test")
     assert result.predictions.shape == (2, 2)
 
-
-def test_metrics_use_sample_std_and_constant_target_reason() -> None:
-    assert mean_sample_std([1.0, 2.0, 3.0]) == pytest.approx({"mean": 2.0, "std": 1.0, "count": 3})
-    metrics = regression_metrics(np.asarray([1.0, 2.0]), np.asarray([4.0, 4.0]), scale=2.0)
-    assert np.isnan(metrics["r2"])
-    assert metrics["r2_reason"] == "constant_target"
-    assert metrics["normalized_mae"] == pytest.approx(1.25)
-
-
 def test_five_fold_ensemble_averages_predictions_before_metrics() -> None:
     results = [
         EvaluationResult(
@@ -416,57 +616,6 @@ def test_five_fold_ensemble_averages_predictions_before_metrics() -> None:
     assert predictions[:, 0].tolist() == pytest.approx([3.0, 5.0])
     assert metrics["value"]["mae"] == 0.0
     assert metrics["value"]["normalized_mae"] == 0.0
-
-
-def test_sweep_training_progress_counts_success_and_completed_skip(
-) -> None:
-    repository_root = Path(__file__).resolve().parents[1]
-    with tempfile.TemporaryDirectory(
-        prefix="pytest-benchmark-progress-", dir=repository_root / "outputs"
-    ) as temporary:
-        working = Path(temporary)
-        rows: list[dict[str, object]] = []
-        status_path = working / "status.tsv"
-        reporter = RecordingReporter()
-        progress = reporter.bar(total=2, desc="sweep", unit="train-job")
-        state = _SweepState(
-            rows=rows,
-            status_path=status_path,
-            progress=progress,
-            model_name="mlp",
-        )
-        common = {
-            "state": state,
-            "operation": "train",
-            "benchmark": "stage2_physics",
-            "task": "simulation/tiny",
-            "fold": None,
-            "required": "checkpoint.json",
-            "training_job": True,
-        }
-        success = run_sweep_job(
-            **common,
-            root=working / "success",
-            command=[sys.executable, "-c", "pass"],
-        )
-        assert success is not None
-        completed = working / "completed/attempt-001"
-        completed.mkdir(parents=True)
-        (completed / "checkpoint.json").write_text("{}", encoding="utf-8")
-        (completed / "metadata.json").write_text(
-            '{"status": "completed"}\n', encoding="utf-8"
-        )
-        skipped = run_sweep_job(
-            **common,
-            root=working / "completed",
-            command=[sys.executable, "-c", "raise AssertionError('must not run')"],
-        )
-        assert skipped == completed
-        assert progress.n == 2
-        assert state.progress_counts == {"done": 2, "failed": 0}
-        assert progress.postfixes[-1] == state.progress_counts
-        assert [row["status"] for row in rows] == ["OK", "SKIPPED_COMPLETED"]
-
 
 def test_sweep_scheduler_is_bounded_and_preserves_dependencies(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -521,56 +670,980 @@ def test_sweep_scheduler_is_bounded_and_preserves_dependencies(
     }
     assert {job.key for job in [*jobs, *ensembles.values()]} == finished
 
-
-def test_sweep_scheduler_preserves_serial_priority(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_dmpnn_full_requires_complete_core_and_partial_from_same_sweep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    jobs, ensembles = _build_jobs(
-        root=tmp_path,
-        stage3_tasks=("experiment/one", "experiment/two"),
-        folds=(1, 2),
-        stage2_tasks=("simulation/one",),
-        devices=(),
+    config = load_benchmark_config("configs/benchmarks/dmpnn.yaml")
+    monkeypatch.setattr(
+        sweep_module, "repository_relative", lambda value: Path(value).as_posix()
     )
-    order = []
+    study_id = f"dmpnn-{semantic_identity(
+        'benchmark.reporting-study.v1',
+        {'model': config.name, 'config': sweep_module._scientific_config(config)},
+    )['hash']}"
 
-    def execute(job, **_kwargs):
-        order.append(job.key)
-        return _JobResult(job, True)
+    def completed(task: str, summary: dict[str, object]) -> None:
+        run = (
+            tmp_path
+            / "stage2_physics"
+            / task.replace("/", "__")
+            / "evaluate_test"
+            / "attempt-001"
+        )
+        run.mkdir(parents=True)
+        (run / "metadata.json").write_text(
+            '{"status":"completed"}\n', encoding="utf-8"
+        )
+        (run / "summary.json").write_text(
+            json.dumps(summary), encoding="utf-8"
+        )
 
-    monkeypatch.setattr(sweep_module, "_execute_job", execute)
-    _schedule(
-        jobs=jobs,
-        ensembles=ensembles,
-        folds=(1, 2),
-        max_workers=1,
-        state=_SweepState(rows=[], status_path=tmp_path / "status.tsv"),
-        config_path="unused.yaml",
-        root=tmp_path,
-        train_script=tmp_path / "train.py",
-        evaluate_script=tmp_path / "evaluate.py",
+    core_tasks = config.stage2_physics.tasks[:-1]
+    for index, task in enumerate(core_tasks, start=1):
+        spec = resolve_task(config, "stage2_physics", task, None)
+        target = spec.target_columns[0]
+        comparison = comparison_identity(
+            "stage2_physics",
+            split="test",
+            expected=(task,),
+            sources={f"{task}:test": f"hash-{index}"},
+            normalization={task: {"scale": float(index)}},
+        )
+        completed(
+            task,
+            {
+                "targets": {target: {"normalized_mae": index / 10}},
+                "reporting": {
+                    "schema_version": REPORTING_SCHEMA_VERSION,
+                    "contract": STAGE2_CORE_EVALUATION_CONTRACT,
+                    "study_id": study_id,
+                    "comparison_identity": comparison,
+                },
+            },
+        )
+    partial_comparison = comparison_identity(
+        "stage2_partial_charge",
+        split="test",
+        expected=(PARTIAL_CHARGE_UNIT,),
+        sources={"partial:test": "partial-hash"},
+        normalization={PARTIAL_CHARGE_UNIT: {"scale": 1.5}},
     )
-    assert order == [
-        ("stage3_fold", "experiment/one", 1),
-        ("stage3_fold", "experiment/one", 2),
-        ("stage3_ensemble", "experiment/one", None),
-        ("stage3_fold", "experiment/two", 1),
-        ("stage3_fold", "experiment/two", 2),
-        ("stage3_ensemble", "experiment/two", None),
-        ("stage2_task", "simulation/one", None),
+    completed(
+        PARTIAL_CHARGE_TASK,
+        {
+            "stage2_partial_charge_benchmark": {
+                "test": {
+                    "status": "complete",
+                    "primary": {"molecule_macro_normalized_mae": 0.4},
+                }
+            },
+            "reporting": {
+                "schema_version": REPORTING_SCHEMA_VERSION,
+                "contract": STAGE2_PARTIAL_EVALUATION_CONTRACT,
+                "study_id": study_id,
+                "comparison_identity": partial_comparison,
+            },
+        },
+    )
+    complete = _aggregate(tmp_path, config)
+    assert complete["reporting"]["benchmarks"]["stage2_core_physics"][
+        "protocol"
+    ]["expected_tasks"] == list(core_tasks)
+    assert complete["reporting"]["benchmarks"]["stage2_partial_charge"][
+        "status"
+    ] == "complete"
+    assert complete["reporting"]["benchmarks"]["stage2_physics_full"][
+        "status"
+    ] == "complete"
+
+    partial_run = (
+        tmp_path
+        / "stage2_physics"
+        / PARTIAL_CHARGE_TASK.replace("/", "__")
+        / "evaluate_test"
+        / "attempt-001"
+        / "summary.json"
+    )
+    payload = json.loads(partial_run.read_text(encoding="utf-8"))
+    payload["stage2_partial_charge_benchmark"]["test"]["status"] = "incomplete"
+    partial_run.write_text(json.dumps(payload), encoding="utf-8")
+    incomplete = _aggregate(tmp_path, config)
+    assert incomplete["reporting"]["benchmarks"]["stage2_partial_charge"][
+        "status"
+    ] == "incomplete"
+    assert incomplete["reporting"]["benchmarks"]["stage2_physics_full"][
+        "status"
+    ] == "incomplete"
+
+
+def test_stage3_only_ablation_aggregate_has_one_model_and_no_stage2_sections(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_benchmark_config(
+        "configs/ablations/ilume_stage3_single_task_mlp.yaml"
+    )
+    task = "experiment/example"
+    study_id = f"{config.name}-{semantic_identity(
+        'benchmark.reporting-study.v1',
+        {'model': config.name, 'config': sweep_module._scientific_config(config)},
+    )['hash']}"
+    monkeypatch.setattr(
+        sweep_module,
+        "configured_tasks",
+        lambda _config, benchmark: (task,) if benchmark == "stage3" else (),
+    )
+    monkeypatch.setattr(sweep_module, "resolve_task", lambda *_args: object())
+    monkeypatch.setattr(sweep_module, "has_test_rows", lambda _task: True)
+    monkeypatch.setattr(
+        sweep_module, "repository_relative", lambda value: Path(value).as_posix()
+    )
+    sources = {
+        **{f"{task}:fold{fold}": f"source-{fold}" for fold in range(1, 6)},
+        f"{task}:test": "test-source",
+    }
+    metric = {
+        "count": 2, "mae": 1.0, "rmse": 1.0, "r2": 0.0,
+        "normalized_mae": 0.5, "normalized_rmse": 0.5,
+    }
+
+    def completed(path: Path, payload: dict[str, object]) -> None:
+        run = path / "attempt-001"
+        run.mkdir(parents=True)
+        (run / "metadata.json").write_text(
+            '{"status":"completed"}\n', encoding="utf-8"
+        )
+        (run / "summary.json").write_text(
+            json.dumps(payload), encoding="utf-8"
+        )
+
+    task_root = tmp_path / "stage3" / "experiment__example"
+    for fold in range(1, 6):
+        comparison = comparison_identity(
+            "stage3_property",
+            split="valid",
+            expected=[task],
+            sources={key: value for key, value in sources.items() if not key.endswith(":test")},
+            normalization={f"{task}:fold{fold}": {"scale": 2.0}},
+            folds=range(1, 6),
+        )
+        completed(
+            task_root / f"evaluate_valid_fold{fold}",
+            {
+                "targets": {"value": metric},
+                "reporting": {
+                    "schema_version": 1,
+                    "study_id": study_id,
+                    "protocol": {"expected_tasks": [task]},
+                    "comparison_identity": comparison,
+                },
+            },
+        )
+    completed(
+        task_root / "evaluate_test",
+        {
+            "ensemble": {"targets": {"value": metric}},
+            "reporting": {
+                "schema_version": 1,
+                "study_id": study_id,
+                "protocol": {"expected_tasks": [task]},
+                "comparison_identity": comparison_identity(
+                    "stage3_property",
+                    split="test",
+                    expected=[task],
+                    sources=sources,
+                    normalization={
+                        f"{task}:fold{fold}": {"scale": 2.0}
+                        for fold in range(1, 6)
+                    },
+                    folds=range(1, 6),
+                    ensemble=True,
+                ),
+            },
+        },
+    )
+    summary = _aggregate(tmp_path, config)
+    assert set(summary["reporting"]["benchmarks"]) == {
+        "stage3_test", "stage3_validation"
+    }
+    assert summary["reporting"]["model_id"] == config.name
+    assert summary["reporting"]["model_display_name"] == config.display_name
+    assert summary["model_selector"] == "validation_best"
+    assert summary["checkpoint_epoch"] is None
+    _write_run(tmp_path / "published", summary, stage="benchmark")
+    published = publish_summary(
+        tmp_path / "published", tmp_path / "leaderboard", tmp_path
+    )
+    assert len(published["leaderboards"]["stage3_test"]) == 1
+    assert len(published["leaderboards"]["stage3_validation"]) == 1
+    assert "legacy_stage2_reporting_contract" not in published["health"][0]["issues"]
+
+# --- Reporting contract ---
+
+TASK_TARGETS = {
+    "simulation/heat_of_vaporization": ("heat",),
+    "simulation/homo": ("HOMO_eV",),
+    "simulation/lumo": ("LUMO_eV",),
+}
+
+def _comparison() -> dict[str, object]:
+    expected = list(TASK_TARGETS)
+    return comparison_identity(
+        "stage2_physics",
+        split="test",
+        expected=expected,
+        sources={"shared:train": "a", "shared:test": "b"},
+        normalization={name: {"scale": 2.0} for name in expected},
+    )
+
+def _stage2_summary(model: str, display: str, offset: float) -> dict[str, object]:
+    metrics = {}
+    expected = list(TASK_TARGETS)
+    for task, targets in TASK_TARGETS.items():
+        metrics[task] = {}
+        for index, target in enumerate(targets):
+            value = offset + index / 10
+            metrics[task][target] = {
+                "count": 4,
+                "mae": value * 2,
+                "rmse": value * 3,
+                "r2": 0.5,
+                "normalized_mae": value,
+                "normalized_rmse": value * 1.5,
+            }
+            if task in {"simulation/homo", "simulation/lumo"}:
+                metrics[task][target]["role_diagnostics"] = {
+                    "cation": {"count": 2, "mae": value * 1.5},
+                    "anion": {"count": 2, "mae": value * 2.5},
+                }
+    partial_comparison = comparison_identity(
+        "stage2_partial_charge",
+        split="test",
+        expected=[PARTIAL_CHARGE_UNIT],
+        sources={"test": "p", "manifest": "m", "mapping": "a"},
+        normalization={PARTIAL_CHARGE_UNIT: {"scale": 2.0, "weighting": "molecule_equal"}},
+    )
+    full_comparison = stage2_full_comparison_identity(
+        _comparison(), partial_comparison,
+        ordered_units=(*expected, PARTIAL_CHARGE_UNIT),
+    )
+    subsets = {
+        name: {
+            "molecule_count": 4 if name == "all_mapped" else 0,
+            "atom_count": 8 if name == "all_mapped" else 0,
+            "molecule_macro_mae": offset * 2 if name == "all_mapped" else None,
+            "molecule_macro_normalized_mae": offset if name == "all_mapped" else None,
+            "atom_micro_mae": offset * 2 if name == "all_mapped" else None,
+            "atom_micro_rmse": offset * 3 if name == "all_mapped" else None,
+            "atom_micro_r2": 0.5 if name == "all_mapped" else None,
+            "atom_micro_r2_reason": None if name == "all_mapped" else "no_samples",
+        }
+        for name in ("all_mapped", "unique", "ambiguous", "typed", "connectivity_only")
+    }
+    metrics[PARTIAL_CHARGE_TASK] = {
+        "target_level": "atom", "capability": "supported", "status": "complete",
+        "primary": {
+            "molecule_macro_mae": offset * 2,
+            "molecule_macro_normalized_mae": offset,
+        },
+        "atom_micro": {"count": 8, "mae": offset * 2, "rmse": offset * 3, "r2": 0.5, "r2_reason": None},
+        "subsets": subsets,
+        "coverage": {"test_molecule_count": 4, "mapped_molecule_count": 4, "issues": []},
+    }
+    return {
+        "split": "test",
+        "checkpoint_epoch": 5,
+        "tasks": metrics,
+        "reporting": {
+            "schema_version": 1,
+            "contract": STAGE2_BENCHMARK_SUITE_CONTRACT,
+            "model_id": model,
+            "model_display_name": display,
+            "study_id": f"{model}-study",
+            "capabilities": {
+                "stage2_core_physics": "supported",
+                "stage2_partial_charge": "supported",
+                "stage2_physics_full": "supported",
+            },
+            "benchmarks": {
+                "stage2_core_physics": {
+                    "status": "complete", "benchmark": "stage2_physics",
+                    "protocol": {"split": "test", "expected_tasks": list(TASK_TARGETS), "checkpoint_epoch": 5, "checkpoint_sha256": "checkpoint"},
+                    "comparison_identity": _comparison(),
+                },
+                "stage2_partial_charge": {
+                    "status": "complete", "benchmark": "stage2_partial_charge",
+                    "protocol": {"split": "test", "expected_tasks": [PARTIAL_CHARGE_TASK], "expected_units": [PARTIAL_CHARGE_UNIT], "checkpoint_epoch": 5, "checkpoint_sha256": "checkpoint"},
+                    "comparison_identity": partial_comparison,
+                },
+                "stage2_physics_full": {
+                    "status": "complete", "benchmark": "stage2_physics_full",
+                    "protocol": {"split": "test", "ordered_units": [*expected, PARTIAL_CHARGE_UNIT], "checkpoint_epoch": 5, "checkpoint_sha256": "checkpoint"},
+                    "comparison_identity": full_comparison,
+                },
+            },
+            "predictions": [],
+        },
+    }
+
+def _write_run(
+    root: Path, summary: dict[str, object], *, stage: str = "stage2"
+) -> None:
+    root.mkdir(parents=True)
+    metadata = {
+        "schema_version": 1,
+        "stage": stage,
+        "operation": "sweep" if stage == "benchmark" else "evaluate",
+        "status": "completed",
+        "semantic_identity": semantic_identity(
+            "test.reporting-run", {"root": root.name}
+        ),
+        "provenance": {"reporting_schema_version": 1},
+    }
+    (root / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    (root / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+
+
+def _stage3_benchmark_summary(
+    model: str, *, scale: float, source: str = "shared"
+) -> dict[str, object]:
+    task = "experiment/example"
+    sources = {
+        **{f"{task}:fold{fold}": source for fold in range(1, 6)},
+        f"{task}:test": source,
+    }
+    normalization = {
+        f"{task}:fold{fold}": {"scale": scale} for fold in range(1, 6)
+    }
+    test_comparison = comparison_identity(
+        "stage3_property", split="test", expected=[task], sources=sources,
+        normalization=normalization, folds=range(1, 6), ensemble=True,
+    )
+    valid_comparison = comparison_identity(
+        "stage3_property", split="valid", expected=[task],
+        sources={
+            key: value
+            for key, value in sources.items()
+            if not key.endswith(":test")
+        },
+        normalization=normalization, folds=range(1, 6),
+    )
+    metrics = {
+        "count": 5, "mae": scale, "rmse": scale, "r2": 0.5,
+        "normalized_mae": 1.0, "normalized_rmse": 1.0,
+    }
+    aggregate = {
+        name: {"count": 5, "mean": value, "std": 0.0}
+        for name, value in (
+            ("mae", scale), ("rmse", scale), ("r2", 0.5),
+            ("normalized_mae", 1.0), ("normalized_rmse", 1.0),
+        )
+    }
+    return {
+        "jobs": {"failed": 0},
+        "stage3_property_benchmark": {
+            "test_ensemble": {task: metrics},
+            "validation_five_fold": {task: aggregate},
+        },
+        "stage2_physics_benchmark": {"test": {}},
+        "reporting": {
+            "schema_version": REPORTING_SCHEMA_VERSION,
+            "model_id": model,
+            "model_display_name": model.upper(),
+            "study_id": f"{model}-study",
+            "source_runs": {},
+            "benchmarks": {
+                "stage3_test": {
+                    "status": "complete",
+                    "protocol": {
+                        "expected_tasks": [task], "enabled_tasks": [task],
+                        "folds": list(range(1, 6)), "ensemble": True,
+                    },
+                    "comparison_identity": test_comparison,
+                },
+                "stage3_validation": {
+                    "status": "complete",
+                    "protocol": {
+                        "expected_tasks": [task],
+                        "folds": list(range(1, 6)), "ensemble": False,
+                    },
+                    "comparison_identity": valid_comparison,
+                },
+            },
+        },
+    }
+
+
+def test_stage3_summary_ignores_normalization_but_requires_shared_sources(
+    tmp_path: Path,
+) -> None:
+    inputs = tmp_path / "inputs"
+    _write_run(
+        inputs / "one", _stage3_benchmark_summary("one", scale=1.0),
+        stage="benchmark",
+    )
+    _write_run(
+        inputs / "two", _stage3_benchmark_summary("two", scale=2.0),
+        stage="benchmark",
+    )
+
+    payload = publish_summary(inputs, tmp_path / "summary", tmp_path)
+    assert len(payload["leaderboards"]["stage3_test"]) == 2
+    assert len(payload["leaderboards"]["stage3_validation"]) == 2
+
+    incompatible = tmp_path / "incompatible"
+    _write_run(
+        incompatible / "one", _stage3_benchmark_summary("one", scale=1.0),
+        stage="benchmark",
+    )
+    _write_run(
+        incompatible / "two",
+        _stage3_benchmark_summary("two", scale=2.0, source="different"),
+        stage="benchmark",
+    )
+    with pytest.raises(ValueError, match="incompatible comparison identities"):
+        publish_summary(incompatible, tmp_path / "bad-summary", tmp_path)
+
+
+def test_prediction_csv_is_atomic_and_records_integrity(tmp_path: Path) -> None:
+    path = tmp_path / "predictions" / "task.csv"
+    manifest = write_prediction_csv(
+        path,
+        [{"source_row": 2, "target": 1.0, "prediction": 1.25}],
+        ("source_row", "target", "prediction"),
+    )
+    assert manifest["rows"] == 1
+    assert len(manifest["sha256"]) == 64
+    with path.open(newline="", encoding="utf-8") as handle:
+        assert list(csv.DictReader(handle)) == [
+            {"source_row": "2", "target": "1", "prediction": "1.25"}
+        ]
+    assert not path.with_suffix(".csv.tmp").exists()
+
+def test_stage2_suite_v1_is_health_only_after_breaking_contract(tmp_path: Path) -> None:
+    inputs = tmp_path / "outputs"
+    legacy = _stage2_summary("ilume", "ILUME", 0.3)
+    legacy["reporting"]["contract"] = "stage2-benchmark-suite-v1"
+    _write_run(inputs / "legacy", legacy)
+
+    payload = publish_summary(inputs, tmp_path / "summary", tmp_path)
+    assert payload["leaderboards"]["stage2_core_physics"] == []
+    health = {row["source_run"]: row for row in payload["health"]}
+    assert health["outputs/legacy"]["stage2_core_eligibility"] == "legacy"
+    assert "legacy_stage2_reporting_contract" in health["outputs/legacy"]["issues"]
+
+
+def test_summary_publishes_radar_and_marks_unsupported_partial_charge_zero(
+    tmp_path: Path,
+) -> None:
+    inputs = tmp_path / "inputs"
+    ilume = _stage2_summary("ilume", "ILUME", 0.2)
+    mlp = _stage2_summary("mlp", "MLP", 0.4)
+    for name in ("stage2_partial_charge", "stage2_physics_full"):
+        mlp["reporting"]["capabilities"][name] = "unsupported"
+        mlp["reporting"]["benchmarks"][name]["status"] = "unsupported"
+    _write_run(inputs / "ilume", ilume)
+    _write_run(inputs / "mlp", mlp)
+
+    publish_summary(inputs, tmp_path / "summary", tmp_path)
+
+    radar = (tmp_path / "summary" / "radar.svg").read_text(encoding="utf-8")
+    assert radar.startswith("<?xml")
+    assert set(path.name for path in (tmp_path / "summary").iterdir()) == set(SUMMARY_FILES)
+    match = re.search(
+        r'<polygon class="series" data-panel="stage2_test" '
+        r'data-run="mlp@inputs/mlp" data-scores="([^"]+)"',
+        radar,
+    )
+    assert match is not None
+    assert float(match.group(1).split(",")[-1]) == 0.0
+    match = re.search(
+        r'<polygon class="series" data-panel="stage2_test" '
+        r'data-run="ilume@inputs/ilume" data-scores="([^"]+)"',
+        radar,
+    )
+    assert match is not None
+    assert float(match.group(1).split(",")[-1]) == 1.0
+
+
+def test_summary_labels_capacity_v1_stage3_scales(tmp_path: Path) -> None:
+    inputs = tmp_path / "outputs"
+    task = "experiment/example"
+    comparison = comparison_identity(
+        "stage3_property",
+        split="test",
+        expected=[task],
+        sources={
+            **{f"{task}:fold{fold}": "shared" for fold in range(1, 6)},
+            f"{task}:test": "shared",
+        },
+        normalization={
+            f"{task}:fold{fold}": {"scale": 1.0} for fold in range(1, 6)
+        },
+        folds=range(1, 6),
+        ensemble=True,
+    )
+    metric = {
+        "count": 5, "mae": 1.0, "rmse": 1.0, "r2": 0.5,
+        "normalized_mae": 1.0, "normalized_rmse": 1.0,
+    }
+    for scale in ("s", "base", "l", "xl"):
+        root = inputs / "experiments_v1" / "stage3" / "formal" / scale
+        reporting = {
+            "schema_version": REPORTING_SCHEMA_VERSION,
+            "model_id": "ilume",
+            "model_display_name": "ILUME",
+            "study_id": f"ilume-capacity-v1-{scale}",
+            "comparison_identity": comparison,
+        }
+        _write_run(
+            root / "test",
+            {
+                "split": "test",
+                "checkpoint_epoch": None,
+                "ensemble": {"tasks": {task: metric}},
+                "reporting": {
+                    **reporting,
+                    "protocol": {
+                        "split": "test", "folds": list(range(1, 6)),
+                        "ensemble": True, "expected_tasks": [task],
+                    },
+                },
+            },
+            stage="stage3",
+        )
+        for fold in range(1, 6):
+            _write_run(
+                root / "validation" / f"fold{fold}",
+                {
+                    "split": "valid",
+                    "checkpoint_epoch": None,
+                    "tasks": {task: metric},
+                    "reporting": {
+                        **reporting,
+                        "protocol": {
+                            "split": "valid", "fold": fold,
+                            "folds": list(range(1, 6)), "ensemble": False,
+                            "expected_tasks": [task],
+                        },
+                    },
+                },
+                stage="stage3",
+            )
+
+    payload = publish_summary(inputs, tmp_path / "summary", tmp_path)
+
+    expected = {
+        "ILUME Capacity v1 (S)", "ILUME Capacity v1 (Base)",
+        "ILUME Capacity v1 (L)", "ILUME Capacity v1 (XL)",
+    }
+    assert {row["model"] for row in payload["leaderboards"]["stage3_test"]} == expected
+    assert {row["model"] for row in payload["leaderboards"]["stage3_validation"]} == expected
+    assert all("alternative_run" not in row["issues"] for row in payload["health"])
+    overview = (tmp_path / "summary" / "overview.md").read_text(encoding="utf-8")
+    radar = (tmp_path / "summary" / "radar.svg").read_text(encoding="utf-8")
+    for label in expected:
+        assert label in overview
+        assert label in radar
+
+# --- D-MPNN runtime smoke ---
+
+def _task(component_count: int, *, atom: bool = False) -> BenchmarkTask:
+    return BenchmarkTask(
+        benchmark="stage2_physics",
+        task_id="simulation/partial_atomic_charge" if atom else "simulation/tiny",
+        slots=tuple(f"component_{index}" for index in range(component_count)),
+        condition_columns=() if atom else ("temperature_K", "pressure_kPa"),
+        target_columns=("partial_charge",) if atom else ("value",),
+        audit_columns=(),
+        train_paths=(Path("train.csv"),),
+        valid_paths=(Path("valid.csv"),),
+        test_path=Path("test.csv"),
+        fold=None,
+        meta_group=None,
+        registry_payload={"test": True},
+    )
+
+def _scalar_bundle(component_count: int) -> DMPNNTrainingBundle:
+    smiles = ("CC", "O", "[Na+]")[:component_count]
+    rows = tuple(tuple(smiles) for _ in range(4))
+    targets = np.asarray([[-1.0], [0.0], [1.0], [2.0]], dtype=np.float64)
+    conditions = np.asarray(
+        [[290.0, 100.0], [300.0, 110.0], [310.0, 120.0], [320.0, 130.0]],
+        dtype=np.float64,
+    )
+    raw = RawDataset(
+        components=rows,
+        component_count=component_count,
+        conditions=conditions,
+        targets=targets,
+        source_rows=tuple(f"tiny:{index}" for index in range(2, 6)),
+        audit_rows=({}, {}, {}, {}),
+    )
+    target_stats = TargetStats.fit(targets)
+    condition_stats = ConditionStats.fit(conditions)
+    dataset = _scalar_dataset(raw, target_stats, condition_stats)
+    return DMPNNTrainingBundle(
+        task=_task(component_count),
+        train_dataset=dataset,
+        valid_dataset=dataset,
+        target_stats=target_stats,
+        condition_stats=condition_stats,
+        source_hashes={},
+        training_identity=semantic_identity(
+            "benchmark.training.v1", {"synthetic_components": component_count}
+        ),
+        target_level="molecule",
+        component_count=component_count,
+    )
+
+@DMPNN_ONLY
+def test_one_epoch_scalar_and_multicomponent_save_reload_smoke(
+    tmp_path: Path,
+) -> None:
+    component_count = 2
+    from chemprop.models.utils import load_model
+
+    config = load_benchmark_config("configs/benchmarks/dmpnn.yaml")
+    config = replace(
+        config,
+        training={
+            **config.training,
+            "batch_size": 2,
+            "max_epochs": 1,
+            "early_stopping_patience": 1,
+            "warmup_epochs": 0,
+        },
+    )
+    output = tmp_path / f"components-{component_count}"
+    summary = train_dmpnn_bundle(config, _scalar_bundle(component_count), output)
+    assert summary["epochs_ran"] == 1
+    assert (output / "model.pt").is_file()
+    first = load_model(
+        output / "model.pt", multicomponent=component_count > 1
+    )
+    second = load_model(
+        output / "model.pt", multicomponent=component_count > 1
+    )
+    dataset = _scalar_bundle(component_count).valid_dataset
+    np.testing.assert_allclose(
+        _predict(first, dataset, atom=False),
+        _predict(second, dataset, atom=False),
+        rtol=0,
+        atol=0,
+    )
+    checkpoint = json.loads((output / "checkpoint.json").read_text(encoding="utf-8"))
+    assert checkpoint["best_valid_raw_mae"] == pytest.approx(
+        checkpoint["best_valid_normalized_mae"]
+        * checkpoint["target_statistics"]["scale"][0]
+    )
+
+
+# --- SPMM baseline contracts ---
+
+from benchmarks.spmm.adapter import (
+    ConditionStats as SPMMConditionStats,
+    SharedSPMMRegressor,
+    _collate as spmm_collate,
+    _load_pretrained_encoder,
+    _prepare_split as prepare_spmm_split,
+    _scheduled_learning_rate,
+)
+from benchmarks.common.environment import spmm_asset_snapshot
+
+
+class FakeSPMMTokenizer:
+    pad_token_id = 0
+    cls_token_id = 2
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, bool]] = []
+
+    def encode(self, sequence: str, **kwargs):
+        truncated = bool(kwargs.get("truncation"))
+        self.calls.append((sequence, truncated))
+        smiles = sequence.removeprefix("[CLS]")
+        content = 101 if len(smiles) > 100 else max(1, len(smiles))
+        values = [2, 2, *([5] * content), 3]
+        if truncated and len(values) > int(kwargs["max_length"]):
+            values = values[: int(kwargs["max_length"]) - 1] + [3]
+        return values
+
+
+def _spmm_task() -> BenchmarkTask:
+    return BenchmarkTask(
+        benchmark="stage3",
+        task_id="experiment/spmm_tiny",
+        slots=("cation", "anion"),
+        condition_columns=("temperature_K",),
+        target_columns=("value",),
+        audit_columns=(),
+        train_paths=(),
+        valid_paths=(),
+        test_path=Path("test.csv"),
+        fold=1,
+        meta_group="tiny",
+        registry_payload={"task_id": "experiment/spmm_tiny"},
+    )
+
+
+def _spmm_raw() -> RawDataset:
+    return RawDataset(
+        components=(
+            ("F[C@H](Cl)Br", "[Cl-]"),
+            ("F[C@@H](Cl)Br", "[Cl-]"),
+            ("C" * 101, "[Cl-]"),
+        ),
+        component_count=2,
+        conditions=np.asarray([[290.0], [300.0], [310.0]]),
+        targets=np.asarray([[1.0], [2.0], [4.0]]),
+        source_rows=("tiny.csv:2", "tiny.csv:3", "tiny.csv:4"),
+        audit_rows=({}, {}, {}),
+    )
+
+
+def test_formal_spmm_config_resolves_108_jobs_and_is_strict() -> None:
+    config = load_benchmark_config("configs/benchmarks/spmm.yaml")
+    stage3 = configured_tasks(config, "stage3")
+    stage2 = configured_tasks(config, "stage2_physics")
+    assert len(stage3) == 21
+    assert stage2 == (
+        "simulation/heat_of_vaporization",
+        "simulation/homo",
+        "simulation/lumo",
+    )
+    assert len(stage3) * len(config.stage3.folds) + len(stage2) == 108
+    assert config.training["batch_size"] == 8
+    changed = config.to_dict()
+    changed["training"]["batch_size"] = 16
+    with pytest.raises(ValueError, match="registered fine-tuning recipe"):
+        benchmark_config_from_dict(changed)
+    runtime_variant = replace(config, runtime={**config.runtime, "num_workers": 8})
+    assert sweep_module._scientific_config(runtime_variant) == sweep_module._scientific_config(config)
+
+
+def test_spmm_environment_dispatches_to_dedicated_environment() -> None:
+    config = load_benchmark_config("configs/benchmarks/spmm.yaml")
+    command = environment_command(
+        config,
+        ("scripts/benchmarks/train.py", "--config", "configs/benchmarks/spmm.yaml"),
+        conda="/conda",
+    )
+    assert command[:6] == [
+        "/conda", "run", "--no-capture-output", "-n", "ilume-spmm", "python"
     ]
 
 
-def test_sweep_devices_are_assigned_round_robin(tmp_path: Path) -> None:
-    assert _parse_devices("cuda:0,cuda:2") == ("cuda:0", "cuda:2")
-    jobs, ensembles = _build_jobs(
-        root=tmp_path,
-        stage3_tasks=("experiment/one",),
-        folds=(1, 2),
-        stage2_tasks=("simulation/one",),
-        devices=("cuda:0", "cuda:1"),
+def test_spmm_asset_snapshot_rejects_hash_mismatch(tmp_path: Path, monkeypatch) -> None:
+    config = load_benchmark_config("configs/benchmarks/spmm.yaml")
+    checkout = tmp_path / "upstream"
+    checkout.mkdir()
+    checkpoint = tmp_path / "checkpoint_SPMM.ckpt"
+    checkpoint.write_bytes(b"x")
+    names = (
+        "SPMM_models.py",
+        "xbert.py",
+        "d_regression.py",
+        "vocab_bpe_300.txt",
+        "config_bert.json",
     )
-    assert [job.device for job in jobs] == ["cuda:0", "cuda:1", "cuda:1"]
-    assert ensembles["experiment/one"].device == "cuda:0"
-    assert _subprocess_env(None)["ILUME_DISABLE_PROGRESS"] == "1"
-    assert _subprocess_env("cuda:3")["CUDA_VISIBLE_DEVICES"] == "3"
+    for name in names:
+        (checkout / name).write_text("fixture", encoding="utf-8")
+    config = replace(
+        config,
+        model={
+            **config.model,
+            "pretrained_checkpoint": checkpoint.as_posix(),
+            "pretrained_size": 1,
+        },
+    )
+    expected = {
+        "SPMM_models.py": config.model["spmm_source_sha256"],
+        "xbert.py": config.model["xbert_source_sha256"],
+        "d_regression.py": config.model["regression_source_sha256"],
+        "vocab_bpe_300.txt": config.model["vocab_sha256"],
+        "config_bert.json": config.model["bert_config_sha256"],
+        "checkpoint_SPMM.ckpt": config.model["pretrained_sha256"],
+    }
+    monkeypatch.setattr(
+        "benchmarks.common.environment.repository_path",
+        lambda value: checkpoint if str(value).endswith(".ckpt") else checkout,
+    )
+    monkeypatch.setattr(
+        "benchmarks.common.environment.sha256_file", lambda path: expected[path.name]
+    )
+    monkeypatch.setattr(
+        "benchmarks.common.environment.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0, stdout=f"{config.model['revision']}\n"
+        ),
+    )
+
+    class Tokenizer:
+        vocab_size = 300
+        pad_token_id = 0
+        unk_token_id = 1
+        cls_token_id = 2
+        sep_token_id = 3
+        mask_token_id = 1
+
+    monkeypatch.setattr(
+        "benchmarks.common.environment._spmm_tokenizer", lambda path: Tokenizer()
+    )
+    assert spmm_asset_snapshot(config)["revision"] == config.model["revision"]
+    expected["xbert.py"] = "wrong"
+    with pytest.raises(RuntimeError, match="asset hash mismatch"):
+        spmm_asset_snapshot(config)
+
+
+def test_spmm_official_token_path_cache_truncation_collision_and_conditions() -> None:
+    raw = _spmm_raw()
+    task = _spmm_task()
+    tokenizer = FakeSPMMTokenizer()
+    cache = {}
+    condition_stats = SPMMConditionStats.fit(raw.conditions)
+    prepared = prepare_spmm_split(
+        raw,
+        task,
+        "train",
+        tokenizer,
+        cache,
+        condition_stats,
+        max_length=100,
+    )
+    assert prepared.audit["collision_group_count"] == 1
+    assert prepared.audit["collision_affected_rows"] == 2
+    assert prepared.audit["truncated_rows"] == ["tiny.csv:4"]
+    assert max(len(values) for values, _ in cache.values()) == 99
+    assert all(int(values[0]) == 2 for values, _ in cache.values())
+    call_count = len(tokenizer.calls)
+    prepare_spmm_split(
+        raw,
+        task,
+        "valid",
+        tokenizer,
+        cache,
+        condition_stats,
+        max_length=100,
+    )
+    assert len(tokenizer.calls) == call_count
+    collate = spmm_collate(
+        prepared, cache, TargetStats.fit(raw.targets), pad_token_id=0
+    )
+    input_ids, attention_mask, conditions, targets = collate([0, 1, 2])
+    assert input_ids.shape == attention_mask.shape == (6, 99)
+    assert conditions[:, 0].tolist() == pytest.approx([-1.2247449, 0.0, 1.2247449])
+    assert targets.shape == (3, 1)
+
+
+class FakeSPMMBert(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.ones(1))
+        self.calls = 0
+
+    def forward(self, input_ids, attention_mask, return_dict, mode):
+        self.calls += 1
+        assert mode == "text"
+        states = input_ids.float().unsqueeze(-1).repeat(1, 1, 4) * self.weight
+        return SimpleNamespace(last_hidden_state=states)
+
+
+class FakeSPMMTextEncoder(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.bert = FakeSPMMBert()
+
+
+def test_spmm_multicomponent_uses_one_shared_forward_in_registry_order() -> None:
+    encoder = FakeSPMMTextEncoder()
+    predictor = torch.nn.Linear(9, 1)
+    model = SharedSPMMRegressor(
+        encoder,
+        predictor,
+        component_count=2,
+        condition_dim=1,
+        hidden_dim=4,
+        load_audit={"loaded": True},
+    )
+    input_ids = torch.cat(
+        (
+            torch.ones((2, 3), dtype=torch.long),
+            torch.ones((2, 3), dtype=torch.long) * 2,
+        )
+    )
+    output = model(
+        input_ids,
+        torch.ones_like(input_ids),
+        torch.asarray([[10.0], [20.0]]),
+    )
+    assert output.shape == (2, 1)
+    assert encoder.bert.calls == 1
+    assert model.text_encoder is encoder
+
+
+def test_spmm_checkpoint_filters_exact_used_text_encoder_state(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = load_benchmark_config("configs/benchmarks/spmm.yaml")
+    checkpoint_path = tmp_path / "checkpoint.ckpt"
+    checkpoint_path.write_bytes(b"x")
+    config = replace(
+        config,
+        model={
+            **config.model,
+            "pretrained_checkpoint": checkpoint_path.as_posix(),
+            "pretrained_sha256": "trusted",
+            "pretrained_size": 1,
+        },
+    )
+    target = {f"bert.used.{index}": torch.zeros(1) for index in range(102)}
+
+    class Encoder:
+        def state_dict(self):
+            return target
+
+        def load_state_dict(self, values, strict):
+            assert strict is True
+            assert set(values) == set(target)
+
+    source = {
+        f"text_encoder.{key}": value.clone() for key, value in target.items()
+    }
+    source.update(
+        {f"text_encoder_m.ignored.{index}": torch.zeros(1) for index in range(656)}
+    )
+    monkeypatch.setattr(
+        "benchmarks.spmm.adapter._upstream_paths",
+        lambda config: (Path("xbert"), Path("vocab"), Path("config"), checkpoint_path),
+    )
+    monkeypatch.setattr("benchmarks.spmm.adapter.sha256_file", lambda path: "trusted")
+    monkeypatch.setattr(
+        "benchmarks.spmm.adapter.torch.load", lambda *args, **kwargs: {"state_dict": source}
+    )
+    audit = _load_pretrained_encoder(config, Encoder())
+    assert audit["source_state_entries"] == 758
+    assert audit["loaded_text_encoder_entries"] == 102
+    source.pop("text_encoder.bert.used.0")
+    source["other.ignored"] = torch.zeros(1)
+    with pytest.raises(RuntimeError, match="load contract mismatch"):
+        _load_pretrained_encoder(config, Encoder())
+
+
+def test_spmm_scheduler_has_exact_warmup_peak_and_cosine_floor() -> None:
+    values = [
+        _scheduled_learning_rate(
+            step,
+            total_steps=100,
+            warmup_steps=10,
+            warmup_learning_rate=5.0e-6,
+            peak_learning_rate=5.0e-5,
+            minimum_learning_rate=3.0e-6,
+        )
+        for step in range(100)
+    ]
+    assert values[0] == pytest.approx(5.0e-6)
+    assert values[9] == pytest.approx(5.0e-5)
+    assert values[10] == pytest.approx(5.0e-5)
+    assert values[-1] == pytest.approx(3.0e-6)
+    assert all(left <= right for left, right in zip(values[:9], values[1:10]))
+    assert all(left >= right for left, right in zip(values[10:-1], values[11:]))

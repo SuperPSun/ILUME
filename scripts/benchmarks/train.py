@@ -9,6 +9,11 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from benchmarks.common.config import load_benchmark_config
+from benchmarks.common.environment import (
+    ensure_benchmark_environment,
+    environment_run_details,
+    write_environment_snapshot,
+)
 from benchmarks.common.engine import prepare_training, train_bundle
 from common.outputs import open_run_directory
 from common.progress import ProgressReporter
@@ -23,6 +28,7 @@ def main() -> None:
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     config = load_benchmark_config(args.config)
+    environment_snapshot = ensure_benchmark_environment(config)
     reporter = ProgressReporter()
     bundle = prepare_training(
         config, args.benchmark, args.task, args.fold, reporter=reporter
@@ -36,9 +42,18 @@ def main() -> None:
         output=args.output,
         seed=config.seed,
         data_metadata=["data/task_catalog.csv", "data/stage2/metadata.json"],
-        details={"benchmark": args.benchmark, "task": args.task, "fold": args.fold},
+        details={
+            "benchmark": args.benchmark,
+            "task": args.task,
+            "fold": args.fold,
+            **environment_run_details(environment_snapshot),
+        },
     )
     try:
+        if environment_snapshot is not None:
+            write_environment_snapshot(
+                run.root / "environment.json", environment_snapshot
+            )
         result = train_bundle(config, bundle, run.root, reporter=reporter)
         run.complete({"benchmark": args.benchmark, "task": args.task, "fold": args.fold, **result})
     except BaseException:
