@@ -31,7 +31,15 @@ def main() -> None:
         output=args.output, seed=config.data.seed,
         resume=args.resume,
         details={
-            "checkpoint": repository_relative(config.initialization.checkpoint),
+            **(
+                {"representation": "rdkit_2d_mlp"}
+                if config.representation is not None
+                else {
+                    "checkpoint": repository_relative(
+                        config.initialization.checkpoint
+                    )
+                }
+            ),
             "math_contract": math_contract,
             "optimizer_implementation": (
                 "fused" if device.type == "cuda" else "single_tensor"
@@ -40,7 +48,11 @@ def main() -> None:
                 "entity_loading": "preload",
                 "pin_memory": device.type == "cuda",
                 "non_blocking_h2d": device.type == "cuda",
-                "teacher_dtype": "float32",
+                **(
+                    {}
+                    if config.representation is not None
+                    else {"teacher_dtype": "float32"}
+                ),
                 "validation": "inference_mode",
             },
         },

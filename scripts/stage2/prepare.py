@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -17,18 +18,19 @@ from stage2.registry import load_stage2_registry
 from stage2.runtime import configure_stage2_math
 from stage2.identity import build_stage2_data_identity
 from stage1.identity import metadata_identity as stage1_metadata_identity
-import json
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Prepare Stage 2 data and teacher cache.")
+    parser = argparse.ArgumentParser(description="Prepare Stage 2 representation data.")
     parser.add_argument("--config", required=True)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     config = load_stage2_config(args.config)
     device = resolve_device(config.training.device)
     math_contract = configure_stage2_math(device)
-    registry = load_stage2_registry(config.data.task_catalog_path)
+    registry = config.resolved_registry(
+        load_stage2_registry(config.data.task_catalog_path)
+    )
     sources = [config.data.task_catalog_path]
     for spec in registry.tasks:
         sources.extend(
@@ -43,28 +45,44 @@ def main() -> None:
         "stage2",
         {f"source_{index:05d}": path for index, path in enumerate(sources)},
     )
-    stage1_metadata = json.loads(
-        (config.data.pretrain_artifacts_dir / "metadata.json").read_text(
-            encoding="utf-8"
+    rdkit_materialization = None
+    if config.representation is not None:
+        from stage2.rdkit import resolve_rdkit_stage2_materialization
+
+        rdkit_materialization = resolve_rdkit_stage2_materialization(config)
+        data_identity = rdkit_materialization["data_identity"]
+    else:
+        assert config.data.pretrain_artifacts_dir is not None
+        stage1_metadata = json.loads(
+            (config.data.pretrain_artifacts_dir / "metadata.json").read_text(
+                encoding="utf-8"
+            )
         )
-    )
-    feature_identity = stage1_metadata_identity(
-        stage1_metadata, "feature", context="Stage 1 feature artifact"
-    )
-    data_identity = build_stage2_data_identity(config, registry, feature_identity)
+        feature_identity = stage1_metadata_identity(
+            stage1_metadata, "feature", context="Stage 1 feature artifact"
+        )
+        data_identity = build_stage2_data_identity(config, registry, feature_identity)
     run = open_run_directory(
         stage="stage2", operation="prepare", config_path=args.config,
         config_payload=config.to_dict(), semantic_identity=data_identity,
         output=args.output, seed=config.data.seed, reusable=True,
-        details={
-            "checkpoint": repository_relative(config.initialization.checkpoint),
-            "math_contract": math_contract,
-            "teacher_dtype": "float32",
-        },
+        details=(
+            {"representation": "rdkit_2d_mlp", "math_contract": math_contract}
+            if config.representation is not None
+            else {
+                "checkpoint": repository_relative(config.initialization.checkpoint),
+                "math_contract": math_contract,
+                "teacher_dtype": "float32",
+            }
+        ),
     )
     effective = replace(config, data=replace(config.data, artifacts_dir=run.artifacts))
     try:
-        run.complete(prepare_teacher_cache(effective))
+        run.complete(
+            prepare_teacher_cache(
+                effective, rdkit_materialization=rdkit_materialization
+            )
+        )
     except BaseException:
         run.fail()
         raise

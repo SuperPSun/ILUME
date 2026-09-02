@@ -138,6 +138,57 @@ python scripts/benchmarks/summarize.py \
 不改变 scientific identity。正式执行前应保证对应输出目录不存在；恢复必须显式添加
 `--resume`。
 
+### No-Stage1：RDKit 2D → Stage2 → Stage3 HoME
+
+[ADR-0036](docs/adr/0036-no-stage1-rdkit-stage2-stage3-ablation.md) 用共享的
+`217D → 1024D → 512D` RDKit MLP 替换 Stage1 backbone，保留 Stage2 ObjectEncoder 与
+Stage3 Base。该路径不读取 Stage1 artifact/checkpoint 或 teacher cache；Stage2 训练八个
+object/interaction task，Partial Charge 与 Full 为 unsupported。
+
+```bash
+python scripts/stage2/prepare.py \
+  --config configs/ablations/no_stage1_rdkit_stage2.yaml \
+  --output outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/prepare
+
+python scripts/stage2/train.py \
+  --config configs/ablations/no_stage1_rdkit_stage2.yaml \
+  --output outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/train
+
+python scripts/stage2/evaluate.py \
+  --config configs/ablations/no_stage1_rdkit_stage2.yaml \
+  --checkpoint-dir outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/train \
+  --output outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test
+
+python scripts/stage3/prepare.py \
+  --config configs/ablations/no_stage1_rdkit_stage3.yaml \
+  --output outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/prepare
+
+python scripts/stage3/train.py \
+  --config configs/ablations/no_stage1_rdkit_stage3.yaml \
+  --fold 1 2 3 4 5 \
+  --output outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/train
+
+python scripts/stage3/evaluate.py \
+  --config configs/ablations/no_stage1_rdkit_stage3.yaml \
+  --checkpoint-dir outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/train \
+  --split valid --fold 1 2 3 4 5 \
+  --output outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid
+
+python scripts/stage3/evaluate.py \
+  --config configs/ablations/no_stage1_rdkit_stage3.yaml \
+  --checkpoint-dir outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/train \
+  --split test --ensemble-folds \
+  --output outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test
+
+python scripts/benchmarks/summarize.py \
+  --input outputs/v1 outputs/benchmarks outputs/ablations \
+  --output summary
+```
+
+Stage2/Stage3 resume 分别在上述 train 命令追加 `--resume <checkpoint>` 与 `--resume`；新
+输出不得覆盖既有目录。Stage3 五折默认串行，多 GPU 调度只增加 `--max-parallel` 和
+`--devices`，不改变实验 identity。
+
 ## Baselines and Ablations
 
 MLP、ECFP4-XGBoost、Chemprop D-MPNN、MoLFormer、ILBERT 与 SPMM 位于 `benchmarks/`；

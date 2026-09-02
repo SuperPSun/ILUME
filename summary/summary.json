@@ -1,11 +1,16 @@
 {
   "schema_version": 1,
   "inputs": [
+    "06db1bb8561f06ee1ca4b297b510a1b7a1103bc60dd690643aeecdb2262161e7",
+    "116dd9ffb7a68aa7203db3b49964d45c3b919b1649eb95bf6ce626b590af2146",
     "1196142b92a1f98f2866d7a562b79b54ee1c2d8fab2136613eda94bc955180fc",
+    "156b0cc37332b3a923d8bd9f26e682d5e082d72fb0010f67b7984ff65ef9be7c",
     "36136ce74157b90b2bffee3ef78bfb0c2a7f0ecb4a0b1bf7ca39615e3605906e",
+    "376fba161897581a44167371a254df5f46f9fd085e0c4fc542791844b3308d51",
     "3f6166e829b96159a7da4f5b7bdca1326a7132b144c66d8ddb47eeac2be75970",
     "4abeb4a33fcc78ea57fc0b78e77f886df8a57e0d06f4304d588d0fdf3fe12b95",
     "4c9f6e5ad8fd3c22c5f9b0948b5a536f84e57d6436c3e41a1d68a901cb693337",
+    "6fa23222e5797601ed4768d1d80353b1ec1330320405437a12441d4356e630da",
     "772064943a15af694fd5b8de4017dd7fe71820d42dc8a4a4a28d60391f15ec44",
     "7c3e32a792430f09367e47c7bbc927218fa92a5a83ac93e9d569ea15f53debcc",
     "8764f89cd3a4fe51a9fdd5646fb88bf193540a3ecd8b6ade3bdfafd388a5aaa7",
@@ -18,7 +23,9 @@
     "cabc0bc0f7b763fe9b9ba1361e0d6b3309460e476f991c810c77e0713e2e75e9",
     "cf0574ec6b9fdcd71fb57dc5bba486d2a157d895b887c6017b60f82a93fbf9d4",
     "dbae1c807761a37a9f575d858fa7ef45ee66f72b077495bfb4f433a349c14f9c",
+    "de44bee6e55490845d1ffc753dd638aa406d03c7740f4f27ee1d24cf28af582b",
     "e6536fa195bf08577a83b2e8b069814f823469d5d3c5ce770e295aea5e18fb07",
+    "e6e197e18a2a092ce19a8a85344fb0803e009ceb4adc87fff2df8bf7bb99b852",
     "e7b7e8b5111aeb29b4e430f82b6aa4f360873b6e6d07067876d7cf33b24af90f",
     "f88a78c48ee7c4d2878386978aa90cc077351a8cd1d7db3702e16aa2a012f34e"
   ],
@@ -561,6 +568,7 @@
           "hash": "d6252504c2f52e2b1d390000cfd9171dc365840877331671de90991037efa2de"
         },
         "source_runs": [
+          "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test",
           "outputs/ablations/stage1_stage2_rdkit_home/evaluate/test",
           "outputs/benchmarks/v1/dmpnn",
           "outputs/benchmarks/v1/ecfp_xgboost",
@@ -1507,6 +1515,11 @@
           "hash": "7610df5ae5dce514537718a760a9f472c3abf9d288a1dca1542005e39775efdc"
         },
         "source_runs": [
+          "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold1",
+          "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold2",
+          "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold3",
+          "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold4",
+          "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold5",
           "outputs/ablations/stage1_stage2_rdkit_home/evaluate/valid/fold1",
           "outputs/ablations/stage1_stage2_rdkit_home/evaluate/valid/fold2",
           "outputs/ablations/stage1_stage2_rdkit_home/evaluate/valid/fold3",
@@ -1563,6 +1576,7 @@
           "hash": "349e1002d831c32da11e360e0a49638879be41f8367ccf587bc055c4e57a0e53"
         },
         "source_runs": [
+          "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test",
           "outputs/benchmarks/v1/dmpnn",
           "outputs/benchmarks/v1/ecfp_xgboost",
           "outputs/benchmarks/v1/ilbert",
@@ -1694,16 +1708,28 @@
   "leaderboards": {
     "stage3_test": [
       {
+        "run": "rdkit_2d_stage2_home@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "macro_normalized_mae": 0.18261096365427976,
+        "valid_tasks": 11,
+        "total_tasks": 11,
+        "per_task_wins": 4,
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test",
+        "checkpoint_epoch": null,
+        "enabled_tasks": 21,
+        "rank": 1
+      },
+      {
         "run": "rdkit_2d_home@outputs/ablations/stage1_stage2_rdkit_home/evaluate/test",
         "model": "RDKit 2D + HoME",
         "macro_normalized_mae": 0.18413162775122932,
         "valid_tasks": 11,
         "total_tasks": 11,
-        "per_task_wins": 5,
+        "per_task_wins": 3,
         "source_run": "outputs/ablations/stage1_stage2_rdkit_home/evaluate/test",
         "checkpoint_epoch": null,
         "enabled_tasks": 21,
-        "rank": 1
+        "rank": 2
       },
       {
         "run": "ilume@outputs/v1/stage3/base/test",
@@ -1711,11 +1737,11 @@
         "macro_normalized_mae": 0.18613398527905617,
         "valid_tasks": 11,
         "total_tasks": 11,
-        "per_task_wins": 3,
+        "per_task_wins": 1,
         "source_run": "outputs/v1/stage3/base/test",
         "checkpoint_epoch": null,
         "enabled_tasks": 21,
-        "rank": 2
+        "rank": 3
       },
       {
         "run": "mlp@outputs/benchmarks/v1/mlp",
@@ -1727,7 +1753,7 @@
         "source_run": "outputs/benchmarks/v1/mlp",
         "checkpoint_epoch": "",
         "enabled_tasks": 21,
-        "rank": 3
+        "rank": 4
       },
       {
         "run": "ilume_stage3_single_task_mlp@outputs/benchmarks/v1/ilume_stage3_single_task_mlp",
@@ -1739,7 +1765,7 @@
         "source_run": "outputs/benchmarks/v1/ilume_stage3_single_task_mlp",
         "checkpoint_epoch": "",
         "enabled_tasks": 21,
-        "rank": 4
+        "rank": 5
       },
       {
         "run": "dmpnn@outputs/benchmarks/v1/dmpnn",
@@ -1751,7 +1777,7 @@
         "source_run": "outputs/benchmarks/v1/dmpnn",
         "checkpoint_epoch": "",
         "enabled_tasks": 21,
-        "rank": 5
+        "rank": 6
       },
       {
         "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
@@ -1763,7 +1789,7 @@
         "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "checkpoint_epoch": "",
         "enabled_tasks": 21,
-        "rank": 6
+        "rank": 7
       },
       {
         "run": "ilbert@outputs/benchmarks/v1/ilbert",
@@ -1775,7 +1801,7 @@
         "source_run": "outputs/benchmarks/v1/ilbert",
         "checkpoint_epoch": "",
         "enabled_tasks": 21,
-        "rank": 7
+        "rank": 8
       },
       {
         "run": "molformer@outputs/benchmarks/v1/molformer",
@@ -1787,7 +1813,7 @@
         "source_run": "outputs/benchmarks/v1/molformer",
         "checkpoint_epoch": "",
         "enabled_tasks": 21,
-        "rank": 8
+        "rank": 9
       }
     ],
     "stage3_validation": [
@@ -1797,7 +1823,7 @@
         "macro_normalized_mae": 0.21559429915694361,
         "valid_tasks": 21,
         "total_tasks": 21,
-        "per_task_wins": 6,
+        "per_task_wins": 5,
         "source_run": "outputs/v1/stage3/base/evaluate/fold1;outputs/v1/stage3/base/evaluate/fold2;outputs/v1/stage3/base/evaluate/fold3;outputs/v1/stage3/base/evaluate/fold4;outputs/v1/stage3/base/evaluate/fold5",
         "checkpoint_epoch": null,
         "rank": 1
@@ -1814,6 +1840,17 @@
         "rank": 2
       },
       {
+        "run": "rdkit_2d_stage2_home@study:rdkit-2d-stage2-home-stage3-aadbdf3dbd2b69bd17a602fd1ec9ce1c680090f6e63d2e9774a92afa87c0de57-taskwise-refined",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "macro_normalized_mae": 0.22094085176510064,
+        "valid_tasks": 21,
+        "total_tasks": 21,
+        "per_task_wins": 1,
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold1;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold2;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold3;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold4;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold5",
+        "checkpoint_epoch": null,
+        "rank": 3
+      },
+      {
         "run": "ilume_stage3_single_task_mlp@outputs/benchmarks/v1/ilume_stage3_single_task_mlp",
         "model": "ILUME Stage3 Single-task MLP",
         "macro_normalized_mae": 0.22307280358659556,
@@ -1822,7 +1859,7 @@
         "per_task_wins": 3,
         "source_run": "outputs/benchmarks/v1/ilume_stage3_single_task_mlp",
         "checkpoint_epoch": "",
-        "rank": 3
+        "rank": 4
       },
       {
         "run": "rdkit_2d_home@study:rdkit-2d-home-stage3-eb9859cafaa86c3a85b5c0278ca6d0682d1edd43de0502d747bead2ba4024ef6-taskwise-refined",
@@ -1833,7 +1870,7 @@
         "per_task_wins": 4,
         "source_run": "outputs/ablations/stage1_stage2_rdkit_home/evaluate/valid/fold1;outputs/ablations/stage1_stage2_rdkit_home/evaluate/valid/fold2;outputs/ablations/stage1_stage2_rdkit_home/evaluate/valid/fold3;outputs/ablations/stage1_stage2_rdkit_home/evaluate/valid/fold4;outputs/ablations/stage1_stage2_rdkit_home/evaluate/valid/fold5",
         "checkpoint_epoch": null,
-        "rank": 4
+        "rank": 5
       },
       {
         "run": "dmpnn@outputs/benchmarks/v1/dmpnn",
@@ -1844,7 +1881,7 @@
         "per_task_wins": 1,
         "source_run": "outputs/benchmarks/v1/dmpnn",
         "checkpoint_epoch": "",
-        "rank": 5
+        "rank": 6
       },
       {
         "run": "ilbert@outputs/benchmarks/v1/ilbert",
@@ -1855,7 +1892,7 @@
         "per_task_wins": 4,
         "source_run": "outputs/benchmarks/v1/ilbert",
         "checkpoint_epoch": "",
-        "rank": 6
+        "rank": 7
       },
       {
         "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
@@ -1866,7 +1903,7 @@
         "per_task_wins": 0,
         "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "checkpoint_epoch": "",
-        "rank": 7
+        "rank": 8
       },
       {
         "run": "molformer@outputs/benchmarks/v1/molformer",
@@ -1877,7 +1914,7 @@
         "per_task_wins": 0,
         "source_run": "outputs/benchmarks/v1/molformer",
         "checkpoint_epoch": "",
-        "rank": 8
+        "rank": 9
       }
     ],
     "stage2_core_physics": [
@@ -1926,6 +1963,17 @@
         "rank": 4
       },
       {
+        "run": "rdkit_2d_stage2@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test",
+        "model": "RDKit 2D MLP + Stage2",
+        "macro_normalized_mae": 0.09173944330287266,
+        "valid_tasks": 3,
+        "total_tasks": 3,
+        "per_task_wins": 0,
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test",
+        "checkpoint_epoch": null,
+        "rank": 5
+      },
+      {
         "run": "molformer@outputs/benchmarks/v1/molformer",
         "model": "MoLFormer-XL-both-10pct",
         "macro_normalized_mae": 0.0936611555818158,
@@ -1934,7 +1982,7 @@
         "per_task_wins": 0,
         "source_run": "outputs/benchmarks/v1/molformer",
         "checkpoint_epoch": "",
-        "rank": 5
+        "rank": 6
       },
       {
         "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
@@ -1945,7 +1993,7 @@
         "per_task_wins": 0,
         "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "checkpoint_epoch": "",
-        "rank": 6
+        "rank": 7
       }
     ],
     "stage2_partial_charge": [
@@ -3052,6 +3100,138 @@
         "normalized_mae": 0.22638920791358028,
         "normalized_rmse": 0.3689978212644563,
         "source_run": "outputs/ablations/stage1_stage2_rdkit_home/evaluate/test"
+      },
+      {
+        "run": "rdkit_2d_stage2_home@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/density",
+        "count": 4918,
+        "mae": 0.016611382795475808,
+        "rmse": 0.03058129118949258,
+        "r2": 0.9701778431362689,
+        "normalized_mae": 0.0927128404801482,
+        "normalized_rmse": 0.1706828628680202,
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test"
+      },
+      {
+        "run": "rdkit_2d_stage2_home@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/electrical_conductivity",
+        "count": 467,
+        "mae": 0.18470714957974563,
+        "rmse": 0.31943553795998264,
+        "r2": 0.8560229602920846,
+        "normalized_mae": 0.12630510595199124,
+        "normalized_rmse": 0.21843409721098944,
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test"
+      },
+      {
+        "run": "rdkit_2d_stage2_home@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/glass_transition_temperature",
+        "count": 79,
+        "mae": 8.714928542511373,
+        "rmse": 11.99646102018986,
+        "r2": 0.7037480527292279,
+        "normalized_mae": 0.2975352759159931,
+        "normalized_rmse": 0.40956966224637154,
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test"
+      },
+      {
+        "run": "rdkit_2d_stage2_home@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/melting_point",
+        "count": 524,
+        "mae": 27.66568875494804,
+        "rmse": 38.313462182145706,
+        "r2": 0.4887091854425495,
+        "normalized_mae": 0.38817481306917573,
+        "normalized_rmse": 0.5375727729868071,
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test"
+      },
+      {
+        "run": "rdkit_2d_stage2_home@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/refractive_index",
+        "count": 579,
+        "mae": 0.004969580185845726,
+        "rmse": 0.008420045910011031,
+        "r2": 0.9561112360960289,
+        "normalized_mae": 0.12561488601789156,
+        "normalized_rmse": 0.21283148026546078,
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test"
+      },
+      {
+        "run": "rdkit_2d_stage2_home@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/solvation",
+        "count": 2379,
+        "mae": 0.058248063687982056,
+        "rmse": 0.15488398903601874,
+        "r2": 0.9807375541049611,
+        "normalized_mae": 0.053167143176157595,
+        "normalized_rmse": 0.14137361311928814,
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test"
+      },
+      {
+        "run": "rdkit_2d_stage2_home@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/surface_tension",
+        "count": 545,
+        "mae": 2.3222806318090594,
+        "rmse": 3.4997129718789592,
+        "r2": 0.8689532108012383,
+        "normalized_mae": 0.2620529848142151,
+        "normalized_rmse": 0.3949179172025727,
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test"
+      },
+      {
+        "run": "rdkit_2d_stage2_home@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/thermal_decomposition_temperature",
+        "count": 276,
+        "mae": 24.507553100585938,
+        "rmse": 36.140421606752064,
+        "r2": 0.7801427119991473,
+        "normalized_mae": 0.3241798120782114,
+        "normalized_rmse": 0.478056501063915,
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test"
+      },
+      {
+        "run": "rdkit_2d_stage2_home@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/transfer",
+        "count": 308,
+        "mae": 0.09008978277311794,
+        "rmse": 0.15429932341340075,
+        "r2": 0.9951140328867184,
+        "normalized_mae": 0.03907131949344724,
+        "normalized_rmse": 0.06691855587986426,
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test"
+      },
+      {
+        "run": "rdkit_2d_stage2_home@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/transfer_organic",
+        "count": 191,
+        "mae": 0.18071188180081435,
+        "rmse": 0.3320899887065259,
+        "r2": 0.9782060474911243,
+        "normalized_mae": 0.07705637906345465,
+        "normalized_rmse": 0.14160470135081688,
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test"
+      },
+      {
+        "run": "rdkit_2d_stage2_home@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/viscosity",
+        "count": 2459,
+        "mae": 0.16646439461973006,
+        "rmse": 0.27166324813978504,
+        "r2": 0.8403567655011307,
+        "normalized_mae": 0.22285004013639131,
+        "normalized_rmse": 0.36368237117511526,
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test"
       }
     ],
     "stage3_validation": [
@@ -5742,6 +5922,342 @@
         "normalized_mae_std": 0.01364507497665569,
         "normalized_rmse_mean": 0.20825191024303522,
         "normalized_rmse_std": 0.02506950280734424
+      },
+      {
+        "run": "rdkit_2d_stage2_home@study:rdkit-2d-stage2-home-stage3-aadbdf3dbd2b69bd17a602fd1ec9ce1c680090f6e63d2e9774a92afa87c0de57-taskwise-refined",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/density",
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold1;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold2;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold3;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold4;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold5",
+        "mae_mean": 0.013548775021511205,
+        "mae_std": 0.0027898054897559765,
+        "rmse_mean": 0.029407925431670073,
+        "rmse_std": 0.007950093060839354,
+        "r2_mean": 0.9710404669307015,
+        "r2_std": 0.01562789164395556,
+        "normalized_mae_mean": 0.07557804099045326,
+        "normalized_mae_std": 0.015189581803924148,
+        "normalized_rmse_mean": 0.16413105076048332,
+        "normalized_rmse_std": 0.04437334291377347
+      },
+      {
+        "run": "rdkit_2d_stage2_home@study:rdkit-2d-stage2-home-stage3-aadbdf3dbd2b69bd17a602fd1ec9ce1c680090f6e63d2e9774a92afa87c0de57-taskwise-refined",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/dynamic_relative_permittivity",
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold1;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold2;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold3;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold4;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold5",
+        "mae_mean": 0.877868290019553,
+        "mae_std": 0.38396226229142516,
+        "rmse_mean": 1.2477670156015896,
+        "rmse_std": 0.5953593439690992,
+        "r2_mean": 0.3763942981518607,
+        "r2_std": 0.5236987939117783,
+        "normalized_mae_mean": 0.4616128140480982,
+        "normalized_mae_std": 0.23804440792490875,
+        "normalized_rmse_mean": 0.6572592171833131,
+        "normalized_rmse_std": 0.36429152319209424
+      },
+      {
+        "run": "rdkit_2d_stage2_home@study:rdkit-2d-stage2-home-stage3-aadbdf3dbd2b69bd17a602fd1ec9ce1c680090f6e63d2e9774a92afa87c0de57-taskwise-refined",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/electrical_conductivity",
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold1;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold2;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold3;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold4;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold5",
+        "mae_mean": 0.191252619408494,
+        "mae_std": 0.0240865412930642,
+        "rmse_mean": 0.374883068942694,
+        "rmse_std": 0.059045180504651344,
+        "r2_mean": 0.907748964287762,
+        "r2_std": 0.05590121499518101,
+        "normalized_mae_mean": 0.13107329856937275,
+        "normalized_mae_std": 0.01787816559635479,
+        "normalized_rmse_mean": 0.2583813207560934,
+        "normalized_rmse_std": 0.054295883569670376
+      },
+      {
+        "run": "rdkit_2d_stage2_home@study:rdkit-2d-stage2-home-stage3-aadbdf3dbd2b69bd17a602fd1ec9ce1c680090f6e63d2e9774a92afa87c0de57-taskwise-refined",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/equilibrium_pressure",
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold1;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold2;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold3;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold4;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold5",
+        "mae_mean": 0.38378329254236215,
+        "mae_std": 0.15517063529948885,
+        "rmse_mean": 0.784640962768078,
+        "rmse_std": 0.3874119455227002,
+        "r2_mean": 0.8006729937713764,
+        "r2_std": 0.18082949536459453,
+        "normalized_mae_mean": 0.19099886198389315,
+        "normalized_mae_std": 0.08161906372105353,
+        "normalized_rmse_mean": 0.3884991088052378,
+        "normalized_rmse_std": 0.191802272924514
+      },
+      {
+        "run": "rdkit_2d_stage2_home@study:rdkit-2d-stage2-home-stage3-aadbdf3dbd2b69bd17a602fd1ec9ce1c680090f6e63d2e9774a92afa87c0de57-taskwise-refined",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/glass_transition_temperature",
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold1;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold2;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold3;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold4;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold5",
+        "mae_mean": 11.045551934503077,
+        "mae_std": 0.7836523559586559,
+        "rmse_mean": 18.50687692113683,
+        "rmse_std": 2.20709805902754,
+        "r2_mean": 0.5951433581617941,
+        "r2_std": 0.07763408831251845,
+        "normalized_mae_mean": 0.37713715380525303,
+        "normalized_mae_std": 0.026505815588304126,
+        "normalized_rmse_mean": 0.6325140903193242,
+        "normalized_rmse_std": 0.08224197897732474
+      },
+      {
+        "run": "rdkit_2d_stage2_home@study:rdkit-2d-stage2-home-stage3-aadbdf3dbd2b69bd17a602fd1ec9ce1c680090f6e63d2e9774a92afa87c0de57-taskwise-refined",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/heat_capacity",
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold1;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold2;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold3;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold4;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold5",
+        "mae_mean": 32.776146256881745,
+        "mae_std": 9.78642728728074,
+        "rmse_mean": 59.741287997343434,
+        "rmse_std": 22.39440083073202,
+        "r2_mean": 0.9260511232149834,
+        "r2_std": 0.04234203152419555,
+        "normalized_mae_mean": 0.13890705577351828,
+        "normalized_mae_std": 0.04490843573772339,
+        "normalized_rmse_mean": 0.25349330940120335,
+        "normalized_rmse_std": 0.1005309305482137
+      },
+      {
+        "run": "rdkit_2d_stage2_home@study:rdkit-2d-stage2-home-stage3-aadbdf3dbd2b69bd17a602fd1ec9ce1c680090f6e63d2e9774a92afa87c0de57-taskwise-refined",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/isobaric_coefficient_of_volume_expansion",
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold1;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold2;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold3;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold4;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold5",
+        "mae_mean": 1.007507927399056e-05,
+        "mae_std": 9.170446958729634e-06,
+        "rmse_mean": 1.6595847524658096e-05,
+        "rmse_std": 1.3340152030797894e-05,
+        "r2_mean": 0.8303793036028801,
+        "r2_std": 0.14855985354499593,
+        "normalized_mae_mean": 0.24381743242183787,
+        "normalized_mae_std": 0.23686742039777797,
+        "normalized_rmse_mean": 0.4011506049564206,
+        "normalized_rmse_std": 0.3467013194516129
+      },
+      {
+        "run": "rdkit_2d_stage2_home@study:rdkit-2d-stage2-home-stage3-aadbdf3dbd2b69bd17a602fd1ec9ce1c680090f6e63d2e9774a92afa87c0de57-taskwise-refined",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/melting_point",
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold1;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold2;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold3;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold4;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold5",
+        "mae_mean": 27.53541395621094,
+        "mae_std": 1.3649085463694435,
+        "rmse_mean": 38.763561232314444,
+        "rmse_std": 1.957516333705072,
+        "r2_mean": 0.7028226274344417,
+        "r2_std": 0.02878641052513067,
+        "normalized_mae_mean": 0.38635756456121856,
+        "normalized_mae_std": 0.01929181729707299,
+        "normalized_rmse_mean": 0.5439420279011872,
+        "normalized_rmse_std": 0.028545237174521898
+      },
+      {
+        "run": "rdkit_2d_stage2_home@study:rdkit-2d-stage2-home-stage3-aadbdf3dbd2b69bd17a602fd1ec9ce1c680090f6e63d2e9774a92afa87c0de57-taskwise-refined",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/pec50",
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold1;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold2;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold3;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold4;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold5",
+        "mae_mean": 0.31576392991236857,
+        "mae_std": 0.030247025743561484,
+        "rmse_mean": 0.42909731571254567,
+        "rmse_std": 0.043506277111663105,
+        "r2_mean": 0.8301592958851706,
+        "r2_std": 0.050980000570177576,
+        "normalized_mae_mean": 0.2946652939911882,
+        "normalized_mae_std": 0.03044710536443592,
+        "normalized_rmse_mean": 0.4003040598683113,
+        "normalized_rmse_std": 0.04178138550743554
+      },
+      {
+        "run": "rdkit_2d_stage2_home@study:rdkit-2d-stage2-home-stage3-aadbdf3dbd2b69bd17a602fd1ec9ce1c680090f6e63d2e9774a92afa87c0de57-taskwise-refined",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/refractive_index",
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold1;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold2;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold3;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold4;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold5",
+        "mae_mean": 0.004965909475068982,
+        "mae_std": 0.000714820812557535,
+        "rmse_mean": 0.009278655468400105,
+        "rmse_std": 0.00206914474754431,
+        "r2_mean": 0.9428687137559532,
+        "r2_std": 0.020750798343091317,
+        "normalized_mae_mean": 0.12566706888062987,
+        "normalized_mae_std": 0.019235024997868614,
+        "normalized_rmse_mean": 0.2351744949546191,
+        "normalized_rmse_std": 0.055822523679565306
+      },
+      {
+        "run": "rdkit_2d_stage2_home@study:rdkit-2d-stage2-home-stage3-aadbdf3dbd2b69bd17a602fd1ec9ce1c680090f6e63d2e9774a92afa87c0de57-taskwise-refined",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/self_diffusion_coefficient",
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold1;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold2;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold3;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold4;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold5",
+        "mae_mean": 0.17462319395596976,
+        "mae_std": 0.06572660856988152,
+        "rmse_mean": 0.2396957899331779,
+        "rmse_std": 0.10538231199074419,
+        "r2_mean": 0.8533624944294144,
+        "r2_std": 0.12141358514038339,
+        "normalized_mae_mean": 0.21107558374698956,
+        "normalized_mae_std": 0.13422976781635806,
+        "normalized_rmse_mean": 0.29546160751523776,
+        "normalized_rmse_std": 0.21798958960659473
+      },
+      {
+        "run": "rdkit_2d_stage2_home@study:rdkit-2d-stage2-home-stage3-aadbdf3dbd2b69bd17a602fd1ec9ce1c680090f6e63d2e9774a92afa87c0de57-taskwise-refined",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/solvation",
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold1;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold2;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold3;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold4;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold5",
+        "mae_mean": 0.17701581171900319,
+        "mae_std": 0.0640898700563279,
+        "rmse_mean": 0.3038994630782659,
+        "rmse_std": 0.12283600689949432,
+        "r2_mean": 0.9136506655376513,
+        "r2_std": 0.06384500383736294,
+        "normalized_mae_mean": 0.16187583473778774,
+        "normalized_mae_std": 0.059914307748066414,
+        "normalized_rmse_mean": 0.2779531090492348,
+        "normalized_rmse_std": 0.11425852586777162
+      },
+      {
+        "run": "rdkit_2d_stage2_home@study:rdkit-2d-stage2-home-stage3-aadbdf3dbd2b69bd17a602fd1ec9ce1c680090f6e63d2e9774a92afa87c0de57-taskwise-refined",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/speed_of_sound",
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold1;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold2;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold3;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold4;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold5",
+        "mae_mean": 29.007021440794812,
+        "mae_std": 11.446732836742289,
+        "rmse_mean": 46.489479053813476,
+        "rmse_std": 14.406305633266188,
+        "r2_mean": 0.9347831029298848,
+        "r2_std": 0.06212552678639828,
+        "normalized_mae_mean": 0.14108391879217524,
+        "normalized_mae_std": 0.05294624076576581,
+        "normalized_rmse_mean": 0.22660460196448845,
+        "normalized_rmse_std": 0.06671431583190933
+      },
+      {
+        "run": "rdkit_2d_stage2_home@study:rdkit-2d-stage2-home-stage3-aadbdf3dbd2b69bd17a602fd1ec9ce1c680090f6e63d2e9774a92afa87c0de57-taskwise-refined",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/static_relative_permittivity",
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold1;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold2;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold3;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold4;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold5",
+        "mae_mean": 4.812093505910843,
+        "mae_std": 1.8995036684421156,
+        "rmse_mean": 6.681390830555088,
+        "rmse_std": 2.6390483036214882,
+        "r2_mean": 0.4582754044847517,
+        "r2_std": 0.30906901740593234,
+        "normalized_mae_mean": 0.4029368176237071,
+        "normalized_mae_std": 0.1615577051953981,
+        "normalized_rmse_mean": 0.5676215245493432,
+        "normalized_rmse_std": 0.2523115471086266
+      },
+      {
+        "run": "rdkit_2d_stage2_home@study:rdkit-2d-stage2-home-stage3-aadbdf3dbd2b69bd17a602fd1ec9ce1c680090f6e63d2e9774a92afa87c0de57-taskwise-refined",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/surface_tension",
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold1;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold2;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold3;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold4;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold5",
+        "mae_mean": 2.1391540799996793,
+        "mae_std": 0.21457944865330625,
+        "rmse_mean": 3.7869952449706714,
+        "rmse_std": 0.36692723145148864,
+        "r2_mean": 0.8152652289040545,
+        "r2_std": 0.018825571838472194,
+        "normalized_mae_mean": 0.24175177794058716,
+        "normalized_mae_std": 0.028004497963773894,
+        "normalized_rmse_mean": 0.4281098276298002,
+        "normalized_rmse_std": 0.05016010009838862
+      },
+      {
+        "run": "rdkit_2d_stage2_home@study:rdkit-2d-stage2-home-stage3-aadbdf3dbd2b69bd17a602fd1ec9ce1c680090f6e63d2e9774a92afa87c0de57-taskwise-refined",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/thermal_conductivity",
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold1;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold2;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold3;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold4;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold5",
+        "mae_mean": 0.006206184467465502,
+        "mae_std": 0.0007695011399122358,
+        "rmse_mean": 0.008858231518397016,
+        "rmse_std": 0.0007919292390861305,
+        "r2_mean": 0.876323640446598,
+        "r2_std": 0.026895092184428728,
+        "normalized_mae_mean": 0.2363160610705235,
+        "normalized_mae_std": 0.024418243790976055,
+        "normalized_rmse_mean": 0.3382852725178542,
+        "normalized_rmse_std": 0.03498757248351192
+      },
+      {
+        "run": "rdkit_2d_stage2_home@study:rdkit-2d-stage2-home-stage3-aadbdf3dbd2b69bd17a602fd1ec9ce1c680090f6e63d2e9774a92afa87c0de57-taskwise-refined",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/thermal_decomposition_temperature",
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold1;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold2;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold3;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold4;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold5",
+        "mae_mean": 23.958971634220248,
+        "mae_std": 1.0607429945554327,
+        "rmse_mean": 34.98505978967157,
+        "rmse_std": 2.3739826506068997,
+        "r2_mean": 0.7846864629370868,
+        "r2_std": 0.028154998975383195,
+        "normalized_mae_mean": 0.31695773284090173,
+        "normalized_mae_std": 0.014834050882565416,
+        "normalized_rmse_mean": 0.46284230060232423,
+        "normalized_rmse_std": 0.03249048313332647
+      },
+      {
+        "run": "rdkit_2d_stage2_home@study:rdkit-2d-stage2-home-stage3-aadbdf3dbd2b69bd17a602fd1ec9ce1c680090f6e63d2e9774a92afa87c0de57-taskwise-refined",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/transfer",
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold1;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold2;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold3;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold4;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold5",
+        "mae_mean": 0.2251114669474165,
+        "mae_std": 0.06758232714850738,
+        "rmse_mean": 0.3525317516680271,
+        "rmse_std": 0.16130433295561877,
+        "r2_mean": 0.9724803679993311,
+        "r2_std": 0.028208060301763465,
+        "normalized_mae_mean": 0.097609691066942,
+        "normalized_mae_std": 0.029175595518025614,
+        "normalized_rmse_mean": 0.15284834772093273,
+        "normalized_rmse_std": 0.06969311594433363
+      },
+      {
+        "run": "rdkit_2d_stage2_home@study:rdkit-2d-stage2-home-stage3-aadbdf3dbd2b69bd17a602fd1ec9ce1c680090f6e63d2e9774a92afa87c0de57-taskwise-refined",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/transfer_organic",
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold1;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold2;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold3;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold4;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold5",
+        "mae_mean": 0.22504943813368275,
+        "mae_std": 0.028472033926047597,
+        "rmse_mean": 0.38998502615101577,
+        "rmse_std": 0.06840867817295909,
+        "r2_mean": 0.9716266601069298,
+        "r2_std": 0.008615327115758015,
+        "normalized_mae_mean": 0.09600926241840776,
+        "normalized_mae_std": 0.012660287977057531,
+        "normalized_rmse_mean": 0.16643025100073894,
+        "normalized_rmse_std": 0.030391338151244916
+      },
+      {
+        "run": "rdkit_2d_stage2_home@study:rdkit-2d-stage2-home-stage3-aadbdf3dbd2b69bd17a602fd1ec9ce1c680090f6e63d2e9774a92afa87c0de57-taskwise-refined",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/viscosity",
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold1;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold2;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold3;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold4;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold5",
+        "mae_mean": 0.12591473478571208,
+        "mae_std": 0.0176566216871556,
+        "rmse_mean": 0.2296348617924435,
+        "rmse_std": 0.02739640800009339,
+        "r2_mean": 0.9021692449326675,
+        "r2_std": 0.024574979096127374,
+        "normalized_mae_mean": 0.16863087124076626,
+        "normalized_mae_std": 0.02413486020635115,
+        "normalized_rmse_mean": 0.3075810104261092,
+        "normalized_rmse_std": 0.03800422134935716
+      },
+      {
+        "run": "rdkit_2d_stage2_home@study:rdkit-2d-stage2-home-stage3-aadbdf3dbd2b69bd17a602fd1ec9ce1c680090f6e63d2e9774a92afa87c0de57-taskwise-refined",
+        "model": "RDKit 2D MLP + Stage2 + HoME",
+        "task": "experiment/x_co2",
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold1;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold2;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold3;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold4;outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold5",
+        "mae_mean": 0.03246954537288441,
+        "mae_std": 0.00168059819175088,
+        "rmse_mean": 0.04923599481136139,
+        "rmse_std": 0.004083509338602853,
+        "r2_mean": 0.9534526056318278,
+        "r2_std": 0.0061830418467692695,
+        "normalized_mae_mean": 0.13969575056286265,
+        "normalized_mae_std": 0.008095806783365515,
+        "normalized_rmse_mean": 0.21194029339873924,
+        "normalized_rmse_std": 0.02016679889168963
       }
     ],
     "stage2_core_physics": [
@@ -6236,6 +6752,88 @@
         "normalized_mae": 0.09633600427368143,
         "normalized_rmse": 0.12854014196997626,
         "source_run": "outputs/benchmarks/v1/molformer"
+      },
+      {
+        "run": "rdkit_2d_stage2@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test",
+        "model": "RDKit 2D MLP + Stage2",
+        "task": "simulation/heat_of_vaporization",
+        "target": "heat_of_vaporization_kJ/mol",
+        "subset": "pooled",
+        "count": 2684,
+        "mae": 3.1291057716515995,
+        "rmse": 4.260668606108936,
+        "r2": 0.9774991632629472,
+        "normalized_mae": 0.11245888063486041,
+        "normalized_rmse": 0.15312682189908772,
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test"
+      },
+      {
+        "run": "rdkit_2d_stage2@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test",
+        "model": "RDKit 2D MLP + Stage2",
+        "task": "simulation/homo",
+        "target": "HOMO_eV",
+        "subset": "anion",
+        "count": 744,
+        "mae": 0.2678141396895985,
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test"
+      },
+      {
+        "run": "rdkit_2d_stage2@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test",
+        "model": "RDKit 2D MLP + Stage2",
+        "task": "simulation/homo",
+        "target": "HOMO_eV",
+        "subset": "cation",
+        "count": 917,
+        "mae": 0.33506904127872983,
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test"
+      },
+      {
+        "run": "rdkit_2d_stage2@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test",
+        "model": "RDKit 2D MLP + Stage2",
+        "task": "simulation/homo",
+        "target": "HOMO_eV",
+        "subset": "pooled",
+        "count": 1661,
+        "mae": 0.3049440281647541,
+        "rmse": 0.3920704122681224,
+        "r2": 0.9880008013791102,
+        "normalized_mae": 0.0846908650480793,
+        "normalized_rmse": 0.10888812145160161,
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test"
+      },
+      {
+        "run": "rdkit_2d_stage2@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test",
+        "model": "RDKit 2D MLP + Stage2",
+        "task": "simulation/lumo",
+        "target": "LUMO_eV",
+        "subset": "anion",
+        "count": 744,
+        "mae": 0.2299680337137038,
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test"
+      },
+      {
+        "run": "rdkit_2d_stage2@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test",
+        "model": "RDKit 2D MLP + Stage2",
+        "task": "simulation/lumo",
+        "target": "LUMO_eV",
+        "subset": "cation",
+        "count": 917,
+        "mae": 0.3364696128705406,
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test"
+      },
+      {
+        "run": "rdkit_2d_stage2@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test",
+        "model": "RDKit 2D MLP + Stage2",
+        "task": "simulation/lumo",
+        "target": "LUMO_eV",
+        "subset": "pooled",
+        "count": 1661,
+        "mae": 0.28876511263412485,
+        "rmse": 0.38028105945180746,
+        "r2": 0.9894395288356426,
+        "normalized_mae": 0.0780685842256783,
+        "normalized_rmse": 0.10281021709453979,
+        "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test"
       }
     ],
     "stage2_partial_charge": [
@@ -6394,8 +6992,6 @@
   "wins": {
     "stage3_test": {
       "ilume@outputs/v1/stage3/base/test": [
-        "experiment/refractive_index",
-        "experiment/transfer_organic",
         "experiment/viscosity"
       ],
       "ilume_stage3_single_task_mlp@outputs/benchmarks/v1/ilume_stage3_single_task_mlp": [
@@ -6407,10 +7003,14 @@
       ],
       "rdkit_2d_home@outputs/ablations/stage1_stage2_rdkit_home/evaluate/test": [
         "experiment/electrical_conductivity",
-        "experiment/glass_transition_temperature",
         "experiment/solvation",
-        "experiment/surface_tension",
         "experiment/transfer"
+      ],
+      "rdkit_2d_stage2_home@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test": [
+        "experiment/glass_transition_temperature",
+        "experiment/refractive_index",
+        "experiment/surface_tension",
+        "experiment/transfer_organic"
       ]
     },
     "stage2_core_physics": {
@@ -6786,12 +7386,145 @@
       "issues": ""
     },
     {
+      "run": "rdkit_2d_stage2@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test",
+      "model": "RDKit 2D MLP + Stage2",
+      "stage": "stage2",
+      "operation": "evaluate",
+      "status": "completed",
+      "completeness": "complete",
+      "checkpoint_epoch": null,
+      "enabled_tasks": "",
+      "expected_tasks": 3,
+      "available_tasks": 3,
+      "available_folds": "",
+      "failed_jobs": "",
+      "stage2_core_eligibility": "eligible",
+      "stage2_partial_eligibility": "not_evaluated",
+      "stage2_full_eligibility": "not_evaluated",
+      "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test",
+      "issues": ""
+    },
+    {
+      "run": "rdkit_2d_stage2_home@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test",
+      "model": "RDKit 2D MLP + Stage2 + HoME",
+      "stage": "stage3",
+      "operation": "evaluate",
+      "status": "completed",
+      "completeness": "complete",
+      "checkpoint_epoch": null,
+      "enabled_tasks": 21,
+      "expected_tasks": 11,
+      "available_tasks": 11,
+      "available_folds": "1;2;3;4;5",
+      "failed_jobs": "",
+      "stage2_core_eligibility": "",
+      "stage2_partial_eligibility": "",
+      "stage2_full_eligibility": "",
+      "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test",
+      "issues": ""
+    },
+    {
+      "run": "rdkit_2d_stage2_home@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold1",
+      "model": "RDKit 2D MLP + Stage2 + HoME",
+      "stage": "stage3",
+      "operation": "evaluate",
+      "status": "completed",
+      "completeness": "complete",
+      "checkpoint_epoch": null,
+      "enabled_tasks": 0,
+      "expected_tasks": 21,
+      "available_tasks": 21,
+      "available_folds": "1",
+      "failed_jobs": "",
+      "stage2_core_eligibility": "",
+      "stage2_partial_eligibility": "",
+      "stage2_full_eligibility": "",
+      "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold1",
+      "issues": ""
+    },
+    {
+      "run": "rdkit_2d_stage2_home@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold2",
+      "model": "RDKit 2D MLP + Stage2 + HoME",
+      "stage": "stage3",
+      "operation": "evaluate",
+      "status": "completed",
+      "completeness": "complete",
+      "checkpoint_epoch": null,
+      "enabled_tasks": 0,
+      "expected_tasks": 21,
+      "available_tasks": 21,
+      "available_folds": "2",
+      "failed_jobs": "",
+      "stage2_core_eligibility": "",
+      "stage2_partial_eligibility": "",
+      "stage2_full_eligibility": "",
+      "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold2",
+      "issues": ""
+    },
+    {
+      "run": "rdkit_2d_stage2_home@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold3",
+      "model": "RDKit 2D MLP + Stage2 + HoME",
+      "stage": "stage3",
+      "operation": "evaluate",
+      "status": "completed",
+      "completeness": "complete",
+      "checkpoint_epoch": null,
+      "enabled_tasks": 0,
+      "expected_tasks": 21,
+      "available_tasks": 21,
+      "available_folds": "3",
+      "failed_jobs": "",
+      "stage2_core_eligibility": "",
+      "stage2_partial_eligibility": "",
+      "stage2_full_eligibility": "",
+      "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold3",
+      "issues": ""
+    },
+    {
+      "run": "rdkit_2d_stage2_home@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold4",
+      "model": "RDKit 2D MLP + Stage2 + HoME",
+      "stage": "stage3",
+      "operation": "evaluate",
+      "status": "completed",
+      "completeness": "complete",
+      "checkpoint_epoch": null,
+      "enabled_tasks": 0,
+      "expected_tasks": 21,
+      "available_tasks": 21,
+      "available_folds": "4",
+      "failed_jobs": "",
+      "stage2_core_eligibility": "",
+      "stage2_partial_eligibility": "",
+      "stage2_full_eligibility": "",
+      "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold4",
+      "issues": ""
+    },
+    {
+      "run": "rdkit_2d_stage2_home@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold5",
+      "model": "RDKit 2D MLP + Stage2 + HoME",
+      "stage": "stage3",
+      "operation": "evaluate",
+      "status": "completed",
+      "completeness": "complete",
+      "checkpoint_epoch": null,
+      "enabled_tasks": 0,
+      "expected_tasks": 21,
+      "available_tasks": 21,
+      "available_folds": "5",
+      "failed_jobs": "",
+      "stage2_core_eligibility": "",
+      "stage2_partial_eligibility": "",
+      "stage2_full_eligibility": "",
+      "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid/fold5",
+      "issues": ""
+    },
+    {
       "run": "unknown@outputs/benchmarks/v1/spmm",
       "model": "unknown",
       "stage": "benchmark",
       "operation": "sweep",
-      "status": "running",
-      "completeness": "running",
+      "status": "failed",
+      "completeness": "failed",
       "checkpoint_epoch": "",
       "enabled_tasks": "",
       "expected_tasks": "",

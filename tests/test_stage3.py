@@ -501,6 +501,51 @@ def test_rdkit_prepare_adapter_refinement_and_reporting_contract(
     with pytest.raises(ValueError, match="requires RDKit representation config"):
         load_prepared_stage3(object_config)
 
+
+def test_no_stage1_stage2_encoder_keeps_object_home_reporting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _tiny_config(tmp_path)
+    encoder_identity = semantic_identity(
+        "stage2.rdkit-encoder", {"contract_version": 1, "test": True}
+    )
+    monkeypatch.setattr(
+        "stage3.prepare.load_stage2_encoder_identity", lambda _: encoder_identity
+    )
+
+    def fake_materialize(config, object_keys, reporter=None):
+        del config, reporter
+        values = torch.arange(
+            len(object_keys) * 4, dtype=torch.float32
+        ).reshape(-1, 4) / 10
+        return values, encoder_identity, {"hits": 0, "misses": len(object_keys)}
+
+    with patch(
+        "stage3.prepare.materialize_object_embeddings",
+        side_effect=fake_materialize,
+    ):
+        prepare_stage3(config)
+    metadata = json.loads(
+        (config.data.artifacts_dir / "metadata.json").read_text(encoding="utf-8")
+    )
+    assert metadata["kind"] == "ilume_stage3_sparse_data"
+    assert metadata["provenance"]["representation"] == "rdkit_2d_stage2"
+
+    output = tmp_path / "no-stage1-stage3-train"
+    run_stage3_training(config, 1, output_dir=output)
+    evaluation = evaluate_checkpoints(
+        config,
+        output,
+        split="valid",
+        ensemble_folds=False,
+        task_subset=("experiment/a",),
+        fold=1,
+    )
+    assert evaluation["reporting"]["model_id"] == "rdkit_2d_stage2_home"
+    assert evaluation["reporting"]["model_display_name"] == (
+        "RDKit 2D MLP + Stage2 + HoME"
+    )
+
 def test_microbatch_accumulation_matches_full_task_batch(tiny_prepared: Stage3Config) -> None:
     registry = resolve_task_registry(tiny_prepared)
     dataset = Stage3TaskDataset(tiny_prepared.data.artifacts_dir, 1, "experiment/a", "train")

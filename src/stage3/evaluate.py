@@ -363,7 +363,10 @@ def _default_reporting_study_id(
     metadata: Mapping[str, Any], selector: str
 ) -> str:
     prefix = (
-        "rdkit-2d-home-stage3-"
+        "rdkit-2d-stage2-home-stage3-"
+        if metadata.get("provenance", {}).get("representation")
+        == "rdkit_2d_stage2"
+        else "rdkit-2d-home-stage3-"
         if metadata.get("kind") != STAGE3_ARTIFACT_KIND
         else "ilume-stage3-"
     )
@@ -377,6 +380,8 @@ def _default_reporting_study_id(
 
 
 def _reporting_model(metadata: Mapping[str, Any]) -> tuple[str, str]:
+    if metadata.get("provenance", {}).get("representation") == "rdkit_2d_stage2":
+        return "rdkit_2d_stage2_home", "RDKit 2D MLP + Stage2 + HoME"
     if metadata.get("kind") != STAGE3_ARTIFACT_KIND:
         return "rdkit_2d_home", "RDKit 2D + HoME"
     return "ilume", "ILUME"

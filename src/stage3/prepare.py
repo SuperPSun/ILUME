@@ -256,6 +256,11 @@ def _stage_artifacts(
         "provenance": {
             "stage2_encoder": str(config.initialization.stage2_encoder),
             "encoding_batch_size": config.preparation.encoding_batch_size,
+            **(
+                {"representation": "rdkit_2d_stage2"}
+                if stage2_encoder_identity.get("type") == "stage2.rdkit-encoder"
+                else {}
+            ),
         },
     }
     atomic_json(staging / "metadata.json", metadata)

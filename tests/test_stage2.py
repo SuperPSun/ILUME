@@ -6,6 +6,8 @@ import json
 
 import copy
 
+import shutil
+
 from dataclasses import replace
 
 from pathlib import Path
@@ -44,7 +46,8 @@ from stage1.tokenizer import SmilesTokenizer
 from stage2.config import (
     DEFAULT_REFINEMENT_TASKS, STAGE2_CHECKPOINT_VERSION,
     Stage2Config, Stage2DataConfig, Stage2InitializationConfig,
-    Stage2PreparationConfig, Stage2TrainingConfig, load_stage2_config,
+    Stage2PreparationConfig, Stage2RepresentationConfig, Stage2TrainingConfig,
+    load_stage2_config,
 )
 
 from stage2.data import (
@@ -55,11 +58,11 @@ from stage2.data import (
 )
 
 from stage2.model import (
-    ObjectEncoder, RegressionHead, Stage2ObjectModel,
+    ObjectEncoder, RDKitDescriptorBackbone, RegressionHead, Stage2ObjectModel,
     molecule_equal_smooth_l1_loss,
 )
 
-from stage2.evaluate import resolve_checkpoint_path
+from stage2.evaluate import evaluate_stage2_checkpoints, resolve_checkpoint_path
 
 from stage2.prepare import (
     prepare_stage2_data, prepare_teacher_cache,
@@ -71,6 +74,10 @@ from stage2.registry import load_stage2_registry
 from stage2.train import (
     STAGE2_REFINED_VERSION, _batch_output,
     load_stage2_encoder_artifact, run_stage2_training,
+)
+from stage2.rdkit_train import (
+    STAGE2_RDKIT_CHECKPOINT_KIND, STAGE2_RDKIT_ENCODER_KIND,
+    STAGE2_RDKIT_REFINED_KIND, load_rdkit_stage2_encoder_artifact,
 )
 
 from stage2 import FrozenObjectSpec, load_frozen_object_encoder
@@ -599,6 +606,174 @@ def test_prepare_train_checkpoint_and_encoder_export(tiny_stage2_setup, tmp_path
         weights_only=False,
     )
     assert mid_resumed_refined["model_state_hash"] == refined_payload["model_state_hash"]
+
+
+def test_no_stage1_rdkit_stage2_prepare_train_and_frozen_export(
+    tiny_stage2_setup, tmp_path: Path,
+) -> None:
+    task_weights = dict(tiny_stage2_setup.loss.task_weights)
+    task_weights.pop("simulation/partial_atomic_charge")
+    config = replace(
+        tiny_stage2_setup,
+        data=replace(
+            tiny_stage2_setup.data,
+            pretrain_artifacts_dir=None,
+            artifacts_dir=tmp_path / "rdkit_stage2_artifacts",
+        ),
+        initialization=Stage2InitializationConfig(checkpoint=None),
+        preparation=replace(
+            tiny_stage2_setup.preparation,
+            teacher_batch_size=None,
+        ),
+        representation=Stage2RepresentationConfig(
+            kind="rdkit_2d_mlp",
+            descriptor_family="rdkit_2d",
+            raw_width=217,
+            hidden_dim=1024,
+            output_dim=512,
+            activation="gelu",
+            dropout=0.10,
+            normalization="layernorm",
+            learning_rate=3.0e-5,
+            unsupported_tasks=("simulation/partial_atomic_charge",),
+        ),
+        model=replace(
+            tiny_stage2_setup.model,
+            object_layers=1,
+            object_ffn_dim=32,
+            dropout=0.0,
+        ),
+        loss=replace(
+            tiny_stage2_setup.loss,
+            lambda_teacher=0.0,
+            task_weights=task_weights,
+        ),
+        training=replace(
+            tiny_stage2_setup.training,
+            epochs=1,
+            backbone_frozen_epochs=0,
+            packing_workers=1,
+            packing_prefetch_batches=1,
+            refinement_epochs=1,
+            refinement_tasks=(
+                "simulation/heat_of_vaporization",
+                "simulation/homo",
+                "simulation/lumo",
+            ),
+        ),
+    )
+    config.validate()
+    with patch("stage2.prepare.load_stage1_model") as stage1_model_loader, patch(
+        "stage2.prepare.load_stage1_feature_inputs"
+    ) as stage1_feature_loader:
+        prepared = prepare_teacher_cache(config)
+    stage1_model_loader.assert_not_called()
+    stage1_feature_loader.assert_not_called()
+
+    metadata = json.loads(
+        (config.data.artifacts_dir / "metadata.json").read_text(encoding="utf-8")
+    )
+    assert prepared["task_count"] == 8
+    assert metadata["descriptor_contract"]["raw_width"] == 217
+    assert metadata["descriptor_contract"]["fit_occurrences"] == 17
+    assert metadata["descriptor_contract"]["retained_width"] <= 217
+    def keys(value):
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                yield str(key).lower()
+                yield from keys(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                yield from keys(nested)
+
+    metadata_keys = tuple(keys(metadata))
+    assert not any(
+        key.startswith("stage1_") or key.startswith("teacher_")
+        for key in metadata_keys
+    )
+    assert load_artifact_registry(config.data.artifacts_dir).task_ids == tuple(
+        task for task in TASKS if task != "simulation/partial_atomic_charge"
+    )
+
+    output = tmp_path / "rdkit_stage2_train"
+    run_stage2_training(config, output_dir=output)
+    boundary = torch.load(
+        output / "checkpoint_epoch_00001.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    final = torch.load(
+        output / "checkpoint_epoch_00002.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    assert boundary["kind"] == STAGE2_RDKIT_CHECKPOINT_KIND
+    assert final["refinement"]["shared_state_hash"] == boundary["refinement"]["shared_state_hash"]
+    assert "teacher_cache_identity" not in final
+    assert "teacher_embeddings_hash" not in final
+    refined = torch.load(
+        output / "taskwise_refined.pt", map_location="cpu", weights_only=False
+    )
+    assert refined["kind"] == STAGE2_RDKIT_REFINED_KIND
+
+    encoder_path = output / "stage2_encoder.pt"
+    encoder = load_rdkit_stage2_encoder_artifact(encoder_path)
+    assert encoder["kind"] == STAGE2_RDKIT_ENCODER_KIND
+    with pytest.raises(ValueError, match="Unsupported Stage 2 encoder"):
+        load_stage2_encoder_artifact(encoder_path)
+    frozen = load_frozen_object_encoder(encoder_path, device="cpu")
+    assert isinstance(frozen.descriptor_encoder, RDKitDescriptorBackbone)
+    assert not any(
+        parameter.requires_grad
+        for module in (frozen.descriptor_encoder, frozen.object_encoder)
+        for parameter in module.parameters()
+    )
+    encoded = frozen.encode(
+        (
+            FrozenObjectSpec("molecule", (("neutral", "CC"),)),
+            FrozenObjectSpec("molecule", (("neutral", "O"),)),
+        )
+    )
+    assert encoded.shape == (2, 512)
+    for task in (
+        "heat_of_vaporization",
+        "homo",
+        "lumo",
+    ):
+        root = config.data.data_root / "stage2" / task
+        shutil.copy(root / "valid.csv", root / "test.csv")
+    evaluation = evaluate_stage2_checkpoints(config, output)
+    reporting = evaluation["reporting"]
+    assert reporting["model_id"] == "rdkit_2d_stage2"
+    assert reporting["model_display_name"] == "RDKit 2D MLP + Stage2"
+    assert reporting["capabilities"] == {
+        "stage2_core_physics": "supported",
+        "stage2_partial_charge": "unsupported",
+        "stage2_physics_full": "unsupported",
+    }
+    assert reporting["benchmarks"]["stage2_core_physics"]["status"] == "complete"
+
+    resumed_output = tmp_path / "rdkit_stage2_resumed"
+    resumed_output.mkdir()
+    boundary_rows = [
+        row
+        for row in (output / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
+        if int(json.loads(row).get("epoch", 0)) <= 1
+    ]
+    (resumed_output / "metrics.jsonl").write_text(
+        "\n".join(boundary_rows) + "\n", encoding="utf-8"
+    )
+    run_stage2_training(
+        config,
+        output_dir=resumed_output,
+        resume_from=output / "checkpoint_epoch_00001.pt",
+    )
+    resumed_refined = torch.load(
+        resumed_output / "taskwise_refined.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    assert resumed_refined["model_state_hash"] == refined["model_state_hash"]
 
 def test_stage2_evaluate_defaults_to_refined_and_rejects_removed_flag() -> None:
     parser = stage2_evaluate_launcher._build_parser()

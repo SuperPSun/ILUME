@@ -815,6 +815,7 @@ def _retained_rows(staged: StagedTaskRows, retained_map: torch.Tensor) -> tuple[
 def _write_task_tensors(
     config: Stage2Config, registry: Stage2Registry, collected: CollectedStage2Data,
     retained_id_by_candidate: Sequence[int], reporter: ProgressReporter,
+    *, artifact_kind: str = STAGE2_ARTIFACT_KIND,
 ) -> tuple[dict[str, dict[str, int]], int, dict[str, Any]]:
     output_dir = config.data.artifacts_dir
     retained_map = torch.tensor(retained_id_by_candidate, dtype=torch.long)
@@ -866,7 +867,7 @@ def _write_task_tensors(
                         stats = condition_scalers[name]
                         conditions[:, column] = (conditions[:, column] - float(stats["mean"])) / float(stats["scale"])
                     payload: dict[str, Any] = {
-                        "format_version": STAGE2_ARTIFACT_VERSION, "kind": STAGE2_ARTIFACT_KIND,
+                        "format_version": STAGE2_ARTIFACT_VERSION, "kind": artifact_kind,
                         "task": spec.task_id, "split": split, "entity_indices": entities,
                         "conditions": conditions,
                         "source_rows": torch.tensor([staged.source_rows[index] for index in keep], dtype=torch.long),
@@ -908,6 +909,10 @@ def _write_task_tensors(
 
 
 def prepare_stage2_data(config: Stage2Config, *, reporter: ProgressReporter | None = None) -> dict[str, Any]:
+    if config.representation is not None:
+        from .rdkit import prepare_rdkit_stage2
+
+        return prepare_rdkit_stage2(config, reporter=reporter)
     config.validate()
     registry = load_stage2_registry(config.data.task_catalog_path)
     config.validate_registry(registry)
@@ -1122,8 +1127,17 @@ def prepare_teacher_cache(
     config: Stage2Config,
     *,
     reporter: ProgressReporter | None = None,
+    rdkit_materialization: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     config.validate()
+    if config.representation is not None:
+        from .rdkit import prepare_rdkit_stage2
+
+        return prepare_rdkit_stage2(
+            config,
+            reporter=reporter,
+            materialization=rdkit_materialization,
+        )
     reporter = reporter or ProgressReporter()
     data_metadata = prepare_stage2_data(config, reporter=reporter)
     device = resolve_device(config.training.device)

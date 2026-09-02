@@ -69,6 +69,10 @@ def _config_hash(config: Stage2Config) -> str:
 
 
 def resolve_stage2_training_identity(config: Stage2Config) -> dict[str, Any]:
+    if config.representation is not None:
+        from .rdkit_train import resolve_rdkit_stage2_training_identity
+
+        return resolve_rdkit_stage2_training_identity(config)
     config.validate()
     runtime_device = resolve_device(config.training.device)
     math_contract = configure_stage2_math(runtime_device)
@@ -519,6 +523,8 @@ def _publish_taskwise_refined(
     validation: Mapping[str, Any],
     training_identity: Mapping[str, Any],
     ordinary_final_epoch: int,
+    *,
+    artifact_kind: str = STAGE2_REFINED_KIND,
 ) -> dict[str, Any]:
     if tensor_state_hash(
         "stage2.refinement-shared-state", _shared_state(model)
@@ -555,7 +561,7 @@ def _publish_taskwise_refined(
     atomic_torch_save(
         artifact_path,
         {
-            "kind": STAGE2_REFINED_KIND,
+            "kind": artifact_kind,
             "format_version": STAGE2_REFINED_VERSION,
             "model": model_state,
             "model_state_hash": tensor_state_hash(
@@ -572,7 +578,7 @@ def _publish_taskwise_refined(
         },
     )
     manifest = {
-        "kind": STAGE2_REFINED_KIND,
+        "kind": artifact_kind,
         "format_version": STAGE2_REFINED_VERSION,
         "artifact": artifact_path.name,
         "artifact_sha256": sha256_file(artifact_path),
@@ -913,6 +919,15 @@ def evaluate_stage2(
 
 
 def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_from: str | Path | None = None, expected_training_identity: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    if config.representation is not None:
+        from .rdkit_train import run_rdkit_stage2_training
+
+        return run_rdkit_stage2_training(
+            config,
+            output_dir=output_dir,
+            resume_from=resume_from,
+            expected_training_identity=expected_training_identity,
+        )
     config.validate()
     seed_everything(config.data.seed)
     device = resolve_device(config.training.device)

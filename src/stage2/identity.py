@@ -106,6 +106,34 @@ def build_stage2_data_identity(
     )
 
 
+def build_rdkit_stage2_data_identity(
+    config: Stage2Config,
+    registry: Stage2Registry,
+    descriptor_contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    return semantic_identity(
+        "stage2.rdkit-prepared-data",
+        {
+            "preparation_contract_version": 1,
+            "source_content": _source_content(config, registry),
+            "registry_hash": registry.registry_hash,
+            "registry": registry.snapshot(),
+            "tensor_contract": STAGE2_TENSOR_CONTRACT,
+            "normalization_contract": "task-train-population-v1",
+            "descriptor_contract": dict(descriptor_contract),
+            "target_materialization_contract": {
+                "version": STAGE2_TARGET_MATERIALIZATION_CONTRACT_VERSION,
+                "modes": {
+                    task: config.data.target_materialization_modes.get(
+                        task, "require_complete"
+                    )
+                    for task in registry.task_ids
+                },
+            },
+        },
+    )
+
+
 def build_stage2_training_identity(
     config: Stage2Config,
     *,
@@ -135,6 +163,50 @@ def build_stage2_training_identity(
             "data_identity": data_identity["hash"],
             "teacher_identity": teacher_identity["hash"],
             "stage1_encoder_identity": stage1_encoder_identity["hash"],
+            "registry_hash": registry.registry_hash,
+            "model_contract": dict(model_contract),
+            "loss": {
+                **raw["loss"],
+                "normalized_task_weights": dict(normalized_task_weights),
+            },
+            "training": training,
+            "optimizer": {
+                "name": "AdamW",
+                "implementation": optimizer_implementation,
+            },
+            "scheduler": "joint-cosine-plus-taskwise-refinement-v1",
+            "math_contract": dict(math_contract),
+            "seed": config.data.seed,
+        },
+    )
+
+
+def build_rdkit_stage2_training_identity(
+    config: Stage2Config,
+    *,
+    data_identity: Mapping[str, Any],
+    registry: Stage2Registry,
+    model_contract: Mapping[str, Any],
+    normalized_task_weights: Mapping[str, float],
+    math_contract: Mapping[str, Any],
+    optimizer_implementation: str,
+) -> dict[str, Any]:
+    raw = config.to_dict()
+    training = dict(raw["training"])
+    for name in (
+        "packing_workers",
+        "packing_prefetch_batches",
+        "cuda_prefetch_batches",
+        "log_every_batches",
+        "device",
+    ):
+        training.pop(name, None)
+    return semantic_identity(
+        "stage2.rdkit-training",
+        {
+            "contract_version": 1,
+            "data_identity": data_identity["hash"],
+            "representation": raw["representation"],
             "registry_hash": registry.registry_hash,
             "model_contract": dict(model_contract),
             "loss": {
@@ -198,7 +270,33 @@ def build_stage2_encoder_identity(
     )
 
 
+def build_rdkit_stage2_encoder_identity(
+    *,
+    descriptor_contract: Mapping[str, Any],
+    descriptor_encoder_state_hash: str,
+    object_encoder_contract: Mapping[str, Any],
+    object_encoder_state_hash: str,
+    role_to_id: Mapping[str, int],
+) -> dict[str, Any]:
+    return semantic_identity(
+        "stage2.rdkit-encoder",
+        {
+            "contract_version": 1,
+            "object_encoding_api": "ordered-object-slots-v1",
+            "representation": "rdkit_2d_mlp",
+            "descriptor_contract": dict(descriptor_contract),
+            "descriptor_encoder_state_hash": descriptor_encoder_state_hash,
+            "object_encoder_contract": dict(object_encoder_contract),
+            "object_encoder_state_hash": object_encoder_state_hash,
+            "role_to_id": dict(role_to_id),
+        },
+    )
+
+
 __all__ = [
+    "build_rdkit_stage2_data_identity",
+    "build_rdkit_stage2_encoder_identity",
+    "build_rdkit_stage2_training_identity",
     "build_stage2_data_identity",
     "build_stage2_encoder_identity",
     "build_stage2_training_identity",

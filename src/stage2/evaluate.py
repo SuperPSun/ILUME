@@ -206,6 +206,8 @@ def resolve_stage2_evaluation_identity(
 def _load_refined_artifact(
     checkpoint_dir: str | Path,
     checkpoint: Mapping[str, Any],
+    *,
+    artifact_kind: str = STAGE2_REFINED_KIND,
 ) -> tuple[Path, dict[str, Any], str]:
     root = Path(checkpoint_dir)
     artifact_path = root / "taskwise_refined.pt"
@@ -219,14 +221,14 @@ def _load_refined_artifact(
     refined = torch.load(artifact_path, map_location="cpu", weights_only=False)
     if (
         not isinstance(manifest, dict)
-        or manifest.get("kind") != STAGE2_REFINED_KIND
+        or manifest.get("kind") != artifact_kind
         or manifest.get("format_version") != STAGE2_REFINED_VERSION
         or manifest.get("artifact") != artifact_path.name
         or manifest.get("artifact_sha256") != sha256_file(artifact_path)
     ):
         raise ValueError("Stage 2 refinement manifest/artifact integrity mismatch")
     if (
-        refined.get("kind") != STAGE2_REFINED_KIND
+        refined.get("kind") != artifact_kind
         or refined.get("format_version") != STAGE2_REFINED_VERSION
     ):
         raise ValueError("Unsupported Stage 2 refined artifact")
@@ -258,7 +260,13 @@ def resolve_stage2_evaluation_contract(
     checkpoint_dir: str | Path,
     *,
     checkpoint_epoch: int | None = None,
-) -> tuple[dict[str, Any], PartialChargeBenchmark]:
+) -> tuple[dict[str, Any], PartialChargeBenchmark | None]:
+    if config.representation is not None:
+        from .rdkit_evaluate import resolve_rdkit_stage2_evaluation_contract
+
+        return resolve_rdkit_stage2_evaluation_contract(
+            config, checkpoint_dir, checkpoint_epoch=checkpoint_epoch
+        )
     taskwise_refined = checkpoint_epoch is None
     path = resolve_checkpoint_path(checkpoint_dir, checkpoint_epoch)
     checkpoint, registry, _ = _load_checkpoint_contract(config, path)
@@ -489,6 +497,17 @@ def evaluate_stage2_checkpoints(
     partial_charge_benchmark: PartialChargeBenchmark | None = None,
     reporter: ProgressReporter | None = None,
 ) -> dict[str, Any]:
+    if config.representation is not None:
+        from .rdkit_evaluate import evaluate_rdkit_stage2_checkpoints
+
+        return evaluate_rdkit_stage2_checkpoints(
+            config,
+            checkpoint_dir,
+            checkpoint_epoch=checkpoint_epoch,
+            predictions_dir=predictions_dir,
+            expected_evaluation_identity=expected_evaluation_identity,
+            reporter=reporter,
+        )
     taskwise_refined = checkpoint_epoch is None
     checkpoint_path = resolve_checkpoint_path(checkpoint_dir, checkpoint_epoch)
     checkpoint, registry, _ = _load_checkpoint_contract(config, checkpoint_path)
