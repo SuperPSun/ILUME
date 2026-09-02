@@ -48,3 +48,10 @@ rdkit_2d_stage2@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/
 rdkit_2d_stage2@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test,RDKit 2D MLP + Stage2,simulation/lumo,LUMO_eV,anion,744,0.2299680337137038,,,,,outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test
 rdkit_2d_stage2@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test,RDKit 2D MLP + Stage2,simulation/lumo,LUMO_eV,cation,917,0.3364696128705406,,,,,outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test
 rdkit_2d_stage2@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test,RDKit 2D MLP + Stage2,simulation/lumo,LUMO_eV,pooled,1661,0.28876511263412485,0.38028105945180746,0.9894395288356426,0.0780685842256783,0.10281021709453979,outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test
+spmm@outputs/benchmarks/v1/spmm,SPMM,simulation/heat_of_vaporization,heat_of_vaporization_kJ/mol,pooled,2684,1.9457129844647663,2.827982194070632,0.9900871964964922,0.06992819042806846,0.10163661288849206,outputs/benchmarks/v1/spmm
+spmm@outputs/benchmarks/v1/spmm,SPMM,simulation/homo,HOMO_eV,anion,744,0.15223759985963167,,,,,outputs/benchmarks/v1/spmm
+spmm@outputs/benchmarks/v1/spmm,SPMM,simulation/homo,HOMO_eV,cation,917,0.22172950128165905,,,,,outputs/benchmarks/v1/spmm
+spmm@outputs/benchmarks/v1/spmm,SPMM,simulation/homo,HOMO_eV,pooled,1661,0.1906024846302513,0.257605792256436,0.9948199333070824,0.05293525307184544,0.07154380926524075,outputs/benchmarks/v1/spmm
+spmm@outputs/benchmarks/v1/spmm,SPMM,simulation/lumo,LUMO_eV,anion,744,0.15363974133547578,,,,,outputs/benchmarks/v1/spmm
+spmm@outputs/benchmarks/v1/spmm,SPMM,simulation/lumo,LUMO_eV,cation,917,0.22312163131100426,,,,,outputs/benchmarks/v1/spmm
+spmm@outputs/benchmarks/v1/spmm,SPMM,simulation/lumo,LUMO_eV,pooled,1661,0.19199909901612575,0.2590421200849423,0.9950997901792294,0.051907578779388265,0.07003287684365418,outputs/benchmarks/v1/spmm

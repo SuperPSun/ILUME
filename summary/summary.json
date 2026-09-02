@@ -11,6 +11,7 @@
     "4abeb4a33fcc78ea57fc0b78e77f886df8a57e0d06f4304d588d0fdf3fe12b95",
     "4c9f6e5ad8fd3c22c5f9b0948b5a536f84e57d6436c3e41a1d68a901cb693337",
     "6fa23222e5797601ed4768d1d80353b1ec1330320405437a12441d4356e630da",
+    "734b24d0e6a6c4388a64c89a603cde9456ffdf11f8ef90a6538578d859b5030b",
     "772064943a15af694fd5b8de4017dd7fe71820d42dc8a4a4a28d60391f15ec44",
     "7c3e32a792430f09367e47c7bbc927218fa92a5a83ac93e9d569ea15f53debcc",
     "8764f89cd3a4fe51a9fdd5646fb88bf193540a3ecd8b6ade3bdfafd388a5aaa7",
@@ -22,7 +23,6 @@
     "c953300403171c751e76efc5167b06343a7acffc35c862c0b444e120507d1563",
     "cabc0bc0f7b763fe9b9ba1361e0d6b3309460e476f991c810c77e0713e2e75e9",
     "cf0574ec6b9fdcd71fb57dc5bba486d2a157d895b887c6017b60f82a93fbf9d4",
-    "dbae1c807761a37a9f575d858fa7ef45ee66f72b077495bfb4f433a349c14f9c",
     "de44bee6e55490845d1ffc753dd638aa406d03c7740f4f27ee1d24cf28af582b",
     "e6536fa195bf08577a83b2e8b069814f823469d5d3c5ce770e295aea5e18fb07",
     "e6e197e18a2a092ce19a8a85344fb0803e009ceb4adc87fff2df8bf7bb99b852",
@@ -575,6 +575,7 @@
           "outputs/benchmarks/v1/ilbert",
           "outputs/benchmarks/v1/ilume_stage3_single_task_mlp",
           "outputs/benchmarks/v1/mlp",
+          "outputs/benchmarks/v1/spmm",
           "outputs/v1/stage3/base/test"
         ]
       }
@@ -1530,6 +1531,7 @@
           "outputs/benchmarks/v1/ilbert",
           "outputs/benchmarks/v1/ilume_stage3_single_task_mlp",
           "outputs/benchmarks/v1/mlp",
+          "outputs/benchmarks/v1/spmm",
           "outputs/v1/stage3/base/evaluate/fold1",
           "outputs/v1/stage3/base/evaluate/fold2",
           "outputs/v1/stage3/base/evaluate/fold3",
@@ -1582,6 +1584,7 @@
           "outputs/benchmarks/v1/ilbert",
           "outputs/benchmarks/v1/mlp",
           "outputs/benchmarks/v1/molformer",
+          "outputs/benchmarks/v1/spmm",
           "outputs/v1/stage2/base/evaluate"
         ]
       }
@@ -1768,6 +1771,18 @@
         "rank": 5
       },
       {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "macro_normalized_mae": 0.21845753975841903,
+        "valid_tasks": 11,
+        "total_tasks": 11,
+        "per_task_wins": 0,
+        "source_run": "outputs/benchmarks/v1/spmm",
+        "checkpoint_epoch": "",
+        "enabled_tasks": 21,
+        "rank": 6
+      },
+      {
         "run": "dmpnn@outputs/benchmarks/v1/dmpnn",
         "model": "D-MPNN",
         "macro_normalized_mae": 0.24452622487790754,
@@ -1777,7 +1792,7 @@
         "source_run": "outputs/benchmarks/v1/dmpnn",
         "checkpoint_epoch": "",
         "enabled_tasks": 21,
-        "rank": 6
+        "rank": 7
       },
       {
         "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
@@ -1789,7 +1804,7 @@
         "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "checkpoint_epoch": "",
         "enabled_tasks": 21,
-        "rank": 7
+        "rank": 8
       },
       {
         "run": "ilbert@outputs/benchmarks/v1/ilbert",
@@ -1801,7 +1816,7 @@
         "source_run": "outputs/benchmarks/v1/ilbert",
         "checkpoint_epoch": "",
         "enabled_tasks": 21,
-        "rank": 8
+        "rank": 9
       },
       {
         "run": "molformer@outputs/benchmarks/v1/molformer",
@@ -1813,7 +1828,7 @@
         "source_run": "outputs/benchmarks/v1/molformer",
         "checkpoint_epoch": "",
         "enabled_tasks": 21,
-        "rank": 9
+        "rank": 10
       }
     ],
     "stage3_validation": [
@@ -1834,7 +1849,7 @@
         "macro_normalized_mae": 0.220095891657771,
         "valid_tasks": 21,
         "total_tasks": 21,
-        "per_task_wins": 3,
+        "per_task_wins": 1,
         "source_run": "outputs/benchmarks/v1/mlp",
         "checkpoint_epoch": "",
         "rank": 2
@@ -1895,6 +1910,17 @@
         "rank": 7
       },
       {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "macro_normalized_mae": 0.2891777747255445,
+        "valid_tasks": 21,
+        "total_tasks": 21,
+        "per_task_wins": 2,
+        "source_run": "outputs/benchmarks/v1/spmm",
+        "checkpoint_epoch": "",
+        "rank": 8
+      },
+      {
         "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
         "model": "ECFP+XGBoost",
         "macro_normalized_mae": 0.30209580088402943,
@@ -1903,7 +1929,7 @@
         "per_task_wins": 0,
         "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "checkpoint_epoch": "",
-        "rank": 8
+        "rank": 9
       },
       {
         "run": "molformer@outputs/benchmarks/v1/molformer",
@@ -1914,7 +1940,7 @@
         "per_task_wins": 0,
         "source_run": "outputs/benchmarks/v1/molformer",
         "checkpoint_epoch": "",
-        "rank": 9
+        "rank": 10
       }
     ],
     "stage2_core_physics": [
@@ -1930,6 +1956,17 @@
         "rank": 1
       },
       {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "macro_normalized_mae": 0.058257007426434054,
+        "valid_tasks": 3,
+        "total_tasks": 3,
+        "per_task_wins": 0,
+        "source_run": "outputs/benchmarks/v1/spmm",
+        "checkpoint_epoch": "",
+        "rank": 2
+      },
+      {
         "run": "ilbert@outputs/benchmarks/v1/ilbert",
         "model": "ILBERT",
         "macro_normalized_mae": 0.06103424620094303,
@@ -1938,7 +1975,7 @@
         "per_task_wins": 1,
         "source_run": "outputs/benchmarks/v1/ilbert",
         "checkpoint_epoch": "",
-        "rank": 2
+        "rank": 3
       },
       {
         "run": "mlp@outputs/benchmarks/v1/mlp",
@@ -1949,7 +1986,7 @@
         "per_task_wins": 0,
         "source_run": "outputs/benchmarks/v1/mlp",
         "checkpoint_epoch": "",
-        "rank": 3
+        "rank": 4
       },
       {
         "run": "ilume@outputs/v1/stage2/base/evaluate",
@@ -1960,7 +1997,7 @@
         "per_task_wins": 0,
         "source_run": "outputs/v1/stage2/base/evaluate",
         "checkpoint_epoch": null,
-        "rank": 4
+        "rank": 5
       },
       {
         "run": "rdkit_2d_stage2@outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test",
@@ -1971,7 +2008,7 @@
         "per_task_wins": 0,
         "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test",
         "checkpoint_epoch": null,
-        "rank": 5
+        "rank": 6
       },
       {
         "run": "molformer@outputs/benchmarks/v1/molformer",
@@ -1982,7 +2019,7 @@
         "per_task_wins": 0,
         "source_run": "outputs/benchmarks/v1/molformer",
         "checkpoint_epoch": "",
-        "rank": 6
+        "rank": 7
       },
       {
         "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
@@ -1993,7 +2030,7 @@
         "per_task_wins": 0,
         "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
         "checkpoint_epoch": "",
-        "rank": 7
+        "rank": 8
       }
     ],
     "stage2_partial_charge": [
@@ -3232,6 +3269,138 @@
         "normalized_mae": 0.22285004013639131,
         "normalized_rmse": 0.36368237117511526,
         "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test"
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/density",
+        "count": 4918,
+        "mae": 0.01867711547269022,
+        "rmse": 0.034228046954698645,
+        "r2": 0.9626413089527871,
+        "normalized_mae": 0.10424228065591587,
+        "normalized_rmse": 0.19103644147688253,
+        "source_run": "outputs/benchmarks/v1/spmm"
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/electrical_conductivity",
+        "count": 467,
+        "mae": 0.21795213973859615,
+        "rmse": 0.42924134373513284,
+        "r2": 0.7400260296657544,
+        "normalized_mae": 0.1490384544657891,
+        "normalized_rmse": 0.29352070844466205,
+        "source_run": "outputs/benchmarks/v1/spmm"
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/glass_transition_temperature",
+        "count": 79,
+        "mae": 10.348549025950536,
+        "rmse": 14.243462213624154,
+        "r2": 0.582375418920398,
+        "normalized_mae": 0.353308506747559,
+        "normalized_rmse": 0.48628424651528385,
+        "source_run": "outputs/benchmarks/v1/spmm"
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/melting_point",
+        "count": 524,
+        "mae": 26.727082051857842,
+        "rmse": 37.35752250119634,
+        "r2": 0.5139048191548119,
+        "normalized_mae": 0.37500530607642607,
+        "normalized_rmse": 0.524160068526609,
+        "source_run": "outputs/benchmarks/v1/spmm"
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/refractive_index",
+        "count": 579,
+        "mae": 0.00939825330489604,
+        "rmse": 0.012185608887232446,
+        "r2": 0.9080781274340907,
+        "normalized_mae": 0.23755739388696082,
+        "normalized_rmse": 0.30801271217798376,
+        "source_run": "outputs/benchmarks/v1/spmm"
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/solvation",
+        "count": 2379,
+        "mae": 0.07801388597401543,
+        "rmse": 0.1740803759766858,
+        "r2": 0.9756668681206019,
+        "normalized_mae": 0.07120881249422016,
+        "normalized_rmse": 0.15889551836933236,
+        "source_run": "outputs/benchmarks/v1/spmm"
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/surface_tension",
+        "count": 545,
+        "mae": 2.8574030287018197,
+        "rmse": 4.221034706056034,
+        "r2": 0.8093664296277661,
+        "normalized_mae": 0.3224377718317279,
+        "normalized_rmse": 0.47631398573250666,
+        "source_run": "outputs/benchmarks/v1/spmm"
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/thermal_decomposition_temperature",
+        "count": 276,
+        "mae": 27.727528808514542,
+        "rmse": 38.45608063991212,
+        "r2": 0.7510658517950604,
+        "normalized_mae": 0.36677284923734504,
+        "normalized_rmse": 0.5086874623486256,
+        "source_run": "outputs/benchmarks/v1/spmm"
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/transfer",
+        "count": 308,
+        "mae": 0.17387066788739922,
+        "rmse": 0.28192183758082373,
+        "r2": 0.9836890246270379,
+        "normalized_mae": 0.07540651344088616,
+        "normalized_rmse": 0.12226756297149056,
+        "source_run": "outputs/benchmarks/v1/spmm"
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/transfer_organic",
+        "count": 191,
+        "mae": 0.23558785061920307,
+        "rmse": 0.3624273622738519,
+        "r2": 0.9740422892127829,
+        "normalized_mae": 0.10045574501884268,
+        "normalized_rmse": 0.15454069722501274,
+        "source_run": "outputs/benchmarks/v1/spmm"
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/viscosity",
+        "count": 2459,
+        "mae": 0.1849515851017748,
+        "rmse": 0.2934671683714163,
+        "r2": 0.8137021772695296,
+        "normalized_mae": 0.24759930348693665,
+        "normalized_rmse": 0.39287182342915195,
+        "source_run": "outputs/benchmarks/v1/spmm"
       }
     ],
     "stage3_validation": [
@@ -6258,6 +6427,342 @@
         "normalized_mae_std": 0.008095806783365515,
         "normalized_rmse_mean": 0.21194029339873924,
         "normalized_rmse_std": 0.02016679889168963
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/density",
+        "source_run": "outputs/benchmarks/v1/spmm",
+        "mae_mean": 0.013780104431914506,
+        "mae_std": 0.00161105538519033,
+        "rmse_mean": 0.028271609990646613,
+        "rmse_std": 0.0037377363932726217,
+        "r2_mean": 0.9745342835977174,
+        "r2_std": 0.006443302342527381,
+        "normalized_mae_mean": 0.07699417654430095,
+        "normalized_mae_std": 0.00981993698103664,
+        "normalized_rmse_mean": 0.15787454454262279,
+        "normalized_rmse_std": 0.021673015592148716
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/dynamic_relative_permittivity",
+        "source_run": "outputs/benchmarks/v1/spmm",
+        "mae_mean": 0.8611335940747292,
+        "mae_std": 0.2632635502872901,
+        "rmse_mean": 1.2718383691668744,
+        "rmse_std": 0.39410102345014153,
+        "r2_mean": 0.42027455285733506,
+        "r2_std": 0.2699711812392392,
+        "normalized_mae_mean": 0.4503214750330379,
+        "normalized_mae_std": 0.17112264753265666,
+        "normalized_rmse_mean": 0.6656877477653628,
+        "normalized_rmse_std": 0.25923675864054313
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/electrical_conductivity",
+        "source_run": "outputs/benchmarks/v1/spmm",
+        "mae_mean": 0.37182367746525946,
+        "mae_std": 0.09368410641942013,
+        "rmse_mean": 0.7522010535024741,
+        "rmse_std": 0.2737668424185842,
+        "r2_mean": 0.7069073555116392,
+        "r2_std": 0.06568407042056273,
+        "normalized_mae_mean": 0.25834462147368725,
+        "normalized_mae_std": 0.0806647728868705,
+        "normalized_rmse_mean": 0.5254770014740172,
+        "normalized_rmse_std": 0.21992144143259076
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/equilibrium_pressure",
+        "source_run": "outputs/benchmarks/v1/spmm",
+        "mae_mean": 0.7743101560722765,
+        "mae_std": 0.13941742693772932,
+        "rmse_mean": 1.0259349533311446,
+        "rmse_std": 0.2252256674878608,
+        "r2_mean": 0.7055321236420654,
+        "r2_std": 0.13066600708796577,
+        "normalized_mae_mean": 0.38337104683808887,
+        "normalized_mae_std": 0.0792467306260309,
+        "normalized_rmse_mean": 0.5081097873756463,
+        "normalized_rmse_std": 0.1229926802392618
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/glass_transition_temperature",
+        "source_run": "outputs/benchmarks/v1/spmm",
+        "mae_mean": 11.50115440204197,
+        "mae_std": 0.32717333021765704,
+        "rmse_mean": 18.897389862318363,
+        "rmse_std": 1.6170366439761035,
+        "r2_mean": 0.5798607511131421,
+        "r2_std": 0.0512907447568946,
+        "normalized_mae_mean": 0.39263932872392315,
+        "normalized_mae_std": 0.007461568903110284,
+        "normalized_rmse_mean": 0.6458631679728175,
+        "normalized_rmse_std": 0.06391906752940679
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/heat_capacity",
+        "source_run": "outputs/benchmarks/v1/spmm",
+        "mae_mean": 32.97783299279111,
+        "mae_std": 9.569454373535613,
+        "rmse_mean": 61.269759873460316,
+        "rmse_std": 18.28762186204421,
+        "r2_mean": 0.9245677590351645,
+        "r2_std": 0.040352721805845454,
+        "normalized_mae_mean": 0.1400042714145584,
+        "normalized_mae_std": 0.044184814415967756,
+        "normalized_rmse_mean": 0.2606749022412764,
+        "normalized_rmse_std": 0.08625583175112805
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/isobaric_coefficient_of_volume_expansion",
+        "source_run": "outputs/benchmarks/v1/spmm",
+        "mae_mean": 2.1771530677089056e-05,
+        "mae_std": 1.3515303559016389e-05,
+        "rmse_mean": 2.741509466525535e-05,
+        "rmse_std": 1.6368241955257143e-05,
+        "r2_mean": 0.5080635291814827,
+        "r2_std": 0.34197937527317107,
+        "normalized_mae_mean": 0.5145620657874277,
+        "normalized_mae_std": 0.35595745163352666,
+        "normalized_rmse_mean": 0.6492713894610477,
+        "normalized_rmse_std": 0.4340571182984892
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/melting_point",
+        "source_run": "outputs/benchmarks/v1/spmm",
+        "mae_mean": 28.738210272627963,
+        "mae_std": 1.7652927570379189,
+        "rmse_mean": 38.92555093019284,
+        "rmse_std": 1.7485861088809445,
+        "r2_mean": 0.699923292371089,
+        "r2_std": 0.03194033155951757,
+        "normalized_mae_mean": 0.40319797875039554,
+        "normalized_mae_std": 0.02418619933609653,
+        "normalized_rmse_mean": 0.5461524146100761,
+        "normalized_rmse_std": 0.024127353375929275
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/pec50",
+        "source_run": "outputs/benchmarks/v1/spmm",
+        "mae_mean": 0.2989021999116,
+        "mae_std": 0.019160591272378468,
+        "rmse_mean": 0.4144770313304713,
+        "rmse_std": 0.028901525133580068,
+        "r2_mean": 0.8433152034550883,
+        "r2_std": 0.03543986492490144,
+        "normalized_mae_mean": 0.2788493533131889,
+        "normalized_mae_std": 0.019800788549423458,
+        "normalized_rmse_mean": 0.3868903114017236,
+        "normalized_rmse_std": 0.032639514726417344
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/refractive_index",
+        "source_run": "outputs/benchmarks/v1/spmm",
+        "mae_mean": 0.005981568611047509,
+        "mae_std": 0.0009216128375337614,
+        "rmse_mean": 0.010615883044873061,
+        "rmse_std": 0.0025746883831589355,
+        "r2_mean": 0.9246854283492244,
+        "r2_std": 0.031795875817809766,
+        "normalized_mae_mean": 0.15139951745493105,
+        "normalized_mae_std": 0.02475017032955321,
+        "normalized_rmse_mean": 0.2690647330264522,
+        "normalized_rmse_std": 0.06859376164251593
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/self_diffusion_coefficient",
+        "source_run": "outputs/benchmarks/v1/spmm",
+        "mae_mean": 0.4710673739839388,
+        "mae_std": 0.1269886547424844,
+        "rmse_mean": 0.5900120840845878,
+        "rmse_std": 0.18338621547388625,
+        "r2_mean": 0.2016892523356984,
+        "r2_std": 0.26249365858778817,
+        "normalized_mae_mean": 0.5620361427211328,
+        "normalized_mae_std": 0.30137080230651736,
+        "normalized_rmse_mean": 0.7117316141054829,
+        "normalized_rmse_std": 0.42589156841772224
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/solvation",
+        "source_run": "outputs/benchmarks/v1/spmm",
+        "mae_mean": 0.1714562917082128,
+        "mae_std": 0.04798757382890769,
+        "rmse_mean": 0.27732730542281236,
+        "rmse_std": 0.07964181661132025,
+        "r2_mean": 0.9317078525887187,
+        "r2_std": 0.03453753587893399,
+        "normalized_mae_mean": 0.15670935442133255,
+        "normalized_mae_std": 0.04489409025786421,
+        "normalized_rmse_mean": 0.25350589808135515,
+        "normalized_rmse_std": 0.07427263934466088
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/speed_of_sound",
+        "source_run": "outputs/benchmarks/v1/spmm",
+        "mae_mean": 32.74805084942263,
+        "mae_std": 5.097898424323725,
+        "rmse_mean": 51.98381765650773,
+        "rmse_std": 7.877678964204331,
+        "r2_mean": 0.9254052407242929,
+        "r2_std": 0.04222819761794708,
+        "normalized_mae_mean": 0.15931580615092206,
+        "normalized_mae_std": 0.019773710413464544,
+        "normalized_rmse_mean": 0.2534198781822845,
+        "normalized_rmse_std": 0.03549550246888556
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/static_relative_permittivity",
+        "source_run": "outputs/benchmarks/v1/spmm",
+        "mae_mean": 3.276580708029857,
+        "mae_std": 1.4163021905501283,
+        "rmse_mean": 5.782452309830822,
+        "rmse_std": 3.261178203674307,
+        "r2_mean": 0.6571617865398779,
+        "r2_std": 0.18454600793511602,
+        "normalized_mae_mean": 0.28428481795495275,
+        "normalized_mae_std": 0.15490402145962173,
+        "normalized_rmse_mean": 0.5072261883097673,
+        "normalized_rmse_std": 0.33816673906601186
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/surface_tension",
+        "source_run": "outputs/benchmarks/v1/spmm",
+        "mae_mean": 2.474670352301235,
+        "mae_std": 0.11741830292171519,
+        "rmse_mean": 4.047563943166395,
+        "rmse_std": 0.3984337211916671,
+        "r2_mean": 0.7872100798285151,
+        "r2_std": 0.039487822745627725,
+        "normalized_mae_mean": 0.2793512079083746,
+        "normalized_mae_std": 0.014416060899882769,
+        "normalized_rmse_mean": 0.4573350118310152,
+        "normalized_rmse_std": 0.05159926849686587
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/thermal_conductivity",
+        "source_run": "outputs/benchmarks/v1/spmm",
+        "mae_mean": 0.005425368878257512,
+        "mae_std": 0.0005910170037218539,
+        "rmse_mean": 0.00757594455459812,
+        "rmse_std": 0.0007052994046266761,
+        "r2_mean": 0.9082003637544869,
+        "r2_std": 0.0240375629651458,
+        "normalized_mae_mean": 0.20648624879684374,
+        "normalized_mae_std": 0.017056783855365607,
+        "normalized_rmse_mean": 0.28854013254126765,
+        "normalized_rmse_std": 0.020428765445918755
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/thermal_decomposition_temperature",
+        "source_run": "outputs/benchmarks/v1/spmm",
+        "mae_mean": 26.30858206389616,
+        "mae_std": 1.3049294932334925,
+        "rmse_mean": 36.16311958724741,
+        "rmse_std": 2.662395670867562,
+        "r2_mean": 0.7702899714267295,
+        "r2_std": 0.02865329250929544,
+        "normalized_mae_mean": 0.3480800555253376,
+        "normalized_mae_std": 0.018934911352177796,
+        "normalized_rmse_mean": 0.4784921773923701,
+        "normalized_rmse_std": 0.0371651267678523
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/transfer",
+        "source_run": "outputs/benchmarks/v1/spmm",
+        "mae_mean": 0.28793372554430585,
+        "mae_std": 0.07143584897258691,
+        "rmse_mean": 0.4132332160272244,
+        "rmse_std": 0.14650372923203775,
+        "r2_mean": 0.9644905326084279,
+        "r2_std": 0.027346576941368862,
+        "normalized_mae_mean": 0.12489649663509161,
+        "normalized_mae_std": 0.030953743560058086,
+        "normalized_rmse_mean": 0.17921408674795591,
+        "normalized_rmse_std": 0.06333707927384065
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/transfer_organic",
+        "source_run": "outputs/benchmarks/v1/spmm",
+        "mae_mean": 0.2915472567850049,
+        "mae_std": 0.01768170741920665,
+        "rmse_mean": 0.4675916092876765,
+        "rmse_std": 0.0507194882477334,
+        "r2_mean": 0.959789399937419,
+        "r2_std": 0.007232724650814135,
+        "normalized_mae_mean": 0.1243472606164802,
+        "normalized_mae_std": 0.008026151593415642,
+        "normalized_rmse_mean": 0.1995475381917759,
+        "normalized_rmse_std": 0.02356947517212599
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/viscosity",
+        "source_run": "outputs/benchmarks/v1/spmm",
+        "mae_mean": 0.1680940380540739,
+        "mae_std": 0.014847507217859008,
+        "rmse_mean": 0.2900263787729006,
+        "rmse_std": 0.03863188831979325,
+        "r2_mean": 0.8462753275598759,
+        "r2_std": 0.02863619748471099,
+        "normalized_mae_mean": 0.22527921250093313,
+        "normalized_mae_std": 0.02267020769287986,
+        "normalized_rmse_mean": 0.3889934846104826,
+        "normalized_rmse_std": 0.057780467871349404
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "experiment/x_co2",
+        "source_run": "outputs/benchmarks/v1/spmm",
+        "mae_mean": 0.12822649050224064,
+        "mae_std": 0.015017101204112404,
+        "rmse_mean": 0.1588781637400191,
+        "rmse_std": 0.01598137287390404,
+        "r2_mean": 0.5176373546559894,
+        "r2_std": 0.054005359076506984,
+        "normalized_mae_mean": 0.5522628306714951,
+        "normalized_mae_std": 0.07258935252903319,
+        "normalized_rmse_mean": 0.684121059752256,
+        "normalized_rmse_std": 0.07803188651208247
       }
     ],
     "stage2_core_physics": [
@@ -6834,6 +7339,88 @@
         "normalized_mae": 0.0780685842256783,
         "normalized_rmse": 0.10281021709453979,
         "source_run": "outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test"
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "simulation/heat_of_vaporization",
+        "target": "heat_of_vaporization_kJ/mol",
+        "subset": "pooled",
+        "count": 2684,
+        "mae": 1.9457129844647663,
+        "rmse": 2.827982194070632,
+        "r2": 0.9900871964964922,
+        "normalized_mae": 0.06992819042806846,
+        "normalized_rmse": 0.10163661288849206,
+        "source_run": "outputs/benchmarks/v1/spmm"
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "simulation/homo",
+        "target": "HOMO_eV",
+        "subset": "anion",
+        "count": 744,
+        "mae": 0.15223759985963167,
+        "source_run": "outputs/benchmarks/v1/spmm"
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "simulation/homo",
+        "target": "HOMO_eV",
+        "subset": "cation",
+        "count": 917,
+        "mae": 0.22172950128165905,
+        "source_run": "outputs/benchmarks/v1/spmm"
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "simulation/homo",
+        "target": "HOMO_eV",
+        "subset": "pooled",
+        "count": 1661,
+        "mae": 0.1906024846302513,
+        "rmse": 0.257605792256436,
+        "r2": 0.9948199333070824,
+        "normalized_mae": 0.05293525307184544,
+        "normalized_rmse": 0.07154380926524075,
+        "source_run": "outputs/benchmarks/v1/spmm"
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "simulation/lumo",
+        "target": "LUMO_eV",
+        "subset": "anion",
+        "count": 744,
+        "mae": 0.15363974133547578,
+        "source_run": "outputs/benchmarks/v1/spmm"
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "simulation/lumo",
+        "target": "LUMO_eV",
+        "subset": "cation",
+        "count": 917,
+        "mae": 0.22312163131100426,
+        "source_run": "outputs/benchmarks/v1/spmm"
+      },
+      {
+        "run": "spmm@outputs/benchmarks/v1/spmm",
+        "model": "SPMM",
+        "task": "simulation/lumo",
+        "target": "LUMO_eV",
+        "subset": "pooled",
+        "count": 1661,
+        "mae": 0.19199909901612575,
+        "rmse": 0.2590421200849423,
+        "r2": 0.9950997901792294,
+        "normalized_mae": 0.051907578779388265,
+        "normalized_rmse": 0.07003287684365418,
+        "source_run": "outputs/benchmarks/v1/spmm"
       }
     ],
     "stage2_partial_charge": [
@@ -7519,21 +8106,21 @@
       "issues": ""
     },
     {
-      "run": "unknown@outputs/benchmarks/v1/spmm",
-      "model": "unknown",
+      "run": "spmm@outputs/benchmarks/v1/spmm",
+      "model": "SPMM",
       "stage": "benchmark",
       "operation": "sweep",
-      "status": "failed",
-      "completeness": "failed",
+      "status": "completed",
+      "completeness": "complete",
       "checkpoint_epoch": "",
       "enabled_tasks": "",
-      "expected_tasks": "",
-      "available_tasks": "",
-      "available_folds": "",
-      "failed_jobs": "",
-      "stage2_core_eligibility": "",
-      "stage2_partial_eligibility": "",
-      "stage2_full_eligibility": "",
+      "expected_tasks": "stage2_core_physics:3;stage2_partial_charge:0;stage2_physics_full:0;stage3_test:11;stage3_validation:21",
+      "available_tasks": "stage3_test:21;stage3_validation:21;stage2_physics:3",
+      "available_folds": "1;2;3;4;5",
+      "failed_jobs": 0,
+      "stage2_core_eligibility": "eligible",
+      "stage2_partial_eligibility": "not_evaluated",
+      "stage2_full_eligibility": "not_evaluated",
       "source_run": "outputs/benchmarks/v1/spmm",
       "issues": ""
     }
