@@ -29,6 +29,7 @@ SPMM_INPUT_CONTRACT = {
     "canonical_identity": "ilume_isomeric_smiles",
     "model_input": "rdkit_canonical_isomeric_false",
     "tokenizer": "official_bert_wordpiece",
+    "wordpiece_max_input_chars_per_word": 350,
     "manual_prefix": "[CLS]",
     "tokenizer_add_special_tokens": True,
     "tokenizer_max_length": 100,
@@ -194,7 +195,9 @@ def _tokenizer(config: BenchmarkConfig) -> Any:
     tokenizer.wordpiece_tokenizer = WordpieceTokenizer(
         vocab=tokenizer.vocab,
         unk_token=tokenizer.unk_token,
-        max_input_chars_per_word=250,
+        max_input_chars_per_word=int(
+            config.model["wordpiece_max_input_chars_per_word"]
+        ),
     )
     return tokenizer
 

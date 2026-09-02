@@ -375,6 +375,7 @@ class BenchmarkConfig:
             "modality": "smiles_text_only",
             "remove_stereochemistry": True,
             "tokenizer": "official_bert_wordpiece",
+            "wordpiece_max_input_chars_per_word": 350,
             "vocab_size": 300,
             "hidden_dim": 768,
             "text_layers": 6,

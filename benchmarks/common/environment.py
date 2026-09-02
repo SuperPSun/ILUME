@@ -461,7 +461,8 @@ def spmm_asset_snapshot(config: BenchmarkConfig) -> dict[str, Any]:
             f"expected {config.model['revision']}, got {actual_revision or 'unavailable'}"
         )
     vocab = checkout / "vocab_bpe_300.txt"
-    tokenizer = _spmm_tokenizer(vocab)
+    max_input_chars = int(config.model["wordpiece_max_input_chars_per_word"])
+    tokenizer = _spmm_tokenizer(vocab, max_input_chars)
     special_ids = {
         "pad": tokenizer.pad_token_id,
         "unk": tokenizer.unk_token_id,
@@ -484,12 +485,16 @@ def spmm_asset_snapshot(config: BenchmarkConfig) -> dict[str, Any]:
             name: {"sha256": actual_hashes[name], "size": path.stat().st_size}
             for name, (path, _) in sorted(required.items())
         },
-        "tokenizer": {"vocab_size": 300, "special_token_ids": special_ids},
+        "tokenizer": {
+            "vocab_size": 300,
+            "special_token_ids": special_ids,
+            "wordpiece_max_input_chars_per_word": max_input_chars,
+        },
         "checkpoint_trust": "pinned_official_lightning_pickle",
     }
 
 
-def _spmm_tokenizer(vocab: Path) -> Any:
+def _spmm_tokenizer(vocab: Path, max_input_chars_per_word: int) -> Any:
     from transformers import BertTokenizer, WordpieceTokenizer
 
     tokenizer = BertTokenizer(
@@ -498,7 +503,7 @@ def _spmm_tokenizer(vocab: Path) -> Any:
     tokenizer.wordpiece_tokenizer = WordpieceTokenizer(
         vocab=tokenizer.vocab,
         unk_token=tokenizer.unk_token,
-        max_input_chars_per_word=250,
+        max_input_chars_per_word=max_input_chars_per_word,
     )
     return tokenizer
 
