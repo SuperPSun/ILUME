@@ -193,7 +193,7 @@ Stage2/Stage3 resume 分别在上述 train 命令追加 `--resume <checkpoint>` 
 
 MLP、ECFP4-XGBoost、Chemprop D-MPNN、MoLFormer、ILBERT 与 SPMM 位于 `benchmarks/`；
 Stage3 Single-task MLP 内部消融位于 `ablations/`。二者均与 Stage 代码隔离，并继续
-复用 benchmark 运行与 reporting 入口；合同见 [ADR-0022](docs/adr/0022-mlp-ecfp-xgboost-baselines.md)、[ADR-0028](docs/adr/0028-chemprop-dmpnn-baseline.md)、[ADR-0029](docs/adr/0029-molformer-baseline.md)、[ADR-0030](docs/adr/0030-molformer-throughput-contract.md)、[ADR-0032](docs/adr/0032-ilbert-baseline.md)、[ADR-0033](docs/adr/0033-stage3-single-task-mlp-ablation.md) 和 [ADR-0035](docs/adr/0035-spmm-baseline.md)。
+复用 benchmark 运行与 reporting 入口；合同见 [ADR-0022](docs/adr/0022-mlp-ecfp-xgboost-baselines.md)、[ADR-0028](docs/adr/0028-chemprop-dmpnn-baseline.md)、[ADR-0029](docs/adr/0029-molformer-baseline.md)、[ADR-0030](docs/adr/0030-molformer-throughput-contract.md)、[ADR-0032](docs/adr/0032-ilbert-baseline.md)、[ADR-0033](docs/adr/0033-stage3-single-task-mlp-ablation.md)、[ADR-0035](docs/adr/0035-spmm-baseline.md)、[ADR-0037](docs/adr/0037-spmm-wordpiece-character-limit.md) 和 [ADR-0038](docs/adr/0038-spmm-throughput-contract.md)。
 
 ```bash
 python -m pip install -e ".[benchmarks]"
@@ -366,11 +366,12 @@ python scripts/benchmarks/train.py \
 
 python scripts/benchmarks/sweep.py \
   --config configs/benchmarks/spmm.yaml \
-  --output outputs/benchmarks/v1/spmm \
-  --max-workers 1
+  --output outputs/benchmarks/v1/spmm-wp350-bs128 \
+  --max-workers 2 \
+  --devices cuda:0,cuda:1
 ```
 
-SPMM只使用官方text-mode前6层和768维`[CLS]`表示；各分子component由同一encoder分别编码并合并为一次forward，随后只扩宽官方regression head第一层。模型输入去除立体信息，严格继承官方100-token tokenizer加首token切片路径，实际encoder上限为99；collision和truncation均公开审计。Partial Charge与Stage 2 Full为unsupported。
+SPMM只使用官方text-mode前6层和768维`[CLS]`表示；各分子component由同一encoder分别编码并合并为一次forward，随后只扩宽官方regression head第一层。模型输入去除立体信息，保留官方100-token tokenizer加首token切片路径，实际encoder上限为99；WordPiece单词字符上限固定为350，collision和truncation均公开审计。训练固定batch 128、FP32+TF32及确定性sortish长度分桶；多GPU运行保持一张GPU一个job。旧`outputs/benchmarks/v1/spmm`不得与新合同混用，汇总时通过`--include outputs/benchmarks/v1/spmm-wp350-bs128`只选择新结果。Partial Charge与Stage 2 Full为unsupported。
 
 ## 输出与结果汇总
 

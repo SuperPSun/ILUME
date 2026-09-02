@@ -41,6 +41,7 @@ SPMM_INPUT_CONTRACT = {
     "component_forward": "merged_component_backbone_forward",
     "conditions": "train_only_zscore_in_registry_order",
 }
+SPMM_TRAINING_ORDER_CONTRACT = "sortish_length_bucketing_v1"
 TokenCache = dict[str, tuple[torch.Tensor, int]]
 
 
@@ -144,10 +145,18 @@ class SharedSPMMRegressor(torch.nn.Module):
         return self.predictor(representation)
 
 
-class EpochBatchSampler(torch.utils.data.Sampler[list[int]]):
-    def __init__(self, row_count: int, *, batch_size: int, seed: int) -> None:
-        self.row_count = int(row_count)
+class SortishBatchSampler(torch.utils.data.Sampler[list[int]]):
+    def __init__(
+        self,
+        lengths: Sequence[int],
+        *,
+        batch_size: int,
+        window_batches: int,
+        seed: int,
+    ) -> None:
+        self.lengths = tuple(int(value) for value in lengths)
         self.batch_size = int(batch_size)
+        self.window_batches = int(window_batches)
         self.seed = int(seed)
         self.epoch = 0
 
@@ -155,15 +164,22 @@ class EpochBatchSampler(torch.utils.data.Sampler[list[int]]):
         self.epoch = int(epoch)
 
     def __len__(self) -> int:
-        return math.ceil(self.row_count / self.batch_size)
+        return math.ceil(len(self.lengths) / self.batch_size)
 
     def __iter__(self) -> Any:
         generator = torch.Generator().manual_seed(self.seed + self.epoch)
-        order = torch.randperm(self.row_count, generator=generator).tolist()
-        return iter(
-            order[start : start + self.batch_size]
-            for start in range(0, len(order), self.batch_size)
-        )
+        permutation = torch.randperm(len(self.lengths), generator=generator).tolist()
+        window_size = self.window_batches * self.batch_size
+        batches: list[list[int]] = []
+        for start in range(0, len(permutation), window_size):
+            window = permutation[start : start + window_size]
+            window.sort(key=self.lengths.__getitem__)
+            batches.extend(
+                window[offset : offset + self.batch_size]
+                for offset in range(0, len(window), self.batch_size)
+            )
+        order = torch.randperm(len(batches), generator=generator).tolist()
+        return iter(batches[index] for index in order)
 
 
 def _upstream_paths(config: BenchmarkConfig) -> tuple[Path, Path, Path, Path]:
@@ -248,6 +264,15 @@ def _token_cache_audit(token_cache: TokenCache) -> dict[str, int | str]:
         "total_pre_truncation_tokens": sum(lengths),
         "maximum_pre_truncation_token_length": max(lengths, default=0),
     }
+
+
+def _row_token_lengths(
+    prepared: PreparedSplit, token_cache: TokenCache
+) -> tuple[int, ...]:
+    return tuple(
+        max(len(token_cache[smiles][0]) for smiles in components)
+        for components in prepared.model_components
+    )
 
 
 def _input_audit(
@@ -431,6 +456,7 @@ def prepare_spmm_training(
             "component_order": list(task.slots),
             "source_hashes": source_hashes,
             "input_contract": SPMM_INPUT_CONTRACT,
+            "training_order_contract": SPMM_TRAINING_ORDER_CONTRACT,
             "token_cache_audit": _token_cache_audit(token_cache),
             "train_input_audit": train.audit,
             "valid_input_audit": valid.audit,
@@ -606,7 +632,7 @@ def _data_loader(
     target_stats: TargetStats,
     *,
     pad_token_id: int,
-    batch_sampler: EpochBatchSampler | None = None,
+    batch_sampler: SortishBatchSampler | None = None,
 ) -> torch.utils.data.DataLoader:
     common = {
         "num_workers": int(config.runtime["num_workers"]),
@@ -706,9 +732,10 @@ def train_spmm_bundle(
         lr=float(config.training["warmup_learning_rate"]),
         weight_decay=float(config.training["weight_decay"]),
     )
-    sampler = EpochBatchSampler(
-        len(bundle.train.raw),
+    sampler = SortishBatchSampler(
+        _row_token_lengths(bundle.train, bundle.token_cache),
         batch_size=int(config.training["batch_size"]),
+        window_batches=int(config.training["bucket_window_batches"]),
         seed=config.seed,
     )
     train_loader = _data_loader(
@@ -1002,11 +1029,12 @@ def evaluate_spmm_checkpoint(
 
 __all__ = [
     "ConditionStats",
-    "EpochBatchSampler",
     "PreparedSplit",
+    "SPMM_TRAINING_ORDER_CONTRACT",
     "SPMMTrainingBundle",
     "SPMM_INPUT_CONTRACT",
     "SharedSPMMRegressor",
+    "SortishBatchSampler",
     "build_spmm_model",
     "evaluate_spmm_checkpoint",
     "prepare_spmm_training",

@@ -26,6 +26,7 @@ model:
   modality: smiles_text_only
   remove_stereochemistry: true
   tokenizer: official_bert_wordpiece
+  wordpiece_max_input_chars_per_word: 350
   vocab_size: 300
   hidden_dim: 768
   text_layers: 6
@@ -48,16 +49,18 @@ training:
   warmup_epochs: 1
   warmup_learning_rate: 5.0e-6
   minimum_learning_rate: 3.0e-6
-  batch_size: 8
+  batch_size: 128
   gradient_accumulation_steps: 1
   max_epochs: 50
   early_stopping_patience: 10
+  length_bucketing: sortish_length_bucketing_v1
+  bucket_window_batches: 20
   loss: mse
   selection_metric: validation_raw_mae
   condition_transform: train_only_zscore
   device: cuda
   precision: fp32
-  cuda_matmul_tf32: false
+  cuda_matmul_tf32: true
   cudnn_tf32: true
   cudnn_benchmark: true
 runtime:

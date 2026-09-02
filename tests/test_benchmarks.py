@@ -1342,10 +1342,13 @@ def test_one_epoch_scalar_and_multicomponent_save_reload_smoke(
 
 from benchmarks.spmm.adapter import (
     ConditionStats as SPMMConditionStats,
+    SPMM_TRAINING_ORDER_CONTRACT,
     SharedSPMMRegressor,
+    SortishBatchSampler as SPMMSortishBatchSampler,
     _collate as spmm_collate,
     _load_pretrained_encoder,
     _prepare_split as prepare_spmm_split,
+    _row_token_lengths as spmm_row_token_lengths,
     _scheduled_learning_rate,
 )
 from benchmarks.common.environment import spmm_asset_snapshot
@@ -1412,9 +1415,21 @@ def test_formal_spmm_config_resolves_108_jobs_and_is_strict() -> None:
         "simulation/lumo",
     )
     assert len(stage3) * len(config.stage3.folds) + len(stage2) == 108
-    assert config.training["batch_size"] == 8
+    assert config.training["batch_size"] == 128
+    assert config.training["cuda_matmul_tf32"] is True
+    assert config.training["length_bucketing"] == SPMM_TRAINING_ORDER_CONTRACT
+    assert config.training["bucket_window_batches"] == 20
+    assert config.model["wordpiece_max_input_chars_per_word"] == 350
     changed = config.to_dict()
-    changed["training"]["batch_size"] = 16
+    changed["model"]["wordpiece_max_input_chars_per_word"] = 351
+    with pytest.raises(ValueError, match="registered upstream recipe"):
+        benchmark_config_from_dict(changed)
+    changed = config.to_dict()
+    changed["training"]["batch_size"] = 8
+    with pytest.raises(ValueError, match="registered fine-tuning recipe"):
+        benchmark_config_from_dict(changed)
+    changed = config.to_dict()
+    changed["training"]["cuda_matmul_tf32"] = False
     with pytest.raises(ValueError, match="registered fine-tuning recipe"):
         benchmark_config_from_dict(changed)
     runtime_variant = replace(config, runtime={**config.runtime, "num_workers": 8})
@@ -1487,7 +1502,8 @@ def test_spmm_asset_snapshot_rejects_hash_mismatch(tmp_path: Path, monkeypatch) 
         mask_token_id = 1
 
     monkeypatch.setattr(
-        "benchmarks.common.environment._spmm_tokenizer", lambda path: Tokenizer()
+        "benchmarks.common.environment._spmm_tokenizer",
+        lambda path, max_input_chars: Tokenizer(),
     )
     assert spmm_asset_snapshot(config)["revision"] == config.model["revision"]
     expected["xbert.py"] = "wrong"
@@ -1515,6 +1531,7 @@ def test_spmm_official_token_path_cache_truncation_collision_and_conditions() ->
     assert prepared.audit["truncated_rows"] == ["tiny.csv:4"]
     assert max(len(values) for values, _ in cache.values()) == 99
     assert all(int(values[0]) == 2 for values, _ in cache.values())
+    assert spmm_row_token_lengths(prepared, cache)[2] == 99
     call_count = len(tokenizer.calls)
     prepare_spmm_split(
         raw,
@@ -1533,6 +1550,26 @@ def test_spmm_official_token_path_cache_truncation_collision_and_conditions() ->
     assert input_ids.shape == attention_mask.shape == (6, 99)
     assert conditions[:, 0].tolist() == pytest.approx([-1.2247449, 0.0, 1.2247449])
     assert targets.shape == (3, 1)
+
+
+def test_spmm_sortish_sampler_is_deterministic_and_covers_each_epoch() -> None:
+    lengths = tuple(range(37))
+    sampler = SPMMSortishBatchSampler(
+        lengths, batch_size=4, window_batches=2, seed=42
+    )
+    epoch0 = list(sampler)
+    assert epoch0 == list(sampler)
+    assert len(epoch0) == 10
+    assert sorted(index for batch in epoch0 for index in batch) == list(range(37))
+    assert all(
+        [lengths[index] for index in batch]
+        == sorted(lengths[index] for index in batch)
+        for batch in epoch0
+    )
+    sampler.set_epoch(1)
+    epoch1 = list(sampler)
+    assert epoch1 != epoch0
+    assert sorted(index for batch in epoch1 for index in batch) == list(range(37))
 
 
 class FakeSPMMBert(torch.nn.Module):
