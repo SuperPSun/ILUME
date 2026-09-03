@@ -367,7 +367,7 @@ def test_formal_configs_and_registry_resolution(tmp_path: Path) -> None:
 
 
 def test_native_split_benchmark_configs_follow_v2_authorities() -> None:
-    splits = ("random", "cation", "anion", "il_solute", "solute", "solvent")
+    splits = ("il", "random", "cation", "anion", "il_solute", "solute", "solvent")
     benchmarks = ("mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm")
     root = Path("configs/benchmarks/splits")
     for split in splits:
@@ -1785,6 +1785,19 @@ def test_llasmol_environment_dispatches_to_dedicated_environment() -> None:
     assert command[:6] == [
         "/conda", "run", "--no-capture-output", "-n", "ilume-llasmol", "python"
     ]
+
+
+def test_llasmol_missing_assets_fail_before_model_loading(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from benchmarks.common.environment import llasmol_asset_snapshot
+
+    config = load_benchmark_config("configs/benchmarks/llasmol.yaml")
+    monkeypatch.setattr(
+        "benchmarks.common.environment.repository_path", lambda path: tmp_path / str(path)
+    )
+    with pytest.raises(FileNotFoundError, match="local assets are incomplete"):
+        llasmol_asset_snapshot(config)
 
 
 def test_llasmol_whole_il_multiview_token_cache_truncation_and_conditions() -> None:

@@ -318,22 +318,23 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
 
 def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
     expected = {
-        "random": ("random", 21),
-        "cation": ("cation", 20),
-        "anion": ("anion", 20),
-        "il_solute": ("il_solute", 2),
-        "solute": ("solute", 3),
-        "solvent": ("solvent", 1),
+        "il": ({"il", "solute_solvent"}, 21),
+        "random": ({"random"}, 21),
+        "cation": ({"cation"}, 20),
+        "anion": ({"anion"}, 20),
+        "il_solute": ({"il_solute"}, 2),
+        "solute": ({"solute"}, 3),
+        "solvent": ({"solvent"}, 1),
     }
     root = Path("configs/v2/stage3/splits")
-    for name, (strategy, task_count) in expected.items():
+    for name, (strategies, task_count) in expected.items():
         config = load_stage3_config(root / f"{name}.yaml")
         registry = resolve_task_registry(config)
         enabled = {
             task_id: spec for task_id, spec in registry.items() if spec.enabled
         }
         assert len(enabled) == task_count
-        assert {spec.split_strategy for spec in enabled.values()} == {strategy}
+        assert {spec.split_strategy for spec in enabled.values()} == set(strategies)
         assert config.data.artifacts_dir == Path(
             f"outputs/v2/stage3/splits/{name}/prepare/artifacts"
         )
@@ -343,6 +344,7 @@ def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
         for spec in enabled.values():
             for fold in range(1, 6):
                 assert source_path(config, spec, fold).is_file()
+
 
 def test_training_seed_changes_training_identity_not_prepared_artifact(
     tiny_prepared: Stage3Config,
