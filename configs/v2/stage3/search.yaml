@@ -1,6 +1,7 @@
 schema_version: 1
 study_name: ilume-v2-stage3-abc
 base_config: configs/v2/stage3/base.yaml
+prepared_artifacts_dir: outputs/v2/stage3/search/prepare/artifacts
 folds: [1, 2]
 epochs: 20
 refinement_ratio: 0.20

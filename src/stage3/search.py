@@ -60,6 +60,7 @@ EVALUATION_WEIGHT_SUM = sum(EVALUATION_WEIGHTS.values())
 class Stage3SearchConfig:
     study_name: str
     base_config: str
+    prepared_artifacts_dir: str
     folds: tuple[int, ...]
     epochs: int
     refinement_ratio: float
@@ -76,6 +77,10 @@ class Stage3SearchConfig:
             raise ValueError("Stage 3 search study_name cannot be empty")
         if self.base_config != "configs/v2/stage3/base.yaml":
             raise ValueError("Stage 3 search fixes configs/v2/stage3/base.yaml")
+        if self.prepared_artifacts_dir != "outputs/v2/stage3/search/prepare/artifacts":
+            raise ValueError(
+                "Stage 3 search fixes the search-local prepared artifact path"
+            )
         if self.folds != (1, 2):
             raise ValueError("Stage 3 search fixes folds 1/2")
         if self.epochs != 20 or self.refinement_ratio != 0.20:
@@ -415,6 +420,14 @@ def config_for_search_c(
 def search_base_config(base: Stage3Config, spec: Stage3SearchConfig) -> Stage3Config:
     config = replace(
         base,
+        data=replace(
+            base.data,
+            artifacts_dir=Path(spec.prepared_artifacts_dir),
+        ),
+        preparation=replace(
+            base.preparation,
+            cache_dir=Path("outputs/v2/stage3/search/prepare/object_cache"),
+        ),
         training=replace(
             base.training,
             seed=spec.sampler_seed,

@@ -108,6 +108,10 @@ Optuna，但不会改动Stage 1/2 Base参数：
 ```bash
 python -m pip install -e ".[hpo]"
 
+python scripts/stage3/prepare.py \
+  --config configs/v2/stage3/base.yaml \
+  --output outputs/v2/stage3/search/prepare
+
 python scripts/stage3/search.py \
   --study-config configs/v2/stage3/search.yaml \
   --phase a \
