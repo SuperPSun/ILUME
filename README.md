@@ -191,9 +191,9 @@ Stage2/Stage3 resume 分别在上述 train 命令追加 `--resume <checkpoint>` 
 
 ## Baselines and Ablations
 
-MLP、ECFP4-XGBoost、Chemprop D-MPNN、MoLFormer、ILBERT 与 SPMM 位于 `benchmarks/`；
+MLP、ECFP4-XGBoost、Chemprop D-MPNN、MoLFormer、ILBERT、SPMM 与 LlaSMol 位于 `benchmarks/`；
 Stage3 Single-task MLP 内部消融位于 `ablations/`。二者均与 Stage 代码隔离，并继续
-复用 benchmark 运行与 reporting 入口；合同见 [ADR-0022](docs/adr/0022-mlp-ecfp-xgboost-baselines.md)、[ADR-0028](docs/adr/0028-chemprop-dmpnn-baseline.md)、[ADR-0029](docs/adr/0029-molformer-baseline.md)、[ADR-0030](docs/adr/0030-molformer-throughput-contract.md)、[ADR-0032](docs/adr/0032-ilbert-baseline.md)、[ADR-0033](docs/adr/0033-stage3-single-task-mlp-ablation.md)、[ADR-0035](docs/adr/0035-spmm-baseline.md)、[ADR-0037](docs/adr/0037-spmm-wordpiece-character-limit.md) 和 [ADR-0038](docs/adr/0038-spmm-throughput-contract.md)。
+复用 benchmark 运行与 reporting 入口；合同见 [ADR-0022](docs/adr/0022-mlp-ecfp-xgboost-baselines.md)、[ADR-0028](docs/adr/0028-chemprop-dmpnn-baseline.md)、[ADR-0029](docs/adr/0029-molformer-baseline.md)、[ADR-0030](docs/adr/0030-molformer-throughput-contract.md)、[ADR-0032](docs/adr/0032-ilbert-baseline.md)、[ADR-0033](docs/adr/0033-stage3-single-task-mlp-ablation.md)、[ADR-0035](docs/adr/0035-spmm-baseline.md)、[ADR-0037](docs/adr/0037-spmm-wordpiece-character-limit.md)、[ADR-0038](docs/adr/0038-spmm-throughput-contract.md) 和 [ADR-0040](docs/adr/0040-llasmol-mistral-7b-baseline.md)。
 
 ```bash
 python -m pip install -e ".[benchmarks]"
@@ -249,7 +249,7 @@ python scripts/benchmarks/sweep.py \
   --max-workers 1
 ```
 
-`--max-workers 1` 保持串行行为。MLP、D-MPNN、MoLFormer、ILBERT 与 SPMM 多 GPU sweep 可通过 `--devices cuda:0,cuda:1,...` 分配逻辑 job；XGBoost 的 CPU 并行度由 YAML 中的 `training.n_jobs` 控制。D-MPNN 正式 sweep 共 109 个单 seed 训练任务；上述命令不会 resume，失败任务由 sweep 在新 attempt 中完整重跑。
+`--max-workers 1` 保持串行行为。MLP、D-MPNN、MoLFormer、ILBERT、SPMM 与 LlaSMol 多 GPU sweep 可通过 `--devices cuda:0,cuda:1,...` 分配逻辑 job；XGBoost 的 CPU 并行度由 YAML 中的 `training.n_jobs` 控制。D-MPNN 正式 sweep 共 109 个单 seed 训练任务；上述命令不会 resume，失败任务由 sweep 在新 attempt 中完整重跑。
 
 MoLFormer同样使用独立hash-lock环境。先显式安装环境并下载固定HF snapshot；正式launcher只使用本地cache，不会自动联网或切换revision。
 
@@ -372,6 +372,50 @@ python scripts/benchmarks/sweep.py \
 ```
 
 SPMM只使用官方text-mode前6层和768维`[CLS]`表示；各分子component由同一encoder分别编码并合并为一次forward，随后只扩宽官方regression head第一层。模型输入去除立体信息，保留官方100-token tokenizer加首token切片路径，实际encoder上限为99；WordPiece单词字符上限固定为350，collision和truncation均公开审计。训练固定batch 128、FP32+TF32及确定性sortish长度分桶；多GPU运行保持一张GPU一个job。旧`outputs/benchmarks/v1/spmm`不得与新合同混用，汇总时通过`--include outputs/benchmarks/v1/spmm-wp350-bs128`只选择新结果。Partial Charge与Stage 2 Full为unsupported。
+
+LlaSMol使用固定Mistral-7B基座和官方LoRA adapter。仓库不复制或提交约13.5 GiB基座与84 MB adapter；必须先显式安装独立环境并将固定snapshot下载到已忽略目录。
+
+```bash
+conda env create -f benchmarks/llasmol/environment.yml
+conda run --no-capture-output -n ilume-llasmol \
+  python -m pip install --require-hashes \
+  -r benchmarks/llasmol/requirements-linux-x86_64-cu128.lock
+
+mkdir -p artifacts/benchmarks/llasmol/base artifacts/benchmarks/llasmol/adapter
+conda run --no-capture-output -n ilume-llasmol \
+  hf download mistralai/Mistral-7B-v0.1 \
+  config.json model.safetensors.index.json \
+  model-00001-of-00002.safetensors model-00002-of-00002.safetensors \
+  tokenizer.json tokenizer.model tokenizer_config.json special_tokens_map.json \
+  --revision 27d67f1b5f57dc0953326b2601d68371d40ea8da \
+  --local-dir artifacts/benchmarks/llasmol/base
+conda run --no-capture-output -n ilume-llasmol \
+  hf download osunlp/LlaSMol-Mistral-7B \
+  adapter_config.json adapter_model.bin \
+  --revision 044d6124448733615c5a3d6ab14b947f71fc6728 \
+  --local-dir artifacts/benchmarks/llasmol/adapter
+
+PYTHONPATH=src:. ILUME_BENCHMARK_ENVIRONMENT=ilume-llasmol \
+conda run --no-capture-output -n ilume-llasmol \
+  python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_llasmol_environment; validate_llasmol_environment(load_benchmark_config("configs/benchmarks/llasmol.yaml"))'
+```
+
+单任务与完整108-job sweep：
+
+```bash
+python scripts/benchmarks/train.py \
+  --config configs/benchmarks/llasmol.yaml \
+  --benchmark stage3 --task experiment/density --fold 1 \
+  --output outputs/benchmarks/v1/llasmol/stage3/experiment__density/fold1/attempt-001
+
+python scripts/benchmarks/sweep.py \
+  --config configs/benchmarks/llasmol.yaml \
+  --output outputs/benchmarks/v1/llasmol \
+  --max-workers 4 \
+  --devices cuda:0,cuda:1,cuda:2,cuda:3
+```
+
+普通IL使用带task marker的单条`cation.anion`sequence；solvation/transfer只增加whole-IL与partner的共享backbone双view。基座以NF4 double-quant冻结加载，并继续训练官方attention与MLP LoRA及`4096/8192 + conditions → 256 → 1`回归head。输入上限512 tokens并公开截断审计；target和numeric conditions只从train rows拟合scaler。建议每张GPU仅运行一个job；OOM/NaN不自动缩批或回退。Partial Charge与Stage 2 Full为unsupported。
 
 ## 输出与结果汇总
 

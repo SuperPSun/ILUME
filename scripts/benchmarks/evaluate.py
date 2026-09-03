@@ -294,6 +294,16 @@ def main() -> None:
             config.stage3.folds[0] if args.ensemble_folds else selector_fold,
             args.split,
         )
+    if config.name == "llasmol":
+        from benchmarks.llasmol.adapter import llasmol_evaluation_audit
+
+        input_audit = llasmol_evaluation_audit(
+            config,
+            args.benchmark,
+            args.task,
+            config.stage3.folds[0] if args.ensemble_folds else selector_fold,
+            args.split,
+        )
     evaluation_identity = semantic_identity(
         "benchmark.evaluation.v1",
         {

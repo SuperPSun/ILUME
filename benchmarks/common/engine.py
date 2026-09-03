@@ -140,6 +140,10 @@ def prepare_training(
         from benchmarks.spmm.adapter import prepare_spmm_training
 
         return prepare_spmm_training(config, benchmark, task_id, fold)  # type: ignore[return-value]
+    if config.name == "llasmol":
+        from benchmarks.llasmol.adapter import prepare_llasmol_training
+
+        return prepare_llasmol_training(config, benchmark, task_id, fold)  # type: ignore[return-value]
     task = resolve_task(config, benchmark, task_id, fold)
     train = load_split(task, "train")
     valid = load_split(task, "valid")
@@ -464,6 +468,12 @@ def train_bundle(
         return train_spmm_bundle(  # type: ignore[arg-type]
             config, bundle, output_dir, reporter=reporter
         )
+    if config.name == "llasmol":
+        from benchmarks.llasmol.adapter import train_llasmol_bundle
+
+        return train_llasmol_bundle(  # type: ignore[arg-type]
+            config, bundle, output_dir, reporter=reporter
+        )
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
     if config.name == "mlp":
@@ -589,6 +599,12 @@ def evaluate_checkpoint(
         from benchmarks.spmm.adapter import evaluate_spmm_checkpoint
 
         return evaluate_spmm_checkpoint(
+            config, benchmark, task_id, fold, checkpoint_dir, split
+        )
+    if config.name == "llasmol":
+        from benchmarks.llasmol.adapter import evaluate_llasmol_checkpoint
+
+        return evaluate_llasmol_checkpoint(
             config, benchmark, task_id, fold, checkpoint_dir, split
         )
     if split not in {"valid", "test"}:

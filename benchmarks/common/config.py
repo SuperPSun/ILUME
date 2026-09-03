@@ -50,7 +50,7 @@ class Stage2PhysicsConfig:
 @dataclass(frozen=True)
 class BenchmarkConfig:
     name: Literal[
-        "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm",
+        "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm", "llasmol",
         "ilume_stage3_single_task_mlp",
     ]
     data: DataConfig
@@ -66,7 +66,7 @@ class BenchmarkConfig:
 
     def validate(self) -> None:
         if self.name not in {
-            "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm",
+            "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm", "llasmol",
             "ilume_stage3_single_task_mlp",
         }:
             raise ValueError(f"Unknown benchmark model: {self.name}")
@@ -87,7 +87,7 @@ class BenchmarkConfig:
         if self.name == "ilume_stage3_single_task_mlp":
             self._validate_ilume_stage3_single_task_mlp()
         advanced = self.name in {
-            "dmpnn", "molformer", "ilbert", "spmm",
+            "dmpnn", "molformer", "ilbert", "spmm", "llasmol",
             "ilume_stage3_single_task_mlp",
         }
         if not advanced and self.data.feature_cache is None:
@@ -102,7 +102,9 @@ class BenchmarkConfig:
             self._validate_ilbert()
         if self.name == "spmm":
             self._validate_spmm()
-        elif self.name not in {"molformer", "ilbert", "spmm"} and self.runtime:
+        if self.name == "llasmol":
+            self._validate_llasmol()
+        elif self.name not in {"molformer", "ilbert", "spmm", "llasmol"} and self.runtime:
             raise ValueError("Only token baselines currently declare benchmark runtime settings")
         if not self.model or not self.training or self.seed < 0:
             raise ValueError("Benchmark model/training contract is incomplete")
@@ -427,6 +429,103 @@ class BenchmarkConfig:
         }
         if self.runtime != expected_runtime:
             raise ValueError("SPMM runtime must match the registered loader recipe")
+
+    def _validate_llasmol(self) -> None:
+        if self.features is not None:
+            raise ValueError("LlaSMol tokenizes SMILES and does not accept features")
+        if self.environment is None or not all(
+            (self.environment.name, str(self.environment.definition), str(self.environment.lock))
+        ):
+            raise ValueError("LlaSMol requires a dedicated environment definition and lock")
+        if self.environment.name != "ilume-llasmol":
+            raise ValueError("LlaSMol environment name must be ilume-llasmol")
+        if self.data.stage2_authority_config is not None:
+            raise ValueError("LlaSMol does not use a Stage 2 prepare authority")
+        expected_model = {
+            "base_repository": "mistralai/Mistral-7B-v0.1",
+            "base_revision": "27d67f1b5f57dc0953326b2601d68371d40ea8da",
+            "base_snapshot": "artifacts/benchmarks/llasmol/base",
+            "base_config_sha256": "cf25cdf4719f181d1d1d371973285d9afe9afde0d0c6a6fd48de857555ce1e0d",
+            "base_index_sha256": "c94ab46aaf5fcca44720c10bcc498c1b0d9759d47534a396e3512edc451ebd06",
+            "base_shard_sha256": [
+                "9742cb4764964155b7a5f35eefad651f590006091ddeb536863d6c5865cca1b9",
+                "9bcf56354ec0c68b5f8e97b4f3b02d16af899a65b0868d6dba5a51c1b30f01cb",
+            ],
+            "base_shard_size": [9942981696, 4540516344],
+            "tokenizer_json_sha256": "11c08db21487c885d8c792180f0be237f6a261b89a46f128a6a80a3aa4bd1720",
+            "tokenizer_model_sha256": "dadfd56d766715c61d2ef780a525ab43b8e6da4de6865bda3d95fdef5e134055",
+            "tokenizer_config_sha256": "ddb008229511e51607002ffe28925001c4a9ca4177dc4de3a655d085cc610b99",
+            "special_tokens_sha256": "6fa06efa2785e450051989a6f8fb4416b10149ded485ddd3f127a40734f5cfd0",
+            "adapter_repository": "osunlp/LlaSMol-Mistral-7B",
+            "adapter_revision": "044d6124448733615c5a3d6ab14b947f71fc6728",
+            "adapter_snapshot": "artifacts/benchmarks/llasmol/adapter",
+            "adapter_config_sha256": "5ce324c408d6a24f67fced865778d1de1d9b62ce39ccca15ddf2e5b6b2087cfd",
+            "adapter_model_sha256": "caa85963742ccf0b5c5fac60db6b10116562dd0be138f9cffb2765f0235b23b2",
+            "adapter_model_size": 84047501,
+            "adapter_state_entries": 448,
+            "pretrained": True,
+            "load_in_4bit": True,
+            "base_frozen": True,
+            "quantization": "nf4_double_quant",
+            "compute_dtype": "bfloat16",
+            "gradient_checkpointing": True,
+            "use_cache": False,
+            "continue_official_adapter": True,
+            "lora_rank": 16,
+            "lora_alpha": 16,
+            "lora_dropout": 0.05,
+            "lora_target_modules": [
+                "q_proj", "k_proj", "v_proj", "o_proj",
+                "gate_proj", "up_proj", "down_proj",
+            ],
+            "hidden_dim": 4096,
+            "pooling": "masked_mean",
+            "head_hidden_dim": 256,
+            "head_activation": "silu",
+            "head_dropout": 0.0,
+            "task_prefix": "uppercase_task_leaf_angle_brackets",
+            "max_length": 512,
+            "truncation": True,
+            "padding": "left_longest_multiple_of_8",
+            "shared_backbone": True,
+            "component_forward": "merged_sequence_view_forward",
+            "fusion": "ordered_concat_conditions_thin_mlp",
+            "input_cache": "unique_sequence_memory_token_cache",
+        }
+        if self.model != expected_model:
+            raise ValueError("LlaSMol model must match the registered QLoRA recipe")
+        expected_training = {
+            "optimizer": "adamw",
+            "lora_learning_rate": 2.0e-5,
+            "head_learning_rate": 1.0e-4,
+            "weight_decay": 1.0e-2,
+            "scheduler": "linear_warmup_cosine",
+            "warmup_fraction": 0.05,
+            "batch_size": 8,
+            "gradient_accumulation_steps": 4,
+            "max_epochs": 30,
+            "early_stopping_patience": 8,
+            "max_grad_norm": 1.0,
+            "length_bucketing": "sortish_length_bucketing_v1",
+            "bucket_window_batches": 20,
+            "loss": "mse",
+            "selection_metric": "validation_raw_mae",
+            "condition_transform": "train_only_zscore",
+            "device": "cuda",
+            "precision": "qlora_nf4_bf16",
+            "tf32": False,
+        }
+        if self.training != expected_training:
+            raise ValueError("LlaSMol training must match the registered QLoRA recipe")
+        expected_runtime = {
+            "num_workers": 4,
+            "prefetch_factor": 2,
+            "persistent_workers": True,
+            "pin_memory": True,
+            "non_blocking_transfer": True,
+        }
+        if self.runtime != expected_runtime:
+            raise ValueError("LlaSMol runtime must match the registered loader recipe")
 
     def to_dict(self) -> dict[str, Any]:
         def convert(value: Any) -> Any:
