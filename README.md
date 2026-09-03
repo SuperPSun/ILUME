@@ -98,6 +98,43 @@ python scripts/stage3/evaluate.py \
 Stage 3 evaluator 同样默认加载每个 fold 的 `taskwise_refined.pt`；显式
 `--checkpoint-epoch N` 才选择对应普通 epoch checkpoint。
 
+### v2 Stage 3 三阶段超参搜索
+
+[ADR-0041](docs/adr/0041-stage3-v2-three-phase-hpo.md) 固定只搜索 Base Stage 3：
+Search A 50个grouping、Search B 30个expert结构、Search C 20个loss/optimizer recipe。
+每个trial只运行fold1/2和20 epochs，总预算为100个配置、200个正常fold run。搜索需要
+Optuna，但不会改动Stage 1/2 Base参数：
+
+```bash
+python -m pip install -e ".[hpo]"
+
+python scripts/stage3/search.py \
+  --study-config configs/v2/stage3/search.yaml \
+  --phase a \
+  --output outputs/v2/stage3/search \
+  --devices cuda:0,cuda:1 \
+  --max-parallel 2
+
+python scripts/stage3/search.py \
+  --study-config configs/v2/stage3/search.yaml \
+  --phase b \
+  --output outputs/v2/stage3/search \
+  --devices cuda:0,cuda:1 \
+  --max-parallel 2
+
+python scripts/stage3/search.py \
+  --study-config configs/v2/stage3/search.yaml \
+  --phase c \
+  --output outputs/v2/stage3/search \
+  --devices cuda:0,cuda:1 \
+  --max-parallel 2
+```
+
+可用更多偶数个显式设备槽并把`--max-parallel`设为相同数量；每个trial的两个fold会同时
+占用两个槽。中断后原命令追加`--resume`。B严格绑定A的`result.json`，C严格绑定A/B结果；
+不得修改已启动study的配置或候选manifest。最终Base recipe写入
+`outputs/v2/stage3/search/search_c/winner_base.yaml`，不会自动运行test或推广到其他scale。
+
 独立的 Capacity v1 研究继续冻结在 legacy v1 五模态合同，不替换或修改 Global-RDKit v2 主线；设计见 [ADR-0026](docs/adr/0026-capacity-v1-pipeline-study.md)，正式命令集中在 [Capacity v1 操作手册](docs/capacity-v1-runbook.md)。
 
 ### RDKit 2D → HoME representation ablation

@@ -154,6 +154,15 @@ def _mixture(
     return (weights.unsqueeze(-1) * outputs).sum(dim=1), weights
 
 
+def _expert_outputs(
+    experts: Iterable[nn.Module], values: torch.Tensor
+) -> torch.Tensor:
+    outputs = [expert(values) for expert in experts]
+    if outputs:
+        return torch.stack(outputs, dim=1)
+    return values.new_empty((values.shape[0], 0, values.shape[-1]))
+
+
 @dataclass(frozen=True)
 class Stage3ForwardOutput:
     predictions: torch.Tensor
@@ -198,16 +207,21 @@ class Stage3SparseModel(nn.Module):
         self.l1_global_experts = nn.ModuleList(
             [Expert(d_model, **expert_kwargs) for _ in range(model_config.global_experts)]
         )
-        self.l1_global_gate = nn.Linear(d_model, model_config.global_experts)
+        self.l1_global_gate = (
+            nn.Linear(d_model, model_config.global_experts)
+            if model_config.global_experts
+            else None
+        )
         self.l2_global_experts = nn.ModuleList(
             [Expert(d_model, **expert_kwargs) for _ in range(model_config.global_experts)]
         )
-        self._own_modules(
-            GLOBAL,
+        global_modules: list[nn.Module] = [
             self.l1_global_experts,
-            self.l1_global_gate,
             self.l2_global_experts,
-        )
+        ]
+        if self.l1_global_gate is not None:
+            global_modules.append(self.l1_global_gate)
+        self._own_modules(GLOBAL, *global_modules)
 
         self.l1_group_experts = nn.ModuleDict()
         self.l1_group_gates = nn.ModuleDict()
@@ -369,11 +383,17 @@ class Stage3SparseModel(nn.Module):
                     partner_embedding
                 )
         key = sanitize_task(task_id)
-        z_global, l1_global_weights = _mixture(
-            self.l1_global_experts,
-            primary_embedding,
-            self.l1_global_gate(primary_embedding),
-        )
+        if self.l1_global_gate is None:
+            z_global = primary_embedding
+            l1_global_weights = primary_embedding.new_empty(
+                (primary_embedding.shape[0], 0)
+            )
+        else:
+            z_global, l1_global_weights = _mixture(
+                self.l1_global_experts,
+                primary_embedding,
+                self.l1_global_gate(primary_embedding),
+            )
         z_group_delta, l1_group_weights = _mixture(
             self.l1_group_experts[spec.meta_group],
             primary_embedding,
@@ -395,15 +415,11 @@ class Stage3SparseModel(nn.Module):
         elif partner_embedding is not None:
             raise ValueError(f"Stage 3 task must not receive partner embedding: {task_id}")
 
-        global_outputs = torch.stack(
-            [expert(z_global) for expert in self.l2_global_experts], dim=1
+        global_outputs = _expert_outputs(self.l2_global_experts, z_global)
+        group_outputs = _expert_outputs(
+            self.l2_group_experts[spec.meta_group], local
         )
-        group_outputs = torch.stack(
-            [expert(local) for expert in self.l2_group_experts[spec.meta_group]], dim=1
-        )
-        private_outputs = torch.stack(
-            [expert(local) for expert in self.private_experts[key]], dim=1
-        )
+        private_outputs = _expert_outputs(self.private_experts[key], local)
         task_gate = torch.softmax(
             self.task_gates[key](torch.cat((z_global, local), dim=-1)), dim=-1
         )

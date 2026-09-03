@@ -34,6 +34,9 @@ from .data import (
 from .identity import build_stage3_prepared_identity, metadata_identity
 
 
+STAGE3_PREPARED_CONTRACT_VERSION = 2
+
+
 def _cache_identity(
     stage2_encoder_identity: Mapping[str, Any], key: ObjectKey
 ) -> dict[str, Any]:
@@ -188,7 +191,7 @@ def _stage_artifacts(
         },
     )
     registry_payload = {
-        task_id: spec.to_dict() for task_id, spec in registry.items()
+        task_id: spec.prepared_dict() for task_id, spec in registry.items()
     }
     atomic_json(staging / "registry.json", registry_payload)
     all_normalization: dict[str, Any] = {}
@@ -226,6 +229,7 @@ def _stage_artifacts(
     )
     metadata = {
         "identity_contract_version": IDENTITY_CONTRACT_VERSION,
+        "prepared_contract_version": STAGE3_PREPARED_CONTRACT_VERSION,
         "format_version": STAGE3_ARTIFACT_VERSION,
         "kind": STAGE3_ARTIFACT_KIND,
         "encoding_contract_version": OBJECT_ENCODING_CONTRACT_VERSION,
@@ -341,9 +345,13 @@ def load_prepared_stage3(config: Stage3Config) -> dict[str, Any]:
         raise ValueError(
             "Stage 3 artifact predates identity contract v1; regenerate it"
         )
+    if metadata.get("prepared_contract_version") != STAGE3_PREPARED_CONTRACT_VERSION:
+        raise ValueError(
+            "Stage 3 artifact predates prepared contract v2; regenerate it"
+        )
     registry = resolve_task_registry(config)
     registry_payload = {
-        task_id: spec.to_dict() for task_id, spec in registry.items()
+        task_id: spec.prepared_dict() for task_id, spec in registry.items()
     }
     if metadata.get("registry_hash") != canonical_json_sha256(registry_payload):
         raise ValueError("Stage 3 artifact registry mismatch")

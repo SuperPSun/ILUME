@@ -17,7 +17,7 @@ from .data import (
 )
 
 
-STAGE3_PREPARED_IDENTITY_CONTRACT_VERSION = 1
+STAGE3_PREPARED_IDENTITY_CONTRACT_VERSION = 2
 STAGE3_TRAINING_IDENTITY_CONTRACT_VERSION = 1
 STAGE3_EVALUATION_IDENTITY_CONTRACT_VERSION = 1
 
@@ -81,7 +81,8 @@ def build_stage3_prepared_identity(
             "contract_version": STAGE3_PREPARED_IDENTITY_CONTRACT_VERSION,
             "source_content": _source_content(config, registry),
             "resolved_registry": {
-                task: spec.to_dict() for task, spec in sorted(registry.items())
+                task: spec.prepared_dict()
+                for task, spec in sorted(registry.items())
             },
             "split": {
                 "policy": config.data.split_policy,

@@ -61,6 +61,13 @@ class ResolvedTaskSpec:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    def prepared_dict(self) -> dict[str, Any]:
+        """Return only fields that determine prepared tensors and data identity."""
+        payload = self.to_dict()
+        for name in ("meta_group", "enabled", "task_weight"):
+            payload.pop(name)
+        return payload
+
 
 @dataclass(frozen=True)
 class ResolvedGroupSpec:

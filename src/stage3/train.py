@@ -378,6 +378,14 @@ def build_resolved_training_plan(
         "trainable_parameters": sorted(
             name for name, parameter in model.named_parameters() if parameter.requires_grad
         ),
+        "parameter_counts": {
+            "total": sum(parameter.numel() for parameter in model.parameters()),
+            "trainable": sum(
+                parameter.numel()
+                for parameter in model.parameters()
+                if parameter.requires_grad
+            ),
+        },
         "frozen_parameters": sorted(
             name
             for name, parameter in model.named_parameters()

@@ -261,9 +261,10 @@ class Stage3Config:
         if any(not self.groups[task.meta_group].enabled for task in enabled_tasks):
             raise ValueError("Enabled task cannot belong to a disabled group")
         model = self.model
-        for name in ("global_experts", "group_experts", "private_experts"):
-            if getattr(model, name) <= 0:
-                raise ValueError(f"model.{name} must be positive")
+        if model.global_experts < 0 or model.private_experts < 0:
+            raise ValueError("global/private expert counts must be non-negative")
+        if model.group_experts <= 0:
+            raise ValueError("model.group_experts must be positive")
         if not 0.0 <= model.dropout < 1.0:
             raise ValueError("model.dropout must be in [0, 1)")
         if model.activation not in {"silu", "gelu"}:

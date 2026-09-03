@@ -97,9 +97,26 @@ from stage3.capacity import (
     validate_anchor_decision,
 )
 
+from stage3.search import (
+    ALL_TASKS,
+    EVALUATION_WEIGHTS,
+    EVALUATION_WEIGHT_SUM,
+    TIER_1,
+    TIER_2,
+    TIER_3,
+    WEAK_TASKS,
+    aggregate_search_trial,
+    config_for_search_c,
+    expert_candidates,
+    grouping_candidates,
+    load_search_config,
+    rank_trials,
+)
+
 from stage3.config import load_stage3_config
 
 import scripts.stage3.train as train_launcher
+import scripts.stage3.search as search_launcher
 
 from stage1.config import load_config
 from stage1.descriptors import calculate_descriptors, rdkit_descriptor_names
@@ -367,6 +384,42 @@ def test_training_seed_changes_training_identity_not_prepared_artifact(
         resolve_stage3_training_identity(tiny_prepared, 1)
     )
 
+
+def test_grouping_and_task_weights_change_training_not_prepared_identity(
+    tiny_prepared: Stage3Config,
+) -> None:
+    regrouped = replace(
+        tiny_prepared,
+        groups={"merged": Stage3GroupConfig(group_weight=2.0)},
+        tasks={
+            task: replace(spec, meta_group="merged", task_weight=2.0)
+            for task, spec in tiny_prepared.tasks.items()
+        },
+    )
+    variants = (
+        regrouped,
+        replace(
+            tiny_prepared,
+            groups={
+                name: replace(spec, group_weight=2.0)
+                for name, spec in tiny_prepared.groups.items()
+            },
+        ),
+        replace(
+            tiny_prepared,
+            model=replace(tiny_prepared.model, group_experts=2),
+        ),
+    )
+    original_identity = resolve_stage3_training_identity(tiny_prepared, 1)
+    for changed in variants:
+        prepared = load_prepared_stage3(changed)
+        assert set(prepared["registry"]) == set(tiny_prepared.tasks)
+        assert resolve_stage3_training_identity(changed, 1) != original_identity
+    assert all(
+        spec.meta_group == "merged"
+        for spec in load_prepared_stage3(regrouped)["registry"].values()
+    )
+
 def test_registry_catalog_precedence_split_and_topology(tmp_path: Path) -> None:
     config = _tiny_config(tmp_path)
     registry = resolve_task_registry(config)
@@ -391,6 +444,238 @@ def test_ownership_is_complete_and_isolated(tiny_prepared: Stage3Config) -> None
         model.parameters_for_owner(group_owner("g2"))
     )
     assert model.parameters_for_owner(GLOBAL)
+
+
+@pytest.mark.parametrize("global_count,private_count", [(0, 0), (0, 1), (1, 0)])
+def test_zero_global_or_private_experts_preserve_forward_and_ownership(
+    tiny_prepared: Stage3Config,
+    global_count: int,
+    private_count: int,
+) -> None:
+    config = replace(
+        tiny_prepared,
+        model=replace(
+            tiny_prepared.model,
+            global_experts=global_count,
+            private_experts=private_count,
+        ),
+    )
+    config.validate()
+    registry = resolve_task_registry(config)
+    model = Stage3SparseModel(config.model, registry, 4)
+    task = "experiment/a"
+    result = model(
+        task,
+        torch.randn(3, 4),
+        torch.empty(3, len(registry[task].condition_columns)),
+    )
+    assert result.predictions.shape == (3,)
+    assert result.diagnostics["l1_global_gate"].shape == (3, global_count)
+    assert result.diagnostics["l2_global_candidates"].shape == (
+        3, global_count, 4
+    )
+    assert result.diagnostics["l2_private_candidates"].shape == (
+        3, private_count, 4
+    )
+    if global_count == 0:
+        assert model.parameters_for_owner(GLOBAL) == ()
+    assert model.parameters_for_owner(private_owner(task))
+
+
+def test_v2_stage3_search_candidate_and_metric_contracts() -> None:
+    spec = load_search_config("configs/v2/stage3/search.yaml")
+    assert spec.folds == (1, 2)
+    assert spec.epochs == 20
+    groupings = grouping_candidates(spec.sampler_seed)
+    assert len(groupings) == 50
+    assert {source: sum(item.source == source for item in groupings) for source in (
+        "anchor", "manual", "combination"
+    )} == {"anchor": 5, "manual": 20, "combination": 25}
+    assert {
+        count: sum(item.group_count == count for item in groupings)
+        for count in (2, 3, 6, 9, 12)
+    } == {2: 10, 3: 10, 6: 10, 9: 10, 12: 10}
+    for candidate in groupings:
+        assert set(candidate.assignments) == set(ALL_TASKS)
+        assert len(set(candidate.assignments.values())) == candidate.group_count
+
+    experts = expert_candidates()
+    assert len(experts) == 30
+    assert {source: sum(item.source == source for item in experts) for source in (
+        "local", "ablation", "higher_capacity"
+    )} == {"local": 10, "ablation": 10, "higher_capacity": 10}
+    assert {
+        (item.global_experts, item.group_experts, item.private_experts)
+        for item in experts
+    } == {
+        (global_count, group_count, private_count)
+        for global_count in (0, 1, 2)
+        for group_count in (1, 2, 3, 4, 6)
+        for private_count in (0, 1)
+    }
+    assert EVALUATION_WEIGHT_SUM == pytest.approx(33.0)
+    assert sum(EVALUATION_WEIGHTS.values()) == pytest.approx(33.0)
+    config = config_for_search_c(
+        load_stage3_config(spec.base_config),
+        groupings[0],
+        experts[0],
+        {
+            "tier1_weight": 5.0,
+            "tier2_weight": 4.0,
+            "tier3_weight": 3.0,
+            "learning_rate": 1.0e-4,
+            "dropout": 0.20,
+            "weight_decay": 3.0e-2,
+        },
+    )
+    assert {config.tasks[task].task_weight for task in TIER_1} == {5.0}
+    assert {config.tasks[task].task_weight for task in TIER_2} == {4.0}
+    assert {config.tasks[task].task_weight for task in TIER_3} == {3.0}
+    assert {
+        config.tasks[task].task_weight
+        for task in ALL_TASKS
+        if task not in WEAK_TASKS
+    } == {1.0}
+
+
+def test_stage3_search_phase_catalogs_bind_top3_and_balance_groupings(
+    tmp_path: Path,
+) -> None:
+    groupings = grouping_candidates()
+    a_root = tmp_path / "search_a"
+    a_root.mkdir()
+    (a_root / "result.json").write_text(
+        json.dumps({"ranking": [{"candidate": item.to_dict()} for item in groupings[:3]]}),
+        encoding="utf-8",
+    )
+    b_catalog, prerequisites = search_launcher._candidate_catalog("b", tmp_path)
+    assert set(prerequisites) == {"search_a"}
+    assert len(b_catalog) == 30
+    assert {
+        grouping.candidate_id: sum(
+            row["grouping"]["candidate_id"] == grouping.candidate_id
+            for row in b_catalog
+        )
+        for grouping in groupings[:3]
+    } == {grouping.candidate_id: 10 for grouping in groupings[:3]}
+
+    b_root = tmp_path / "search_b"
+    b_root.mkdir()
+    (b_root / "result.json").write_text(
+        json.dumps({"ranking": [{"candidate": item} for item in b_catalog[:3]]}),
+        encoding="utf-8",
+    )
+    c_catalog, prerequisites = search_launcher._candidate_catalog("c", tmp_path)
+    assert set(prerequisites) == {"search_a", "search_b"}
+    assert len(c_catalog) == 9
+    assert len({row["grouping"]["candidate_id"] for row in c_catalog}) == 3
+    assert len({row["experts"]["candidate_id"] for row in c_catalog}) == 3
+
+
+def test_stage3_search_two_fold_aggregation_and_tie_break() -> None:
+    weak = {task: 0.5 for task in EVALUATION_WEIGHTS if EVALUATION_WEIGHTS[task] > 1}
+    fold = {
+        "weighted_normalized_mae": 0.4,
+        "original_macro_task_score": 0.6,
+        "weak_task_scores": weak,
+        "training_cost": {
+            "wall_seconds": 2.0,
+            "gpu_seconds": 2.0,
+            "peak_allocated_bytes": 100,
+            "total_parameters": 10,
+            "trainable_parameters": 9,
+        },
+    }
+    row = aggregate_search_trial(
+        {1: fold, 2: {**fold, "weighted_normalized_mae": 0.6}},
+        trial_number=7,
+        candidate={"candidate_id": "x"},
+    )
+    assert row["score"] == pytest.approx(0.5)
+    assert row["fold_sample_sd"] == pytest.approx(math.sqrt(0.02))
+    assert row["training_cost"]["gpu_seconds"] == pytest.approx(4.0)
+    slower = {
+        **row,
+        "trial_number": 8,
+        "training_cost": {**row["training_cost"], "gpu_seconds": 5.0},
+    }
+    assert [item["trial_number"] for item in rank_trials([slower, row])] == [7, 8]
+
+
+def test_stage3_search_a_runs_fixed_budget_and_resumes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stage3.search as search_module
+
+    spec = load_search_config("configs/v2/stage3/search.yaml")
+    base = search_module.search_base_config(
+        load_stage3_config(spec.base_config), spec
+    )
+    calls = 0
+
+    def fake_wave(trials, *, phase, folds, devices, max_retries):
+        nonlocal calls
+        calls += 1
+        assert phase == "screen"
+        assert folds == (1, 2)
+        assert max_retries == 1
+        return {
+            number: {
+                fold: trial_root / phase / "attempt0" / f"fold{fold}"
+                for fold in folds
+            }
+            for number, _, trial_root in trials
+        }
+
+    def fake_fold_summary(root, *, expected_epochs):
+        number = int(next(part for part in Path(root).parts if part.startswith("trial_")).split("_")[1])
+        score = 0.1 + number / 1000
+        return {
+            "weighted_normalized_mae": score,
+            "original_macro_task_score": score + 0.1,
+            "weak_task_scores": {
+                task: score for task in search_module.WEAK_TASKS
+            },
+            "training_cost": {
+                "wall_seconds": 1.0,
+                "gpu_seconds": 1.0,
+                "peak_allocated_bytes": 10,
+                "total_parameters": 100,
+                "trainable_parameters": 90,
+            },
+        }
+
+    monkeypatch.setattr(train_launcher, "_run_capacity_wave", fake_wave)
+    monkeypatch.setattr(search_module, "fold_search_summary", fake_fold_summary)
+    monkeypatch.setattr(search_launcher, "ROOT", tmp_path)
+    output = tmp_path / "search_a"
+    result = search_launcher._run_study(
+        phase="a",
+        base=base,
+        spec=spec,
+        catalog=[item.to_dict() for item in grouping_candidates()],
+        phase_root=output,
+        resume=False,
+        devices=("cuda:0", "cuda:1"),
+        max_parallel=2,
+    )
+    assert result["attempted_trials"] == 50
+    assert result["completed_trials"] == 50
+    assert [row["trial_number"] for row in result["top3"]] == [0, 1, 2]
+    first_calls = calls
+    resumed = search_launcher._run_study(
+        phase="a",
+        base=base,
+        spec=spec,
+        catalog=[item.to_dict() for item in grouping_candidates()],
+        phase_root=output,
+        resume=True,
+        devices=("cuda:0", "cuda:1"),
+        max_parallel=2,
+    )
+    assert resumed == result
+    assert calls == first_calls
 
 
 def test_rdkit_prepare_adapter_refinement_and_reporting_contract(
@@ -646,6 +931,36 @@ def test_pcgrad_keeps_global_and_group_as_separate_blocks(
     private = model.parameters_for_owner(private_owner("experiment/a"))[0]
     assert torch.equal(result.gradients[private], gradients["experiment/a"][private])
 
+
+def test_pcgrad_accepts_empty_global_expert_block(
+    tiny_prepared: Stage3Config,
+) -> None:
+    config = replace(
+        tiny_prepared,
+        model=replace(
+            tiny_prepared.model, global_experts=0, private_experts=0
+        ),
+    )
+    registry = resolve_task_registry(config)
+    model = Stage3SparseModel(config.model, registry, 4)
+    gradients = {}
+    for task in registry:
+        owners = (group_owner(registry[task].meta_group), private_owner(task))
+        gradients[task] = {
+            parameter: torch.ones_like(parameter, dtype=torch.float32)
+            for owner in owners
+            for parameter in model.parameters_for_owner(owner)
+        }
+    result = hierarchical_pcgrad(
+        model,
+        gradients,
+        registry,
+        {"g1": 1.0, "g2": 1.0},
+        __import__("random").Random(3),
+    )
+    assert result.assembled_owner_norms["GLOBAL"] == 0.0
+    assert result.gradients
+
 def test_short_training_checkpoint_and_resume_are_exact(tiny_prepared: Stage3Config) -> None:
     continuous = tiny_prepared.data.artifacts_dir.parent / "continuous"
     rows = run_stage3_training(tiny_prepared, 1, output_dir=continuous)
@@ -687,6 +1002,7 @@ def test_short_training_checkpoint_and_resume_are_exact(tiny_prepared: Stage3Con
     assert expected.keys() == actual.keys()
     assert all(torch.equal(expected[name], actual[name]) for name in expected)
     assert (resumed / "taskwise_refined.pt").is_file()
+
     prediction_dir = tiny_prepared.data.artifacts_dir.parent / "evaluation-predictions"
     evaluation = evaluate_checkpoints(
         tiny_prepared,
@@ -743,6 +1059,28 @@ def test_short_training_checkpoint_and_resume_are_exact(tiny_prepared: Stage3Con
         fold=1,
     )
     assert epoch_only["model_selector"] == "epoch_checkpoint"
+
+
+def test_zero_global_private_experts_train_and_checkpoint(
+    tiny_prepared: Stage3Config,
+) -> None:
+    config = replace(
+        tiny_prepared,
+        model=replace(
+            tiny_prepared.model, global_experts=0, private_experts=0
+        ),
+    )
+    output = tiny_prepared.data.artifacts_dir.parent / "zero-expert-train"
+    rows = run_stage3_training(config, 1, output_dir=output)
+    assert [row["phase"] for row in rows] == ["joint", "refinement"]
+    checkpoint = torch.load(
+        output / "checkpoint_epoch_00002.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    assert checkpoint["config"]["model"]["global_experts"] == 0
+    assert checkpoint["config"]["model"]["private_experts"] == 0
+    assert (output / "taskwise_refined.pt").is_file()
 
 # --- Capacity v1 selection contract ---
 

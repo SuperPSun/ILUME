@@ -8,6 +8,7 @@ import queue
 import re
 import sys
 import traceback
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -198,6 +199,11 @@ def _run_fold(
 
     config = load_stage3_config(config_path)
     configure_process_runtime(config)
+    started = time.perf_counter()
+    if config.training.device == "cuda":
+        import torch
+
+        torch.cuda.reset_peak_memory_stats()
 
     from common.outputs import (
         open_run_directory,
@@ -260,10 +266,33 @@ def _run_fold(
             run.root / "taskwise_refinement.json",
             context="Stage 3 task-wise refinement manifest",
         )
+        if config.training.device == "cuda":
+            import torch
+
+            torch.cuda.synchronize()
+            peak_memory = int(torch.cuda.max_memory_allocated())
+        else:
+            peak_memory = 0
+        wall_seconds = time.perf_counter() - started
+        plan = _read_json(
+            run.root / "resolved_training_plan.json",
+            context="Stage 3 resolved training plan",
+        )
         run.complete({
             "fold": fold,
             "final_epoch": final_epoch,
             "taskwise_refinement": refinement,
+            "training_cost": {
+                "wall_seconds": wall_seconds,
+                "gpu_seconds": (
+                    wall_seconds if config.training.device == "cuda" else 0.0
+                ),
+                "peak_allocated_bytes": peak_memory,
+                "total_parameters": int(plan["parameter_counts"]["total"]),
+                "trainable_parameters": int(
+                    plan["parameter_counts"]["trainable"]
+                ),
+            },
         })
     except BaseException:
         run.fail()
