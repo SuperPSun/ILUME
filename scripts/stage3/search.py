@@ -27,6 +27,12 @@ def _parse_devices(value: str) -> tuple[str, ...]:
     return devices
 
 
+def _expand_devices(devices: tuple[str, ...], slots: int) -> tuple[str, ...]:
+    if len(devices) > slots:
+        raise ValueError("--devices cannot contain more devices than --max-parallel")
+    return tuple(devices[index % len(devices)] for index in range(slots))
+
+
 def _phase_name(phase: str) -> str:
     return {"a": "search_a", "b": "search_b", "c": "search_c"}[phase]
 
@@ -396,8 +402,10 @@ def main() -> int:
         parser.error(str(error))
     if args.max_parallel < 2 or args.max_parallel % 2:
         parser.error("--max-parallel must be an even number of fold workers")
-    if len(devices) != args.max_parallel:
-        parser.error("--devices must contain exactly --max-parallel slots")
+    try:
+        devices = _expand_devices(devices, args.max_parallel)
+    except ValueError as error:
+        parser.error(str(error))
 
     from common.identity import semantic_identity
     from common.io import atomic_json

@@ -136,6 +136,12 @@ from stage3.config import validate_stage3_folds
 
 def test_stage3_search_allows_repeated_device_slots() -> None:
     assert search_launcher._parse_devices("cuda:0,cuda:0") == ("cuda:0", "cuda:0")
+    assert search_launcher._expand_devices(("cuda:0",), 4) == (
+        "cuda:0", "cuda:0", "cuda:0", "cuda:0"
+    )
+    assert search_launcher._expand_devices(("cuda:0", "cuda:1"), 4) == (
+        "cuda:0", "cuda:1", "cuda:0", "cuda:1"
+    )
 
 import argparse
 
