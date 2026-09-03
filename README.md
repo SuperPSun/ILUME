@@ -131,7 +131,9 @@ python scripts/stage3/search.py \
 ```
 
 可用更多偶数个显式设备槽并把`--max-parallel`设为相同数量；每个trial的两个fold会同时
-占用两个槽。中断后原命令追加`--resume`。B严格绑定A的`result.json`，C严格绑定A/B结果；
+占用两个槽。单卡也可以通过重复设备名提供多个逻辑槽，例如
+`--max-parallel 2 --devices cuda:0,cuda:0`；这会让两个fold同时竞争同一张卡，需要自行确认
+显存足够。中断后原命令追加`--resume`。B严格绑定A的`result.json`，C严格绑定A/B结果；
 不得修改已启动study的配置或候选manifest。最终Base recipe写入
 `outputs/v2/stage3/search/search_c/winner_base.yaml`，不会自动运行test或推广到其他scale。
 

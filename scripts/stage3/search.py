@@ -24,8 +24,6 @@ def _parse_devices(value: str) -> tuple[str, ...]:
     devices = tuple(item.strip() for item in value.split(","))
     if not devices or any(not re.fullmatch(r"cuda:\d+", item) for item in devices):
         raise ValueError("--devices must be a comma-separated list such as cuda:0,cuda:1")
-    if len(devices) != len(set(devices)):
-        raise ValueError("--devices must not contain duplicate devices")
     return devices
 
 
@@ -399,7 +397,7 @@ def main() -> int:
     if args.max_parallel < 2 or args.max_parallel % 2:
         parser.error("--max-parallel must be an even number of fold workers")
     if len(devices) != args.max_parallel:
-        parser.error("--devices must contain exactly --max-parallel distinct slots")
+        parser.error("--devices must contain exactly --max-parallel slots")
 
     from common.identity import semantic_identity
     from common.io import atomic_json

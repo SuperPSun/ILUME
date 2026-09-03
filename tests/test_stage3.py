@@ -133,6 +133,10 @@ from typing import Any
 
 from stage3.config import validate_stage3_folds
 
+
+def test_stage3_search_allows_repeated_device_slots() -> None:
+    assert search_launcher._parse_devices("cuda:0,cuda:0") == ("cuda:0", "cuda:0")
+
 import argparse
 
 from types import SimpleNamespace
