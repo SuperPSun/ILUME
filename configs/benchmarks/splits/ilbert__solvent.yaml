@@ -1,0 +1,96 @@
+name: ilbert
+display_name: ILBERT (solvent split)
+seed: 42
+environment:
+  name: ilume-ilbert
+  definition: benchmarks/ilbert/environment.yml
+  lock: benchmarks/ilbert/requirements-linux-x86_64-cu121.lock
+data:
+  data_root: data
+  task_catalog: data/task_catalog.csv
+  stage3_authority_config: configs/v2/stage3/splits/solvent.yaml
+model:
+  repository: Yu-Xin-Qiu/ILBERT
+  revision: f9dc6f1b23a40b6988480735f3724a6332f68c12
+  checkout: artifacts/benchmarks/ilbert/upstream
+  model_source_sha256: ed4c1441bc479eb3e999f77a52b4ae70eec4069da9f15bb87603afa02d8ccbc8
+  tokenizer_source_sha256: f435f4fed84d740061f3d85982441a47ea0aae596d2618cb902947311911d84d
+  vocab_sha256: 87dd3943b31b42d179912220497516f6422483e021c45a994302e634311cd44f
+  pretrained_checkpoint: artifacts/benchmarks/ilbert/pretrained_model.pth
+  pretrained_sha256: 556d0f63d206de786a6589e8ad4e3f05fc31ed744cb3234fd13e4eff7c397f7c
+  pretrained: true
+  full_fine_tuning: true
+  tokenizer: official_ais_atomwise
+  vocab_size: 2000
+  hidden_dim: 512
+  layers: 6
+  heads: 4
+  ffn_hidden_dim: 1024
+  dropout: 0.0
+  textcnn_kernel_sizes:
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  - 6
+  - 7
+  - 8
+  - 9
+  - 10
+  - 15
+  textcnn_filters:
+  - 100
+  - 200
+  - 200
+  - 200
+  - 200
+  - 100
+  - 100
+  - 100
+  - 100
+  - 100
+  - 160
+  max_length: 100
+  truncation: true
+  padding: max_length
+  shared_backbone: true
+  component_forward: merged_sequence_view_forward
+  fusion: ordered_concat_native_predictor
+training:
+  optimizer: adam
+  learning_rate: 0.0001
+  weight_decay: 0.0
+  scheduler: reduce_on_plateau
+  scheduler_metric: validation_raw_rmse
+  scheduler_patience: 7
+  scheduler_factor: 0.3
+  minimum_learning_rate: 3.0e-05
+  batch_size: 16
+  gradient_accumulation_steps: 1
+  max_epochs: 100
+  early_stopping_patience: 15
+  tf32: true
+  loss: mse
+  selection_metric: validation_raw_mae
+  condition_transform: raw_physical_units
+  device: cuda
+  precision: fp32
+runtime:
+  num_workers: 4
+  prefetch_factor: 2
+  persistent_workers: true
+  pin_memory: true
+  non_blocking_transfer: true
+stage3:
+  enabled: true
+  tasks: all
+  folds:
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+stage2_physics:
+  enabled: false
+  tasks: []

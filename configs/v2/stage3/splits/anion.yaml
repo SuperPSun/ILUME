@@ -1,0 +1,171 @@
+data:
+  stage3_dir: data/stage3
+  task_catalog: data/task_catalog.csv
+  artifacts_dir: outputs/v2/stage3/splits/anion/prepare/artifacts
+  split_policy: prefer_il
+  split_strategies:
+    experiment/electrical_conductivity: anion
+    experiment/self_diffusion_coefficient: anion
+    experiment/viscosity: anion
+    experiment/thermal_conductivity: anion
+    experiment/density: anion
+    experiment/heat_capacity: anion
+    experiment/isobaric_coefficient_of_volume_expansion: anion
+    experiment/speed_of_sound: anion
+    experiment/surface_tension: anion
+    experiment/equilibrium_pressure: anion
+    experiment/glass_transition_temperature: anion
+    experiment/melting_point: anion
+    experiment/thermal_decomposition_temperature: anion
+    experiment/dynamic_relative_permittivity: anion
+    experiment/static_relative_permittivity: anion
+    experiment/refractive_index: anion
+    experiment/solvation: anion
+    experiment/transfer: anion
+    experiment/x_co2: anion
+    experiment/pec50: anion
+  cv_repeat: 1
+  cv_repeats: {}
+  seed: 42
+preparation:
+  encoding_batch_size: 256
+  cache_dir: outputs/v2/stage3/splits/anion/prepare/object_cache
+initialization:
+  stage2_encoder: outputs/v2/stage2/base/train/stage2_encoder.pt
+  plugin: null
+model:
+  global_experts: 2
+  group_experts: 2
+  private_experts: 1
+  dropout: 0.1
+  activation: silu
+  expert_hidden_ratio: 2.0
+  interaction_hidden_ratio: 2.0
+  film_hidden_ratio: 1.0
+  tower_hidden_ratio: 1.0
+  l2_residual: true
+groups:
+  transport:
+    enabled: true
+    group_weight: 1.0
+  thermophysical:
+    enabled: true
+    group_weight: 1.0
+  phase_stability:
+    enabled: true
+    group_weight: 1.0
+  dielectric_optical:
+    enabled: true
+    group_weight: 1.0
+  solvation:
+    enabled: true
+    group_weight: 1.0
+  biological:
+    enabled: true
+    group_weight: 1.0
+tasks:
+  experiment/electrical_conductivity:
+    meta_group: transport
+    enabled: true
+  experiment/self_diffusion_coefficient:
+    meta_group: transport
+    enabled: true
+  experiment/viscosity:
+    meta_group: transport
+    enabled: true
+  experiment/thermal_conductivity:
+    meta_group: transport
+    enabled: true
+  experiment/density:
+    meta_group: thermophysical
+    enabled: true
+  experiment/heat_capacity:
+    meta_group: thermophysical
+    enabled: true
+  experiment/isobaric_coefficient_of_volume_expansion:
+    meta_group: thermophysical
+    enabled: true
+  experiment/speed_of_sound:
+    meta_group: thermophysical
+    enabled: true
+  experiment/surface_tension:
+    meta_group: thermophysical
+    enabled: true
+  experiment/equilibrium_pressure:
+    meta_group: phase_stability
+    enabled: true
+  experiment/glass_transition_temperature:
+    meta_group: phase_stability
+    enabled: true
+  experiment/melting_point:
+    meta_group: phase_stability
+    enabled: true
+  experiment/thermal_decomposition_temperature:
+    meta_group: phase_stability
+    enabled: true
+  experiment/dynamic_relative_permittivity:
+    meta_group: dielectric_optical
+    enabled: true
+  experiment/static_relative_permittivity:
+    meta_group: dielectric_optical
+    enabled: true
+  experiment/refractive_index:
+    meta_group: dielectric_optical
+    enabled: true
+  experiment/solvation:
+    meta_group: solvation
+    partner_mode: interaction
+    primary_slots:
+    - cation
+    - anion
+    partner_slots:
+    - solute
+    enabled: true
+  experiment/transfer:
+    meta_group: solvation
+    partner_mode: interaction
+    primary_slots:
+    - cation
+    - anion
+    partner_slots:
+    - solute
+    enabled: true
+  experiment/transfer_organic:
+    meta_group: solvation
+    partner_mode: interaction
+    primary_slots:
+    - solute
+    partner_slots:
+    - solvent
+    enabled: false
+  experiment/x_co2:
+    meta_group: solvation
+    enabled: true
+  experiment/pec50:
+    meta_group: biological
+    enabled: true
+training:
+  composite_batch_size: 2048
+  microbatch_size: 1024
+  virtual_min_size: 1000
+  epochs: 100
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  betas:
+  - 0.9
+  - 0.999
+  eps: 1.0e-08
+  warmup_ratio: 0.05
+  min_lr_ratio: 0.05
+  max_grad_norm: 1.0
+  smooth_l1_beta: 1.0
+  amp_dtype: bf16
+  optimizer_implementation: single_tensor
+  active_tasks: auto
+  checkpoint_interval_epochs: 10
+  device: cuda
+  cpu_threads: 4
+  cpu_interop_threads: 1
+  debug_pcgrad_traces: false
+  refinement_ratio: 0.2
+  refinement_lr_multiplier: 0.1

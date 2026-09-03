@@ -62,6 +62,8 @@ from common.reporting import (
 
 from stage2.atom_evaluation import PARTIAL_CHARGE_TASK, PARTIAL_CHARGE_UNIT
 
+from stage3.config import load_stage3_config
+
 import scripts.benchmarks.sweep as sweep_module
 
 from scripts.benchmarks.sweep import (
@@ -362,6 +364,24 @@ def test_formal_configs_and_registry_resolution(tmp_path: Path) -> None:
         )
     assert matrix.shape == (0, 2 * 217 + 2)
     assert reporter.bars == []
+
+
+def test_native_split_benchmark_configs_follow_v2_authorities() -> None:
+    splits = ("random", "cation", "anion", "il_solute", "solute", "solvent")
+    benchmarks = ("mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm")
+    root = Path("configs/benchmarks/splits")
+    for split in splits:
+        authority = load_stage3_config(
+            Path("configs/v2/stage3/splits") / f"{split}.yaml"
+        )
+        expected = tuple(authority.enabled_task_ids)
+        for benchmark in benchmarks:
+            config = load_benchmark_config(root / f"{benchmark}__{split}.yaml")
+            assert config.data.stage3_authority_config == Path(
+                f"configs/v2/stage3/splits/{split}.yaml"
+            )
+            assert configured_tasks(config, "stage3") == expected
+            assert configured_tasks(config, "stage2_physics") == ()
 
 
 def test_stage3_single_task_mlp_config_and_ordered_concat() -> None:
@@ -1684,3 +1704,222 @@ def test_spmm_scheduler_has_exact_warmup_peak_and_cosine_floor() -> None:
     assert values[-1] == pytest.approx(3.0e-6)
     assert all(left <= right for left, right in zip(values[:9], values[1:10]))
     assert all(left >= right for left, right in zip(values[10:-1], values[11:]))
+
+
+# --- LlaSMol baseline contracts ---
+
+from benchmarks.llasmol.adapter import (
+    ConditionStats as LlaSMolConditionStats,
+    LLASMOL_TRAINING_ORDER_CONTRACT,
+    SharedLlaSMolRegressor,
+    SortishBatchSampler as LlaSMolSortishBatchSampler,
+    _collate as llasmol_collate,
+    _official_adapter_state,
+    _prepare_split as prepare_llasmol_split,
+    _scheduled_factor as llasmol_scheduled_factor,
+    llasmol_model_views,
+    llasmol_task_prefix,
+)
+
+
+def _llasmol_task(*, slots=("cation", "anion")) -> BenchmarkTask:
+    return BenchmarkTask(
+        benchmark="stage3",
+        task_id="experiment/llasmol_tiny",
+        slots=slots,
+        condition_columns=("temperature_K",),
+        target_columns=("value",),
+        audit_columns=(),
+        train_paths=(),
+        valid_paths=(),
+        test_path=Path("test.csv"),
+        fold=1,
+        meta_group="tiny",
+        registry_payload={"task_id": "experiment/llasmol_tiny"},
+    )
+
+
+class FakeLlaSMolTokenizer:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, bool]] = []
+
+    def __call__(self, sequence: str, **kwargs):
+        truncated = bool(kwargs.get("truncation"))
+        self.calls.append((sequence, truncated))
+        length = 520 if "LONG" in sequence else 2 + len(sequence) % 9
+        values = [1, *([5] * (length - 1))]
+        if truncated:
+            values = values[: int(kwargs["max_length"])]
+        return {"input_ids": values, "attention_mask": [1] * len(values)}
+
+
+def test_formal_llasmol_config_resolves_108_jobs_and_is_strict() -> None:
+    config = load_benchmark_config("configs/benchmarks/llasmol.yaml")
+    stage3 = configured_tasks(config, "stage3")
+    stage2 = configured_tasks(config, "stage2_physics")
+    assert len(stage3) == 21
+    assert stage2 == (
+        "simulation/heat_of_vaporization",
+        "simulation/homo",
+        "simulation/lumo",
+    )
+    assert len(stage3) * len(config.stage3.folds) + len(stage2) == 108
+    assert config.training["batch_size"] == 8
+    assert config.training["gradient_accumulation_steps"] == 4
+    assert config.training["length_bucketing"] == LLASMOL_TRAINING_ORDER_CONTRACT
+    changed = config.to_dict()
+    changed["training"]["batch_size"] = 16
+    with pytest.raises(ValueError, match="registered QLoRA recipe"):
+        benchmark_config_from_dict(changed)
+    runtime_variant = replace(config, runtime={**config.runtime, "num_workers": 8})
+    assert sweep_module._scientific_config(runtime_variant) == sweep_module._scientific_config(config)
+
+
+def test_llasmol_environment_dispatches_to_dedicated_environment() -> None:
+    config = load_benchmark_config("configs/benchmarks/llasmol.yaml")
+    command = environment_command(
+        config,
+        ("scripts/benchmarks/train.py", "--config", "configs/benchmarks/llasmol.yaml"),
+        conda="/conda",
+    )
+    assert command[:6] == [
+        "/conda", "run", "--no-capture-output", "-n", "ilume-llasmol", "python"
+    ]
+
+
+def test_llasmol_whole_il_multiview_token_cache_truncation_and_conditions() -> None:
+    task = _llasmol_task(slots=("cation", "anion", "solute"))
+    raw = RawDataset(
+        components=(("[C+]", "[Cl-]", "CCO"), ("[N+]", "[Br-]", "LONG")),
+        component_count=3,
+        conditions=np.asarray([[290.0], [310.0]]),
+        targets=np.asarray([[1.0], [3.0]]),
+        source_rows=("tiny.csv:2", "tiny.csv:3"),
+        audit_rows=({}, {}),
+    )
+    assert llasmol_task_prefix(task.task_id) == "<LLASMOL_TINY>"
+    views, names = llasmol_model_views(task, raw.components[0])
+    assert views == ("[C+].[Cl-]", "CCO")
+    assert names == ("ionic_liquid", "solute")
+    tokenizer = FakeLlaSMolTokenizer()
+    cache = {}
+    stats = LlaSMolConditionStats.fit(raw.conditions)
+    prepared = prepare_llasmol_split(
+        raw, task, "train", tokenizer, cache, stats, max_length=512
+    )
+    assert prepared.model_views[0] == (
+        "<LLASMOL_TINY>\n[C+].[Cl-]",
+        "<LLASMOL_TINY>\nCCO",
+    )
+    assert prepared.audit["truncated_rows"] == ["tiny.csv:3"]
+    assert len(tokenizer.calls) == 8
+    prior_calls = len(tokenizer.calls)
+    prepare_llasmol_split(
+        raw, task, "valid", tokenizer, cache, stats, max_length=512
+    )
+    assert len(tokenizer.calls) == prior_calls
+    collate = llasmol_collate(
+        prepared, cache, TargetStats.fit(raw.targets), pad_token_id=0
+    )
+    input_ids, attention_mask, conditions, targets = collate([0, 1])
+    assert input_ids.shape == attention_mask.shape == (4, 512)
+    assert conditions[:, 0].tolist() == pytest.approx([-1.0, 1.0])
+    assert targets.shape == (2, 1)
+    assert torch.all(input_ids[attention_mask == 0] == 0)
+
+
+class FakeLlaSMolBackbone(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    def forward(self, input_ids, attention_mask, use_cache, return_dict):
+        self.calls += 1
+        states = input_ids.float().unsqueeze(-1).repeat(1, 1, 4)
+        return SimpleNamespace(last_hidden_state=states)
+
+
+class FakeLlaSMolPEFT(torch.nn.Module):
+    def __init__(self, backbone):
+        super().__init__()
+        self.backbone = backbone
+        self.base_model = SimpleNamespace(
+            model=SimpleNamespace(model=self.backbone)
+        )
+
+
+def test_llasmol_multiview_uses_one_backbone_forward_and_masked_mean() -> None:
+    backbone = FakeLlaSMolBackbone()
+    predictor = torch.nn.Linear(9, 1, bias=False)
+    predictor.weight.data.fill_(1.0)
+    model = SharedLlaSMolRegressor(
+        FakeLlaSMolPEFT(backbone),
+        predictor,
+        view_count=2,
+        condition_dim=1,
+        hidden_dim=4,
+        load_audit={"loaded": True},
+    )
+    input_ids = torch.asarray(
+        [[0, 1, 3], [1, 3, 5], [0, 2, 4], [2, 4, 6]], dtype=torch.long
+    )
+    attention_mask = torch.asarray(
+        [[0, 1, 1], [1, 1, 1], [0, 1, 1], [1, 1, 1]], dtype=torch.long
+    )
+    output = model(input_ids, attention_mask, torch.asarray([[10.0], [20.0]]))
+    assert output[:, 0].tolist() == pytest.approx([30.0, 48.0])
+    assert backbone.calls == 1
+
+
+def test_llasmol_adapter_namespace_sampler_and_scheduler_contracts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = load_benchmark_config("configs/benchmarks/llasmol.yaml")
+    checkpoint = tmp_path / "adapter_model.bin"
+    checkpoint.write_bytes(b"x")
+    config = replace(
+        config,
+        model={
+            **config.model,
+            "adapter_snapshot": tmp_path.as_posix(),
+            "adapter_model_size": 1,
+            "adapter_model_sha256": "trusted",
+        },
+    )
+    state = {
+        f"base_model.model.model.layers.{layer}.{scope}.{module}.lora_{side}.weight":
+        torch.zeros(1, dtype=torch.bfloat16)
+        for layer in range(32)
+        for scope, modules in (
+            ("self_attn", ("q_proj", "k_proj", "v_proj", "o_proj")),
+            ("mlp", ("gate_proj", "up_proj", "down_proj")),
+        )
+        for module in modules
+        for side in ("A", "B")
+    }
+    monkeypatch.setattr(
+        "benchmarks.llasmol.adapter.repository_path", lambda path: tmp_path
+    )
+    monkeypatch.setattr("benchmarks.llasmol.adapter.sha256_file", lambda path: "trusted")
+    monkeypatch.setattr("benchmarks.llasmol.adapter.torch.load", lambda *args, **kwargs: state)
+    _, audit = _official_adapter_state(config)
+    assert audit["state_entries"] == 448
+    state.pop(next(iter(state)))
+    with pytest.raises(RuntimeError, match="entry count"):
+        _official_adapter_state(config)
+
+    sampler = LlaSMolSortishBatchSampler(
+        tuple(range(37)), batch_size=4, window_batches=2, seed=42
+    )
+    epoch0 = list(sampler)
+    assert epoch0 == list(sampler)
+    assert sorted(index for batch in epoch0 for index in batch) == list(range(37))
+    sampler.set_epoch(1)
+    assert list(sampler) != epoch0
+    factors = [
+        llasmol_scheduled_factor(step, total_steps=100, warmup_steps=5)
+        for step in range(100)
+    ]
+    assert factors[4] == pytest.approx(1.0)
+    assert factors[5] == pytest.approx(1.0)
+    assert factors[-1] == pytest.approx(0.0)

@@ -1,0 +1,39 @@
+name: ecfp_xgboost
+display_name: ECFP+XGBoost (solvent split)
+seed: 42
+data:
+  data_root: data
+  task_catalog: data/task_catalog.csv
+  stage3_authority_config: configs/v2/stage3/splits/solvent.yaml
+  feature_cache: outputs/benchmarks/cache/features.sqlite3
+features:
+  kind: ecfp4
+  radius: 2
+  n_bits: 2048
+model:
+  n_estimators: 1000
+  max_depth: 6
+  learning_rate: 0.05
+  subsample: 0.8
+  colsample_bytree: 0.8
+  reg_lambda: 1.0
+  objective: reg:squarederror
+  eval_metric: mae
+  tree_method: hist
+training:
+  early_stopping_rounds: 50
+  n_jobs: 8
+  device: cpu
+  target_space: raw
+stage3:
+  enabled: true
+  tasks: all
+  folds:
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+stage2_physics:
+  enabled: false
+  tasks: []

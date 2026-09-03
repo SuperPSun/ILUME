@@ -1,0 +1,83 @@
+name: spmm
+display_name: SPMM (solute split)
+seed: 42
+environment:
+  name: ilume-spmm
+  definition: benchmarks/spmm/environment.yml
+  lock: benchmarks/spmm/requirements-linux-x86_64-cu117.lock
+data:
+  data_root: data
+  task_catalog: data/task_catalog.csv
+  stage3_authority_config: configs/v2/stage3/splits/solute.yaml
+model:
+  repository: jinhojsk515/SPMM
+  revision: 046976484f31b3cbc862b8f2094e38df72fcfce7
+  checkout: artifacts/benchmarks/spmm/upstream
+  spmm_source_sha256: 6adddd7db6287151fd594fdf01325d614dcedebd2309839bad6193d1c53e1ff2
+  xbert_source_sha256: 13d205f5f50699d9e58b165eda932150c371c9bcaf3d35740b7f8df16335c04a
+  regression_source_sha256: c18c74660ca8c201ad1b06a39379c4522c7eef4f380bd06aecb9e5ef2b25b384
+  vocab_sha256: 760a96b6855fcdc10c384d520c8be6e66140e2db98dde3cb930467c51b0f102a
+  bert_config_sha256: 85a090cea9435faac75c08eae698754198123d528a78cdad1819066e5c9a7376
+  pretrained_checkpoint: artifacts/benchmarks/spmm/checkpoint_SPMM.ckpt
+  pretrained_sha256: 6b8eafd693eba42680e20ea06e3bf4efde640ac54ee1068ab34e6934bd0aca01
+  pretrained_size: 2358591924
+  pretrained: true
+  full_fine_tuning: true
+  modality: smiles_text_only
+  remove_stereochemistry: true
+  tokenizer: official_bert_wordpiece
+  wordpiece_max_input_chars_per_word: 350
+  vocab_size: 300
+  hidden_dim: 768
+  text_layers: 6
+  heads: 12
+  ffn_hidden_dim: 3072
+  dropout: 0.1
+  max_length: 100
+  encoder_max_length: 99
+  truncation: true
+  padding: longest
+  shared_backbone: true
+  component_forward: merged_component_backbone_forward
+  fusion: ordered_concat_native_regression_head
+  input_cache: unique_smiles_memory_token_cache
+training:
+  optimizer: adamw
+  learning_rate: 5.0e-05
+  weight_decay: 0.02
+  scheduler: linear_warmup_cosine
+  warmup_epochs: 1
+  warmup_learning_rate: 5.0e-06
+  minimum_learning_rate: 3.0e-06
+  batch_size: 128
+  gradient_accumulation_steps: 1
+  max_epochs: 50
+  early_stopping_patience: 10
+  length_bucketing: sortish_length_bucketing_v1
+  bucket_window_batches: 20
+  loss: mse
+  selection_metric: validation_raw_mae
+  condition_transform: train_only_zscore
+  device: cuda
+  precision: fp32
+  cuda_matmul_tf32: true
+  cudnn_tf32: true
+  cudnn_benchmark: true
+runtime:
+  num_workers: 4
+  prefetch_factor: 2
+  persistent_workers: true
+  pin_memory: true
+  non_blocking_transfer: true
+stage3:
+  enabled: true
+  tasks: all
+  folds:
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+stage2_physics:
+  enabled: false
+  tasks: []
