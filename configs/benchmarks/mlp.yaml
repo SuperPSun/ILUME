@@ -11,15 +11,15 @@ features:
   radius: 2
   n_bits: 2048
 model:
-  hidden_dims: [256, 128]
-  dropout: 0.1
+  hidden_dims: [128, 64]
+  dropout: 0.2
 training:
   optimizer: adamw
   learning_rate: 1.0e-3
-  weight_decay: 1.0e-4
+  weight_decay: 1.0e-3
   batch_size: 128
-  max_epochs: 100
-  early_stopping_patience: 20
+  max_epochs: 50
+  early_stopping_patience: 10
   loss: normalized_mse
   selection_metric: raw_target_macro_mae
   device: cuda
