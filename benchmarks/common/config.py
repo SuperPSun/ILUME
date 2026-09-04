@@ -195,7 +195,7 @@ class BenchmarkConfig:
             "ffn_hidden_dim": 300,
             "ffn_hidden_layers": 1,
             "batch_norm": False,
-            "multicomponent_shared": False,
+            "multicomponent_shared": True,
         }
         if self.model != expected_model:
             raise ValueError("D-MPNN model must match the registered Chemprop recipe")

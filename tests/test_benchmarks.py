@@ -382,6 +382,8 @@ def test_native_split_benchmark_configs_follow_v2_authorities() -> None:
             )
             assert configured_tasks(config, "stage3") == expected
             assert configured_tasks(config, "stage2_physics") == ()
+            if benchmark == "dmpnn":
+                assert config.model["multicomponent_shared"] is True
 
 
 def test_stage3_single_task_mlp_config_and_ordered_concat() -> None:
@@ -490,6 +492,12 @@ def test_formal_dmpnn_config_resolves_109_training_jobs() -> None:
     assert len(stage3_tasks) * len(config.stage3.folds) + len(stage2_tasks) == 109
     assert config.features is None
     assert config.data.feature_cache is None
+    assert config.model["multicomponent_shared"] is True
+    with pytest.raises(ValueError, match="registered Chemprop recipe"):
+        replace(
+            config,
+            model={**config.model, "multicomponent_shared": False},
+        ).validate()
 
 def test_dmpnn_environment_dispatches_once_before_validation(
     monkeypatch: pytest.MonkeyPatch,
@@ -1334,6 +1342,16 @@ def test_one_epoch_scalar_and_multicomponent_save_reload_smoke(
             "warmup_epochs": 0,
         },
     )
+    for count in (2, 3):
+        candidate = build_dmpnn_model(config, _scalar_bundle(count))
+        message_passing = candidate.message_passing
+        assert message_passing.shared is True
+        assert len(message_passing.blocks) == count
+        assert all(block is message_passing.blocks[0] for block in message_passing.blocks)
+        assert {id(parameter) for parameter in message_passing.parameters()} == {
+            id(parameter) for parameter in message_passing.blocks[0].parameters()
+        }
+        assert message_passing.output_dim == count * config.model["message_hidden_dim"]
     output = tmp_path / f"components-{component_count}"
     summary = train_dmpnn_bundle(config, _scalar_bundle(component_count), output)
     assert summary["epochs_ran"] == 1

@@ -236,7 +236,7 @@ Stage2/Stage3 resume 分别在上述 train 命令追加 `--resume <checkpoint>` 
 
 MLP、ECFP4-XGBoost、Chemprop D-MPNN、MoLFormer、ILBERT、SPMM 与 LlaSMol 位于 `benchmarks/`；
 Stage3 Single-task MLP 内部消融位于 `ablations/`。二者均与 Stage 代码隔离，并继续
-复用 benchmark 运行与 reporting 入口；合同见 [ADR-0022](docs/adr/0022-mlp-ecfp-xgboost-baselines.md)、[ADR-0028](docs/adr/0028-chemprop-dmpnn-baseline.md)、[ADR-0029](docs/adr/0029-molformer-baseline.md)、[ADR-0030](docs/adr/0030-molformer-throughput-contract.md)、[ADR-0032](docs/adr/0032-ilbert-baseline.md)、[ADR-0033](docs/adr/0033-stage3-single-task-mlp-ablation.md)、[ADR-0035](docs/adr/0035-spmm-baseline.md)、[ADR-0037](docs/adr/0037-spmm-wordpiece-character-limit.md)、[ADR-0038](docs/adr/0038-spmm-throughput-contract.md) 和 [ADR-0040](docs/adr/0040-llasmol-mistral-7b-baseline.md)。
+复用 benchmark 运行与 reporting 入口；合同见 [ADR-0022](docs/adr/0022-mlp-ecfp-xgboost-baselines.md)、[ADR-0028](docs/adr/0028-chemprop-dmpnn-baseline.md)、[ADR-0029](docs/adr/0029-molformer-baseline.md)、[ADR-0030](docs/adr/0030-molformer-throughput-contract.md)、[ADR-0032](docs/adr/0032-ilbert-baseline.md)、[ADR-0033](docs/adr/0033-stage3-single-task-mlp-ablation.md)、[ADR-0035](docs/adr/0035-spmm-baseline.md)、[ADR-0037](docs/adr/0037-spmm-wordpiece-character-limit.md)、[ADR-0038](docs/adr/0038-spmm-throughput-contract.md)、[ADR-0040](docs/adr/0040-llasmol-mistral-7b-baseline.md) 和 [ADR-0042](docs/adr/0042-dmpnn-shared-component-encoder.md)。
 
 ```bash
 python -m pip install -e ".[benchmarks]"
@@ -263,7 +263,7 @@ Object embedding 和 normalized conditions 做有序 concat。21 个 task × 5 f
 汇总。它同时移除 HoME routing、跨任务共享、PCGrad 与 composite sampling，因此只能解释为
 整体架构消融，不能解释成某个单组件的贡献。
 
-D-MPNN 使用独立 hash-lock 环境，不修改主环境。环境只由以下显式命令创建和安装；普通运行会通过 `conda run` 自动进入已有环境，不要求 `conda activate`，也不会自动安装或更新依赖。
+D-MPNN 使用独立 hash-lock 环境，不修改主环境。多组分标量任务按 registry slot 分别构图并有序拼接表示，但所有组分共享唯一 message-passing encoder；不同 task/fold 仍独立训练。环境只由以下显式命令创建和安装；普通运行会通过 `conda run` 自动进入已有环境，不要求 `conda activate`，也不会自动安装或更新依赖。
 
 ```bash
 conda env create -f benchmarks/dmpnn/environment.yml
@@ -284,11 +284,11 @@ conda run --no-capture-output -n ilume-dmpnn \
 python scripts/benchmarks/train.py \
   --config configs/benchmarks/dmpnn.yaml \
   --benchmark stage3 --task experiment/density --fold 1 \
-  --output outputs/benchmarks/v1/dmpnn/stage3/experiment__density/fold1/attempt-001
+  --output outputs/benchmarks/v2/dmpnn/stage3/experiment__density/fold1/attempt-001
 
 python scripts/benchmarks/sweep.py \
   --config configs/benchmarks/dmpnn.yaml \
-  --output outputs/benchmarks/v1/dmpnn \
+  --output outputs/benchmarks/v2/dmpnn \
   --max-workers 1
 ```
 

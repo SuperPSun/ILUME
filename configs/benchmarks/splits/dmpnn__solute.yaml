@@ -20,7 +20,7 @@ model:
   ffn_hidden_dim: 300
   ffn_hidden_layers: 1
   batch_norm: false
-  multicomponent_shared: false
+  multicomponent_shared: true
 training:
   optimizer: adam
   scheduler: noam

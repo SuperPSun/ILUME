@@ -431,14 +431,16 @@ def build_dmpnn_model(config: BenchmarkConfig, bundle: DMPNNTrainingBundle) -> A
             metrics=[MAE()],
             **schedule,
         )
-    blocks = [BondMessagePassing(**message_kwargs) for _ in range(bundle.component_count)]
+    shared = bool(model["multicomponent_shared"])
+    block_count = 1 if shared else bundle.component_count
+    blocks = [BondMessagePassing(**message_kwargs) for _ in range(block_count)]
     message_passing = (
         blocks[0]
         if bundle.component_count == 1
         else MulticomponentMessagePassing(
             blocks,
             n_components=bundle.component_count,
-            shared=bool(model["multicomponent_shared"]),
+            shared=shared,
         )
     )
     predictor = RegressionFFN(
