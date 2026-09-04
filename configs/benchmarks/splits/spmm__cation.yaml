@@ -4,7 +4,7 @@ seed: 42
 environment:
   name: ilume-spmm
   definition: benchmarks/spmm/environment.yml
-  lock: benchmarks/spmm/requirements-linux-x86_64-cu117.lock
+  lock: benchmarks/spmm/requirements-linux-x86_64-cu128.lock
 data:
   data_root: data
   task_catalog: data/task_catalog.csv

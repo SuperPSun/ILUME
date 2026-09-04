@@ -10,7 +10,7 @@ ILUME需要加入官方SPMM pretrained model作为advanced baseline。SPMM预训
 ## 决定
 
 1. 固定外部`jinhojsk515/SPMM@046976484f31b3cbc862b8f2094e38df72fcfce7`及官方`checkpoint_SPMM.ckpt`；运行前校验checkout、相关源码、vocab、BERT config、checkpoint SHA与2358591924字节大小。上游为Apache-2.0，但ILUME仍不复制或提交源码和权重。
-2. 使用独立`ilume-spmm` hash-lock环境，固定Python 3.10.14、PyTorch 1.13.1+cu117、CUDA 11.7、Transformers 4.30.1、tokenizers 0.13.3、RDKit 2023.3.1和NumPy 1.24.3。该环境不安装要求Python ≥3.11的ILUME editable package，统一launcher通过现役脚本的仓库路径引导运行；缺少环境、CUDA或资产不匹配时在创建run output前硬失败。
+2. 使用独立`ilume-spmm` hash-lock环境，固定Python 3.10.14、PyTorch 2.9.0+cu128、CUDA 12.8、Transformers 4.30.1、tokenizers 0.13.3、RDKit 2023.3.1和NumPy 1.24.3。该环境不安装要求Python ≥3.11的ILUME editable package，统一launcher通过现役脚本的仓库路径引导运行；缺少环境、CUDA或资产不匹配时在创建run output前硬失败。
 3. baseline只实例化官方`xbert.py`的SMILES text encoder。加载主`text_encoder.bert` embeddings与layers 0–5的102个state entries；layers 6–11、LM head、PV、momentum encoder和queues均不进入downstream模型。官方Lightning checkpoint包含Python pickle对象，只有固定SHA与大小通过后才允许反序列化，并保存load audit。
 4. ILUME isomeric canonical SMILES保持benchmark identity；模型输入重新canonicalize为`isomericSmiles=False`。使用固定BERT WordPiece vocab，严格执行官方`"[CLS]" + SMILES`、tokenizer自动special tokens、`max_length=100`截断及删除最外层首token，因此encoder最大长度为99。去立体collision与全部split截断均公开审计。
 5. cation、anion、solute和solvent始终按registry slot分别编码，但共享唯一full-finetuned encoder；一个batch以component-major顺序合并成一次`C×B` forward。表示按slot顺序concat，normalized numeric conditions随后拼接，predictor仅为`Linear(input_dim,1536) → GELU → Linear(1536,1)`。

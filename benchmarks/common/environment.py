@@ -389,8 +389,8 @@ def validate_ilbert_environment(config: BenchmarkConfig) -> dict[str, Any]:
         "numpy": "1.26.4",
         "transformers": "4.39.1",
         "tokenizers": "0.15.2",
-        "pytorch": "2.2.1+cu121",
-        "cuda": "12.1",
+        "pytorch": "2.9.0+cu128",
+        "cuda": "12.8",
         "rdkit": "2023.09.5",
     }
     definition, lock, installed = _validate_lock(
@@ -539,8 +539,8 @@ def validate_spmm_environment(config: BenchmarkConfig) -> dict[str, Any]:
         "numpy": "1.24.3",
         "transformers": "4.30.1",
         "tokenizers": "0.13.3",
-        "pytorch": "1.13.1+cu117",
-        "cuda": "11.7",
+        "pytorch": "2.9.0+cu128",
+        "cuda": "12.8",
         "rdkit": "2023.03.1",
     }
     definition, lock, installed = _validate_lock(

@@ -334,7 +334,7 @@ ILBERT使用独立hash-lock环境和用户本地准备的固定上游资产。�
 conda env create -f benchmarks/ilbert/environment.yml
 conda run --no-capture-output -n ilume-ilbert \
   python -m pip install --require-hashes \
-  -r benchmarks/ilbert/requirements-linux-x86_64-cu121.lock
+  -r benchmarks/ilbert/requirements-linux-x86_64-cu128.lock
 
 mkdir -p artifacts/benchmarks/ilbert
 git clone https://github.com/Yu-Xin-Qiu/ILBERT.git \
@@ -374,13 +374,13 @@ python scripts/benchmarks/sweep.py \
 ILBERT普通离子液体输入为单条`cation.anion` AIS sequence；solvation/transfer只增加共享backbone的有序双view。所有输入固定padding/truncation到100 tokens并公开审计，数值条件保持registry顺序和原始物理单位。Partial Charge与Stage 2 Full为unsupported。
 
 SPMM使用独立hash-lock环境和固定的官方Apache-2.0上游checkout。仓库不复制或提交约2.20 GiB的官方Lightning checkpoint；运行前会校验commit、源码、vocab、config、checkpoint SHA和字节数。
-该环境为兼容PyTorch 1.13固定Python 3.10，因此不执行要求Python ≥3.11的ILUME editable install；四个benchmark脚本会从仓库根显式引导`src`和`benchmarks`导入。
+该环境固定Python 3.10，因此不执行要求Python ≥3.11的ILUME editable install；四个benchmark脚本会从仓库根显式引导`src`和`benchmarks`导入。
 
 ```bash
 conda env create -f benchmarks/spmm/environment.yml
 conda run --no-capture-output -n ilume-spmm \
   python -m pip install --require-hashes \
-  -r benchmarks/spmm/requirements-linux-x86_64-cu117.lock
+  -r benchmarks/spmm/requirements-linux-x86_64-cu128.lock
 
 mkdir -p artifacts/benchmarks/spmm
 git clone https://github.com/jinhojsk515/SPMM.git \

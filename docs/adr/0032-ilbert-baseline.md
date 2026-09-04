@@ -10,7 +10,7 @@ ILUME 需要一个保留 ILBERT 原生 AIS tokenizer、RoBERTa、TextCNN 与 dow
 ## 决定
 
 1. 固定外部上游 `Yu-Xin-Qiu/ILBERT@f9dc6f1b23a40b6988480735f3724a6332f68c12` 和 Zenodo `pretrained_model.pth`。ILUME 只动态加载用户本地 checkout，并校验 commit、`model.py`、`ILtokenizer.py`、`merged_vocab.txt` 与 checkpoint SHA；不复制、提交或再分发无许可证的源码和权重。
-2. 使用独立 `ilume-ilbert` hash-lock 环境，固定 Python 3.11.9、PyTorch 2.2.1+cu121、CUDA 12.1、Transformers 4.39.1、tokenizers 0.15.2、atomInSmiles 1.0.2、RDKit 2023.9.5 与 NumPy 1.26.4。缺少环境、CUDA 或资产不匹配时在创建 run output 前硬失败，不自动安装、下载或回退。
+2. 使用独立 `ilume-ilbert` hash-lock 环境，固定 Python 3.11.9、PyTorch 2.9.0+cu128、CUDA 12.8、Transformers 4.39.1、tokenizers 0.15.2、atomInSmiles 1.0.2、RDKit 2023.9.5 与 NumPy 1.26.4。缺少环境、CUDA 或资产不匹配时在创建 run output 前硬失败，不自动安装、下载或回退。
 3. 固定官方 AIS tokenizer、vocab 2000、512 hidden、6层、4 heads、FFN 1024、dropout 0、TextCNN kernels `1–10,15` 及官方 filters。generic checkpoint只初始化实际使用的RoBERTa encoder；仅允许LM head为unexpected，未使用pooler和随机初始化TextCNN/predictor为missing，并保存完整load audit。
 4. 普通IL严格编码一个`cation.anion` sequence。solvation/transfer编码`[ionic_liquid, solute]`，organic transfer编码`[solute, solvent]`；所有view合成一次`V×B` forward并共享唯一full-finetuned RoBERTa+TextCNN。适配只扩展官方predictor第一层输入，保持`Linear(input_dim,256) → Softplus → Linear(256,1)`。
 5. HOMO/LUMO直接编码single-ion sequence；cation与anion共同使用一个task pool、scaler、model和scalar head，`ion_role`只用于审计与diagnostics，不构造dummy counterion或role feature。

@@ -4,7 +4,7 @@ seed: 42
 environment:
   name: ilume-ilbert
   definition: benchmarks/ilbert/environment.yml
-  lock: benchmarks/ilbert/requirements-linux-x86_64-cu121.lock
+  lock: benchmarks/ilbert/requirements-linux-x86_64-cu128.lock
 data:
   data_root: data
   task_catalog: data/task_catalog.csv
