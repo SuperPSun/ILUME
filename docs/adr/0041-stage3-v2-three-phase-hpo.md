@@ -60,6 +60,9 @@ Stage 1/2 artifact、Stage 3源数据、normalization与数值tensor格式不改
 - 每个fold summary额外记录wall/GPU seconds、峰值allocated显存、总参数量和可训练参数量。
 - 搜索结果只是在两折20-epoch筛选口径下的Base recipe决定，不能解释为五折正式结果或
   scale-independent结论。
+- `scripts/stage3/search_report.py`只读汇总A/B/C保存的fold1/2 taskwise-refined stitched
+  validation并生成逐trial/逐性质表格与SVG；它不重新evaluation、不读取test，也不能把
+  性质对比图解释为五折确认。
 - 正式prepare、100-trial搜索及最终test必须由用户显式执行；代码验收只运行临时小数据测试。
 
 ## 参考

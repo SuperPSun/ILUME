@@ -8,6 +8,8 @@ import math
 
 import shutil
 
+import xml.etree.ElementTree as ET
+
 from dataclasses import asdict, replace
 
 from pathlib import Path
@@ -113,10 +115,18 @@ from stage3.search import (
     rank_trials,
 )
 
+from stage3.search_report import (
+    REPORT_ARTIFACTS,
+    TASK_ORDER,
+    build_search_report,
+    write_search_report,
+)
+
 from stage3.config import load_stage3_config
 
 import scripts.stage3.train as train_launcher
 import scripts.stage3.search as search_launcher
+import scripts.stage3.search_report as search_report_launcher
 
 from stage1.config import load_config
 from stage1.descriptors import calculate_descriptors, rdkit_descriptor_names
@@ -610,6 +620,216 @@ def test_stage3_search_two_fold_aggregation_and_tie_break() -> None:
         "training_cost": {**row["training_cost"], "gpu_seconds": 5.0},
     }
     assert [item["trial_number"] for item in rank_trials([slower, row])] == [7, 8]
+
+
+def _search_report_trial(
+    candidate: dict[str, Any], trial_number: int, value: float, phase: str
+) -> dict[str, Any]:
+    fold_summaries = {}
+    for fold, offset in ((1, 0.0), (2, 0.02)):
+        task_scores = {
+            task: value + index / 1000 + offset
+            for index, task in enumerate(ALL_TASKS)
+        }
+        weighted = sum(
+            task_scores[task] * EVALUATION_WEIGHTS[task] for task in ALL_TASKS
+        ) / EVALUATION_WEIGHT_SUM
+        fold_summaries[fold] = {
+            "task_scores": task_scores,
+            "weighted_normalized_mae": weighted,
+            "original_macro_task_score": sum(task_scores.values()) / len(task_scores),
+            "weak_task_scores": {task: task_scores[task] for task in WEAK_TASKS},
+            "training_cost": {
+                "wall_seconds": 10.0 + fold,
+                "gpu_seconds": 9.0 + fold,
+                "peak_allocated_bytes": 1000 + trial_number,
+                "total_parameters": 10000 + trial_number,
+                "trainable_parameters": 9000 + trial_number,
+            },
+        }
+    parameters: dict[str, Any] = {"candidate_id": candidate["candidate_id"]}
+    if phase == "C":
+        parameters.update({
+            "tier1_weight": 1.0,
+            "tier2_weight": 1.0,
+            "tier3_weight": 1.0,
+            "learning_rate": 3.0e-4,
+            "dropout": 0.1,
+            "weight_decay": 1.0e-2,
+        })
+    return aggregate_search_trial(
+        fold_summaries,
+        trial_number=trial_number,
+        candidate={**candidate, "parameters": parameters},
+    )
+
+
+def _write_search_report_inputs(root: Path) -> None:
+    def write(path: Path, payload: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+    a_candidates = [candidate.to_dict() for candidate in grouping_candidates()]
+    a_ranking = rank_trials([
+        _search_report_trial(a_candidates[index], index, 0.40 + index * 0.05, "A")
+        for index in range(3)
+    ])
+    a_result = {
+        "schema_version": 1,
+        "phase": "A",
+        "primary_metric": "weak_property_weighted_validation_normalized_mae",
+        "attempted_trials": 50,
+        "completed_trials": 3,
+        "failed_trials": 47,
+        "ranking": a_ranking,
+        "top3": a_ranking,
+        "top3_groupings": [row["candidate"] for row in a_ranking],
+    }
+    write(root / "search_a/result.json", a_result)
+    write(root / "search_a/candidate_manifest.json", {
+        "schema_version": 1,
+        "phase": "A",
+        "prerequisites": {},
+        "candidates": a_candidates,
+    })
+
+    b_candidates, _ = search_launcher._candidate_catalog("b", root)
+    b_ranking = rank_trials([
+        _search_report_trial(b_candidates[index], index, 0.30 + index * 0.04, "B")
+        for index in range(3)
+    ])
+    b_result = {
+        "schema_version": 1,
+        "phase": "B",
+        "primary_metric": "weak_property_weighted_validation_normalized_mae",
+        "attempted_trials": 30,
+        "completed_trials": 3,
+        "failed_trials": 27,
+        "ranking": b_ranking,
+        "top3": b_ranking,
+        "top3_expert_structures": [row["candidate"]["experts"] for row in b_ranking],
+    }
+    write(root / "search_b/result.json", b_result)
+    write(root / "search_b/candidate_manifest.json", {
+        "schema_version": 1,
+        "phase": "B",
+        "prerequisites": {"search_a": sha256_file(root / "search_a/result.json")},
+        "candidates": b_candidates,
+    })
+
+    c_candidates, _ = search_launcher._candidate_catalog("c", root)
+    c_ranking = rank_trials([
+        _search_report_trial(c_candidates[index], index, 0.20 + index * 0.03, "C")
+        for index in range(3)
+    ])
+    c_result = {
+        "schema_version": 1,
+        "phase": "C",
+        "primary_metric": "weak_property_weighted_validation_normalized_mae",
+        "attempted_trials": 20,
+        "completed_trials": 3,
+        "failed_trials": 17,
+        "ranking": c_ranking,
+        "top3": c_ranking,
+        "top3_recipes": c_ranking,
+        "winner": c_ranking[0],
+    }
+    write(root / "search_c/result.json", c_result)
+    write(root / "search_c/candidate_manifest.json", {
+        "schema_version": 1,
+        "phase": "C",
+        "prerequisites": {
+            "search_a": sha256_file(root / "search_a/result.json"),
+            "search_b": sha256_file(root / "search_b/result.json"),
+        },
+        "candidates": c_candidates,
+    })
+
+
+def test_stage3_search_report_builds_metric_tables_and_svgs(tmp_path: Path) -> None:
+    search_root = tmp_path / "search"
+    _write_search_report_inputs(search_root)
+
+    report = build_search_report(search_root)
+    assert tuple(report["task_order"]) == TASK_ORDER
+    assert report["phases"]["C"]["winner"]["score"] == pytest.approx(
+        report["trials"][6]["score"]
+    )
+    first_task = TASK_ORDER[0]
+    first_trial = report["trials"][0]
+    expected_mean = 0.41 + ALL_TASKS.index(first_task) / 1000
+    assert first_trial["task_metrics"][first_task]["mean"] == pytest.approx(expected_mean)
+    assert first_trial["task_metrics"][first_task]["sample_sd"] == pytest.approx(
+        math.sqrt(0.0002)
+    )
+    assert [series["label"] for series in report["radar"]] == [
+        "Base anchor-g6", "Search A winner", "Search B winner", "Search C winner"
+    ]
+
+    output = tmp_path / "report"
+    write_search_report(report, output)
+    assert {path.name for path in output.iterdir()} == set(REPORT_ARTIFACTS)
+    for name in (
+        "search_a_property_matrix.svg",
+        "search_b_property_matrix.svg",
+        "search_c_property_matrix.svg",
+        "property_radar.svg",
+    ):
+        ET.parse(output / name)
+    assert len((output / "task_metrics.csv").read_text(encoding="utf-8").splitlines()) == 1 + 9 * 21
+    radar = (output / "property_radar.svg").read_text(encoding="utf-8")
+    assert 'data-label="Search C winner"' in radar
+    assert "Validation folds 1/2 only" in radar
+
+
+def test_stage3_search_report_rejects_prerequisite_hash_mismatch(tmp_path: Path) -> None:
+    search_root = tmp_path / "search"
+    _write_search_report_inputs(search_root)
+    path = search_root / "search_b/candidate_manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["prerequisites"]["search_a"] = "0" * 64
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="prerequisite hashes"):
+        build_search_report(search_root)
+
+
+def test_stage3_search_report_cli_writes_standard_run_and_refuses_overwrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import common.outputs as outputs_module
+
+    _write_search_report_inputs(tmp_path / "search")
+    monkeypatch.setattr(outputs_module, "REPOSITORY_ROOT", tmp_path)
+    monkeypatch.setattr(
+        "sys.argv", ["search_report.py", "--search-output", "search"]
+    )
+    assert search_report_launcher.main() == 0
+    output = tmp_path / "search/search_report"
+    assert {"run_config.yaml", "metadata.json", "attempts.jsonl", "summary.json"} <= {
+        path.name for path in output.iterdir()
+    }
+    with pytest.raises(FileExistsError, match="Output already exists"):
+        search_report_launcher.main()
+
+
+@pytest.mark.parametrize("invalid", ("missing", "nonfinite"))
+def test_stage3_search_report_rejects_invalid_property_metrics(
+    tmp_path: Path, invalid: str
+) -> None:
+    search_root = tmp_path / invalid
+    _write_search_report_inputs(search_root)
+    path = search_root / "search_a/result.json"
+    result = json.loads(path.read_text(encoding="utf-8"))
+    task_scores = result["ranking"][0]["folds"]["1"]["task_scores"]
+    if invalid == "missing":
+        task_scores.pop(ALL_TASKS[0])
+    else:
+        task_scores[ALL_TASKS[0]] = float("inf")
+    result["top3"] = result["ranking"][:3]
+    result["top3_groupings"] = [row["candidate"] for row in result["ranking"][:3]]
+    path.write_text(json.dumps(result), encoding="utf-8")
+    with pytest.raises(ValueError, match="all 21 tasks|non-finite"):
+        build_search_report(search_root)
 
 
 def test_stage3_search_a_runs_fixed_budget_and_resumes(

@@ -141,6 +141,17 @@ python scripts/stage3/search.py \
 不得修改已启动study的配置或候选manifest。最终Base recipe写入
 `outputs/v2/stage3/search/search_c/winner_base.yaml`，不会自动运行test或推广到其他scale。
 
+A/B/C完成后可生成只读的两折搜索报告：
+
+```bash
+python scripts/stage3/search_report.py \
+  --search-output outputs/v2/stage3/search
+```
+
+报告默认写入`outputs/v2/stage3/search/search_report/`，包括完整trial与逐性质CSV、
+三阶段性质矩阵和Base/A/B/C winner雷达图。报告只读取搜索保存的fold1/2
+taskwise-refined stitched validation，不重新训练、不调用evaluation，也不读取test。
+
 独立的 Capacity v1 研究继续冻结在 legacy v1 五模态合同，不替换或修改 Global-RDKit v2 主线；设计见 [ADR-0026](docs/adr/0026-capacity-v1-pipeline-study.md)，正式命令集中在 [Capacity v1 操作手册](docs/capacity-v1-runbook.md)。
 
 ### RDKit 2D → HoME representation ablation
