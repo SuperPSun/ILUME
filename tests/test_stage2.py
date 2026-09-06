@@ -406,7 +406,7 @@ def test_global_rdkit_v2_teacher_cache_uses_entity_embedding(
 
 def test_stage2_refinement_config_contract(tiny_stage2_setup):
     active = load_stage2_config(Path("configs/v2/stage2/base.yaml"))
-    assert active.training.epochs == 5
+    assert active.training.epochs == 10
     assert active.training.refinement_epochs == 0
     assert active.training.refinement_tasks == ()
 

@@ -43,7 +43,7 @@ python scripts/stage1/train.py \
 
 ## Stage 2
 
-Stage 2 Object v3 从 catalog 加载九个 simulation task，共享 ObjectEncoder，并从 Stage 1 encoder 准备 entity teacher cache。现役 v2 固定训练 5 个 joint epochs，随后直接发布最终 checkpoint、`stage2_encoder.pt` 和 joint validation `final_metrics.json`；不再执行 taskwise refinement，也不提供 Stage 2 test evaluation。模型、数据身份和恢复合同见 [ADR-0019/0021/0025/0043](docs/adr/README.md)。
+Stage 2 Object v3 从 catalog 加载九个 simulation task，共享 ObjectEncoder，并从 Stage 1 encoder 准备 entity teacher cache。现役 v2 固定训练 10 个 joint epochs，随后直接发布最终 checkpoint、`stage2_encoder.pt` 和 joint validation `final_metrics.json`；不再执行 taskwise refinement，也不提供 Stage 2 test evaluation。模型、数据身份和恢复合同见 [ADR-0019/0021/0025/0043](docs/adr/README.md)。
 
 ```bash
 python scripts/stage2/prepare.py \

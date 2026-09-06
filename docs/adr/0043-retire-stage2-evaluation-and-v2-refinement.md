@@ -10,7 +10,7 @@ Stage 2 的任务表现不再作为论文比较目标。继续训练四个 task 
 
 ## 决定
 
-1. 现役 `configs/v2/stage2/base.yaml` 只运行九任务的 5 个 joint epochs，配置为 `refinement_epochs: 0` 和空 `refinement_tasks`。训练完成后直接发布最终 joint checkpoint、`stage2_encoder.pt` 与仅含最终 joint validation 的 `final_metrics.json`，不生成 `taskwise_refined.pt`、`taskwise_refinement.json` 或 stitched validation。
+1. 现役 `configs/v2/stage2/base.yaml` 只运行九任务的 10 个 joint epochs，配置为 `refinement_epochs: 0` 和空 `refinement_tasks`。训练完成后直接发布最终 joint checkpoint、`stage2_encoder.pt` 与仅含最终 joint validation 的 `final_metrics.json`，不生成 `taskwise_refined.pt`、`taskwise_refinement.json` 或 stitched validation。
 2. Stage 2 配置与训练器仍接受正数 refinement epochs 和非空任务列表，以保持 legacy v1、Capacity v1 与 No-Stage1 消融的冻结训练定义；零 epochs 与空任务列表必须同时出现。
 3. 删除 Stage 2 test evaluation 公共入口及其专用实现。主模型、消融和 baseline 均不再生成新的 Stage 2 test evaluation。
 4. baseline 配置、数据解析、训练/evaluate CLI、adapter 与 sweep 只支持 Stage 3。七个 baseline 的正式 sweep 均为 21 tasks × 5 folds，即 105 个训练 job。
