@@ -47,10 +47,6 @@ training:
   log_every_batches: 50
   device: auto
   amp_dtype: bf16
-  refinement_epochs: 10
-  refinement_tasks:
-    - simulation/heat_of_vaporization
-    - simulation/homo
-    - simulation/lumo
-    - simulation/partial_atomic_charge
+  refinement_epochs: 0
+  refinement_tasks: []
   refinement_lr_multiplier: 0.10

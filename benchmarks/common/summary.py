@@ -8,16 +8,13 @@ import statistics
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 from xml.sax.saxutils import escape
 
 from common.identity import validate_semantic_identity
 from common.identity import semantic_identity
 from common.io import atomic_json
-from common.reporting import (
-    REPORTING_SCHEMA_VERSION,
-    STAGE2_BENCHMARK_SUITE_CONTRACT,
-)
+from common.reporting import REPORTING_SCHEMA_VERSION
 
 
 SUMMARY_SCHEMA_VERSION = 1
@@ -26,46 +23,11 @@ SUMMARY_FILES = (
     "radar.svg",
     "stage3_test_leaderboard.csv",
     "stage3_validation_leaderboard.csv",
-    "stage2_core_physics_leaderboard.csv",
-    "stage2_partial_charge_leaderboard.csv",
-    "stage2_physics_full_leaderboard.csv",
     "stage3_test_metrics.csv",
     "stage3_validation_metrics.csv",
-    "stage2_core_physics_metrics.csv",
-    "stage2_partial_charge_metrics.csv",
     "sweep_status.csv",
     "summary.json",
 )
-
-_PARTIAL_CHARGE_PREDICTION_FIELDS = (
-    "source_row",
-    "mol_id",
-    "canonical_smiles",
-    "role",
-    "formal_charge",
-    "evaluation_status",
-    "exclusion_reason",
-    "atom_count",
-    "atom_indices",
-    "elements",
-    "target_charges",
-    "predicted_charges",
-    "absolute_errors",
-    "molecule_mae",
-    "mapping_status",
-    "mapping_count_lower_bound",
-    "selected_mapping_rank",
-    "bond_match_mode",
-    "unparsed_bond_types",
-    "bond_fallback_reason",
-)
-_PARTIAL_CHARGE_RUNTIME_FIELDS = {
-    "canonical_smiles",
-    "predicted_charges",
-    "absolute_errors",
-    "molecule_mae",
-}
-
 
 @dataclass(frozen=True)
 class Candidate:
@@ -157,7 +119,6 @@ def discover_candidates(
         if key not in {
             ("benchmark", "sweep"),
             ("stage3", "evaluate"),
-            ("stage2", "evaluate"),
         }:
             continue
         root = metadata_path.parent
@@ -226,130 +187,6 @@ def _stage3_comparison_key(identity: Mapping[str, Any]) -> str:
     )["hash"]
 
 
-def _partial_charge_comparison_key(
-    candidate: Candidate, section: Mapping[str, Any]
-) -> str:
-    identity = section["comparison_identity"]
-    payload = identity["payload"]
-    sources = dict(payload["sources"])
-    task = "simulation/partial_atomic_charge"
-    sources.pop(f"{task}:mapping_audit", None)
-    sources.pop(f"{task}:evaluated_subset", None)
-    reporting = candidate.summary["reporting"]
-    prediction_root = candidate.root
-    prediction = next(
-        (
-            item for item in reporting.get("predictions", ())
-            if item.get("task") == task
-        ),
-        None,
-    )
-    if prediction is None:
-        source_run = reporting.get("source_runs", {}).get("stage2_physics", {}).get(task)
-        try:
-            relative = Path(str(source_run)).relative_to(Path(candidate.source_run))
-        except ValueError:
-            relative = None
-        if relative is not None:
-            source_root = candidate.root / relative
-            summary_path = source_root / "summary.json"
-            if summary_path.is_file():
-                source_summary = _json(summary_path)
-                prediction = next(
-                    (
-                        item
-                        for item in source_summary.get("reporting", {}).get("predictions", ())
-                        if item.get("task") == task
-                    ),
-                    None,
-                )
-                prediction_root = source_root
-    if not isinstance(prediction, Mapping) or not isinstance(prediction.get("path"), str):
-        return str(identity["hash"])
-    path = (prediction_root / prediction["path"]).resolve()
-    if not _is_within(path, prediction_root.resolve()) or not path.is_file():
-        return str(identity["hash"])
-    with path.open(newline="", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle)
-        if tuple(reader.fieldnames or ()) != _PARTIAL_CHARGE_PREDICTION_FIELDS:
-            return str(identity["hash"])
-        rows = [
-            {
-                name: row[name]
-                for name in _PARTIAL_CHARGE_PREDICTION_FIELDS
-                if name not in _PARTIAL_CHARGE_RUNTIME_FIELDS
-            }
-            for row in reader
-        ]
-    return semantic_identity(
-        "reporting.partial-charge-comparison.v2",
-        {
-            "comparison": {
-                "benchmark": payload["benchmark"],
-                "split": payload["split"],
-                "expected": payload["expected"],
-                "sources": sources,
-                "normalization": payload["normalization"],
-                "folds": payload["folds"],
-                "ensemble": payload["ensemble"],
-            },
-            "evaluation_rows": rows,
-        },
-    )["hash"]
-
-
-def _stage2_full_comparison_key(
-    candidate: Candidate,
-    section: Mapping[str, Any],
-    partial_section: Mapping[str, Any],
-) -> str:
-    identity = section["comparison_identity"]
-    payload = dict(identity["payload"])
-    component_hashes = dict(payload["component_hashes"])
-    component_hashes["stage2_partial_charge"] = _partial_charge_comparison_key(
-        candidate, partial_section
-    )
-    payload["component_hashes"] = component_hashes
-    return semantic_identity("reporting.stage2-full-comparison.v2", payload)["hash"]
-
-
-def _validate_stage2_suite(reporting: Mapping[str, Any]) -> None:
-    capabilities = reporting.get("capabilities")
-    sections = reporting.get("benchmarks")
-    names = {
-        "stage2_core_physics", "stage2_partial_charge", "stage2_physics_full"
-    }
-    if not isinstance(capabilities, dict) or set(capabilities) != names:
-        raise ValueError("Stage 2 reporting capabilities are incomplete")
-    if not isinstance(sections, dict):
-        raise ValueError("Stage 2 reporting benchmarks are malformed")
-    for name in names:
-        capability = capabilities[name]
-        status = sections[name].get("status")
-        if capability not in {"supported", "unsupported"}:
-            raise ValueError(f"Invalid Stage 2 capability: {name}")
-        if status not in {"complete", "incomplete", "unsupported"}:
-            raise ValueError(f"Invalid Stage 2 status: {name}")
-        if (capability == "unsupported") != (status == "unsupported"):
-            raise ValueError(f"Stage 2 capability/status mismatch: {name}")
-    full = sections["stage2_physics_full"]
-    if full["status"] == "complete":
-        core = sections["stage2_core_physics"]
-        partial = sections["stage2_partial_charge"]
-        if core["status"] != "complete" or partial["status"] != "complete":
-            raise ValueError("Stage 2 Full cannot outlive an incomplete component")
-        payload = full["comparison_identity"]["payload"]
-        if payload.get("component_hashes") != {
-            "stage2_core_physics": core["comparison_identity"]["hash"],
-            "stage2_partial_charge": partial["comparison_identity"]["hash"],
-        }:
-            raise ValueError("Stage 2 Full component identities are inconsistent")
-        expected_units = [
-            *core["protocol"].get("expected_tasks", ()),
-            *partial["protocol"].get("expected_units", ()),
-        ]
-        if payload.get("ordered_units") != expected_units:
-            raise ValueError("Stage 2 Full ordered units are inconsistent")
 
 
 def _validate_current(candidate: Candidate) -> None:
@@ -365,73 +202,27 @@ def _validate_current(candidate: Candidate) -> None:
         raise ValueError("reporting study identity is incomplete")
     if stage == "benchmark":
         benchmarks = reporting.get("benchmarks")
-        current_stage2 = reporting.get("contract") == STAGE2_BENCHMARK_SUITE_CONTRACT
-        current_sections = {
-            "stage3_test", "stage3_validation", "stage2_core_physics",
-            "stage2_partial_charge", "stage2_physics_full",
-        }
-        if current_stage2 and set(benchmarks or ()) != current_sections:
-            raise ValueError("benchmark sweep reporting sections are incomplete")
-        if not current_stage2 and not {
+        if not isinstance(benchmarks, dict) or not {
             "stage3_test", "stage3_validation"
-        }.issubset(set(benchmarks or ())):
-            raise ValueError("benchmark sweep Stage 3 reporting sections are incomplete")
-        if current_stage2:
-            _validate_stage2_suite(reporting)
-        names_to_validate = benchmarks if current_stage2 else {
-            name: benchmarks[name] for name in ("stage3_test", "stage3_validation")
-        }
-        for name, value in names_to_validate.items():
-            if value.get("status") not in {"unsupported", "incomplete"}:
-                _validate_comparison(value.get("comparison_identity"), name)
+        }.issubset(benchmarks):
+            raise ValueError(
+                "benchmark sweep Stage 3 reporting sections are incomplete"
+            )
+        for name in ("stage3_test", "stage3_validation"):
+            section = benchmarks[name]
+            if section.get("status") not in {"unsupported", "incomplete"}:
+                _validate_comparison(section.get("comparison_identity"), name)
         if not isinstance(reporting.get("source_runs"), dict):
             raise ValueError("benchmark sweep reporting lacks source runs")
-        if reporting.get("contract") == STAGE2_BENCHMARK_SUITE_CONTRACT:
-            source_manifest = reporting.get("source_run_manifest")
-            if not isinstance(source_manifest, dict):
-                raise ValueError("benchmark sweep reporting lacks source-run manifest")
-            validate_semantic_identity(source_manifest)
-            if source_manifest.get("type") != "benchmark.source-run-manifest.v1":
-                raise ValueError("benchmark sweep source-run manifest has wrong type")
-            if source_manifest.get("payload", {}).get("source_runs") != reporting["source_runs"]:
-                raise ValueError("benchmark sweep source-run manifest is inconsistent")
-    elif stage == "stage2":
-        if reporting.get("contract") != STAGE2_BENCHMARK_SUITE_CONTRACT:
-            return
-        benchmarks = reporting.get("benchmarks")
-        if set(benchmarks or ()) != {
-            "stage2_core_physics", "stage2_partial_charge", "stage2_physics_full"
-        }:
-            raise ValueError("Stage 2 reporting suite sections are incomplete")
-        _validate_stage2_suite(reporting)
-        if benchmarks["stage2_physics_full"]["status"] == "complete":
-            protocols = [
-                benchmarks[name]["protocol"]
-                for name in (
-                    "stage2_core_physics", "stage2_partial_charge",
-                    "stage2_physics_full",
-                )
-            ]
-            checkpoint_hashes = {item.get("checkpoint_sha256") for item in protocols}
-            checkpoint_epochs = {item.get("checkpoint_epoch") for item in protocols}
-            if (
-                len(checkpoint_hashes) != 1 or None in checkpoint_hashes
-                or len(checkpoint_epochs) != 1
-            ):
-                raise ValueError("ILUME Stage 2 suite checkpoint binding is inconsistent")
-        for name, value in benchmarks.items():
-            if value.get("status") not in {"unsupported", "incomplete"}:
-                _validate_comparison(value.get("comparison_identity"), name)
-    else:
-        _validate_comparison(
-            reporting.get("comparison_identity"), f"{stage} evaluation"
-        )
-        protocol = reporting.get("protocol")
-        if not isinstance(protocol, dict) or protocol.get("split") not in {
-            "valid", "test"
-        }:
-            raise ValueError(f"{stage} evaluation protocol is malformed")
-
+        return
+    _validate_comparison(
+        reporting.get("comparison_identity"), "stage3 evaluation"
+    )
+    protocol = reporting.get("protocol")
+    if not isinstance(protocol, dict) or protocol.get("split") not in {
+        "valid", "test"
+    }:
+        raise ValueError("stage3 evaluation protocol is malformed")
 
 def _finite(value: Any) -> bool:
     try:
@@ -474,21 +265,6 @@ def _model(candidate: Candidate) -> tuple[str, str]:
     return ("ilume", "ILUME") if candidate.metadata.get("stage") != "benchmark" else ("unknown", "unknown")
 
 
-def _stage2_eligibility(reporting: Mapping[str, Any]) -> tuple[str, str, str]:
-    if reporting.get("contract") != STAGE2_BENCHMARK_SUITE_CONTRACT:
-        return ("legacy", "legacy", "legacy")
-    sections = reporting["benchmarks"]
-    values = []
-    for name in (
-        "stage2_core_physics", "stage2_partial_charge", "stage2_physics_full"
-    ):
-        status = sections[name]["status"]
-        values.append(
-            "eligible" if status == "complete" else
-            "not_evaluated" if status == "unsupported" else
-            "not_eligible"
-        )
-    return tuple(values)
 
 
 def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
@@ -503,22 +279,18 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
                 str(candidate.metadata.get("stage", "")),
                 str(candidate.metadata.get("operation", "")),
                 str((candidate.summary or {}).get("split", provenance.get("split", ""))),
-                str((candidate.summary or {}).get("reporting", {}).get("protocol", {}).get("fold", provenance.get("fold", ""))),
+                str(
+                    (candidate.summary or {})
+                    .get("reporting", {})
+                    .get("protocol", {})
+                    .get("fold", provenance.get("fold", ""))
+                ),
             )
         )
         status = str(candidate.metadata.get("status", "unknown"))
         summary = candidate.summary or {}
         issues = list(candidate.issues)
         reporting = summary.get("reporting", {})
-        has_stage2 = candidate.metadata.get("stage") == "stage2" or (
-            candidate.metadata.get("stage") == "benchmark"
-            and reporting.get("contract") == STAGE2_BENCHMARK_SUITE_CONTRACT
-        )
-        eligibility = (
-            _stage2_eligibility(reporting) if has_stage2 and reporting else ("", "", "")
-        )
-        if has_stage2 and reporting and eligibility[0] == "legacy":
-            issues.append("legacy_stage2_reporting_contract")
         if not candidate.current:
             completeness = "legacy"
             issues.append("reporting_schema_missing")
@@ -535,38 +307,54 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
             if candidate.metadata["stage"] == "benchmark":
                 sections = reporting["benchmarks"]
                 expected = ";".join(
-                    f"{name}:{len(value['protocol'].get('expected_tasks', ())) }"
-                    for name, value in sorted(sections.items())
+                    f"{name}:{len(sections[name]['protocol'].get('expected_tasks', ()))}"
+                    for name in ("stage3_test", "stage3_validation")
                 )
-                available_items = [
-                    f"stage3_test:{len(summary['stage3_property_benchmark']['test_ensemble'])}",
-                    f"stage3_validation:{len(summary['stage3_property_benchmark']['validation_five_fold'])}",
-                ]
-                if "stage2_physics_benchmark" in summary:
-                    available_items.append(
-                        f"stage2_physics:{len(summary['stage2_physics_benchmark']['test'])}"
+                available = ";".join(
+                    (
+                        "stage3_test:"
+                        + str(
+                            len(
+                                summary["stage3_property_benchmark"][
+                                    "test_ensemble"
+                                ]
+                            )
+                        ),
+                        "stage3_validation:"
+                        + str(
+                            len(
+                                summary["stage3_property_benchmark"][
+                                    "validation_five_fold"
+                                ]
+                            )
+                        ),
                     )
-                available = ";".join(available_items)
-                folds = ";".join(map(str, sections["stage3_validation"]["protocol"]["folds"]))
-            elif candidate.metadata["stage"] == "stage3":
+                )
+                folds = ";".join(
+                    map(
+                        str,
+                        sections["stage3_validation"]["protocol"]["folds"],
+                    )
+                )
+            else:
                 protocol = reporting["protocol"]
                 expected_tasks = protocol.get("expected_tasks", ())
                 expected = len(expected_tasks)
-                if candidate.metadata["stage"] == "stage3":
-                    metrics = (
-                        summary.get("ensemble", {}).get("tasks", {})
-                        if summary.get("split") == "test"
-                        else summary.get("tasks", {})
-                    )
-                    available = sum(
-                        int(values.get("count", 0)) > 0 for values in metrics.values()
-                    )
-                    fold = protocol.get("fold")
-                    folds = ";".join(map(str, protocol.get("folds", ()))) if fold is None else str(fold)
-            elif reporting.get("contract") == STAGE2_BENCHMARK_SUITE_CONTRACT:
-                protocol = reporting["benchmarks"]["stage2_core_physics"]["protocol"]
-                expected = len(protocol.get("expected_tasks", ()))
-                available = len(summary.get("tasks", {}))
+                metrics = (
+                    summary.get("ensemble", {}).get("tasks", {})
+                    if summary.get("split") == "test"
+                    else summary.get("tasks", {})
+                )
+                available = sum(
+                    int(values.get("count", 0)) > 0
+                    for values in metrics.values()
+                )
+                fold = protocol.get("fold")
+                folds = (
+                    ";".join(map(str, protocol.get("folds", ())))
+                    if fold is None
+                    else str(fold)
+                )
         rows.append(
             {
                 "run": _run_id(model, candidate.source_run),
@@ -577,16 +365,18 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
                 "completeness": completeness,
                 "checkpoint_epoch": checkpoint,
                 "enabled_tasks": (
-                    len(summary.get("reporting", {}).get("protocol", {}).get("enabled_tasks", ()))
-                    if candidate.metadata.get("stage") == "stage3" else ""
+                    len(
+                        summary.get("reporting", {})
+                        .get("protocol", {})
+                        .get("enabled_tasks", ())
+                    )
+                    if candidate.metadata.get("stage") == "stage3"
+                    else ""
                 ),
                 "expected_tasks": expected,
                 "available_tasks": available,
                 "available_folds": folds,
                 "failed_jobs": failed_jobs,
-                "stage2_core_eligibility": eligibility[0],
-                "stage2_partial_eligibility": eligibility[1],
-                "stage2_full_eligibility": eligibility[2],
                 "source_run": candidate.source_run,
                 "issues": ";".join(issues),
             }
@@ -611,13 +401,15 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
             )
             test_metrics = summary["stage3_property_benchmark"]["test_ensemble"]
             test_missing = [
-                task for task in test_expected
+                task
+                for task in test_expected
                 if task not in test_metrics
                 or int(test_metrics[task].get("count", 0)) <= 0
             ]
             if test_missing:
                 mark_incomplete(
-                    candidate, "stage3_test_missing_tasks=" + ",".join(test_missing)
+                    candidate,
+                    "stage3_test_missing_tasks=" + ",".join(test_missing),
                 )
             test_folds = tuple(
                 sections["stage3_test"]["protocol"].get("folds", ())
@@ -626,9 +418,13 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
                 mark_incomplete(
                     candidate,
                     "stage3_test_missing_folds="
-                    + ",".join(map(str, sorted(set(range(1, 6)) - set(test_folds)))),
+                    + ",".join(
+                        map(
+                            str,
+                            sorted(set(range(1, 6)) - set(test_folds)),
+                        )
+                    ),
                 )
-
             valid_expected = tuple(
                 sections["stage3_validation"]["protocol"]["expected_tasks"]
             )
@@ -636,48 +432,28 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
                 "validation_five_fold"
             ]
             valid_missing = [
-                task for task in valid_expected
+                task
+                for task in valid_expected
                 if task not in valid_metrics
-                or int(valid_metrics[task].get("normalized_mae", {}).get("count", 0))
+                or int(
+                    valid_metrics[task]
+                    .get("normalized_mae", {})
+                    .get("count", 0)
+                )
                 != 5
             ]
             if valid_missing:
                 mark_incomplete(
                     candidate,
-                    "stage3_validation_missing_tasks=" + ",".join(valid_missing),
+                    "stage3_validation_missing_tasks="
+                    + ",".join(valid_missing),
                 )
-
-            if reporting.get("contract") == STAGE2_BENCHMARK_SUITE_CONTRACT:
-                stage2_expected = tuple(
-                    sections["stage2_core_physics"]["protocol"]["expected_tasks"]
-                )
-                stage2_metrics = summary["stage2_physics_benchmark"]["test"]
-                stage2_available = {
-                    task
-                    for task, targets in stage2_metrics.items()
-                    for target, values in targets.items()
-                    if int(values.get("count", 0)) > 0
-                }
-                stage2_missing = sorted(set(stage2_expected) - stage2_available)
-                if stage2_missing:
-                    mark_incomplete(
-                        candidate,
-                        "stage2_missing_tasks=" + ",".join(stage2_missing),
-                    )
-                for name in (
-                    "stage2_core_physics", "stage2_partial_charge",
-                    "stage2_physics_full",
-                ):
-                    section = sections[name]
-                    if section["status"] == "incomplete":
-                        for issue in section.get("issues", ("incomplete",)):
-                            mark_incomplete(candidate, f"{name}:{issue}")
             try:
                 if int(summary.get("jobs", {}).get("failed", 0)) > 0:
                     mark_incomplete(candidate, "failed_jobs")
             except (TypeError, ValueError):
                 mark_incomplete(candidate, "failed_jobs_unknown")
-        elif candidate.metadata["stage"] == "stage3":
+        else:
             protocol = reporting["protocol"]
             expected_tasks = tuple(protocol["expected_tasks"])
             metrics = (
@@ -686,95 +462,95 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
                 else summary.get("tasks", {})
             )
             missing = [
-                task for task in expected_tasks
-                if task not in metrics or int(metrics[task].get("count", 0)) <= 0
+                task
+                for task in expected_tasks
+                if task not in metrics
+                or int(metrics[task].get("count", 0)) <= 0
             ]
             if missing:
-                mark_incomplete(candidate, "missing_tasks=" + ",".join(missing))
+                mark_incomplete(
+                    candidate, "missing_tasks=" + ",".join(missing)
+                )
             if summary.get("split") == "test":
                 folds = tuple(protocol.get("folds", ()))
                 if folds != (1, 2, 3, 4, 5):
                     mark_incomplete(
                         candidate,
                         "missing_folds="
-                        + ",".join(map(str, sorted(set(range(1, 6)) - set(folds)))),
+                        + ",".join(
+                            map(
+                                str,
+                                sorted(set(range(1, 6)) - set(folds)),
+                            )
+                        ),
                     )
             else:
-                key = (str(reporting["model_id"]), str(reporting["study_id"]))
+                key = (
+                    str(reporting["model_id"]),
+                    str(reporting["study_id"]),
+                )
                 fold = int(protocol["fold"])
-                validation_groups.setdefault(key, {}).setdefault(fold, []).append(
-                    candidate
-                )
-        elif candidate.metadata["stage"] == "stage2":
-            if reporting.get("contract") != STAGE2_BENCHMARK_SUITE_CONTRACT:
-                continue
-            sections = reporting["benchmarks"]
-            expected_tasks = tuple(
-                sections["stage2_core_physics"]["protocol"]["expected_tasks"]
-            )
-            available_tasks = {
-                task
-                for task, targets in summary.get("tasks", {}).items()
-                if task != "simulation/partial_atomic_charge"
-                for target, values in targets.items()
-                if int(values.get("count", 0)) > 0
-            }
-            missing = sorted(set(expected_tasks) - available_tasks)
-            if missing:
-                mark_incomplete(
-                    candidate, "missing_tasks=" + ",".join(missing)
-                )
-            for name in (
-                "stage2_core_physics", "stage2_partial_charge",
-                "stage2_physics_full",
-            ):
-                section = sections[name]
-                if section["status"] == "incomplete":
-                    for issue in section.get("issues", ("incomplete",)):
-                        mark_incomplete(candidate, f"{name}:{issue}")
+                validation_groups.setdefault(key, {}).setdefault(
+                    fold, []
+                ).append(candidate)
 
     for folds in validation_groups.values():
         missing = sorted(set(range(1, 6)) - set(folds))
-        duplicates = sorted(fold for fold, items in folds.items() if len(items) > 1)
-        unique_items = [items[0] for items in folds.values() if len(items) == 1]
+        duplicates = sorted(
+            fold for fold, items in folds.items() if len(items) > 1
+        )
+        unique_items = [
+            items[0] for items in folds.values() if len(items) == 1
+        ]
         comparison_hashes = {
             candidate.summary["reporting"]["comparison_identity"]["hash"]
             for candidate in unique_items
         }
         expected_sets = {
-            tuple(candidate.summary["reporting"]["protocol"]["expected_tasks"])
+            tuple(
+                candidate.summary["reporting"]["protocol"][
+                    "expected_tasks"
+                ]
+            )
             for candidate in unique_items
         }
         checkpoints = {
-            candidate.summary.get("checkpoint_epoch") for candidate in unique_items
+            candidate.summary.get("checkpoint_epoch")
+            for candidate in unique_items
         }
         for items in folds.values():
             for candidate in items:
                 if missing:
                     mark_incomplete(
-                        candidate, "missing_folds=" + ",".join(map(str, missing))
+                        candidate,
+                        "missing_folds=" + ",".join(map(str, missing)),
                     )
                 if duplicates:
                     mark_incomplete(
                         candidate,
-                        "duplicate_folds=" + ",".join(map(str, duplicates)),
+                        "duplicate_folds="
+                        + ",".join(map(str, duplicates)),
                     )
                 if len(comparison_hashes) > 1:
-                    mark_incomplete(candidate, "comparison_identity_mismatch")
+                    mark_incomplete(
+                        candidate, "comparison_identity_mismatch"
+                    )
                 if len(expected_sets) > 1:
                     mark_incomplete(candidate, "expected_tasks_mismatch")
                 if len(checkpoints) > 1:
                     mark_incomplete(candidate, "checkpoint_epoch_mismatch")
     signature_counts = {
-        signature: signatures.count(signature) for signature in set(signatures)
+        signature: signatures.count(signature)
+        for signature in set(signatures)
     }
     for row, signature in zip(rows, signatures, strict=True):
         if signature_counts[signature] > 1:
             row["issues"] = ";".join(
-                item for item in (row["issues"], "alternative_run") if item
+                item
+                for item in (row["issues"], "alternative_run")
+                if item
             )
     return sorted(rows, key=lambda row: row["run"])
-
 
 def _current_completed(candidates: Sequence[Candidate]) -> list[Candidate]:
     return [
@@ -975,235 +751,6 @@ def _stage3_validation(
     )
 
 
-def _stage2_core(
-    candidates: Sequence[Candidate],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, list[str]]]:
-    leaders: list[dict[str, Any]] = []
-    metrics_rows: list[dict[str, Any]] = []
-    comparisons: dict[str, list[str]] = {}
-    for candidate in _current_completed(candidates):
-        summary = candidate.summary
-        reporting = summary["reporting"]
-        if reporting.get("contract") != STAGE2_BENCHMARK_SUITE_CONTRACT:
-            continue
-        if candidate.metadata["stage"] == "benchmark":
-            section = reporting["benchmarks"]["stage2_core_physics"]
-            metrics = summary["stage2_physics_benchmark"]["test"]
-            checkpoint = ""
-        elif candidate.metadata["stage"] == "stage2":
-            section = reporting["benchmarks"]["stage2_core_physics"]
-            metrics = summary["tasks"]
-            checkpoint = summary["checkpoint_epoch"]
-        else:
-            continue
-        if section.get("status") != "complete":
-            continue
-        expected = tuple(section["protocol"]["expected_tasks"])
-        flattened: dict[str, tuple[str, Mapping[str, Any]]] = {}
-        for task in expected:
-            targets = metrics.get(task, {})
-            if len(targets) == 1:
-                target, value = next(iter(targets.items()))
-                flattened[task] = (target, value)
-        if not expected or any(
-            task not in flattened
-            or int(flattened[task][1].get("count", 0)) <= 0
-            or not _finite(flattened[task][1].get("normalized_mae"))
-            for task in expected
-        ):
-            continue
-        model_id = reporting["model_id"]
-        display = reporting["model_display_name"]
-        run = _run_id(model_id, candidate.source_run)
-        for task in expected:
-            target, value = flattened[task]
-            metrics_rows.append(
-                {
-                    "run": run, "model": display, "task": task, "target": target,
-                    "subset": "pooled",
-                    "count": value["count"], "mae": value["mae"],
-                    "rmse": value["rmse"], "r2": value["r2"],
-                    "normalized_mae": value["normalized_mae"],
-                    "normalized_rmse": value["normalized_rmse"],
-                    "source_run": candidate.source_run,
-                }
-            )
-            diagnostics = value.get("role_diagnostics", {})
-            for role in ("cation", "anion"):
-                if role not in diagnostics:
-                    continue
-                role_value = diagnostics[role]
-                metrics_rows.append(
-                    {
-                        "run": run,
-                        "model": display,
-                        "task": task,
-                        "target": target,
-                        "subset": role,
-                        "count": role_value["count"],
-                        "mae": role_value["mae"],
-                        "source_run": candidate.source_run,
-                    }
-                )
-        values = [
-            float(flattened[task][1]["normalized_mae"])
-            for task in expected
-        ]
-        comparisons.setdefault(section["comparison_identity"]["hash"], []).append(run)
-        leaders.append(
-            {
-                "run": run, "model": display,
-                "macro_normalized_mae": sum(values) / len(values),
-                "valid_tasks": len(values), "total_tasks": len(expected),
-                "per_task_wins": 0, "source_run": candidate.source_run,
-                "checkpoint_epoch": checkpoint,
-            }
-        )
-    _require_one_comparison(comparisons, "Stage 2 Core physics")
-    pooled_rows = [row for row in metrics_rows if row["subset"] == "pooled"]
-    wins = _wins(pooled_rows, "task", "normalized_mae")
-    for row in leaders:
-        row["per_task_wins"] = len(wins.get(row["run"], ()))
-    return _rank(leaders, "macro_normalized_mae"), sorted(
-        metrics_rows,
-        key=lambda row: (
-            row["run"], row["task"], row["target"], row["subset"]
-        ),
-    ), wins
-
-
-def _partial_metrics(summary: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    if "tasks" in summary:
-        value = summary["tasks"].get("simulation/partial_atomic_charge")
-        return value if isinstance(value, dict) else None
-    value = summary.get("stage2_partial_charge_benchmark", {}).get("test")
-    return value if isinstance(value, dict) else None
-
-
-def _stage2_partial(
-    candidates: Sequence[Candidate],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    leaders: list[dict[str, Any]] = []
-    metrics_rows: list[dict[str, Any]] = []
-    comparisons: dict[str, list[str]] = {}
-    for candidate in _current_completed(candidates):
-        reporting = candidate.summary["reporting"]
-        if reporting.get("contract") != STAGE2_BENCHMARK_SUITE_CONTRACT:
-            continue
-        section = reporting["benchmarks"]["stage2_partial_charge"]
-        if section["status"] != "complete":
-            continue
-        metrics = _partial_metrics(candidate.summary)
-        if metrics is None or metrics.get("status") != "complete":
-            continue
-        primary = metrics.get("primary") or {}
-        if not _finite(primary.get("molecule_macro_normalized_mae")):
-            continue
-        model_id = reporting["model_id"]
-        display = reporting["model_display_name"]
-        run = _run_id(model_id, candidate.source_run)
-        for subset in ("all_mapped", "unique", "ambiguous", "typed", "connectivity_only"):
-            value = metrics.get("subsets", {}).get(subset)
-            if not isinstance(value, dict):
-                break
-            metrics_rows.append(
-                {
-                    "run": run, "model": display, "subset": subset,
-                    **{
-                        name: value.get(name)
-                        for name in (
-                            "molecule_count", "atom_count", "molecule_macro_mae",
-                            "molecule_macro_normalized_mae", "atom_micro_mae",
-                            "atom_micro_rmse", "atom_micro_r2", "atom_micro_r2_reason",
-                            "reason",
-                        )
-                    },
-                    "source_run": candidate.source_run,
-                }
-            )
-        else:
-            coverage = metrics.get("coverage", {})
-            leaders.append(
-                {
-                    "run": run, "model": display,
-                    "molecule_macro_normalized_mae": float(
-                        primary["molecule_macro_normalized_mae"]
-                    ),
-                    "molecule_macro_mae": primary["molecule_macro_mae"],
-                    "mapped_molecules": coverage.get("mapped_molecule_count", ""),
-                    "test_molecules": coverage.get("test_molecule_count", ""),
-                    "source_run": candidate.source_run,
-                    "checkpoint_epoch": candidate.summary.get("checkpoint_epoch", ""),
-                }
-            )
-            comparisons.setdefault(
-                _partial_charge_comparison_key(candidate, section), []
-            ).append(run)
-            continue
-        metrics_rows = [row for row in metrics_rows if row["run"] != run]
-    _require_one_comparison(comparisons, "Stage 2 Partial Charge")
-    return _rank(leaders, "molecule_macro_normalized_mae"), sorted(
-        metrics_rows, key=lambda row: (row["run"], row["subset"])
-    )
-
-
-def _stage2_full(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
-    leaders: list[dict[str, Any]] = []
-    comparisons: dict[str, list[str]] = {}
-    for candidate in _current_completed(candidates):
-        summary = candidate.summary
-        reporting = summary["reporting"]
-        if reporting.get("contract") != STAGE2_BENCHMARK_SUITE_CONTRACT:
-            continue
-        section = reporting["benchmarks"]["stage2_physics_full"]
-        if section["status"] != "complete":
-            continue
-        core_section = reporting["benchmarks"]["stage2_core_physics"]
-        partial_section = reporting["benchmarks"]["stage2_partial_charge"]
-        if core_section["status"] != "complete" or partial_section["status"] != "complete":
-            continue
-        expected = tuple(core_section["protocol"]["expected_tasks"])
-        core_metrics = (
-            summary["stage2_physics_benchmark"]["test"]
-            if candidate.metadata["stage"] == "benchmark"
-            else summary["tasks"]
-        )
-        flattened = {
-            task: next(iter(targets.values()))
-            for task, targets in core_metrics.items()
-            if task != "simulation/partial_atomic_charge" and len(targets) == 1
-        }
-        partial = _partial_metrics(summary)
-        primary = None if partial is None else partial.get("primary")
-        if (
-            not expected
-            or any(
-                unit not in flattened
-                or not _finite(flattened[unit].get("normalized_mae"))
-                for unit in expected
-            )
-            or not isinstance(primary, dict)
-            or not _finite(primary.get("molecule_macro_normalized_mae"))
-        ):
-            continue
-        values = [float(flattened[unit]["normalized_mae"]) for unit in expected]
-        values.append(float(primary["molecule_macro_normalized_mae"]))
-        model_id = reporting["model_id"]
-        run = _run_id(model_id, candidate.source_run)
-        leaders.append(
-            {
-                "run": run, "model": reporting["model_display_name"],
-                "macro_normalized_mae": sum(values) / len(values),
-                "valid_units": len(values), "total_units": len(values),
-                "source_run": candidate.source_run,
-                "checkpoint_epoch": summary.get("checkpoint_epoch", ""),
-            }
-        )
-        comparisons.setdefault(
-            _stage2_full_comparison_key(candidate, section, partial_section), []
-        ).append(run)
-    _require_one_comparison(comparisons, "Stage 2 Full physics")
-    return _rank(leaders, "macro_normalized_mae")
 
 
 def _require_one_comparison(groups: Mapping[str, Sequence[str]], label: str) -> None:
@@ -1262,26 +809,19 @@ def _write_csv(path: Path, rows: Sequence[Mapping[str, Any]], fields: Sequence[s
 def _overview(
     stage3_test: Sequence[Mapping[str, Any]],
     stage3_validation: Sequence[Mapping[str, Any]],
-    stage2_core: Sequence[Mapping[str, Any]],
-    stage2_partial: Sequence[Mapping[str, Any]],
-    stage2_full: Sequence[Mapping[str, Any]],
-    stage2_wins: Mapping[str, Sequence[str]],
     health: Sequence[Mapping[str, Any]],
 ) -> str:
     lines = ["# ILUME result overview", ""]
     for title, rows in (
         ("Stage 3 TEST (5-fold ensemble)", stage3_test),
         ("Stage 3 VALIDATION (5-fold mean)", stage3_validation),
-        ("Stage 2 CORE", stage2_core),
-        ("Partial Charge", stage2_partial),
-        ("Stage 2 FULL", stage2_full),
     ):
         lines.extend((f"## {title}", ""))
         if rows:
             for row in rows:
                 lines.append(
                     f"{row['rank']}. {row['model']} — macro normalized MAE "
-                    f"{float(row.get('macro_normalized_mae', row.get('molecule_macro_normalized_mae'))):.6g}"
+                    f"{float(row['macro_normalized_mae']):.6g}"
                 )
         else:
             lines.append("No eligible run.")
@@ -1290,36 +830,14 @@ def _overview(
                 f"Coverage: {rows[0]['total_tasks']} test tasks / "
                 f"{rows[0]['enabled_tasks']} enabled Stage 3 tasks."
             )
-        if title in {"Partial Charge", "Stage 2 FULL"}:
-            not_evaluated = [
-                row["run"] for row in health
-                if row[
-                    "stage2_partial_eligibility"
-                    if title == "Partial Charge" else "stage2_full_eligibility"
-                ] == "not_evaluated"
-            ]
-            not_eligible = [
-                row["run"] for row in health
-                if row[
-                    "stage2_partial_eligibility"
-                    if title == "Partial Charge" else "stage2_full_eligibility"
-                ] == "not_eligible"
-            ]
-            lines.append(
-                "Not evaluated: " + (", ".join(not_evaluated) if not_evaluated else "None")
-            )
-            lines.append(
-                "Not eligible: " + (", ".join(not_eligible) if not_eligible else "None")
-            )
         lines.append("")
-    lines.extend(("## Core task wins", ""))
-    lines.extend(
-        f"- {run}: {len(values)}" for run, values in stage2_wins.items()
-    )
-    if not stage2_wins:
-        lines.append("- None")
-    lines.extend(("", "## Experiment health", ""))
-    icons = {"complete": "✓", "legacy": "⚠", "running": "⚠", "failed": "✗"}
+    lines.extend(("## Experiment health", ""))
+    icons = {
+        "complete": "✓",
+        "legacy": "⚠",
+        "running": "⚠",
+        "failed": "✗",
+    }
     for row in health:
         lines.append(
             f"- {icons.get(str(row['completeness']), '⚠')} {row['run']}: "
@@ -1327,7 +845,6 @@ def _overview(
             + (f" ({row['issues']})" if row["issues"] else "")
         )
     return "\n".join(lines) + "\n"
-
 
 def _radar_score(value: float, best: float) -> float:
     if best == 0.0:
@@ -1342,8 +859,6 @@ def _radar_panel_data(
     task_key: str,
     metric_key: str,
     tasks: Sequence[str] | None = None,
-    partial_rows: Sequence[Mapping[str, Any]] = (),
-    partial_metric_key: str | None = None,
 ) -> tuple[tuple[str, ...], list[dict[str, Any]]]:
     model_by_run = {str(row["run"]): str(row["model"]) for row in leaders}
     ordered_runs = [str(row["run"]) for row in leaders]
@@ -1352,12 +867,6 @@ def _radar_panel_data(
         if row.get("run") not in model_by_run or not _finite(row.get(metric_key)):
             continue
         values[str(row["run"]), str(row[task_key])] = float(row[metric_key])
-    for row in partial_rows:
-        if row.get("run") not in model_by_run or row.get("subset") != "all_mapped":
-            continue
-        value = row.get(partial_metric_key or metric_key)
-        if _finite(value):
-            values[str(row["run"]), "simulation/partial_atomic_charge"] = float(value)
     axes = tuple(tasks) if tasks is not None else tuple(sorted({
         task for run, task in values if run in model_by_run
     }))
@@ -1392,106 +901,165 @@ def _radar_point(center_x: float, center_y: float, radius: float, angle: float) 
 def _radar_svg(payload: Mapping[str, Any]) -> str:
     leaderboards = payload["leaderboards"]
     metrics = payload["metrics"]
-    stage2_tasks = (
-        "simulation/heat_of_vaporization",
-        "simulation/homo",
-        "simulation/lumo",
-        "simulation/partial_atomic_charge",
-    )
     panels = (
         (
-            "stage2_test", "Stage 2 test", *_radar_panel_data(
-                metrics["stage2_core_physics"],
-                leaderboards["stage2_core_physics"],
+            "stage3_test",
+            "Stage 3 test",
+            *_radar_panel_data(
+                metrics["stage3_test"],
+                leaderboards["stage3_test"],
                 task_key="task",
                 metric_key="normalized_mae",
-                tasks=stage2_tasks,
-                partial_rows=metrics["stage2_partial_charge"],
-                partial_metric_key="molecule_macro_normalized_mae",
             ),
         ),
         (
-            "stage3_test", "Stage 3 test", *_radar_panel_data(
-                metrics["stage3_test"], leaderboards["stage3_test"],
-                task_key="task", metric_key="normalized_mae",
-            ),
-        ),
-        (
-            "stage3_validation", "Stage 3 validation", *_radar_panel_data(
-                metrics["stage3_validation"], leaderboards["stage3_validation"],
-                task_key="task", metric_key="normalized_mae_mean",
+            "stage3_validation",
+            "Stage 3 validation",
+            *_radar_panel_data(
+                metrics["stage3_validation"],
+                leaderboards["stage3_validation"],
+                task_key="task",
+                metric_key="normalized_mae_mean",
             ),
         ),
     )
-    palette = ("#0072b2", "#d55e00", "#009e73", "#cc79a7", "#e69f00", "#56b4e9")
-    models = sorted({series["model"] for _, _, _, items in panels for series in items})
-    colors = {model: palette[index % len(palette)] for index, model in enumerate(models)}
-    centers = ((330.0, 570.0), (960.0, 570.0), (1590.0, 570.0))
-    radius = 240.0
+    palette = (
+        "#0072b2",
+        "#d55e00",
+        "#009e73",
+        "#cc79a7",
+        "#e69f00",
+        "#56b4e9",
+    )
+    models = sorted(
+        {
+            series["model"]
+            for _, _, _, items in panels
+            for series in items
+        }
+    )
+    colors = {
+        model: palette[index % len(palette)]
+        for index, model in enumerate(models)
+    }
+    centers = ((330.0, 520.0), (950.0, 520.0))
+    radius = 230.0
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
-        '<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="900" viewBox="0 0 1920 900">',
-        '<rect width="1920" height="900" fill="white"/>',
-        '<text x="960" y="42" text-anchor="middle" font-family="sans-serif" font-size="26" font-weight="bold">ILUME benchmark radar scores</text>',
-        '<text x="960" y="70" text-anchor="middle" font-family="sans-serif" font-size="14">Score = best normalized MAE / model normalized MAE; higher is better. Unsupported Stage 2 partial charge = 0.</text>',
+        '<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="820" viewBox="0 0 1280 820">',
+        '<rect width="1280" height="820" fill="white"/>',
+        '<text x="640" y="42" text-anchor="middle" font-family="sans-serif" font-size="26" font-weight="bold">ILUME benchmark radar scores</text>',
+        '<text x="640" y="70" text-anchor="middle" font-family="sans-serif" font-size="14">Score = best normalized MAE / model normalized MAE; higher is better.</text>',
     ]
-    for (panel_id, title, tasks, series), (center_x, center_y) in zip(panels, centers, strict=True):
+    for (panel_id, title, tasks, series), (
+        center_x,
+        center_y,
+    ) in zip(panels, centers, strict=True):
         lines.append(
-            f'<text x="{center_x:.1f}" y="122" text-anchor="middle" font-family="sans-serif" font-size="20" font-weight="bold">{_svg_text(title)}</text>'
+            f'<text x="{center_x:.1f}" y="112" text-anchor="middle" '
+            f'font-family="sans-serif" font-size="20" font-weight="bold">'
+            f'{_svg_text(title)}</text>'
         )
         if not tasks or not series:
             lines.append(
-                f'<text x="{center_x:.1f}" y="{center_y:.1f}" text-anchor="middle" font-family="sans-serif" font-size="16">No eligible run.</text>'
+                f'<text x="{center_x:.1f}" y="{center_y:.1f}" '
+                f'text-anchor="middle" font-family="sans-serif" '
+                f'font-size="16">No eligible run.</text>'
             )
             continue
-        angles = tuple(2.0 * math.pi * index / len(tasks) for index in range(len(tasks)))
+        angles = tuple(
+            2.0 * math.pi * index / len(tasks)
+            for index in range(len(tasks))
+        )
         for fraction in (0.25, 0.5, 0.75, 1.0):
             points = " ".join(
                 f"{x:.2f},{y:.2f}"
                 for x, y in (
-                    _radar_point(center_x, center_y, radius * fraction, angle)
+                    _radar_point(
+                        center_x,
+                        center_y,
+                        radius * fraction,
+                        angle,
+                    )
                     for angle in angles
                 )
             )
             lines.append(
-                f'<polygon points="{points}" fill="none" stroke="#c7c7c7" stroke-width="1"/>'
+                f'<polygon points="{points}" fill="none" '
+                f'stroke="#c7c7c7" stroke-width="1"/>'
             )
             lines.append(
-                f'<text x="{center_x + 5:.2f}" y="{center_y - radius * fraction + 4:.2f}" font-family="sans-serif" font-size="9" fill="#666">{fraction:g}</text>'
+                f'<text x="{center_x + 5:.2f}" '
+                f'y="{center_y - radius * fraction + 4:.2f}" '
+                f'font-family="sans-serif" font-size="9" '
+                f'fill="#666">{fraction:g}</text>'
             )
         lines.append(
-            f'<text x="{center_x + 5:.2f}" y="{center_y + 4:.2f}" font-family="sans-serif" font-size="9" fill="#666">0</text>'
+            f'<text x="{center_x + 5:.2f}" y="{center_y + 4:.2f}" '
+            f'font-family="sans-serif" font-size="9" fill="#666">0</text>'
         )
         for task, angle in zip(tasks, angles, strict=True):
             x, y = _radar_point(center_x, center_y, radius, angle)
-            label_x, label_y = _radar_point(center_x, center_y, radius + 24.0, angle)
-            anchor = "middle" if abs(math.sin(angle)) < 0.2 else ("start" if math.sin(angle) > 0 else "end")
+            label_x, label_y = _radar_point(
+                center_x, center_y, radius + 24.0, angle
+            )
+            anchor = (
+                "middle"
+                if abs(math.sin(angle)) < 0.2
+                else "start"
+                if math.sin(angle) > 0
+                else "end"
+            )
             label = task.rsplit("/", 1)[-1].replace("_", " ")
-            lines.extend((
-                f'<line x1="{center_x:.2f}" y1="{center_y:.2f}" x2="{x:.2f}" y2="{y:.2f}" stroke="#c7c7c7" stroke-width="1"/>',
-                f'<text x="{label_x:.2f}" y="{label_y:.2f}" text-anchor="{anchor}" font-family="sans-serif" font-size="10">{_svg_text(label)}</text>',
-            ))
+            lines.extend(
+                (
+                    f'<line x1="{center_x:.2f}" y1="{center_y:.2f}" '
+                    f'x2="{x:.2f}" y2="{y:.2f}" stroke="#c7c7c7" '
+                    f'stroke-width="1"/>',
+                    f'<text x="{label_x:.2f}" y="{label_y:.2f}" '
+                    f'text-anchor="{anchor}" font-family="sans-serif" '
+                    f'font-size="10">{_svg_text(label)}</text>',
+                )
+            )
         for index, series_item in enumerate(series):
             points = " ".join(
                 f"{x:.2f},{y:.2f}"
                 for x, y in (
-                    _radar_point(center_x, center_y, radius * score, angle)
-                    for score, angle in zip(series_item["scores"], angles, strict=True)
+                    _radar_point(
+                        center_x,
+                        center_y,
+                        radius * score,
+                        angle,
+                    )
+                    for score, angle in zip(
+                        series_item["scores"], angles, strict=True
+                    )
                 )
             )
-            score_text = ",".join(f"{score:.6g}" for score in series_item["scores"])
+            score_text = ",".join(
+                f"{score:.6g}" for score in series_item["scores"]
+            )
             color = colors[series_item["model"]]
             lines.append(
-                f'<polygon class="series" data-panel="{panel_id}" data-run="{_svg_text(series_item["run"])}" data-scores="{score_text}" points="{points}" fill="{color}" fill-opacity="0.12" stroke="{color}" stroke-width="2"/>'
+                f'<polygon class="series" data-panel="{panel_id}" '
+                f'data-run="{_svg_text(series_item["run"])}" '
+                f'data-scores="{score_text}" points="{points}" '
+                f'fill="{color}" fill-opacity="0.12" stroke="{color}" '
+                f'stroke-width="2"/>'
             )
-            legend_y = 160 + index * 20
-            lines.extend((
-                f'<line x1="{center_x - radius:.1f}" y1="{legend_y}" x2="{center_x - radius + 18:.1f}" y2="{legend_y}" stroke="{color}" stroke-width="3"/>',
-                f'<text x="{center_x - radius + 24:.1f}" y="{legend_y + 4}" font-family="sans-serif" font-size="12">{_svg_text(series_item["model"])}</text>',
-            ))
+            legend_y = 145 + index * 20
+            lines.extend(
+                (
+                    f'<line x1="{center_x - radius:.1f}" y1="{legend_y}" '
+                    f'x2="{center_x - radius + 18:.1f}" y2="{legend_y}" '
+                    f'stroke="{color}" stroke-width="3"/>',
+                    f'<text x="{center_x - radius + 24:.1f}" '
+                    f'y="{legend_y + 4}" font-family="sans-serif" '
+                    f'font-size="12">{_svg_text(series_item["model"])}</text>',
+                )
+            )
     lines.append("</svg>")
     return "\n".join(lines) + "\n"
-
 
 def build_summary(
     input_roots: Path | Sequence[Path],
@@ -1503,38 +1071,37 @@ def build_summary(
         input_roots, repository_root, include_roots=include_roots
     )
     health = _health(candidates)
-    stage3_test, stage3_test_metrics, test_wins = _stage3_test(candidates)
-    stage3_validation, stage3_validation_metrics = _stage3_validation(candidates)
-    stage2_core, stage2_core_metrics, stage2_wins = _stage2_core(candidates)
-    stage2_partial, stage2_partial_metrics = _stage2_partial(candidates)
-    stage2_full = _stage2_full(candidates)
+    stage3_test, stage3_test_metrics, test_wins = _stage3_test(
+        candidates
+    )
+    stage3_validation, stage3_validation_metrics = _stage3_validation(
+        candidates
+    )
     return {
         "schema_version": SUMMARY_SCHEMA_VERSION,
         "inputs": sorted(
             {
-                candidate.metadata.get("semantic_identity", {}).get("hash", "")
+                candidate.metadata.get("semantic_identity", {}).get(
+                    "hash", ""
+                )
                 for candidate in candidates
-                if candidate.metadata.get("semantic_identity", {}).get("hash")
+                if candidate.metadata.get("semantic_identity", {}).get(
+                    "hash"
+                )
             }
         ),
         "comparison_identities": _comparison_catalog(candidates),
         "leaderboards": {
             "stage3_test": stage3_test,
             "stage3_validation": stage3_validation,
-            "stage2_core_physics": stage2_core,
-            "stage2_partial_charge": stage2_partial,
-            "stage2_physics_full": stage2_full,
         },
         "metrics": {
             "stage3_test": stage3_test_metrics,
             "stage3_validation": stage3_validation_metrics,
-            "stage2_core_physics": stage2_core_metrics,
-            "stage2_partial_charge": stage2_partial_metrics,
         },
-        "wins": {"stage3_test": test_wins, "stage2_core_physics": stage2_wins},
+        "wins": {"stage3_test": test_wins},
         "health": health,
     }
-
 
 def _comparison_catalog(
     candidates: Sequence[Candidate],
@@ -1542,34 +1109,28 @@ def _comparison_catalog(
     catalog: dict[str, dict[str, dict[str, Any]]] = {
         "stage3_test": {},
         "stage3_validation": {},
-        "stage2_core_physics": {},
-        "stage2_partial_charge": {},
-        "stage2_physics_full": {},
     }
     sources: dict[tuple[str, str], list[str]] = {}
     for candidate in _current_completed(candidates):
         reporting = candidate.summary["reporting"]
-        sections: Iterable[tuple[str, Mapping[str, Any]]]
         if candidate.metadata["stage"] == "benchmark":
             sections = (
-                reporting["benchmarks"].items()
-                if reporting.get("contract") == STAGE2_BENCHMARK_SUITE_CONTRACT
-                else (
-                    ("stage3_test", reporting["benchmarks"]["stage3_test"]),
-                    ("stage3_validation", reporting["benchmarks"]["stage3_validation"]),
-                )
+                (
+                    "stage3_test",
+                    reporting["benchmarks"]["stage3_test"],
+                ),
+                (
+                    "stage3_validation",
+                    reporting["benchmarks"]["stage3_validation"],
+                ),
             )
-        elif candidate.metadata["stage"] == "stage3":
+        else:
             name = (
                 "stage3_test"
                 if candidate.summary.get("split") == "test"
                 else "stage3_validation"
             )
             sections = ((name, reporting),)
-        elif reporting.get("contract") == STAGE2_BENCHMARK_SUITE_CONTRACT:
-            sections = reporting["benchmarks"].items()
-        else:
-            sections = ()
         for name, section in sections:
             if section.get("status") in {"unsupported", "incomplete"}:
                 continue
@@ -1578,10 +1139,13 @@ def _comparison_catalog(
             existing = catalog[name].get(identity_hash)
             if existing is not None and existing != identity:
                 raise ValueError(
-                    f"Comparison identity hash collision in {name}: {identity_hash}"
+                    f"Comparison identity hash collision in {name}: "
+                    f"{identity_hash}"
                 )
             catalog[name][identity_hash] = dict(identity)
-            sources.setdefault((name, identity_hash), []).append(candidate.source_run)
+            sources.setdefault((name, identity_hash), []).append(
+                candidate.source_run
+            )
     return {
         name: [
             {
@@ -1593,77 +1157,115 @@ def _comparison_catalog(
         for name, values in catalog.items()
     }
 
-
-def write_summary_snapshot(payload: Mapping[str, Any], destination: Path) -> None:
+def write_summary_snapshot(
+    payload: Mapping[str, Any], destination: Path
+) -> None:
     destination.mkdir(parents=True, exist_ok=False)
     leaderboards = payload["leaderboards"]
     metrics = payload["metrics"]
     _write_csv(
         destination / "stage3_test_leaderboard.csv",
         leaderboards["stage3_test"],
-        ("rank", "run", "model", "macro_normalized_mae", "valid_tasks", "total_tasks", "per_task_wins", "source_run", "checkpoint_epoch"),
+        (
+            "rank",
+            "run",
+            "model",
+            "macro_normalized_mae",
+            "valid_tasks",
+            "total_tasks",
+            "per_task_wins",
+            "source_run",
+            "checkpoint_epoch",
+        ),
     )
     _write_csv(
         destination / "stage3_validation_leaderboard.csv",
         leaderboards["stage3_validation"],
-        ("rank", "run", "model", "macro_normalized_mae", "valid_tasks", "total_tasks", "per_task_wins", "source_run", "checkpoint_epoch"),
-    )
-    _write_csv(
-        destination / "stage2_core_physics_leaderboard.csv",
-        leaderboards["stage2_core_physics"],
-        ("rank", "run", "model", "macro_normalized_mae", "valid_tasks", "total_tasks", "per_task_wins", "source_run", "checkpoint_epoch"),
-    )
-    _write_csv(
-        destination / "stage2_partial_charge_leaderboard.csv",
-        leaderboards["stage2_partial_charge"],
-        ("rank", "run", "model", "molecule_macro_normalized_mae", "molecule_macro_mae", "mapped_molecules", "test_molecules", "source_run", "checkpoint_epoch"),
-    )
-    _write_csv(
-        destination / "stage2_physics_full_leaderboard.csv",
-        leaderboards["stage2_physics_full"],
-        ("rank", "run", "model", "macro_normalized_mae", "valid_units", "total_units", "source_run", "checkpoint_epoch"),
+        (
+            "rank",
+            "run",
+            "model",
+            "macro_normalized_mae",
+            "valid_tasks",
+            "total_tasks",
+            "per_task_wins",
+            "source_run",
+            "checkpoint_epoch",
+        ),
     )
     _write_csv(
         destination / "stage3_test_metrics.csv",
         metrics["stage3_test"],
-        ("run", "model", "task", "count", "mae", "rmse", "r2", "normalized_mae", "normalized_rmse", "source_run"),
+        (
+            "run",
+            "model",
+            "task",
+            "count",
+            "mae",
+            "rmse",
+            "r2",
+            "normalized_mae",
+            "normalized_rmse",
+            "source_run",
+        ),
     )
     _write_csv(
         destination / "stage3_validation_metrics.csv",
         metrics["stage3_validation"],
-        ("run", "model", "task", "mae_mean", "mae_std", "rmse_mean", "rmse_std", "r2_mean", "r2_std", "normalized_mae_mean", "normalized_mae_std", "normalized_rmse_mean", "normalized_rmse_std", "source_run"),
-    )
-    _write_csv(
-        destination / "stage2_core_physics_metrics.csv",
-        metrics["stage2_core_physics"],
-        ("run", "model", "task", "target", "subset", "count", "mae", "rmse", "r2", "normalized_mae", "normalized_rmse", "source_run"),
-    )
-    _write_csv(
-        destination / "stage2_partial_charge_metrics.csv",
-        metrics["stage2_partial_charge"],
-        ("run", "model", "subset", "molecule_count", "atom_count", "molecule_macro_mae", "molecule_macro_normalized_mae", "atom_micro_mae", "atom_micro_rmse", "atom_micro_r2", "atom_micro_r2_reason", "reason", "source_run"),
+        (
+            "run",
+            "model",
+            "task",
+            "mae_mean",
+            "mae_std",
+            "rmse_mean",
+            "rmse_std",
+            "r2_mean",
+            "r2_std",
+            "normalized_mae_mean",
+            "normalized_mae_std",
+            "normalized_rmse_mean",
+            "normalized_rmse_std",
+            "source_run",
+        ),
     )
     _write_csv(
         destination / "sweep_status.csv",
         payload["health"],
-        ("run", "model", "stage", "operation", "status", "completeness", "checkpoint_epoch", "enabled_tasks", "expected_tasks", "available_tasks", "available_folds", "failed_jobs", "stage2_core_eligibility", "stage2_partial_eligibility", "stage2_full_eligibility", "source_run", "issues"),
+        (
+            "run",
+            "model",
+            "stage",
+            "operation",
+            "status",
+            "completeness",
+            "checkpoint_epoch",
+            "enabled_tasks",
+            "expected_tasks",
+            "available_tasks",
+            "available_folds",
+            "failed_jobs",
+            "source_run",
+            "issues",
+        ),
     )
     (destination / "overview.md").write_text(
         _overview(
-            leaderboards["stage3_test"], leaderboards["stage3_validation"],
-            leaderboards["stage2_core_physics"],
-            leaderboards["stage2_partial_charge"],
-            leaderboards["stage2_physics_full"],
-            payload["wins"]["stage2_core_physics"], payload["health"],
+            leaderboards["stage3_test"],
+            leaderboards["stage3_validation"],
+            payload["health"],
         ),
         encoding="utf-8",
     )
-    (destination / "radar.svg").write_text(_radar_svg(payload), encoding="utf-8")
+    (destination / "radar.svg").write_text(
+        _radar_svg(payload), encoding="utf-8"
+    )
     atomic_json(destination / "summary.json", payload)
     actual = tuple(sorted(path.name for path in destination.iterdir()))
     if actual != tuple(sorted(SUMMARY_FILES)):
-        raise AssertionError(f"Summary snapshot file set mismatch: {actual}")
-
+        raise AssertionError(
+            f"Summary snapshot file set mismatch: {actual}"
+        )
 
 def publish_summary(
     input_roots: Path | Sequence[Path],

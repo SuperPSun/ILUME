@@ -13,7 +13,6 @@
     "c953300403171c751e76efc5167b06343a7acffc35c862c0b444e120507d1563",
     "cabc0bc0f7b763fe9b9ba1361e0d6b3309460e476f991c810c77e0713e2e75e9",
     "cf0574ec6b9fdcd71fb57dc5bba486d2a157d895b887c6017b60f82a93fbf9d4",
-    "e6536fa195bf08577a83b2e8b069814f823469d5d3c5ce770e295aea5e18fb07",
     "e7b7e8b5111aeb29b4e430f82b6aa4f360873b6e6d07067876d7cf33b24af90f"
   ],
   "comparison_identities": {
@@ -1514,172 +1513,6 @@
           "outputs/v1/stage3/base/evaluate/fold5"
         ]
       }
-    ],
-    "stage2_core_physics": [
-      {
-        "identity": {
-          "identity_contract_version": 1,
-          "type": "reporting.comparison.v1",
-          "payload": {
-            "benchmark": "stage2_physics",
-            "split": "test",
-            "expected": [
-              "simulation/heat_of_vaporization",
-              "simulation/homo",
-              "simulation/lumo"
-            ],
-            "sources": {
-              "simulation/heat_of_vaporization:train": "066a640276f823c8fc12abee56e0d6e682f676559e031bed84ef5d4050960ee2",
-              "simulation/heat_of_vaporization:test": "75e54d3f89c74386a13f91764451ecfd8d5b2ae29bc0c883dffc427ee13c034a",
-              "simulation/homo:train": "44b4326633257c9ede278be2fd6fc528445d7c3531ad2277aa0bde713d75d77d",
-              "simulation/homo:test": "fe5cb73a0a53b49070494162854a0a67f5905c02e47099739ff52166152e660b",
-              "simulation/lumo:train": "431b2f98782f0efd66507c88d34a51682f8a7deabae51187ab9ee9e3f8e0c761",
-              "simulation/lumo:test": "49c48a6e64c7db92493512cb7342a9f9f9bc46ea27706a213d20d828e341668f"
-            },
-            "normalization": {
-              "simulation/heat_of_vaporization": {
-                "scale": 27.824443512
-              },
-              "simulation/homo": {
-                "scale": 3.60067202043
-              },
-              "simulation/lumo": {
-                "scale": 3.6988644728
-              }
-            },
-            "folds": [],
-            "ensemble": false
-          },
-          "hash": "349e1002d831c32da11e360e0a49638879be41f8367ccf587bc055c4e57a0e53"
-        },
-        "source_runs": [
-          "outputs/benchmarks/v1/dmpnn",
-          "outputs/benchmarks/v1/ecfp_xgboost",
-          "outputs/benchmarks/v1/ilbert",
-          "outputs/benchmarks/v1/mlp",
-          "outputs/benchmarks/v1/molformer",
-          "outputs/benchmarks/v1/spmm",
-          "outputs/v1/stage2/base/evaluate"
-        ]
-      }
-    ],
-    "stage2_partial_charge": [
-      {
-        "identity": {
-          "identity_contract_version": 1,
-          "type": "reporting.comparison.v1",
-          "payload": {
-            "benchmark": "stage2_partial_charge",
-            "split": "test",
-            "expected": [
-              "simulation/partial_atomic_charge::molecule_macro_normalized_mae"
-            ],
-            "sources": {
-              "simulation/partial_atomic_charge:test": "19784c28622e3b759f4d6ddeffca8141956c909af5045480886bdbb71124c5db",
-              "simulation/partial_atomic_charge:structure_manifest": "ea4dfe3eb6bef53df969fea444cae0ce2f9005d12f87225656c29d174535d9a1",
-              "simulation/partial_atomic_charge:mapping_contract": "eb5c0f886dced6d7c81d3f881afb18e8a4fbf544e1a1030c10c49c30e82cc64a",
-              "simulation/partial_atomic_charge:mapping_audit": "db4b76b401804baee1ea49394ada4dd6dc04d9fa94eb937380ae7664cf7b4be5",
-              "simulation/partial_atomic_charge:evaluated_subset": "a0e66171c0295f0f1529eabc99c565440f50257f89d5a60bdd4b272d5e82fcb4"
-            },
-            "normalization": {
-              "simulation/partial_atomic_charge::molecule_macro_normalized_mae": {
-                "scale": 0.440673876326,
-                "weighting": "molecule_equal"
-              }
-            },
-            "folds": [],
-            "ensemble": false
-          },
-          "hash": "47f11c6f20e5c1a28c82e6388749d1ab9339e5791797a20e666bf55f50dc45e5"
-        },
-        "source_runs": [
-          "outputs/v1/stage2/base/evaluate"
-        ]
-      },
-      {
-        "identity": {
-          "identity_contract_version": 1,
-          "type": "reporting.comparison.v1",
-          "payload": {
-            "benchmark": "stage2_partial_charge",
-            "split": "test",
-            "expected": [
-              "simulation/partial_atomic_charge::molecule_macro_normalized_mae"
-            ],
-            "sources": {
-              "simulation/partial_atomic_charge:test": "19784c28622e3b759f4d6ddeffca8141956c909af5045480886bdbb71124c5db",
-              "simulation/partial_atomic_charge:structure_manifest": "ea4dfe3eb6bef53df969fea444cae0ce2f9005d12f87225656c29d174535d9a1",
-              "simulation/partial_atomic_charge:mapping_contract": "eb5c0f886dced6d7c81d3f881afb18e8a4fbf544e1a1030c10c49c30e82cc64a",
-              "simulation/partial_atomic_charge:mapping_audit": "1f3652c2a4c900c5fa22d6eddd30b45336c0ca5565a84688b50880d4c4934bca",
-              "simulation/partial_atomic_charge:evaluated_subset": "a6dd927600120e2b8a074c78ba8cc11948f6b7a7bf87f007d4aadf50d4e091d1"
-            },
-            "normalization": {
-              "simulation/partial_atomic_charge::molecule_macro_normalized_mae": {
-                "scale": 0.440673876326,
-                "weighting": "molecule_equal"
-              }
-            },
-            "folds": [],
-            "ensemble": false
-          },
-          "hash": "7b63e6f879e56361baf80b7711bc3e515e4926a9ee0245e488740513c01b15c9"
-        },
-        "source_runs": [
-          "outputs/benchmarks/v1/dmpnn"
-        ]
-      }
-    ],
-    "stage2_physics_full": [
-      {
-        "identity": {
-          "identity_contract_version": 1,
-          "type": "reporting.comparison.v1",
-          "payload": {
-            "benchmark": "stage2_physics_full",
-            "split": "test",
-            "component_hashes": {
-              "stage2_core_physics": "349e1002d831c32da11e360e0a49638879be41f8367ccf587bc055c4e57a0e53",
-              "stage2_partial_charge": "47f11c6f20e5c1a28c82e6388749d1ab9339e5791797a20e666bf55f50dc45e5"
-            },
-            "ordered_units": [
-              "simulation/heat_of_vaporization",
-              "simulation/homo",
-              "simulation/lumo",
-              "simulation/partial_atomic_charge::molecule_macro_normalized_mae"
-            ],
-            "unit_weighting": "equal"
-          },
-          "hash": "1fae1c892c233bc314917b5d428e47c7d289b4a50488092ecd5b433475f60f36"
-        },
-        "source_runs": [
-          "outputs/v1/stage2/base/evaluate"
-        ]
-      },
-      {
-        "identity": {
-          "identity_contract_version": 1,
-          "type": "reporting.comparison.v1",
-          "payload": {
-            "benchmark": "stage2_physics_full",
-            "split": "test",
-            "component_hashes": {
-              "stage2_core_physics": "349e1002d831c32da11e360e0a49638879be41f8367ccf587bc055c4e57a0e53",
-              "stage2_partial_charge": "7b63e6f879e56361baf80b7711bc3e515e4926a9ee0245e488740513c01b15c9"
-            },
-            "ordered_units": [
-              "simulation/heat_of_vaporization",
-              "simulation/homo",
-              "simulation/lumo",
-              "simulation/partial_atomic_charge::molecule_macro_normalized_mae"
-            ],
-            "unit_weighting": "equal"
-          },
-          "hash": "acb2259655ef2ba57e556e61b8669209a62338bb7563416abc712596f5f6bfb9"
-        },
-        "source_runs": [
-          "outputs/benchmarks/v1/dmpnn"
-        ]
-      }
     ]
   },
   "leaderboards": {
@@ -1869,131 +1702,6 @@
         "source_run": "outputs/benchmarks/v1/molformer",
         "checkpoint_epoch": "",
         "rank": 8
-      }
-    ],
-    "stage2_core_physics": [
-      {
-        "run": "dmpnn@outputs/benchmarks/v1/dmpnn",
-        "model": "D-MPNN",
-        "macro_normalized_mae": 0.057051479117753746,
-        "valid_tasks": 3,
-        "total_tasks": 3,
-        "per_task_wins": 2,
-        "source_run": "outputs/benchmarks/v1/dmpnn",
-        "checkpoint_epoch": "",
-        "rank": 1
-      },
-      {
-        "run": "spmm@outputs/benchmarks/v1/spmm",
-        "model": "SPMM",
-        "macro_normalized_mae": 0.058257007426434054,
-        "valid_tasks": 3,
-        "total_tasks": 3,
-        "per_task_wins": 0,
-        "source_run": "outputs/benchmarks/v1/spmm",
-        "checkpoint_epoch": "",
-        "rank": 2
-      },
-      {
-        "run": "ilbert@outputs/benchmarks/v1/ilbert",
-        "model": "ILBERT",
-        "macro_normalized_mae": 0.06103424620094303,
-        "valid_tasks": 3,
-        "total_tasks": 3,
-        "per_task_wins": 1,
-        "source_run": "outputs/benchmarks/v1/ilbert",
-        "checkpoint_epoch": "",
-        "rank": 3
-      },
-      {
-        "run": "mlp@outputs/benchmarks/v1/mlp",
-        "model": "MLP",
-        "macro_normalized_mae": 0.06765150811346712,
-        "valid_tasks": 3,
-        "total_tasks": 3,
-        "per_task_wins": 0,
-        "source_run": "outputs/benchmarks/v1/mlp",
-        "checkpoint_epoch": "",
-        "rank": 4
-      },
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate",
-        "model": "ILUME",
-        "macro_normalized_mae": 0.08831408282931452,
-        "valid_tasks": 3,
-        "total_tasks": 3,
-        "per_task_wins": 0,
-        "source_run": "outputs/v1/stage2/base/evaluate",
-        "checkpoint_epoch": null,
-        "rank": 5
-      },
-      {
-        "run": "molformer@outputs/benchmarks/v1/molformer",
-        "model": "MoLFormer-XL-both-10pct",
-        "macro_normalized_mae": 0.0936611555818158,
-        "valid_tasks": 3,
-        "total_tasks": 3,
-        "per_task_wins": 0,
-        "source_run": "outputs/benchmarks/v1/molformer",
-        "checkpoint_epoch": "",
-        "rank": 6
-      },
-      {
-        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
-        "model": "ECFP+XGBoost",
-        "macro_normalized_mae": 0.13470258857254386,
-        "valid_tasks": 3,
-        "total_tasks": 3,
-        "per_task_wins": 0,
-        "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
-        "checkpoint_epoch": "",
-        "rank": 7
-      }
-    ],
-    "stage2_partial_charge": [
-      {
-        "run": "dmpnn@outputs/benchmarks/v1/dmpnn",
-        "model": "D-MPNN",
-        "molecule_macro_normalized_mae": 0.12221771844764738,
-        "molecule_macro_mae": 0.05385815574399768,
-        "mapped_molecules": 2842,
-        "test_molecules": 2854,
-        "source_run": "outputs/benchmarks/v1/dmpnn",
-        "checkpoint_epoch": "",
-        "rank": 1
-      },
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate",
-        "model": "ILUME",
-        "molecule_macro_normalized_mae": 0.14158688144835105,
-        "molecule_macro_mae": 0.06239363988470049,
-        "mapped_molecules": 2842,
-        "test_molecules": 2854,
-        "source_run": "outputs/v1/stage2/base/evaluate",
-        "checkpoint_epoch": null,
-        "rank": 2
-      }
-    ],
-    "stage2_physics_full": [
-      {
-        "run": "dmpnn@outputs/benchmarks/v1/dmpnn",
-        "model": "D-MPNN",
-        "macro_normalized_mae": 0.07334303895022716,
-        "valid_units": 4,
-        "total_units": 4,
-        "source_run": "outputs/benchmarks/v1/dmpnn",
-        "checkpoint_epoch": "",
-        "rank": 1
-      },
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate",
-        "model": "ILUME",
-        "macro_normalized_mae": 0.10163228248407366,
-        "valid_units": 4,
-        "total_units": 4,
-        "source_run": "outputs/v1/stage2/base/evaluate",
-        "checkpoint_epoch": null,
-        "rank": 2
       }
     ]
   },
@@ -5745,734 +5453,6 @@
         "normalized_rmse_mean": 0.684121059752256,
         "normalized_rmse_std": 0.07803188651208247
       }
-    ],
-    "stage2_core_physics": [
-      {
-        "run": "dmpnn@outputs/benchmarks/v1/dmpnn",
-        "model": "D-MPNN",
-        "task": "simulation/heat_of_vaporization",
-        "target": "heat_of_vaporization_kJ/mol",
-        "subset": "pooled",
-        "count": 2684,
-        "mae": 2.0280425004148204,
-        "rmse": 2.8604762875950547,
-        "r2": 0.9898580874832241,
-        "normalized_mae": 0.07288708216347504,
-        "normalized_rmse": 0.10280443834779965,
-        "source_run": "outputs/benchmarks/v1/dmpnn"
-      },
-      {
-        "run": "dmpnn@outputs/benchmarks/v1/dmpnn",
-        "model": "D-MPNN",
-        "task": "simulation/homo",
-        "target": "HOMO_eV",
-        "subset": "anion",
-        "count": 744,
-        "mae": 0.14579218809581307,
-        "source_run": "outputs/benchmarks/v1/dmpnn"
-      },
-      {
-        "run": "dmpnn@outputs/benchmarks/v1/dmpnn",
-        "model": "D-MPNN",
-        "task": "simulation/homo",
-        "target": "HOMO_eV",
-        "subset": "cation",
-        "count": 917,
-        "mae": 0.2263435817378553,
-        "source_run": "outputs/benchmarks/v1/dmpnn"
-      },
-      {
-        "run": "dmpnn@outputs/benchmarks/v1/dmpnn",
-        "model": "D-MPNN",
-        "task": "simulation/homo",
-        "target": "HOMO_eV",
-        "subset": "pooled",
-        "count": 1661,
-        "mae": 0.19026276483859014,
-        "rmse": 0.2559431574343751,
-        "r2": 0.9948865837164073,
-        "normalized_mae": 0.05284090407539881,
-        "normalized_rmse": 0.07108205245633771,
-        "source_run": "outputs/benchmarks/v1/dmpnn"
-      },
-      {
-        "run": "dmpnn@outputs/benchmarks/v1/dmpnn",
-        "model": "D-MPNN",
-        "task": "simulation/lumo",
-        "target": "LUMO_eV",
-        "subset": "anion",
-        "count": 744,
-        "mae": 0.1591929754380659,
-        "source_run": "outputs/benchmarks/v1/dmpnn"
-      },
-      {
-        "run": "dmpnn@outputs/benchmarks/v1/dmpnn",
-        "model": "D-MPNN",
-        "task": "simulation/lumo",
-        "target": "LUMO_eV",
-        "subset": "cation",
-        "count": 917,
-        "mae": 0.17519311621938322,
-        "source_run": "outputs/benchmarks/v1/dmpnn"
-      },
-      {
-        "run": "dmpnn@outputs/benchmarks/v1/dmpnn",
-        "model": "D-MPNN",
-        "task": "simulation/lumo",
-        "target": "LUMO_eV",
-        "subset": "pooled",
-        "count": 1661,
-        "mae": 0.16802628615237536,
-        "rmse": 0.2243587970677657,
-        "r2": 0.9963241302835318,
-        "normalized_mae": 0.04542645111438739,
-        "normalized_rmse": 0.06065612804081809,
-        "source_run": "outputs/benchmarks/v1/dmpnn"
-      },
-      {
-        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
-        "model": "ECFP+XGBoost",
-        "task": "simulation/heat_of_vaporization",
-        "target": "heat_of_vaporization_kJ/mol",
-        "subset": "pooled",
-        "count": 2684,
-        "mae": 5.6614555401635345,
-        "rmse": 9.5359103703066,
-        "r2": 0.8872886953236472,
-        "normalized_mae": 0.20347057570852525,
-        "normalized_rmse": 0.3427170202408998,
-        "source_run": "outputs/benchmarks/v1/ecfp_xgboost"
-      },
-      {
-        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
-        "model": "ECFP+XGBoost",
-        "task": "simulation/homo",
-        "target": "HOMO_eV",
-        "subset": "anion",
-        "count": 744,
-        "mae": 0.2741569086700482,
-        "source_run": "outputs/benchmarks/v1/ecfp_xgboost"
-      },
-      {
-        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
-        "model": "ECFP+XGBoost",
-        "task": "simulation/homo",
-        "target": "HOMO_eV",
-        "subset": "cation",
-        "count": 917,
-        "mae": 0.4733949380878851,
-        "source_run": "outputs/benchmarks/v1/ecfp_xgboost"
-      },
-      {
-        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
-        "model": "ECFP+XGBoost",
-        "task": "simulation/homo",
-        "target": "HOMO_eV",
-        "subset": "pooled",
-        "count": 1661,
-        "mae": 0.3841516545918763,
-        "rmse": 0.5911888126062096,
-        "r2": 0.9727179803344413,
-        "normalized_mae": 0.10668887707963094,
-        "normalized_rmse": 0.16418846516750285,
-        "source_run": "outputs/benchmarks/v1/ecfp_xgboost"
-      },
-      {
-        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
-        "model": "ECFP+XGBoost",
-        "task": "simulation/lumo",
-        "target": "LUMO_eV",
-        "subset": "anion",
-        "count": 744,
-        "mae": 0.2694680622361275,
-        "source_run": "outputs/benchmarks/v1/ecfp_xgboost"
-      },
-      {
-        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
-        "model": "ECFP+XGBoost",
-        "task": "simulation/lumo",
-        "target": "LUMO_eV",
-        "subset": "cation",
-        "count": 917,
-        "mae": 0.4108142983103888,
-        "source_run": "outputs/benchmarks/v1/ecfp_xgboost"
-      },
-      {
-        "run": "ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost",
-        "model": "ECFP+XGBoost",
-        "task": "simulation/lumo",
-        "target": "LUMO_eV",
-        "subset": "pooled",
-        "count": 1661,
-        "mae": 0.34750207697429586,
-        "rmse": 0.5456975912391558,
-        "r2": 0.9782540703736791,
-        "normalized_mae": 0.09394831292947536,
-        "normalized_rmse": 0.14753111265688726,
-        "source_run": "outputs/benchmarks/v1/ecfp_xgboost"
-      },
-      {
-        "run": "ilbert@outputs/benchmarks/v1/ilbert",
-        "model": "ILBERT",
-        "task": "simulation/heat_of_vaporization",
-        "target": "heat_of_vaporization_kJ/mol",
-        "subset": "pooled",
-        "count": 2684,
-        "mae": 1.9404793408619998,
-        "rmse": 2.79232730727944,
-        "r2": 0.9903355798292677,
-        "normalized_mae": 0.06974009525195102,
-        "normalized_rmse": 0.10035518971193266,
-        "source_run": "outputs/benchmarks/v1/ilbert"
-      },
-      {
-        "run": "ilbert@outputs/benchmarks/v1/ilbert",
-        "model": "ILBERT",
-        "task": "simulation/homo",
-        "target": "HOMO_eV",
-        "subset": "anion",
-        "count": 744,
-        "mae": 0.1813895458438855,
-        "source_run": "outputs/benchmarks/v1/ilbert"
-      },
-      {
-        "run": "ilbert@outputs/benchmarks/v1/ilbert",
-        "model": "ILBERT",
-        "task": "simulation/homo",
-        "target": "HOMO_eV",
-        "subset": "cation",
-        "count": 917,
-        "mae": 0.21133377084173974,
-        "source_run": "outputs/benchmarks/v1/ilbert"
-      },
-      {
-        "run": "ilbert@outputs/benchmarks/v1/ilbert",
-        "model": "ILBERT",
-        "task": "simulation/homo",
-        "target": "HOMO_eV",
-        "subset": "pooled",
-        "count": 1661,
-        "mae": 0.19792106560489245,
-        "rmse": 0.2749646116033156,
-        "r2": 0.994098292115373,
-        "normalized_mae": 0.05496781280878149,
-        "normalized_rmse": 0.07636480358196267,
-        "source_run": "outputs/benchmarks/v1/ilbert"
-      },
-      {
-        "run": "ilbert@outputs/benchmarks/v1/ilbert",
-        "model": "ILBERT",
-        "task": "simulation/lumo",
-        "target": "LUMO_eV",
-        "subset": "anion",
-        "count": 744,
-        "mae": 0.23328600288203258,
-        "source_run": "outputs/benchmarks/v1/ilbert"
-      },
-      {
-        "run": "ilbert@outputs/benchmarks/v1/ilbert",
-        "model": "ILBERT",
-        "task": "simulation/lumo",
-        "target": "LUMO_eV",
-        "subset": "cation",
-        "count": 917,
-        "mae": 0.20196530513063932,
-        "source_run": "outputs/benchmarks/v1/ilbert"
-      },
-      {
-        "run": "ilbert@outputs/benchmarks/v1/ilbert",
-        "model": "ILBERT",
-        "task": "simulation/lumo",
-        "target": "LUMO_eV",
-        "subset": "pooled",
-        "count": 1661,
-        "mae": 0.21599456408731413,
-        "rmse": 0.28996218804462315,
-        "r2": 0.9938601658337377,
-        "normalized_mae": 0.058394830542096585,
-        "normalized_rmse": 0.07839221744319716,
-        "source_run": "outputs/benchmarks/v1/ilbert"
-      },
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate",
-        "model": "ILUME",
-        "task": "simulation/heat_of_vaporization",
-        "target": "heat_of_vaporization_kJ/mol",
-        "subset": "pooled",
-        "count": 2684,
-        "mae": 3.6861633107413883,
-        "rmse": 5.038494151831594,
-        "r2": 0.9685337728277741,
-        "normalized_mae": 0.13247931837870244,
-        "normalized_rmse": 0.1810815784923746,
-        "source_run": "outputs/v1/stage2/base/evaluate"
-      },
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate",
-        "model": "ILUME",
-        "task": "simulation/homo",
-        "target": "HOMO_eV",
-        "subset": "anion",
-        "count": 744,
-        "mae": 0.18717216191027736,
-        "source_run": "outputs/v1/stage2/base/evaluate"
-      },
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate",
-        "model": "ILUME",
-        "task": "simulation/homo",
-        "target": "HOMO_eV",
-        "subset": "cation",
-        "count": 917,
-        "mae": 0.28733764123455685,
-        "source_run": "outputs/v1/stage2/base/evaluate"
-      },
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate",
-        "model": "ILUME",
-        "task": "simulation/homo",
-        "target": "HOMO_eV",
-        "subset": "pooled",
-        "count": 1661,
-        "mae": 0.24247122545053282,
-        "rmse": 0.3158036776809023,
-        "r2": 0.9922150026328599,
-        "normalized_mae": 0.06734054756297393,
-        "normalized_rmse": 0.0877068713531598,
-        "source_run": "outputs/v1/stage2/base/evaluate"
-      },
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate",
-        "model": "ILUME",
-        "task": "simulation/lumo",
-        "target": "LUMO_eV",
-        "subset": "anion",
-        "count": 744,
-        "mae": 0.22019818926614168,
-        "source_run": "outputs/v1/stage2/base/evaluate"
-      },
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate",
-        "model": "ILUME",
-        "task": "simulation/lumo",
-        "target": "LUMO_eV",
-        "subset": "cation",
-        "count": 917,
-        "mae": 0.25765795592079216,
-        "source_run": "outputs/v1/stage2/base/evaluate"
-      },
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate",
-        "model": "ILUME",
-        "task": "simulation/lumo",
-        "target": "LUMO_eV",
-        "subset": "pooled",
-        "count": 1661,
-        "mae": 0.24087886718445264,
-        "rmse": 0.31294197477258195,
-        "r2": 0.9928484275566622,
-        "normalized_mae": 0.06512238254626722,
-        "normalized_rmse": 0.08460487727351687,
-        "source_run": "outputs/v1/stage2/base/evaluate"
-      },
-      {
-        "run": "mlp@outputs/benchmarks/v1/mlp",
-        "model": "MLP",
-        "task": "simulation/heat_of_vaporization",
-        "target": "heat_of_vaporization_kJ/mol",
-        "subset": "pooled",
-        "count": 2684,
-        "mae": 2.1076093920421632,
-        "rmse": 3.026044250962918,
-        "r2": 0.9886500563517432,
-        "normalized_mae": 0.07574668622322638,
-        "normalized_rmse": 0.10875488847256987,
-        "source_run": "outputs/benchmarks/v1/mlp"
-      },
-      {
-        "run": "mlp@outputs/benchmarks/v1/mlp",
-        "model": "MLP",
-        "task": "simulation/homo",
-        "target": "HOMO_eV",
-        "subset": "anion",
-        "count": 744,
-        "mae": 0.18427873391917685,
-        "source_run": "outputs/benchmarks/v1/mlp"
-      },
-      {
-        "run": "mlp@outputs/benchmarks/v1/mlp",
-        "model": "MLP",
-        "task": "simulation/homo",
-        "target": "HOMO_eV",
-        "subset": "cation",
-        "count": 917,
-        "mae": 0.2974268654473661,
-        "source_run": "outputs/benchmarks/v1/mlp"
-      },
-      {
-        "run": "mlp@outputs/benchmarks/v1/mlp",
-        "model": "MLP",
-        "task": "simulation/homo",
-        "target": "HOMO_eV",
-        "subset": "pooled",
-        "count": 1661,
-        "mae": 0.2467452219452753,
-        "rmse": 0.3261783823047139,
-        "r2": 0.9916950991385789,
-        "normalized_mae": 0.06852754723150535,
-        "normalized_rmse": 0.09058819588506441,
-        "source_run": "outputs/benchmarks/v1/mlp"
-      },
-      {
-        "run": "mlp@outputs/benchmarks/v1/mlp",
-        "model": "MLP",
-        "task": "simulation/lumo",
-        "target": "LUMO_eV",
-        "subset": "anion",
-        "count": 744,
-        "mae": 0.17347528479109775,
-        "source_run": "outputs/benchmarks/v1/mlp"
-      },
-      {
-        "run": "mlp@outputs/benchmarks/v1/mlp",
-        "model": "MLP",
-        "task": "simulation/lumo",
-        "target": "LUMO_eV",
-        "subset": "cation",
-        "count": 917,
-        "mae": 0.25240477021608104,
-        "source_run": "outputs/benchmarks/v1/mlp"
-      },
-      {
-        "run": "mlp@outputs/benchmarks/v1/mlp",
-        "model": "MLP",
-        "task": "simulation/lumo",
-        "target": "LUMO_eV",
-        "subset": "pooled",
-        "count": 1661,
-        "mae": 0.21705044321054973,
-        "rmse": 0.2999596252363076,
-        "r2": 0.9934294835133154,
-        "normalized_mae": 0.05868029088566965,
-        "normalized_rmse": 0.08109505699441694,
-        "source_run": "outputs/benchmarks/v1/mlp"
-      },
-      {
-        "run": "molformer@outputs/benchmarks/v1/molformer",
-        "model": "MoLFormer-XL-both-10pct",
-        "task": "simulation/heat_of_vaporization",
-        "target": "heat_of_vaporization_kJ/mol",
-        "subset": "pooled",
-        "count": 2684,
-        "mae": 2.404799572112924,
-        "rmse": 3.297318857297468,
-        "r2": 0.986523874439656,
-        "normalized_mae": 0.08642758914738345,
-        "normalized_rmse": 0.11850439545613968,
-        "source_run": "outputs/benchmarks/v1/molformer"
-      },
-      {
-        "run": "molformer@outputs/benchmarks/v1/molformer",
-        "model": "MoLFormer-XL-both-10pct",
-        "task": "simulation/homo",
-        "target": "HOMO_eV",
-        "subset": "anion",
-        "count": 744,
-        "mae": 0.3349989577460225,
-        "source_run": "outputs/benchmarks/v1/molformer"
-      },
-      {
-        "run": "molformer@outputs/benchmarks/v1/molformer",
-        "model": "MoLFormer-XL-both-10pct",
-        "task": "simulation/homo",
-        "target": "HOMO_eV",
-        "subset": "cation",
-        "count": 917,
-        "mae": 0.3687960365731006,
-        "source_run": "outputs/benchmarks/v1/molformer"
-      },
-      {
-        "run": "molformer@outputs/benchmarks/v1/molformer",
-        "model": "MoLFormer-XL-both-10pct",
-        "task": "simulation/homo",
-        "target": "HOMO_eV",
-        "subset": "pooled",
-        "count": 1661,
-        "mae": 0.3536575497294244,
-        "rmse": 0.4601790314815595,
-        "r2": 0.9834698134443091,
-        "normalized_mae": 0.09821987332438249,
-        "normalized_rmse": 0.1278036513379577,
-        "source_run": "outputs/benchmarks/v1/molformer"
-      },
-      {
-        "run": "molformer@outputs/benchmarks/v1/molformer",
-        "model": "MoLFormer-XL-both-10pct",
-        "task": "simulation/lumo",
-        "target": "LUMO_eV",
-        "subset": "anion",
-        "count": 744,
-        "mae": 0.36330453716151706,
-        "source_run": "outputs/benchmarks/v1/molformer"
-      },
-      {
-        "run": "molformer@outputs/benchmarks/v1/molformer",
-        "model": "MoLFormer-XL-both-10pct",
-        "task": "simulation/lumo",
-        "target": "LUMO_eV",
-        "subset": "cation",
-        "count": 917,
-        "mae": 0.35067819569256203,
-        "source_run": "outputs/benchmarks/v1/molformer"
-      },
-      {
-        "run": "molformer@outputs/benchmarks/v1/molformer",
-        "model": "MoLFormer-XL-both-10pct",
-        "task": "simulation/lumo",
-        "target": "LUMO_eV",
-        "subset": "pooled",
-        "count": 1661,
-        "mae": 0.35633382365939076,
-        "rmse": 0.47545256446136214,
-        "r2": 0.9834922344160125,
-        "normalized_mae": 0.09633600427368143,
-        "normalized_rmse": 0.12854014196997626,
-        "source_run": "outputs/benchmarks/v1/molformer"
-      },
-      {
-        "run": "spmm@outputs/benchmarks/v1/spmm",
-        "model": "SPMM",
-        "task": "simulation/heat_of_vaporization",
-        "target": "heat_of_vaporization_kJ/mol",
-        "subset": "pooled",
-        "count": 2684,
-        "mae": 1.9457129844647663,
-        "rmse": 2.827982194070632,
-        "r2": 0.9900871964964922,
-        "normalized_mae": 0.06992819042806846,
-        "normalized_rmse": 0.10163661288849206,
-        "source_run": "outputs/benchmarks/v1/spmm"
-      },
-      {
-        "run": "spmm@outputs/benchmarks/v1/spmm",
-        "model": "SPMM",
-        "task": "simulation/homo",
-        "target": "HOMO_eV",
-        "subset": "anion",
-        "count": 744,
-        "mae": 0.15223759985963167,
-        "source_run": "outputs/benchmarks/v1/spmm"
-      },
-      {
-        "run": "spmm@outputs/benchmarks/v1/spmm",
-        "model": "SPMM",
-        "task": "simulation/homo",
-        "target": "HOMO_eV",
-        "subset": "cation",
-        "count": 917,
-        "mae": 0.22172950128165905,
-        "source_run": "outputs/benchmarks/v1/spmm"
-      },
-      {
-        "run": "spmm@outputs/benchmarks/v1/spmm",
-        "model": "SPMM",
-        "task": "simulation/homo",
-        "target": "HOMO_eV",
-        "subset": "pooled",
-        "count": 1661,
-        "mae": 0.1906024846302513,
-        "rmse": 0.257605792256436,
-        "r2": 0.9948199333070824,
-        "normalized_mae": 0.05293525307184544,
-        "normalized_rmse": 0.07154380926524075,
-        "source_run": "outputs/benchmarks/v1/spmm"
-      },
-      {
-        "run": "spmm@outputs/benchmarks/v1/spmm",
-        "model": "SPMM",
-        "task": "simulation/lumo",
-        "target": "LUMO_eV",
-        "subset": "anion",
-        "count": 744,
-        "mae": 0.15363974133547578,
-        "source_run": "outputs/benchmarks/v1/spmm"
-      },
-      {
-        "run": "spmm@outputs/benchmarks/v1/spmm",
-        "model": "SPMM",
-        "task": "simulation/lumo",
-        "target": "LUMO_eV",
-        "subset": "cation",
-        "count": 917,
-        "mae": 0.22312163131100426,
-        "source_run": "outputs/benchmarks/v1/spmm"
-      },
-      {
-        "run": "spmm@outputs/benchmarks/v1/spmm",
-        "model": "SPMM",
-        "task": "simulation/lumo",
-        "target": "LUMO_eV",
-        "subset": "pooled",
-        "count": 1661,
-        "mae": 0.19199909901612575,
-        "rmse": 0.2590421200849423,
-        "r2": 0.9950997901792294,
-        "normalized_mae": 0.051907578779388265,
-        "normalized_rmse": 0.07003287684365418,
-        "source_run": "outputs/benchmarks/v1/spmm"
-      }
-    ],
-    "stage2_partial_charge": [
-      {
-        "run": "dmpnn@outputs/benchmarks/v1/dmpnn",
-        "model": "D-MPNN",
-        "subset": "all_mapped",
-        "molecule_count": 2842,
-        "atom_count": 68920,
-        "molecule_macro_mae": 0.05385815574399768,
-        "molecule_macro_normalized_mae": 0.12221771844764738,
-        "atom_micro_mae": 0.0546055704215145,
-        "atom_micro_rmse": 0.0812428814301332,
-        "atom_micro_r2": 0.9644927710285603,
-        "atom_micro_r2_reason": null,
-        "reason": null,
-        "source_run": "outputs/benchmarks/v1/dmpnn"
-      },
-      {
-        "run": "dmpnn@outputs/benchmarks/v1/dmpnn",
-        "model": "D-MPNN",
-        "subset": "ambiguous",
-        "molecule_count": 2179,
-        "atom_count": 56199,
-        "molecule_macro_mae": 0.05423423337381422,
-        "molecule_macro_normalized_mae": 0.12307113329708731,
-        "atom_micro_mae": 0.054754510950571454,
-        "atom_micro_rmse": 0.08148991693918081,
-        "atom_micro_r2": 0.9647410194757987,
-        "atom_micro_r2_reason": null,
-        "reason": null,
-        "source_run": "outputs/benchmarks/v1/dmpnn"
-      },
-      {
-        "run": "dmpnn@outputs/benchmarks/v1/dmpnn",
-        "model": "D-MPNN",
-        "subset": "connectivity_only",
-        "molecule_count": 1775,
-        "atom_count": 44194,
-        "molecule_macro_mae": 0.05525488337064136,
-        "molecule_macro_normalized_mae": 0.12538724516951646,
-        "atom_micro_mae": 0.05586225095238694,
-        "atom_micro_rmse": 0.08332056869237206,
-        "atom_micro_r2": 0.9644011205384548,
-        "atom_micro_r2_reason": null,
-        "reason": null,
-        "source_run": "outputs/benchmarks/v1/dmpnn"
-      },
-      {
-        "run": "dmpnn@outputs/benchmarks/v1/dmpnn",
-        "model": "D-MPNN",
-        "subset": "typed",
-        "molecule_count": 1067,
-        "atom_count": 24726,
-        "molecule_macro_mae": 0.05153463977652577,
-        "molecule_macro_normalized_mae": 0.11694507558793076,
-        "atom_micro_mae": 0.05235944329293016,
-        "atom_micro_rmse": 0.0773905077722187,
-        "atom_micro_r2": 0.9646810913437559,
-        "atom_micro_r2_reason": null,
-        "reason": null,
-        "source_run": "outputs/benchmarks/v1/dmpnn"
-      },
-      {
-        "run": "dmpnn@outputs/benchmarks/v1/dmpnn",
-        "model": "D-MPNN",
-        "subset": "unique",
-        "molecule_count": 663,
-        "atom_count": 12721,
-        "molecule_macro_mae": 0.0526221479681753,
-        "molecule_macro_normalized_mae": 0.11941290554126786,
-        "atom_micro_mae": 0.0539475790063371,
-        "atom_micro_rmse": 0.0801424123255565,
-        "atom_micro_r2": 0.9633106279049013,
-        "atom_micro_r2_reason": null,
-        "reason": null,
-        "source_run": "outputs/benchmarks/v1/dmpnn"
-      },
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate",
-        "model": "ILUME",
-        "subset": "all_mapped",
-        "molecule_count": 2842,
-        "atom_count": 68920,
-        "molecule_macro_mae": 0.06239363988470049,
-        "molecule_macro_normalized_mae": 0.14158688144835105,
-        "atom_micro_mae": 0.06390035057718506,
-        "atom_micro_rmse": 0.09264186212170375,
-        "atom_micro_r2": 0.9538299126318033,
-        "atom_micro_r2_reason": null,
-        "reason": null,
-        "source_run": "outputs/v1/stage2/base/evaluate"
-      },
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate",
-        "model": "ILUME",
-        "subset": "ambiguous",
-        "molecule_count": 2179,
-        "atom_count": 56199,
-        "molecule_macro_mae": 0.06276714883540221,
-        "molecule_macro_normalized_mae": 0.14243446731801065,
-        "atom_micro_mae": 0.06413153816761943,
-        "atom_micro_rmse": 0.0930431175337927,
-        "atom_micro_r2": 0.9540346567210559,
-        "atom_micro_r2_reason": null,
-        "reason": null,
-        "source_run": "outputs/v1/stage2/base/evaluate"
-      },
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate",
-        "model": "ILUME",
-        "subset": "connectivity_only",
-        "molecule_count": 1775,
-        "atom_count": 44194,
-        "molecule_macro_mae": 0.06404604915686973,
-        "molecule_macro_normalized_mae": 0.145336614212061,
-        "atom_micro_mae": 0.0656538182978509,
-        "atom_micro_rmse": 0.09528134999652624,
-        "atom_micro_r2": 0.9534469992133763,
-        "atom_micro_r2_reason": null,
-        "reason": null,
-        "source_run": "outputs/v1/stage2/base/evaluate"
-      },
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate",
-        "model": "ILUME",
-        "subset": "typed",
-        "molecule_count": 1067,
-        "atom_count": 24726,
-        "molecule_macro_mae": 0.05964478659688378,
-        "molecule_macro_normalized_mae": 0.13534904109634988,
-        "atom_micro_mae": 0.060766291188399685,
-        "atom_micro_rmse": 0.08772657371000331,
-        "atom_micro_r2": 0.9546168936741735,
-        "atom_micro_r2_reason": null,
-        "reason": null,
-        "source_run": "outputs/v1/stage2/base/evaluate"
-      },
-      {
-        "run": "ilume@outputs/v1/stage2/base/evaluate",
-        "model": "ILUME",
-        "subset": "unique",
-        "molecule_count": 663,
-        "atom_count": 12721,
-        "molecule_macro_mae": 0.061166074268442436,
-        "molecule_macro_normalized_mae": 0.13880122592800656,
-        "atom_micro_mae": 0.06287900701969568,
-        "atom_micro_rmse": 0.09084798382007715,
-        "atom_micro_r2": 0.9528538705052279,
-        "atom_micro_r2_reason": null,
-        "reason": null,
-        "source_run": "outputs/v1/stage2/base/evaluate"
-      }
     ]
   },
   "wins": {
@@ -6494,15 +5474,6 @@
         "experiment/melting_point",
         "experiment/thermal_decomposition_temperature"
       ]
-    },
-    "stage2_core_physics": {
-      "dmpnn@outputs/benchmarks/v1/dmpnn": [
-        "simulation/homo",
-        "simulation/lumo"
-      ],
-      "ilbert@outputs/benchmarks/v1/ilbert": [
-        "simulation/heat_of_vaporization"
-      ]
     }
   },
   "health": [
@@ -6515,13 +5486,10 @@
       "completeness": "complete",
       "checkpoint_epoch": "",
       "enabled_tasks": "",
-      "expected_tasks": "stage2_core_physics:3;stage2_partial_charge:0;stage2_physics_full:0;stage3_test:11;stage3_validation:21",
-      "available_tasks": "stage3_test:21;stage3_validation:21;stage2_physics:3",
+      "expected_tasks": "stage3_test:11;stage3_validation:21",
+      "available_tasks": "stage3_test:21;stage3_validation:21",
       "available_folds": "1;2;3;4;5",
       "failed_jobs": 0,
-      "stage2_core_eligibility": "eligible",
-      "stage2_partial_eligibility": "eligible",
-      "stage2_full_eligibility": "eligible",
       "source_run": "outputs/benchmarks/v1/dmpnn",
       "issues": ""
     },
@@ -6534,13 +5502,10 @@
       "completeness": "complete",
       "checkpoint_epoch": "",
       "enabled_tasks": "",
-      "expected_tasks": "stage2_core_physics:3;stage2_partial_charge:0;stage2_physics_full:0;stage3_test:11;stage3_validation:21",
-      "available_tasks": "stage3_test:21;stage3_validation:21;stage2_physics:3",
+      "expected_tasks": "stage3_test:11;stage3_validation:21",
+      "available_tasks": "stage3_test:21;stage3_validation:21",
       "available_folds": "1;2;3;4;5",
       "failed_jobs": 0,
-      "stage2_core_eligibility": "eligible",
-      "stage2_partial_eligibility": "not_evaluated",
-      "stage2_full_eligibility": "not_evaluated",
       "source_run": "outputs/benchmarks/v1/ecfp_xgboost",
       "issues": ""
     },
@@ -6553,33 +5518,11 @@
       "completeness": "complete",
       "checkpoint_epoch": "",
       "enabled_tasks": "",
-      "expected_tasks": "stage2_core_physics:3;stage2_partial_charge:0;stage2_physics_full:0;stage3_test:11;stage3_validation:21",
-      "available_tasks": "stage3_test:21;stage3_validation:21;stage2_physics:3",
+      "expected_tasks": "stage3_test:11;stage3_validation:21",
+      "available_tasks": "stage3_test:21;stage3_validation:21",
       "available_folds": "1;2;3;4;5",
       "failed_jobs": 0,
-      "stage2_core_eligibility": "eligible",
-      "stage2_partial_eligibility": "not_evaluated",
-      "stage2_full_eligibility": "not_evaluated",
       "source_run": "outputs/benchmarks/v1/ilbert",
-      "issues": ""
-    },
-    {
-      "run": "ilume@outputs/v1/stage2/base/evaluate",
-      "model": "ILUME",
-      "stage": "stage2",
-      "operation": "evaluate",
-      "status": "completed",
-      "completeness": "complete",
-      "checkpoint_epoch": null,
-      "enabled_tasks": "",
-      "expected_tasks": 3,
-      "available_tasks": 4,
-      "available_folds": "",
-      "failed_jobs": "",
-      "stage2_core_eligibility": "eligible",
-      "stage2_partial_eligibility": "eligible",
-      "stage2_full_eligibility": "eligible",
-      "source_run": "outputs/v1/stage2/base/evaluate",
       "issues": ""
     },
     {
@@ -6595,9 +5538,6 @@
       "available_tasks": 21,
       "available_folds": "1",
       "failed_jobs": "",
-      "stage2_core_eligibility": "",
-      "stage2_partial_eligibility": "",
-      "stage2_full_eligibility": "",
       "source_run": "outputs/v1/stage3/base/evaluate/fold1",
       "issues": ""
     },
@@ -6614,9 +5554,6 @@
       "available_tasks": 21,
       "available_folds": "2",
       "failed_jobs": "",
-      "stage2_core_eligibility": "",
-      "stage2_partial_eligibility": "",
-      "stage2_full_eligibility": "",
       "source_run": "outputs/v1/stage3/base/evaluate/fold2",
       "issues": ""
     },
@@ -6633,9 +5570,6 @@
       "available_tasks": 21,
       "available_folds": "3",
       "failed_jobs": "",
-      "stage2_core_eligibility": "",
-      "stage2_partial_eligibility": "",
-      "stage2_full_eligibility": "",
       "source_run": "outputs/v1/stage3/base/evaluate/fold3",
       "issues": ""
     },
@@ -6652,9 +5586,6 @@
       "available_tasks": 21,
       "available_folds": "4",
       "failed_jobs": "",
-      "stage2_core_eligibility": "",
-      "stage2_partial_eligibility": "",
-      "stage2_full_eligibility": "",
       "source_run": "outputs/v1/stage3/base/evaluate/fold4",
       "issues": ""
     },
@@ -6671,9 +5602,6 @@
       "available_tasks": 21,
       "available_folds": "5",
       "failed_jobs": "",
-      "stage2_core_eligibility": "",
-      "stage2_partial_eligibility": "",
-      "stage2_full_eligibility": "",
       "source_run": "outputs/v1/stage3/base/evaluate/fold5",
       "issues": ""
     },
@@ -6690,9 +5618,6 @@
       "available_tasks": 11,
       "available_folds": "1;2;3;4;5",
       "failed_jobs": "",
-      "stage2_core_eligibility": "",
-      "stage2_partial_eligibility": "",
-      "stage2_full_eligibility": "",
       "source_run": "outputs/v1/stage3/base/test",
       "issues": ""
     },
@@ -6709,9 +5634,6 @@
       "available_tasks": "stage3_test:21;stage3_validation:21",
       "available_folds": "1;2;3;4;5",
       "failed_jobs": 0,
-      "stage2_core_eligibility": "",
-      "stage2_partial_eligibility": "",
-      "stage2_full_eligibility": "",
       "source_run": "outputs/benchmarks/v1/ilume_stage3_single_task_mlp",
       "issues": ""
     },
@@ -6724,13 +5646,10 @@
       "completeness": "complete",
       "checkpoint_epoch": "",
       "enabled_tasks": "",
-      "expected_tasks": "stage2_core_physics:3;stage2_partial_charge:0;stage2_physics_full:0;stage3_test:11;stage3_validation:21",
-      "available_tasks": "stage3_test:21;stage3_validation:21;stage2_physics:3",
+      "expected_tasks": "stage3_test:11;stage3_validation:21",
+      "available_tasks": "stage3_test:21;stage3_validation:21",
       "available_folds": "1;2;3;4;5",
       "failed_jobs": 0,
-      "stage2_core_eligibility": "eligible",
-      "stage2_partial_eligibility": "not_evaluated",
-      "stage2_full_eligibility": "not_evaluated",
       "source_run": "outputs/benchmarks/v1/mlp",
       "issues": ""
     },
@@ -6743,13 +5662,10 @@
       "completeness": "complete",
       "checkpoint_epoch": "",
       "enabled_tasks": "",
-      "expected_tasks": "stage2_core_physics:3;stage2_partial_charge:0;stage2_physics_full:0;stage3_test:11;stage3_validation:21",
-      "available_tasks": "stage3_test:21;stage3_validation:21;stage2_physics:3",
+      "expected_tasks": "stage3_test:11;stage3_validation:21",
+      "available_tasks": "stage3_test:21;stage3_validation:21",
       "available_folds": "1;2;3;4;5",
       "failed_jobs": 0,
-      "stage2_core_eligibility": "eligible",
-      "stage2_partial_eligibility": "not_evaluated",
-      "stage2_full_eligibility": "not_evaluated",
       "source_run": "outputs/benchmarks/v1/molformer",
       "issues": ""
     },
@@ -6762,13 +5678,10 @@
       "completeness": "complete",
       "checkpoint_epoch": "",
       "enabled_tasks": "",
-      "expected_tasks": "stage2_core_physics:3;stage2_partial_charge:0;stage2_physics_full:0;stage3_test:11;stage3_validation:21",
-      "available_tasks": "stage3_test:21;stage3_validation:21;stage2_physics:3",
+      "expected_tasks": "stage3_test:11;stage3_validation:21",
+      "available_tasks": "stage3_test:21;stage3_validation:21",
       "available_folds": "1;2;3;4;5",
       "failed_jobs": 0,
-      "stage2_core_eligibility": "eligible",
-      "stage2_partial_eligibility": "not_evaluated",
-      "stage2_full_eligibility": "not_evaluated",
       "source_run": "outputs/benchmarks/v1/spmm",
       "issues": ""
     }

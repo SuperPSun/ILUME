@@ -1295,6 +1295,18 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
             data_identity=data_identity,
             refinement_state=refinement_state,
         )
+    if refinement_epochs == 0:
+        final = {
+            "event": "stage2_training_complete",
+            "final_epoch": boundary_epoch,
+            "final_validation": validation,
+            "stage2_encoder": {
+                "artifact": encoder_path.name,
+                "artifact_sha256": sha256_file(encoder_path),
+            },
+        }
+        atomic_json(output / "final_metrics.json", final)
+        return results
     for task_id in refinement_tasks:
         model.task_head_module(task_id).load_state_dict(
             refinement_state["selected_tasks"][task_id]["best_state"], strict=True

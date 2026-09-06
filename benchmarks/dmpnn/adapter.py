@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import csv
 import json
-import math
 import os
 import sys
 import tempfile
@@ -12,7 +10,6 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 import torch
-from rdkit import Chem
 import logging
 import warnings
 
@@ -31,18 +28,6 @@ warnings.filterwarnings(
 from common.identity import require_compatible_identity, semantic_identity, tensor_state_hash
 from common.io import atomic_json, sha256_file
 from common.outputs import repository_path
-from stage2.atom_evaluation import (
-    PARTIAL_CHARGE_TASK,
-    PartialChargeBenchmark,
-    build_partial_charge_benchmark,
-    score_partial_charge_predictions,
-)
-from stage2.atom_targets import PARTIAL_CHARGE_MAPPING_CONTRACT
-from stage2.config import load_stage2_config
-from stage2.data import Stage2TaskDataset
-from stage2.registry import ORBITAL_TASK_TARGETS
-from common.reporting import role_mae_diagnostics
-
 from benchmarks.common.config import BenchmarkConfig, BenchmarkName
 from benchmarks.common.data import BenchmarkTask, RawDataset, load_split, resolve_task
 from benchmarks.common.engine import EvaluationResult, TargetStats
@@ -109,26 +94,10 @@ class DMPNNTrainingBundle:
     component_count: int
 
 
-@dataclass
-class PartialEvaluationResult:
-    benchmark: PartialChargeBenchmark
-    predictions: dict[str, np.ndarray]
-    score: dict[str, Any]
-    training_identity: dict[str, Any]
-
-
 def _lock_sha(config: BenchmarkConfig) -> str:
     if config.environment is None:
         raise ValueError("D-MPNN environment contract is missing")
     return sha256_file(repository_path(config.environment.lock))
-
-
-def _target_stats(values: Mapping[str, Any]) -> TargetStats:
-    mean = float(values["mean"])
-    scale = float(values["scale"])
-    if not math.isfinite(mean) or not math.isfinite(scale) or scale <= 0:
-        raise ValueError("D-MPNN target scaler must be finite and positive")
-    return TargetStats((mean,), (scale,))
 
 
 def _scalar_dataset(
@@ -228,142 +197,6 @@ def _prepare_scalar(
     )
 
 
-def _source_rows(path: Path) -> dict[int, dict[str, str]]:
-    with path.open(newline="", encoding="utf-8-sig") as handle:
-        reader = csv.DictReader(handle)
-        required = {"mol_id", "SMILES", "role", "formal_charge", "source_list"}
-        missing = required - set(reader.fieldnames or ())
-        if missing:
-            raise ValueError(f"Partial-charge source missing columns: {sorted(missing)}")
-        return {index: dict(row) for index, row in enumerate(reader, start=2)}
-
-
-def _mapping_audit(path: Path) -> dict[str, dict[str, str]]:
-    with path.open(newline="", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle)
-        required = {"mol_id", "canonical_smiles", "model_atom_count", "status"}
-        missing = required - set(reader.fieldnames or ())
-        if missing:
-            raise ValueError(f"Partial-charge mapping audit missing columns: {sorted(missing)}")
-        rows: dict[str, dict[str, str]] = {}
-        for row in reader:
-            mol_id = row["mol_id"].strip()
-            if not mol_id or mol_id in rows:
-                raise ValueError("Partial-charge mapping audit has invalid mol_id values")
-            rows[mol_id] = dict(row)
-    if not rows:
-        raise ValueError("Partial-charge mapping audit is empty")
-    return rows
-
-
-def _partial_dataset(
-    dataset: Stage2TaskDataset, source_path: Path, audit_path: Path
-) -> Any:
-    from chemprop.data import MolAtomBondDatapoint, MolAtomBondDataset
-
-    rows = _source_rows(source_path)
-    audit = _mapping_audit(audit_path)
-    datapoints = []
-    for index, (source_row, mol_id) in enumerate(
-        zip(dataset.source_rows.tolist(), dataset.mol_ids, strict=True)
-    ):
-        row = rows.get(int(source_row))
-        if row is None or row["mol_id"].strip() != mol_id:
-            raise ValueError("Partial-charge prepared/source row identity mismatch")
-        audit_row = audit.get(mol_id)
-        if audit_row is None or audit_row["status"] != "mapped":
-            raise ValueError("Partial-charge retained row lacks a mapped audit record")
-        canonical = audit_row["canonical_smiles"].strip()
-        molecule = Chem.MolFromSmiles(canonical)
-        if molecule is None:
-            raise ValueError(f"Invalid prepared canonical SMILES for mol_id={mol_id}")
-        start = int(dataset.atom_target_offsets[index])
-        end = int(dataset.atom_target_offsets[index + 1])
-        values = dataset.atom_target_values[start:end].float().numpy().copy()
-        mask = dataset.atom_target_mask[start:end].numpy()
-        values[~mask] = np.nan
-        if (
-            molecule.GetNumAtoms() != len(values)
-            or int(audit_row["model_atom_count"]) != len(values)
-        ):
-            raise ValueError("Partial-charge prepared atom order/count mismatch")
-        datapoints.append(
-            MolAtomBondDatapoint.from_smi(
-                canonical,
-                atom_y=values.reshape(-1, 1),
-                reorder_atoms=False,
-                name=mol_id,
-            )
-        )
-    return MolAtomBondDataset(datapoints)
-
-
-def _prepare_partial(config: BenchmarkConfig) -> DMPNNTrainingBundle:
-    if config.data.stage2_authority_config is None:
-        raise ValueError("D-MPNN Partial Charge requires Stage 2 authority")
-    authority_path = config.data.stage2_authority_config
-    authority = load_stage2_config(authority_path)
-    if authority.data.data_root != config.data.data_root:
-        raise ValueError("D-MPNN and Stage 2 authority data roots differ")
-    if authority.data.task_catalog_path != config.data.task_catalog:
-        raise ValueError("D-MPNN and Stage 2 authority task catalogs differ")
-    task = resolve_task(config, "stage2_physics", PARTIAL_CHARGE_TASK, None)
-    train_artifact = Stage2TaskDataset(
-        authority.data.artifacts_dir, PARTIAL_CHARGE_TASK, "train"
-    )
-    valid_artifact = Stage2TaskDataset(
-        authority.data.artifacts_dir, PARTIAL_CHARGE_TASK, "valid"
-    )
-    scalers_path = authority.data.artifacts_dir / "scalers.json"
-    scalers = json.loads(scalers_path.read_text(encoding="utf-8"))
-    stats_payload = scalers[PARTIAL_CHARGE_TASK]["targets"][task.target_columns[0]]
-    if stats_payload.get("weighting") != "molecule_equal":
-        raise ValueError("Partial-charge scaler must use molecule_equal weighting")
-    target_stats = _target_stats(stats_payload)
-    condition_stats = ConditionStats((), ())
-    train_source = task.train_paths[0]
-    valid_source = task.valid_paths[0]
-    metadata_path = authority.data.artifacts_dir / "metadata.json"
-    audit_path = authority.data.artifacts_dir / "partial_charge_mapping_audit.csv"
-    source_hashes = {
-        "stage2_authority_config": sha256_file(authority_path),
-        "prepared_metadata": sha256_file(metadata_path),
-        "scalers": sha256_file(scalers_path),
-        "prepared_train": sha256_file(
-            authority.data.artifacts_dir / f"tasks/{PARTIAL_CHARGE_TASK}/train.pt"
-        ),
-        "prepared_valid": sha256_file(
-            authority.data.artifacts_dir / f"tasks/{PARTIAL_CHARGE_TASK}/valid.pt"
-        ),
-        "prepared_mapping_audit": sha256_file(audit_path),
-        "train_source": sha256_file(train_source),
-        "valid_source": sha256_file(valid_source),
-        "mapping_contract": PARTIAL_CHARGE_MAPPING_CONTRACT["hash"],
-    }
-    identity = semantic_identity(
-        "benchmark.training.v1",
-        _identity_payload(
-            config,
-            task,
-            target_stats,
-            condition_stats,
-            source_hashes,
-            target_level="atom",
-        ),
-    )
-    return DMPNNTrainingBundle(
-        task=task,
-        train_dataset=_partial_dataset(train_artifact, train_source, audit_path),
-        valid_dataset=_partial_dataset(valid_artifact, valid_source, audit_path),
-        target_stats=target_stats,
-        condition_stats=condition_stats,
-        source_hashes=source_hashes,
-        training_identity=identity,
-        target_level="atom",
-        component_count=1,
-    )
-
-
 def prepare_dmpnn_training(
     config: BenchmarkConfig,
     benchmark: BenchmarkName,
@@ -372,10 +205,6 @@ def prepare_dmpnn_training(
 ) -> DMPNNTrainingBundle:
     if config.name != "dmpnn":
         raise ValueError("D-MPNN adapter requires name=dmpnn")
-    if task_id == PARTIAL_CHARGE_TASK:
-        if benchmark != "stage2_physics" or fold is not None:
-            raise ValueError("Partial Charge is a non-folded Stage 2 benchmark")
-        return _prepare_partial(config)
     return _prepare_scalar(config, benchmark, task_id, fold)
 
 
@@ -386,10 +215,9 @@ def _output_transform(stats: TargetStats) -> Any:
 
 
 def build_dmpnn_model(config: BenchmarkConfig, bundle: DMPNNTrainingBundle) -> Any:
-    from chemprop.models import MPNN, MolAtomBondMPNN, MulticomponentMPNN
+    from chemprop.models import MPNN, MulticomponentMPNN
     from chemprop.nn import (
         BondMessagePassing,
-        MABBondMessagePassing,
         MulticomponentMessagePassing,
         NormAggregation,
         RegressionFFN,
@@ -417,20 +245,6 @@ def build_dmpnn_model(config: BenchmarkConfig, bundle: DMPNNTrainingBundle) -> A
         "max_lr": float(training["max_learning_rate"]),
         "final_lr": float(training["final_learning_rate"]),
     }
-    if bundle.target_level == "atom":
-        message_passing = MABBondMessagePassing(
-            **message_kwargs, return_edge_embeddings=False
-        )
-        predictor = RegressionFFN(
-            input_dim=int(message_passing.output_dims[0]), **predictor_kwargs
-        )
-        return MolAtomBondMPNN(
-            message_passing,
-            atom_predictor=predictor,
-            batch_norm=bool(model["batch_norm"]),
-            metrics=[MAE()],
-            **schedule,
-        )
     shared = bool(model["multicomponent_shared"])
     block_count = 1 if shared else bundle.component_count
     blocks = [BondMessagePassing(**message_kwargs) for _ in range(block_count)]
@@ -522,7 +336,7 @@ def train_dmpnn_bundle(
         shuffle=False,
         drop_last=False,
     )
-    monitor = "atom_val/mae" if bundle.target_level == "atom" else "val/mae"
+    monitor = "val/mae"
     history = _HistoryCallback()
     with tempfile.TemporaryDirectory(prefix="ilume-dmpnn-checkpoint-") as temporary:
         checkpoint = ModelCheckpoint(
@@ -576,9 +390,7 @@ def train_dmpnn_bundle(
         "format_version": 1,
         "kind": "ilume_baseline_model",
         "model_kind": (
-            "dmpnn_atom"
-            if bundle.target_level == "atom"
-            else "dmpnn_multicomponent"
+            "dmpnn_multicomponent"
             if bundle.component_count > 1
             else "dmpnn_scalar"
         ),
@@ -623,7 +435,7 @@ def _manifest(root: Path) -> dict[str, Any]:
     return payload
 
 
-def _predict(model: Any, dataset: Any, *, atom: bool) -> np.ndarray:
+def _predict(model: Any, dataset: Any) -> np.ndarray:
     from chemprop.data import build_dataloader
     from lightning import pytorch as pl
 
@@ -639,10 +451,7 @@ def _predict(model: Any, dataset: Any, *, atom: bool) -> np.ndarray:
         enable_progress_bar=False,
     )
     outputs = trainer.predict(model, dataloaders=loader)
-    if atom:
-        values = [item[1] for item in outputs]
-    else:
-        values = outputs
+    values = outputs
     if not values or any(item is None for item in values):
         raise RuntimeError("D-MPNN prediction produced no outputs")
     return torch.cat(values).float().cpu().numpy()
@@ -658,8 +467,6 @@ def evaluate_dmpnn_checkpoint(
 ) -> EvaluationResult:
     from chemprop.models.utils import load_model
 
-    if task_id == PARTIAL_CHARGE_TASK:
-        raise ValueError("Use evaluate_dmpnn_partial for Partial Charge")
     if split not in {"valid", "test"}:
         raise ValueError("D-MPNN evaluation split must be valid or test")
     root = Path(checkpoint_dir)
@@ -678,20 +485,13 @@ def evaluate_dmpnn_checkpoint(
         predictions = np.empty((0, 1), dtype=np.float64)
     else:
         dataset = _scalar_dataset(raw, bundle.target_stats, bundle.condition_stats)
-        predictions = _predict(model, dataset, atom=False)
+        predictions = _predict(model, dataset)
     metrics = target_metrics(
         predictions,
         raw.targets,
         bundle.task.target_columns,
         bundle.target_stats.scale,
     )
-    if task_id in ORBITAL_TASK_TARGETS:
-        target = ORBITAL_TASK_TARGETS[task_id]
-        metrics[target]["role_diagnostics"] = role_mae_diagnostics(
-            predictions[:, 0],
-            raw.targets[:, 0],
-            [row["ion_role"] for row in raw.audit_rows],
-        )
     return EvaluationResult(
         predictions=predictions,
         targets=raw.targets,
@@ -705,86 +505,12 @@ def evaluate_dmpnn_checkpoint(
     )
 
 
-def evaluate_dmpnn_partial(
-    config: BenchmarkConfig, checkpoint_dir: str | Path
-) -> PartialEvaluationResult:
-    from chemprop.data import MolAtomBondDatapoint, MolAtomBondDataset
-    from chemprop.models.utils import load_model
-
-    root = Path(checkpoint_dir)
-    manifest = _manifest(root)
-    bundle = prepare_dmpnn_training(
-        config, "stage2_physics", PARTIAL_CHARGE_TASK, None
-    )
-    require_compatible_identity(
-        bundle.training_identity,
-        manifest["training_identity"],
-        context="D-MPNN Partial Charge evaluation checkpoint",
-    )
-    authority = load_stage2_config(config.data.stage2_authority_config)
-    spec = bundle.task
-    resource = spec.registry_payload.get("dataset", {}).get("resource_manifest")
-    manifest_path = (
-        config.data.data_root / str(resource)
-        if resource
-        else None
-    )
-    if manifest_path is None:
-        from stage2.registry import load_stage2_registry
-
-        registry_spec = load_stage2_registry(config.data.task_catalog).by_id(
-            PARTIAL_CHARGE_TASK
-        )
-        manifest_path = registry_spec.dataset.resource_manifest_path(
-            authority.data.data_root
-        )
-    if manifest_path is None:
-        raise ValueError("Partial Charge structure manifest is missing")
-    scaler_payload = json.loads(
-        (authority.data.artifacts_dir / "scalers.json").read_text(encoding="utf-8")
-    )[PARTIAL_CHARGE_TASK]["targets"][spec.target_columns[0]]
-    benchmark = build_partial_charge_benchmark(
-        spec.test_path, manifest_path, scaler_payload
-    )
-    datapoints = []
-    atom_counts = []
-    for molecule in benchmark.evaluated:
-        atom_count = len(molecule.target_charges)
-        atom_counts.append(atom_count)
-        datapoints.append(
-            MolAtomBondDatapoint.from_smi(
-                molecule.canonical_smiles,
-                atom_y=np.full((atom_count, 1), np.nan, dtype=np.float32),
-                reorder_atoms=False,
-                name=molecule.mol_id,
-            )
-        )
-    model = load_model(root / "model.pt", mol_atom_bond=True)
-    flat = _predict(model, MolAtomBondDataset(datapoints), atom=True).reshape(-1)
-    predictions: dict[str, np.ndarray] = {}
-    offset = 0
-    for molecule, count in zip(benchmark.evaluated, atom_counts, strict=True):
-        predictions[molecule.mol_id] = flat[offset : min(offset + count, len(flat))]
-        offset += count
-    if len(flat) > offset:
-        predictions["__extra_prediction__"] = flat[offset:]
-    score = score_partial_charge_predictions(benchmark, predictions)
-    return PartialEvaluationResult(
-        benchmark=benchmark,
-        predictions=predictions,
-        score=score,
-        training_identity=bundle.training_identity,
-    )
-
-
 __all__ = [
     "ConditionStats",
     "DMPNNTrainingBundle",
     "DMPNN_GRAPH_CONTRACT",
-    "PartialEvaluationResult",
     "build_dmpnn_model",
     "evaluate_dmpnn_checkpoint",
-    "evaluate_dmpnn_partial",
     "prepare_dmpnn_training",
     "train_dmpnn_bundle",
 ]

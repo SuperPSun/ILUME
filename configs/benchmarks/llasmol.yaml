@@ -85,9 +85,3 @@ stage3:
   enabled: true
   tasks: all
   folds: [1, 2, 3, 4, 5]
-stage2_physics:
-  enabled: true
-  tasks:
-    - simulation/heat_of_vaporization
-    - simulation/homo
-    - simulation/lumo

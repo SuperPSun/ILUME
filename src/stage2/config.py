@@ -189,10 +189,12 @@ class Stage2Config:
             raise ValueError("Stage 2 Object v3 requires cuda_prefetch_batches == 1")
         if training.amp_dtype not in {"bf16", "fp16", "none"}:
             raise ValueError("training.amp_dtype must be bf16, fp16, or none")
-        if training.refinement_epochs <= 0:
-            raise ValueError("refinement_epochs must be positive")
-        if not training.refinement_tasks:
-            raise ValueError("refinement_tasks must be non-empty")
+        if training.refinement_epochs < 0:
+            raise ValueError("refinement_epochs must be non-negative")
+        if (training.refinement_epochs == 0) != (not training.refinement_tasks):
+            raise ValueError(
+                "refinement_epochs and refinement_tasks must be disabled together"
+            )
         if len(set(training.refinement_tasks)) != len(training.refinement_tasks):
             raise ValueError("refinement_tasks must not contain duplicates")
         if training.refinement_lr_multiplier <= 0:

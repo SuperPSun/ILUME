@@ -23,41 +23,11 @@ Coverage: 11 test tasks / 21 enabled Stage 3 tasks.
 7. ECFP+XGBoost — macro normalized MAE 0.302096
 8. MoLFormer-XL-both-10pct — macro normalized MAE 0.303961
 
-## Stage 2 CORE
-
-1. D-MPNN — macro normalized MAE 0.0570515
-2. SPMM — macro normalized MAE 0.058257
-3. ILBERT — macro normalized MAE 0.0610342
-4. MLP — macro normalized MAE 0.0676515
-5. ILUME — macro normalized MAE 0.0883141
-6. MoLFormer-XL-both-10pct — macro normalized MAE 0.0936612
-7. ECFP+XGBoost — macro normalized MAE 0.134703
-
-## Partial Charge
-
-1. D-MPNN — macro normalized MAE 0.122218
-2. ILUME — macro normalized MAE 0.141587
-Not evaluated: ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost, ilbert@outputs/benchmarks/v1/ilbert, mlp@outputs/benchmarks/v1/mlp, molformer@outputs/benchmarks/v1/molformer, spmm@outputs/benchmarks/v1/spmm
-Not eligible: None
-
-## Stage 2 FULL
-
-1. D-MPNN — macro normalized MAE 0.073343
-2. ILUME — macro normalized MAE 0.101632
-Not evaluated: ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost, ilbert@outputs/benchmarks/v1/ilbert, mlp@outputs/benchmarks/v1/mlp, molformer@outputs/benchmarks/v1/molformer, spmm@outputs/benchmarks/v1/spmm
-Not eligible: None
-
-## Core task wins
-
-- dmpnn@outputs/benchmarks/v1/dmpnn: 2
-- ilbert@outputs/benchmarks/v1/ilbert: 1
-
 ## Experiment health
 
 - ✓ dmpnn@outputs/benchmarks/v1/dmpnn: complete
 - ✓ ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost: complete
 - ✓ ilbert@outputs/benchmarks/v1/ilbert: complete
-- ✓ ilume@outputs/v1/stage2/base/evaluate: complete
 - ✓ ilume@outputs/v1/stage3/base/evaluate/fold1: complete
 - ✓ ilume@outputs/v1/stage3/base/evaluate/fold2: complete
 - ✓ ilume@outputs/v1/stage3/base/evaluate/fold3: complete

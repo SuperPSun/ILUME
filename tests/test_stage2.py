@@ -6,8 +6,6 @@ import json
 
 import copy
 
-import shutil
-
 from dataclasses import replace
 
 from pathlib import Path
@@ -17,10 +15,6 @@ from unittest.mock import patch
 import pytest
 
 import torch
-
-from rdkit import Chem
-
-import scripts.stage2.evaluate as stage2_evaluate_launcher
 
 from common.io import sha256_file
 
@@ -66,8 +60,6 @@ from stage2.model import (
     molecule_equal_smooth_l1_loss,
 )
 
-from stage2.evaluate import evaluate_stage2_checkpoints, resolve_checkpoint_path
-
 from stage2.prepare import (
     prepare_stage2_data, prepare_teacher_cache,
     stage1_encoder_identity, teacher_cache_identity,
@@ -75,10 +67,7 @@ from stage2.prepare import (
 
 from stage2.registry import load_stage2_registry
 
-from stage2.train import (
-    STAGE2_REFINED_VERSION, _batch_output,
-    load_stage2_encoder_artifact, run_stage2_training,
-)
+from stage2.train import _batch_output, load_stage2_encoder_artifact, run_stage2_training
 from stage2.rdkit_train import (
     STAGE2_RDKIT_CHECKPOINT_KIND, STAGE2_RDKIT_ENCODER_KIND,
     STAGE2_RDKIT_REFINED_KIND, load_rdkit_stage2_encoder_artifact,
@@ -91,14 +80,6 @@ from stage2.atom_targets import (
 )
 
 import numpy as np
-
-from stage2.atom_evaluation import (
-    PARTIAL_CHARGE_PREDICTION_FIELDS,
-    build_partial_charge_benchmark,
-    public_partial_charge_score,
-    score_partial_charge_predictions,
-    write_partial_charge_predictions,
-)
 
 from stage2.atom_targets import PARTIAL_CHARGE_MAPPING_CONTRACT
 
@@ -424,6 +405,11 @@ def test_global_rdkit_v2_teacher_cache_uses_entity_embedding(
     ).shape == (1, 32)
 
 def test_stage2_refinement_config_contract(tiny_stage2_setup):
+    active = load_stage2_config(Path("configs/v2/stage2/base.yaml"))
+    assert active.training.epochs == 5
+    assert active.training.refinement_epochs == 0
+    assert active.training.refinement_tasks == ()
+
     paths = [
         Path("configs/v1/stage2/base.yaml"),
         *sorted(Path("configs/experiments_v1/stage2").glob("*.yaml")),
@@ -437,7 +423,7 @@ def test_stage2_refinement_config_contract(tiny_stage2_setup):
             DEFAULT_REFINEMENT_TASKS
         )
 
-    with pytest.raises(ValueError, match="positive"):
+    with pytest.raises(ValueError, match="disabled together"):
         replace(
             tiny_stage2_setup,
             training=replace(tiny_stage2_setup.training, refinement_epochs=0),
@@ -450,7 +436,7 @@ def test_stage2_refinement_config_contract(tiny_stage2_setup):
                 refinement_tasks=("simulation/homo", "simulation/homo"),
             ),
         ).validate()
-    with pytest.raises(ValueError, match="non-empty"):
+    with pytest.raises(ValueError, match="disabled together"):
         replace(
             tiny_stage2_setup,
             training=replace(tiny_stage2_setup.training, refinement_tasks=()),
@@ -605,75 +591,54 @@ def test_object_encoder_roles_and_dynamic_heads(tiny_stage2_setup):
     assert model.object_heads["simulation/homo"] is not model.object_heads["simulation/lumo"]
 
 def test_prepare_train_checkpoint_and_encoder_export(tiny_stage2_setup, tmp_path):
-    prepare_teacher_cache(tiny_stage2_setup)
-    output = tmp_path / "train"
-    run_stage2_training(tiny_stage2_setup, output_dir=output)
-    assert (output / "checkpoint_epoch_00001.pt").is_file()
-    boundary_checkpoint = torch.load(
-        output / "checkpoint_epoch_00002.pt", map_location="cpu", weights_only=False
+    config = replace(
+        tiny_stage2_setup,
+        training=replace(
+            tiny_stage2_setup.training,
+            epochs=5,
+            refinement_epochs=0,
+            refinement_tasks=(),
+        ),
     )
-    assert boundary_checkpoint["optimizer"]["state"]
-    assert boundary_checkpoint["refinement"]["optimizers"] == {}
-    assert boundary_checkpoint["phase"] == "boundary"
-    assert boundary_checkpoint["refinement"]["task_updates"] == {
-        task: 0 for task in DEFAULT_REFINEMENT_TASKS
-    }
-    final_checkpoint = torch.load(output / "checkpoint_epoch_00004.pt", map_location="cpu", weights_only=False)
+    prepare_teacher_cache(config)
+    output = tmp_path / "train"
+    run_stage2_training(config, output_dir=output)
+    assert (output / "checkpoint_epoch_00001.pt").is_file()
+    final_checkpoint = torch.load(
+        output / "checkpoint_epoch_00005.pt", map_location="cpu", weights_only=False
+    )
     assert final_checkpoint["format_version"] == STAGE2_CHECKPOINT_VERSION
-    assert final_checkpoint["completed_epoch"] == 4
+    assert final_checkpoint["completed_epoch"] == 5
+    assert final_checkpoint["phase"] == "boundary"
+    assert final_checkpoint["optimizer"]["state"]
+    assert final_checkpoint["refinement"]["optimizers"] == {}
+    assert final_checkpoint["refinement"]["task_updates"] == {}
     task_batches = final_checkpoint["task_batches"]
     steps_per_epoch = sum(task_batches.values())
-    refinement_steps_per_epoch = sum(
-        task_batches[task] for task in DEFAULT_REFINEMENT_TASKS
-    )
     assert final_checkpoint["scheduler_geometry"] == {
         "gradient_accumulation_steps": 1,
         "steps_per_epoch": steps_per_epoch,
-        "total_steps": 2 * steps_per_epoch,
+        "total_steps": 5 * steps_per_epoch,
         "backbone_unfreeze_step": steps_per_epoch,
-        "joint_epochs": 2,
-        "refinement_epochs": 2,
-        "refinement_steps_per_epoch": refinement_steps_per_epoch,
-        "total_epochs": 4,
+        "joint_epochs": 5,
+        "refinement_epochs": 0,
+        "refinement_steps_per_epoch": 0,
+        "total_epochs": 5,
     }
-    assert final_checkpoint["refinement"]["task_updates"] == {
-        task: 2 * task_batches[task] for task in DEFAULT_REFINEMENT_TASKS
-    }
-    assert (
-        final_checkpoint["refinement"]["shared_state_hash"]
-        == boundary_checkpoint["refinement"]["shared_state_hash"]
-    )
-    assert final_checkpoint["registry_hash"] == load_artifact_registry(tiny_stage2_setup.data.artifacts_dir).registry_hash
+    assert final_checkpoint["registry_hash"] == load_artifact_registry(config.data.artifacts_dir).registry_hash
     assert final_checkpoint["model_contract"]["object_encoder"] == {
-        "layers": tiny_stage2_setup.model.object_layers,
-        "ffn_dim": tiny_stage2_setup.model.object_ffn_dim,
-        "dropout": tiny_stage2_setup.model.dropout,
+        "layers": config.model.object_layers,
+        "ffn_dim": config.model.object_ffn_dim,
+        "dropout": config.model.dropout,
     }
     encoder_path = output / "stage2_encoder.pt"
-    assert (output / "taskwise_refined.pt").is_file()
-    assert (output / "taskwise_refinement.json").is_file()
-    refined_payload = torch.load(
-        output / "taskwise_refined.pt", map_location="cpu", weights_only=False
-    )
-    assert refined_payload["format_version"] == STAGE2_REFINED_VERSION
-    assert tuple(refined_payload["refined_tasks"]) == DEFAULT_REFINEMENT_TASKS
-    assert set(refined_payload["unrefined_tasks"]) == set(TASKS) - set(
-        DEFAULT_REFINEMENT_TASKS
-    )
-    assert set(refined_payload["private_state_hashes"]) == set(
-        load_artifact_registry(tiny_stage2_setup.data.artifacts_dir).task_ids
-    )
-    assert set(refined_payload["selected_tasks"]) == set(DEFAULT_REFINEMENT_TASKS)
-    for selection in refined_payload["selected_tasks"].values():
-        assert selection["selected_refinement_epoch"] in {0, 1, 2}
-        assert [candidate["refinement_epoch"] for candidate in selection["candidates"]] == [0, 1, 2]
-    for task in refined_payload["unrefined_tasks"]:
-        assert (
-            refined_payload["private_state_hashes"][task]
-            == boundary_checkpoint["refinement"]["unrefined_task_state_hashes"][task]
-        )
-    assert resolve_checkpoint_path(output) == output / "checkpoint_epoch_00004.pt"
-    assert resolve_checkpoint_path(output, 2) == output / "checkpoint_epoch_00002.pt"
+    assert encoder_path.is_file()
+    assert not (output / "taskwise_refined.pt").exists()
+    assert not (output / "taskwise_refinement.json").exists()
+    final_metrics = json.loads((output / "final_metrics.json").read_text(encoding="utf-8"))
+    assert final_metrics["final_epoch"] == 5
+    assert final_metrics["final_validation"]
+    assert final_metrics["stage2_encoder"]["artifact_sha256"] == sha256_file(encoder_path)
     frozen = load_frozen_object_encoder(encoder_path, device="cpu")
     assert not frozen.backbone.training
     assert not frozen.object_encoder.training
@@ -699,60 +664,8 @@ def test_prepare_train_checkpoint_and_encoder_export(tiny_stage2_setup, tmp_path
     assert not any("head" in key for key in encoder["stage1_backbone"])
     assert set(encoder) >= {"stage1_backbone", "object_encoder", "model_contract", "state_hashes", "provenance"}
     assert encoder["provenance"]["stage2_checkpoint_hash"] == sha256_file(
-        output / "checkpoint_epoch_00002.pt"
+        output / "checkpoint_epoch_00005.pt"
     )
-    resume_output = tmp_path / "resume"
-    resume_output.mkdir()
-    rows = [json.loads(line) for line in (output / "metrics.jsonl").read_text(encoding="utf-8").splitlines()]
-    boundary_rows = [row for row in rows if int(row.get("epoch", 0)) <= 2]
-    (resume_output / "metrics.jsonl").write_text(
-        "\n".join(json.dumps(row, sort_keys=True) for row in boundary_rows) + "\n",
-        encoding="utf-8",
-    )
-    resume_config = replace(
-        tiny_stage2_setup,
-        training=replace(
-            tiny_stage2_setup.training,
-            packing_workers=1,
-            packing_prefetch_batches=1,
-            log_every_batches=1,
-        ),
-    )
-    assert resume_config.experiment_dict() == tiny_stage2_setup.experiment_dict()
-    run_stage2_training(
-        resume_config,
-        output_dir=resume_output,
-        resume_from=output / "checkpoint_epoch_00002.pt",
-    )
-    resumed = torch.load(resume_output / "checkpoint_epoch_00004.pt", map_location="cpu", weights_only=False)
-    assert resumed["scheduler_geometry"]["gradient_accumulation_steps"] == 1
-    assert resumed["refinement"]["task_updates"] == {
-        task: 2 * task_batches[task] for task in DEFAULT_REFINEMENT_TASKS
-    }
-    assert (resume_output / "stage2_encoder.pt").is_file()
-    resumed_refined = torch.load(
-        resume_output / "taskwise_refined.pt", map_location="cpu", weights_only=False
-    )
-    assert resumed_refined["model_state_hash"] == refined_payload["model_state_hash"]
-
-    mid_resume_output = tmp_path / "resume_mid_refinement"
-    mid_resume_output.mkdir()
-    mid_rows = [row for row in rows if int(row.get("epoch", 0)) <= 3]
-    (mid_resume_output / "metrics.jsonl").write_text(
-        "\n".join(json.dumps(row, sort_keys=True) for row in mid_rows) + "\n",
-        encoding="utf-8",
-    )
-    run_stage2_training(
-        resume_config,
-        output_dir=mid_resume_output,
-        resume_from=output / "checkpoint_epoch_00003.pt",
-    )
-    mid_resumed_refined = torch.load(
-        mid_resume_output / "taskwise_refined.pt",
-        map_location="cpu",
-        weights_only=False,
-    )
-    assert mid_resumed_refined["model_state_hash"] == refined_payload["model_state_hash"]
 
 
 def test_no_stage1_rdkit_stage2_prepare_train_and_frozen_export(
@@ -882,24 +795,6 @@ def test_no_stage1_rdkit_stage2_prepare_train_and_frozen_export(
         )
     )
     assert encoded.shape == (2, 512)
-    for task in (
-        "heat_of_vaporization",
-        "homo",
-        "lumo",
-    ):
-        root = config.data.data_root / "stage2" / task
-        shutil.copy(root / "valid.csv", root / "test.csv")
-    evaluation = evaluate_stage2_checkpoints(config, output)
-    reporting = evaluation["reporting"]
-    assert reporting["model_id"] == "rdkit_2d_stage2"
-    assert reporting["model_display_name"] == "RDKit 2D MLP + Stage2"
-    assert reporting["capabilities"] == {
-        "stage2_core_physics": "supported",
-        "stage2_partial_charge": "unsupported",
-        "stage2_physics_full": "unsupported",
-    }
-    assert reporting["benchmarks"]["stage2_core_physics"]["status"] == "complete"
-
     resumed_output = tmp_path / "rdkit_stage2_resumed"
     resumed_output.mkdir()
     boundary_rows = [
@@ -921,24 +816,6 @@ def test_no_stage1_rdkit_stage2_prepare_train_and_frozen_export(
         weights_only=False,
     )
     assert resumed_refined["model_state_hash"] == refined["model_state_hash"]
-
-def test_stage2_evaluate_defaults_to_refined_and_rejects_removed_flag() -> None:
-    parser = stage2_evaluate_launcher._build_parser()
-    parsed = parser.parse_args([
-        "--config", "base.yaml", "--checkpoint-dir", "train",
-        "--output", "evaluate",
-    ])
-    assert parsed.checkpoint_epoch is None
-    parsed_epoch = parser.parse_args([
-        "--config", "base.yaml", "--checkpoint-dir", "train",
-        "--checkpoint-epoch", "5", "--output", "evaluate",
-    ])
-    assert parsed_epoch.checkpoint_epoch == 5
-    with pytest.raises(SystemExit):
-        parser.parse_args([
-            "--config", "base.yaml", "--checkpoint-dir", "train",
-            "--taskwise-refined", "--output", "evaluate",
-        ])
 
 # --- Partial-charge mapping behavior ---
 
@@ -976,120 +853,6 @@ def test_unknown_bond_is_auditable_connectivity_fallback(tmp_path: Path) -> None
     assert result.bond_match_mode == "connectivity_only"
     assert result.unparsed_bond_types == ("du",)
     assert result.bond_fallback_reason == "unparsed_bond_type"
-
-# --- Partial-charge evaluation contract ---
-
-def _mol2(path: Path, atoms, bonds, *, valid: bool = True) -> None:
-    lines = ["@<TRIPOS>MOLECULE", "MOL", f"{len(atoms)} {len(bonds)} 1 0 0", "SMALL", "resp", "@<TRIPOS>ATOM"]
-    for index, (name, kind, charge) in enumerate(atoms, start=1):
-        lines.append(f"{index} {name} 0 0 0 {kind} 1 MOL {charge}")
-    if valid:
-        lines.append("@<TRIPOS>BOND")
-        for index, (first, second, kind) in enumerate(bonds, start=1):
-            lines.append(f"{index} {first} {second} {kind}")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-def _benchmark_files(root: Path) -> tuple[Path, Path]:
-    structures = root / "structures"
-    structures.mkdir(parents=True)
-    definitions = {
-        "unique": (
-            [("C1", "c3", 0.1), ("C2", "c3", 0.1), ("O1", "o", -0.2)],
-            [(1, 2, "1"), (2, 3, "1")],
-            True,
-        ),
-        "ambiguous": (
-            [("C1", "c3", 0.3), ("C2", "c3", -0.3)],
-            [(1, 2, "1")],
-            True,
-        ),
-        "fallback": (
-            [("C1", "c3", 0.1), ("N1", "n3", -0.1)],
-            [(1, 2, "du")],
-            True,
-        ),
-        "excluded": (
-            [("C1", "c3", 0.0)],
-            [],
-            False,
-        ),
-    }
-    smiles = {"unique": "CCO", "ambiguous": "CC", "fallback": "CN", "excluded": "C"}
-    with (structures / "structure_manifest.csv").open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=("mol_id", "relative_path", "format", "size_bytes", "sha256", "referenced_by_charge"),
-        )
-        writer.writeheader()
-        for mol_id, (atoms, bonds, valid) in definitions.items():
-            path = structures / f"{mol_id}.mol2"
-            _mol2(path, atoms, bonds, valid=valid)
-            writer.writerow(
-                {
-                    "mol_id": mol_id,
-                    "relative_path": path.name,
-                    "format": "mol2",
-                    "size_bytes": path.stat().st_size,
-                    "sha256": sha256_file(path),
-                    "referenced_by_charge": "true",
-                }
-            )
-    test = root / "test.csv"
-    with test.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=("mol_id", "SMILES", "role", "formal_charge", "source_list"),
-        )
-        writer.writeheader()
-        for mol_id in definitions:
-            writer.writerow(
-                {
-                    "mol_id": mol_id,
-                    "SMILES": smiles[mol_id],
-                    "role": "neutral",
-                    "formal_charge": 0,
-                    "source_list": "simulation",
-                }
-            )
-    return test, structures / "structure_manifest.csv"
-
-def _stats(scale: float = 2.0) -> dict[str, object]:
-    return {"mean": 0.0, "scale": scale, "weighting": "molecule_equal"}
-
-def test_partial_charge_scorer_requires_exact_coverage_and_molecule_macro(tmp_path: Path) -> None:
-    test, manifest = _benchmark_files(tmp_path)
-    benchmark = build_partial_charge_benchmark(test, manifest, _stats())
-    predictions = {
-        molecule.mol_id: np.asarray(molecule.target_charges) + index
-        for index, molecule in enumerate(benchmark.evaluated, start=1)
-    }
-    score = score_partial_charge_predictions(benchmark, predictions)
-    assert score["status"] == "complete"
-    assert score["primary"]["molecule_macro_mae"] == pytest.approx(2.0)
-    assert score["primary"]["molecule_macro_normalized_mae"] == pytest.approx(1.0)
-    assert score["atom_micro"]["mae"] == pytest.approx(13 / 7)
-    assert score["atom_micro"]["mae"] != pytest.approx(
-        score["primary"]["molecule_macro_mae"]
-    )
-    assert score["subsets"]["all_mapped"]["molecule_count"] == 3
-    assert score["subsets"]["unique"]["molecule_count"] == 2
-    assert score["subsets"]["ambiguous"]["molecule_count"] == 1
-    assert score["subsets"]["typed"]["molecule_count"] == 2
-    assert score["subsets"]["connectivity_only"]["molecule_count"] == 1
-
-    incomplete = score_partial_charge_predictions(
-        benchmark, {"unique": predictions["unique"], "unknown": [0.0]}
-    )
-    assert incomplete["status"] == "incomplete"
-    assert incomplete["primary"] is None
-    assert incomplete["coverage"]["missing_prediction_count"] == 2
-    assert incomplete["coverage"]["extra_prediction_count"] == 1
-
-    wrong_length = dict(predictions)
-    wrong_length["unique"] = [float("nan")]
-    invalid = score_partial_charge_predictions(benchmark, wrong_length)
-    assert invalid["status"] == "incomplete"
-    assert invalid["coverage"]["invalid_prediction_count"] == 1
 
 # --- Batch scheduling and scientific loss behavior ---
 

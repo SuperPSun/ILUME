@@ -7,7 +7,7 @@ from typing import Any, Literal
 import yaml
 
 
-BenchmarkName = Literal["stage3", "stage2_physics"]
+BenchmarkName = Literal["stage3"]
 
 
 @dataclass(frozen=True)
@@ -16,7 +16,6 @@ class DataConfig:
     task_catalog: Path
     stage3_authority_config: Path
     feature_cache: Path | None
-    stage2_authority_config: Path | None = None
     stage3_prepared_artifacts: Path | None = None
 
 
@@ -42,12 +41,6 @@ class Stage3BenchmarkConfig:
 
 
 @dataclass(frozen=True)
-class Stage2PhysicsConfig:
-    enabled: bool
-    tasks: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class BenchmarkConfig:
     name: Literal[
         "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm", "llasmol",
@@ -60,7 +53,6 @@ class BenchmarkConfig:
     training: dict[str, Any]
     runtime: dict[str, Any]
     stage3: Stage3BenchmarkConfig
-    stage2_physics: Stage2PhysicsConfig
     seed: int
     display_name: str = ""
 
@@ -114,8 +106,6 @@ class BenchmarkConfig:
             raise ValueError("Benchmark Stage 3 folds must be unique")
         if self.stage3.enabled and self.stage3.tasks != "all" and not self.stage3.tasks:
             raise ValueError("Enabled Stage 3 benchmark has no tasks")
-        if self.stage2_physics.enabled and not self.stage2_physics.tasks:
-            raise ValueError("Enabled Stage 2 physics benchmark has no tasks")
 
     def _validate_ilume_stage3_single_task_mlp(self) -> None:
         if self.features is not None or self.environment is not None:
@@ -137,10 +127,6 @@ class BenchmarkConfig:
         if self.stage3.folds != (1, 2, 3, 4, 5):
             raise ValueError(
                 "ILUME Stage3 Single-task MLP requires folds [1, 2, 3, 4, 5]"
-            )
-        if self.stage2_physics.enabled or self.stage2_physics.tasks:
-            raise ValueError(
-                "ILUME Stage3 Single-task MLP is a Stage 3-only ablation"
             )
         expected_model = {
             "hidden_dims": [512, 256],
@@ -183,8 +169,6 @@ class BenchmarkConfig:
             raise ValueError("D-MPNN requires a dedicated environment definition and lock")
         if self.environment.name != "ilume-dmpnn":
             raise ValueError("D-MPNN environment name must be ilume-dmpnn")
-        if self.data.stage2_authority_config is None:
-            raise ValueError("D-MPNN requires data.stage2_authority_config")
         expected_model = {
             "message_hidden_dim": 300,
             "depth": 3,
@@ -226,8 +210,6 @@ class BenchmarkConfig:
             raise ValueError("MoLFormer requires a dedicated environment definition and lock")
         if self.environment.name != "ilume-molformer":
             raise ValueError("MoLFormer environment name must be ilume-molformer")
-        if self.data.stage2_authority_config is not None:
-            raise ValueError("MoLFormer does not use a Stage 2 prepare authority")
         expected_model = {
             "repository": "ibm-research/MoLFormer-XL-both-10pct",
             "revision": "361063d0ad524ef77cf39b08469f6be770dc550f",
@@ -286,8 +268,6 @@ class BenchmarkConfig:
             raise ValueError("ILBERT requires a dedicated environment definition and lock")
         if self.environment.name != "ilume-ilbert":
             raise ValueError("ILBERT environment name must be ilume-ilbert")
-        if self.data.stage2_authority_config is not None:
-            raise ValueError("ILBERT does not use a Stage 2 prepare authority")
         expected_model = {
             "repository": "Yu-Xin-Qiu/ILBERT",
             "revision": "f9dc6f1b23a40b6988480735f3724a6332f68c12",
@@ -358,8 +338,6 @@ class BenchmarkConfig:
             raise ValueError("SPMM requires a dedicated environment definition and lock")
         if self.environment.name != "ilume-spmm":
             raise ValueError("SPMM environment name must be ilume-spmm")
-        if self.data.stage2_authority_config is not None:
-            raise ValueError("SPMM does not use a Stage 2 prepare authority")
         expected_model = {
             "repository": "jinhojsk515/SPMM",
             "revision": "046976484f31b3cbc862b8f2094e38df72fcfce7",
@@ -439,8 +417,6 @@ class BenchmarkConfig:
             raise ValueError("LlaSMol requires a dedicated environment definition and lock")
         if self.environment.name != "ilume-llasmol":
             raise ValueError("LlaSMol environment name must be ilume-llasmol")
-        if self.data.stage2_authority_config is not None:
-            raise ValueError("LlaSMol does not use a Stage 2 prepare authority")
         expected_model = {
             "base_repository": "mistralai/Mistral-7B-v0.1",
             "base_revision": "27d67f1b5f57dc0953326b2601d68371d40ea8da",
@@ -560,7 +536,7 @@ def _only(values: dict[str, Any], allowed: set[str], context: str) -> None:
 def benchmark_config_from_dict(raw: dict[str, Any]) -> BenchmarkConfig:
     _only(
         raw,
-        {"name", "display_name", "seed", "data", "features", "environment", "model", "training", "runtime", "stage3", "stage2_physics"},
+        {"name", "display_name", "seed", "data", "features", "environment", "model", "training", "runtime", "stage3"},
         "benchmark config",
     )
     data = _mapping(raw.get("data"), "data")
@@ -568,7 +544,7 @@ def benchmark_config_from_dict(raw: dict[str, Any]) -> BenchmarkConfig:
         data,
         {
             "data_root", "task_catalog", "stage3_authority_config",
-            "feature_cache", "stage2_authority_config",
+            "feature_cache",
             "stage3_prepared_artifacts",
         },
         "data",
@@ -587,8 +563,6 @@ def benchmark_config_from_dict(raw: dict[str, Any]) -> BenchmarkConfig:
         _only(environment, {"name", "definition", "lock"}, "environment")
     stage3 = _mapping(raw.get("stage3"), "stage3")
     _only(stage3, {"enabled", "tasks", "folds"}, "stage3")
-    stage2 = _mapping(raw.get("stage2_physics"), "stage2_physics")
-    _only(stage2, {"enabled", "tasks"}, "stage2_physics")
     tasks: Literal["all"] | tuple[str, ...]
     if stage3.get("tasks") == "all":
         tasks = "all"
@@ -606,11 +580,6 @@ def benchmark_config_from_dict(raw: dict[str, Any]) -> BenchmarkConfig:
             stage3_authority_config=Path(data["stage3_authority_config"]),
             feature_cache=(
                 None if data.get("feature_cache") is None else Path(data["feature_cache"])
-            ),
-            stage2_authority_config=(
-                None
-                if data.get("stage2_authority_config") is None
-                else Path(data["stage2_authority_config"])
             ),
             stage3_prepared_artifacts=(
                 None
@@ -643,10 +612,6 @@ def benchmark_config_from_dict(raw: dict[str, Any]) -> BenchmarkConfig:
             enabled=bool(stage3.get("enabled", False)),
             tasks=tasks,
             folds=tuple(int(value) for value in stage3.get("folds", ())),
-        ),
-        stage2_physics=Stage2PhysicsConfig(
-            enabled=bool(stage2.get("enabled", False)),
-            tasks=tuple(str(value) for value in stage2.get("tasks", ())),
         ),
     )
     config.validate()

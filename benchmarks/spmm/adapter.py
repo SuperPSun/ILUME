@@ -15,8 +15,6 @@ from common.identity import require_compatible_identity, semantic_identity, tens
 from common.io import atomic_json, atomic_torch_save, sha256_file
 from common.outputs import repository_path
 from common.progress import ProgressReporter
-from common.reporting import role_mae_diagnostics
-from stage2.registry import ORBITAL_TASK_TARGETS
 
 from benchmarks.common.config import BenchmarkConfig, BenchmarkName
 from benchmarks.common.data import BenchmarkTask, RawDataset, load_split, resolve_task
@@ -1006,13 +1004,6 @@ def evaluate_spmm_checkpoint(
         bundle.task.target_columns,
         bundle.target_stats.scale,
     )
-    if task_id in ORBITAL_TASK_TARGETS:
-        target = ORBITAL_TASK_TARGETS[task_id]
-        metrics[target]["role_diagnostics"] = role_mae_diagnostics(
-            predictions[:, 0],
-            raw.targets[:, 0],
-            [row["ion_role"] for row in raw.audit_rows],
-        )
     return EvaluationResult(
         predictions=predictions,
         targets=raw.targets,

@@ -43,7 +43,7 @@ python scripts/stage1/train.py \
 
 ## Stage 2
 
-Stage 2 Object v3 从 catalog 加载九个 simulation task，共享 ObjectEncoder，并从 Stage 1 encoder 准备 entity teacher cache；最后 20% epoch 冻结共享表示并独立优化各 task head。模型、数据身份、恢复和选择合同见 [ADR-0019/0021/0025/0027](docs/adr/README.md)。
+Stage 2 Object v3 从 catalog 加载九个 simulation task，共享 ObjectEncoder，并从 Stage 1 encoder 准备 entity teacher cache。现役 v2 固定训练 5 个 joint epochs，随后直接发布最终 checkpoint、`stage2_encoder.pt` 和 joint validation `final_metrics.json`；不再执行 taskwise refinement，也不提供 Stage 2 test evaluation。模型、数据身份和恢复合同见 [ADR-0019/0021/0025/0043](docs/adr/README.md)。
 
 ```bash
 python scripts/stage2/prepare.py \
@@ -53,14 +53,9 @@ python scripts/stage2/prepare.py \
 python scripts/stage2/train.py \
   --config configs/v2/stage2/base.yaml \
   --output outputs/v2/stage2/base/train
-
-python scripts/stage2/evaluate.py \
-  --config configs/v2/stage2/base.yaml \
-  --checkpoint-dir outputs/v2/stage2/base/train \
-  --output outputs/v2/stage2/base/evaluate/test_benchmark_suite_v2
 ```
 
-Evaluator 默认加载 `taskwise_refined.pt`；只有显式传入 `--checkpoint-epoch N` 时才加载普通历史 checkpoint。它分别发布 Core、Partial Charge 和 Full 三榜；评分及 eligibility 合同见 [ADR-0023/0024/0025](docs/adr/README.md)。Stage 2 只从完整 Object v3 epoch 恢复，旧 Object v2 和缺少现役合同的开发期 v3 输出不迁移。
+Stage 2 只从完整 Object v3 joint epoch 恢复，旧 Object v2、旧式 v2 refinement run 和缺少现役合同的开发期 v3 输出不迁移。legacy v1、Capacity v1 与 No-Stage1 的既有 refinement 训练定义和历史产物保持不变。
 
 ## Stage 3
 
@@ -196,8 +191,8 @@ python scripts/benchmarks/summarize.py \
 
 [ADR-0036](docs/adr/0036-no-stage1-rdkit-stage2-stage3-ablation.md) 用共享的
 `217D → 1024D → 512D` RDKit MLP 替换 Stage1 backbone，保留 Stage2 ObjectEncoder 与
-Stage3 Base。该路径不读取 Stage1 artifact/checkpoint 或 teacher cache；Stage2 训练八个
-object/interaction task，Partial Charge 与 Full 为 unsupported。
+Stage3 Base。该路径不读取 Stage1 artifact/checkpoint 或 teacher cache；Stage2 仍按冻结配置
+训练八个 object/interaction task，但不再执行或汇总 Stage 2 test evaluation。
 
 ```bash
 python scripts/stage2/prepare.py \
@@ -207,11 +202,6 @@ python scripts/stage2/prepare.py \
 python scripts/stage2/train.py \
   --config configs/ablations/no_stage1_rdkit_stage2.yaml \
   --output outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/train
-
-python scripts/stage2/evaluate.py \
-  --config configs/ablations/no_stage1_rdkit_stage2.yaml \
-  --checkpoint-dir outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/train \
-  --output outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/evaluate/test
 
 python scripts/stage3/prepare.py \
   --config configs/ablations/no_stage1_rdkit_stage3.yaml \
@@ -303,7 +293,7 @@ python scripts/benchmarks/sweep.py \
   --max-workers 1
 ```
 
-`--max-workers 1` 保持串行行为。MLP、D-MPNN、MoLFormer、ILBERT、SPMM 与 LlaSMol 多 GPU sweep 可通过 `--devices cuda:0,cuda:1,...` 分配逻辑 job；XGBoost 的 CPU 并行度由 YAML 中的 `training.n_jobs` 控制。D-MPNN 正式 sweep 共 109 个单 seed 训练任务；上述命令不会 resume，失败任务由 sweep 在新 attempt 中完整重跑。
+`--max-workers 1` 保持串行行为。MLP、D-MPNN、MoLFormer、ILBERT、SPMM 与 LlaSMol 多 GPU sweep 可通过 `--devices cuda:0,cuda:1,...` 分配逻辑 job；XGBoost 的 CPU 并行度由 YAML 中的 `training.n_jobs` 控制。每个 baseline 正式 sweep 均为 21 tasks × 5 folds，即 105 个单 seed 训练任务；上述命令不会 resume，失败任务由 sweep 在新 attempt 中完整重跑。
 
 MoLFormer同样使用独立hash-lock环境。先显式安装环境并下载固定HF snapshot；正式launcher只使用本地cache，不会自动联网或切换revision。
 
@@ -323,7 +313,7 @@ conda run --no-capture-output -n ilume-molformer \
   python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_molformer_environment; validate_molformer_environment(load_benchmark_config("configs/benchmarks/molformer.yaml"))'
 ```
 
-单任务与完整108-job sweep：
+单任务与完整 105-job sweep：
 
 ```bash
 python scripts/benchmarks/train.py \
@@ -337,7 +327,7 @@ python scripts/benchmarks/sweep.py \
   --max-workers 1
 ```
 
-MoLFormer的超长train row整行跳过且不进入scaler；valid/test显式截断到202 tokens并在结果中审计。训练前为unique SMILES建立run-local内存token cache，多组分合并为一次共享backbone forward；正式合同固定batch 128、encoder/head learning rate `5e-6/5e-5`、50 epochs、patience 8和TF32，OOM/NaN不自动缩批或回退。多GPU sweep可使用`--devices cuda:0,cuda:1,...`。Partial Charge与Stage 2 Full保持unsupported。
+MoLFormer的超长train row整行跳过且不进入scaler；valid/test显式截断到202 tokens并在结果中审计。训练前为unique SMILES建立run-local内存token cache，多组分合并为一次共享backbone forward；正式合同固定batch 128、encoder/head learning rate `5e-6/5e-5`、50 epochs、patience 8和TF32，OOM/NaN不自动缩批或回退。多GPU sweep可使用`--devices cuda:0,cuda:1,...`。
 
 ILBERT使用独立hash-lock环境和用户本地准备的固定上游资产。上游目前没有显式LICENSE，因此仓库不复制或再分发其源码与权重。
 
@@ -368,7 +358,7 @@ conda run --no-capture-output -n ilume-ilbert \
   python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_ilbert_environment; validate_ilbert_environment(load_benchmark_config("configs/benchmarks/ilbert.yaml"))'
 ```
 
-单任务与完整108-job sweep：
+单任务与完整 105-job sweep：
 
 ```bash
 python scripts/benchmarks/train.py \
@@ -382,7 +372,7 @@ python scripts/benchmarks/sweep.py \
   --max-workers 1
 ```
 
-ILBERT普通离子液体输入为单条`cation.anion` AIS sequence；solvation/transfer只增加共享backbone的有序双view。所有输入固定padding/truncation到100 tokens并公开审计，数值条件保持registry顺序和原始物理单位。Partial Charge与Stage 2 Full为unsupported。
+ILBERT普通离子液体输入为单条`cation.anion` AIS sequence；solvation/transfer只增加共享backbone的有序双view。所有输入固定padding/truncation到100 tokens并公开审计，数值条件保持registry顺序和原始物理单位。
 
 SPMM使用独立hash-lock环境和固定的官方Apache-2.0上游checkout。仓库不复制或提交约2.20 GiB的官方Lightning checkpoint；运行前会校验commit、源码、vocab、config、checkpoint SHA和字节数。
 该环境固定Python 3.10，因此不执行要求Python ≥3.11的ILUME editable install；四个benchmark脚本会从仓库根显式引导`src`和`benchmarks`导入。
@@ -410,7 +400,7 @@ conda run --no-capture-output -n ilume-spmm \
   python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_spmm_environment; validate_spmm_environment(load_benchmark_config("configs/benchmarks/spmm.yaml"))'
 ```
 
-单任务与完整108-job sweep：
+单任务与完整 105-job sweep：
 
 ```bash
 python scripts/benchmarks/train.py \
@@ -425,7 +415,7 @@ python scripts/benchmarks/sweep.py \
   --devices cuda:0,cuda:1
 ```
 
-SPMM只使用官方text-mode前6层和768维`[CLS]`表示；各分子component由同一encoder分别编码并合并为一次forward，随后只扩宽官方regression head第一层。模型输入去除立体信息，保留官方100-token tokenizer加首token切片路径，实际encoder上限为99；WordPiece单词字符上限固定为350，collision和truncation均公开审计。训练固定batch 128、FP32+TF32及确定性sortish长度分桶；多GPU运行保持一张GPU一个job。旧`outputs/benchmarks/v1/spmm`不得与新合同混用，汇总时通过`--include outputs/benchmarks/v1/spmm-wp350-bs128`只选择新结果。Partial Charge与Stage 2 Full为unsupported。
+SPMM只使用官方text-mode前6层和768维`[CLS]`表示；各分子component由同一encoder分别编码并合并为一次forward，随后只扩宽官方regression head第一层。模型输入去除立体信息，保留官方100-token tokenizer加首token切片路径，实际encoder上限为99；WordPiece单词字符上限固定为350，collision和truncation均公开审计。训练固定batch 128、FP32+TF32及确定性sortish长度分桶；多GPU运行保持一张GPU一个job。旧`outputs/benchmarks/v1/spmm`不得与新合同混用，汇总时通过`--include outputs/benchmarks/v1/spmm-wp350-bs128`只选择新结果。
 
 LlaSMol使用固定Mistral-7B基座和官方LoRA adapter。仓库不复制或提交约13.5 GiB基座与84 MB adapter；必须先显式安装独立环境并将固定snapshot下载到已忽略目录。
 
@@ -454,7 +444,7 @@ conda run --no-capture-output -n ilume-llasmol \
   python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_llasmol_environment; validate_llasmol_environment(load_benchmark_config("configs/benchmarks/llasmol.yaml"))'
 ```
 
-单任务与完整108-job sweep：
+单任务与完整 105-job sweep：
 
 ```bash
 python scripts/benchmarks/train.py \
@@ -469,7 +459,7 @@ python scripts/benchmarks/sweep.py \
   --devices cuda:0,cuda:1,cuda:2,cuda:3
 ```
 
-普通IL使用带task marker的单条`cation.anion`sequence；solvation/transfer只增加whole-IL与partner的共享backbone双view。基座以NF4 double-quant冻结加载，并继续训练官方attention与MLP LoRA及`4096/8192 + conditions → 256 → 1`回归head。输入上限512 tokens并公开截断审计；target和numeric conditions只从train rows拟合scaler。建议每张GPU仅运行一个job；OOM/NaN不自动缩批或回退。Partial Charge与Stage 2 Full为unsupported。
+普通IL使用带task marker的单条`cation.anion`sequence；solvation/transfer只增加whole-IL与partner的共享backbone双view。基座以NF4 double-quant冻结加载，并继续训练官方attention与MLP LoRA及`4096/8192 + conditions → 256 → 1`回归head。输入上限512 tokens并公开截断审计；target和numeric conditions只从train rows拟合scaler。建议每张GPU仅运行一个job；OOM/NaN不自动缩批或回退。
 
 ## 输出与结果汇总
 
@@ -482,14 +472,13 @@ python scripts/benchmarks/summarize.py \
   --input outputs/v2 outputs/benchmarks \
   --include \
     outputs/v2/stage3/base \
-    outputs/v2/stage2/base/evaluate/test_benchmark_suite_v2 \
     outputs/benchmarks/v1/mlp \
     outputs/benchmarks/v1/ecfp_xgboost \
     outputs/benchmarks/v1/ilume_stage3_single_task_mlp \
   --output summary
 ```
 
-只有 schema 完整且 comparison identity 兼容的 completed run 进入榜单；Stage 3 按 ADR-0031 允许 train-only normalization 不同，但 valid/test source 与其余协议必须一致。其他 run 进入 health。损坏的选中正式结果会使发布失败，已有 `summary/` 保持不变。详细 reporting 合同见 [ADR-0023/0024/0025/0031](docs/adr/README.md)。
+只有 schema 完整且 comparison identity 兼容的 completed Stage 3 run 进入榜单；按 ADR-0031 允许 train-only normalization 不同，但 valid/test source 与其余协议必须一致。旧 candidate 的 Stage 2 section 被忽略。其他 run 进入 health。损坏的选中正式结果会使发布失败，已有 `summary/` 保持不变。详细 reporting 合同见 [ADR-0031/0043](docs/adr/README.md)。
 
 ## 验证
 

@@ -55,16 +55,14 @@ from common.identity import semantic_identity
 
 from common.reporting import (
     REPORTING_SCHEMA_VERSION,
-    STAGE2_CORE_EVALUATION_CONTRACT,
-    STAGE2_PARTIAL_EVALUATION_CONTRACT,
     comparison_identity,
 )
-
-from stage2.atom_evaluation import PARTIAL_CHARGE_TASK, PARTIAL_CHARGE_UNIT
 
 from stage3.config import load_stage3_config
 
 import scripts.benchmarks.sweep as sweep_module
+import scripts.benchmarks.evaluate as benchmark_evaluate_launcher
+import scripts.benchmarks.train as benchmark_train_launcher
 
 from scripts.benchmarks.sweep import (
     _JobResult,
@@ -80,14 +78,8 @@ from scripts.benchmarks.sweep import (
 from benchmarks.common.summary import SUMMARY_FILES, publish_summary
 
 from common.reporting import (
-    STAGE2_BENCHMARK_SUITE_CONTRACT,
-    comparison_identity,
-    role_mae_diagnostics,
-    stage2_full_comparison_identity,
     write_prediction_csv,
 )
-
-from stage2.evaluate import resolve_checkpoint_path
 
 from dataclasses import replace
 
@@ -113,7 +105,6 @@ try:
     from benchmarks.dmpnn.adapter import (
         ConditionStats,
         DMPNNTrainingBundle,
-        _partial_dataset,
         _predict,
         _prepare_scalar,
         _scalar_dataset,
@@ -191,20 +182,20 @@ def _tiny_config(tmp_path: Path, *, name: str = "mlp", targets: str = "value"):
         writer.writerow(
             {
                 "catalog_schema_version": 1,
-                "stage": 2,
-                "task_id": "simulation/tiny",
-                "task_kind": "object_property",
+                "stage": 3,
+                "task_id": "experiment/tiny",
+                "task_kind": "observation",
                 "target_level": "object",
-                "source_file": "simulation/tiny.csv",
+                "source_file": "experiment/tiny.csv",
                 "target_columns": targets,
                 "identity_columns": "cation;anion",
                 "condition_columns": "temperature_K",
                 "system_type": "il",
                 "simulation_method": "test",
-                "materialized_path": "stage2/tiny",
+                "materialized_path": "stage3/experiment/tiny",
                 "label_source": "materialized_csv",
                 "resource_manifest": "",
-                "strategies": "system_holdout",
+                "strategies": "il",
             }
         )
     fields = ["cation", "anion", "temperature_K", *targets.split(";")]
@@ -219,9 +210,32 @@ def _tiny_config(tmp_path: Path, *, name: str = "mlp", targets: str = "value"):
         for column, target in enumerate(targets.split(";")):
             row[target] = float(index + column * 0.5)
         values.append(row)
-    _write_csv(tmp_path / "stage2/tiny/train.csv", fields, values[:4])
-    _write_csv(tmp_path / "stage2/tiny/valid.csv", fields, values[4:6])
-    _write_csv(tmp_path / "stage2/tiny/test.csv", fields, values[6:])
+    for fold in range(1, 6):
+        _write_csv(
+            tmp_path / f"stage3/experiment/tiny/IL/fold{fold}.csv",
+            fields,
+            values[(fold - 1) % 4 : (fold - 1) % 4 + 2],
+        )
+    _write_csv(tmp_path / "stage3/experiment/tiny/test.csv", fields, values[6:])
+    authority = tmp_path / "stage3.yaml"
+    authority.write_text(
+        yaml.safe_dump(
+            {
+                "data": {
+                    "stage3_dir": str(tmp_path / "stage3"),
+                    "task_catalog": str(catalog),
+                    "artifacts_dir": str(tmp_path / "unused-artifacts"),
+                },
+                "preparation": {"cache_dir": str(tmp_path / "unused-cache")},
+                "initialization": {"stage2_encoder": str(tmp_path / "unused.pt")},
+                "groups": {"tiny": {"enabled": True, "group_weight": 1.0}},
+                "tasks": {"experiment/tiny": {"meta_group": "tiny"}},
+                "training": {"device": "cpu", "amp_dtype": "none"},
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
     if name == "mlp":
         features = {"kind": "rdkit_2d", "radius": 2, "n_bits": 2048}
         model = {"hidden_dims": [8], "dropout": 0.0}
@@ -245,14 +259,13 @@ def _tiny_config(tmp_path: Path, *, name: str = "mlp", targets: str = "value"):
             "seed": 42,
             "data": {
                 "data_root": str(tmp_path), "task_catalog": str(catalog),
-                "stage3_authority_config": str(tmp_path / "unused.yaml"),
+                "stage3_authority_config": str(authority),
                 "feature_cache": str(tmp_path / "features.sqlite3"),
             },
             "features": features,
             "model": model,
             "training": training,
-            "stage3": {"enabled": False, "tasks": "all", "folds": [1, 2, 3, 4, 5]},
-            "stage2_physics": {"enabled": True, "tasks": ["simulation/tiny"]},
+            "stage3": {"enabled": True, "tasks": "all", "folds": [1, 2, 3, 4, 5]},
         }
     )
 
@@ -334,27 +347,37 @@ def _tiny_stage3_config(tmp_path: Path):
                 "device": "cpu", "precision": "fp32",
             },
             "stage3": {"enabled": True, "tasks": "all", "folds": [1, 2, 3, 4, 5]},
-            "stage2_physics": {"enabled": False, "tasks": []},
         }
     )
 
-def test_formal_configs_and_registry_resolution(tmp_path: Path) -> None:
+def test_formal_configs_and_registry_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = load_benchmark_config("configs/benchmarks/mlp.yaml")
     assert len(configured_tasks(config, "stage3")) == 21
-    assert configured_tasks(config, "stage2_physics") == (
-        "simulation/heat_of_vaporization",
-        "simulation/homo",
-        "simulation/lumo",
-    )
+    retired = config.to_dict()
+    retired["stage2_physics"] = {"enabled": True, "tasks": ["simulation/homo"]}
+    with pytest.raises(ValueError, match="Unknown benchmark config fields: stage2_physics"):
+        benchmark_config_from_dict(retired)
+    for launcher in (
+        benchmark_train_launcher,
+        benchmark_evaluate_launcher,
+    ):
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                str(launcher.__file__), "--config", "config.yaml",
+                "--benchmark", "stage2_physics", "--task", "simulation/homo",
+                "--output", "output",
+            ],
+        )
+        with pytest.raises(SystemExit):
+            launcher.main()
     solvation = resolve_task(config, "stage3", "experiment/solvation", 1)
     organic = resolve_task(config, "stage3", "experiment/transfer_organic", 1)
-    orbital = resolve_task(config, "stage2_physics", "simulation/homo", None)
     assert solvation.slots == ("cation", "anion", "solute")
     assert organic.slots == ("solute", "solvent")
-    assert orbital.slots == ("SMILES",) and orbital.target_columns == ("HOMO_eV",)
-    assert orbital.audit_columns == (
-        "ion_role", "provenance_source_file", "provenance_source_row"
-    )
     missing_test = resolve_task(config, "stage3", "experiment/self_diffusion_coefficient", 1)
     empty = load_split(missing_test, "test")
     reporter = RecordingReporter()
@@ -381,7 +404,6 @@ def test_native_split_benchmark_configs_follow_v2_authorities() -> None:
                 f"configs/v2/stage3/splits/{split}.yaml"
             )
             assert configured_tasks(config, "stage3") == expected
-            assert configured_tasks(config, "stage2_physics") == ()
             if benchmark == "dmpnn":
                 assert config.model["multicomponent_shared"] is True
 
@@ -392,7 +414,6 @@ def test_stage3_single_task_mlp_config_and_ordered_concat() -> None:
     )
     assert config.display_name == "ILUME Stage3 Single-task MLP"
     assert len(configured_tasks(config, "stage3")) == 21
-    assert configured_tasks(config, "stage2_physics") == ()
     assert config.data.feature_cache is None and config.features is None
     with pytest.raises(ValueError, match="registered recipe"):
         replace(config, model={**config.model, "dropout": 0.2}).validate()
@@ -478,18 +499,11 @@ def test_stage3_single_task_mlp_runs_full_budget_and_selects_best() -> None:
     restored.load_state_dict(best_state, strict=True)
     assert reporter.bars[0].n == 3 and reporter.bars[0].closed
 
-def test_formal_dmpnn_config_resolves_109_training_jobs() -> None:
+def test_formal_dmpnn_config_resolves_105_training_jobs() -> None:
     config = load_benchmark_config("configs/benchmarks/dmpnn.yaml")
     stage3_tasks = configured_tasks(config, "stage3")
-    stage2_tasks = configured_tasks(config, "stage2_physics")
     assert len(stage3_tasks) == 21
-    assert stage2_tasks == (
-        "simulation/heat_of_vaporization",
-        "simulation/homo",
-        "simulation/lumo",
-        "simulation/partial_atomic_charge",
-    )
-    assert len(stage3_tasks) * len(config.stage3.folds) + len(stage2_tasks) == 109
+    assert len(stage3_tasks) * len(config.stage3.folds) == 105
     assert config.features is None
     assert config.data.feature_cache is None
     assert config.model["multicomponent_shared"] is True
@@ -540,27 +554,27 @@ def test_preprocessor_uses_train_mask_median_and_population_zscore() -> None:
 
 def test_training_prepare_uses_only_training_and_validation_splits(tmp_path: Path) -> None:
     config = _tiny_config(tmp_path)
-    test_path = tmp_path / "stage2/tiny/test.csv"
+    test_path = tmp_path / "stage3/experiment/tiny/test.csv"
     test_path.unlink()
     reporter = RecordingReporter()
     bundle = prepare_training(
         config,
-        "stage2_physics",
-        "simulation/tiny",
-        None,
+        "stage3",
+        "experiment/tiny",
+        1,
         reporter=reporter,
     )
-    assert bundle.train_features.shape[0] == 4
+    assert bundle.train_features.shape[0] == 8
     assert [(bar.total, bar.n, bar.closed) for bar in reporter.bars] == [
-        (4, 4, True),
+        (8, 8, True),
         (2, 2, True),
     ]
     assert "train features" in reporter.bars[0].desc
     assert "valid features" in reporter.bars[1].desc
 
 def test_mlp_train_checkpoint_and_test_evaluation(tmp_path: Path) -> None:
-    config = _tiny_config(tmp_path, targets="left;right")
-    bundle = prepare_training(config, "stage2_physics", "simulation/tiny", None)
+    config = _tiny_config(tmp_path)
+    bundle = prepare_training(config, "stage3", "experiment/tiny", 1)
     output = tmp_path / "mlp_run"
     reporter = RecordingReporter()
     summary = train_bundle(config, bundle, output, reporter=reporter)
@@ -582,23 +596,23 @@ def test_mlp_train_checkpoint_and_test_evaluation(tmp_path: Path) -> None:
     evaluation_reporter = RecordingReporter()
     result = evaluate_checkpoint(
         config,
-        "stage2_physics",
-        "simulation/tiny",
-        None,
+        "stage3",
+        "experiment/tiny",
+        1,
         output,
         "test",
         reporter=evaluation_reporter,
     )
-    assert result.predictions.shape == (2, 2)
-    assert set(result.metrics) == {"left", "right"}
+    assert result.predictions.shape == (2, 1)
+    assert set(result.metrics) == {"value"}
     assert [(bar.total, bar.n, bar.closed) for bar in evaluation_reporter.bars] == [
-        (4, 4, True),
+        (8, 8, True),
         (2, 2, True),
         (2, 2, True),
     ]
     assert "test features" in evaluation_reporter.bars[-1].desc
-    assert "normalized_mae" in result.metrics["left"]
-    assert "normalized_rmse" in result.metrics["right"]
+    assert "normalized_mae" in result.metrics["value"]
+    assert "normalized_rmse" in result.metrics["value"]
 
 def test_stage3_fold_training_and_normalized_evaluation(tmp_path: Path) -> None:
     config = _tiny_stage3_config(tmp_path)
@@ -613,20 +627,20 @@ def test_stage3_fold_training_and_normalized_evaluation(tmp_path: Path) -> None:
 
 def test_xgboost_uses_independent_models_and_best_iteration(tmp_path: Path) -> None:
     pytest.importorskip("xgboost")
-    config = _tiny_config(tmp_path, name="ecfp_xgboost", targets="left;right")
-    bundle = prepare_training(config, "stage2_physics", "simulation/tiny", None)
+    config = _tiny_config(tmp_path, name="ecfp_xgboost")
+    bundle = prepare_training(config, "stage3", "experiment/tiny", 1)
     output = tmp_path / "xgb_run"
     reporter = RecordingReporter()
     summary = train_bundle(config, bundle, output, reporter=reporter)
     reference_summary = train_bundle(config, bundle, tmp_path / "xgb_reference")
     assert summary == reference_summary
-    assert set(summary["targets"]) == {"left", "right"}
-    assert len(list(output.glob("model_*.json"))) == 2
-    assert len(reporter.bars) == 2
+    assert set(summary["targets"]) == {"value"}
+    assert len(list(output.glob("model_*.json"))) == 1
+    assert len(reporter.bars) == 1
     assert all(0 < bar.n <= bar.total and bar.closed for bar in reporter.bars)
     assert all("best" in bar.postfixes[-1] for bar in reporter.bars)
-    result = evaluate_checkpoint(config, "stage2_physics", "simulation/tiny", None, output, "test")
-    assert result.predictions.shape == (2, 2)
+    result = evaluate_checkpoint(config, "stage3", "experiment/tiny", 1, output, "test")
+    assert result.predictions.shape == (2, 1)
 
 def test_five_fold_ensemble_averages_predictions_before_metrics() -> None:
     results = [
@@ -652,7 +666,6 @@ def test_sweep_scheduler_is_bounded_and_preserves_dependencies(
         root=tmp_path,
         stage3_tasks=("experiment/one", "experiment/two"),
         folds=(1, 2),
-        stage2_tasks=("simulation/one", "simulation/two"),
         devices=(),
     )
     lock = threading.Lock()
@@ -697,112 +710,6 @@ def test_sweep_scheduler_is_bounded_and_preserves_dependencies(
         "experiment/two": {1, 2},
     }
     assert {job.key for job in [*jobs, *ensembles.values()]} == finished
-
-def test_dmpnn_full_requires_complete_core_and_partial_from_same_sweep(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config = load_benchmark_config("configs/benchmarks/dmpnn.yaml")
-    monkeypatch.setattr(
-        sweep_module, "repository_relative", lambda value: Path(value).as_posix()
-    )
-    study_id = f"dmpnn-{semantic_identity(
-        'benchmark.reporting-study.v1',
-        {'model': config.name, 'config': sweep_module._scientific_config(config)},
-    )['hash']}"
-
-    def completed(task: str, summary: dict[str, object]) -> None:
-        run = (
-            tmp_path
-            / "stage2_physics"
-            / task.replace("/", "__")
-            / "evaluate_test"
-            / "attempt-001"
-        )
-        run.mkdir(parents=True)
-        (run / "metadata.json").write_text(
-            '{"status":"completed"}\n', encoding="utf-8"
-        )
-        (run / "summary.json").write_text(
-            json.dumps(summary), encoding="utf-8"
-        )
-
-    core_tasks = config.stage2_physics.tasks[:-1]
-    for index, task in enumerate(core_tasks, start=1):
-        spec = resolve_task(config, "stage2_physics", task, None)
-        target = spec.target_columns[0]
-        comparison = comparison_identity(
-            "stage2_physics",
-            split="test",
-            expected=(task,),
-            sources={f"{task}:test": f"hash-{index}"},
-            normalization={task: {"scale": float(index)}},
-        )
-        completed(
-            task,
-            {
-                "targets": {target: {"normalized_mae": index / 10}},
-                "reporting": {
-                    "schema_version": REPORTING_SCHEMA_VERSION,
-                    "contract": STAGE2_CORE_EVALUATION_CONTRACT,
-                    "study_id": study_id,
-                    "comparison_identity": comparison,
-                },
-            },
-        )
-    partial_comparison = comparison_identity(
-        "stage2_partial_charge",
-        split="test",
-        expected=(PARTIAL_CHARGE_UNIT,),
-        sources={"partial:test": "partial-hash"},
-        normalization={PARTIAL_CHARGE_UNIT: {"scale": 1.5}},
-    )
-    completed(
-        PARTIAL_CHARGE_TASK,
-        {
-            "stage2_partial_charge_benchmark": {
-                "test": {
-                    "status": "complete",
-                    "primary": {"molecule_macro_normalized_mae": 0.4},
-                }
-            },
-            "reporting": {
-                "schema_version": REPORTING_SCHEMA_VERSION,
-                "contract": STAGE2_PARTIAL_EVALUATION_CONTRACT,
-                "study_id": study_id,
-                "comparison_identity": partial_comparison,
-            },
-        },
-    )
-    complete = _aggregate(tmp_path, config)
-    assert complete["reporting"]["benchmarks"]["stage2_core_physics"][
-        "protocol"
-    ]["expected_tasks"] == list(core_tasks)
-    assert complete["reporting"]["benchmarks"]["stage2_partial_charge"][
-        "status"
-    ] == "complete"
-    assert complete["reporting"]["benchmarks"]["stage2_physics_full"][
-        "status"
-    ] == "complete"
-
-    partial_run = (
-        tmp_path
-        / "stage2_physics"
-        / PARTIAL_CHARGE_TASK.replace("/", "__")
-        / "evaluate_test"
-        / "attempt-001"
-        / "summary.json"
-    )
-    payload = json.loads(partial_run.read_text(encoding="utf-8"))
-    payload["stage2_partial_charge_benchmark"]["test"]["status"] = "incomplete"
-    partial_run.write_text(json.dumps(payload), encoding="utf-8")
-    incomplete = _aggregate(tmp_path, config)
-    assert incomplete["reporting"]["benchmarks"]["stage2_partial_charge"][
-        "status"
-    ] == "incomplete"
-    assert incomplete["reporting"]["benchmarks"]["stage2_physics_full"][
-        "status"
-    ] == "incomplete"
-
 
 def test_stage3_only_ablation_aggregate_has_one_model_and_no_stage2_sections(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -907,114 +814,8 @@ def test_stage3_only_ablation_aggregate_has_one_model_and_no_stage2_sections(
 
 # --- Reporting contract ---
 
-TASK_TARGETS = {
-    "simulation/heat_of_vaporization": ("heat",),
-    "simulation/homo": ("HOMO_eV",),
-    "simulation/lumo": ("LUMO_eV",),
-}
-
-def _comparison() -> dict[str, object]:
-    expected = list(TASK_TARGETS)
-    return comparison_identity(
-        "stage2_physics",
-        split="test",
-        expected=expected,
-        sources={"shared:train": "a", "shared:test": "b"},
-        normalization={name: {"scale": 2.0} for name in expected},
-    )
-
-def _stage2_summary(model: str, display: str, offset: float) -> dict[str, object]:
-    metrics = {}
-    expected = list(TASK_TARGETS)
-    for task, targets in TASK_TARGETS.items():
-        metrics[task] = {}
-        for index, target in enumerate(targets):
-            value = offset + index / 10
-            metrics[task][target] = {
-                "count": 4,
-                "mae": value * 2,
-                "rmse": value * 3,
-                "r2": 0.5,
-                "normalized_mae": value,
-                "normalized_rmse": value * 1.5,
-            }
-            if task in {"simulation/homo", "simulation/lumo"}:
-                metrics[task][target]["role_diagnostics"] = {
-                    "cation": {"count": 2, "mae": value * 1.5},
-                    "anion": {"count": 2, "mae": value * 2.5},
-                }
-    partial_comparison = comparison_identity(
-        "stage2_partial_charge",
-        split="test",
-        expected=[PARTIAL_CHARGE_UNIT],
-        sources={"test": "p", "manifest": "m", "mapping": "a"},
-        normalization={PARTIAL_CHARGE_UNIT: {"scale": 2.0, "weighting": "molecule_equal"}},
-    )
-    full_comparison = stage2_full_comparison_identity(
-        _comparison(), partial_comparison,
-        ordered_units=(*expected, PARTIAL_CHARGE_UNIT),
-    )
-    subsets = {
-        name: {
-            "molecule_count": 4 if name == "all_mapped" else 0,
-            "atom_count": 8 if name == "all_mapped" else 0,
-            "molecule_macro_mae": offset * 2 if name == "all_mapped" else None,
-            "molecule_macro_normalized_mae": offset if name == "all_mapped" else None,
-            "atom_micro_mae": offset * 2 if name == "all_mapped" else None,
-            "atom_micro_rmse": offset * 3 if name == "all_mapped" else None,
-            "atom_micro_r2": 0.5 if name == "all_mapped" else None,
-            "atom_micro_r2_reason": None if name == "all_mapped" else "no_samples",
-        }
-        for name in ("all_mapped", "unique", "ambiguous", "typed", "connectivity_only")
-    }
-    metrics[PARTIAL_CHARGE_TASK] = {
-        "target_level": "atom", "capability": "supported", "status": "complete",
-        "primary": {
-            "molecule_macro_mae": offset * 2,
-            "molecule_macro_normalized_mae": offset,
-        },
-        "atom_micro": {"count": 8, "mae": offset * 2, "rmse": offset * 3, "r2": 0.5, "r2_reason": None},
-        "subsets": subsets,
-        "coverage": {"test_molecule_count": 4, "mapped_molecule_count": 4, "issues": []},
-    }
-    return {
-        "split": "test",
-        "checkpoint_epoch": 5,
-        "tasks": metrics,
-        "reporting": {
-            "schema_version": 1,
-            "contract": STAGE2_BENCHMARK_SUITE_CONTRACT,
-            "model_id": model,
-            "model_display_name": display,
-            "study_id": f"{model}-study",
-            "capabilities": {
-                "stage2_core_physics": "supported",
-                "stage2_partial_charge": "supported",
-                "stage2_physics_full": "supported",
-            },
-            "benchmarks": {
-                "stage2_core_physics": {
-                    "status": "complete", "benchmark": "stage2_physics",
-                    "protocol": {"split": "test", "expected_tasks": list(TASK_TARGETS), "checkpoint_epoch": 5, "checkpoint_sha256": "checkpoint"},
-                    "comparison_identity": _comparison(),
-                },
-                "stage2_partial_charge": {
-                    "status": "complete", "benchmark": "stage2_partial_charge",
-                    "protocol": {"split": "test", "expected_tasks": [PARTIAL_CHARGE_TASK], "expected_units": [PARTIAL_CHARGE_UNIT], "checkpoint_epoch": 5, "checkpoint_sha256": "checkpoint"},
-                    "comparison_identity": partial_comparison,
-                },
-                "stage2_physics_full": {
-                    "status": "complete", "benchmark": "stage2_physics_full",
-                    "protocol": {"split": "test", "ordered_units": [*expected, PARTIAL_CHARGE_UNIT], "checkpoint_epoch": 5, "checkpoint_sha256": "checkpoint"},
-                    "comparison_identity": full_comparison,
-                },
-            },
-            "predictions": [],
-        },
-    }
-
 def _write_run(
-    root: Path, summary: dict[str, object], *, stage: str = "stage2"
+    root: Path, summary: dict[str, object], *, stage: str = "benchmark"
 ) -> None:
     root.mkdir(parents=True)
     metadata = {
@@ -1117,6 +918,8 @@ def test_stage3_summary_ignores_normalization_but_requires_shared_sources(
     payload = publish_summary(inputs, tmp_path / "summary", tmp_path)
     assert len(payload["leaderboards"]["stage3_test"]) == 2
     assert len(payload["leaderboards"]["stage3_validation"]) == 2
+    assert "stage2" not in json.dumps(payload).lower()
+    assert all("stage2" not in name for name in SUMMARY_FILES)
 
     incompatible = tmp_path / "incompatible"
     _write_run(
@@ -1146,52 +949,6 @@ def test_prediction_csv_is_atomic_and_records_integrity(tmp_path: Path) -> None:
             {"source_row": "2", "target": "1", "prediction": "1.25"}
         ]
     assert not path.with_suffix(".csv.tmp").exists()
-
-def test_stage2_suite_v1_is_health_only_after_breaking_contract(tmp_path: Path) -> None:
-    inputs = tmp_path / "outputs"
-    legacy = _stage2_summary("ilume", "ILUME", 0.3)
-    legacy["reporting"]["contract"] = "stage2-benchmark-suite-v1"
-    _write_run(inputs / "legacy", legacy)
-
-    payload = publish_summary(inputs, tmp_path / "summary", tmp_path)
-    assert payload["leaderboards"]["stage2_core_physics"] == []
-    health = {row["source_run"]: row for row in payload["health"]}
-    assert health["outputs/legacy"]["stage2_core_eligibility"] == "legacy"
-    assert "legacy_stage2_reporting_contract" in health["outputs/legacy"]["issues"]
-
-
-def test_summary_publishes_radar_and_marks_unsupported_partial_charge_zero(
-    tmp_path: Path,
-) -> None:
-    inputs = tmp_path / "inputs"
-    ilume = _stage2_summary("ilume", "ILUME", 0.2)
-    mlp = _stage2_summary("mlp", "MLP", 0.4)
-    for name in ("stage2_partial_charge", "stage2_physics_full"):
-        mlp["reporting"]["capabilities"][name] = "unsupported"
-        mlp["reporting"]["benchmarks"][name]["status"] = "unsupported"
-    _write_run(inputs / "ilume", ilume)
-    _write_run(inputs / "mlp", mlp)
-
-    publish_summary(inputs, tmp_path / "summary", tmp_path)
-
-    radar = (tmp_path / "summary" / "radar.svg").read_text(encoding="utf-8")
-    assert radar.startswith("<?xml")
-    assert set(path.name for path in (tmp_path / "summary").iterdir()) == set(SUMMARY_FILES)
-    match = re.search(
-        r'<polygon class="series" data-panel="stage2_test" '
-        r'data-run="mlp@inputs/mlp" data-scores="([^"]+)"',
-        radar,
-    )
-    assert match is not None
-    assert float(match.group(1).split(",")[-1]) == 0.0
-    match = re.search(
-        r'<polygon class="series" data-panel="stage2_test" '
-        r'data-run="ilume@inputs/ilume" data-scores="([^"]+)"',
-        radar,
-    )
-    assert match is not None
-    assert float(match.group(1).split(",")[-1]) == 1.0
-
 
 def test_summary_labels_capacity_v1_stage3_scales(tmp_path: Path) -> None:
     inputs = tmp_path / "outputs"
@@ -1275,19 +1032,19 @@ def test_summary_labels_capacity_v1_stage3_scales(tmp_path: Path) -> None:
 
 # --- D-MPNN runtime smoke ---
 
-def _task(component_count: int, *, atom: bool = False) -> BenchmarkTask:
+def _task(component_count: int) -> BenchmarkTask:
     return BenchmarkTask(
-        benchmark="stage2_physics",
-        task_id="simulation/partial_atomic_charge" if atom else "simulation/tiny",
+        benchmark="stage3",
+        task_id="experiment/tiny",
         slots=tuple(f"component_{index}" for index in range(component_count)),
-        condition_columns=() if atom else ("temperature_K", "pressure_kPa"),
-        target_columns=("partial_charge",) if atom else ("value",),
+        condition_columns=("temperature_K", "pressure_kPa"),
+        target_columns=("value",),
         audit_columns=(),
         train_paths=(Path("train.csv"),),
         valid_paths=(Path("valid.csv"),),
         test_path=Path("test.csv"),
-        fold=None,
-        meta_group=None,
+        fold=1,
+        meta_group="tiny",
         registry_payload={"test": True},
     )
 
@@ -1364,8 +1121,8 @@ def test_one_epoch_scalar_and_multicomponent_save_reload_smoke(
     )
     dataset = _scalar_bundle(component_count).valid_dataset
     np.testing.assert_allclose(
-        _predict(first, dataset, atom=False),
-        _predict(second, dataset, atom=False),
+        _predict(first, dataset),
+        _predict(second, dataset),
         rtol=0,
         atol=0,
     )
@@ -1442,17 +1199,11 @@ def _spmm_raw() -> RawDataset:
     )
 
 
-def test_formal_spmm_config_resolves_108_jobs_and_is_strict() -> None:
+def test_formal_spmm_config_resolves_105_jobs_and_is_strict() -> None:
     config = load_benchmark_config("configs/benchmarks/spmm.yaml")
     stage3 = configured_tasks(config, "stage3")
-    stage2 = configured_tasks(config, "stage2_physics")
     assert len(stage3) == 21
-    assert stage2 == (
-        "simulation/heat_of_vaporization",
-        "simulation/homo",
-        "simulation/lumo",
-    )
-    assert len(stage3) * len(config.stage3.folds) + len(stage2) == 108
+    assert len(stage3) * len(config.stage3.folds) == 105
     assert config.training["batch_size"] == 128
     assert config.training["cuda_matmul_tf32"] is True
     assert config.training["length_bucketing"] == SPMM_TRAINING_ORDER_CONTRACT
@@ -1771,17 +1522,11 @@ class FakeLlaSMolTokenizer:
         return {"input_ids": values, "attention_mask": [1] * len(values)}
 
 
-def test_formal_llasmol_config_resolves_108_jobs_and_is_strict() -> None:
+def test_formal_llasmol_config_resolves_105_jobs_and_is_strict() -> None:
     config = load_benchmark_config("configs/benchmarks/llasmol.yaml")
     stage3 = configured_tasks(config, "stage3")
-    stage2 = configured_tasks(config, "stage2_physics")
     assert len(stage3) == 21
-    assert stage2 == (
-        "simulation/heat_of_vaporization",
-        "simulation/homo",
-        "simulation/lumo",
-    )
-    assert len(stage3) * len(config.stage3.folds) + len(stage2) == 108
+    assert len(stage3) * len(config.stage3.folds) == 105
     assert config.training["batch_size"] == 8
     assert config.training["gradient_accumulation_steps"] == 4
     assert config.training["length_bucketing"] == LLASMOL_TRAINING_ORDER_CONTRACT

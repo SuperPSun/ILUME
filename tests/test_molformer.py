@@ -64,8 +64,8 @@ class FakeTokenizer:
 
 def _task() -> BenchmarkTask:
     return BenchmarkTask(
-        benchmark="stage2_physics",
-        task_id="simulation/tiny",
+        benchmark="stage3",
+        task_id="experiment/tiny",
         slots=("cation", "anion"),
         condition_columns=("temperature_K",),
         target_columns=("value",),
@@ -73,9 +73,9 @@ def _task() -> BenchmarkTask:
         train_paths=(),
         valid_paths=(),
         test_path=None,  # type: ignore[arg-type]
-        fold=None,
-        meta_group=None,
-        registry_payload={"task_id": "simulation/tiny"},
+        fold=1,
+        meta_group="tiny",
+        registry_payload={"task_id": "experiment/tiny"},
     )
 
 
@@ -95,17 +95,11 @@ def _raw() -> RawDataset:
     )
 
 
-def test_formal_molformer_config_resolves_108_training_jobs() -> None:
+def test_formal_molformer_config_resolves_105_training_jobs() -> None:
     config = load_benchmark_config("configs/benchmarks/molformer.yaml")
     stage3 = configured_tasks(config, "stage3")
-    stage2 = configured_tasks(config, "stage2_physics")
     assert len(stage3) == 21
-    assert stage2 == (
-        "simulation/heat_of_vaporization",
-        "simulation/homo",
-        "simulation/lumo",
-    )
-    assert len(stage3) * len(config.stage3.folds) + len(stage2) == 108
+    assert len(stage3) * len(config.stage3.folds) == 105
     assert config.training["batch_size"] == 128
     assert config.training["encoder_learning_rate"] == 5.0e-6
     assert config.training["new_parameter_learning_rate"] == 5.0e-5

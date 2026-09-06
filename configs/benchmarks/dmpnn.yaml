@@ -9,7 +9,6 @@ data:
   data_root: data
   task_catalog: data/task_catalog.csv
   stage3_authority_config: configs/v1/stage3/base.yaml
-  stage2_authority_config: configs/v1/stage2/base.yaml
 model:
   message_hidden_dim: 300
   depth: 3
@@ -39,10 +38,3 @@ stage3:
   enabled: true
   tasks: all
   folds: [1, 2, 3, 4, 5]
-stage2_physics:
-  enabled: true
-  tasks:
-    - simulation/heat_of_vaporization
-    - simulation/homo
-    - simulation/lumo
-    - simulation/partial_atomic_charge
