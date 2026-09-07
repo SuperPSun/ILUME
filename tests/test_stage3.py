@@ -572,6 +572,41 @@ def test_four_phase_config_and_task_specific_gate_contract() -> None:
     assert len(model.l1_group_experts["g2"]) == 1
 
 
+def test_v2_private_capacity_ratios_scale_hidden_widths_only() -> None:
+    config = load_stage3_config("configs/v2/stage3/base.yaml")
+    for task_config in config.tasks.values():
+        overrides = task_config.model_overrides
+        scale = overrides["private_lr_scale"]
+        assert overrides["private_hidden_ratio"] == scale
+        assert overrides["tower_hidden_ratio"] == scale
+        assert overrides["film_hidden_ratio"] == scale
+
+    task_id = "experiment/static_relative_permittivity"
+    task = config.tasks[task_id]
+    scale = task.model_overrides["private_lr_scale"]
+    assert task.model_overrides["private_hidden_ratio"] == scale
+    assert task.model_overrides["tower_hidden_ratio"] == scale
+    assert task.model_overrides["film_hidden_ratio"] == scale
+
+    spec = resolve_task_registry(config)[task_id]
+    model = Stage3SparseModel(
+        config.model,
+        {task_id: spec},
+        1024,
+        group_configs=config.groups,
+        task_configs={task_id: task},
+    )
+    key = task_id.replace("/", "__")
+    recipe = model.resolved_capacity_recipe()["tasks"][task_id]
+    assert recipe["private_hidden"] == 256
+    assert recipe["tower_hidden"] == 256
+    assert recipe["film_hidden"] == 256
+    assert model.private_experts[key][0].layers[0].out_features == 256
+    assert model.towers[key].layers[0].out_features == 256
+    assert model.condition_films[key].network[0].out_features == 256
+    assert model.task_gates[key].in_features == 2048
+
+
 def test_four_phase_training_publishes_fixed_final_state(
     tiny_prepared: Stage3Config,
 ) -> None:

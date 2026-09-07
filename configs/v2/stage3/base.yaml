@@ -31,45 +31,45 @@ groups:
   solvation: {enabled: true, group_weight: 1.0, experts: 3, expert_hidden_ratio: 1.5, phase_c_epochs: 25}
   biological: {enabled: true, group_weight: 1.0, experts: 1, expert_hidden_ratio: 0.5, phase_c_epochs: 5}
 tasks:
-  experiment/electrical_conductivity: {meta_group: transport, phase_d_epochs: 15, model_overrides: {private_lr_scale: 0.75}}
-  experiment/self_diffusion_coefficient: {meta_group: transport, phase_d_epochs: 10, model_overrides: {private_lr_scale: 0.25}}
-  experiment/viscosity: {meta_group: transport, phase_d_epochs: 5, model_overrides: {private_lr_scale: 1.0}}
-  experiment/thermal_conductivity: {meta_group: transport, phase_d_epochs: 5, model_overrides: {private_lr_scale: 0.25}}
-  experiment/density: {meta_group: thermophysical, phase_d_epochs: 5, model_overrides: {private_lr_scale: 1.0}}
-  experiment/heat_capacity: {meta_group: thermophysical, phase_d_epochs: 3, model_overrides: {private_lr_scale: 0.5}}
-  experiment/isobaric_coefficient_of_volume_expansion: {meta_group: thermophysical, phase_d_epochs: 3, model_overrides: {private_lr_scale: 0.25}}
-  experiment/speed_of_sound: {meta_group: thermophysical, phase_d_epochs: 3, model_overrides: {private_lr_scale: 0.5}}
-  experiment/surface_tension: {meta_group: thermophysical, phase_d_epochs: 10, model_overrides: {private_lr_scale: 0.75}}
-  experiment/equilibrium_pressure: {meta_group: phase_stability, phase_d_epochs: 3, model_overrides: {private_lr_scale: 0.25}}
-  experiment/glass_transition_temperature: {meta_group: phase_stability, phase_d_epochs: 5, model_overrides: {private_lr_scale: 0.75}}
-  experiment/melting_point: {meta_group: phase_stability, phase_d_epochs: 10, model_overrides: {private_lr_scale: 1.0}}
-  experiment/thermal_decomposition_temperature: {meta_group: phase_stability, phase_d_epochs: 10, model_overrides: {private_lr_scale: 1.0}}
-  experiment/dynamic_relative_permittivity: {meta_group: dielectric_optical, phase_d_epochs: 3, model_overrides: {private_lr_scale: 0.25}}
-  experiment/static_relative_permittivity: {meta_group: dielectric_optical, phase_d_epochs: 5, model_overrides: {private_lr_scale: 0.25}}
-  experiment/refractive_index: {meta_group: dielectric_optical, phase_d_epochs: 5, model_overrides: {private_lr_scale: 0.75}}
+  experiment/electrical_conductivity: {meta_group: transport, phase_d_epochs: 15, model_overrides: {private_lr_scale: 0.75, private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75}}
+  experiment/self_diffusion_coefficient: {meta_group: transport, phase_d_epochs: 10, model_overrides: {private_lr_scale: 0.25, private_hidden_ratio: 0.25, tower_hidden_ratio: 0.25, film_hidden_ratio: 0.25}}
+  experiment/viscosity: {meta_group: transport, phase_d_epochs: 5, model_overrides: {private_lr_scale: 1.0, private_hidden_ratio: 1.0, tower_hidden_ratio: 1.0, film_hidden_ratio: 1.0}}
+  experiment/thermal_conductivity: {meta_group: transport, phase_d_epochs: 5, model_overrides: {private_lr_scale: 0.25, private_hidden_ratio: 0.25, tower_hidden_ratio: 0.25, film_hidden_ratio: 0.25}}
+  experiment/density: {meta_group: thermophysical, phase_d_epochs: 5, model_overrides: {private_lr_scale: 1.0, private_hidden_ratio: 1.0, tower_hidden_ratio: 1.0, film_hidden_ratio: 1.0}}
+  experiment/heat_capacity: {meta_group: thermophysical, phase_d_epochs: 3, model_overrides: {private_lr_scale: 0.5, private_hidden_ratio: 0.5, tower_hidden_ratio: 0.5, film_hidden_ratio: 0.5}}
+  experiment/isobaric_coefficient_of_volume_expansion: {meta_group: thermophysical, phase_d_epochs: 3, model_overrides: {private_lr_scale: 0.25, private_hidden_ratio: 0.25, tower_hidden_ratio: 0.25, film_hidden_ratio: 0.25}}
+  experiment/speed_of_sound: {meta_group: thermophysical, phase_d_epochs: 3, model_overrides: {private_lr_scale: 0.5, private_hidden_ratio: 0.5, tower_hidden_ratio: 0.5, film_hidden_ratio: 0.5}}
+  experiment/surface_tension: {meta_group: thermophysical, phase_d_epochs: 10, model_overrides: {private_lr_scale: 0.75, private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75}}
+  experiment/equilibrium_pressure: {meta_group: phase_stability, phase_d_epochs: 3, model_overrides: {private_lr_scale: 0.25, private_hidden_ratio: 0.25, tower_hidden_ratio: 0.25, film_hidden_ratio: 0.25}}
+  experiment/glass_transition_temperature: {meta_group: phase_stability, phase_d_epochs: 5, model_overrides: {private_lr_scale: 0.75, private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75}}
+  experiment/melting_point: {meta_group: phase_stability, phase_d_epochs: 10, model_overrides: {private_lr_scale: 1.0, private_hidden_ratio: 1.0, tower_hidden_ratio: 1.0, film_hidden_ratio: 1.0}}
+  experiment/thermal_decomposition_temperature: {meta_group: phase_stability, phase_d_epochs: 10, model_overrides: {private_lr_scale: 1.0, private_hidden_ratio: 1.0, tower_hidden_ratio: 1.0, film_hidden_ratio: 1.0}}
+  experiment/dynamic_relative_permittivity: {meta_group: dielectric_optical, phase_d_epochs: 3, model_overrides: {private_lr_scale: 0.25, private_hidden_ratio: 0.25, tower_hidden_ratio: 0.25, film_hidden_ratio: 0.25}}
+  experiment/static_relative_permittivity: {meta_group: dielectric_optical, phase_d_epochs: 5, model_overrides: {private_lr_scale: 0.25, private_hidden_ratio: 0.25, tower_hidden_ratio: 0.25, film_hidden_ratio: 0.25}}
+  experiment/refractive_index: {meta_group: dielectric_optical, phase_d_epochs: 5, model_overrides: {private_lr_scale: 0.75, private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75}}
   experiment/solvation:
     meta_group: solvation
     phase_d_epochs: 5
-    model_overrides: {private_lr_scale: 1.0}
+    model_overrides: {private_lr_scale: 1.0, private_hidden_ratio: 1.0, tower_hidden_ratio: 1.0, film_hidden_ratio: 1.0}
     partner_mode: interaction
     primary_slots: [cation, anion]
     partner_slots: [solute]
   experiment/transfer:
     meta_group: solvation
     phase_d_epochs: 10
-    model_overrides: {private_lr_scale: 1.0}
+    model_overrides: {private_lr_scale: 1.0, private_hidden_ratio: 1.0, tower_hidden_ratio: 1.0, film_hidden_ratio: 1.0}
     partner_mode: interaction
     primary_slots: [cation, anion]
     partner_slots: [solute]
   experiment/transfer_organic:
     meta_group: solvation
     phase_d_epochs: 20
-    model_overrides: {private_lr_scale: 0.75}
+    model_overrides: {private_lr_scale: 0.75, private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75}
     partner_mode: interaction
     primary_slots: [solute]
     partner_slots: [solvent]
-  experiment/x_co2: {meta_group: solvation, phase_d_epochs: 3, model_overrides: {private_lr_scale: 0.5}}
-  experiment/pec50: {meta_group: biological, phase_d_epochs: 10, model_overrides: {private_lr_scale: 0.5}}
+  experiment/x_co2: {meta_group: solvation, phase_d_epochs: 3, model_overrides: {private_lr_scale: 0.5, private_hidden_ratio: 0.5, tower_hidden_ratio: 0.5, film_hidden_ratio: 0.5}}
+  experiment/pec50: {meta_group: biological, phase_d_epochs: 10, model_overrides: {private_lr_scale: 0.5, private_hidden_ratio: 0.5, tower_hidden_ratio: 0.5, film_hidden_ratio: 0.5}}
 training:
   composite_batch_size: 2048
   microbatch_size: 1024
