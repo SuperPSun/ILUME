@@ -1,0 +1,36 @@
+schema_version: 2
+kind: comparison
+expected_epochs: 100
+candidates:
+  - id: s
+    scale: S
+    folds:
+      1: outputs/experiments_v1/stage3/formal/s/train/fold1
+      2: outputs/experiments_v1/stage3/formal/s/train/fold2
+      3: outputs/experiments_v1/stage3/formal/s/train/fold3
+      4: outputs/experiments_v1/stage3/formal/s/train/fold4
+      5: outputs/experiments_v1/stage3/formal/s/train/fold5
+  - id: base
+    scale: Base
+    folds:
+      1: outputs/experiments_v1/stage3/formal/base/train/fold1
+      2: outputs/experiments_v1/stage3/formal/base/train/fold2
+      3: outputs/experiments_v1/stage3/formal/base/train/fold3
+      4: outputs/experiments_v1/stage3/formal/base/train/fold4
+      5: outputs/experiments_v1/stage3/formal/base/train/fold5
+  - id: l
+    scale: L
+    folds:
+      1: outputs/experiments_v1/stage3/formal/l/train/fold1
+      2: outputs/experiments_v1/stage3/formal/l/train/fold2
+      3: outputs/experiments_v1/stage3/formal/l/train/fold3
+      4: outputs/experiments_v1/stage3/formal/l/train/fold4
+      5: outputs/experiments_v1/stage3/formal/l/train/fold5
+  - id: xl
+    scale: XL
+    folds:
+      1: outputs/experiments_v1/stage3/formal/xl/train/fold1
+      2: outputs/experiments_v1/stage3/formal/xl/train/fold2
+      3: outputs/experiments_v1/stage3/formal/xl/train/fold3
+      4: outputs/experiments_v1/stage3/formal/xl/train/fold4
+      5: outputs/experiments_v1/stage3/formal/xl/train/fold5

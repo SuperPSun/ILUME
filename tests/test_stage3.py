@@ -8,9 +8,7 @@ import math
 
 import shutil
 
-import xml.etree.ElementTree as ET
-
-from dataclasses import asdict, replace
+from dataclasses import replace
 
 from pathlib import Path
 
@@ -82,51 +80,14 @@ from stage3.identity import build_stage3_training_identity, metadata_identity
 
 from dataclasses import replace
 
-import yaml
 
 from common.identity import semantic_identity
 
-from stage3.capacity import (
-    CapacityStudyConfig,
-    aggregate_fold_summaries,
-    config_for_trial,
-    confirmation_trial_numbers,
-    load_capacity_study_config,
-    materialize_final_recipe_configs,
-    select_probe_winners,
-    summarize_capacity_manifest,
-    refined_validation_summary,
-    validate_anchor_decision,
-)
-
-from stage3.search import (
-    ALL_TASKS,
-    EVALUATION_WEIGHTS,
-    EVALUATION_WEIGHT_SUM,
-    TIER_1,
-    TIER_2,
-    TIER_3,
-    WEAK_TASKS,
-    aggregate_search_trial,
-    config_for_search_c,
-    expert_candidates,
-    grouping_candidates,
-    load_search_config,
-    rank_trials,
-)
-
-from stage3.search_report import (
-    REPORT_ARTIFACTS,
-    TASK_ORDER,
-    build_search_report,
-    write_search_report,
-)
+from stage3.capacity import refined_validation_summary, summarize_capacity_manifest
 
 from stage3.config import load_stage3_config
 
 import scripts.stage3.train as train_launcher
-import scripts.stage3.search as search_launcher
-import scripts.stage3.search_report as search_report_launcher
 
 from stage1.config import load_config
 from stage1.descriptors import calculate_descriptors, rdkit_descriptor_names
@@ -144,14 +105,6 @@ from typing import Any
 from stage3.config import validate_stage3_folds
 
 
-def test_stage3_search_allows_repeated_device_slots() -> None:
-    assert search_launcher._parse_devices("cuda:0,cuda:0") == ("cuda:0", "cuda:0")
-    assert search_launcher._expand_devices(("cuda:0",), 4) == (
-        "cuda:0", "cuda:0", "cuda:0", "cuda:0"
-    )
-    assert search_launcher._expand_devices(("cuda:0", "cuda:1"), 4) == (
-        "cuda:0", "cuda:1", "cuda:0", "cuda:1"
-    )
 
 import argparse
 
@@ -502,410 +455,6 @@ def test_zero_global_or_private_experts_preserve_forward_and_ownership(
     assert model.parameters_for_owner(private_owner(task))
 
 
-def test_v2_stage3_search_candidate_and_metric_contracts() -> None:
-    spec = load_search_config("configs/v2/stage3/search.yaml")
-    assert spec.folds == (1, 2)
-    assert spec.epochs == 20
-    groupings = grouping_candidates(spec.sampler_seed)
-    assert len(groupings) == 50
-    assert {source: sum(item.source == source for item in groupings) for source in (
-        "anchor", "manual", "combination"
-    )} == {"anchor": 5, "manual": 20, "combination": 25}
-    assert {
-        count: sum(item.group_count == count for item in groupings)
-        for count in (2, 3, 6, 9, 12)
-    } == {2: 10, 3: 10, 6: 10, 9: 10, 12: 10}
-    for candidate in groupings:
-        assert set(candidate.assignments) == set(ALL_TASKS)
-        assert len(set(candidate.assignments.values())) == candidate.group_count
-
-    experts = expert_candidates()
-    assert len(experts) == 30
-    assert {source: sum(item.source == source for item in experts) for source in (
-        "local", "ablation", "higher_capacity"
-    )} == {"local": 10, "ablation": 10, "higher_capacity": 10}
-    assert {
-        (item.global_experts, item.group_experts, item.private_experts)
-        for item in experts
-    } == {
-        (global_count, group_count, private_count)
-        for global_count in (0, 1, 2)
-        for group_count in (1, 2, 3, 4, 6)
-        for private_count in (0, 1)
-    }
-    assert EVALUATION_WEIGHT_SUM == pytest.approx(33.0)
-    assert sum(EVALUATION_WEIGHTS.values()) == pytest.approx(33.0)
-    config = config_for_search_c(
-        load_stage3_config(spec.base_config),
-        groupings[0],
-        experts[0],
-        {
-            "tier1_weight": 5.0,
-            "tier2_weight": 4.0,
-            "tier3_weight": 3.0,
-            "learning_rate": 1.0e-4,
-            "dropout": 0.20,
-            "weight_decay": 3.0e-2,
-        },
-    )
-    assert {config.tasks[task].task_weight for task in TIER_1} == {5.0}
-    assert {config.tasks[task].task_weight for task in TIER_2} == {4.0}
-    assert {config.tasks[task].task_weight for task in TIER_3} == {3.0}
-    assert {
-        config.tasks[task].task_weight
-        for task in ALL_TASKS
-        if task not in WEAK_TASKS
-    } == {1.0}
-
-
-def test_stage3_search_phase_catalogs_bind_top3_and_balance_groupings(
-    tmp_path: Path,
-) -> None:
-    groupings = grouping_candidates()
-    a_root = tmp_path / "search_a"
-    a_root.mkdir()
-    (a_root / "result.json").write_text(
-        json.dumps({"ranking": [{"candidate": item.to_dict()} for item in groupings[:3]]}),
-        encoding="utf-8",
-    )
-    b_catalog, prerequisites = search_launcher._candidate_catalog("b", tmp_path)
-    assert set(prerequisites) == {"search_a"}
-    assert len(b_catalog) == 30
-    assert {
-        grouping.candidate_id: sum(
-            row["grouping"]["candidate_id"] == grouping.candidate_id
-            for row in b_catalog
-        )
-        for grouping in groupings[:3]
-    } == {grouping.candidate_id: 10 for grouping in groupings[:3]}
-
-    b_root = tmp_path / "search_b"
-    b_root.mkdir()
-    (b_root / "result.json").write_text(
-        json.dumps({"ranking": [{"candidate": item} for item in b_catalog[:3]]}),
-        encoding="utf-8",
-    )
-    c_catalog, prerequisites = search_launcher._candidate_catalog("c", tmp_path)
-    assert set(prerequisites) == {"search_a", "search_b"}
-    assert len(c_catalog) == 9
-    assert len({row["grouping"]["candidate_id"] for row in c_catalog}) == 3
-    assert len({row["experts"]["candidate_id"] for row in c_catalog}) == 3
-
-
-def test_stage3_search_two_fold_aggregation_and_tie_break() -> None:
-    weak = {task: 0.5 for task in EVALUATION_WEIGHTS if EVALUATION_WEIGHTS[task] > 1}
-    fold = {
-        "weighted_normalized_mae": 0.4,
-        "original_macro_task_score": 0.6,
-        "weak_task_scores": weak,
-        "training_cost": {
-            "wall_seconds": 2.0,
-            "gpu_seconds": 2.0,
-            "peak_allocated_bytes": 100,
-            "total_parameters": 10,
-            "trainable_parameters": 9,
-        },
-    }
-    row = aggregate_search_trial(
-        {1: fold, 2: {**fold, "weighted_normalized_mae": 0.6}},
-        trial_number=7,
-        candidate={"candidate_id": "x"},
-    )
-    assert row["score"] == pytest.approx(0.5)
-    assert row["fold_sample_sd"] == pytest.approx(math.sqrt(0.02))
-    assert row["training_cost"]["gpu_seconds"] == pytest.approx(4.0)
-    slower = {
-        **row,
-        "trial_number": 8,
-        "training_cost": {**row["training_cost"], "gpu_seconds": 5.0},
-    }
-    assert [item["trial_number"] for item in rank_trials([slower, row])] == [7, 8]
-
-
-def _search_report_trial(
-    candidate: dict[str, Any], trial_number: int, value: float, phase: str
-) -> dict[str, Any]:
-    fold_summaries = {}
-    for fold, offset in ((1, 0.0), (2, 0.02)):
-        task_scores = {
-            task: value + index / 1000 + offset
-            for index, task in enumerate(ALL_TASKS)
-        }
-        weighted = sum(
-            task_scores[task] * EVALUATION_WEIGHTS[task] for task in ALL_TASKS
-        ) / EVALUATION_WEIGHT_SUM
-        fold_summaries[fold] = {
-            "task_scores": task_scores,
-            "weighted_normalized_mae": weighted,
-            "original_macro_task_score": sum(task_scores.values()) / len(task_scores),
-            "weak_task_scores": {task: task_scores[task] for task in WEAK_TASKS},
-            "training_cost": {
-                "wall_seconds": 10.0 + fold,
-                "gpu_seconds": 9.0 + fold,
-                "peak_allocated_bytes": 1000 + trial_number,
-                "total_parameters": 10000 + trial_number,
-                "trainable_parameters": 9000 + trial_number,
-            },
-        }
-    parameters: dict[str, Any] = {"candidate_id": candidate["candidate_id"]}
-    if phase == "C":
-        parameters.update({
-            "tier1_weight": 1.0,
-            "tier2_weight": 1.0,
-            "tier3_weight": 1.0,
-            "learning_rate": 3.0e-4,
-            "dropout": 0.1,
-            "weight_decay": 1.0e-2,
-        })
-    return aggregate_search_trial(
-        fold_summaries,
-        trial_number=trial_number,
-        candidate={**candidate, "parameters": parameters},
-    )
-
-
-def _write_search_report_inputs(root: Path) -> None:
-    def write(path: Path, payload: dict[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload), encoding="utf-8")
-
-    a_candidates = [candidate.to_dict() for candidate in grouping_candidates()]
-    a_ranking = rank_trials([
-        _search_report_trial(a_candidates[index], index, 0.40 + index * 0.05, "A")
-        for index in range(3)
-    ])
-    a_result = {
-        "schema_version": 1,
-        "phase": "A",
-        "primary_metric": "weak_property_weighted_validation_normalized_mae",
-        "attempted_trials": 50,
-        "completed_trials": 3,
-        "failed_trials": 47,
-        "ranking": a_ranking,
-        "top3": a_ranking,
-        "top3_groupings": [row["candidate"] for row in a_ranking],
-    }
-    write(root / "search_a/result.json", a_result)
-    write(root / "search_a/candidate_manifest.json", {
-        "schema_version": 1,
-        "phase": "A",
-        "prerequisites": {},
-        "candidates": a_candidates,
-    })
-
-    b_candidates, _ = search_launcher._candidate_catalog("b", root)
-    b_ranking = rank_trials([
-        _search_report_trial(b_candidates[index], index, 0.30 + index * 0.04, "B")
-        for index in range(3)
-    ])
-    b_result = {
-        "schema_version": 1,
-        "phase": "B",
-        "primary_metric": "weak_property_weighted_validation_normalized_mae",
-        "attempted_trials": 30,
-        "completed_trials": 3,
-        "failed_trials": 27,
-        "ranking": b_ranking,
-        "top3": b_ranking,
-        "top3_expert_structures": [row["candidate"]["experts"] for row in b_ranking],
-    }
-    write(root / "search_b/result.json", b_result)
-    write(root / "search_b/candidate_manifest.json", {
-        "schema_version": 1,
-        "phase": "B",
-        "prerequisites": {"search_a": sha256_file(root / "search_a/result.json")},
-        "candidates": b_candidates,
-    })
-
-    c_candidates, _ = search_launcher._candidate_catalog("c", root)
-    c_ranking = rank_trials([
-        _search_report_trial(c_candidates[index], index, 0.20 + index * 0.03, "C")
-        for index in range(3)
-    ])
-    c_result = {
-        "schema_version": 1,
-        "phase": "C",
-        "primary_metric": "weak_property_weighted_validation_normalized_mae",
-        "attempted_trials": 20,
-        "completed_trials": 3,
-        "failed_trials": 17,
-        "ranking": c_ranking,
-        "top3": c_ranking,
-        "top3_recipes": c_ranking,
-        "winner": c_ranking[0],
-    }
-    write(root / "search_c/result.json", c_result)
-    write(root / "search_c/candidate_manifest.json", {
-        "schema_version": 1,
-        "phase": "C",
-        "prerequisites": {
-            "search_a": sha256_file(root / "search_a/result.json"),
-            "search_b": sha256_file(root / "search_b/result.json"),
-        },
-        "candidates": c_candidates,
-    })
-
-
-def test_stage3_search_report_builds_metric_tables_and_svgs(tmp_path: Path) -> None:
-    search_root = tmp_path / "search"
-    _write_search_report_inputs(search_root)
-
-    report = build_search_report(search_root)
-    assert tuple(report["task_order"]) == TASK_ORDER
-    assert report["phases"]["C"]["winner"]["score"] == pytest.approx(
-        report["trials"][6]["score"]
-    )
-    first_task = TASK_ORDER[0]
-    first_trial = report["trials"][0]
-    expected_mean = 0.41 + ALL_TASKS.index(first_task) / 1000
-    assert first_trial["task_metrics"][first_task]["mean"] == pytest.approx(expected_mean)
-    assert first_trial["task_metrics"][first_task]["sample_sd"] == pytest.approx(
-        math.sqrt(0.0002)
-    )
-    assert [series["label"] for series in report["radar"]] == [
-        "Base anchor-g6", "Search A winner", "Search B winner", "Search C winner"
-    ]
-
-    output = tmp_path / "report"
-    write_search_report(report, output)
-    assert {path.name for path in output.iterdir()} == set(REPORT_ARTIFACTS)
-    for name in (
-        "search_a_property_matrix.svg",
-        "search_b_property_matrix.svg",
-        "search_c_property_matrix.svg",
-        "property_radar.svg",
-    ):
-        ET.parse(output / name)
-    assert len((output / "task_metrics.csv").read_text(encoding="utf-8").splitlines()) == 1 + 9 * 21
-    radar = (output / "property_radar.svg").read_text(encoding="utf-8")
-    assert 'data-label="Search C winner"' in radar
-    assert "Validation folds 1/2 only" in radar
-
-
-def test_stage3_search_report_rejects_prerequisite_hash_mismatch(tmp_path: Path) -> None:
-    search_root = tmp_path / "search"
-    _write_search_report_inputs(search_root)
-    path = search_root / "search_b/candidate_manifest.json"
-    manifest = json.loads(path.read_text(encoding="utf-8"))
-    manifest["prerequisites"]["search_a"] = "0" * 64
-    path.write_text(json.dumps(manifest), encoding="utf-8")
-    with pytest.raises(ValueError, match="prerequisite hashes"):
-        build_search_report(search_root)
-
-
-def test_stage3_search_report_cli_writes_standard_run_and_refuses_overwrite(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import common.outputs as outputs_module
-
-    _write_search_report_inputs(tmp_path / "search")
-    monkeypatch.setattr(outputs_module, "REPOSITORY_ROOT", tmp_path)
-    monkeypatch.setattr(
-        "sys.argv", ["search_report.py", "--search-output", "search"]
-    )
-    assert search_report_launcher.main() == 0
-    output = tmp_path / "search/search_report"
-    assert {"run_config.yaml", "metadata.json", "attempts.jsonl", "summary.json"} <= {
-        path.name for path in output.iterdir()
-    }
-    with pytest.raises(FileExistsError, match="Output already exists"):
-        search_report_launcher.main()
-
-
-@pytest.mark.parametrize("invalid", ("missing", "nonfinite"))
-def test_stage3_search_report_rejects_invalid_property_metrics(
-    tmp_path: Path, invalid: str
-) -> None:
-    search_root = tmp_path / invalid
-    _write_search_report_inputs(search_root)
-    path = search_root / "search_a/result.json"
-    result = json.loads(path.read_text(encoding="utf-8"))
-    task_scores = result["ranking"][0]["folds"]["1"]["task_scores"]
-    if invalid == "missing":
-        task_scores.pop(ALL_TASKS[0])
-    else:
-        task_scores[ALL_TASKS[0]] = float("inf")
-    result["top3"] = result["ranking"][:3]
-    result["top3_groupings"] = [row["candidate"] for row in result["ranking"][:3]]
-    path.write_text(json.dumps(result), encoding="utf-8")
-    with pytest.raises(ValueError, match="all 21 tasks|non-finite"):
-        build_search_report(search_root)
-
-
-def test_stage3_search_a_runs_fixed_budget_and_resumes(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import stage3.search as search_module
-
-    spec = load_search_config("configs/v2/stage3/search.yaml")
-    base = search_module.search_base_config(
-        load_stage3_config(spec.base_config), spec
-    )
-    calls = 0
-
-    def fake_wave(trials, *, phase, folds, devices, max_retries):
-        nonlocal calls
-        calls += 1
-        assert phase == "screen"
-        assert folds == (1, 2)
-        assert max_retries == 1
-        return {
-            number: {
-                fold: trial_root / phase / "attempt0" / f"fold{fold}"
-                for fold in folds
-            }
-            for number, _, trial_root in trials
-        }
-
-    def fake_fold_summary(root, *, expected_epochs):
-        number = int(next(part for part in Path(root).parts if part.startswith("trial_")).split("_")[1])
-        score = 0.1 + number / 1000
-        return {
-            "weighted_normalized_mae": score,
-            "original_macro_task_score": score + 0.1,
-            "weak_task_scores": {
-                task: score for task in search_module.WEAK_TASKS
-            },
-            "training_cost": {
-                "wall_seconds": 1.0,
-                "gpu_seconds": 1.0,
-                "peak_allocated_bytes": 10,
-                "total_parameters": 100,
-                "trainable_parameters": 90,
-            },
-        }
-
-    monkeypatch.setattr(train_launcher, "_run_capacity_wave", fake_wave)
-    monkeypatch.setattr(search_module, "fold_search_summary", fake_fold_summary)
-    monkeypatch.setattr(search_launcher, "ROOT", tmp_path)
-    output = tmp_path / "search_a"
-    result = search_launcher._run_study(
-        phase="a",
-        base=base,
-        spec=spec,
-        catalog=[item.to_dict() for item in grouping_candidates()],
-        phase_root=output,
-        resume=False,
-        devices=("cuda:0", "cuda:1"),
-        max_parallel=2,
-    )
-    assert result["attempted_trials"] == 50
-    assert result["completed_trials"] == 50
-    assert [row["trial_number"] for row in result["top3"]] == [0, 1, 2]
-    first_calls = calls
-    resumed = search_launcher._run_study(
-        phase="a",
-        base=base,
-        spec=spec,
-        catalog=[item.to_dict() for item in grouping_candidates()],
-        phase_root=output,
-        resume=True,
-        devices=("cuda:0", "cuda:1"),
-        max_parallel=2,
-    )
-    assert resumed == result
-    assert calls == first_calls
 
 
 def test_rdkit_prepare_adapter_refinement_and_reporting_contract(
@@ -1362,193 +911,49 @@ def test_refined_score_uses_stitched_validation(tmp_path: Path) -> None:
     assert summary["score"] == pytest.approx(0.25)
     assert summary["model_selector"] == "taskwise_refined"
 
-def test_capacity_study_and_trial_config_are_strict(tmp_path: Path) -> None:
-    study = tmp_path / "study.yaml"
-    study.write_text(
-        """
-schema_version: 2
-study_name: test
-anchor_decision: outputs/test/anchor.yaml
-attempted_trials: 40
-startup_trials: 10
-trials_per_wave: 2
-folds: [1, 2]
-confirmation_folds: [3, 4, 5]
-top_k: 5
-max_retries: 1
-sampler_seed: 42
-global_experts: [1, 2, 3, 4]
-group_experts: [1, 2, 3, 4]
-private_experts: [1, 2]
-expert_hidden_ratio: [1.0, 1.5, 2.0, 3.0, 4.0]
-dropout: [0.0, 0.3]
-learning_rate: [0.0001, 0.001]
-weight_decay: [0.0001, 0.1]
-baseline:
-  global_experts: 2
-  group_experts: 2
-  private_experts: 1
-  expert_hidden_ratio: 2.0
-  dropout: 0.1
-  learning_rate: 0.0003
-  weight_decay: 0.01
-""".lstrip(),
-        encoding="utf-8",
-    )
-    spec = load_capacity_study_config(study)
-    base = load_stage3_config("configs/v1/stage3/base.yaml")
-    base = replace(base, training=replace(base.training, epochs=20, seed=42))
-    trial = config_for_trial(base, spec.baseline)
-    assert trial.model.global_experts == 2
-    assert trial.model.expert_hidden_ratio == 2.0
-    assert trial.training.learning_rate == pytest.approx(3.0e-4)
-    assert trial.training.seed == 42
 
-def test_capacity_study_runs_synchronous_waves_and_resumes(tmp_path: Path) -> None:
-    baseline = {
-        "global_experts": 2,
-        "group_experts": 2,
-        "private_experts": 1,
-        "expert_hidden_ratio": 2.0,
-        "dropout": 0.1,
-        "learning_rate": 3.0e-4,
-        "weight_decay": 1.0e-2,
-    }
-    spec = CapacityStudyConfig(
-        study_name="capacity-test",
-        anchor_decision="outputs/test/anchor.yaml",
-        attempted_trials=4,
-        startup_trials=2,
-        trials_per_wave=2,
-        folds=(1, 2),
-        confirmation_folds=(3, 4, 5),
-        top_k=2,
-        max_retries=1,
-        sampler_seed=42,
-        global_experts=(1, 2),
-        group_experts=(1, 2),
-        private_experts=(1, 2),
-        expert_hidden_ratio=(1.0, 2.0),
-        dropout=(0.0, 0.3),
-        learning_rate=(1.0e-4, 1.0e-3),
-        weight_decay=(1.0e-4, 1.0e-1),
-        baseline=baseline,
-    )
-    spec.validate()
-    base = load_stage3_config("configs/v1/stage3/base.yaml")
-    base = replace(base, training=replace(base.training, epochs=20, seed=42))
-    calls: list[tuple[str, tuple[int, ...], tuple[int, ...]]] = []
+@pytest.mark.parametrize("scale", ("s", "base", "l", "xl"))
+def test_capacity_formal_configs_remain_loadable(scale: str) -> None:
+    config = load_stage3_config(f"configs/experiments_v1/stage3/formal/{scale}.yaml")
+    assert config.training.seed == 42
+    assert config.training.epochs == 100
 
-    def run_wave(trials, *, phase, folds, devices, max_retries):
-        assert max_retries == 1
-        calls.append(
-            (
-                phase,
-                tuple(number for number, _, _ in trials),
-                tuple(folds),
-            )
-        )
-        result = {}
-        for number, _, trial_root in trials:
-            result[number] = {}
-            for fold in folds:
-                root = trial_root / phase / "attempt0" / f"fold{fold}"
-                _write_metrics(root, [0.1 + number / 100] * 20)
-                result[number][fold] = root
-        return result
 
-    output = tmp_path / "study"
-    report = train_launcher._run_capacity_study(
-        base_config=base,
-        study_config=spec,
-        output=output,
-        resume=False,
-        devices=("cuda:0", "cuda:1", "cuda:2", "cuda:3"),
-        run_wave=run_wave,
-    )
-    assert calls[:2] == [
-        ("search", (0, 1), (1, 2)),
-        ("search", (2, 3), (1, 2)),
-    ]
-    assert report["shortlist"] == [0, 1]
-    assert [row["trial_number"] for row in report["ranking"]] == [0, 1]
-    calls.clear()
-    resumed = train_launcher._run_capacity_study(
-        base_config=base,
-        study_config=spec,
-        output=output,
-        resume=True,
-        devices=("cuda:0", "cuda:1", "cuda:2", "cuda:3"),
-        run_wave=run_wave,
-    )
-    assert resumed == report
-    assert calls == []
-
-    decision = tmp_path / "final-recipe.yaml"
-    probe_config = "configs/experiments_v1/stage3/probe/base-r4.yaml"
-    decision.write_text(
+def test_capacity_probe_report_remains_supported(tmp_path: Path) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    _write_metrics(first, [0.4] * 20)
+    _write_metrics(second, [0.2] * 20)
+    manifest = tmp_path / "probe.yaml"
+    manifest.write_text(
         __import__("yaml").safe_dump(
             {
-                    "schema_version": 1,
-                "kind": "final_recipe",
-                "hpo_output": str(output),
-                "trial_number": 0,
-                "reason": "test confirmed baseline",
-                "scale_configs": {
-                    scale: probe_config for scale in ("s", "base", "l", "xl")
-                },
-                "seed_output_root": "outputs/test/seeds",
-                "formal_output_root": "outputs/test/formal",
+                "schema_version": 2,
+                "kind": "probe",
+                "expected_epochs": 20,
+                "candidates": [
+                    {
+                        "id": "base-r4",
+                        "scale": "Base",
+                        "recipe": "r4",
+                        "folds": {1: str(first)},
+                    },
+                    {
+                        "id": "base-r6",
+                        "scale": "Base",
+                        "recipe": "r6",
+                        "folds": {1: str(second)},
+                    },
+                ],
             },
             sort_keys=False,
         ),
         encoding="utf-8",
     )
-    materialized = materialize_final_recipe_configs(
-        decision, tmp_path / "materialized"
-    )
-    assert materialized["trial_number"] == 0
-    seed_config = load_stage3_config(
-        tmp_path / "materialized/seed/seed10042.yaml"
-    )
-    formal_config = load_stage3_config(tmp_path / "materialized/formal/xl.yaml")
-    assert (seed_config.training.seed, seed_config.training.epochs) == (10042, 20)
-    assert (formal_config.training.seed, formal_config.training.epochs) == (42, 50)
+    result = summarize_capacity_manifest(manifest)
+    assert [row["id"] for row in result["ranking"]] == ["base-r6", "base-r4"]
+    assert result["scale_winners"][0]["id"] == "base-r6"
 
-def test_anchor_decision_requires_selected_probe_winner(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import common.outputs as outputs_module
-
-    monkeypatch.setattr(outputs_module, "REPOSITORY_ROOT", tmp_path)
-    config_path = tmp_path / "configs/anchor.yaml"
-    config_path.parent.mkdir(parents=True)
-    config_path.write_text("training: {}\n", encoding="utf-8")
-    report_path = tmp_path / "outputs/probe/summary.json"
-    report_path.parent.mkdir(parents=True)
-    report_path.write_text(
-        json.dumps({"scale_winners": [{"id": "l-default"}]}), encoding="utf-8"
-    )
-    decision_path = tmp_path / "outputs/anchor.yaml"
-    decision_path.write_text(
-        yaml.safe_dump(
-            {
-                "schema_version": 1,
-                "kind": "anchor",
-                "selected_candidate": "l-default",
-                "selected_config": "configs/anchor.yaml",
-                "probe_report": "outputs/probe/summary.json",
-                "reason": "Pareto evidence",
-            }
-        ),
-        encoding="utf-8",
-    )
-    base_spec = load_capacity_study_config(
-        "configs/experiments_v1/stage3/hpo.yaml"
-    )
-    spec = replace(base_spec, anchor_decision="outputs/anchor.yaml")
-    decision = validate_anchor_decision(spec, config_path)
-    assert decision["selected_candidate"] == "l-default"
 
 # --- Multi-fold training launcher contract ---
 

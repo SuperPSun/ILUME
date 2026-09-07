@@ -1,8 +1,13 @@
 # ADR-0041：v2 Stage 3 三阶段固定预算搜索
 
-- 状态：Accepted
+- 状态：Retired
 - 日期：2026-09-03
+- 退役日期：2026-09-06
 - 修订：ADR-0020 的 expert 数下界与 Stage 3 prepared identity 边界
+
+> 2026-09-06：本 ADR 定义的搜索入口、报告入口、配置、实现与 Optuna 依赖均已移除。
+> 下文只保留历史设计与结果解释边界，不再构成可运行合同；现役 v2 Stage 3 直接使用
+> `configs/v2/stage3/base.yaml`。
 
 ## 背景
 

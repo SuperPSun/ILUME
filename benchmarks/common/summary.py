@@ -24,6 +24,10 @@ SUMMARY_FILES = (
     "stage3_test_leaderboard.csv",
     "stage3_validation_leaderboard.csv",
     "stage3_test_metrics.csv",
+    "stage3_test_task_mae.csv",
+    "stage3_test_task_rank.csv",
+    "stage3_validation_task_mae.csv",
+    "stage3_validation_task_rank.csv",
     "stage3_validation_metrics.csv",
     "sweep_status.csv",
     "summary.json",
@@ -806,6 +810,58 @@ def _write_csv(path: Path, rows: Sequence[Mapping[str, Any]], fields: Sequence[s
             writer.writerow({name: row.get(name, "") for name in fields})
 
 
+def _stage3_task_tables(
+    metrics: Sequence[Mapping[str, Any]],
+    leaders: Sequence[Mapping[str, Any]],
+    *,
+    metric_key: str,
+    split: str,
+) -> tuple[tuple[str, ...], list[dict[str, Any]], list[dict[str, Any]]]:
+    tasks = tuple(sorted({str(row["task"]) for row in metrics}))
+    mae_rows: list[dict[str, Any]] = []
+    rank_rows: list[dict[str, Any]] = []
+    ordered_runs = [str(row["run"]) for row in leaders]
+    model_by_run = {str(row["run"]): str(row["model"]) for row in leaders}
+    values: dict[tuple[str, str], float] = {}
+    for row in metrics:
+        run = str(row["run"])
+        task = str(row["task"])
+        if run not in model_by_run:
+            continue
+        key = (run, task)
+        if key in values:
+            raise ValueError(f"Duplicate Stage 3 {split} metric: {run}/{task}")
+        value = float(row[metric_key])
+        if not math.isfinite(value):
+            raise ValueError(f"Non-finite Stage 3 {split} MAE: {run}/{task}")
+        values[key] = value
+
+    ranks: dict[tuple[str, str], int] = {}
+    for task in tasks:
+        ordered = sorted(
+            (values[(run, task)], run)
+            for run in ordered_runs
+            if (run, task) in values
+        )
+        previous: float | None = None
+        rank = 0
+        for index, (value, run) in enumerate(ordered, start=1):
+            if previous is None or value != previous:
+                rank = index
+                previous = value
+            ranks[(run, task)] = rank
+
+    for run in ordered_runs:
+        common = {"run": run, "model": model_by_run[run]}
+        mae_rows.append(
+            {**common, **{task: values.get((run, task), "") for task in tasks}}
+        )
+        rank_rows.append(
+            {**common, **{task: ranks.get((run, task), "") for task in tasks}}
+        )
+    return tasks, mae_rows, rank_rows
+
+
 def _overview(
     stage3_test: Sequence[Mapping[str, Any]],
     stage3_validation: Sequence[Mapping[str, Any]],
@@ -1163,6 +1219,18 @@ def write_summary_snapshot(
     destination.mkdir(parents=True, exist_ok=False)
     leaderboards = payload["leaderboards"]
     metrics = payload["metrics"]
+    test_fields, test_mae, test_rank = _stage3_task_tables(
+        metrics["stage3_test"],
+        leaderboards["stage3_test"],
+        metric_key="mae",
+        split="test",
+    )
+    validation_fields, validation_mae, validation_rank = _stage3_task_tables(
+        metrics["stage3_validation"],
+        leaderboards["stage3_validation"],
+        metric_key="mae_mean",
+        split="validation",
+    )
     _write_csv(
         destination / "stage3_test_leaderboard.csv",
         leaderboards["stage3_test"],
@@ -1208,6 +1276,26 @@ def write_summary_snapshot(
             "normalized_rmse",
             "source_run",
         ),
+    )
+    _write_csv(
+        destination / "stage3_test_task_mae.csv",
+        test_mae,
+        ("run", "model", *test_fields),
+    )
+    _write_csv(
+        destination / "stage3_test_task_rank.csv",
+        test_rank,
+        ("run", "model", *test_fields),
+    )
+    _write_csv(
+        destination / "stage3_validation_task_mae.csv",
+        validation_mae,
+        ("run", "model", *validation_fields),
+    )
+    _write_csv(
+        destination / "stage3_validation_task_rank.csv",
+        validation_rank,
+        ("run", "model", *validation_fields),
     )
     _write_csv(
         destination / "stage3_validation_metrics.csv",

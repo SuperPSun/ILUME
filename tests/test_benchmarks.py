@@ -920,6 +920,27 @@ def test_stage3_summary_ignores_normalization_but_requires_shared_sources(
     assert len(payload["leaderboards"]["stage3_validation"]) == 2
     assert "stage2" not in json.dumps(payload).lower()
     assert all("stage2" not in name for name in SUMMARY_FILES)
+    with (tmp_path / "summary" / "stage3_test_task_mae.csv").open(
+        newline="", encoding="utf-8"
+    ) as handle:
+        test_mae_rows = list(csv.DictReader(handle))
+    with (tmp_path / "summary" / "stage3_test_task_rank.csv").open(
+        newline="", encoding="utf-8"
+    ) as handle:
+        test_rank_rows = list(csv.DictReader(handle))
+    with (tmp_path / "summary" / "stage3_validation_task_mae.csv").open(
+        newline="", encoding="utf-8"
+    ) as handle:
+        validation_mae_rows = list(csv.DictReader(handle))
+    with (tmp_path / "summary" / "stage3_validation_task_rank.csv").open(
+        newline="", encoding="utf-8"
+    ) as handle:
+        validation_rank_rows = list(csv.DictReader(handle))
+    for rows in (test_mae_rows, validation_mae_rows):
+        assert [row["model"] for row in rows] == ["ONE", "TWO"]
+        assert [float(row["experiment/example"]) for row in rows] == [1.0, 2.0]
+    for rows in (test_rank_rows, validation_rank_rows):
+        assert [int(row["experiment/example"]) for row in rows] == [1, 2]
 
     incompatible = tmp_path / "incompatible"
     _write_run(

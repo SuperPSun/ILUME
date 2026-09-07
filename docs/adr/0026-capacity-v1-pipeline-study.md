@@ -10,6 +10,10 @@
 > 20GB 的线性显存估算，四规模共同改为 global batch 512、LR `4e-4`，估计峰值约 80GB；
 > 不通过脚本自动探测或回退。该估算只适用于同类空闲 84GB GPU，首次正式运行须记录实际
 > 峰值显存、吞吐和结果稳定性。
+>
+> 2026-09-06：Anchor HPO、confirmation、seed 配置物化及其 Optuna 实现已退役；下文相关
+> 条款只保留历史。当前 Stage 3 正式运行直接读取已冻结的
+> `configs/experiments_v1/stage3/formal/*.yaml`，不得从旧 study 重新生成配方。
 
 ## 背景
 

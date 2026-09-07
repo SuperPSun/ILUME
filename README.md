@@ -93,61 +93,17 @@ python scripts/stage3/evaluate.py \
 Stage 3 evaluator 同样默认加载每个 fold 的 `taskwise_refined.pt`；显式
 `--checkpoint-epoch N` 才选择对应普通 epoch checkpoint。
 
-### v2 Stage 3 三阶段超参搜索
+### 超参数搜索退役
 
-[ADR-0041](docs/adr/0041-stage3-v2-three-phase-hpo.md) 固定只搜索 Base Stage 3：
-Search A 50个grouping、Search B 30个expert结构、Search C 20个loss/optimizer recipe。
-每个trial只运行fold1/2和20 epochs，总预算为100个配置、200个正常fold run。搜索需要
-Optuna，但不会改动Stage 1/2 Base参数：
+ILUME 的 v2 Stage 3 A/B/C 搜索与 Capacity v1 HPO 已于 2026-09-06 退役；仓库不再提供
+搜索入口、搜索配置或 Optuna 依赖。现役 v2 直接使用自包含的
+`configs/v2/stage3/base.yaml`，既有搜索输出只作为历史 artifact，不可由当前代码续跑。
+退役背景见 [ADR-0041](docs/adr/0041-stage3-v2-three-phase-hpo.md)。
 
-```bash
-python -m pip install -e ".[hpo]"
-
-python scripts/stage3/prepare.py \
-  --config configs/v2/stage3/base.yaml \
-  --output outputs/v2/stage3/search/prepare
-
-python scripts/stage3/search.py \
-  --study-config configs/v2/stage3/search.yaml \
-  --phase a \
-  --output outputs/v2/stage3/search \
-  --devices cuda:0,cuda:1 \
-  --max-parallel 2
-
-python scripts/stage3/search.py \
-  --study-config configs/v2/stage3/search.yaml \
-  --phase b \
-  --output outputs/v2/stage3/search \
-  --devices cuda:0,cuda:1 \
-  --max-parallel 2
-
-python scripts/stage3/search.py \
-  --study-config configs/v2/stage3/search.yaml \
-  --phase c \
-  --output outputs/v2/stage3/search \
-  --devices cuda:0,cuda:1 \
-  --max-parallel 2
-```
-
-`--max-parallel`表示并行 fold worker 数，不要求手工重复设备名。程序会按 round-robin
-自动扩展`--devices`：例如`--max-parallel 16 --devices cuda:0,cuda:1`会平均分配为每卡
-8个槽，`--max-parallel 2 --devices cuda:0`则让两个fold竞争同一张卡。后者需要自行确认
-显存足够。中断后原命令追加`--resume`。B严格绑定A的`result.json`，C严格绑定A/B结果；
-不得修改已启动study的配置或候选manifest。最终Base recipe写入
-`outputs/v2/stage3/search/search_c/winner_base.yaml`，不会自动运行test或推广到其他scale。
-
-A/B/C完成后可生成只读的两折搜索报告：
-
-```bash
-python scripts/stage3/search_report.py \
-  --search-output outputs/v2/stage3/search
-```
-
-报告默认写入`outputs/v2/stage3/search/search_report/`，包括完整trial与逐性质CSV、
-三阶段性质矩阵和Base/A/B/C winner雷达图。报告只读取搜索保存的fold1/2
-taskwise-refined stitched validation，不重新训练、不调用evaluation，也不读取test。
-
-独立的 Capacity v1 研究继续冻结在 legacy v1 五模态合同，不替换或修改 Global-RDKit v2 主线；设计见 [ADR-0026](docs/adr/0026-capacity-v1-pipeline-study.md)，正式命令集中在 [Capacity v1 操作手册](docs/capacity-v1-runbook.md)。
+Capacity v1 继续冻结在 legacy v1 五模态合同，并直接使用已提交的四份
+`configs/experiments_v1/stage3/formal/*.yaml`。只读 probe/robustness/comparison 报告仍由
+`scripts/stage3/capacity.py --manifest ... --output ...` 生成；当前命令见
+[Capacity v1 操作手册](docs/capacity-v1-runbook.md)。
 
 ### RDKit 2D → HoME representation ablation
 
@@ -478,7 +434,7 @@ python scripts/benchmarks/summarize.py \
   --output summary
 ```
 
-只有 schema 完整且 comparison identity 兼容的 completed Stage 3 run 进入榜单；按 ADR-0031 允许 train-only normalization 不同，但 valid/test source 与其余协议必须一致。旧 candidate 的 Stage 2 section 被忽略。其他 run 进入 health。损坏的选中正式结果会使发布失败，已有 `summary/` 保持不变。详细 reporting 合同见 [ADR-0031/0043](docs/adr/README.md)。
+只有 schema 完整且 comparison identity 兼容的 completed Stage 3 run 进入榜单；按 ADR-0031 允许 train-only normalization 不同，但 valid/test source 与其余协议必须一致。`stage3_{test,validation}_task_mae.csv` 以模型为行、registry task 为列，分别展示 test 原始 MAE 和 validation 五折 MAE 均值；对应的 `stage3_{test,validation}_task_rank.csv` 按每个任务的 MAE 从小到大给出模型排名。旧 candidate 的 Stage 2 section 被忽略。其他 run 进入 health。损坏的选中正式结果会使发布失败，已有 `summary/` 保持不变。详细 reporting 合同见 [ADR-0031/0043](docs/adr/README.md)。
 
 ## 验证
 
