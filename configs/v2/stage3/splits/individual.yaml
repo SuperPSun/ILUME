@@ -1,36 +1,15 @@
 data:
   stage3_dir: data/stage3
   task_catalog: data/task_catalog.csv
-  artifacts_dir: outputs/v2/stage3/splits/il/prepare/artifacts
-  split_policy: prefer_il
-  split_strategies:
-    experiment/electrical_conductivity: il
-    experiment/self_diffusion_coefficient: il
-    experiment/viscosity: il
-    experiment/thermal_conductivity: il
-    experiment/density: il
-    experiment/heat_capacity: il
-    experiment/isobaric_coefficient_of_volume_expansion: il
-    experiment/speed_of_sound: il
-    experiment/surface_tension: il
-    experiment/equilibrium_pressure: il
-    experiment/glass_transition_temperature: il
-    experiment/melting_point: il
-    experiment/thermal_decomposition_temperature: il
-    experiment/dynamic_relative_permittivity: il
-    experiment/static_relative_permittivity: il
-    experiment/refractive_index: il
-    experiment/solvation: il
-    experiment/transfer: il
-    experiment/transfer_organic: solute_solvent
-    experiment/x_co2: il
-    experiment/pec50: il
+  artifacts_dir: outputs/v2/stage3/splits/individual/prepare/artifacts
+  split_policy: individual
+  split_strategies: {}
   cv_repeat: 1
   cv_repeats: {}
   seed: 42
 preparation:
   encoding_batch_size: 256
-  cache_dir: outputs/v2/stage3/splits/il/prepare/object_cache
+  cache_dir: outputs/v2/stage3/splits/individual/prepare/object_cache
 initialization:
   stage2_encoder: outputs/v2/stage2/base/train/stage2_encoder.pt
   plugin: null
@@ -86,66 +65,82 @@ tasks:
     meta_group: transport
     phase_d_epochs: 15
     model_overrides: {private_lr_scale: 0.75}
+    enabled: true
   experiment/self_diffusion_coefficient:
     meta_group: transport
     phase_d_epochs: 10
     model_overrides: {private_lr_scale: 0.25}
+    enabled: true
   experiment/viscosity:
     meta_group: transport
     phase_d_epochs: 5
     model_overrides: {private_lr_scale: 1.0}
+    enabled: true
   experiment/thermal_conductivity:
     meta_group: transport
     phase_d_epochs: 5
     model_overrides: {private_lr_scale: 0.25}
+    enabled: true
   experiment/density:
     meta_group: thermophysical
     phase_d_epochs: 5
     model_overrides: {private_lr_scale: 1.0}
+    enabled: true
   experiment/heat_capacity:
     meta_group: thermophysical
     phase_d_epochs: 3
     model_overrides: {private_lr_scale: 0.5}
+    enabled: true
   experiment/isobaric_coefficient_of_volume_expansion:
     meta_group: thermophysical
     phase_d_epochs: 3
     model_overrides: {private_lr_scale: 0.25}
+    enabled: true
   experiment/speed_of_sound:
     meta_group: thermophysical
     phase_d_epochs: 3
     model_overrides: {private_lr_scale: 0.5}
+    enabled: true
   experiment/surface_tension:
     meta_group: thermophysical
     phase_d_epochs: 10
     model_overrides: {private_lr_scale: 0.75}
+    enabled: true
   experiment/equilibrium_pressure:
     meta_group: phase_stability
     phase_d_epochs: 3
     model_overrides: {private_lr_scale: 0.25}
+    enabled: true
   experiment/glass_transition_temperature:
     meta_group: phase_stability
     phase_d_epochs: 5
     model_overrides: {private_lr_scale: 0.75}
+    enabled: true
   experiment/melting_point:
     meta_group: phase_stability
     phase_d_epochs: 10
     model_overrides: {private_lr_scale: 1.0}
+    enabled: true
   experiment/thermal_decomposition_temperature:
     meta_group: phase_stability
     phase_d_epochs: 10
     model_overrides: {private_lr_scale: 1.0}
+    enabled: true
   experiment/dynamic_relative_permittivity:
     meta_group: dielectric_optical
     phase_d_epochs: 3
     model_overrides: {private_lr_scale: 0.25}
+    enabled: true
   experiment/static_relative_permittivity:
     meta_group: dielectric_optical
     phase_d_epochs: 5
     model_overrides: {private_lr_scale: 0.25}
+    enabled: true
   experiment/refractive_index:
     meta_group: dielectric_optical
     phase_d_epochs: 5
     model_overrides: {private_lr_scale: 0.75}
+    enabled: true
   experiment/solvation:
     meta_group: solvation
     phase_d_epochs: 5
@@ -156,6 +151,7 @@ tasks:
     - anion
     partner_slots:
     - solute
+    enabled: true
   experiment/transfer:
     meta_group: solvation
     phase_d_epochs: 10
@@ -166,6 +162,7 @@ tasks:
     - anion
     partner_slots:
     - solute
+    enabled: true
   experiment/transfer_organic:
     meta_group: solvation
     phase_d_epochs: 20
@@ -175,14 +172,17 @@ tasks:
     - solute
     partner_slots:
     - solvent
+    enabled: true
   experiment/x_co2:
     meta_group: solvation
     phase_d_epochs: 3
     model_overrides: {private_lr_scale: 0.5}
+    enabled: true
   experiment/pec50:
     meta_group: biological
     phase_d_epochs: 10
     model_overrides: {private_lr_scale: 0.5}
+    enabled: true
 training:
   composite_batch_size: 2048
   microbatch_size: 1024

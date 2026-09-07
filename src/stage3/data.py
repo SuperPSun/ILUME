@@ -174,7 +174,23 @@ def load_task_catalog(path: str | Path) -> dict[str, CatalogTaskFact]:
     return result
 
 
-def _default_strategy(fact: CatalogTaskFact) -> str:
+def _default_strategy(fact: CatalogTaskFact, policy: str = "prefer_il") -> str:
+    if policy == "random":
+        return "random"
+    if policy == "system":
+        topology = fact.system_type.replace("-", "_")
+        if topology in fact.split_strategies:
+            return topology
+        raise ValueError(
+            f"Stage 3 task has no system split strategy: {fact.task_id}"
+        )
+    if policy == "individual":
+        strategy = "cation" if "cation" in fact.identity_columns else "solvent"
+        if strategy in fact.split_strategies:
+            return strategy
+        raise ValueError(
+            f"Stage 3 task has no individual split strategy: {fact.task_id}"
+        )
     if "il" in fact.split_strategies:
         return "il"
     topology = fact.system_type.replace("-", "_")
@@ -199,7 +215,9 @@ def resolve_task_registry(config: Stage3Config) -> dict[str, ResolvedTaskSpec]:
     resolved: dict[str, ResolvedTaskSpec] = {}
     for task_id, task in config.tasks.items():
         fact = catalog[task_id]
-        strategy = config.data.split_strategies.get(task_id, _default_strategy(fact))
+        strategy = config.data.split_strategies.get(
+            task_id, _default_strategy(fact, config.data.split_policy)
+        )
         strategy = strategy.replace("-", "_")
         if strategy not in fact.split_strategies:
             raise ValueError(f"Illegal split strategy for {task_id}: {strategy}")

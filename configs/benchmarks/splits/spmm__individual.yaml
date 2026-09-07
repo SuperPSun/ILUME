@@ -1,5 +1,5 @@
 name: spmm
-display_name: SPMM (solute split)
+display_name: SPMM (individual split)
 seed: 42
 environment:
   name: ilume-spmm
@@ -8,7 +8,7 @@ environment:
 data:
   data_root: data
   task_catalog: data/task_catalog.csv
-  stage3_authority_config: configs/v2/stage3/splits/solute.yaml
+  stage3_authority_config: configs/v2/stage3/splits/individual.yaml
 model:
   repository: jinhojsk515/SPMM
   revision: 046976484f31b3cbc862b8f2094e38df72fcfce7

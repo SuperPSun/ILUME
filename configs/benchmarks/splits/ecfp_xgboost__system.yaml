@@ -1,10 +1,10 @@
 name: ecfp_xgboost
-display_name: ECFP+XGBoost (cation split)
+display_name: ECFP+XGBoost (system split)
 seed: 42
 data:
   data_root: data
   task_catalog: data/task_catalog.csv
-  stage3_authority_config: configs/v2/stage3/splits/cation.yaml
+  stage3_authority_config: configs/v2/stage3/splits/system.yaml
   feature_cache: outputs/benchmarks/cache/features.sqlite3
 features:
   kind: ecfp4

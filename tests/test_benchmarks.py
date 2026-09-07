@@ -434,7 +434,7 @@ def test_formal_baseline_configs_use_fixed_final_state(
 
 
 def test_native_split_benchmark_configs_follow_v2_authorities() -> None:
-    splits = ("il", "random", "cation", "anion", "il_solute", "solute", "solvent")
+    splits = ("system", "random", "individual")
     benchmarks = ("mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm")
     root = Path("configs/benchmarks/splits")
     for split in splits:

@@ -1,5 +1,5 @@
 name: dmpnn
-display_name: D-MPNN (solute split)
+display_name: D-MPNN (individual split)
 seed: 42
 environment:
   name: ilume-dmpnn
@@ -8,7 +8,7 @@ environment:
 data:
   data_root: data
   task_catalog: data/task_catalog.csv
-  stage3_authority_config: configs/v2/stage3/splits/solute.yaml
+  stage3_authority_config: configs/v2/stage3/splits/individual.yaml
 model:
   message_hidden_dim: 300
   depth: 3

@@ -2,29 +2,8 @@ data:
   stage3_dir: data/stage3
   task_catalog: data/task_catalog.csv
   artifacts_dir: outputs/v2/stage3/splits/random/prepare/artifacts
-  split_policy: prefer_il
-  split_strategies:
-    experiment/electrical_conductivity: random
-    experiment/self_diffusion_coefficient: random
-    experiment/viscosity: random
-    experiment/thermal_conductivity: random
-    experiment/density: random
-    experiment/heat_capacity: random
-    experiment/isobaric_coefficient_of_volume_expansion: random
-    experiment/speed_of_sound: random
-    experiment/surface_tension: random
-    experiment/equilibrium_pressure: random
-    experiment/glass_transition_temperature: random
-    experiment/melting_point: random
-    experiment/thermal_decomposition_temperature: random
-    experiment/dynamic_relative_permittivity: random
-    experiment/static_relative_permittivity: random
-    experiment/refractive_index: random
-    experiment/solvation: random
-    experiment/transfer: random
-    experiment/transfer_organic: random
-    experiment/x_co2: random
-    experiment/pec50: random
+  split_policy: random
+  split_strategies: {}
   cv_repeat: 1
   cv_repeats: {}
   seed: 42

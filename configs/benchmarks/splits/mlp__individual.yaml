@@ -1,10 +1,10 @@
 name: mlp
-display_name: MLP (il split)
+display_name: MLP (individual split)
 seed: 42
 data:
   data_root: data
   task_catalog: data/task_catalog.csv
-  stage3_authority_config: configs/v2/stage3/splits/il.yaml
+  stage3_authority_config: configs/v2/stage3/splits/individual.yaml
   feature_cache: outputs/benchmarks/cache/features.sqlite3
 features:
   kind: rdkit_2d

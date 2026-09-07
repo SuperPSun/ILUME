@@ -1,5 +1,5 @@
 name: molformer
-display_name: MoLFormer-XL-both-10pct (il split)
+display_name: MoLFormer-XL-both-10pct (individual split)
 seed: 42
 environment:
   name: ilume-molformer
@@ -8,7 +8,7 @@ environment:
 data:
   data_root: data
   task_catalog: data/task_catalog.csv
-  stage3_authority_config: configs/v2/stage3/splits/il.yaml
+  stage3_authority_config: configs/v2/stage3/splits/individual.yaml
 model:
   repository: ibm-research/MoLFormer-XL-both-10pct
   revision: 361063d0ad524ef77cf39b08469f6be770dc550f

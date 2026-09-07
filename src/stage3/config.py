@@ -254,8 +254,13 @@ class Stage3Config:
     training: Stage3TrainingConfig = field(default_factory=Stage3TrainingConfig)
 
     def validate(self) -> None:
-        if self.data.split_policy != "prefer_il":
-            raise ValueError("data.split_policy must be prefer_il")
+        if self.data.split_policy not in {
+            "prefer_il", "random", "system", "individual"
+        }:
+            raise ValueError(
+                "data.split_policy must be one of: individual, prefer_il, "
+                "random, system"
+            )
         if self.data.cv_repeat <= 0 or any(
             value <= 0 for value in self.data.cv_repeats.values()
         ):

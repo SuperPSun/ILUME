@@ -2,7 +2,7 @@ data:
   stage3_dir: data/stage3
   task_catalog: data/task_catalog.csv
   artifacts_dir: outputs/v2/stage3/base/prepare/artifacts
-  split_policy: prefer_il
+  split_policy: system
   split_strategies: {}
   cv_repeat: 1
   cv_repeats: {}

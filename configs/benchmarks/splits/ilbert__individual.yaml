@@ -1,5 +1,5 @@
 name: ilbert
-display_name: ILBERT (anion split)
+display_name: ILBERT (individual split)
 seed: 42
 environment:
   name: ilume-ilbert
@@ -8,7 +8,7 @@ environment:
 data:
   data_root: data
   task_catalog: data/task_catalog.csv
-  stage3_authority_config: configs/v2/stage3/splits/anion.yaml
+  stage3_authority_config: configs/v2/stage3/splits/individual.yaml
 model:
   repository: Yu-Xin-Qiu/ILBERT
   revision: f9dc6f1b23a40b6988480735f3724a6332f68c12

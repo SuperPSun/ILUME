@@ -402,13 +402,9 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
 
 def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
     expected = {
-        "il": ({"il", "solute_solvent"}, 21),
+        "system": ({"il", "il_solute", "solute_solvent"}, 21),
         "random": ({"random"}, 21),
-        "cation": ({"cation"}, 20),
-        "anion": ({"anion"}, 20),
-        "il_solute": ({"il_solute"}, 2),
-        "solute": ({"solute"}, 3),
-        "solvent": ({"solvent"}, 1),
+        "individual": ({"cation", "solvent"}, 21),
     }
     root = Path("configs/v2/stage3/splits")
     for name, (strategies, task_count) in expected.items():
@@ -431,6 +427,24 @@ def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
         for spec in enabled.values():
             for fold in range(1, 6):
                 assert source_path(config, spec, fold).is_file()
+
+
+def test_v2_split_policies_follow_catalog_topology_and_identity() -> None:
+    system = resolve_task_registry(
+        load_stage3_config("configs/v2/stage3/splits/system.yaml")
+    )
+    assert {
+        spec.system_type for spec in system.values()
+    } == {"il", "il_solute", "solute_solvent"}
+    assert {
+        spec.split_strategy for spec in system.values()
+    } == {"il", "il_solute", "solute_solvent"}
+
+    individual = resolve_task_registry(
+        load_stage3_config("configs/v2/stage3/splits/individual.yaml")
+    )
+    assert sum(spec.split_strategy == "cation" for spec in individual.values()) == 20
+    assert individual["experiment/transfer_organic"].split_strategy == "solvent"
 
 
 def test_four_phase_config_and_task_specific_gate_contract() -> None:

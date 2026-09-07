@@ -1,10 +1,10 @@
 name: ecfp_xgboost
-display_name: ECFP+XGBoost (anion split)
+display_name: ECFP+XGBoost (individual split)
 seed: 42
 data:
   data_root: data
   task_catalog: data/task_catalog.csv
-  stage3_authority_config: configs/v2/stage3/splits/anion.yaml
+  stage3_authority_config: configs/v2/stage3/splits/individual.yaml
   feature_cache: outputs/benchmarks/cache/features.sqlite3
 features:
   kind: ecfp4
