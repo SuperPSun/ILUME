@@ -3,6 +3,8 @@
 - 状态：Accepted
 - 日期：2026-08-31
 
+> 2026-09-07：Stage 3 sampling 与 joint clipping 已随现役 Base 由 [ADR-0046](0046-stage3-ownership-clipping-raw-sampling.md) 修订；本消融继续只替换 representation。
+
 ## 背景
 
 现役 Stage3 使用冻结的 Stage2 Object v3 512D representation，再进入动态 HoME、

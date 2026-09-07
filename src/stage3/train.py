@@ -39,9 +39,11 @@ from .data import (
     Stage3TaskDataset,
     balanced_virtual_indices,
     composite_steps_per_epoch,
+    raw_task_steps,
     resolve_group_registry,
     resolve_batch_allocation,
-    resolve_virtual_sizes,
+    resolve_raw_batch_allocation,
+    shuffled_epoch_indices,
     stable_seed,
 )
 from .model import GLOBAL, Ownership, Stage3SparseModel, group_owner, private_owner
@@ -312,28 +314,52 @@ def build_resolved_training_plan(
     normalizations: Mapping[str, Any],
 ) -> dict[str, Any]:
     counts = {task: len(datasets[task]) for task in active_tasks}
-    allocation = resolve_batch_allocation(
-        counts,
-        config.training.composite_batch_size,
-        config.training.virtual_min_size,
-        config.training.virtual_max_replication_ratio,
-    )
-    steps = composite_steps_per_epoch(
-        counts,
-        allocation,
-        config.training.virtual_min_size,
-        config.training.virtual_max_replication_ratio,
-    )
+    if config.training.sampling_mode == "raw":
+        allocation = resolve_raw_batch_allocation(
+            counts, config.training.composite_batch_size
+        )
+        task_steps = raw_task_steps(counts, allocation)
+        steps = max(task_steps.values())
+        data_plan = {
+            "sampling": "raw_without_replacement_v1",
+            "N_t": counts,
+            "B_t": allocation,
+            "task_steps": task_steps,
+            "K": steps,
+            "epoch_exposures": dict(counts),
+            "effective_composite_batch_size": sum(allocation.values()),
+        }
+    else:
+        allocation = resolve_batch_allocation(
+            counts,
+            config.training.composite_batch_size,
+            config.training.virtual_min_size,
+        )
+        steps = composite_steps_per_epoch(
+            counts, allocation, config.training.virtual_min_size
+        )
+        virtual = {
+            task: max(counts[task], config.training.virtual_min_size)
+            for task in active_tasks
+        }
+        data_plan = {
+            "N_t": counts,
+            "N_prime_t": virtual,
+            "B_t": allocation,
+            "K": steps,
+            "padded_sizes": {
+                task: steps * allocation[task] for task in active_tasks
+            },
+            "replication_ratios": {
+                task: steps * allocation[task] / counts[task]
+                for task in active_tasks
+            },
+        }
     boundary_epoch, refinement_epochs = refinement_geometry(
         config.training.epochs, config.training.refinement_ratio
     )
     total_steps = boundary_epoch * steps
     warmup_steps = math.ceil(config.training.warmup_ratio * total_steps)
-    virtual = resolve_virtual_sizes(
-        counts,
-        config.training.virtual_min_size,
-        config.training.virtual_max_replication_ratio,
-    )
     plan = {
         "format_version": 1,
         "fold": fold,
@@ -345,16 +371,7 @@ def build_resolved_training_plan(
             group: spec.to_dict()
             for group, spec in resolve_group_registry(config).items()
         },
-        "data": {
-            "N_t": counts,
-            "N_prime_t": virtual,
-            "B_t": allocation,
-            "K": steps,
-            "padded_sizes": {task: steps * allocation[task] for task in active_tasks},
-            "replication_ratios": {
-                task: steps * allocation[task] / counts[task] for task in active_tasks
-            },
-        },
+        "data": data_plan,
         "model": {**asdict(config.model), "resolved_widths": _resolved_widths(model.d_model, config)},
         "optimizer": {
             "name": "AdamW", "implementation": config.training.optimizer_implementation,
@@ -410,14 +427,6 @@ def build_resolved_training_plan(
             "debug_pcgrad_traces": config.training.debug_pcgrad_traces,
         },
     }
-    if config.training.virtual_max_replication_ratio is not None:
-        plan["data"]["virtual_max_replication_ratio"] = (
-            config.training.virtual_max_replication_ratio
-        )
-        plan["data"]["virtual_replication_ratios"] = {
-            task: virtual[task] / counts[task]
-            for task in active_tasks
-        }
     if config.training.joint_gradient_clip_mode != "global":
         plan["math"]["joint_gradient_clip_mode"] = (
             config.training.joint_gradient_clip_mode
@@ -588,7 +597,7 @@ def _stage3_refinement_optimizers(
     model: Stage3SparseModel,
     active: Sequence[str],
     config: Stage3Config,
-    steps_per_epoch: int,
+    task_steps: Mapping[str, int],
     refinement_epochs: int,
 ) -> tuple[
     dict[str, torch.optim.AdamW],
@@ -597,8 +606,8 @@ def _stage3_refinement_optimizers(
     optimizers: dict[str, torch.optim.AdamW] = {}
     schedulers: dict[str, torch.optim.lr_scheduler.LambdaLR] = {}
     seen: set[int] = set()
-    total_updates = steps_per_epoch * refinement_epochs
     for task in active:
+        total_updates = task_steps[task] * refinement_epochs
         parameters = model.parameters_for_owner(private_owner(task))
         identities = {id(parameter) for parameter in parameters}
         if not parameters or seen & identities:
@@ -1111,8 +1120,16 @@ def run_stage3_training(
     )
     boundary_epoch = int(plan["refinement"]["boundary_epoch"])
     refinement_epochs = int(plan["refinement"]["epochs"])
+    task_steps = (
+        {
+            task: int(plan["data"]["task_steps"][task])
+            for task in active
+        }
+        if config.training.sampling_mode == "raw"
+        else {task: int(plan["data"]["K"]) for task in active}
+    )
     refinement_optimizers, refinement_schedulers = _stage3_refinement_optimizers(
-        model, active, config, int(plan["data"]["K"]), refinement_epochs
+        model, active, config, task_steps, refinement_epochs
     )
     pcgrad_rng = random.Random(stable_seed(training_seed, fold, "pcgrad"))
     task_order_rng = random.Random(
@@ -1234,14 +1251,26 @@ def run_stage3_training(
             )
             if not in_refinement:
                 model.train()
-            sequences = {
-                task: balanced_virtual_indices(
-                    counts[task], steps_per_epoch * allocation[task],
-                    seed=training_seed, epoch=epoch, task_id=task,
-                )
-                for task in active
-            }
-            epoch_loss = {task: 0.0 for task in active}
+            if config.training.sampling_mode == "raw":
+                sequences = {
+                    task: shuffled_epoch_indices(
+                        counts[task],
+                        seed=training_seed,
+                        epoch=epoch,
+                        task_id=task,
+                    )
+                    for task in active
+                }
+            else:
+                sequences = {
+                    task: balanced_virtual_indices(
+                        counts[task], steps_per_epoch * allocation[task],
+                        seed=training_seed, epoch=epoch, task_id=task,
+                    )
+                    for task in active
+                }
+            epoch_loss_sums = {task: 0.0 for task in active}
+            epoch_sample_counts = {task: 0 for task in active}
             latest_pcgrad: HierarchicalPCGradResult | None = None
             pre_norm = post_norm = 0.0
             owner_pre_norms: dict[str, float] = {}
@@ -1251,16 +1280,21 @@ def run_stage3_training(
                 order = list(active)
                 task_order_rng.shuffle(order)
                 task_gradients: dict[str, GradientMap] = {}
+                processed_tasks: list[str] = []
                 for task in order:
-                    if in_refinement:
-                        _set_private_trainable(model, task)
                     begin = step * allocation[task]
                     indices = sequences[task][begin : begin + allocation[task]]
+                    if not len(indices):
+                        continue
+                    processed_tasks.append(task)
+                    if in_refinement:
+                        _set_private_trainable(model, task)
                     gradient, loss = compute_task_gradient(
                         model, task, train_data[task], indices, representations,
                         normalizations[task], config, device,
                     )
-                    epoch_loss[task] += loss
+                    epoch_loss_sums[task] += loss * len(indices)
+                    epoch_sample_counts[task] += len(indices)
                     if in_refinement:
                         active_optimizer = refinement_optimizers[task]
                         active_optimizer.zero_grad(set_to_none=True)
@@ -1315,17 +1349,35 @@ def run_stage3_training(
                     scheduler.step()
                 global_step += 1
 
-                mean_train_loss = sum(epoch_loss.values()) / (
-                    len(active) * (step + 1)
+                observed_losses = [
+                    epoch_loss_sums[task] / epoch_sample_counts[task]
+                    for task in active
+                    if epoch_sample_counts[task]
+                ]
+                mean_train_loss = sum(observed_losses) / len(observed_losses)
+                current_lr = (
+                    refinement_optimizers[processed_tasks[-1]].param_groups[0]["lr"]
+                    if in_refinement
+                    else optimizer.param_groups[0]["lr"]
                 )
 
                 progress.set_postfix(
                     {
-                        "lr": f"{(refinement_optimizers[order[-1]].param_groups[0]['lr'] if in_refinement else optimizer.param_groups[0]['lr']):.2e}",
+                        "lr": f"{current_lr:.2e}",
                         "loss": f"{mean_train_loss:.4f}",
                     }
                 )
                 progress.update(1)
+            expected_epoch_samples = {
+                task: (
+                    counts[task]
+                    if config.training.sampling_mode == "raw"
+                    else steps_per_epoch * allocation[task]
+                )
+                for task in active
+            }
+            if epoch_sample_counts != expected_epoch_samples:
+                raise RuntimeError("Stage 3 epoch sample coverage is incomplete")
             validation = validate_tasks(
                 model,
                 valid_data,
@@ -1346,10 +1398,11 @@ def run_stage3_training(
 
             val_mae = validation["macro_task_equal"]["mae"]["value"]
 
-            mean_epoch_loss = sum(
-                epoch_loss[task] / steps_per_epoch
+            task_training_loss = {
+                task: epoch_loss_sums[task] / epoch_sample_counts[task]
                 for task in active
-            ) / len(active)
+            }
+            mean_epoch_loss = sum(task_training_loss.values()) / len(active)
 
             progress.set_postfix(
                 {
@@ -1366,7 +1419,7 @@ def run_stage3_training(
                     if in_refinement
                     else optimizer.param_groups[0]["lr"]
                 ),
-                "training_loss": {task: epoch_loss[task] / steps_per_epoch for task in active},
+                "training_loss": task_training_loss,
                 "validation": validation,
             }
             _append_jsonl(metrics_path, row)
@@ -1381,7 +1434,7 @@ def run_stage3_training(
                     "task_level_group": _pair_matrix(list(active), {}),
                     "group_level_global": _pair_matrix(groups, {}),
                     "task_loss": {
-                        task: epoch_loss[task] / steps_per_epoch for task in active
+                        task: task_training_loss[task] for task in active
                     },
                     "task_learning_rate": {
                         task: refinement_optimizers[task].param_groups[0]["lr"]
@@ -1441,7 +1494,7 @@ def run_stage3_training(
     if refinement_state is None:
         raise RuntimeError("Stage 3 refinement boundary was not captured")
     expected_refinement_updates = {
-        task: steps_per_epoch * refinement_epochs for task in active
+        task: task_steps[task] * refinement_epochs for task in active
     }
     if refinement_state["task_updates"] != expected_refinement_updates:
         raise RuntimeError("Stage 3 refinement task update counts are incomplete")

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -171,8 +170,8 @@ class Stage3TrainingConfig:
     seed: int | None = None
     composite_batch_size: int = 2048
     microbatch_size: int = 1024
+    sampling_mode: str = "virtual"
     virtual_min_size: int = 1000
-    virtual_max_replication_ratio: float | None = None
     epochs: int = 100
     learning_rate: float = 3.0e-4
     weight_decay: float = 1.0e-2
@@ -300,16 +299,8 @@ class Stage3Config:
             raise ValueError("training.betas must contain two values in [0, 1)")
         if training.eps <= 0 or training.max_grad_norm < 0:
             raise ValueError("Stage 3 eps/grad norm values are invalid")
-        if (
-            training.virtual_max_replication_ratio is not None
-            and (
-                not math.isfinite(training.virtual_max_replication_ratio)
-                or training.virtual_max_replication_ratio < 1.0
-            )
-        ):
-            raise ValueError(
-                "training.virtual_max_replication_ratio must be finite and >= 1"
-            )
+        if training.sampling_mode not in {"virtual", "raw"}:
+            raise ValueError("training.sampling_mode must be virtual or raw")
         if training.joint_gradient_clip_mode not in {"global", "ownership"}:
             raise ValueError(
                 "training.joint_gradient_clip_mode must be global or ownership"
@@ -365,8 +356,10 @@ class Stage3Config:
             adaptation = plugin["adaptation"]
             adaptation["global"] = adaptation.pop("global_scope")
         training = payload["training"]
-        if training["virtual_max_replication_ratio"] is None:
-            training.pop("virtual_max_replication_ratio")
+        if training["sampling_mode"] == "virtual":
+            training.pop("sampling_mode")
+        else:
+            training.pop("virtual_min_size")
         if training["joint_gradient_clip_mode"] == "global":
             training.pop("joint_gradient_clip_mode")
         return payload

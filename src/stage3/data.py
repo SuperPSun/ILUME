@@ -622,18 +622,13 @@ def stable_seed(seed: int, *parts: object) -> int:
 
 
 def resolve_batch_allocation(
-    counts: Mapping[str, int],
-    composite_batch_size: int,
-    virtual_min_size: int,
-    virtual_max_replication_ratio: float | None = None,
+    counts: Mapping[str, int], composite_batch_size: int, virtual_min_size: int
 ) -> dict[str, int]:
     if not counts or any(value <= 0 for value in counts.values()):
         raise ValueError("Stage 3 task counts must be positive")
     if len(counts) > composite_batch_size:
         raise ValueError("Stage 3 active tasks exceed composite batch size")
-    virtual = resolve_virtual_sizes(
-        counts, virtual_min_size, virtual_max_replication_ratio
-    )
+    virtual = {task: max(count, virtual_min_size) for task, count in counts.items()}
     total = sum(virtual.values())
     allocation = {
         task: max(1, math.floor(composite_batch_size * size / total))
@@ -658,50 +653,76 @@ def resolve_batch_allocation(
 
 
 def composite_steps_per_epoch(
-    counts: Mapping[str, int],
-    allocation: Mapping[str, int],
-    virtual_min_size: int,
-    virtual_max_replication_ratio: float | None = None,
+    counts: Mapping[str, int], allocation: Mapping[str, int], virtual_min_size: int
 ) -> int:
     if set(counts) != set(allocation):
         raise ValueError("Stage 3 count/allocation tasks differ")
-    virtual = resolve_virtual_sizes(
-        counts, virtual_min_size, virtual_max_replication_ratio
-    )
     return max(
-        math.ceil(virtual[task] / allocation[task])
+        math.ceil(max(counts[task], virtual_min_size) / allocation[task])
         for task in counts
     )
 
 
-def resolve_virtual_sizes(
-    counts: Mapping[str, int],
-    virtual_min_size: int,
-    virtual_max_replication_ratio: float | None = None,
+def resolve_raw_batch_allocation(
+    counts: Mapping[str, int], composite_batch_size: int
 ) -> dict[str, int]:
     if not counts or any(value <= 0 for value in counts.values()):
         raise ValueError("Stage 3 task counts must be positive")
-    if virtual_min_size <= 0:
-        raise ValueError("Stage 3 virtual minimum size must be positive")
-    if virtual_max_replication_ratio is None:
-        return {
-            task: max(count, virtual_min_size)
-            for task, count in counts.items()
-        }
-    if (
-        not math.isfinite(virtual_max_replication_ratio)
-        or virtual_max_replication_ratio < 1.0
-    ):
-        raise ValueError(
-            "Stage 3 virtual maximum replication ratio must be finite and >= 1"
-        )
-    return {
-        task: min(
-            max(count, virtual_min_size),
-            max(count, math.floor(count * virtual_max_replication_ratio)),
-        )
+    if len(counts) > composite_batch_size:
+        raise ValueError("Stage 3 active tasks exceed composite batch size")
+    total = sum(counts.values())
+    target = min(total, composite_batch_size)
+    quotas = {task: target * count / total for task, count in counts.items()}
+    allocation = {
+        task: min(count, max(1, math.floor(quotas[task])))
         for task, count in counts.items()
     }
+    while sum(allocation.values()) < target:
+        candidates = [task for task in counts if allocation[task] < counts[task]]
+        task = min(
+            candidates,
+            key=lambda name: (allocation[name] - quotas[name], name),
+        )
+        allocation[task] += 1
+    while sum(allocation.values()) > target:
+        candidates = [task for task in counts if allocation[task] > 1]
+        task = min(
+            candidates,
+            key=lambda name: (quotas[name] - allocation[name], name),
+        )
+        allocation[task] -= 1
+    return allocation
+
+
+def raw_task_steps(
+    counts: Mapping[str, int], allocation: Mapping[str, int]
+) -> dict[str, int]:
+    if set(counts) != set(allocation):
+        raise ValueError("Stage 3 count/allocation tasks differ")
+    if any(
+        allocation[task] <= 0 or allocation[task] > counts[task]
+        for task in counts
+    ):
+        raise ValueError("Stage 3 raw allocation is outside task size")
+    return {
+        task: math.ceil(counts[task] / allocation[task])
+        for task in counts
+    }
+
+
+def shuffled_epoch_indices(
+    real_size: int,
+    *,
+    seed: int,
+    epoch: int,
+    task_id: str,
+) -> torch.Tensor:
+    if real_size <= 0:
+        raise ValueError("Stage 3 raw sequence size must be positive")
+    generator = torch.Generator().manual_seed(
+        stable_seed(seed, "raw", epoch, task_id)
+    )
+    return torch.randperm(real_size, generator=generator)
 
 
 def balanced_virtual_indices(

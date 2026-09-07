@@ -3,6 +3,8 @@
 - 状态：Accepted
 - 日期：2026-09-01
 
+> 2026-09-07：Stage 3 sampling 与 joint clipping 已随现役 Base 由 [ADR-0046](0046-stage3-ownership-clipping-raw-sampling.md) 修订；本消融继续只替换 Stage 1 representation。
+
 ## 背景
 
 现役 ILUME 依次使用 Stage1 multimodal pretrained backbone、Stage2 ObjectEncoder 和

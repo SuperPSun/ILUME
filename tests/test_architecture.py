@@ -34,7 +34,7 @@ def test_global_rdkit_v2_base_configs_are_isolated() -> None:
     assert stage3.tasks == legacy_stage3.tasks
     assert stage3.training == replace(
         legacy_stage3.training,
-        virtual_max_replication_ratio=3.0,
+        sampling_mode="raw",
         joint_gradient_clip_mode="ownership",
     )
     assert "outputs/v2" in str(stage3.initialization.stage2_encoder)

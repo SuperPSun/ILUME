@@ -4,6 +4,8 @@
 - 日期：2026-09-02
 - 取代范围：ADR-0002 的主线 grouped descriptor token 决定、ADR-0004 的主线 fingerprint 模态，以及 ADR-0013/0015 中五路 Stage 1 loss；legacy v1 与 Capacity v1 保留原合同。
 
+> 2026-09-07：本文所称 Stage 3 sampling 不变已由 [ADR-0046](0046-stage3-ownership-clipping-raw-sampling.md) 修订为现役 v2 raw sampling；legacy v1 与 Capacity v1 不变。
+
 ## 背景
 
 旧主线把 SMILES、Graph、grouped RDKit descriptor 与 fingerprint 融合后只导出 512 维 CLS。全局 physicochemical 信息必须经过单一 CLS 路径，且 fingerprint 与 Graph local environment 高度重叠。新主线需要显式保留 post-Fusion RDKit 表示，同时不改变 SMILES Transformer、D-MPNN、Fusion 主体和既有训练调度。

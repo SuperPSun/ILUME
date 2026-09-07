@@ -68,8 +68,7 @@ tasks:
 training:
   composite_batch_size: 2048
   microbatch_size: 1024
-  virtual_min_size: 1000
-  virtual_max_replication_ratio: 3.0
+  sampling_mode: raw
   epochs: 100
   learning_rate: 0.0003
   weight_decay: 0.01

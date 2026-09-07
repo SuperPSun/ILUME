@@ -47,9 +47,11 @@ from stage3.data import (
     Stage3RepresentationStore,
     balanced_virtual_indices,
     composite_steps_per_epoch,
+    raw_task_steps,
     resolve_batch_allocation,
-    resolve_virtual_sizes,
+    resolve_raw_batch_allocation,
     resolve_task_registry,
+    shuffled_epoch_indices,
     source_path,
 )
 
@@ -286,9 +288,9 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
     assert config.training.microbatch_size == 1024
     assert config.training.checkpoint_interval_epochs == 10
     assert config.training.seed is None
-    assert config.training.virtual_max_replication_ratio is None
+    assert config.training.sampling_mode == "virtual"
     assert config.training.joint_gradient_clip_mode == "global"
-    assert "virtual_max_replication_ratio" not in config.to_dict()["training"]
+    assert "sampling_mode" not in config.to_dict()["training"]
     assert "joint_gradient_clip_mode" not in config.to_dict()["training"]
     assert effective_training_seed(config) == config.data.seed
     assert config.model.dropout == 0.10
@@ -310,12 +312,13 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
     )
     assert ablation.initialization.stage2_encoder is None
     assert ablation.initialization.plugin is None
-    assert ablation.training.virtual_max_replication_ratio == 3.0
+    assert ablation.training.sampling_mode == "raw"
     assert ablation.training.joint_gradient_clip_mode == "ownership"
 
     v2 = load_stage3_config("configs/v2/stage3/base.yaml")
-    assert v2.training.virtual_max_replication_ratio == 3.0
+    assert v2.training.sampling_mode == "raw"
     assert v2.training.joint_gradient_clip_mode == "ownership"
+    assert "virtual_min_size" not in v2.to_dict()["training"]
 
 
 def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
@@ -343,7 +346,7 @@ def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
         assert config.preparation.cache_dir == Path(
             f"outputs/v2/stage3/splits/{name}/prepare/object_cache"
         )
-        assert config.training.virtual_max_replication_ratio == 3.0
+        assert config.training.sampling_mode == "raw"
         assert config.training.joint_gradient_clip_mode == "ownership"
         for spec in enabled.values():
             for fold in range(1, 6):
@@ -371,35 +374,59 @@ def test_training_seed_changes_training_identity_not_prepared_artifact(
         resolve_stage3_training_identity(tiny_prepared, 1)
     )
 
-    changed_contract = replace(
+    changed_sampling = replace(
         tiny_prepared,
         training=replace(
             tiny_prepared.training,
-            virtual_max_replication_ratio=3.0,
-            joint_gradient_clip_mode="ownership",
+            sampling_mode="raw",
         ),
     )
-    assert resolve_stage3_training_identity(changed_contract, 1) != (
+    assert resolve_stage3_training_identity(changed_sampling, 1) != (
         resolve_stage3_training_identity(tiny_prepared, 1)
     )
 
 
-def test_virtual_sizes_apply_nominal_replication_cap_consistently() -> None:
+def test_raw_sampling_uses_every_index_once_without_padding() -> None:
     counts = {"tiny": 10, "medium": 400, "large": 2000}
-    virtual = resolve_virtual_sizes(counts, 1000, 3.0)
-    assert virtual == {"tiny": 30, "medium": 1000, "large": 2000}
-
-    allocation = resolve_batch_allocation(counts, 30, 1000, 3.0)
-    steps = composite_steps_per_epoch(counts, allocation, 1000, 3.0)
-    assert steps == max(
-        math.ceil(virtual[task] / allocation[task])
-        for task in counts
-    )
-    assert resolve_virtual_sizes(counts, 1000) == {
-        "tiny": 1000,
-        "medium": 1000,
-        "large": 2000,
+    allocation = resolve_raw_batch_allocation(counts, 30)
+    task_steps = raw_task_steps(counts, allocation)
+    steps = max(task_steps.values())
+    sequences = {
+        task: shuffled_epoch_indices(
+            count, seed=42, epoch=1, task_id=task
+        )
+        for task, count in counts.items()
     }
+
+    assert sum(allocation.values()) == 30
+    assert all(1 <= allocation[task] <= counts[task] for task in counts)
+    for task, count in counts.items():
+        batches = [
+            sequences[task][
+                step * allocation[task] : (step + 1) * allocation[task]
+            ]
+            for step in range(steps)
+        ]
+        observed = torch.cat([batch for batch in batches if len(batch)])
+        assert len(observed) == count
+        assert sorted(observed.tolist()) == list(range(count))
+        assert sum(bool(len(batch)) for batch in batches) == task_steps[task]
+    assert all(
+        sum(
+            len(
+                sequences[task][
+                    step * allocation[task] : (step + 1) * allocation[task]
+                ]
+            )
+            for task in counts
+        )
+        <= 30
+        for step in range(steps)
+    )
+
+    legacy = resolve_batch_allocation(counts, 30, 1000)
+    legacy_steps = composite_steps_per_epoch(counts, legacy, 1000)
+    assert legacy_steps * legacy["tiny"] > counts["tiny"]
 
 
 def test_grouping_and_task_weights_change_training_not_prepared_identity(
@@ -793,6 +820,38 @@ def test_pcgrad_keeps_global_and_group_as_separate_blocks(
     assert torch.equal(result.gradients[private], gradients["experiment/a"][private])
 
 
+def test_pcgrad_accepts_only_tasks_present_in_raw_step(
+    tiny_prepared: Stage3Config,
+) -> None:
+    registry = resolve_task_registry(tiny_prepared)
+    model = Stage3SparseModel(tiny_prepared.model, registry, 4)
+    task = "experiment/a"
+    owners = (GLOBAL, group_owner(registry[task].meta_group), private_owner(task))
+    gradients = {
+        task: {
+            parameter: torch.ones_like(parameter, dtype=torch.float32)
+            for owner in owners
+            for parameter in model.parameters_for_owner(owner)
+        }
+    }
+
+    result = hierarchical_pcgrad(
+        model,
+        gradients,
+        registry,
+        {"g1": 1.0, "g2": 1.0},
+        __import__("random").Random(3),
+    )
+
+    assert set(result.private_norms) == {task}
+    absent_private = {
+        parameter
+        for absent in ("experiment/b", "experiment/c")
+        for parameter in model.parameters_for_owner(private_owner(absent))
+    }
+    assert absent_private.isdisjoint(result.gradients)
+
+
 def test_pcgrad_accepts_empty_global_expert_block(
     tiny_prepared: Stage3Config,
 ) -> None:
@@ -827,7 +886,7 @@ def test_short_training_checkpoint_and_resume_are_exact(tiny_prepared: Stage3Con
         tiny_prepared,
         training=replace(
             tiny_prepared.training,
-            virtual_max_replication_ratio=3.0,
+            sampling_mode="raw",
             joint_gradient_clip_mode="ownership",
         ),
     )
@@ -840,11 +899,11 @@ def test_short_training_checkpoint_and_resume_are_exact(tiny_prepared: Stage3Con
     assert (continuous / "taskwise_refined.pt").is_file()
     assert (continuous / "taskwise_refinement.json").is_file()
     plan = json.loads((continuous / "resolved_training_plan.json").read_text())
-    assert plan["data"]["virtual_max_replication_ratio"] == 3.0
-    assert plan["data"]["virtual_replication_ratios"] == {
-        task: plan["data"]["N_prime_t"][task] / plan["data"]["N_t"][task]
-        for task in plan["active_tasks"]
-    }
+    assert plan["data"]["sampling"] == "raw_without_replacement_v1"
+    assert plan["data"]["epoch_exposures"] == plan["data"]["N_t"]
+    assert not {
+        "N_prime_t", "padded_sizes", "replication_ratios"
+    } & plan["data"].keys()
     assert plan["math"]["joint_gradient_clip_mode"] == "ownership"
     joint_diagnostics = json.loads(
         (continuous / "diagnostics.jsonl").read_text().splitlines()[0]
@@ -886,6 +945,15 @@ def test_short_training_checkpoint_and_resume_are_exact(tiny_prepared: Stage3Con
     )["model"]
     assert expected.keys() == actual.keys()
     assert all(torch.equal(expected[name], actual[name]) for name in expected)
+    final_checkpoint = torch.load(
+        continuous / "checkpoint_epoch_00002.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    assert final_checkpoint["refinement"]["task_updates"] == {
+        task: plan["data"]["task_steps"][task]
+        for task in plan["active_tasks"]
+    }
     assert (resumed / "taskwise_refined.pt").is_file()
 
     prediction_dir = tiny_prepared.data.artifacts_dir.parent / "evaluation-predictions"
