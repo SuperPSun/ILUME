@@ -97,6 +97,41 @@ def _checkpoint_epochs(root: Path) -> list[int]:
     return sorted(epochs)
 
 
+def _validate_four_phase_histories(root: Path, plan: Mapping[str, Any]) -> None:
+    phases = plan.get("phases")
+    if not isinstance(phases, Mapping):
+        raise ValueError("Stage 3 four-phase plan has no phase recipe")
+    scopes = [
+        (root / "phase_a", int(phases["bootstrap"]["epochs"])),
+        (root / "phase_b", int(phases["consolidation"]["epochs"])),
+    ]
+    scopes.extend(
+        (root / "phase_c" / group, int(recipe["epochs"]))
+        for group, recipe in phases["group_specialization"]["branches"].items()
+    )
+    scopes.extend(
+        (
+            root / "phase_d" / task.replace("/", "__"),
+            int(recipe["epochs"]),
+        )
+        for task, recipe in phases["task_specialization"]["branches"].items()
+    )
+    for scope, epochs in scopes:
+        metrics = _history_epochs(
+            scope / "metrics.jsonl", context="Stage 3 four-phase metrics history"
+        )
+        diagnostics = _history_epochs(
+            scope / "diagnostics.jsonl",
+            context="Stage 3 four-phase diagnostics history",
+        )
+        if metrics != list(range(1, epochs + 1)) or diagnostics != metrics:
+            raise ValueError(f"Stage 3 four-phase scope is incomplete: {scope.name}")
+        if not (scope / f"checkpoint_epoch_{epochs:05d}.pt").is_file():
+            raise FileNotFoundError(
+                f"Stage 3 four-phase final checkpoint is missing: {scope}"
+            )
+
+
 def _validate_existing_identity(
     metadata: Mapping[str, Any], training_identity: Mapping[str, Any]
 ) -> None:
@@ -118,6 +153,7 @@ def _resume_action(
     fold: int,
     total_epochs: int,
     training_identity: Mapping[str, Any],
+    four_phase: bool = False,
 ) -> tuple[str, Path | None]:
     metadata = _read_json(root / "metadata.json", context="Stage 3 run metadata")
     _validate_existing_identity(metadata, training_identity)
@@ -128,6 +164,42 @@ def _resume_action(
         raise ValueError("Existing Stage 3 run fold does not match its directory")
     if not (root / "run_config.yaml").is_file():
         raise FileNotFoundError("Stage 3 run is missing run_config.yaml")
+
+    if four_phase:
+        status = metadata.get("status")
+        if status == "completed":
+            summary = _read_json(root / "summary.json", context="Stage 3 run summary")
+            plan = _read_json(
+                root / "resolved_training_plan.json",
+                context="Stage 3 four-phase resolved plan",
+            )
+            _validate_four_phase_histories(root, plan)
+            manifest = _read_json(
+                root / "four_phase_final.json",
+                context="Stage 3 four-phase final manifest",
+            )
+            artifact = root / "four_phase_final.pt"
+            stitched_manifest = _read_json(
+                root / "phase_c/stitched.json",
+                context="Stage 3 Phase C stitched manifest",
+            )
+            stitched_artifact = root / "phase_c/stitched.pt"
+            if (
+                summary.get("fold") != fold
+                or summary.get("four_phase_final") != manifest
+                or not artifact.is_file()
+                or manifest.get("artifact_sha256") != _sha256(artifact)
+                or not stitched_artifact.is_file()
+                or stitched_manifest.get("artifact_sha256")
+                != _sha256(stitched_artifact)
+            ):
+                raise ValueError("Completed Stage 3 four-phase output is incomplete")
+            return "skipped", None
+        if status not in {"failed", "running"}:
+            raise ValueError(f"Stage 3 run has unsupported status: {status!r}")
+        if not (root / "resolved_training_plan.json").is_file():
+            raise FileNotFoundError("Stage 3 four-phase run lacks its resolved plan")
+        return "resume", root
 
     metrics = _history_epochs(root / "metrics.jsonl", context="Stage 3 metrics history")
     diagnostics = _history_epochs(
@@ -225,6 +297,7 @@ def _run_fold(
             fold=fold,
             total_epochs=config.training.epochs,
             training_identity=training_identity,
+            four_phase=config.training.schedule_mode == "four_phase",
         )
         if action == "skipped":
             return "skipped"
@@ -260,11 +333,22 @@ def _run_fold(
             resume_from=resume_from,
             expected_training_identity=training_identity,
         )
-        final_epoch = rows[-1] if rows else _last_history_row(run.root / "metrics.jsonl")
-        refinement = _read_json(
-            run.root / "taskwise_refinement.json",
-            context="Stage 3 task-wise refinement manifest",
-        )
+        if config.training.schedule_mode == "four_phase":
+            final_epoch = rows[-1]
+            final_manifest = _read_json(
+                run.root / "four_phase_final.json",
+                context="Stage 3 four-phase final manifest",
+            )
+        else:
+            final_epoch = (
+                rows[-1]
+                if rows
+                else _last_history_row(run.root / "metrics.jsonl")
+            )
+            final_manifest = _read_json(
+                run.root / "taskwise_refinement.json",
+                context="Stage 3 task-wise refinement manifest",
+            )
         if config.training.device == "cuda":
             import torch
 
@@ -277,10 +361,9 @@ def _run_fold(
             run.root / "resolved_training_plan.json",
             context="Stage 3 resolved training plan",
         )
-        run.complete({
+        summary = {
             "fold": fold,
             "final_epoch": final_epoch,
-            "taskwise_refinement": refinement,
             "training_cost": {
                 "wall_seconds": wall_seconds,
                 "gpu_seconds": (
@@ -292,7 +375,13 @@ def _run_fold(
                     plan["parameter_counts"]["trainable"]
                 ),
             },
-        })
+        }
+        summary[
+            "four_phase_final"
+            if config.training.schedule_mode == "four_phase"
+            else "taskwise_refinement"
+        ] = final_manifest
+        run.complete(summary)
     except BaseException:
         run.fail()
         raise

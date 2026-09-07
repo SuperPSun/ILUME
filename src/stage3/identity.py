@@ -152,6 +152,7 @@ def resolve_stage3_prepared_identity(
 
 
 def build_stage3_training_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
+    four_phase = plan.get("schedule_mode") == "four_phase"
     semantic_plan = {
         name: plan[name]
         for name in (
@@ -160,10 +161,7 @@ def build_stage3_training_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
             "resolved_registry",
             "groups",
             "data",
-            "model",
-            "optimizer",
-            "scheduler",
-            "refinement",
+            "model", "optimizer",
             "math",
             "prepared_identity",
             "normalization_hash",
@@ -173,6 +171,12 @@ def build_stage3_training_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
             "frozen_parameters",
         )
     }
+    if four_phase:
+        semantic_plan["schedule_mode"] = "four_phase"
+        semantic_plan["phases"] = plan["phases"]
+    else:
+        semantic_plan["scheduler"] = plan["scheduler"]
+        semantic_plan["refinement"] = plan["refinement"]
     if "representation" in plan:
         semantic_plan["representation"] = plan["representation"]
     else:
@@ -182,7 +186,9 @@ def build_stage3_training_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
     return semantic_identity(
         "stage3.training",
         {
-            "contract_version": STAGE3_TRAINING_IDENTITY_CONTRACT_VERSION,
+            "contract_version": (
+                2 if four_phase else STAGE3_TRAINING_IDENTITY_CONTRACT_VERSION
+            ),
             "plan": semantic_plan,
         },
     )

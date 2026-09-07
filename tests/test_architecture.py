@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import replace
 from pathlib import Path
 
 from stage1.config import load_config as load_stage1_config
@@ -30,13 +29,14 @@ def test_global_rdkit_v2_base_configs_are_isolated() -> None:
     assert stage2.loss.lambda_teacher == 0.10
     assert "outputs/v2" in str(stage2.initialization.checkpoint)
     assert stage3.model == legacy_stage3.model
-    assert stage3.groups == legacy_stage3.groups
-    assert stage3.tasks == legacy_stage3.tasks
-    assert stage3.training == replace(
-        legacy_stage3.training,
-        sampling_mode="raw",
-        joint_gradient_clip_mode="ownership",
-    )
+    assert all(group.experts is not None for group in stage3.groups.values())
+    assert all(group.experts is None for group in legacy_stage3.groups.values())
+    assert all(task.phase_d_epochs is not None for task in stage3.tasks.values())
+    assert all(task.phase_d_epochs is None for task in legacy_stage3.tasks.values())
+    assert stage3.training.schedule_mode == "four_phase"
+    assert legacy_stage3.training.schedule_mode == "legacy_joint_refinement"
+    assert stage3.training.sampling_mode == "raw"
+    assert stage3.training.joint_gradient_clip_mode == "ownership"
     assert "outputs/v2" in str(stage3.initialization.stage2_encoder)
 
 

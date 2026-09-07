@@ -59,7 +59,7 @@ Stage 2 只从完整 Object v3 joint epoch 恢复，旧 Object v2、旧式 v2 re
 
 ## Stage 3
 
-Stage 3 使用冻结的 Stage 2 Object v3 表示、动态 HoME 和 ownership-aware hierarchical PCGrad；最后 20% epoch 冻结 GLOBAL/GROUP，仅优化各 task PRIVATE。数据、模型、五折调度和恢复合同见 [ADR-0020/0021/0027](docs/adr/README.md)。
+Stage 3 使用冻结的 Stage 2 Object v3 表示、动态 HoME、raw sampling 与 ownership-aware clipping。现役 v2 按固定预算依次执行 joint bootstrap、shared consolidation、六个同源 group specialization 分支和 21 个同源 task specialization 分支，validation 只记录，最终发布各 scope 最后一轮拼接的 `four_phase_final.pt`。数据、模型、五折调度和恢复合同见 [ADR 索引](docs/adr/README.md)。
 
 ```bash
 python scripts/stage3/prepare.py \
@@ -90,8 +90,9 @@ python scripts/stage3/evaluate.py \
   --output outputs/v2/stage3/base/evaluate_test
 ```
 
-Stage 3 evaluator 同样默认加载每个 fold 的 `taskwise_refined.pt`；显式
-`--checkpoint-epoch N` 才选择对应普通 epoch checkpoint。
+Stage 3 evaluator 对现役 v2 默认加载每个 fold 的 `four_phase_final.pt`；legacy v1 与
+Capacity v1 仍默认加载 `taskwise_refined.pt`，且只有 legacy 配置支持显式
+`--checkpoint-epoch N`。
 
 ### 超参数搜索退役
 

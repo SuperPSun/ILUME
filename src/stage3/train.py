@@ -355,11 +355,72 @@ def build_resolved_training_plan(
                 for task in active_tasks
             },
         }
-    boundary_epoch, refinement_epochs = refinement_geometry(
-        config.training.epochs, config.training.refinement_ratio
-    )
-    total_steps = boundary_epoch * steps
-    warmup_steps = math.ceil(config.training.warmup_ratio * total_steps)
+    four_phase = config.training.schedule_mode == "four_phase"
+    if four_phase:
+        phases = config.training.four_phase
+        assert phases is not None
+        task_steps = data_plan["task_steps"]
+        phase_plan = {
+            "bootstrap": {
+                **asdict(phases.bootstrap),
+                "steps_per_epoch": steps,
+                "total_steps": phases.bootstrap.epochs * steps,
+                "warmup_steps": math.ceil(
+                    phases.bootstrap.warmup_ratio
+                    * phases.bootstrap.epochs
+                    * steps
+                ),
+                "pcgrad": "hierarchical",
+            },
+            "consolidation": {
+                **asdict(phases.consolidation),
+                "steps_per_epoch": steps,
+                "total_steps": phases.consolidation.epochs * steps,
+                "warmup_steps": 0,
+                "pcgrad": "hierarchical",
+            },
+            "group_specialization": {
+                **asdict(phases.group_specialization),
+                "warmup_steps": 0,
+                "pcgrad": "group_only",
+                "branches": {
+                    group: {
+                        "epochs": int(config.groups[group].phase_c_epochs),
+                        "steps_per_epoch": max(
+                            int(task_steps[task])
+                            for task in active_tasks
+                            if model.task_specs[task].meta_group == group
+                        ),
+                    }
+                    for group in sorted(
+                        {model.task_specs[task].meta_group for task in active_tasks}
+                    )
+                },
+            },
+            "task_specialization": {
+                **asdict(phases.task_specialization),
+                "warmup_steps": 0,
+                "pcgrad": "off",
+                "branches": {
+                    task: {
+                        "epochs": int(config.tasks[task].phase_d_epochs),
+                        "steps_per_epoch": int(task_steps[task]),
+                    }
+                    for task in active_tasks
+                },
+            },
+        }
+        for phase_name in ("group_specialization", "task_specialization"):
+            for branch in phase_plan[phase_name]["branches"].values():
+                branch["total_steps"] = (
+                    branch["epochs"] * branch["steps_per_epoch"]
+                )
+    else:
+        boundary_epoch, refinement_epochs = refinement_geometry(
+            config.training.epochs, config.training.refinement_ratio
+        )
+        total_steps = boundary_epoch * steps
+        warmup_steps = math.ceil(config.training.warmup_ratio * total_steps)
     plan = {
         "format_version": 1,
         "fold": fold,
@@ -375,20 +436,8 @@ def build_resolved_training_plan(
         "model": {**asdict(config.model), "resolved_widths": _resolved_widths(model.d_model, config)},
         "optimizer": {
             "name": "AdamW", "implementation": config.training.optimizer_implementation,
-            "lr": config.training.learning_rate, "weight_decay": config.training.weight_decay,
+            "weight_decay": config.training.weight_decay,
             "betas": list(config.training.betas), "eps": config.training.eps,
-        },
-        "scheduler": {
-            "name": "linear_warmup_cosine", "warmup_steps": warmup_steps,
-            "total_steps": total_steps, "min_lr_ratio": config.training.min_lr_ratio,
-        },
-        "refinement": {
-            "boundary_epoch": boundary_epoch,
-            "epochs": refinement_epochs,
-            "lr_multiplier": config.training.refinement_lr_multiplier,
-            "scheduler": "task-local-no-warmup-cosine",
-            "min_lr_ratio": config.training.min_lr_ratio,
-            "selection": "task-validation-normalized-mae-min",
         },
         "math": {
             "precision": config.training.amp_dtype,
@@ -427,6 +476,32 @@ def build_resolved_training_plan(
             "debug_pcgrad_traces": config.training.debug_pcgrad_traces,
         },
     }
+    if four_phase:
+        plan["model"].pop("group_experts")
+        plan["schedule_mode"] = "four_phase"
+        plan["phases"] = phase_plan
+        plan["model"]["capacity_recipe"] = model.resolved_capacity_recipe()
+        plan["optimizer"]["parameter_groups"] = "ownership_decay_split"
+        plan["math"]["pcgrad"] = {
+            "bootstrap": "hierarchical_ownership_blocks_v1",
+            "consolidation": "hierarchical_ownership_blocks_v1",
+            "group_specialization": "group_block_only_v1",
+            "task_specialization": "off",
+        }
+    else:
+        plan["optimizer"]["lr"] = config.training.learning_rate
+        plan["scheduler"] = {
+            "name": "linear_warmup_cosine", "warmup_steps": warmup_steps,
+            "total_steps": total_steps, "min_lr_ratio": config.training.min_lr_ratio,
+        }
+        plan["refinement"] = {
+            "boundary_epoch": boundary_epoch,
+            "epochs": refinement_epochs,
+            "lr_multiplier": config.training.refinement_lr_multiplier,
+            "scheduler": "task-local-no-warmup-cosine",
+            "min_lr_ratio": config.training.min_lr_ratio,
+            "selection": "task-validation-normalized-mae-min",
+        }
     if config.training.joint_gradient_clip_mode != "global":
         plan["math"]["joint_gradient_clip_mode"] = (
             config.training.joint_gradient_clip_mode
@@ -1058,6 +1133,8 @@ def run_stage3_training(
         config.model,
         registry,
         d_model,
+        group_configs=config.groups,
+        task_configs=config.tasks,
         descriptor_input_dims=representations.input_dims,
     ).to(device)
     representation_source_identity = (
@@ -1093,6 +1170,24 @@ def run_stage3_training(
             expected_training_identity,
             training_identity,
             context="Stage 3 run-directory training identity",
+        )
+    if config.training.schedule_mode == "four_phase":
+        from .four_phase import run_four_phase_training
+
+        return run_four_phase_training(
+            config=config,
+            fold=fold,
+            output_dir=output_dir,
+            resume_from=resume_from,
+            model=model,
+            registry=registry,
+            active=active,
+            train_data=train_data,
+            valid_data=valid_data,
+            representations=representations,
+            normalizations=normalizations,
+            plan=plan,
+            device=device,
         )
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -1533,6 +1628,8 @@ def resolve_stage3_training_identity(
         config.model,
         prepared["registry"],
         representations.output_dim,
+        group_configs=config.groups,
+        task_configs=config.tasks,
         descriptor_input_dims=representations.input_dims,
     )
     encoder_identity = (

@@ -6,6 +6,10 @@
 
 > 2026-09-06：HPO 执行能力已退役。下文 HPO 相关段落仅记录历史评分语义；refinement、
 > stitched validation、artifact 与普通训练合同继续有效。
+>
+> 2026-09-07：现役 v2 Stage 3 与对应消融的 refinement、selection 和 final artifact 已由
+> [ADR-0047](0047-stage3-deterministic-four-phase-training.md) 取代；本文相应条款仅继续约束
+> legacy v1 与 Capacity v1。
 
 ## 背景
 

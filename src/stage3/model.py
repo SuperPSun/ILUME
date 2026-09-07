@@ -6,7 +6,7 @@ from typing import Iterable, Mapping
 import torch
 from torch import nn
 
-from .config import Stage3ModelConfig
+from .config import Stage3GroupConfig, Stage3ModelConfig, Stage3TaskConfig
 from .data import ResolvedTaskSpec, sanitize_task
 
 
@@ -176,16 +176,21 @@ class Stage3SparseModel(nn.Module):
         task_specs: Mapping[str, ResolvedTaskSpec],
         d_model: int,
         *,
+        group_configs: Mapping[str, Stage3GroupConfig] | None = None,
+        task_configs: Mapping[str, Stage3TaskConfig] | None = None,
         descriptor_input_dims: Mapping[str, int] | None = None,
     ) -> None:
         super().__init__()
         self.model_config = model_config
         self.task_specs = dict(task_specs)
+        self.group_configs = dict(group_configs or {})
+        self.task_configs = dict(task_configs or {})
         self.d_model = d_model
         self.groups = tuple(
             sorted({spec.meta_group for spec in self.task_specs.values() if spec.enabled})
         )
         self._ownership_by_parameter: dict[nn.Parameter, Ownership] = {}
+        self._modules_by_owner: dict[Ownership, list[nn.Module]] = {}
         self.descriptor_adapters = nn.ModuleDict()
         if descriptor_input_dims is not None:
             if d_model != 512 or set(descriptor_input_dims) != {"il", "molecule"}:
@@ -234,13 +239,28 @@ class Stage3SparseModel(nn.Module):
             if spec.enabled and spec.partner_mode == "interaction"
         }
         for group in self.groups:
-            self.l1_group_experts[group] = nn.ModuleList(
-                [Expert(d_model, **expert_kwargs) for _ in range(model_config.group_experts)]
+            group_config = self.group_configs.get(group)
+            group_experts = (
+                model_config.group_experts
+                if group_config is None or group_config.experts is None
+                else group_config.experts
             )
-            self.l1_group_gates[group] = nn.Linear(d_model, model_config.group_experts)
+            group_hidden_ratio = (
+                model_config.expert_hidden_ratio
+                if group_config is None or group_config.expert_hidden_ratio is None
+                else group_config.expert_hidden_ratio
+            )
+            group_expert_kwargs = {
+                **expert_kwargs,
+                "hidden_ratio": group_hidden_ratio,
+            }
+            self.l1_group_experts[group] = nn.ModuleList(
+                [Expert(d_model, **group_expert_kwargs) for _ in range(group_experts)]
+            )
+            self.l1_group_gates[group] = nn.Linear(d_model, group_experts)
             self.l1_group_normalizations[group] = nn.LayerNorm(d_model)
             self.l2_group_experts[group] = nn.ModuleList(
-                [Expert(d_model, **expert_kwargs) for _ in range(model_config.group_experts)]
+                [Expert(d_model, **group_expert_kwargs) for _ in range(group_experts)]
             )
             modules: list[nn.Module] = [
                 self.l1_group_experts[group],
@@ -263,24 +283,50 @@ class Stage3SparseModel(nn.Module):
         self.condition_films = nn.ModuleDict()
         self.task_normalizations = nn.ModuleDict()
         self.towers = nn.ModuleDict()
-        candidate_count = (
-            model_config.global_experts
-            + model_config.group_experts
-            + model_config.private_experts
-        )
         for task_id, spec in self.task_specs.items():
             if not spec.enabled:
                 continue
             key = sanitize_task(task_id)
+            task_config = self.task_configs.get(task_id)
+            overrides = task_config.model_overrides if task_config is not None else {}
+            private_experts = int(
+                overrides.get("private_experts", model_config.private_experts)
+            )
+            private_hidden_ratio = float(
+                overrides.get("private_hidden_ratio", model_config.expert_hidden_ratio)
+            )
+            tower_hidden_ratio = float(
+                overrides.get("tower_hidden_ratio", model_config.tower_hidden_ratio)
+            )
+            film_hidden_ratio = float(
+                overrides.get("film_hidden_ratio", model_config.film_hidden_ratio)
+            )
+            group_config = self.group_configs.get(spec.meta_group)
+            group_experts = (
+                model_config.group_experts
+                if group_config is None or group_config.experts is None
+                else group_config.experts
+            )
+            candidate_count = (
+                model_config.global_experts + group_experts + private_experts
+            )
             self.private_experts[key] = nn.ModuleList(
-                [Expert(d_model, **expert_kwargs) for _ in range(model_config.private_experts)]
+                [
+                    Expert(
+                        d_model,
+                        hidden_ratio=private_hidden_ratio,
+                        dropout=model_config.dropout,
+                        activation=model_config.activation,
+                    )
+                    for _ in range(private_experts)
+                ]
             )
             self.task_gates[key] = nn.Linear(2 * d_model, candidate_count)
             if spec.condition_columns:
                 self.condition_films[key] = ConditionFiLM(
                     len(spec.condition_columns),
                     d_model,
-                    hidden_ratio=model_config.film_hidden_ratio,
+                    hidden_ratio=film_hidden_ratio,
                     dropout=model_config.dropout,
                     activation=model_config.activation,
                 )
@@ -289,7 +335,7 @@ class Stage3SparseModel(nn.Module):
             )
             self.towers[key] = TaskTower(
                 d_model,
-                hidden_ratio=model_config.tower_hidden_ratio,
+                hidden_ratio=tower_hidden_ratio,
                 dropout=model_config.dropout,
                 activation=model_config.activation,
             )
@@ -304,8 +350,67 @@ class Stage3SparseModel(nn.Module):
             self._own_modules(private_owner(task_id), *modules)
         self._validate_ownership()
 
+    def resolved_capacity_recipe(self) -> dict[str, object]:
+        groups: dict[str, dict[str, int | float]] = {}
+        for group in self.groups:
+            config = self.group_configs.get(group)
+            experts = (
+                self.model_config.group_experts
+                if config is None or config.experts is None
+                else config.experts
+            )
+            ratio = (
+                self.model_config.expert_hidden_ratio
+                if config is None or config.expert_hidden_ratio is None
+                else config.expert_hidden_ratio
+            )
+            groups[group] = {
+                "experts": experts,
+                "expert_hidden_ratio": ratio,
+                "expert_hidden": _width(self.d_model, ratio),
+            }
+        tasks: dict[str, object] = {}
+        for task_id, spec in self.task_specs.items():
+            if not spec.enabled:
+                continue
+            config = self.task_configs.get(task_id)
+            overrides = config.model_overrides if config is not None else {}
+            private_experts = int(
+                overrides.get("private_experts", self.model_config.private_experts)
+            )
+            private_ratio = float(
+                overrides.get(
+                    "private_hidden_ratio", self.model_config.expert_hidden_ratio
+                )
+            )
+            tower_ratio = float(
+                overrides.get("tower_hidden_ratio", self.model_config.tower_hidden_ratio)
+            )
+            film_ratio = float(
+                overrides.get("film_hidden_ratio", self.model_config.film_hidden_ratio)
+            )
+            tasks[task_id] = {
+                "private_experts": private_experts,
+                "private_hidden_ratio": private_ratio,
+                "private_hidden": _width(self.d_model, private_ratio),
+                "tower_hidden_ratio": tower_ratio,
+                "tower_hidden": _width(self.d_model, tower_ratio),
+                "film_hidden_ratio": film_ratio,
+                "film_hidden": _width(self.d_model, film_ratio),
+                "private_lr_scale": float(overrides.get("private_lr_scale", 1.0)),
+                "candidate_count": (
+                    self.model_config.global_experts
+                    + int(groups[spec.meta_group]["experts"])
+                    + private_experts
+                ),
+            }
+        return {"groups": groups, "tasks": tasks}
+
     def _own_modules(self, owner: Ownership, *modules: nn.Module) -> None:
+        owned_modules = self._modules_by_owner.setdefault(owner, [])
         for module in modules:
+            if module not in owned_modules:
+                owned_modules.append(module)
             for parameter in module.parameters():
                 existing = self._ownership_by_parameter.get(parameter)
                 if existing is not None and existing != owner:
@@ -338,6 +443,21 @@ class Stage3SparseModel(nn.Module):
             for parameter, candidate in self._ownership_by_parameter.items()
             if candidate == owner
         )
+
+    def set_trainable_owners(self, owners: Iterable[Ownership]) -> None:
+        selected = set(owners)
+        unknown = selected - set(self._modules_by_owner)
+        if unknown:
+            raise KeyError(
+                "Unknown Stage 3 owners: "
+                + ", ".join(owner.label for owner in sorted(unknown))
+            )
+        for parameter, owner in self._ownership_by_parameter.items():
+            parameter.requires_grad_(owner in selected)
+        self.eval()
+        for owner in selected:
+            for module in self._modules_by_owner[owner]:
+                module.train()
 
     def private_modules_for_task(self, task_id: str) -> tuple[nn.Module, ...]:
         if task_id not in self.task_specs or not self.task_specs[task_id].enabled:

@@ -26,8 +26,12 @@ from common.identity import IDENTITY_CONTRACT_VERSION, semantic_identity, tensor
 from stage3.config import (
     BASE_GROUP_TASKS,
     Stage3Config,
+    Stage3BootstrapPhaseConfig,
+    Stage3ConsolidationPhaseConfig,
     Stage3DataConfig,
+    Stage3FourPhaseConfig,
     Stage3GroupConfig,
+    Stage3GroupSpecializationPhaseConfig,
     Stage3InitializationConfig,
     Stage3ModelConfig,
     Stage3PluginAdaptationConfig,
@@ -35,9 +39,11 @@ from stage3.config import (
     Stage3PreparationConfig,
     Stage3RepresentationConfig,
     Stage3TaskConfig,
+    Stage3TaskSpecializationPhaseConfig,
     Stage3TrainingConfig,
     effective_training_seed,
     load_stage3_config,
+    stage3_config_from_dict,
 )
 
 from stage3.data import (
@@ -81,6 +87,14 @@ from stage3.train import (
 )
 
 from stage3.identity import build_stage3_training_identity, metadata_identity
+from stage3.four_phase import (
+    _lr_factor as _four_phase_lr_factor,
+    _model_state as _four_phase_model_state,
+    _optimizer as _four_phase_optimizer,
+    _owner_hash as _four_phase_owner_hash,
+    _owner_state as _four_phase_owner_state,
+    _stitch_owner_deltas,
+)
 
 from dataclasses import replace
 
@@ -225,6 +239,64 @@ def _tiny_config(tmp_path: Path) -> Stage3Config:
         ),
     )
 
+
+def _tiny_four_phase(config: Stage3Config) -> Stage3Config:
+    return replace(
+        config,
+        groups={
+            "g1": Stage3GroupConfig(
+                experts=2, expert_hidden_ratio=1.5, phase_c_epochs=1
+            ),
+            "g2": Stage3GroupConfig(
+                experts=1, expert_hidden_ratio=0.5, phase_c_epochs=1
+            ),
+        },
+        tasks={
+            task: replace(
+                spec,
+                phase_d_epochs=1,
+                model_overrides={
+                    "private_lr_scale": 0.5 if task == "experiment/a" else 1.0,
+                    **(
+                        {"private_experts": 2, "private_hidden_ratio": 0.5}
+                        if task == "experiment/a"
+                        else {}
+                    ),
+                },
+            )
+            for task, spec in config.tasks.items()
+        },
+        training=replace(
+            config.training,
+            sampling_mode="raw",
+            joint_gradient_clip_mode="ownership",
+            schedule_mode="four_phase",
+            four_phase=Stage3FourPhaseConfig(
+                bootstrap=Stage3BootstrapPhaseConfig(
+                    epochs=1,
+                    global_lr=3.0e-4,
+                    group_lr=3.0e-4,
+                    private_lr=3.0e-4,
+                    warmup_ratio=0.05,
+                    min_lr_ratio=0.5,
+                ),
+                consolidation=Stage3ConsolidationPhaseConfig(
+                    epochs=1,
+                    global_lr=3.0e-5,
+                    group_lr=1.0e-4,
+                    private_lr=1.5e-4,
+                    min_lr_ratio=0.2,
+                ),
+                group_specialization=Stage3GroupSpecializationPhaseConfig(
+                    group_lr=7.5e-5, private_lr=1.0e-4, min_lr_ratio=0.2
+                ),
+                task_specialization=Stage3TaskSpecializationPhaseConfig(
+                    private_lr=1.0e-4, min_lr_ratio=0.1
+                ),
+            ),
+        ),
+    )
+
 @pytest.fixture()
 def tiny_prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Stage3Config:
     config = _tiny_config(tmp_path)
@@ -314,10 +386,17 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
     assert ablation.initialization.plugin is None
     assert ablation.training.sampling_mode == "raw"
     assert ablation.training.joint_gradient_clip_mode == "ownership"
+    assert ablation.training.schedule_mode == "four_phase"
+
+    no_stage1 = load_stage3_config(
+        "configs/ablations/no_stage1_rdkit_stage3.yaml"
+    )
+    assert no_stage1.training.schedule_mode == "four_phase"
 
     v2 = load_stage3_config("configs/v2/stage3/base.yaml")
     assert v2.training.sampling_mode == "raw"
     assert v2.training.joint_gradient_clip_mode == "ownership"
+    assert v2.training.schedule_mode == "four_phase"
     assert "virtual_min_size" not in v2.to_dict()["training"]
 
 
@@ -348,9 +427,278 @@ def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
         )
         assert config.training.sampling_mode == "raw"
         assert config.training.joint_gradient_clip_mode == "ownership"
+        assert config.training.schedule_mode == "four_phase"
         for spec in enabled.values():
             for fold in range(1, 6):
                 assert source_path(config, spec, fold).is_file()
+
+
+def test_four_phase_config_and_task_specific_gate_contract() -> None:
+    config = load_stage3_config("configs/v2/stage3/base.yaml")
+    assert config.training.schedule_mode == "four_phase"
+    assert config.training.four_phase is not None
+    assert config.training.four_phase.bootstrap.epochs == 5
+    assert config.training.four_phase.consolidation.epochs == 10
+    assert {
+        group: (spec.experts, spec.expert_hidden_ratio, spec.phase_c_epochs)
+        for group, spec in config.groups.items()
+    } == {
+        "biological": (1, 0.5, 5),
+        "dielectric_optical": (1, 0.75, 5),
+        "thermophysical": (2, 1.5, 10),
+        "transport": (2, 1.5, 15),
+        "phase_stability": (3, 1.5, 20),
+        "solvation": (3, 1.5, 25),
+    }
+    expected_tasks = {
+        "dynamic_relative_permittivity": (0.25, 3),
+        "equilibrium_pressure": (0.25, 3),
+        "isobaric_coefficient_of_volume_expansion": (0.25, 3),
+        "self_diffusion_coefficient": (0.25, 10),
+        "static_relative_permittivity": (0.25, 5),
+        "thermal_conductivity": (0.25, 5),
+        "heat_capacity": (0.50, 3), "pec50": (0.50, 10),
+        "speed_of_sound": (0.50, 3), "x_co2": (0.50, 3),
+        "electrical_conductivity": (0.75, 15),
+        "glass_transition_temperature": (0.75, 5),
+        "refractive_index": (0.75, 5), "surface_tension": (0.75, 10),
+        "transfer_organic": (0.75, 20), "density": (1.00, 5),
+        "melting_point": (1.00, 10), "solvation": (1.00, 5),
+        "thermal_decomposition_temperature": (1.00, 10),
+        "transfer": (1.00, 10), "viscosity": (1.00, 5),
+    }
+    assert {
+        task.removeprefix("experiment/"): (
+            spec.model_overrides["private_lr_scale"], spec.phase_d_epochs
+        )
+        for task, spec in config.tasks.items()
+    } == expected_tasks
+    serialized = config.to_dict()
+    assert "epochs" not in serialized["training"]
+    assert "refinement_ratio" not in serialized["training"]
+    assert "group_experts" not in serialized["model"]
+    mixed = {**serialized, "training": {**serialized["training"], "epochs": 20}}
+    with pytest.raises(ValueError, match="forbids legacy fields"):
+        stage3_config_from_dict(mixed)
+
+    task_a = Stage3TaskConfig(
+        meta_group="g1",
+        phase_d_epochs=1,
+        model_overrides={"private_experts": 2, "private_lr_scale": 0.5},
+    )
+    task_b = Stage3TaskConfig(
+        meta_group="g2",
+        phase_d_epochs=1,
+        model_overrides={"private_experts": 0, "private_lr_scale": 1.0},
+    )
+    tiny = Stage3Config(
+        model=Stage3ModelConfig(global_experts=1, group_experts=9),
+        groups={
+            "g1": Stage3GroupConfig(
+                experts=3, expert_hidden_ratio=1.0, phase_c_epochs=1
+            ),
+            "g2": Stage3GroupConfig(
+                experts=1, expert_hidden_ratio=1.0, phase_c_epochs=1
+            ),
+        },
+        tasks={"experiment/a": task_a, "experiment/b": task_b},
+        training=replace(
+            Stage3TrainingConfig(),
+            sampling_mode="raw",
+            joint_gradient_clip_mode="ownership",
+            schedule_mode="four_phase",
+            four_phase=Stage3FourPhaseConfig(
+                bootstrap=Stage3BootstrapPhaseConfig(
+                    1, 3e-4, 3e-4, 3e-4, 0.05, 0.5
+                ),
+                consolidation=Stage3ConsolidationPhaseConfig(
+                    1, 3e-5, 1e-4, 1.5e-4, 0.2
+                ),
+                group_specialization=Stage3GroupSpecializationPhaseConfig(
+                    7.5e-5, 1e-4, 0.2
+                ),
+                task_specialization=Stage3TaskSpecializationPhaseConfig(
+                    1e-4, 0.1
+                ),
+            ),
+        ),
+    )
+    tiny.validate()
+    specs = {
+        task: ResolvedTaskSpec(
+            task_id=task,
+            target_column="value",
+            identity_columns=("cation", "anion"),
+            condition_columns=(),
+            system_type="il",
+            materialized_path=task,
+            split_strategy="il",
+            cv_repeat=1,
+            meta_group=spec.meta_group,
+            partner_mode="none",
+            primary_slots=("cation", "anion"),
+            partner_slots=(),
+            enabled=True,
+            task_weight=1.0,
+            catalog_schema_version=1,
+            provenance={},
+        )
+        for task, spec in tiny.tasks.items()
+    }
+    model = Stage3SparseModel(
+        tiny.model,
+        specs,
+        4,
+        group_configs=tiny.groups,
+        task_configs=tiny.tasks,
+    )
+    assert model.task_gates["experiment__a"].out_features == 6
+    assert model.task_gates["experiment__b"].out_features == 2
+    assert len(model.l1_group_experts["g1"]) == 3
+    assert len(model.l1_group_experts["g2"]) == 1
+
+
+def test_four_phase_training_publishes_fixed_final_state(
+    tiny_prepared: Stage3Config,
+) -> None:
+    config = _tiny_four_phase(tiny_prepared)
+    output = config.data.artifacts_dir.parent / "four-phase-train"
+    rows = run_stage3_training(config, 1, output_dir=output)
+
+    assert rows[-1]["phase"] == "four_phase_final"
+    assert (output / "phase_a/checkpoint_epoch_00001.pt").is_file()
+    assert (output / "phase_b/checkpoint_epoch_00001.pt").is_file()
+    assert (output / "phase_c/g1/checkpoint_epoch_00001.pt").is_file()
+    assert (
+        output / "phase_d/experiment__a/checkpoint_epoch_00001.pt"
+    ).is_file()
+    artifact = torch.load(
+        output / "four_phase_final.pt", map_location="cpu", weights_only=False
+    )
+    manifest = json.loads((output / "four_phase_final.json").read_text())
+    assert artifact["kind"] == "ilume_stage3_four_phase_final"
+    assert manifest["artifact_sha256"] == sha256_file(
+        output / "four_phase_final.pt"
+    )
+    assert set(manifest["phases"]["group_specialization"]["groups"]) == {
+        "g1", "g2"
+    }
+    assert set(manifest["phases"]["task_specialization"]["tasks"]) == set(
+        config.tasks
+    )
+    assert "best_metric" not in json.dumps(manifest)
+    assert "selected_epoch" not in json.dumps(manifest)
+    assert "best_state" not in json.dumps(manifest)
+
+    resumed = run_stage3_training(
+        config, 1, output_dir=output, resume_from=output
+    )
+    assert resumed[-1]["phase"] == "four_phase_final"
+    evaluated = evaluate_checkpoints(
+        config,
+        output,
+        split="valid",
+        ensemble_folds=False,
+        task_subset=("experiment/a",),
+        fold=1,
+    )
+    assert evaluated["model_selector"] == "four_phase_final"
+    with pytest.raises(ValueError, match="only supported by legacy"):
+        evaluate_checkpoints(
+            config,
+            output,
+            split="valid",
+            ensemble_folds=False,
+            checkpoint_epoch=1,
+            task_subset=("experiment/a",),
+            fold=1,
+        )
+
+
+def test_four_phase_optimizer_groups_follow_ownership(
+    tiny_prepared: Stage3Config,
+) -> None:
+    config = _tiny_four_phase(tiny_prepared)
+    model = Stage3SparseModel(
+        config.model,
+        resolve_task_registry(config),
+        4,
+        group_configs=config.groups,
+        task_configs=config.tasks,
+    )
+    owners = (group_owner("g1"), private_owner("experiment/a"))
+    model.set_trainable_owners(owners)
+    optimizer = _four_phase_optimizer(
+        model,
+        config,
+        {owners[0]: 7.5e-5, owners[1]: 5.0e-5},
+    )
+
+    assert optimizer.state == {}
+    assert {group["owner"] for group in optimizer.param_groups} == {
+        "GROUP:g1", "PRIVATE:experiment/a"
+    }
+    assert {
+        (group["owner"], group["lr"])
+        for group in optimizer.param_groups
+    } == {
+        ("GROUP:g1", 7.5e-5),
+        ("PRIVATE:experiment/a", 5.0e-5),
+    }
+    optimized = {
+        id(parameter)
+        for group in optimizer.param_groups
+        for parameter in group["params"]
+    }
+    expected = {
+        id(parameter)
+        for parameter, owner in model.parameter_ownership().items()
+        if owner in owners
+    }
+    assert optimized == expected
+    assert all(
+        parameter.requires_grad == (owner in owners)
+        for parameter, owner in model.parameter_ownership().items()
+    )
+
+
+def test_four_phase_scheduler_recipes_reach_phase_local_floors() -> None:
+    assert _four_phase_lr_factor(0, 5, 100, 0.5) == pytest.approx(0.2)
+    assert _four_phase_lr_factor(4, 5, 100, 0.5) == pytest.approx(1.0)
+    assert _four_phase_lr_factor(99, 5, 100, 0.5) == pytest.approx(0.5)
+    assert _four_phase_lr_factor(0, 0, 100, 0.2) == pytest.approx(1.0)
+    assert _four_phase_lr_factor(99, 0, 100, 0.2) == pytest.approx(0.2)
+    assert _four_phase_lr_factor(99, 0, 100, 0.1) == pytest.approx(0.1)
+
+
+def test_four_phase_owner_delta_stitch_is_order_independent(
+    tiny_prepared: Stage3Config,
+) -> None:
+    config = _tiny_four_phase(tiny_prepared)
+    registry = resolve_task_registry(config)
+    first = Stage3SparseModel(
+        config.model, registry, 4,
+        group_configs=config.groups, task_configs=config.tasks,
+    )
+    second = Stage3SparseModel(
+        config.model, registry, 4,
+        group_configs=config.groups, task_configs=config.tasks,
+    )
+    second.load_state_dict(first.state_dict())
+    anchor = _four_phase_model_state(first)
+    owners = (group_owner("g1"), private_owner("experiment/c"))
+    deltas = {}
+    for index, owner in enumerate(owners, start=1):
+        state = _four_phase_owner_state(first, (owner,))
+        state = {name: value + index for name, value in state.items()}
+        deltas[owner.label] = ((owner,), state, _four_phase_owner_hash(state))
+
+    forward = _stitch_owner_deltas(first, anchor, deltas)
+    reverse = _stitch_owner_deltas(
+        second, anchor, dict(reversed(list(deltas.items())))
+    )
+    assert set(forward) == set(reverse)
+    assert all(torch.equal(forward[name], reverse[name]) for name in forward)
 
 
 def test_training_seed_changes_training_identity_not_prepared_artifact(

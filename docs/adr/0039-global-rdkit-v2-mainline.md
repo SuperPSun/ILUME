@@ -5,6 +5,10 @@
 - 取代范围：ADR-0002 的主线 grouped descriptor token 决定、ADR-0004 的主线 fingerprint 模态，以及 ADR-0013/0015 中五路 Stage 1 loss；legacy v1 与 Capacity v1 保留原合同。
 
 > 2026-09-07：本文所称 Stage 3 sampling 不变已由 [ADR-0046](0046-stage3-ownership-clipping-raw-sampling.md) 修订为现役 v2 raw sampling；legacy v1 与 Capacity v1 不变。
+>
+> 2026-09-07：本文所称 Stage 3 expert topology 与 refinement 不变已由
+> [ADR-0047](0047-stage3-deterministic-four-phase-training.md) 修订为 per-group/task capacity
+> 与 deterministic 四阶段训练；prepared representation 合同不变。
 
 ## 背景
 

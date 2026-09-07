@@ -23,6 +23,16 @@ ResolveIdentity = Callable[..., dict[str, Any]]
 EvaluateCheckpoints = Callable[..., dict[str, Any]]
 
 
+def _model_selector(config: Stage3Config, checkpoint_epoch: int | None) -> str:
+    if checkpoint_epoch is not None:
+        return "epoch_checkpoint"
+    return (
+        "four_phase_final"
+        if config.training.schedule_mode == "four_phase"
+        else "taskwise_refined"
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Evaluate Stage 3 checkpoints.")
     parser.add_argument("--config", required=True)
@@ -33,7 +43,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--checkpoint-epoch",
         type=int,
-        help="Evaluate ordinary fold epoch checkpoints; omitted loads taskwise_refined.pt.",
+        help=(
+            "Evaluate legacy ordinary fold epoch checkpoints; omitted loads the "
+            "config's final artifact. Four-phase configs reject this option."
+        ),
     )
     parser.add_argument("--tasks", nargs="+")
     parser.add_argument("--study-id")
@@ -69,7 +82,7 @@ def _run_fold(
     resolve_identity: ResolveIdentity,
     evaluate_checkpoints: EvaluateCheckpoints,
 ) -> None:
-    taskwise_refined = checkpoint_epoch is None
+    model_selector = _model_selector(config, checkpoint_epoch)
     with progress.status(f"Resolving Stage 3 fold{fold} evaluation identity"):
         evaluation_identity = resolve_identity(
             config,
@@ -96,7 +109,7 @@ def _run_fold(
             "ensemble_folds": False,
             "fold": fold,
             "checkpoint_epoch": checkpoint_epoch,
-            "model_selector": "taskwise_refined" if taskwise_refined else "epoch_checkpoint",
+            "model_selector": model_selector,
             "tasks": tasks,
             "reporting_study_id": study_id,
         },
@@ -173,7 +186,7 @@ def _run_test(
     resolve_identity: ResolveIdentity,
     evaluate_checkpoints: EvaluateCheckpoints,
 ) -> None:
-    taskwise_refined = args.checkpoint_epoch is None
+    model_selector = _model_selector(config, args.checkpoint_epoch)
     with progress.status("Resolving Stage 3 evaluation identity"):
         evaluation_identity = resolve_identity(
             config,
@@ -199,7 +212,7 @@ def _run_test(
             "ensemble_folds": True,
             "fold": None,
             "checkpoint_epoch": args.checkpoint_epoch,
-            "model_selector": "taskwise_refined" if taskwise_refined else "epoch_checkpoint",
+            "model_selector": model_selector,
             "tasks": args.tasks,
             "reporting_study_id": args.study_id,
         },

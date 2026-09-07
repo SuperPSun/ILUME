@@ -63,6 +63,7 @@ class Stage3TaskConfig:
     partner_slots: tuple[str, ...] = ()
     enabled: bool = True
     task_weight: float = 1.0
+    phase_d_epochs: int | None = None
     model_overrides: dict[str, Any] = field(default_factory=dict)
 
 
@@ -159,10 +160,53 @@ class Stage3ModelConfig:
 class Stage3GroupConfig:
     enabled: bool = True
     group_weight: float = 1.0
+    experts: int | None = None
+    expert_hidden_ratio: float | None = None
+    phase_c_epochs: int | None = None
 
 
 def _base_groups() -> dict[str, Stage3GroupConfig]:
     return {name: Stage3GroupConfig() for name in BASE_GROUP_TASKS}
+
+
+@dataclass(frozen=True)
+class Stage3BootstrapPhaseConfig:
+    epochs: int
+    global_lr: float
+    group_lr: float
+    private_lr: float
+    warmup_ratio: float
+    min_lr_ratio: float
+
+
+@dataclass(frozen=True)
+class Stage3ConsolidationPhaseConfig:
+    epochs: int
+    global_lr: float
+    group_lr: float
+    private_lr: float
+    min_lr_ratio: float
+
+
+@dataclass(frozen=True)
+class Stage3GroupSpecializationPhaseConfig:
+    group_lr: float
+    private_lr: float
+    min_lr_ratio: float
+
+
+@dataclass(frozen=True)
+class Stage3TaskSpecializationPhaseConfig:
+    private_lr: float
+    min_lr_ratio: float
+
+
+@dataclass(frozen=True)
+class Stage3FourPhaseConfig:
+    bootstrap: Stage3BootstrapPhaseConfig
+    consolidation: Stage3ConsolidationPhaseConfig
+    group_specialization: Stage3GroupSpecializationPhaseConfig
+    task_specialization: Stage3TaskSpecializationPhaseConfig
 
 
 @dataclass(frozen=True)
@@ -192,6 +236,8 @@ class Stage3TrainingConfig:
     debug_pcgrad_traces: bool = False
     refinement_ratio: float = 0.20
     refinement_lr_multiplier: float = 0.10
+    schedule_mode: str = "legacy_joint_refinement"
+    four_phase: Stage3FourPhaseConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -238,6 +284,19 @@ class Stage3Config:
             raise ValueError("Stage 3 requires groups and tasks")
         if any(group.group_weight <= 0 for group in self.groups.values()):
             raise ValueError("Stage 3 group weights must be positive")
+        for group_id, group in self.groups.items():
+            if group.experts is not None and group.experts <= 0:
+                raise ValueError(f"Stage 3 group experts must be positive: {group_id}")
+            if group.expert_hidden_ratio is not None and group.expert_hidden_ratio <= 0:
+                raise ValueError(
+                    f"Stage 3 group expert_hidden_ratio must be positive: {group_id}"
+                )
+            if group.phase_c_epochs is not None and group.phase_c_epochs <= 0:
+                raise ValueError(f"Stage 3 phase C epochs must be positive: {group_id}")
+        override_keys = {
+            "private_experts", "private_hidden_ratio", "tower_hidden_ratio",
+            "film_hidden_ratio", "private_lr_scale",
+        }
         for task_id, task in self.tasks.items():
             if not task_id or "." in task_id:
                 raise ValueError(f"Invalid Stage 3 task id: {task_id}")
@@ -253,10 +312,30 @@ class Stage3Config:
                 raise ValueError(f"Partner task has no partner slots: {task_id}")
             if task.task_weight <= 0:
                 raise ValueError(f"Stage 3 task weight must be positive: {task_id}")
-            if task.model_overrides:
+            if task.phase_d_epochs is not None and task.phase_d_epochs <= 0:
+                raise ValueError(f"Stage 3 phase D epochs must be positive: {task_id}")
+            unknown_overrides = set(task.model_overrides) - override_keys
+            if unknown_overrides:
                 raise ValueError(
-                    f"Stage 3 v1 has no task model overrides yet: {task_id}"
+                    f"Unknown Stage 3 task model overrides for {task_id}: "
+                    + ", ".join(sorted(unknown_overrides))
                 )
+            if "private_experts" in task.model_overrides:
+                value = task.model_overrides["private_experts"]
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                    raise ValueError(
+                        f"Stage 3 private_experts must be a non-negative integer: {task_id}"
+                    )
+            for name in (
+                "private_hidden_ratio", "tower_hidden_ratio",
+                "film_hidden_ratio", "private_lr_scale",
+            ):
+                if name in task.model_overrides:
+                    value = task.model_overrides[name]
+                    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+                        raise ValueError(
+                            f"Stage 3 {name} must be positive: {task_id}"
+                        )
         enabled_tasks = [task for task in self.tasks.values() if task.enabled]
         if not enabled_tasks:
             raise ValueError("Stage 3 requires at least one enabled task")
@@ -289,10 +368,70 @@ class Stage3Config:
                 raise ValueError(f"training.{name} must be positive")
         if training.microbatch_size > training.composite_batch_size:
             raise ValueError("microbatch_size exceeds composite_batch_size")
-        from common.refinement import refinement_geometry
-        refinement_geometry(training.epochs, training.refinement_ratio)
-        if training.refinement_lr_multiplier <= 0:
-            raise ValueError("refinement_lr_multiplier must be positive")
+        if training.schedule_mode not in {
+            "legacy_joint_refinement", "four_phase"
+        }:
+            raise ValueError(
+                "training.schedule_mode must be legacy_joint_refinement or four_phase"
+            )
+        if training.schedule_mode == "legacy_joint_refinement":
+            if training.four_phase is not None:
+                raise ValueError("legacy Stage 3 training forbids training.four_phase")
+            from common.refinement import refinement_geometry
+            refinement_geometry(training.epochs, training.refinement_ratio)
+            if training.refinement_lr_multiplier <= 0:
+                raise ValueError("refinement_lr_multiplier must be positive")
+        else:
+            if training.four_phase is None:
+                raise ValueError("four-phase Stage 3 training requires training.four_phase")
+            if training.sampling_mode != "raw":
+                raise ValueError("four-phase Stage 3 training requires raw sampling")
+            if training.joint_gradient_clip_mode != "ownership":
+                raise ValueError(
+                    "four-phase Stage 3 training requires ownership clipping"
+                )
+            for group_id, group in self.groups.items():
+                if group.enabled and (
+                    group.experts is None
+                    or group.expert_hidden_ratio is None
+                    or group.phase_c_epochs is None
+                ):
+                    raise ValueError(
+                        f"Four-phase Stage 3 group recipe is incomplete: {group_id}"
+                    )
+            for task_id, task in self.tasks.items():
+                if task.enabled and (
+                    task.phase_d_epochs is None
+                    or "private_lr_scale" not in task.model_overrides
+                ):
+                    raise ValueError(
+                        f"Four-phase Stage 3 task recipe is incomplete: {task_id}"
+                    )
+            phases = training.four_phase
+            numeric = (
+                phases.bootstrap.global_lr, phases.bootstrap.group_lr,
+                phases.bootstrap.private_lr, phases.consolidation.global_lr,
+                phases.consolidation.group_lr, phases.consolidation.private_lr,
+                phases.group_specialization.group_lr,
+                phases.group_specialization.private_lr,
+                phases.task_specialization.private_lr,
+            )
+            if phases.bootstrap.epochs <= 0 or phases.consolidation.epochs <= 0:
+                raise ValueError("Four-phase Stage 3 epochs must be positive")
+            if any(value <= 0 for value in numeric):
+                raise ValueError("Four-phase Stage 3 learning rates must be positive")
+            if not 0 <= phases.bootstrap.warmup_ratio < 1:
+                raise ValueError("Four-phase bootstrap warmup_ratio must be in [0, 1)")
+            for name, value in (
+                ("bootstrap", phases.bootstrap.min_lr_ratio),
+                ("consolidation", phases.consolidation.min_lr_ratio),
+                ("group_specialization", phases.group_specialization.min_lr_ratio),
+                ("task_specialization", phases.task_specialization.min_lr_ratio),
+            ):
+                if not 0 < value <= 1:
+                    raise ValueError(
+                        f"Four-phase {name} min_lr_ratio must be in (0, 1]"
+                    )
         if training.learning_rate <= 0 or training.weight_decay < 0:
             raise ValueError("Stage 3 optimizer values are invalid")
         if len(training.betas) != 2 or not all(0 <= x < 1 for x in training.betas):
@@ -356,10 +495,27 @@ class Stage3Config:
             adaptation = plugin["adaptation"]
             adaptation["global"] = adaptation.pop("global_scope")
         training = payload["training"]
+        if training["schedule_mode"] == "legacy_joint_refinement":
+            training.pop("schedule_mode")
+            training.pop("four_phase")
+        else:
+            payload["model"].pop("group_experts")
+            for name in (
+                "virtual_min_size", "epochs", "learning_rate", "warmup_ratio",
+                "min_lr_ratio", "refinement_ratio", "refinement_lr_multiplier",
+            ):
+                training.pop(name)
+        for group in payload["groups"].values():
+            for name in ("experts", "expert_hidden_ratio", "phase_c_epochs"):
+                if group[name] is None:
+                    group.pop(name)
+        for task in payload["tasks"].values():
+            if task["phase_d_epochs"] is None:
+                task.pop("phase_d_epochs")
         if training["sampling_mode"] == "virtual":
             training.pop("sampling_mode")
         else:
-            training.pop("virtual_min_size")
+            training.pop("virtual_min_size", None)
         if training["joint_gradient_clip_mode"] == "global":
             training.pop("joint_gradient_clip_mode")
         return payload
@@ -419,21 +575,72 @@ def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
         for name, value in groups_raw.items()
     }
     tasks_raw = raw.get("tasks")
-    tasks = _base_task_registry() if tasks_raw is None else {
-        task_id: _construct_dataclass(
-            Stage3TaskConfig,
-            {
-                **value,
-                **{
-                    name: tuple(value[name])
-                    for name in ("primary_slots", "partner_slots")
-                    if name in value
+    tasks = _base_task_registry()
+    if tasks_raw is not None:
+        tasks = {}
+        for task_id, raw_task in tasks_raw.items():
+            value = dict(raw_task)
+            if "model_overrides" in value:
+                if not isinstance(value["model_overrides"], dict):
+                    raise ValueError(
+                        f"Stage 3 task model_overrides must be a mapping: {task_id}"
+                    )
+                value["model_overrides"] = dict(value["model_overrides"])
+            tasks[task_id] = _construct_dataclass(
+                Stage3TaskConfig,
+                {
+                    **value,
+                    **{
+                        name: tuple(value[name])
+                        for name in ("primary_slots", "partner_slots")
+                        if name in value
+                    },
                 },
-            },
-        )
-        for task_id, value in tasks_raw.items()
-    }
+            )
     training_raw = dict(raw.get("training") or {})
+    schedule_mode = training_raw.get("schedule_mode", "legacy_joint_refinement")
+    if schedule_mode == "four_phase":
+        forbidden = {
+            "epochs", "learning_rate", "warmup_ratio", "min_lr_ratio",
+            "refinement_ratio", "refinement_lr_multiplier",
+        } & set(training_raw)
+        if forbidden:
+            raise ValueError(
+                "Four-phase Stage 3 training forbids legacy fields: "
+                + ", ".join(sorted(forbidden))
+            )
+    four_phase_raw = training_raw.get("four_phase")
+    if four_phase_raw is not None:
+        if not isinstance(four_phase_raw, dict):
+            raise ValueError("training.four_phase must be a mapping")
+        values = dict(four_phase_raw)
+        required_phases = {
+            "bootstrap", "consolidation", "group_specialization",
+            "task_specialization",
+        }
+        missing_phases = required_phases - set(values)
+        if missing_phases:
+            raise ValueError(
+                "training.four_phase is missing: "
+                + ", ".join(sorted(missing_phases))
+            )
+        values["bootstrap"] = _construct_dataclass(
+            Stage3BootstrapPhaseConfig, values.get("bootstrap")
+        )
+        values["consolidation"] = _construct_dataclass(
+            Stage3ConsolidationPhaseConfig, values.get("consolidation")
+        )
+        values["group_specialization"] = _construct_dataclass(
+            Stage3GroupSpecializationPhaseConfig,
+            values.get("group_specialization"),
+        )
+        values["task_specialization"] = _construct_dataclass(
+            Stage3TaskSpecializationPhaseConfig,
+            values.get("task_specialization"),
+        )
+        training_raw["four_phase"] = _construct_dataclass(
+            Stage3FourPhaseConfig, values
+        )
     if "betas" in training_raw:
         training_raw["betas"] = tuple(training_raw["betas"])
     if isinstance(training_raw.get("active_tasks"), list):
