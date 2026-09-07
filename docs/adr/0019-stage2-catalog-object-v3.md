@@ -11,6 +11,8 @@
 > 2026-08-25：本文的 cation/anion orbital task 定义已由 [ADR-0025](0025-stage2-homo-lumo-scalar-tasks.md) 取代；Object v3、训练与 identity 分层合同保持不变。
 >
 > 2026-08-26：本文的末期 joint training、固定 final checkpoint 与 checkpoint v3 合同已由 [ADR-0027](0027-late-taskwise-refinement.md) 修订；Object v3 数据、teacher 与模型合同保持不变。
+>
+> 2026-09-07：现役 v2 的 teacher loss weighting 已由 [ADR-0044](0044-stage2-v2-task-compensated-teacher-loss.md) 修订；本文的 uncompensated teacher 公式仅继续用于冻结的 legacy v1 与 Capacity v1 合同。
 
 ## 决定
 

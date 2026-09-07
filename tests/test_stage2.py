@@ -45,7 +45,7 @@ from stage2.config import (
     DEFAULT_REFINEMENT_TASKS, STAGE2_CHECKPOINT_VERSION,
     Stage2Config, Stage2DataConfig, Stage2InitializationConfig,
     Stage2PreparationConfig, Stage2RepresentationConfig, Stage2TrainingConfig,
-    load_stage2_config,
+    load_stage2_config, stage2_config_from_dict,
 )
 
 from stage2.data import (
@@ -59,6 +59,8 @@ from stage2.model import (
     ObjectEncoder, RDKitDescriptorBackbone, RegressionHead, Stage2ObjectModel,
     molecule_equal_smooth_l1_loss,
 )
+
+from stage2.identity import build_stage2_training_identity
 
 from stage2.prepare import (
     prepare_stage2_data, prepare_teacher_cache,
@@ -89,7 +91,7 @@ from stage2.model import (
     masked_target_macro_smooth_l1_loss, molecule_equal_smooth_l1_loss,
 )
 
-from stage2.train import task_compensation_scale
+from stage2.train import joint_stage2_loss, task_compensation_scale
 
 # --- Configuration, preparation, training, and artifact contracts ---
 
@@ -409,6 +411,8 @@ def test_stage2_refinement_config_contract(tiny_stage2_setup):
     assert active.training.epochs == 10
     assert active.training.refinement_epochs == 0
     assert active.training.refinement_tasks == ()
+    assert active.loss.teacher_weighting == "task_compensated"
+    assert active.to_dict()["loss"]["teacher_weighting"] == "task_compensated"
 
     paths = [
         Path("configs/v1/stage2/base.yaml"),
@@ -419,9 +423,35 @@ def test_stage2_refinement_config_contract(tiny_stage2_setup):
         assert config.training.epochs == (5 if path == Path("configs/v1/stage2/base.yaml") else 10)
         assert config.training.refinement_epochs == 10
         assert config.training.refinement_tasks == DEFAULT_REFINEMENT_TASKS
+        assert config.loss.teacher_weighting == "uncompensated"
+        assert "teacher_weighting" not in config.to_dict()["loss"]
         assert config.to_dict()["training"]["refinement_tasks"] == list(
             DEFAULT_REFINEMENT_TASKS
         )
+
+    invalid = active.to_dict()
+    invalid["loss"]["teacher_weighting"] = "unknown"
+    with pytest.raises(ValueError, match="teacher_weighting"):
+        stage2_config_from_dict(invalid)
+
+    registry = load_stage2_registry(tiny_stage2_setup.data.task_catalog_path)
+    identity_args = {
+        "data_identity": {"hash": "data"},
+        "teacher_identity": {"hash": "teacher"},
+        "stage1_encoder_identity": {"hash": "stage1"},
+        "registry": registry,
+        "model_contract": {"kind": "test"},
+        "normalized_task_weights": active.normalized_task_weights(registry),
+        "math_contract": {"precision": "test"},
+        "optimizer_implementation": "single_tensor",
+    }
+    legacy = replace(
+        active,
+        loss=replace(active.loss, teacher_weighting="uncompensated"),
+    )
+    assert build_stage2_training_identity(active, **identity_args)["hash"] != (
+        build_stage2_training_identity(legacy, **identity_args)["hash"]
+    )
 
     with pytest.raises(ValueError, match="disabled together"):
         replace(
@@ -876,7 +906,7 @@ def test_round_robin_is_complete_deterministic_and_does_not_cycle() -> None:
     assert len({item.task for item in first[:len(datasets)]}) == len(datasets)
     assert [item.task for item in first].count("c") == 1
 
-def test_loss_reductions_and_teacher_independence() -> None:
+def test_loss_reductions_and_teacher_weighting() -> None:
     predictions = torch.tensor([[2.0, 2.0], [0.0, 2.0]])
     target = torch.zeros_like(predictions)
     macro = masked_target_macro_smooth_l1_loss(
@@ -889,4 +919,19 @@ def test_loss_reductions_and_teacher_independence() -> None:
     )
     assert molecule.item() == pytest.approx(1.5)
     compensation = task_compensation_scale(0.25, 20, 4, 10)
-    assert (compensation * torch.tensor(2.0) + 0.1 * torch.tensor(3.0)).item() == pytest.approx(4.3)
+    physics_loss = torch.tensor(2.0)
+    teacher_loss = torch.tensor(3.0)
+    assert joint_stage2_loss(
+        physics_loss,
+        teacher_loss,
+        compensation=compensation,
+        lambda_teacher=0.1,
+        teacher_weighting="task_compensated",
+    ).item() == pytest.approx(4.6)
+    assert joint_stage2_loss(
+        physics_loss,
+        teacher_loss,
+        compensation=compensation,
+        lambda_teacher=0.1,
+        teacher_weighting="uncompensated",
+    ).item() == pytest.approx(4.3)

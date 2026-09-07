@@ -134,6 +134,21 @@ def task_compensation_scale(task_weight: float, total_epoch_batches: int, batch_
     return task_weight * total_epoch_batches * batch_rows / task_rows
 
 
+def joint_stage2_loss(
+    physics_loss: torch.Tensor,
+    teacher_loss: torch.Tensor,
+    *,
+    compensation: float,
+    lambda_teacher: float,
+    teacher_weighting: str,
+) -> torch.Tensor:
+    if teacher_weighting == "task_compensated":
+        return compensation * (physics_loss + lambda_teacher * teacher_loss)
+    if teacher_weighting == "uncompensated":
+        return compensation * physics_loss + lambda_teacher * teacher_loss
+    raise ValueError(f"Unsupported Stage 2 teacher weighting: {teacher_weighting}")
+
+
 def _training_geometry(config: Stage2Config, datasets: dict[str, Stage2TaskDataset]) -> tuple[dict[str, int], int, int, int]:
     if config.training.gradient_accumulation_steps != 1:
         raise ValueError("Stage 2 Object v3 requires one batch per optimizer step")
@@ -1185,7 +1200,13 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
                         loss = batch_output.physics_loss
                     else:
                         compensation = task_compensation_scale(normalized_weights[descriptor.task], total_epoch_batches, int(descriptor.indices.numel()), task_rows[descriptor.task])
-                        loss = compensation * batch_output.physics_loss + config.loss.lambda_teacher * batch_output.teacher_loss
+                        loss = joint_stage2_loss(
+                            batch_output.physics_loss,
+                            batch_output.teacher_loss,
+                            compensation=compensation,
+                            lambda_teacher=config.loss.lambda_teacher,
+                            teacher_weighting=config.loss.teacher_weighting,
+                        )
                 interval_finite = interval_finite & torch.isfinite(loss.detach())
                 scaler.scale(loss).backward()
                 if config.training.max_grad_norm > 0:
@@ -1340,6 +1361,7 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
 __all__ = [
     "STAGE2_CHECKPOINT_KIND", "STAGE2_CHECKPOINT_VERSION",
     "STAGE2_REFINED_KIND", "STAGE2_REFINED_VERSION", "evaluate_stage2",
+    "joint_stage2_loss",
     "load_stage2_encoder_artifact", "resolve_stage2_training_identity",
     "run_stage2_training", "task_compensation_scale",
 ]

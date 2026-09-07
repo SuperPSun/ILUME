@@ -18,6 +18,7 @@ model:
   dropout: 0.10
 loss:
   lambda_teacher: 0.10
+  teacher_weighting: task_compensated
   task_weights:
     simulation/density: 1.0
     simulation/heat_capacity: 0.8

@@ -81,6 +81,7 @@ class Stage2ModelConfig:
 @dataclass(frozen=True)
 class Stage2LossConfig:
     lambda_teacher: float = 0.10
+    teacher_weighting: str = "uncompensated"
     task_weights: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_TASK_WEIGHTS))
     task_loss_modes: dict[str, str] = field(
         default_factory=lambda: {"simulation/simulated_qm_elec_hf": "masked_target_macro"}
@@ -138,6 +139,13 @@ class Stage2Config:
             raise ValueError("model.dropout must be between 0 and 1")
         if self.loss.lambda_teacher < 0.0:
             raise ValueError("loss.lambda_teacher must be non-negative")
+        if self.loss.teacher_weighting not in {
+            "uncompensated",
+            "task_compensated",
+        }:
+            raise ValueError(
+                "loss.teacher_weighting must be uncompensated or task_compensated"
+            )
         if self.representation is None:
             if self.data.pretrain_artifacts_dir is None or self.initialization.checkpoint is None:
                 raise ValueError("Stage 2 Object v3 requires Stage 1 artifacts and checkpoint")
@@ -263,6 +271,8 @@ class Stage2Config:
         payload = convert(asdict(self))
         if self.representation is None:
             payload.pop("representation")
+        if self.loss.teacher_weighting == "uncompensated":
+            payload["loss"].pop("teacher_weighting")
         return payload
 
     def experiment_dict(self) -> dict[str, Any]:
