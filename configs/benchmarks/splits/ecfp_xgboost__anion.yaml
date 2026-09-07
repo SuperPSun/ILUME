@@ -21,7 +21,7 @@ model:
   eval_metric: mae
   tree_method: hist
 training:
-  early_stopping_rounds: 50
+  model_selection: final_training_state
   n_jobs: 8
   device: cpu
   target_space: raw

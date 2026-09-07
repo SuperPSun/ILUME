@@ -52,11 +52,10 @@ training:
   batch_size: 128
   gradient_accumulation_steps: 1
   max_epochs: 50
-  early_stopping_patience: 10
   length_bucketing: sortish_length_bucketing_v1
   bucket_window_batches: 20
   loss: mse
-  selection_metric: validation_raw_mae
+  model_selection: final_training_state
   condition_transform: train_only_zscore
   device: cuda
   precision: fp32

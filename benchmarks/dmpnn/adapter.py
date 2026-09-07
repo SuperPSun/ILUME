@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -311,7 +310,6 @@ def train_dmpnn_bundle(
     from chemprop.data import build_dataloader
     from chemprop.models.utils import save_model
     from lightning import pytorch as pl
-    from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
@@ -336,58 +334,38 @@ def train_dmpnn_bundle(
         shuffle=False,
         drop_last=False,
     )
-    monitor = "val/mae"
     history = _HistoryCallback()
-    with tempfile.TemporaryDirectory(prefix="ilume-dmpnn-checkpoint-") as temporary:
-        checkpoint = ModelCheckpoint(
-            dirpath=temporary,
-            filename="best",
-            monitor=monitor,
-            mode="min",
-            save_top_k=1,
-            save_last=False,
-            auto_insert_metric_name=False,
-        )
-        early_stopping = EarlyStopping(
-            monitor=monitor,
-            patience=int(config.training["early_stopping_patience"]),
-            mode="min",
-        )
-        trainer = pl.Trainer(
-            accelerator="gpu",
-            devices=1,
-            precision="32-true",
-            max_epochs=int(config.training["max_epochs"]),
-            callbacks=[history, checkpoint, early_stopping],
-            deterministic=True,
-            logger=False,
-            enable_model_summary=False,
-            enable_progress_bar=(
-                os.environ.get("ILUME_DISABLE_PROGRESS") != "1"
-                and sys.stderr.isatty()
-            ),
-        )
-        trainer.fit(model, train_loader, valid_loader)
-        if not checkpoint.best_model_path:
-            raise RuntimeError("D-MPNN training did not produce a best checkpoint")
-        best_model = type(model).load_from_checkpoint(
-            checkpoint.best_model_path, map_location="cpu"
-        )
+    max_epochs = int(config.training["max_epochs"])
+    trainer = pl.Trainer(
+        accelerator="gpu",
+        devices=1,
+        precision="32-true",
+        max_epochs=max_epochs,
+        callbacks=[history],
+        deterministic=True,
+        logger=False,
+        enable_checkpointing=False,
+        enable_model_summary=False,
+        enable_progress_bar=(
+            os.environ.get("ILUME_DISABLE_PROGRESS") != "1"
+            and sys.stderr.isatty()
+        ),
+    )
+    trainer.fit(model, train_loader, valid_loader)
+    final_model = model.cpu()
     model_path = root / "model.pt"
     temporary_model = root / "model.pt.tmp"
-    save_model(temporary_model, best_model, output_columns=list(bundle.task.target_columns))
+    save_model(temporary_model, final_model, output_columns=list(bundle.task.target_columns))
     temporary_model.replace(model_path)
-    state_hash = tensor_state_hash("benchmark.dmpnn-state.v1", best_model.state_dict())
-    best_normalized = float(checkpoint.best_model_score.detach().cpu())
-    if not history.rows:
-        raise RuntimeError("D-MPNN training produced no validation history")
+    state_hash = tensor_state_hash("benchmark.dmpnn-state.v2", final_model.state_dict())
+    if len(history.rows) != max_epochs:
+        raise RuntimeError("D-MPNN training did not complete its fixed epoch budget")
     for row in history.rows:
         row["valid_raw_mae"] = row["valid_normalized_mae"] * bundle.target_stats.scale[0]
-    selected = min(history.rows, key=lambda row: row["valid_normalized_mae"])
-    best_epoch = int(selected["epoch"])
+    final_normalized = float(history.rows[-1]["valid_normalized_mae"])
     atomic_json(root / "training_history.json", history.rows)
     manifest = {
-        "format_version": 1,
+        "format_version": 2,
         "kind": "ilume_baseline_model",
         "model_kind": (
             "dmpnn_multicomponent"
@@ -400,9 +378,9 @@ def train_dmpnn_bundle(
         "target_columns": list(bundle.task.target_columns),
         "component_count": bundle.component_count,
         "target_level": bundle.target_level,
-        "best_epoch": best_epoch,
-        "best_valid_normalized_mae": best_normalized,
-        "best_valid_raw_mae": best_normalized * bundle.target_stats.scale[0],
+        "final_epoch": max_epochs,
+        "final_valid_normalized_mae": final_normalized,
+        "final_valid_raw_mae": final_normalized * bundle.target_stats.scale[0],
         "model_state_hash": state_hash,
         "integrity": {
             "model.pt": {
@@ -413,8 +391,8 @@ def train_dmpnn_bundle(
     }
     atomic_json(root / "checkpoint.json", manifest)
     return {
-        "best_epoch": best_epoch,
-        "best_valid_raw_mae": manifest["best_valid_raw_mae"],
+        "final_epoch": max_epochs,
+        "final_valid_raw_mae": manifest["final_valid_raw_mae"],
         "epochs_ran": len(history.rows),
     }
 
@@ -422,7 +400,7 @@ def train_dmpnn_bundle(
 def _manifest(root: Path) -> dict[str, Any]:
     path = root / "checkpoint.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
-    if payload.get("format_version") != 1 or payload.get("kind") != "ilume_baseline_model":
+    if payload.get("format_version") != 2 or payload.get("kind") != "ilume_baseline_model":
         raise ValueError("Unsupported D-MPNN checkpoint")
     for filename, expected in payload.get("integrity", {}).items():
         artifact = root / filename

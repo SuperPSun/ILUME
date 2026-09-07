@@ -516,13 +516,6 @@ def train_ilbert_bundle(
         lr=float(config.training["learning_rate"]),
         weight_decay=float(config.training["weight_decay"]),
     )
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode="min",
-        patience=int(config.training["scheduler_patience"]),
-        factor=float(config.training["scheduler_factor"]),
-        min_lr=float(config.training["minimum_learning_rate"]),
-    )
     sampler = EpochBatchSampler(
         len(bundle.train.raw),
         batch_size=int(config.training["batch_size"]),
@@ -539,10 +532,6 @@ def train_ilbert_bundle(
         config, bundle.valid, bundle.token_cache, bundle.target_stats
     )
     non_blocking = bool(config.runtime["non_blocking_transfer"])
-    best_mae = float("inf")
-    best_epoch = 0
-    best_state: dict[str, torch.Tensor] | None = None
-    stale = 0
     history: list[dict[str, Any]] = []
     max_epochs = int(config.training["max_epochs"])
     progress = (reporter or ProgressReporter()).bar(
@@ -586,7 +575,6 @@ def train_ilbert_bundle(
                     normalized - bundle.target_stats.normalize(bundle.valid.raw.targets)
                 ).mean()
             )
-            scheduler.step(raw_rmse)
             history.append(
                 {
                     "epoch": epoch,
@@ -597,40 +585,31 @@ def train_ilbert_bundle(
                     "learning_rate": float(optimizer.param_groups[0]["lr"]),
                 }
             )
-            if raw_mae < best_mae:
-                best_mae = raw_mae
-                best_epoch = epoch
-                best_state = {
-                    name: value.detach().cpu().clone()
-                    for name, value in model.state_dict().items()
-                }
-                stale = 0
-            else:
-                stale += 1
             progress.set_postfix(
                 {
                     "train_mse": f"{loss_sum / seen:.4f}",
                     "val_mae": f"{raw_mae:.4f}",
-                    "best": f"{best_mae:.4f}@{best_epoch}",
-                    "patience": f"{stale}/{config.training['early_stopping_patience']}",
                 }
             )
             progress.update(1)
-            if stale >= int(config.training["early_stopping_patience"]):
-                break
     finally:
         progress.close()
-    if best_state is None:
-        raise RuntimeError("ILBERT training did not produce a best checkpoint")
-    state_hash = tensor_state_hash("benchmark.ilbert-state.v1", best_state)
+    if len(history) != max_epochs:
+        raise RuntimeError("ILBERT training did not complete its fixed epoch budget")
+    final_state = {
+        name: value.detach().cpu().clone()
+        for name, value in model.state_dict().items()
+    }
+    final_mae = float(history[-1]["valid_raw_mae"])
+    state_hash = tensor_state_hash("benchmark.ilbert-state.v2", final_state)
     model_path = root / "model.pt"
     history_path = root / "history.json"
     audit_path = root / "input_audit.json"
-    atomic_torch_save(model_path, {"state_dict": best_state, "state_hash": state_hash})
+    atomic_torch_save(model_path, {"state_dict": final_state, "state_hash": state_hash})
     atomic_json(history_path, history)
     atomic_json(audit_path, {"train": bundle.train.audit, "valid": bundle.valid.audit})
     manifest = {
-        "format_version": 1,
+        "format_version": 2,
         "kind": "ilume_baseline_model",
         "model_kind": "ilbert",
         "training_identity": bundle.training_identity,
@@ -638,8 +617,8 @@ def train_ilbert_bundle(
         "target_columns": list(bundle.task.target_columns),
         "view_count": bundle.train.view_count,
         "condition_dim": int(bundle.train.raw_conditions.shape[1]),
-        "best_epoch": best_epoch,
-        "best_valid_raw_mae": best_mae,
+        "final_epoch": max_epochs,
+        "final_valid_raw_mae": final_mae,
         "model_state_hash": state_hash,
         "pretrained_load_audit": model.load_audit,
         "upstream_assets": bundle.assets,
@@ -653,8 +632,8 @@ def train_ilbert_bundle(
     }
     atomic_json(root / "checkpoint.json", manifest)
     return {
-        "best_epoch": best_epoch,
-        "best_valid_raw_mae": best_mae,
+        "final_epoch": max_epochs,
+        "final_valid_raw_mae": final_mae,
         "epochs_ran": len(history),
         "input_audit": manifest["input_audit"],
     }
@@ -666,7 +645,7 @@ def _manifest(root: Path) -> dict[str, Any]:
         raise FileNotFoundError(f"Missing ILBERT checkpoint manifest: {path}")
     payload = json.loads(path.read_text(encoding="utf-8"))
     if (
-        payload.get("format_version") != 1
+        payload.get("format_version") != 2
         or payload.get("kind") != "ilume_baseline_model"
         or payload.get("model_kind") != "ilbert"
     ):
@@ -736,7 +715,7 @@ def evaluate_ilbert_checkpoint(
     model = build_ilbert_model(config, bundle)
     payload = torch.load(root / "model.pt", map_location="cpu", weights_only=True)
     if tensor_state_hash(
-        "benchmark.ilbert-state.v1", payload["state_dict"]
+        "benchmark.ilbert-state.v2", payload["state_dict"]
     ) != manifest["model_state_hash"]:
         raise ValueError("ILBERT checkpoint state hash mismatch")
     model.load_state_dict(payload["state_dict"], strict=True)

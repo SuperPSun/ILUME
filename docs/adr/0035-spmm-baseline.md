@@ -3,6 +3,8 @@
 - 状态：Accepted
 - 日期：2026-09-01
 
+> Early stopping 与 validation-best checkpoint 由 [ADR-0045](0045-fixed-budget-baseline-training.md) 取代。
+
 ## 背景
 
 ILUME需要加入官方SPMM pretrained model作为advanced baseline。SPMM预训练同时包含SMILES text与53维property vector，但官方MoleculeNet regression只使用SMILES text branch的`[CLS]`表示。其原生downstream没有ILUME多组分topology，也没有满足Partial Charge atom mapping合同的输出路径。

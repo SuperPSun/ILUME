@@ -756,10 +756,6 @@ def train_spmm_bundle(
     total_steps = steps_per_epoch * max_epochs
     warmup_steps = steps_per_epoch * int(config.training["warmup_epochs"])
     non_blocking = bool(config.runtime["non_blocking_transfer"])
-    best_mae = float("inf")
-    best_epoch = 0
-    best_state: dict[str, torch.Tensor] | None = None
-    stale = 0
     global_step = 0
     history: list[dict[str, Any]] = []
     progress = (reporter or ProgressReporter()).bar(
@@ -828,40 +824,31 @@ def train_spmm_bundle(
                     "learning_rate": float(optimizer.param_groups[0]["lr"]),
                 }
             )
-            if raw_mae < best_mae:
-                best_mae = raw_mae
-                best_epoch = epoch
-                best_state = {
-                    name: value.detach().cpu().clone()
-                    for name, value in model.state_dict().items()
-                }
-                stale = 0
-            else:
-                stale += 1
             progress.set_postfix(
                 {
                     "train_mse": f"{loss_sum / seen:.4f}",
                     "val_mae": f"{raw_mae:.4f}",
-                    "best": f"{best_mae:.4f}@{best_epoch}",
-                    "patience": f"{stale}/{config.training['early_stopping_patience']}",
                 }
             )
             progress.update(1)
-            if stale >= int(config.training["early_stopping_patience"]):
-                break
     finally:
         progress.close()
-    if best_state is None:
-        raise RuntimeError("SPMM training did not produce a best checkpoint")
-    state_hash = tensor_state_hash("benchmark.spmm-state.v1", best_state)
+    if len(history) != max_epochs:
+        raise RuntimeError("SPMM training did not complete its fixed epoch budget")
+    final_state = {
+        name: value.detach().cpu().clone()
+        for name, value in model.state_dict().items()
+    }
+    final_mae = float(history[-1]["valid_raw_mae"])
+    state_hash = tensor_state_hash("benchmark.spmm-state.v2", final_state)
     model_path = root / "model.pt"
     history_path = root / "history.json"
     audit_path = root / "input_audit.json"
-    atomic_torch_save(model_path, {"state_dict": best_state, "state_hash": state_hash})
+    atomic_torch_save(model_path, {"state_dict": final_state, "state_hash": state_hash})
     atomic_json(history_path, history)
     atomic_json(audit_path, {"train": bundle.train.audit, "valid": bundle.valid.audit})
     manifest = {
-        "format_version": 1,
+        "format_version": 2,
         "kind": "ilume_baseline_model",
         "model_kind": "spmm",
         "training_identity": bundle.training_identity,
@@ -870,8 +857,8 @@ def train_spmm_bundle(
         "target_columns": list(bundle.task.target_columns),
         "component_count": bundle.train.component_count,
         "condition_dim": len(bundle.task.condition_columns),
-        "best_epoch": best_epoch,
-        "best_valid_raw_mae": best_mae,
+        "final_epoch": max_epochs,
+        "final_valid_raw_mae": final_mae,
         "model_state_hash": state_hash,
         "pretrained_load_audit": model.load_audit,
         "upstream_assets": bundle.assets,
@@ -885,8 +872,8 @@ def train_spmm_bundle(
     }
     atomic_json(root / "checkpoint.json", manifest)
     return {
-        "best_epoch": best_epoch,
-        "best_valid_raw_mae": best_mae,
+        "final_epoch": max_epochs,
+        "final_valid_raw_mae": final_mae,
         "epochs_ran": len(history),
         "input_audit": manifest["input_audit"],
     }
@@ -898,7 +885,7 @@ def _manifest(root: Path) -> dict[str, Any]:
         raise FileNotFoundError(f"Missing SPMM checkpoint manifest: {path}")
     payload = json.loads(path.read_text(encoding="utf-8"))
     if (
-        payload.get("format_version") != 1
+        payload.get("format_version") != 2
         or payload.get("kind") != "ilume_baseline_model"
         or payload.get("model_kind") != "spmm"
     ):
@@ -975,7 +962,7 @@ def evaluate_spmm_checkpoint(
     )
     payload = torch.load(root / "model.pt", map_location="cpu")
     if tensor_state_hash(
-        "benchmark.spmm-state.v1", payload["state_dict"]
+        "benchmark.spmm-state.v2", payload["state_dict"]
     ) != manifest["model_state_hash"]:
         raise ValueError("SPMM checkpoint state hash mismatch")
     model.load_state_dict(payload["state_dict"], strict=True)

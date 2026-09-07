@@ -241,8 +241,8 @@ def _tiny_config(tmp_path: Path, *, name: str = "mlp", targets: str = "value"):
         model = {"hidden_dims": [8], "dropout": 0.0}
         training = {
             "optimizer": "adamw", "learning_rate": 0.01, "weight_decay": 0.0,
-            "batch_size": 2, "max_epochs": 4, "early_stopping_patience": 2,
-            "loss": "normalized_mse", "selection_metric": "raw_target_macro_mae",
+            "batch_size": 2, "max_epochs": 4,
+            "loss": "normalized_mse", "model_selection": "final_training_state",
             "device": "cpu", "precision": "fp32",
         }
     else:
@@ -252,7 +252,12 @@ def _tiny_config(tmp_path: Path, *, name: str = "mlp", targets: str = "value"):
             "subsample": 1.0, "colsample_bytree": 1.0, "reg_lambda": 1.0,
             "objective": "reg:squarederror", "eval_metric": "mae", "tree_method": "hist",
         }
-        training = {"early_stopping_rounds": 2, "n_jobs": 1, "device": "cpu", "target_space": "raw"}
+        training = {
+            "model_selection": "final_training_state",
+            "n_jobs": 1,
+            "device": "cpu",
+            "target_space": "raw",
+        }
     return benchmark_config_from_dict(
         {
             "name": name,
@@ -342,8 +347,8 @@ def _tiny_stage3_config(tmp_path: Path):
             "model": {"hidden_dims": [8], "dropout": 0.0},
             "training": {
                 "optimizer": "adamw", "learning_rate": 0.01, "weight_decay": 0.0,
-                "batch_size": 2, "max_epochs": 3, "early_stopping_patience": 2,
-                "loss": "normalized_mse", "selection_metric": "raw_target_macro_mae",
+                "batch_size": 2, "max_epochs": 3,
+                "loss": "normalized_mse", "model_selection": "final_training_state",
                 "device": "cpu", "precision": "fp32",
             },
             "stage3": {"enabled": True, "tasks": "all", "folds": [1, 2, 3, 4, 5]},
@@ -389,6 +394,45 @@ def test_formal_configs_and_registry_resolution(
     assert reporter.bars == []
 
 
+@pytest.mark.parametrize(
+    ("name", "fixed_budget"),
+    (
+        ("mlp", 50),
+        ("ecfp_xgboost", 1000),
+        ("dmpnn", 50),
+        ("molformer", 50),
+        ("ilbert", 50),
+        ("spmm", 50),
+        ("llasmol", 50),
+    ),
+)
+def test_formal_baseline_configs_use_fixed_final_state(
+    name: str, fixed_budget: int,
+) -> None:
+    config = load_benchmark_config(Path("configs/benchmarks") / f"{name}.yaml")
+    assert config.training["model_selection"] == "final_training_state"
+    assert {
+        "early_stopping_patience", "early_stopping_rounds", "selection_metric",
+    }.isdisjoint(config.training)
+    if name == "ecfp_xgboost":
+        assert config.model["n_estimators"] == fixed_budget
+    else:
+        assert config.training["max_epochs"] == fixed_budget
+    if name == "ilbert":
+        assert config.training["scheduler"] == "constant"
+        assert {
+            "scheduler_metric", "scheduler_patience", "scheduler_factor",
+            "minimum_learning_rate",
+        }.isdisjoint(config.training)
+    for retired_field in (
+        "selection_metric", "early_stopping_patience", "early_stopping_rounds",
+    ):
+        retired = config.to_dict()
+        retired["training"][retired_field] = 1
+        with pytest.raises(ValueError, match="forbid validation-driven"):
+            benchmark_config_from_dict(retired)
+
+
 def test_native_split_benchmark_configs_follow_v2_authorities() -> None:
     splits = ("il", "random", "cation", "anion", "il_solute", "solute", "solvent")
     benchmarks = ("mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm")
@@ -404,6 +448,16 @@ def test_native_split_benchmark_configs_follow_v2_authorities() -> None:
                 f"configs/v2/stage3/splits/{split}.yaml"
             )
             assert configured_tasks(config, "stage3") == expected
+            assert config.training["model_selection"] == "final_training_state"
+            assert {
+                "early_stopping_patience", "early_stopping_rounds", "selection_metric",
+            }.isdisjoint(config.training)
+            if benchmark == "ecfp_xgboost":
+                assert config.model["n_estimators"] == 1000
+            else:
+                assert config.training["max_epochs"] == 50
+            if benchmark == "ilbert":
+                assert config.training["scheduler"] == "constant"
             if benchmark == "dmpnn":
                 assert config.model["multicomponent_shared"] is True
 
@@ -586,13 +640,17 @@ def test_mlp_train_checkpoint_and_test_evaluation(tmp_path: Path) -> None:
     ] == json.loads(
         (reference_output / "checkpoint.json").read_text(encoding="utf-8")
     )["model_state_hash"]
-    assert 1 <= summary["best_epoch"] <= 4
+    assert summary["final_epoch"] == 4
+    assert summary["epochs_ran"] == 4
+    assert "best_epoch" not in summary
+    checkpoint = json.loads((output / "checkpoint.json").read_text(encoding="utf-8"))
+    assert checkpoint["format_version"] == 2
+    assert checkpoint["final_epoch"] == 4
+    assert "best_valid_raw_macro_mae" not in checkpoint
     assert len(reporter.bars) == 1
     assert reporter.bars[0].n == summary["epochs_ran"]
     assert reporter.bars[0].closed
-    assert set(reporter.bars[0].postfixes[-1]) == {
-        "train_mse", "val_mae", "best", "patience"
-    }
+    assert set(reporter.bars[0].postfixes[-1]) == {"train_mse", "val_mae"}
     evaluation_reporter = RecordingReporter()
     result = evaluate_checkpoint(
         config,
@@ -625,7 +683,7 @@ def test_stage3_fold_training_and_normalized_evaluation(tmp_path: Path) -> None:
     assert result.predictions.shape == (2, 1)
     assert "normalized_mae" in result.metrics["value"]
 
-def test_xgboost_uses_independent_models_and_best_iteration(tmp_path: Path) -> None:
+def test_xgboost_uses_independent_models_and_fixed_budget(tmp_path: Path) -> None:
     pytest.importorskip("xgboost")
     config = _tiny_config(tmp_path, name="ecfp_xgboost")
     bundle = prepare_training(config, "stage3", "experiment/tiny", 1)
@@ -635,10 +693,15 @@ def test_xgboost_uses_independent_models_and_best_iteration(tmp_path: Path) -> N
     reference_summary = train_bundle(config, bundle, tmp_path / "xgb_reference")
     assert summary == reference_summary
     assert set(summary["targets"]) == {"value"}
+    assert summary["targets"]["value"]["trained_rounds"] == 8
+    assert "best_iteration" not in summary["targets"]["value"]
     assert len(list(output.glob("model_*.json"))) == 1
     assert len(reporter.bars) == 1
     assert all(0 < bar.n <= bar.total and bar.closed for bar in reporter.bars)
-    assert all("best" in bar.postfixes[-1] for bar in reporter.bars)
+    assert all(set(bar.postfixes[-1]) == {"val_mae"} for bar in reporter.bars)
+    checkpoint = json.loads((output / "checkpoint.json").read_text(encoding="utf-8"))
+    assert checkpoint["format_version"] == 2
+    assert checkpoint["models"][0]["trained_rounds"] == 8
     result = evaluate_checkpoint(config, "stage3", "experiment/tiny", 1, output, "test")
     assert result.predictions.shape == (2, 1)
 
@@ -1116,7 +1179,6 @@ def test_one_epoch_scalar_and_multicomponent_save_reload_smoke(
             **config.training,
             "batch_size": 2,
             "max_epochs": 1,
-            "early_stopping_patience": 1,
             "warmup_epochs": 0,
         },
     )
@@ -1148,8 +1210,10 @@ def test_one_epoch_scalar_and_multicomponent_save_reload_smoke(
         atol=0,
     )
     checkpoint = json.loads((output / "checkpoint.json").read_text(encoding="utf-8"))
-    assert checkpoint["best_valid_raw_mae"] == pytest.approx(
-        checkpoint["best_valid_normalized_mae"]
+    assert checkpoint["format_version"] == 2
+    assert checkpoint["final_epoch"] == 1
+    assert checkpoint["final_valid_raw_mae"] == pytest.approx(
+        checkpoint["final_valid_normalized_mae"]
         * checkpoint["target_statistics"]["scale"][0]
     )
 

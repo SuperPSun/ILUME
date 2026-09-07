@@ -4,6 +4,8 @@
 - 日期：2026-09-02
 - 覆盖：ADR-0035 的batch、CUDA matmul精度和训练row顺序条款
 
+> Early-stopping patience 与 validation-best checkpoint 由 [ADR-0045](0045-fixed-budget-baseline-training.md) 取代；吞吐和固定训练预算条款保持有效。
+
 ## 背景
 
 ADR-0035固定batch 8、FP32且关闭CUDA matmul TF32。真实Stage 3任务因此每轮产生数千个optimizer steps，随机batch在较大batch候选上还会造成显著padding浪费。RTX 4090实测显示batch 128在双组分和三组分真实长度分布上分别达到约3034和2033 rows/s；三组分99-token完整optimizer step峰值reserved显存约15.2 GiB。batch 256峰值约37.8 GiB且吞吐收益很小。

@@ -4,6 +4,8 @@
 - 日期：2026-08-26
 - 后续修订：ADR-0042 将多组分 message-passing 改为跨组分槽共享权重；其余决定保持有效。
 
+> Early stopping 与 validation-best checkpoint 由 [ADR-0045](0045-fixed-budget-baseline-training.md) 取代。
+
 ## 背景
 
 ILUME 需要一个强图神经网络 baseline，与 ADR-0022 的 MLP 和 ECFP4-XGBoost 使用相同 registry、split、条件、target 与 evaluation/reporting 口径。该 baseline 不得进入或改变 Stage 1/2/3 的训练合同，也不得复制 Chemprop 的模型实现。

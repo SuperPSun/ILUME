@@ -3,6 +3,8 @@
 - 状态：Accepted
 - 日期：2026-08-31
 
+> Validation-driven scheduler、early stopping 与 validation-best checkpoint 由 [ADR-0045](0045-fixed-budget-baseline-training.md) 取代。
+
 ## 背景
 
 ILUME 需要一个保留 ILBERT 原生 AIS tokenizer、RoBERTa、TextCNN 与 downstream predictor 的语言模型 baseline。上游不是可安装的模型包，且截至本决定没有显式许可证；其 generic pretrained checkpoint 独立发布于 Zenodo。ILBERT 原生处理完整离子液体序列，但没有满足 Partial Charge 严格 atom mapping 的官方输出合同。

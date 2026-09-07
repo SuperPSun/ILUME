@@ -104,7 +104,8 @@ def test_formal_molformer_config_resolves_105_training_jobs() -> None:
     assert config.training["encoder_learning_rate"] == 5.0e-6
     assert config.training["new_parameter_learning_rate"] == 5.0e-5
     assert config.training["max_epochs"] == 50
-    assert config.training["early_stopping_patience"] == 8
+    assert config.training["model_selection"] == "final_training_state"
+    assert "early_stopping_patience" not in config.training
     assert config.training["tf32"] is True
     assert config.runtime == {
         "num_workers": 4,

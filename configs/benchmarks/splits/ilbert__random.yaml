@@ -61,18 +61,13 @@ training:
   optimizer: adam
   learning_rate: 0.0001
   weight_decay: 0.0
-  scheduler: reduce_on_plateau
-  scheduler_metric: validation_raw_rmse
-  scheduler_patience: 7
-  scheduler_factor: 0.3
-  minimum_learning_rate: 3.0e-05
+  scheduler: constant
   batch_size: 16
   gradient_accumulation_steps: 1
-  max_epochs: 100
-  early_stopping_patience: 15
+  max_epochs: 50
   tf32: true
   loss: mse
-  selection_metric: validation_raw_mae
+  model_selection: final_training_state
   condition_transform: raw_physical_units
   device: cuda
   precision: fp32

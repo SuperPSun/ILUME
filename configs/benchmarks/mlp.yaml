@@ -19,9 +19,8 @@ training:
   weight_decay: 1.0e-3
   batch_size: 128
   max_epochs: 50
-  early_stopping_patience: 10
   loss: normalized_mse
-  selection_metric: raw_target_macro_mae
+  model_selection: final_training_state
   device: cuda
   precision: fp32
 stage3:

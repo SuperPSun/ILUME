@@ -3,6 +3,8 @@
 - 状态：Accepted
 - 日期：2026-09-03
 
+> Early stopping 与 validation-best checkpoint 由 [ADR-0045](0045-fixed-budget-baseline-training.md) 取代。
+
 ## 背景
 
 ILUME需要加入chemical LLM baseline，以统一regression协议评估大语言模型式chemical representation。官方`osunlp/LlaSMol-Mistral-7B`只发布了基于`mistralai/Mistral-7B-v0.1`的LoRA adapter，而不是完整7B checkpoint；其官方adapter同时覆盖attention与MLP projection。

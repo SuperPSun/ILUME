@@ -193,19 +193,26 @@ Stage2/Stage3 resume 分别在上述 train 命令追加 `--resume <checkpoint>` 
 
 MLP、ECFP4-XGBoost、Chemprop D-MPNN、MoLFormer、ILBERT、SPMM 与 LlaSMol 位于 `benchmarks/`；
 Stage3 Single-task MLP 内部消融位于 `ablations/`。二者均与 Stage 代码隔离，并继续
-复用 benchmark 运行与 reporting 入口；合同见 [ADR-0022](docs/adr/0022-mlp-ecfp-xgboost-baselines.md)、[ADR-0028](docs/adr/0028-chemprop-dmpnn-baseline.md)、[ADR-0029](docs/adr/0029-molformer-baseline.md)、[ADR-0030](docs/adr/0030-molformer-throughput-contract.md)、[ADR-0032](docs/adr/0032-ilbert-baseline.md)、[ADR-0033](docs/adr/0033-stage3-single-task-mlp-ablation.md)、[ADR-0035](docs/adr/0035-spmm-baseline.md)、[ADR-0037](docs/adr/0037-spmm-wordpiece-character-limit.md)、[ADR-0038](docs/adr/0038-spmm-throughput-contract.md)、[ADR-0040](docs/adr/0040-llasmol-mistral-7b-baseline.md) 和 [ADR-0042](docs/adr/0042-dmpnn-shared-component-encoder.md)。
+复用 benchmark 运行与 reporting 入口；合同见 [ADR-0022](docs/adr/0022-mlp-ecfp-xgboost-baselines.md)、[ADR-0028](docs/adr/0028-chemprop-dmpnn-baseline.md)、[ADR-0029](docs/adr/0029-molformer-baseline.md)、[ADR-0030](docs/adr/0030-molformer-throughput-contract.md)、[ADR-0032](docs/adr/0032-ilbert-baseline.md)、[ADR-0033](docs/adr/0033-stage3-single-task-mlp-ablation.md)、[ADR-0035](docs/adr/0035-spmm-baseline.md)、[ADR-0037](docs/adr/0037-spmm-wordpiece-character-limit.md)、[ADR-0038](docs/adr/0038-spmm-throughput-contract.md)、[ADR-0040](docs/adr/0040-llasmol-mistral-7b-baseline.md)、[ADR-0042](docs/adr/0042-dmpnn-shared-component-encoder.md) 和 [ADR-0045](docs/adr/0045-fixed-budget-baseline-training.md)。
+
+七个论文 baseline 均固定跑满 YAML 预算并保存最终训练状态；每轮 validation 只写入 history，
+不参与 early stopping、checkpoint selection、scheduler 或其他训练决策。checkpoint format 为
+version 2，与旧 validation-selected artifact 不兼容。新正式结果统一写入
+`outputs/benchmarks/fixed-budget-v1/<model>/`；旧输出保持只读且不得混入同一汇总。
+除固定 1000 trees 的 ECFP4-XGBoost 外，六个神经 baseline 的主配置与 split 配置均训练
+50 epochs。
 
 ```bash
 python -m pip install -e ".[benchmarks]"
 
 python scripts/benchmarks/sweep.py \
   --config configs/benchmarks/mlp.yaml \
-  --output outputs/benchmarks/v1/mlp \
+  --output outputs/benchmarks/fixed-budget-v1/mlp \
   --max-workers 1
 
 python scripts/benchmarks/sweep.py \
   --config configs/benchmarks/ecfp_xgboost.yaml \
-  --output outputs/benchmarks/v1/ecfp_xgboost \
+  --output outputs/benchmarks/fixed-budget-v1/ecfp_xgboost \
   --max-workers 1
 
 python scripts/benchmarks/sweep.py \
@@ -241,11 +248,11 @@ conda run --no-capture-output -n ilume-dmpnn \
 python scripts/benchmarks/train.py \
   --config configs/benchmarks/dmpnn.yaml \
   --benchmark stage3 --task experiment/density --fold 1 \
-  --output outputs/benchmarks/v2/dmpnn/stage3/experiment__density/fold1/attempt-001
+  --output outputs/benchmarks/fixed-budget-v1/dmpnn/stage3/experiment__density/fold1/attempt-001
 
 python scripts/benchmarks/sweep.py \
   --config configs/benchmarks/dmpnn.yaml \
-  --output outputs/benchmarks/v2/dmpnn \
+  --output outputs/benchmarks/fixed-budget-v1/dmpnn \
   --max-workers 1
 ```
 
@@ -275,15 +282,15 @@ conda run --no-capture-output -n ilume-molformer \
 python scripts/benchmarks/train.py \
   --config configs/benchmarks/molformer.yaml \
   --benchmark stage3 --task experiment/density --fold 1 \
-  --output outputs/benchmarks/v1/molformer/stage3/experiment__density/fold1/attempt-001
+  --output outputs/benchmarks/fixed-budget-v1/molformer/stage3/experiment__density/fold1/attempt-001
 
 python scripts/benchmarks/sweep.py \
   --config configs/benchmarks/molformer.yaml \
-  --output outputs/benchmarks/v1/molformer \
+  --output outputs/benchmarks/fixed-budget-v1/molformer \
   --max-workers 1
 ```
 
-MoLFormer的超长train row整行跳过且不进入scaler；valid/test显式截断到202 tokens并在结果中审计。训练前为unique SMILES建立run-local内存token cache，多组分合并为一次共享backbone forward；正式合同固定batch 128、encoder/head learning rate `5e-6/5e-5`、50 epochs、patience 8和TF32，OOM/NaN不自动缩批或回退。多GPU sweep可使用`--devices cuda:0,cuda:1,...`。
+MoLFormer的超长train row整行跳过且不进入scaler；valid/test显式截断到202 tokens并在结果中审计。训练前为unique SMILES建立run-local内存token cache，多组分合并为一次共享backbone forward；正式合同固定batch 128、encoder/head learning rate `5e-6/5e-5`、完整50 epochs、最终训练状态和TF32，OOM/NaN不自动缩批或回退。多GPU sweep可使用`--devices cuda:0,cuda:1,...`。
 
 ILBERT使用独立hash-lock环境和用户本地准备的固定上游资产。上游目前没有显式LICENSE，因此仓库不复制或再分发其源码与权重。
 
@@ -320,15 +327,15 @@ conda run --no-capture-output -n ilume-ilbert \
 python scripts/benchmarks/train.py \
   --config configs/benchmarks/ilbert.yaml \
   --benchmark stage3 --task experiment/density --fold 1 \
-  --output outputs/benchmarks/v1/ilbert/stage3/experiment__density/fold1/attempt-001
+  --output outputs/benchmarks/fixed-budget-v1/ilbert/stage3/experiment__density/fold1/attempt-001
 
 python scripts/benchmarks/sweep.py \
   --config configs/benchmarks/ilbert.yaml \
-  --output outputs/benchmarks/v1/ilbert \
+  --output outputs/benchmarks/fixed-budget-v1/ilbert \
   --max-workers 1
 ```
 
-ILBERT普通离子液体输入为单条`cation.anion` AIS sequence；solvation/transfer只增加共享backbone的有序双view。所有输入固定padding/truncation到100 tokens并公开审计，数值条件保持registry顺序和原始物理单位。
+ILBERT普通离子液体输入为单条`cation.anion` AIS sequence；solvation/transfer只增加共享backbone的有序双view。所有输入固定padding/truncation到100 tokens并公开审计，数值条件保持registry顺序和原始物理单位。训练使用恒定`1e-4` learning rate完成50 epochs，validation不调整学习率。
 
 SPMM使用独立hash-lock环境和固定的官方Apache-2.0上游checkout。仓库不复制或提交约2.20 GiB的官方Lightning checkpoint；运行前会校验commit、源码、vocab、config、checkpoint SHA和字节数。
 该环境固定Python 3.10，因此不执行要求Python ≥3.11的ILUME editable install；四个benchmark脚本会从仓库根显式引导`src`和`benchmarks`导入。
@@ -362,16 +369,16 @@ conda run --no-capture-output -n ilume-spmm \
 python scripts/benchmarks/train.py \
   --config configs/benchmarks/spmm.yaml \
   --benchmark stage3 --task experiment/density --fold 1 \
-  --output outputs/benchmarks/v1/spmm/stage3/experiment__density/fold1/attempt-001
+  --output outputs/benchmarks/fixed-budget-v1/spmm/stage3/experiment__density/fold1/attempt-001
 
 python scripts/benchmarks/sweep.py \
   --config configs/benchmarks/spmm.yaml \
-  --output outputs/benchmarks/v1/spmm-wp350-bs128 \
+  --output outputs/benchmarks/fixed-budget-v1/spmm \
   --max-workers 2 \
   --devices cuda:0,cuda:1
 ```
 
-SPMM只使用官方text-mode前6层和768维`[CLS]`表示；各分子component由同一encoder分别编码并合并为一次forward，随后只扩宽官方regression head第一层。模型输入去除立体信息，保留官方100-token tokenizer加首token切片路径，实际encoder上限为99；WordPiece单词字符上限固定为350，collision和truncation均公开审计。训练固定batch 128、FP32+TF32及确定性sortish长度分桶；多GPU运行保持一张GPU一个job。旧`outputs/benchmarks/v1/spmm`不得与新合同混用，汇总时通过`--include outputs/benchmarks/v1/spmm-wp350-bs128`只选择新结果。
+SPMM只使用官方text-mode前6层和768维`[CLS]`表示；各分子component由同一encoder分别编码并合并为一次forward，随后只扩宽官方regression head第一层。模型输入去除立体信息，保留官方100-token tokenizer加首token切片路径，实际encoder上限为99；WordPiece单词字符上限固定为350，collision和truncation均公开审计。训练固定batch 128、完整50 epochs、最终训练状态、FP32+TF32及确定性sortish长度分桶；多GPU运行保持一张GPU一个job。旧SPMM输出不得与新合同混用。
 
 LlaSMol使用固定Mistral-7B基座和官方LoRA adapter。仓库不复制或提交约13.5 GiB基座与84 MB adapter；必须先显式安装独立环境并将固定snapshot下载到已忽略目录。
 
@@ -406,16 +413,16 @@ conda run --no-capture-output -n ilume-llasmol \
 python scripts/benchmarks/train.py \
   --config configs/benchmarks/llasmol.yaml \
   --benchmark stage3 --task experiment/density --fold 1 \
-  --output outputs/benchmarks/v1/llasmol/stage3/experiment__density/fold1/attempt-001
+  --output outputs/benchmarks/fixed-budget-v1/llasmol/stage3/experiment__density/fold1/attempt-001
 
 python scripts/benchmarks/sweep.py \
   --config configs/benchmarks/llasmol.yaml \
-  --output outputs/benchmarks/v1/llasmol \
+  --output outputs/benchmarks/fixed-budget-v1/llasmol \
   --max-workers 4 \
   --devices cuda:0,cuda:1,cuda:2,cuda:3
 ```
 
-普通IL使用带task marker的单条`cation.anion`sequence；solvation/transfer只增加whole-IL与partner的共享backbone双view。基座以NF4 double-quant冻结加载，并继续训练官方attention与MLP LoRA及`4096/8192 + conditions → 256 → 1`回归head。输入上限512 tokens并公开截断审计；target和numeric conditions只从train rows拟合scaler。建议每张GPU仅运行一个job；OOM/NaN不自动缩批或回退。
+普通IL使用带task marker的单条`cation.anion`sequence；solvation/transfer只增加whole-IL与partner的共享backbone双view。基座以NF4 double-quant冻结加载，并继续训练官方attention与MLP LoRA及`4096/8192 + conditions → 256 → 1`回归head。输入上限512 tokens并公开截断审计；target和numeric conditions只从train rows拟合scaler。训练固定完成50 epochs并保存最终状态。建议每张GPU仅运行一个job；OOM/NaN不自动缩批或回退。
 
 ## 输出与结果汇总
 
@@ -428,8 +435,8 @@ python scripts/benchmarks/summarize.py \
   --input outputs/v2 outputs/benchmarks \
   --include \
     outputs/v2/stage3/base \
-    outputs/benchmarks/v1/mlp \
-    outputs/benchmarks/v1/ecfp_xgboost \
+    outputs/benchmarks/fixed-budget-v1/mlp \
+    outputs/benchmarks/fixed-budget-v1/ecfp_xgboost \
     outputs/benchmarks/v1/ilume_stage3_single_task_mlp \
   --output summary
 ```

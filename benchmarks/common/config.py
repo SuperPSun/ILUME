@@ -78,6 +78,22 @@ class BenchmarkConfig:
             raise ValueError("Fingerprint radius and n_bits must be positive")
         if self.name == "ilume_stage3_single_task_mlp":
             self._validate_ilume_stage3_single_task_mlp()
+        else:
+            retired = {
+                "early_stopping_patience",
+                "early_stopping_rounds",
+                "selection_metric",
+            }.intersection(self.training)
+            if retired:
+                raise ValueError(
+                    "Fixed-budget baselines forbid validation-driven training fields: "
+                    + ", ".join(sorted(retired))
+                )
+            if self.training.get("model_selection") != "final_training_state":
+                raise ValueError(
+                    "Fixed-budget baselines require "
+                    "training.model_selection=final_training_state"
+                )
         advanced = self.name in {
             "dmpnn", "molformer", "ilbert", "spmm", "llasmol",
             "ilume_stage3_single_task_mlp",
@@ -192,9 +208,8 @@ class BenchmarkConfig:
             "final_learning_rate": 1.0e-4,
             "batch_size": 64,
             "max_epochs": 50,
-            "early_stopping_patience": 10,
             "loss": "mse",
-            "selection_metric": "validation_mae",
+            "model_selection": "final_training_state",
             "device": "cuda",
             "precision": "fp32",
         }
@@ -238,12 +253,11 @@ class BenchmarkConfig:
             "batch_size": 128,
             "gradient_accumulation_steps": 1,
             "max_epochs": 50,
-            "early_stopping_patience": 8,
             "tf32": True,
             "length_bucketing": "sortish_length_bucketing_v1",
             "bucket_window_batches": 20,
             "loss": "mse",
-            "selection_metric": "validation_mae",
+            "model_selection": "final_training_state",
             "device": "cuda",
             "precision": "fp32",
         }
@@ -301,18 +315,13 @@ class BenchmarkConfig:
             "optimizer": "adam",
             "learning_rate": 1.0e-4,
             "weight_decay": 0.0,
-            "scheduler": "reduce_on_plateau",
-            "scheduler_metric": "validation_raw_rmse",
-            "scheduler_patience": 7,
-            "scheduler_factor": 0.3,
-            "minimum_learning_rate": 3.0e-5,
+            "scheduler": "constant",
             "batch_size": 16,
             "gradient_accumulation_steps": 1,
-            "max_epochs": 100,
-            "early_stopping_patience": 15,
+            "max_epochs": 50,
             "tf32": True,
             "loss": "mse",
-            "selection_metric": "validation_raw_mae",
+            "model_selection": "final_training_state",
             "condition_transform": "raw_physical_units",
             "device": "cuda",
             "precision": "fp32",
@@ -384,11 +393,10 @@ class BenchmarkConfig:
             "batch_size": 128,
             "gradient_accumulation_steps": 1,
             "max_epochs": 50,
-            "early_stopping_patience": 10,
             "length_bucketing": "sortish_length_bucketing_v1",
             "bucket_window_batches": 20,
             "loss": "mse",
-            "selection_metric": "validation_raw_mae",
+            "model_selection": "final_training_state",
             "condition_transform": "train_only_zscore",
             "device": "cuda",
             "precision": "fp32",
@@ -479,13 +487,12 @@ class BenchmarkConfig:
             "warmup_fraction": 0.05,
             "batch_size": 8,
             "gradient_accumulation_steps": 4,
-            "max_epochs": 30,
-            "early_stopping_patience": 8,
+            "max_epochs": 50,
             "max_grad_norm": 1.0,
             "length_bucketing": "sortish_length_bucketing_v1",
             "bucket_window_batches": 20,
             "loss": "mse",
-            "selection_metric": "validation_raw_mae",
+            "model_selection": "final_training_state",
             "condition_transform": "train_only_zscore",
             "device": "cuda",
             "precision": "qlora_nf4_bf16",

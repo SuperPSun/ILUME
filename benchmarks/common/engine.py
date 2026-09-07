@@ -28,7 +28,7 @@ from .features import (
 from .metrics import target_metrics
 
 
-BENCHMARK_CHECKPOINT_VERSION = 1
+BENCHMARK_CHECKPOINT_VERSION = 2
 BENCHMARK_CHECKPOINT_KIND = "ilume_baseline_model"
 
 
@@ -238,12 +238,7 @@ def train_mlp(
     valid_x = torch.from_numpy(bundle.valid_features).to(device)
     batch_size = int(config.training["batch_size"])
     max_epochs = int(config.training["max_epochs"])
-    patience = int(config.training["early_stopping_patience"])
     generator = torch.Generator().manual_seed(config.seed)
-    best_score = float("inf")
-    best_epoch = 0
-    best_state: dict[str, torch.Tensor] | None = None
-    stale = 0
     history: list[dict[str, float | int]] = []
     fold_suffix = f" fold{bundle.task.fold}" if bundle.task.fold is not None else ""
     progress = (reporter or ProgressReporter()).bar(
@@ -280,34 +275,25 @@ def train_mlp(
                     "valid_raw_macro_mae": score,
                 }
             )
-            if score < best_score:
-                best_score = score
-                best_epoch = epoch
-                best_state = {
-                    name: value.detach().cpu().clone()
-                    for name, value in model.state_dict().items()
-                }
-                stale = 0
-            else:
-                stale += 1
             progress.set_postfix(
                 {
                     "train_mse": f"{train_mse:.4f}",
                     "val_mae": f"{score:.4f}",
-                    "best": f"{best_score:.4f}@{best_epoch}",
-                    "patience": f"{stale}/{patience}",
                 }
             )
             progress.update(1)
-            if stale >= patience:
-                break
     finally:
         progress.close()
-    if best_state is None:
-        raise RuntimeError("MLP benchmark did not produce a best model")
-    state_hash = tensor_state_hash("benchmark.mlp-state.v1", best_state)
+    if len(history) != max_epochs:
+        raise RuntimeError("MLP benchmark did not complete its fixed epoch budget")
+    final_state = {
+        name: value.detach().cpu().clone()
+        for name, value in model.state_dict().items()
+    }
+    final_score = float(history[-1]["valid_raw_macro_mae"])
+    state_hash = tensor_state_hash("benchmark.mlp-state.v2", final_state)
     model_path = output_dir / "model.pt"
-    atomic_torch_save(model_path, {"state_dict": best_state, "state_hash": state_hash})
+    atomic_torch_save(model_path, {"state_dict": final_state, "state_hash": state_hash})
     atomic_json(output_dir / "training_history.json", history)
     manifest = {
         "format_version": BENCHMARK_CHECKPOINT_VERSION,
@@ -321,13 +307,17 @@ def train_mlp(
         "input_dim": int(bundle.train_features.shape[1]),
         "hidden_dims": list(config.model["hidden_dims"]),
         "dropout": float(config.model["dropout"]),
-        "best_epoch": best_epoch,
-        "best_valid_raw_macro_mae": best_score,
+        "final_epoch": max_epochs,
+        "final_valid_raw_macro_mae": final_score,
         "model_state_hash": state_hash,
         "integrity": {"model.pt": {"sha256": sha256_file(model_path), "size": model_path.stat().st_size}},
     }
     _write_manifest(output_dir, manifest)
-    return {"best_epoch": best_epoch, "best_valid_raw_macro_mae": best_score, "epochs_ran": len(history)}
+    return {
+        "final_epoch": max_epochs,
+        "final_valid_raw_macro_mae": final_score,
+        "epochs_ran": len(history),
+    }
 
 
 def train_xgboost(
@@ -369,19 +359,12 @@ def train_xgboost(
                 progress.update(max(0, epoch + 1 - int(progress.n)))
                 return False
 
-        callback = xgb.callback.EarlyStopping(
-            rounds=int(config.training["early_stopping_rounds"]),
-            metric_name=str(config.model["eval_metric"]),
-            data_name="validation_0",
-            maximize=False,
-            save_best=True,
-        )
         params = {
             **config.model,
             "random_state": config.seed,
             "n_jobs": int(config.training["n_jobs"]),
             "device": str(config.training["device"]),
-            "callbacks": [callback, ProgressCallback()],
+            "callbacks": [ProgressCallback()],
         }
         model = xgb.XGBRegressor(**params)
         try:
@@ -398,7 +381,6 @@ def train_xgboost(
             progress.set_postfix(
                 {
                     "val_mae": f"{float(evaluation_history[-1]):.4f}",
-                    "best": f"{float(model.best_score):.4f}@{int(model.best_iteration)}",
                 }
             )
         finally:
@@ -408,8 +390,16 @@ def train_xgboost(
         path = output_dir / filename
         model.save_model(temporary)
         temporary.replace(path)
-        best_iteration = int(model.best_iteration)
-        entry = {"target": target, "file": filename, "best_iteration": best_iteration, "best_score": float(model.best_score)}
+        trained_rounds = int(model.get_booster().num_boosted_rounds())
+        expected_rounds = int(config.model["n_estimators"])
+        if trained_rounds != expected_rounds or len(evaluation_history) != expected_rounds:
+            raise RuntimeError("XGBoost did not complete its fixed boosting budget")
+        entry = {
+            "target": target,
+            "file": filename,
+            "trained_rounds": trained_rounds,
+            "final_valid_mae": float(evaluation_history[-1]),
+        }
         models.append(entry)
         integrity[filename] = {"sha256": sha256_file(path), "size": path.stat().st_size}
     manifest = {
@@ -426,7 +416,15 @@ def train_xgboost(
         "integrity": integrity,
     }
     _write_manifest(output_dir, manifest)
-    return {"targets": {entry["target"]: {"best_iteration": entry["best_iteration"], "best_score": entry["best_score"]} for entry in models}}
+    return {
+        "targets": {
+            entry["target"]: {
+                "trained_rounds": entry["trained_rounds"],
+                "final_valid_mae": entry["final_valid_mae"],
+            }
+            for entry in models
+        }
+    }
 
 
 def train_bundle(
@@ -505,7 +503,7 @@ def _predict(config: BenchmarkConfig, manifest: Mapping[str, Any], root: Path, f
             tuple(int(value) for value in manifest["hidden_dims"]), float(manifest["dropout"]),
         )
         payload = torch.load(root / "model.pt", map_location="cpu", weights_only=True)
-        if tensor_state_hash("benchmark.mlp-state.v1", payload["state_dict"]) != manifest["model_state_hash"]:
+        if tensor_state_hash("benchmark.mlp-state.v2", payload["state_dict"]) != manifest["model_state_hash"]:
             raise ValueError("MLP checkpoint state hash mismatch")
         model.load_state_dict(payload["state_dict"], strict=True)
         model.to(device).eval()
@@ -520,9 +518,9 @@ def _predict(config: BenchmarkConfig, manifest: Mapping[str, Any], root: Path, f
     for entry in manifest["models"]:
         model = xgb.XGBRegressor()
         model.load_model(root / entry["file"])
-        if int(model.best_iteration) != int(entry["best_iteration"]):
-            raise ValueError(f"XGBoost best_iteration mismatch: {entry['target']}")
-        columns.append(model.predict(features, iteration_range=(0, int(entry["best_iteration"]) + 1)))
+        if int(model.get_booster().num_boosted_rounds()) != int(entry["trained_rounds"]):
+            raise ValueError(f"XGBoost trained_rounds mismatch: {entry['target']}")
+        columns.append(model.predict(features))
     return np.column_stack(columns)
 
 

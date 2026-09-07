@@ -64,13 +64,12 @@ training:
   warmup_fraction: 0.05
   batch_size: 8
   gradient_accumulation_steps: 4
-  max_epochs: 30
-  early_stopping_patience: 8
+  max_epochs: 50
   max_grad_norm: 1.0
   length_bucketing: sortish_length_bucketing_v1
   bucket_window_batches: 20
   loss: mse
-  selection_metric: validation_raw_mae
+  model_selection: final_training_state
   condition_transform: train_only_zscore
   device: cuda
   precision: qlora_nf4_bf16
