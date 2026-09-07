@@ -74,6 +74,7 @@ training:
   composite_batch_size: 2048
   microbatch_size: 1024
   virtual_min_size: 1000
+  virtual_max_replication_ratio: 3.0
   epochs: 100
   learning_rate: 0.0003
   weight_decay: 0.01
@@ -82,6 +83,7 @@ training:
   warmup_ratio: 0.05
   min_lr_ratio: 0.05
   max_grad_norm: 1.0
+  joint_gradient_clip_mode: ownership
   smooth_l1_beta: 1.0
   amp_dtype: bf16
   optimizer_implementation: single_tensor

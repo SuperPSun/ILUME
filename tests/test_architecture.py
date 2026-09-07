@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 from pathlib import Path
 
 from stage1.config import load_config as load_stage1_config
@@ -31,7 +32,11 @@ def test_global_rdkit_v2_base_configs_are_isolated() -> None:
     assert stage3.model == legacy_stage3.model
     assert stage3.groups == legacy_stage3.groups
     assert stage3.tasks == legacy_stage3.tasks
-    assert stage3.training == legacy_stage3.training
+    assert stage3.training == replace(
+        legacy_stage3.training,
+        virtual_max_replication_ratio=3.0,
+        joint_gradient_clip_mode="ownership",
+    )
     assert "outputs/v2" in str(stage3.initialization.stage2_encoder)
 
 

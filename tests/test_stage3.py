@@ -48,6 +48,7 @@ from stage3.data import (
     balanced_virtual_indices,
     composite_steps_per_epoch,
     resolve_batch_allocation,
+    resolve_virtual_sizes,
     resolve_task_registry,
     source_path,
 )
@@ -69,6 +70,7 @@ from stage3.train import (
     STAGE3_CHECKPOINT_VERSION,
     STAGE3_RDKIT_CHECKPOINT_KIND,
     STAGE3_RDKIT_REFINED_KIND,
+    _clip_joint_gradients,
     _load_plugin,
     checkpoint_epochs,
     compute_task_gradient,
@@ -284,6 +286,10 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
     assert config.training.microbatch_size == 1024
     assert config.training.checkpoint_interval_epochs == 10
     assert config.training.seed is None
+    assert config.training.virtual_max_replication_ratio is None
+    assert config.training.joint_gradient_clip_mode == "global"
+    assert "virtual_max_replication_ratio" not in config.to_dict()["training"]
+    assert "joint_gradient_clip_mode" not in config.to_dict()["training"]
     assert effective_training_seed(config) == config.data.seed
     assert config.model.dropout == 0.10
     assert config.model.expert_hidden_ratio == 2.0
@@ -304,6 +310,12 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
     )
     assert ablation.initialization.stage2_encoder is None
     assert ablation.initialization.plugin is None
+    assert ablation.training.virtual_max_replication_ratio == 3.0
+    assert ablation.training.joint_gradient_clip_mode == "ownership"
+
+    v2 = load_stage3_config("configs/v2/stage3/base.yaml")
+    assert v2.training.virtual_max_replication_ratio == 3.0
+    assert v2.training.joint_gradient_clip_mode == "ownership"
 
 
 def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
@@ -331,6 +343,8 @@ def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
         assert config.preparation.cache_dir == Path(
             f"outputs/v2/stage3/splits/{name}/prepare/object_cache"
         )
+        assert config.training.virtual_max_replication_ratio == 3.0
+        assert config.training.joint_gradient_clip_mode == "ownership"
         for spec in enabled.values():
             for fold in range(1, 6):
                 assert source_path(config, spec, fold).is_file()
@@ -356,6 +370,36 @@ def test_training_seed_changes_training_identity_not_prepared_artifact(
     assert resolve_stage3_training_identity(changed, 1) != (
         resolve_stage3_training_identity(tiny_prepared, 1)
     )
+
+    changed_contract = replace(
+        tiny_prepared,
+        training=replace(
+            tiny_prepared.training,
+            virtual_max_replication_ratio=3.0,
+            joint_gradient_clip_mode="ownership",
+        ),
+    )
+    assert resolve_stage3_training_identity(changed_contract, 1) != (
+        resolve_stage3_training_identity(tiny_prepared, 1)
+    )
+
+
+def test_virtual_sizes_apply_nominal_replication_cap_consistently() -> None:
+    counts = {"tiny": 10, "medium": 400, "large": 2000}
+    virtual = resolve_virtual_sizes(counts, 1000, 3.0)
+    assert virtual == {"tiny": 30, "medium": 1000, "large": 2000}
+
+    allocation = resolve_batch_allocation(counts, 30, 1000, 3.0)
+    steps = composite_steps_per_epoch(counts, allocation, 1000, 3.0)
+    assert steps == max(
+        math.ceil(virtual[task] / allocation[task])
+        for task in counts
+    )
+    assert resolve_virtual_sizes(counts, 1000) == {
+        "tiny": 1000,
+        "medium": 1000,
+        "large": 2000,
+    }
 
 
 def test_grouping_and_task_weights_change_training_not_prepared_identity(
@@ -417,6 +461,44 @@ def test_ownership_is_complete_and_isolated(tiny_prepared: Stage3Config) -> None
         model.parameters_for_owner(group_owner("g2"))
     )
     assert model.parameters_for_owner(GLOBAL)
+
+
+def test_joint_gradient_clipping_isolated_by_owner(
+    tiny_prepared: Stage3Config,
+) -> None:
+    registry = resolve_task_registry(tiny_prepared)
+    model = Stage3SparseModel(tiny_prepared.model, registry, 4)
+    requested_norms = {
+        "GLOBAL": 0.25,
+        "GROUP:g1": 0.50,
+        "GROUP:g2": 0.75,
+        "PRIVATE:experiment/a": 10.0,
+        "PRIVATE:experiment/b": 20.0,
+        "PRIVATE:experiment/c": 30.0,
+    }
+    ownership = model.parameter_ownership()
+    for owner in sorted(set(ownership.values())):
+        parameters = model.parameters_for_owner(owner)
+        element_count = sum(parameter.numel() for parameter in parameters)
+        value = requested_norms[owner.label] / math.sqrt(element_count)
+        for parameter in parameters:
+            parameter.grad = torch.full_like(parameter, value)
+
+    pre, post, owner_pre, owner_post = _clip_joint_gradients(
+        model, 1.0, "ownership"
+    )
+
+    assert pre > 30.0
+    assert post == pytest.approx(
+        math.sqrt(0.25**2 + 0.50**2 + 0.75**2 + 3.0), rel=1e-5
+    )
+    assert owner_pre == pytest.approx(requested_norms, rel=1e-5)
+    assert owner_post["GLOBAL"] == pytest.approx(0.25, rel=1e-5)
+    assert owner_post["GROUP:g1"] == pytest.approx(0.50, rel=1e-5)
+    assert owner_post["GROUP:g2"] == pytest.approx(0.75, rel=1e-5)
+    assert owner_post["PRIVATE:experiment/a"] == pytest.approx(1.0, rel=1e-5)
+    assert owner_post["PRIVATE:experiment/b"] == pytest.approx(1.0, rel=1e-5)
+    assert owner_post["PRIVATE:experiment/c"] == pytest.approx(1.0, rel=1e-5)
 
 
 @pytest.mark.parametrize("global_count,private_count", [(0, 0), (0, 1), (1, 0)])
@@ -741,6 +823,14 @@ def test_pcgrad_accepts_empty_global_expert_block(
     assert result.gradients
 
 def test_short_training_checkpoint_and_resume_are_exact(tiny_prepared: Stage3Config) -> None:
+    tiny_prepared = replace(
+        tiny_prepared,
+        training=replace(
+            tiny_prepared.training,
+            virtual_max_replication_ratio=3.0,
+            joint_gradient_clip_mode="ownership",
+        ),
+    )
     continuous = tiny_prepared.data.artifacts_dir.parent / "continuous"
     rows = run_stage3_training(tiny_prepared, 1, output_dir=continuous)
     assert [row["epoch"] for row in rows] == [1, 2]
@@ -749,6 +839,22 @@ def test_short_training_checkpoint_and_resume_are_exact(tiny_prepared: Stage3Con
     ]
     assert (continuous / "taskwise_refined.pt").is_file()
     assert (continuous / "taskwise_refinement.json").is_file()
+    plan = json.loads((continuous / "resolved_training_plan.json").read_text())
+    assert plan["data"]["virtual_max_replication_ratio"] == 3.0
+    assert plan["data"]["virtual_replication_ratios"] == {
+        task: plan["data"]["N_prime_t"][task] / plan["data"]["N_t"][task]
+        for task in plan["active_tasks"]
+    }
+    assert plan["math"]["joint_gradient_clip_mode"] == "ownership"
+    joint_diagnostics = json.loads(
+        (continuous / "diagnostics.jsonl").read_text().splitlines()[0]
+    )
+    assert joint_diagnostics["clip_owner_pre_norms"]
+    assert joint_diagnostics["clip_owner_post_norms"]
+    assert all(
+        norm <= tiny_prepared.training.max_grad_norm + 1e-5
+        for norm in joint_diagnostics["clip_owner_post_norms"].values()
+    )
     boundary_checkpoint = torch.load(
         continuous / "checkpoint_epoch_00001.pt", map_location="cpu", weights_only=False
     )

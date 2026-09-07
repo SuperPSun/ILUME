@@ -622,13 +622,18 @@ def stable_seed(seed: int, *parts: object) -> int:
 
 
 def resolve_batch_allocation(
-    counts: Mapping[str, int], composite_batch_size: int, virtual_min_size: int
+    counts: Mapping[str, int],
+    composite_batch_size: int,
+    virtual_min_size: int,
+    virtual_max_replication_ratio: float | None = None,
 ) -> dict[str, int]:
     if not counts or any(value <= 0 for value in counts.values()):
         raise ValueError("Stage 3 task counts must be positive")
     if len(counts) > composite_batch_size:
         raise ValueError("Stage 3 active tasks exceed composite batch size")
-    virtual = {task: max(count, virtual_min_size) for task, count in counts.items()}
+    virtual = resolve_virtual_sizes(
+        counts, virtual_min_size, virtual_max_replication_ratio
+    )
     total = sum(virtual.values())
     allocation = {
         task: max(1, math.floor(composite_batch_size * size / total))
@@ -653,14 +658,50 @@ def resolve_batch_allocation(
 
 
 def composite_steps_per_epoch(
-    counts: Mapping[str, int], allocation: Mapping[str, int], virtual_min_size: int
+    counts: Mapping[str, int],
+    allocation: Mapping[str, int],
+    virtual_min_size: int,
+    virtual_max_replication_ratio: float | None = None,
 ) -> int:
     if set(counts) != set(allocation):
         raise ValueError("Stage 3 count/allocation tasks differ")
+    virtual = resolve_virtual_sizes(
+        counts, virtual_min_size, virtual_max_replication_ratio
+    )
     return max(
-        math.ceil(max(counts[task], virtual_min_size) / allocation[task])
+        math.ceil(virtual[task] / allocation[task])
         for task in counts
     )
+
+
+def resolve_virtual_sizes(
+    counts: Mapping[str, int],
+    virtual_min_size: int,
+    virtual_max_replication_ratio: float | None = None,
+) -> dict[str, int]:
+    if not counts or any(value <= 0 for value in counts.values()):
+        raise ValueError("Stage 3 task counts must be positive")
+    if virtual_min_size <= 0:
+        raise ValueError("Stage 3 virtual minimum size must be positive")
+    if virtual_max_replication_ratio is None:
+        return {
+            task: max(count, virtual_min_size)
+            for task, count in counts.items()
+        }
+    if (
+        not math.isfinite(virtual_max_replication_ratio)
+        or virtual_max_replication_ratio < 1.0
+    ):
+        raise ValueError(
+            "Stage 3 virtual maximum replication ratio must be finite and >= 1"
+        )
+    return {
+        task: min(
+            max(count, virtual_min_size),
+            max(count, math.floor(count * virtual_max_replication_ratio)),
+        )
+        for task, count in counts.items()
+    }
 
 
 def balanced_virtual_indices(

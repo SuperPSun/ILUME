@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -171,6 +172,7 @@ class Stage3TrainingConfig:
     composite_batch_size: int = 2048
     microbatch_size: int = 1024
     virtual_min_size: int = 1000
+    virtual_max_replication_ratio: float | None = None
     epochs: int = 100
     learning_rate: float = 3.0e-4
     weight_decay: float = 1.0e-2
@@ -179,6 +181,7 @@ class Stage3TrainingConfig:
     warmup_ratio: float = 0.05
     min_lr_ratio: float = 0.05
     max_grad_norm: float = 1.0
+    joint_gradient_clip_mode: str = "global"
     smooth_l1_beta: float = 1.0
     amp_dtype: str = "bf16"
     optimizer_implementation: str = "single_tensor"
@@ -297,6 +300,20 @@ class Stage3Config:
             raise ValueError("training.betas must contain two values in [0, 1)")
         if training.eps <= 0 or training.max_grad_norm < 0:
             raise ValueError("Stage 3 eps/grad norm values are invalid")
+        if (
+            training.virtual_max_replication_ratio is not None
+            and (
+                not math.isfinite(training.virtual_max_replication_ratio)
+                or training.virtual_max_replication_ratio < 1.0
+            )
+        ):
+            raise ValueError(
+                "training.virtual_max_replication_ratio must be finite and >= 1"
+            )
+        if training.joint_gradient_clip_mode not in {"global", "ownership"}:
+            raise ValueError(
+                "training.joint_gradient_clip_mode must be global or ownership"
+            )
         if not 0 <= training.warmup_ratio < 1:
             raise ValueError("training.warmup_ratio must be in [0, 1)")
         if not 0 < training.min_lr_ratio <= 1:
@@ -347,6 +364,11 @@ class Stage3Config:
         if plugin is not None:
             adaptation = plugin["adaptation"]
             adaptation["global"] = adaptation.pop("global_scope")
+        training = payload["training"]
+        if training["virtual_max_replication_ratio"] is None:
+            training.pop("virtual_max_replication_ratio")
+        if training["joint_gradient_clip_mode"] == "global":
+            training.pop("joint_gradient_clip_mode")
         return payload
 
 

@@ -41,6 +41,7 @@ from .data import (
     composite_steps_per_epoch,
     resolve_group_registry,
     resolve_batch_allocation,
+    resolve_virtual_sizes,
     stable_seed,
 )
 from .model import GLOBAL, Ownership, Stage3SparseModel, group_owner, private_owner
@@ -312,17 +313,27 @@ def build_resolved_training_plan(
 ) -> dict[str, Any]:
     counts = {task: len(datasets[task]) for task in active_tasks}
     allocation = resolve_batch_allocation(
-        counts, config.training.composite_batch_size, config.training.virtual_min_size
+        counts,
+        config.training.composite_batch_size,
+        config.training.virtual_min_size,
+        config.training.virtual_max_replication_ratio,
     )
     steps = composite_steps_per_epoch(
-        counts, allocation, config.training.virtual_min_size
+        counts,
+        allocation,
+        config.training.virtual_min_size,
+        config.training.virtual_max_replication_ratio,
     )
     boundary_epoch, refinement_epochs = refinement_geometry(
         config.training.epochs, config.training.refinement_ratio
     )
     total_steps = boundary_epoch * steps
     warmup_steps = math.ceil(config.training.warmup_ratio * total_steps)
-    virtual = {task: max(counts[task], config.training.virtual_min_size) for task in active_tasks}
+    virtual = resolve_virtual_sizes(
+        counts,
+        config.training.virtual_min_size,
+        config.training.virtual_max_replication_ratio,
+    )
     plan = {
         "format_version": 1,
         "fold": fold,
@@ -399,6 +410,18 @@ def build_resolved_training_plan(
             "debug_pcgrad_traces": config.training.debug_pcgrad_traces,
         },
     }
+    if config.training.virtual_max_replication_ratio is not None:
+        plan["data"]["virtual_max_replication_ratio"] = (
+            config.training.virtual_max_replication_ratio
+        )
+        plan["data"]["virtual_replication_ratios"] = {
+            task: virtual[task] / counts[task]
+            for task in active_tasks
+        }
+    if config.training.joint_gradient_clip_mode != "global":
+        plan["math"]["joint_gradient_clip_mode"] = (
+            config.training.joint_gradient_clip_mode
+        )
     if prepared["metadata"].get("kind") == STAGE3_ARTIFACT_KIND:
         plan["stage2_encoder_identity"] = metadata_identity(
             prepared["metadata"],
@@ -449,6 +472,61 @@ def _optimizer(model: nn.Module, config: Stage3Config) -> torch.optim.AdamW:
         foreach=False,
         fused=False,
     )
+
+
+def _clip_joint_gradients(
+    model: Stage3SparseModel,
+    max_grad_norm: float,
+    mode: str,
+) -> tuple[float, float, dict[str, float], dict[str, float]]:
+    trainable = [
+        parameter
+        for parameter in model.parameters()
+        if parameter.requires_grad and parameter.grad is not None
+    ]
+    pre_norm = float(
+        torch.nn.utils.clip_grad_norm_(
+            trainable, float("inf"), error_if_nonfinite=True
+        )
+    )
+    owner_pre_norms: dict[str, float] = {}
+    owner_post_norms: dict[str, float] = {}
+    if mode == "global":
+        if max_grad_norm > 0:
+            torch.nn.utils.clip_grad_norm_(
+                trainable, max_grad_norm, error_if_nonfinite=True
+            )
+        post_norm = min(pre_norm, max_grad_norm) if max_grad_norm > 0 else pre_norm
+        return pre_norm, post_norm, owner_pre_norms, owner_post_norms
+    elif mode == "ownership":
+        owned: dict[Ownership, list[nn.Parameter]] = {}
+        for parameter, owner in model.parameter_ownership().items():
+            if parameter.requires_grad and parameter.grad is not None:
+                owned.setdefault(owner, []).append(parameter)
+        for owner in sorted(owned):
+            parameters = owned[owner]
+            owner_pre_norms[owner.label] = float(
+                torch.nn.utils.clip_grad_norm_(
+                    parameters, float("inf"), error_if_nonfinite=True
+                )
+            )
+            if max_grad_norm > 0:
+                torch.nn.utils.clip_grad_norm_(
+                    parameters, max_grad_norm, error_if_nonfinite=True
+                )
+            owner_post_norms[owner.label] = float(
+                torch.nn.utils.clip_grad_norm_(
+                    parameters, float("inf"), error_if_nonfinite=True
+                )
+            )
+    else:
+        raise ValueError(f"Unknown Stage 3 joint gradient clip mode: {mode}")
+    post_norm = float(
+        torch.nn.utils.clip_grad_norm_(
+            trainable, float("inf"), error_if_nonfinite=True
+        )
+    )
+    return pre_norm, post_norm, owner_pre_norms, owner_post_norms
 
 
 def _optimizer_for_parameters(
@@ -1166,6 +1244,8 @@ def run_stage3_training(
             epoch_loss = {task: 0.0 for task in active}
             latest_pcgrad: HierarchicalPCGradResult | None = None
             pre_norm = post_norm = 0.0
+            owner_pre_norms: dict[str, float] = {}
+            owner_post_norms: dict[str, float] = {}
             refinement_norms = {task: 0.0 for task in active}
             for step in range(steps_per_epoch):
                 order = list(active)
@@ -1221,19 +1301,16 @@ def run_stage3_training(
                     for parameter, gradient in latest_pcgrad.gradients.items():
                         if parameter.requires_grad:
                             parameter.grad = gradient.to(parameter.device, dtype=parameter.dtype)
-                    trainable = [parameter for parameter in model.parameters() if parameter.requires_grad]
-                    pre_norm = float(
-                        torch.nn.utils.clip_grad_norm_(
-                            trainable, float("inf"), error_if_nonfinite=True
-                        )
+                    (
+                        pre_norm,
+                        post_norm,
+                        owner_pre_norms,
+                        owner_post_norms,
+                    ) = _clip_joint_gradients(
+                        model,
+                        config.training.max_grad_norm,
+                        config.training.joint_gradient_clip_mode,
                     )
-                    if config.training.max_grad_norm > 0:
-                        torch.nn.utils.clip_grad_norm_(
-                            trainable,
-                            config.training.max_grad_norm,
-                            error_if_nonfinite=True,
-                        )
-                    post_norm = min(pre_norm, config.training.max_grad_norm) if config.training.max_grad_norm > 0 else pre_norm
                     optimizer.step()
                     scheduler.step()
                 global_step += 1
@@ -1330,6 +1407,13 @@ def run_stage3_training(
                     "assembled_owner_norms": latest_pcgrad.assembled_owner_norms,
                     "clip_pre_norm": pre_norm, "clip_post_norm": post_norm,
                 }
+                if config.training.joint_gradient_clip_mode == "ownership":
+                    diagnostics.update(
+                        {
+                            "clip_owner_pre_norms": owner_pre_norms,
+                            "clip_owner_post_norms": owner_post_norms,
+                        }
+                    )
             _append_jsonl(diagnostics_path, diagnostics)
             if epoch == boundary_epoch or epoch in checkpoint_epochs(
                 config.training.epochs, config.training.checkpoint_interval_epochs
