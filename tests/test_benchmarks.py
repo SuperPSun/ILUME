@@ -462,6 +462,16 @@ def test_native_split_benchmark_configs_follow_v2_authorities() -> None:
                 assert config.model["multicomponent_shared"] is True
 
 
+def test_default_benchmark_configs_follow_v2_system_authority() -> None:
+    for benchmark in ("mlp", "ecfp_xgboost", "dmpnn"):
+        config = load_benchmark_config(
+            Path("configs/benchmarks") / f"{benchmark}.yaml"
+        )
+        assert config.data.stage3_authority_config == Path(
+            "configs/v2/stage3/splits/system.yaml"
+        )
+
+
 def test_stage3_single_task_mlp_config_and_ordered_concat() -> None:
     config = load_benchmark_config(
         "configs/ablations/ilume_stage3_single_task_mlp.yaml"
