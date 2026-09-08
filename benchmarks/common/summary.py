@@ -255,7 +255,40 @@ def _display_name(candidate: Candidate, reporting: Mapping[str, Any]) -> str:
             and scale in scale_label
         ):
             return f"{display} Capacity v1 ({scale_label[scale]})"
+    variant = _ilume_stage3_variant(candidate, reporting)
+    if variant is not None:
+        return f"{display} ({variant})"
     return display
+
+
+def _ilume_stage3_variant(
+    candidate: Candidate, reporting: Mapping[str, Any]
+) -> str | None:
+    if (
+        candidate.metadata.get("stage") != "stage3"
+        or reporting.get("model_id") != "ilume"
+    ):
+        return None
+    source = Path(candidate.source_run).parts
+    for index, part in enumerate(source[:-1]):
+        marker = source[index - 2:index]
+        if (
+            part == "stage3"
+            and index >= 2
+            and marker in {("outputs", "v1"), ("outputs", "v2")}
+        ):
+            return source[index + 1]
+    return None
+
+
+def _validation_study_key(
+    candidate: Candidate, reporting: Mapping[str, Any]
+) -> tuple[str, str, str]:
+    return (
+        str(reporting["model_id"]),
+        str(reporting["study_id"]),
+        _ilume_stage3_variant(candidate, reporting) or "",
+    )
 
 
 def _model(candidate: Candidate) -> tuple[str, str]:
@@ -394,7 +427,7 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
             item for item in (row["issues"], issue) if item
         )
 
-    validation_groups: dict[tuple[str, str], dict[int, list[Candidate]]] = {}
+    validation_groups: dict[tuple[str, str, str], dict[int, list[Candidate]]] = {}
     for candidate in _current_completed(candidates):
         summary = candidate.summary or {}
         reporting = summary["reporting"]
@@ -489,10 +522,7 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
                         ),
                     )
             else:
-                key = (
-                    str(reporting["model_id"]),
-                    str(reporting["study_id"]),
-                )
+                key = _validation_study_key(candidate, reporting)
                 fold = int(protocol["fold"])
                 validation_groups.setdefault(key, {}).setdefault(
                     fold, []
@@ -642,18 +672,18 @@ def _stage3_validation(
     leaders: list[dict[str, Any]] = []
     metrics_rows: list[dict[str, Any]] = []
     comparisons: dict[str, list[str]] = {}
-    fold_groups: dict[tuple[str, str], dict[int, Candidate]] = {}
-    ambiguous: set[tuple[str, str]] = set()
+    fold_groups: dict[tuple[str, str, str], dict[int, Candidate]] = {}
+    ambiguous: set[tuple[str, str, str]] = set()
     for candidate in _current_completed(candidates):
         if candidate.metadata["stage"] != "stage3" or candidate.summary.get("split") != "valid":
             continue
         reporting = candidate.summary["reporting"]
-        key = (str(reporting["model_id"]), str(reporting["study_id"]))
+        key = _validation_study_key(candidate, reporting)
         fold = int(reporting["protocol"]["fold"])
         if fold in fold_groups.setdefault(key, {}):
             ambiguous.add(key)
         fold_groups[key][fold] = candidate
-    for (model_id, study_id), folds in sorted(fold_groups.items()):
+    for (model_id, study_id, variant), folds in sorted(fold_groups.items()):
         if (model_id, study_id) in ambiguous or set(folds) != set(range(1, 6)):
             continue
         items = [folds[fold] for fold in range(1, 6)]
@@ -666,7 +696,9 @@ def _stage3_validation(
             for item in items[1:]
         ):
             continue
-        run = f"{model_id}@study:{study_id}"
+        run = f"{model_id}@study:{study_id}" + (
+            f":variant:{variant}" if variant else ""
+        )
         display = _display_name(items[0], first_reporting)
         source = ";".join(item.source_run for item in items)
         checkpoints = {item.summary["checkpoint_epoch"] for item in items}

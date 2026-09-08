@@ -966,7 +966,7 @@ def _stage3_benchmark_summary(
 
 
 def _stage3_validation_summary(
-    study_id: str, display_name: str, fold: int, *, mae: float
+    study_id: str, fold: int, *, mae: float
 ) -> dict[str, object]:
     task = "experiment/example"
     comparison = comparison_identity(
@@ -981,12 +981,8 @@ def _stage3_validation_summary(
         folds=range(1, 6),
     )
     metrics = {
-        "count": 1,
-        "mae": mae,
-        "rmse": mae,
-        "r2": 0.5,
-        "normalized_mae": mae,
-        "normalized_rmse": mae,
+        "count": 1, "mae": mae, "rmse": mae, "r2": 0.5,
+        "normalized_mae": mae, "normalized_rmse": mae,
     }
     return {
         "split": "valid",
@@ -995,13 +991,11 @@ def _stage3_validation_summary(
         "reporting": {
             "schema_version": REPORTING_SCHEMA_VERSION,
             "model_id": "ilume",
-            "model_display_name": display_name,
+            "model_display_name": "ILUME",
             "study_id": study_id,
             "protocol": {
-                "split": "valid",
-                "fold": fold,
-                "folds": list(range(1, 6)),
-                "ensemble": False,
+                "split": "valid", "fold": fold,
+                "folds": list(range(1, 6)), "ensemble": False,
                 "expected_tasks": [task],
             },
             "comparison_identity": comparison,
@@ -1063,20 +1057,15 @@ def test_stage3_summary_ignores_normalization_but_requires_shared_sources(
         publish_summary(incompatible, tmp_path / "bad-summary", tmp_path)
 
 
-def test_stage3_summary_keeps_ilume_config_variants_separate(
+def test_stage3_summary_separates_ilume_variants_by_output_directory(
     tmp_path: Path,
 ) -> None:
-    inputs = tmp_path / "inputs"
-    for study_id, display_name, mae in (
-        ("ilume-stage3-base", "ILUME (base)", 1.0),
-        ("ilume-stage3-base-uniform", "ILUME (base-uniform)", 2.0),
-    ):
+    inputs = tmp_path / "outputs"
+    for variant, mae in (("base", 1.0), ("base-uniform", 2.0)):
         for fold in range(1, 6):
             _write_run(
-                inputs / study_id / f"fold{fold}",
-                _stage3_validation_summary(
-                    study_id, display_name, fold, mae=mae
-                ),
+                inputs / "v2" / "stage3" / variant / "validation" / f"fold{fold}",
+                _stage3_validation_summary("shared-study", fold, mae=mae),
                 stage="stage3",
             )
 

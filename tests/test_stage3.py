@@ -650,12 +650,8 @@ def test_four_phase_training_publishes_fixed_final_state(
         ensemble_folds=False,
         task_subset=("experiment/a",),
         fold=1,
-        reporting_study_id="explicit-study",
-        reporting_model_display_name="ILUME (base)",
     )
     assert evaluated["model_selector"] == "four_phase_final"
-    assert evaluated["reporting"]["study_id"] == "explicit-study"
-    assert evaluated["reporting"]["model_display_name"] == "ILUME (base)"
     with pytest.raises(ValueError, match="only supported by legacy"):
         evaluate_checkpoints(
             config,
@@ -666,29 +662,6 @@ def test_four_phase_training_publishes_fixed_final_state(
             task_subset=("experiment/a",),
             fold=1,
         )
-
-
-def test_reporting_study_id_is_fold_independent_and_excludes_execution(
-    tiny_prepared: Stage3Config,
-) -> None:
-    base = resolve_stage3_reporting_study_id(tiny_prepared)
-    execution_only = replace(
-        tiny_prepared,
-        training=replace(
-            tiny_prepared.training,
-            checkpoint_interval_epochs=1,
-            cpu_threads=1,
-            cpu_interop_threads=1,
-            debug_pcgrad_traces=True,
-            device="cpu",
-        ),
-    )
-    variant = replace(
-        tiny_prepared,
-        model=replace(tiny_prepared.model, dropout=0.2),
-    )
-    assert resolve_stage3_reporting_study_id(execution_only) == base
-    assert resolve_stage3_reporting_study_id(variant) != base
 
 
 def test_four_phase_optimizer_groups_follow_ownership(
@@ -1763,7 +1736,6 @@ def test_single_validation_fold_uses_fold_directory_and_run_lifecycle(
     assert open_calls[0]["output"] == Path("evaluate/fold3")
     assert open_calls[0]["details"]["reporting_study_id"] == "study-a"
     assert evaluate_calls[0]["fold"] == 3
-    assert evaluate_calls[0]["reporting_model_display_name"] == "ILUME (base)"
     assert evaluate_calls[0]["predictions_dir"] == Path(
         "/repo/evaluate/fold3/predictions"
     )
@@ -1812,7 +1784,6 @@ def test_test_path_remains_one_root_ensemble_run(
             "fold": None,
             "predictions_dir": Path("/repo/evaluate_test/predictions"),
             "reporting_study_id": None,
-            "reporting_model_display_name": "ILUME (base)",
             "expected_evaluation_identity": EVALUATION_IDENTITY,
         }
     ]

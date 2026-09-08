@@ -33,10 +33,6 @@ def _model_selector(config: Stage3Config, checkpoint_epoch: int | None) -> str:
     )
 
 
-def _reporting_model_display_name(config_path: str) -> str:
-    return f"ILUME ({Path(config_path).stem})"
-
-
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Evaluate Stage 3 checkpoints.")
     parser.add_argument("--config", required=True)
@@ -129,7 +125,6 @@ def _run_fold(
             fold=fold,
             predictions_dir=run.root / "predictions",
             reporting_study_id=study_id,
-            reporting_model_display_name=_reporting_model_display_name(config_path),
             expected_evaluation_identity=evaluation_identity,
         )
         run.complete(result)
@@ -233,7 +228,6 @@ def _run_test(
             fold=None,
             predictions_dir=run.root / "predictions",
             reporting_study_id=args.study_id,
-            reporting_model_display_name=_reporting_model_display_name(args.config),
             expected_evaluation_identity=evaluation_identity,
         )
         run.complete(result)
