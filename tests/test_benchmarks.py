@@ -965,6 +965,50 @@ def _stage3_benchmark_summary(
     }
 
 
+def _stage3_validation_summary(
+    study_id: str, display_name: str, fold: int, *, mae: float
+) -> dict[str, object]:
+    task = "experiment/example"
+    comparison = comparison_identity(
+        "stage3_property",
+        split="valid",
+        expected=[task],
+        sources={f"{task}:fold{index}": "shared" for index in range(1, 6)},
+        normalization={
+            f"{task}:fold{index}": {"scale": 1.0}
+            for index in range(1, 6)
+        },
+        folds=range(1, 6),
+    )
+    metrics = {
+        "count": 1,
+        "mae": mae,
+        "rmse": mae,
+        "r2": 0.5,
+        "normalized_mae": mae,
+        "normalized_rmse": mae,
+    }
+    return {
+        "split": "valid",
+        "checkpoint_epoch": None,
+        "tasks": {task: metrics},
+        "reporting": {
+            "schema_version": REPORTING_SCHEMA_VERSION,
+            "model_id": "ilume",
+            "model_display_name": display_name,
+            "study_id": study_id,
+            "protocol": {
+                "split": "valid",
+                "fold": fold,
+                "folds": list(range(1, 6)),
+                "ensemble": False,
+                "expected_tasks": [task],
+            },
+            "comparison_identity": comparison,
+        },
+    }
+
+
 def test_stage3_summary_ignores_normalization_but_requires_shared_sources(
     tmp_path: Path,
 ) -> None:
@@ -1017,6 +1061,32 @@ def test_stage3_summary_ignores_normalization_but_requires_shared_sources(
     )
     with pytest.raises(ValueError, match="incompatible comparison identities"):
         publish_summary(incompatible, tmp_path / "bad-summary", tmp_path)
+
+
+def test_stage3_summary_keeps_ilume_config_variants_separate(
+    tmp_path: Path,
+) -> None:
+    inputs = tmp_path / "inputs"
+    for study_id, display_name, mae in (
+        ("ilume-stage3-base", "ILUME (base)", 1.0),
+        ("ilume-stage3-base-uniform", "ILUME (base-uniform)", 2.0),
+    ):
+        for fold in range(1, 6):
+            _write_run(
+                inputs / study_id / f"fold{fold}",
+                _stage3_validation_summary(
+                    study_id, display_name, fold, mae=mae
+                ),
+                stage="stage3",
+            )
+
+    payload = publish_summary(inputs, tmp_path / "summary", tmp_path)
+    rows = payload["leaderboards"]["stage3_validation"]
+    assert [row["model"] for row in rows] == [
+        "ILUME (base)", "ILUME (base-uniform)"
+    ]
+    assert [row["macro_normalized_mae"] for row in rows] == [1.0, 2.0]
+    assert all("duplicate_folds" not in row["issues"] for row in payload["health"])
 
 
 def test_prediction_csv_is_atomic_and_records_integrity(tmp_path: Path) -> None:

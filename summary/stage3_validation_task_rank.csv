@@ -1,9 +1,0 @@
-run,model,experiment/density,experiment/dynamic_relative_permittivity,experiment/electrical_conductivity,experiment/equilibrium_pressure,experiment/glass_transition_temperature,experiment/heat_capacity,experiment/isobaric_coefficient_of_volume_expansion,experiment/melting_point,experiment/pec50,experiment/refractive_index,experiment/self_diffusion_coefficient,experiment/solvation,experiment/speed_of_sound,experiment/static_relative_permittivity,experiment/surface_tension,experiment/thermal_conductivity,experiment/thermal_decomposition_temperature,experiment/transfer,experiment/transfer_organic,experiment/viscosity,experiment/x_co2
-ilume@study:ilume-stage3-6e0b193154d4b81545dc1bac0bb187e872a34548b7cee0723f681a7c5105f31d-taskwise-refined,ILUME,2,5,1,3,2,4,1,3,4,1,1,1,3,7,1,5,3,1,1,1,1
-mlp@outputs/benchmarks/v1/mlp,MLP,3,2,2,4,1,2,5,2,3,3,3,7,4,2,2,2,2,6,4,3,6
-ilume_stage3_single_task_mlp@outputs/benchmarks/v1/ilume_stage3_single_task_mlp,ILUME Stage3 Single-task MLP,1,3,3,2,4,1,3,6,5,4,4,2,2,5,3,3,7,5,2,2,4
-dmpnn@outputs/benchmarks/v1/dmpnn,D-MPNN,4,4,4,5,7,3,2,7,6,6,6,5,1,8,5,6,6,4,6,4,2
-ilbert@outputs/benchmarks/v1/ilbert,ILBERT,8,1,8,1,3,7,4,1,1,2,2,3,6,3,4,4,1,2,3,8,5
-spmm@outputs/benchmarks/v1/spmm,SPMM,5,7,7,8,5,5,7,5,2,5,8,4,5,1,6,1,5,3,5,6,8
-ecfp_xgboost@outputs/benchmarks/v1/ecfp_xgboost,ECFP+XGBoost,7,8,5,6,6,8,8,4,7,7,5,8,8,4,8,7,4,7,7,7,3
-molformer@outputs/benchmarks/v1/molformer,MoLFormer-XL-both-10pct,6,6,6,7,8,6,6,8,8,8,7,6,7,6,7,8,8,8,8,5,7

@@ -11,6 +11,7 @@ from common.progress import ProgressReporter
 from common.identity import (
     IDENTITY_CONTRACT_VERSION,
     require_compatible_identity,
+    semantic_identity,
     tensor_state_hash,
 )
 from common.training import canonical_json_sha256, resolve_device
@@ -419,7 +420,7 @@ def _reporting_comparison(
 
 
 def _default_reporting_study_id(
-    metadata: Mapping[str, Any], selector: str
+    config: Stage3Config, metadata: Mapping[str, Any], selector: str
 ) -> str:
     prefix = (
         "rdkit-2d-stage2-home-stage3-"
@@ -429,13 +430,34 @@ def _default_reporting_study_id(
         if metadata.get("kind") != STAGE3_ARTIFACT_KIND
         else "ilume-stage3-"
     )
-    return (
-        prefix
-        + metadata_identity(
-            metadata, "prepared", context="Stage 3 prepared artifact"
-        )["hash"]
-        + f"-{selector}"
+    prepared_identity = metadata_identity(
+        metadata, "prepared", context="Stage 3 prepared artifact"
     )
+    if metadata.get("kind") != STAGE3_ARTIFACT_KIND:
+        return prefix + prepared_identity["hash"] + f"-{selector}"
+    payload = config.to_dict()
+    payload.pop("data")
+    payload.pop("preparation")
+    initialization = payload["initialization"]
+    initialization.pop("stage2_encoder")
+    training = payload["training"]
+    for name in (
+        "checkpoint_interval_epochs",
+        "cpu_interop_threads",
+        "cpu_threads",
+        "debug_pcgrad_traces",
+        "device",
+    ):
+        training.pop(name)
+    study = semantic_identity(
+        "reporting.stage3-study.v1",
+        {
+            "prepared_identity": prepared_identity["hash"],
+            "config": payload,
+            "selector": selector,
+        },
+    )
+    return prefix + study["hash"]
 
 
 def _reporting_model(metadata: Mapping[str, Any]) -> tuple[str, str]:
@@ -487,6 +509,7 @@ def resolve_stage3_reporting_study_id(
     if not isinstance(metadata, dict):
         raise ValueError("Stage 3 prepared metadata must contain a JSON object")
     return _default_reporting_study_id(
+        config,
         metadata,
         "four-phase-final"
         if four_phase_final
@@ -611,6 +634,7 @@ def evaluate_checkpoints(
     fold: int | None = None,
     predictions_dir: str | Path | None = None,
     reporting_study_id: str | None = None,
+    reporting_model_display_name: str | None = None,
     expected_evaluation_identity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if split not in {"valid", "test"}:
@@ -786,10 +810,13 @@ def evaluate_checkpoints(
             **next(iter(fold_results.values())),
         }
         default_study_id = _default_reporting_study_id(
+            config,
             prepared["metadata"],
             selector_label if final_artifact else f"epoch{epoch}",
         )
         model_id, model_display_name = _reporting_model(prepared["metadata"])
+        if model_id == "ilume" and reporting_model_display_name is not None:
+            model_display_name = reporting_model_display_name
         result["reporting"] = reporting_block(
             model_id=model_id,
             model_display_name=model_display_name,
@@ -848,10 +875,13 @@ def evaluate_checkpoints(
         },
     }
     default_study_id = _default_reporting_study_id(
+        config,
         prepared["metadata"],
         selector_label if final_artifact else f"epoch{epoch}",
     )
     model_id, model_display_name = _reporting_model(prepared["metadata"])
+    if model_id == "ilume" and reporting_model_display_name is not None:
+        model_display_name = reporting_model_display_name
     result["reporting"] = reporting_block(
         model_id=model_id,
         model_display_name=model_display_name,
