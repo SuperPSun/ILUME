@@ -8,7 +8,7 @@ environment:
 data:
   data_root: data
   task_catalog: data/task_catalog.csv
-  stage3_authority_config: configs/v1/stage3/base.yaml
+  stage3_authority_config: configs/v2/stage3/splits/system.yaml
 model:
   repository: jinhojsk515/SPMM
   revision: 046976484f31b3cbc862b8f2094e38df72fcfce7

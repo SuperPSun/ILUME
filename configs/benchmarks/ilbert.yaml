@@ -8,7 +8,7 @@ environment:
 data:
   data_root: data
   task_catalog: data/task_catalog.csv
-  stage3_authority_config: configs/v1/stage3/base.yaml
+  stage3_authority_config: configs/v2/stage3/splits/system.yaml
 model:
   repository: Yu-Xin-Qiu/ILBERT
   revision: f9dc6f1b23a40b6988480735f3724a6332f68c12

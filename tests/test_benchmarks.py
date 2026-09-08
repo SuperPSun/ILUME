@@ -463,7 +463,10 @@ def test_native_split_benchmark_configs_follow_v2_authorities() -> None:
 
 
 def test_default_benchmark_configs_follow_v2_system_authority() -> None:
-    for benchmark in ("mlp", "ecfp_xgboost", "dmpnn"):
+    for benchmark in (
+        "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm",
+        "llasmol",
+    ):
         config = load_benchmark_config(
             Path("configs/benchmarks") / f"{benchmark}.yaml"
         )
