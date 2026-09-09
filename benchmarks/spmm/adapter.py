@@ -661,10 +661,14 @@ def _data_loader(
 
 
 def _configure_backend(config: BenchmarkConfig) -> None:
-    torch.backends.cuda.matmul.allow_tf32 = bool(
-        config.training["cuda_matmul_tf32"]
+    cuda_tf32 = bool(config.training["cuda_matmul_tf32"])
+    cudnn_tf32 = bool(config.training["cudnn_tf32"])
+    torch.backends.cuda.matmul.fp32_precision = (
+        "tf32" if cuda_tf32 else "ieee"
     )
-    torch.backends.cudnn.allow_tf32 = bool(config.training["cudnn_tf32"])
+    torch.backends.cudnn.conv.fp32_precision = (
+        "tf32" if cudnn_tf32 else "ieee"
+    )
     torch.backends.cudnn.deterministic = False
     torch.backends.cudnn.benchmark = bool(config.training["cudnn_benchmark"])
 
