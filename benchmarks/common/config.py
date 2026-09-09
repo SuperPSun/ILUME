@@ -452,7 +452,7 @@ class BenchmarkConfig:
             "base_frozen": True,
             "quantization": "nf4_double_quant",
             "compute_dtype": "bfloat16",
-            "gradient_checkpointing": True,
+            "gradient_checkpointing": False,
             "use_cache": False,
             "continue_official_adapter": True,
             "lora_rank": 16,
@@ -485,8 +485,8 @@ class BenchmarkConfig:
             "weight_decay": 1.0e-2,
             "scheduler": "linear_warmup_cosine",
             "warmup_fraction": 0.05,
-            "batch_size": 8,
-            "gradient_accumulation_steps": 4,
+            "batch_size": 32,
+            "gradient_accumulation_steps": 1,
             "max_epochs": 50,
             "max_grad_norm": 1.0,
             "length_bucketing": "sortish_length_bucketing_v1",
@@ -501,7 +501,7 @@ class BenchmarkConfig:
         if self.training != expected_training:
             raise ValueError("LlaSMol training must match the registered QLoRA recipe")
         expected_runtime = {
-            "num_workers": 4,
+            "num_workers": 8,
             "prefetch_factor": 2,
             "persistent_workers": True,
             "pin_memory": True,

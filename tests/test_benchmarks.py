@@ -1684,8 +1684,8 @@ def test_formal_llasmol_config_resolves_105_jobs_and_is_strict() -> None:
     stage3 = configured_tasks(config, "stage3")
     assert len(stage3) == 21
     assert len(stage3) * len(config.stage3.folds) == 105
-    assert config.training["batch_size"] == 8
-    assert config.training["gradient_accumulation_steps"] == 4
+    assert config.training["batch_size"] == 32
+    assert config.training["gradient_accumulation_steps"] == 1
     assert config.training["length_bucketing"] == LLASMOL_TRAINING_ORDER_CONTRACT
     changed = config.to_dict()
     changed["training"]["batch_size"] = 16
