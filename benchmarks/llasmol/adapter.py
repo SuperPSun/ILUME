@@ -552,12 +552,14 @@ def build_llasmol_model(
         str(repository_path(str(config.model["base_snapshot"]))),
         local_files_only=True,
         quantization_config=quantization,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         device_map={"": device.index if device.index is not None else 0},
     )
     base.config.use_cache = bool(config.model["use_cache"])
     base = prepare_model_for_kbit_training(
-        base, use_gradient_checkpointing=bool(config.model["gradient_checkpointing"])
+        base,
+        use_gradient_checkpointing=bool(config.model["gradient_checkpointing"]),
+        gradient_checkpointing_kwargs={"use_reentrant": False},
     )
     lora = LoraConfig(
         r=int(config.model["lora_rank"]),
@@ -676,7 +678,6 @@ def _configure_backend(config: BenchmarkConfig) -> None:
     precision = "tf32" if bool(config.training["tf32"]) else "ieee"
     torch.backends.cuda.matmul.fp32_precision = precision
     torch.backends.cudnn.conv.fp32_precision = precision
-    torch.set_float32_matmul_precision("highest")
 
 
 def _scheduled_factor(step: int, *, total_steps: int, warmup_steps: int) -> float:
