@@ -490,7 +490,14 @@ def _load_pretrained_encoder(
         or sha256_file(checkpoint_path) != str(config.model["pretrained_sha256"])
     ):
         raise RuntimeError("SPMM checkpoint trust boundary changed before deserialization")
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    # This is the pinned official Lightning pickle; its metadata includes
+    # tokenizer objects, so it cannot be loaded with PyTorch's weights-only
+    # default. The size and SHA256 trust checks above must remain first.
+    checkpoint = torch.load(
+        checkpoint_path,
+        map_location="cpu",
+        weights_only=False,
+    )
     if not isinstance(checkpoint, Mapping) or not isinstance(
         checkpoint.get("state_dict"), Mapping
     ):
