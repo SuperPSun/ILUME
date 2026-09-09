@@ -673,8 +673,9 @@ def _data_loader(
 
 
 def _configure_backend(config: BenchmarkConfig) -> None:
-    torch.backends.cuda.matmul.allow_tf32 = bool(config.training["tf32"])
-    torch.backends.cudnn.allow_tf32 = bool(config.training["tf32"])
+    precision = "tf32" if bool(config.training["tf32"]) else "ieee"
+    torch.backends.cuda.matmul.fp32_precision = precision
+    torch.backends.cudnn.conv.fp32_precision = precision
     torch.set_float32_matmul_precision("highest")
 
 

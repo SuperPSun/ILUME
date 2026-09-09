@@ -466,8 +466,9 @@ def _data_loader(
 
 
 def _configure_tf32(enabled: bool) -> None:
-    torch.backends.cuda.matmul.allow_tf32 = enabled
-    torch.backends.cudnn.allow_tf32 = enabled
+    precision = "tf32" if enabled else "ieee"
+    torch.backends.cuda.matmul.fp32_precision = precision
+    torch.backends.cudnn.conv.fp32_precision = precision
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
