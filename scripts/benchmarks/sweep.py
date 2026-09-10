@@ -488,6 +488,11 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
         raise ValueError(
             "Benchmark sweep contains incompatible reporting study identities"
         )
+    model_selector = (
+        "validation_best"
+        if config.name == "ilume_stage3_single_task_mlp"
+        else str(config.training["model_selection"])
+    )
     stage3_sections = {
         "stage3_test": {
             "benchmark": "stage3_property",
@@ -497,14 +502,8 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
                 "ensemble": True,
                 "expected_tasks": test_expected,
                 "enabled_tasks": valid_expected,
-                **(
-                    {
-                        "model_selector": "validation_best",
-                        "checkpoint_epoch": None,
-                    }
-                    if config.name == "ilume_stage3_single_task_mlp"
-                    else {}
-                ),
+                "model_selector": model_selector,
+                "checkpoint_epoch": None,
             },
             "comparison_identity": merged_comparison(
                 [
@@ -524,14 +523,8 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
                 "folds": list(config.stage3.folds),
                 "ensemble": False,
                 "expected_tasks": valid_expected,
-                **(
-                    {
-                        "model_selector": "validation_best",
-                        "checkpoint_epoch": None,
-                    }
-                    if config.name == "ilume_stage3_single_task_mlp"
-                    else {}
-                ),
+                "model_selector": model_selector,
+                "checkpoint_epoch": None,
             },
             "comparison_identity": merged_comparison(
                 stage3_valid_reporting,
@@ -543,7 +536,7 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
     }
     return {
         "model": config.name,
-        "model_selector": "validation_best",
+        "model_selector": model_selector,
         "checkpoint_epoch": None,
         "stage3_property_benchmark": {
             "validation_five_fold": stage3_valid,
@@ -610,7 +603,7 @@ def main() -> None:
     except ValueError as error:
         parser.error(str(error))
     if devices and config.name not in {
-        "mlp", "dmpnn", "molformer", "ilbert", "spmm", "llasmol",
+        "mlp", "dmpnn", "molformer", "ilbert", "spmm", "llasmol", "aionopedia",
         "ilume_stage3_single_task_mlp",
     }:
         parser.error("--devices is only supported for GPU neural-network benchmarks")

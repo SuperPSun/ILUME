@@ -4,6 +4,9 @@
 - 日期：2026-09-07
 - 修订：取代 ADR-0022/0028/0029/0030/0032/0035/0038/0040 中的 early stopping、validation-best checkpoint 与 ILBERT validation-driven scheduler 条款
 
+> 2026-09-10：统一 baseline policy 已重新开放。本文仍只约束下列七个 baseline；
+> AIonopedia 的 10-epoch model-native 合同由 ADR-0049 定义。
+
 ## 背景
 
 Stage 3 baseline 的五折 validation 指标本身是正式 benchmark 结果。若训练同时使用同一

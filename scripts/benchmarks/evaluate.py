@@ -201,7 +201,11 @@ def main() -> None:
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     config = load_benchmark_config(args.config)
-    validation_best = config.name == "ilume_stage3_single_task_mlp"
+    model_selector = (
+        "validation_best"
+        if config.name == "ilume_stage3_single_task_mlp"
+        else str(config.training["model_selection"])
+    )
     environment_snapshot = ensure_benchmark_environment(config)
     reporter = ProgressReporter()
     if args.split == "test":
@@ -269,6 +273,16 @@ def main() -> None:
             config.stage3.folds[0] if args.ensemble_folds else selector_fold,
             args.split,
         )
+    if config.name == "aionopedia":
+        from benchmarks.aionopedia.adapter import aionopedia_evaluation_audit
+
+        input_audit = aionopedia_evaluation_audit(
+            config,
+            args.benchmark,
+            args.task,
+            config.stage3.folds[0] if args.ensemble_folds else selector_fold,
+            args.split,
+        )
     evaluation_identity = semantic_identity(
         "benchmark.evaluation.v1",
         {
@@ -293,11 +307,8 @@ def main() -> None:
             "benchmark": args.benchmark, "task": args.task, "split": args.split,
             "fold": selector_fold, "ensemble_folds": args.ensemble_folds,
             "checkpoints": [repository_relative(path) for path in checkpoints],
-            **(
-                {"model_selector": "validation_best", "checkpoint_epoch": None}
-                if validation_best
-                else {}
-            ),
+            "model_selector": model_selector,
+            "checkpoint_epoch": None,
             **environment_run_details(environment_snapshot),
         },
     )
@@ -343,10 +354,9 @@ def main() -> None:
                 "fold": selector_fold, "targets": first.metrics,
             }
             extras = None
-        if validation_best:
-            summary.update(
-                {"model_selector": "validation_best", "checkpoint_epoch": None}
-            )
+        summary.update(
+            {"model_selector": model_selector, "checkpoint_epoch": None}
+        )
         if input_audit is not None:
             summary["input_audit"] = input_audit
         prediction_manifest = _write_task_predictions(
@@ -385,11 +395,8 @@ def main() -> None:
                 "folds": list(config.stage3.folds),
                 "ensemble": args.ensemble_folds,
                 "expected_tasks": [args.task],
-                **(
-                    {"model_selector": "validation_best", "checkpoint_epoch": None}
-                    if validation_best
-                    else {}
-                ),
+                "model_selector": model_selector,
+                "checkpoint_epoch": None,
             },
             comparison=comparison,
             study_id=f"{config.name}-{study}",

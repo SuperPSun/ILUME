@@ -21,6 +21,7 @@ from .config import BenchmarkConfig
 
 ENVIRONMENT_MARKER = "ILUME_BENCHMARK_ENVIRONMENT"
 LLASMOL_ASSET_MARKER = "ILUME_LLASMOL_ASSETS"
+AIONOPEDIA_ASSET_MARKER = "ILUME_AIONOPEDIA_ASSETS"
 _LOCKED_REQUIREMENT = re.compile(r"^([A-Za-z0-9_.-]+)==([^ ;\\]+)")
 
 
@@ -42,7 +43,7 @@ def _locked_versions(path: Path) -> dict[str, str]:
 def environment_command(
     config: BenchmarkConfig, argv: Sequence[str], *, conda: str | None = None
 ) -> list[str]:
-    if config.name not in {"dmpnn", "molformer", "ilbert", "spmm", "llasmol"} or config.environment is None:
+    if config.name not in {"dmpnn", "molformer", "ilbert", "spmm", "llasmol", "aionopedia"} or config.environment is None:
         raise ValueError("Environment dispatch is only defined for advanced baselines")
     executable = conda or shutil.which("conda")
     if executable is None:
@@ -64,7 +65,7 @@ def environment_command(
 def ensure_benchmark_environment(
     config: BenchmarkConfig, argv: Sequence[str] | None = None
 ) -> dict[str, Any] | None:
-    if config.name not in {"dmpnn", "molformer", "ilbert", "spmm", "llasmol"}:
+    if config.name not in {"dmpnn", "molformer", "ilbert", "spmm", "llasmol", "aionopedia"}:
         return None
     if config.environment is None:
         raise ValueError(f"{config.display_name} environment contract is missing")
@@ -91,7 +92,9 @@ def ensure_benchmark_environment(
         return validate_ilbert_environment(config)
     if config.name == "spmm":
         return validate_spmm_environment(config)
-    return validate_llasmol_environment(config)
+    if config.name == "llasmol":
+        return validate_llasmol_environment(config)
+    return validate_aionopedia_environment(config)
 
 
 def _installed_versions() -> dict[str, str]:
@@ -811,6 +814,199 @@ def validate_llasmol_environment(config: BenchmarkConfig) -> dict[str, Any]:
     }
 
 
+def aionopedia_asset_snapshot(config: BenchmarkConfig) -> dict[str, Any]:
+    if config.name != "aionopedia":
+        raise ValueError("AIonopedia asset snapshot requires an AIonopedia config")
+    marker_payload = {
+        "base_revision": config.model["base_revision"],
+        "pretrained_revision": config.model["pretrained_revision"],
+        "adapter_config_provenance": config.model["adapter_config_provenance"],
+        "base_files": config.model["base_files"],
+        "pretrained_files": config.model["pretrained_files"],
+    }
+    expected_marker = hashlib.sha256(
+        json.dumps(marker_payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    inherited_validation = os.environ.get(AIONOPEDIA_ASSET_MARKER) == expected_marker
+    groups = {}
+    for group, root_field in (
+        ("base_files", "base_snapshot"),
+        ("pretrained_files", "pretrained_snapshot"),
+    ):
+        root = repository_path(config.model[root_field])
+        if not root.is_dir():
+            raise FileNotFoundError(f"AIonopedia asset directory is missing: {root}")
+        files = {}
+        for filename, expected in config.model[group].items():
+            path = root / filename
+            if not path.is_file():
+                raise FileNotFoundError(f"AIonopedia asset is missing: {path}")
+            actual = {
+                "sha256": expected["sha256"] if inherited_validation else sha256_file(path),
+                "size": path.stat().st_size,
+            }
+            if actual != expected:
+                raise ValueError(
+                    f"AIonopedia asset integrity mismatch for {group}/{filename}: "
+                    f"expected {expected}, got {actual}"
+                )
+            files[filename] = actual
+        groups[group] = files
+    structure = {
+        "base_model_type": "qwen3",
+        "base_hidden_size": 1024,
+        "pretraining_outputs_ignored": 71,
+        "released_module_files": sorted(config.model["pretrained_files"]),
+        "base_tensor_width_validated": True,
+        "released_lora_only_validated": True,
+        "released_modules_strictly_loaded": True,
+        "adapter_config_provenance": config.model["adapter_config_provenance"],
+        "adapter_config_byte_identical_to_current_hf_revision": False,
+    }
+    if not inherited_validation:
+        import torch
+        from safetensors import safe_open
+
+        from benchmarks.aionopedia.adapter import OFFICIAL_MODULE_FILES, OFFICIAL_SEGMENTS
+        from benchmarks.aionopedia.model import MultiModalRegressor
+
+        base = repository_path(config.model["base_snapshot"])
+        pretrained = repository_path(config.model["pretrained_snapshot"])
+        base_config = json.loads((base / "config.json").read_text(encoding="utf-8"))
+        if {
+            "model_type": base_config.get("model_type"),
+            "hidden_size": base_config.get("hidden_size"),
+        } != {"model_type": "qwen3", "hidden_size": 1024}:
+            raise RuntimeError("AIonopedia Qwen base config differs from contract")
+        with safe_open(base / "model.safetensors", framework="pt", device="cpu") as state:
+            embedding_shape = tuple(state.get_slice("model.embed_tokens.weight").get_shape())
+        if embedding_shape[-1] != 1024:
+            raise RuntimeError("AIonopedia Qwen tensor width differs from contract")
+
+        adapter_config = json.loads(
+            (pretrained / "adapter_config.json").read_text(encoding="utf-8")
+        )
+        adapter_semantics = {
+            "peft_type": adapter_config.get("peft_type"),
+            "task_type": adapter_config.get("task_type"),
+            "r": adapter_config.get("r"),
+            "lora_alpha": adapter_config.get("lora_alpha"),
+            "lora_dropout": adapter_config.get("lora_dropout"),
+            "target_modules": sorted(adapter_config.get("target_modules", [])),
+            "bias": adapter_config.get("bias"),
+            "inference_mode": adapter_config.get("inference_mode"),
+            "auto_mapping": adapter_config.get("auto_mapping"),
+        }
+        expected_adapter_semantics = {
+            "peft_type": "LORA",
+            "task_type": None,
+            "r": 16,
+            "lora_alpha": 32,
+            "lora_dropout": 0.1,
+            "target_modules": ["k_proj", "o_proj", "q_proj", "v_proj"],
+            "bias": "none",
+            "inference_mode": True,
+            "auto_mapping": {
+                "base_model_class": "Qwen3ForCausalLM",
+                "parent_library": "transformers.models.qwen3.modeling_qwen3",
+            },
+        }
+        if adapter_semantics != expected_adapter_semantics:
+            raise RuntimeError("AIonopedia local LoRA config differs from pinned contract")
+        with safe_open(
+            pretrained / "adapter_model.safetensors", framework="pt", device="cpu"
+        ) as state:
+            adapter_keys = tuple(state.keys())
+        if not adapter_keys or any("lora_" not in name.lower() for name in adapter_keys):
+            raise RuntimeError("AIonopedia released adapter contains non-LoRA tensors")
+
+        model = MultiModalRegressor(torch.nn.Identity(), llm_dim=1024)
+        for filename, attribute in OFFICIAL_MODULE_FILES.items():
+            getattr(model, attribute).load_state_dict(
+                torch.load(
+                    pretrained / filename, map_location="cpu", weights_only=True
+                ),
+                strict=True,
+            )
+        segments = torch.load(
+            pretrained / "segment_embeddings.pt", map_location="cpu", weights_only=True
+        )
+        if set(segments) != set(OFFICIAL_SEGMENTS):
+            raise RuntimeError("AIonopedia released segment tensors differ from contract")
+        for name in OFFICIAL_SEGMENTS:
+            if tuple(segments[name].shape) != tuple(getattr(model, name).shape):
+                raise RuntimeError(f"AIonopedia released segment shape differs: {name}")
+        pretraining_head = torch.nn.Sequential(
+            torch.nn.Linear(512, 1024), torch.nn.ReLU(), torch.nn.Linear(1024, 71)
+        )
+        pretraining_head.load_state_dict(
+            torch.load(
+                pretrained / "fc_out_state_dict.pt",
+                map_location="cpu",
+                weights_only=True,
+            ),
+            strict=True,
+        )
+        os.environ[AIONOPEDIA_ASSET_MARKER] = expected_marker
+    return {
+        "base_repository": config.model["base_repository"],
+        "base_revision": config.model["base_revision"],
+        "pretrained_repository": config.model["pretrained_repository"],
+        "pretrained_revision": config.model["pretrained_revision"],
+        "upstream_repository": config.model["upstream_repository"],
+        "upstream_revision": config.model["upstream_revision"],
+        "structure": structure,
+        **groups,
+    }
+
+
+def validate_aionopedia_environment(config: BenchmarkConfig) -> dict[str, Any]:
+    if config.name != "aionopedia" or config.environment is None:
+        raise ValueError("AIonopedia environment validation requires an AIonopedia config")
+    try:
+        import peft
+        from rdkit import rdBase
+        import torch
+        import torch_geometric
+        import transformers
+    except ImportError as error:
+        raise RuntimeError("AIonopedia environment cannot import its locked runtime") from error
+    direct = {
+        "python": platform.python_version(),
+        "pip": importlib.metadata.version("pip"),
+        "pytorch": torch.__version__,
+        "cuda": torch.version.cuda,
+        "transformers": transformers.__version__,
+        "peft": peft.__version__,
+        "torch_geometric": torch_geometric.__version__,
+        "rdkit": rdBase.rdkitVersion,
+    }
+    expected_direct = {
+        "python": "3.12.9",
+        "pytorch": "2.9.0+cu128",
+        "cuda": "12.8",
+        "transformers": "4.52.4",
+        "peft": "0.15.2",
+        "torch_geometric": "2.6.1",
+        "rdkit": "2023.09.5",
+    }
+    definition, lock, installed = _validate_lock(
+        config, expected_direct=expected_direct, direct=direct
+    )
+    if not torch.cuda.is_bf16_supported():
+        raise RuntimeError("AIonopedia requires CUDA BF16 support")
+    return {
+        "environment_name": config.environment.name,
+        "environment_definition": repository_relative(definition),
+        "environment_lock": repository_relative(lock),
+        "environment_lock_sha256": sha256_file(lock),
+        "direct_versions": direct,
+        "resolved_packages": dict(sorted(installed.items())),
+        "gpu": _gpu_snapshot(torch),
+        "pretrained_snapshot": aionopedia_asset_snapshot(config),
+    }
+
+
 def environment_run_details(snapshot: dict[str, Any] | None) -> dict[str, Any]:
     if snapshot is None:
         return {}
@@ -836,6 +1032,11 @@ def environment_run_details(snapshot: dict[str, Any] | None) -> dict[str, Any]:
         details["bitsandbytes_version"] = direct["bitsandbytes"]
         details["base_revision"] = snapshot["pretrained_snapshot"]["base"]["revision"]
         details["adapter_revision"] = snapshot["pretrained_snapshot"]["adapter"]["revision"]
+    if snapshot["environment_name"] == "ilume-aionopedia":
+        details["transformers_version"] = direct["transformers"]
+        details["peft_version"] = direct["peft"]
+        details["base_revision"] = snapshot["pretrained_snapshot"]["base_revision"]
+        details["pretrained_revision"] = snapshot["pretrained_snapshot"]["pretrained_revision"]
     return details
 
 
@@ -844,8 +1045,10 @@ def write_environment_snapshot(path: str | Path, snapshot: dict[str, Any]) -> No
 
 
 __all__ = [
+    "AIONOPEDIA_ASSET_MARKER",
     "ENVIRONMENT_MARKER",
     "LLASMOL_ASSET_MARKER",
+    "aionopedia_asset_snapshot",
     "ensure_benchmark_environment",
     "environment_run_details",
     "environment_command",
@@ -853,6 +1056,7 @@ __all__ = [
     "llasmol_asset_snapshot",
     "spmm_asset_snapshot",
     "validate_dmpnn_environment",
+    "validate_aionopedia_environment",
     "validate_ilbert_environment",
     "validate_llasmol_environment",
     "validate_molformer_environment",

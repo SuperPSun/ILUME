@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 
+import hashlib
+
 import json
 
 import re
@@ -465,7 +467,7 @@ def test_native_split_benchmark_configs_follow_v2_authorities() -> None:
 def test_default_benchmark_configs_follow_v2_system_authority() -> None:
     for benchmark in (
         "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm",
-        "llasmol",
+        "llasmol", "aionopedia",
     ):
         config = load_benchmark_config(
             Path("configs/benchmarks") / f"{benchmark}.yaml"
@@ -1856,3 +1858,194 @@ def test_llasmol_adapter_namespace_sampler_and_scheduler_contracts(
     assert factors[4] == pytest.approx(1.0)
     assert factors[5] == pytest.approx(1.0)
     assert factors[-1] == pytest.approx(0.0)
+
+
+# --- AIonopedia baseline contracts ---
+
+from benchmarks.aionopedia.adapter import (
+    SampleStats as AIonopediaSampleStats,
+    _prepare_split as prepare_aionopedia_split,
+    _scheduled_factor as aionopedia_scheduled_factor,
+)
+from benchmarks.aionopedia.graph import smiles_to_graph as aionopedia_graph
+from benchmarks.aionopedia.model import MultiModalRegressor as AIonopediaRegressor
+from torch_geometric.data import Batch, Data
+
+
+def test_formal_aionopedia_config_uses_pinned_generic_snapshot() -> None:
+    config = load_benchmark_config("configs/benchmarks/aionopedia.yaml")
+    tasks = configured_tasks(config, "stage3")
+    assert len(tasks) == 21
+    assert len(tasks) * len(config.stage3.folds) == 105
+    assert config.training["max_epochs"] == 10
+    assert config.training["validation_policy"] == "reporting_only_each_epoch"
+    assert config.model["pretrained_snapshot"].endswith(
+        "qwen0.6b-pretrain_simple2.8m(itg_loss)"
+    )
+    assert config.model["adapter_config_provenance"] == (
+        "local_generic_pretraining_export_peft_0.14"
+    )
+    assert set(config.model["pretrained_files"]) == {
+        "GNN_state_dict.pt", "adapter_config.json", "adapter_model.safetensors",
+        "decoder1_state_dict.pt", "decoder2_state_dict.pt",
+        "embedding_property_state_dict.pt", "fc_out_state_dict.pt",
+        "graph_merge_encoder_state_dict.pt", "projector_gnn_state_dict.pt",
+        "projector_llm_state_dict.pt", "projector_temp_state_dict.pt",
+        "segment_embeddings.pt",
+    }
+    command = environment_command(
+        config,
+        ("scripts/benchmarks/train.py", "--config", "configs/benchmarks/aionopedia.yaml"),
+        conda="/conda",
+    )
+    assert command[:6] == [
+        "/conda", "run", "--no-capture-output", "-n", "ilume-aionopedia", "python"
+    ]
+    changed = config.to_dict()
+    changed["model"]["pretrained_snapshot"] = "artifacts/property-specific/density"
+    with pytest.raises(ValueError, match="registered multimodal recipe"):
+        benchmark_config_from_dict(changed)
+
+
+def _aionopedia_task(
+    *, slots: tuple[str, ...], conditions: tuple[str, ...], target: str = "secret_target",
+) -> BenchmarkTask:
+    return BenchmarkTask(
+        benchmark="stage3",
+        task_id="experiment/aionopedia_tiny",
+        slots=slots,
+        condition_columns=conditions,
+        target_columns=(target,),
+        audit_columns=(),
+        train_paths=(),
+        valid_paths=(),
+        test_path=Path("test.csv"),
+        fold=1,
+        meta_group="tiny",
+        registry_payload={"task_id": "experiment/aionopedia_tiny"},
+    )
+
+
+def _aionopedia_raw(
+    components: tuple[str, ...], conditions: tuple[float, ...]
+) -> RawDataset:
+    return RawDataset(
+        components=(components,),
+        component_count=len(components),
+        conditions=np.asarray([conditions], dtype=np.float64).reshape(1, len(conditions)),
+        targets=np.asarray([[1.0]], dtype=np.float64),
+        source_rows=("tiny.csv:2",),
+        audit_rows=({},),
+    )
+
+
+@pytest.mark.parametrize(
+    ("slots", "conditions", "components", "values", "topology", "graph_roles"),
+    (
+        (("cation", "anion"), (), ("[Na+]", "[Cl-]"), (), 3, ("", "[Na+]", "[Cl-]")),
+        (("cation", "anion"), ("temperature_K",), ("[Na+]", "[Cl-]"), (300.0,), 2, ("", "[Na+]", "[Cl-]")),
+        (("cation", "anion", "solute"), ("temperature_K",), ("[Na+]", "[Cl-]", "O"), (300.0,), 1, ("O", "[Na+]", "[Cl-]")),
+        (("solute", "solvent"), ("temperature_K",), ("O", "CCO"), (300.0,), 0, ("O", "CCO", "")),
+    ),
+)
+def test_aionopedia_registry_topologies_and_prompts_do_not_leak_target(
+    slots, conditions, components, values, topology, graph_roles
+) -> None:
+    task = _aionopedia_task(slots=slots, conditions=conditions)
+    prepared = prepare_aionopedia_split(
+        task, _aionopedia_raw(components, values), None
+    )
+    assert prepared.topology == topology
+    assert prepared.graph_roles[0] == graph_roles
+    assert "secret_target" not in prepared.prompts[0]
+    assert "aionopedia_tiny" not in prepared.prompts[0]
+
+
+def test_aionopedia_condition_scales_and_prompt_units() -> None:
+    task = _aionopedia_task(
+        slots=("cation", "anion"),
+        conditions=("temperature_K", "pressure_kPa", "frequency_MHz"),
+    )
+    pressure = AIonopediaSampleStats.fit(np.asarray([100.0, 200.0]), allow_constant=True)
+    prepared = prepare_aionopedia_split(
+        task,
+        _aionopedia_raw(("[Na+]", "[Cl-]"), (300.0, 150.0, 18000.0)),
+        pressure,
+    )
+    assert prepared.temperature.tolist() == pytest.approx([0.3])
+    assert prepared.extra_conditions["pressure"].tolist() == pytest.approx([0.0])
+    assert prepared.extra_conditions["frequency"].tolist() == pytest.approx([18.0])
+    assert prepared.active_conditions == ("pressure", "frequency")
+    assert "temperature 300K" in prepared.prompts[0]
+    assert "pressure 150kPa" in prepared.prompts[0]
+    assert "frequency 18000MHz" in prepared.prompts[0]
+
+    wavelength_task = _aionopedia_task(
+        slots=("cation", "anion"), conditions=("temperature_K", "wavelength_nm")
+    )
+    wavelength = prepare_aionopedia_split(
+        wavelength_task,
+        _aionopedia_raw(("[Na+]", "[Cl-]"), (298.15, 589.0)),
+        None,
+    )
+    assert wavelength.extra_conditions["wavelength"].tolist() == pytest.approx([0.589])
+
+
+def test_aionopedia_graph_preprocessing_matches_official_golden_contract() -> None:
+    graph = aionopedia_graph("C")
+    assert graph.x.shape == (1, 35)
+    assert graph.edge_index.shape == (2, 0)
+    assert graph.edge_attr.shape == (0, 11)
+    assert hashlib.sha256(graph.x.numpy().tobytes()).hexdigest() == (
+        "926e24a9ca06fd679201bf03f106f826266e2b9aa21c5d28ec5a17e782107eea"
+    )
+
+
+def test_aionopedia_sample_std_scheduler_and_condition_tokens() -> None:
+    stats = AIonopediaSampleStats.fit(np.asarray([1.0, 3.0]), allow_constant=False)
+    assert stats.mean == 2.0
+    assert stats.scale == pytest.approx(2 ** 0.5)
+    constant = AIonopediaSampleStats.fit(np.asarray([5.0, 5.0]), allow_constant=True)
+    assert constant.constant and constant.scale == 1.0
+    factors = [
+        aionopedia_scheduled_factor(step, total_steps=100, warmup_steps=50)
+        for step in range(101)
+    ]
+    assert factors[0] == 0.0
+    assert factors[50] == 1.0
+    assert factors[-1] == 0.0
+
+    class FakeLLM(torch.nn.Module):
+        def forward(self, input_ids, attention_mask, output_hidden_states, use_cache):
+            hidden = torch.zeros((*input_ids.shape, 1024), dtype=torch.float32)
+            return SimpleNamespace(hidden_states=(hidden,))
+
+    model = AIonopediaRegressor(FakeLLM()).eval()
+    cation = Batch.from_data_list([aionopedia_graph("C")])
+    empty = Batch.from_data_list([
+        Data(
+            x=torch.empty((0, 35)),
+            edge_index=torch.empty((2, 0), dtype=torch.long),
+            edge_attr=torch.empty((0, 11)),
+        )
+    ])
+    common = {
+        "solute_graph": empty,
+        "cation_graph": cation,
+        "anion_graph": empty,
+        "temperature": torch.tensor([0.3]),
+        "topology": torch.tensor([2]),
+    }
+    without, _ = model.encode_graphs(
+        **common, extra_conditions={}, active_conditions=()
+    )
+    with_conditions, _ = model.encode_graphs(
+        **common,
+        extra_conditions={
+            "pressure": torch.tensor([0.0]),
+            "frequency": torch.tensor([1.0]),
+            "wavelength": torch.tensor([0.5]),
+        },
+        active_conditions=("pressure", "frequency", "wavelength"),
+    )
+    assert with_conditions.shape[1] == without.shape[1] + 3

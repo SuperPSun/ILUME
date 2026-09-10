@@ -192,9 +192,9 @@ Stage2/Stage3 resume 分别在上述 train 命令追加 `--resume <checkpoint>` 
 
 ## Baselines and Ablations
 
-MLP、ECFP4-XGBoost、Chemprop D-MPNN、MoLFormer、ILBERT、SPMM 与 LlaSMol 位于 `benchmarks/`；
+MLP、ECFP4-XGBoost、Chemprop D-MPNN、MoLFormer、ILBERT、SPMM、LlaSMol 与 AIonopedia 位于 `benchmarks/`；
 Stage3 Single-task MLP 内部消融位于 `ablations/`。二者均与 Stage 代码隔离，并继续
-复用 benchmark 运行与 reporting 入口；合同见 [ADR-0022](docs/adr/0022-mlp-ecfp-xgboost-baselines.md)、[ADR-0028](docs/adr/0028-chemprop-dmpnn-baseline.md)、[ADR-0029](docs/adr/0029-molformer-baseline.md)、[ADR-0030](docs/adr/0030-molformer-throughput-contract.md)、[ADR-0032](docs/adr/0032-ilbert-baseline.md)、[ADR-0033](docs/adr/0033-stage3-single-task-mlp-ablation.md)、[ADR-0035](docs/adr/0035-spmm-baseline.md)、[ADR-0037](docs/adr/0037-spmm-wordpiece-character-limit.md)、[ADR-0038](docs/adr/0038-spmm-throughput-contract.md)、[ADR-0040](docs/adr/0040-llasmol-mistral-7b-baseline.md)、[ADR-0042](docs/adr/0042-dmpnn-shared-component-encoder.md) 和 [ADR-0045](docs/adr/0045-fixed-budget-baseline-training.md)。
+复用 benchmark 运行与 reporting 入口；旧七模型合同见 [ADR-0045](docs/adr/0045-fixed-budget-baseline-training.md) 及其引用，AIonopedia 合同见 [ADR-0049](docs/adr/0049-aionopedia-multimodal-baseline.md)。
 
 七个论文 baseline 均固定跑满 YAML 预算并保存最终训练状态；每轮 validation 只写入 history，
 不参与 early stopping、checkpoint selection、scheduler 或其他训练决策。checkpoint format 为
@@ -424,6 +424,78 @@ python scripts/benchmarks/sweep.py \
 ```
 
 普通IL使用带task marker的单条`cation.anion`sequence；solvation/transfer只增加whole-IL与partner的共享backbone双view。基座以NF4 double-quant冻结加载，并继续训练官方attention与MLP LoRA及`4096/8192 + conditions → 256 → 1`回归head。输入上限512 tokens并公开截断审计；target和numeric conditions只从train rows拟合scaler。训练固定完成50 epochs并保存最终状态。建议每张GPU仅运行一个job；OOM/NaN不自动缩批或回退。
+
+AIonopedia 使用锁定的 PyTorch `2.9.0+cu128` 环境、Qwen3-0.6B 与 generic ionic-liquid
+multimodal checkpoint，完整加载 released LoRA、GNN、projectors、graph merge、cross-modal
+decoders 和 segment embeddings。当前正式 pretrained snapshot 是用户提供的本地 generic
+pretraining export：
+
+`artifacts/benchmarks/aionopedia/best_cosine(stable_ver)_qwen0.6b/qwen0.6b-pretrain_simple2.8m(itg_loss)`
+
+配置逐文件固定 SHA-256 和字节数；运行不会读取同级的 property-specific 目录。本地
+`adapter_config.json` 是旧 PEFT 0.14 元数据版本，不与 Hugging Face 当前文件逐字节相同，
+但其 LoRA 语义被严格校验，且 adapter 始终加载到另行锁定的本地 Qwen base；作者机器路径
+不会写入公开 run metadata。仓库不提交权重。
+若以后需要从 gated Hugging Face revision 重新取得其余资产，可在网页获得权限并登录后执行：
+
+```bash
+conda env create -f benchmarks/aionopedia/environment.yml
+conda run --no-capture-output -n ilume-aionopedia \
+  python -m pip install --require-hashes \
+  -r benchmarks/aionopedia/requirements-linux-x86_64-cu128.lock
+conda run --no-capture-output -n ilume-aionopedia \
+  python -m pip install --no-deps --no-build-isolation -e .
+
+conda run --no-capture-output -n ilume-aionopedia hf auth login
+mkdir -p artifacts/benchmarks/aionopedia/base \
+  'artifacts/benchmarks/aionopedia/best_cosine(stable_ver)_qwen0.6b/qwen0.6b-pretrain_simple2.8m(itg_loss)'
+conda run --no-capture-output -n ilume-aionopedia \
+  hf download Qwen/Qwen3-0.6B \
+  config.json model.safetensors tokenizer.json tokenizer_config.json \
+  --revision c1899de289a04d12100db370d81485cdf75e47ca \
+  --local-dir artifacts/benchmarks/aionopedia/base
+conda run --no-capture-output -n ilume-aionopedia \
+  hf download AIonopedia/AIonopedia \
+  GNN_state_dict.pt adapter_model.safetensors \
+  decoder1_state_dict.pt decoder2_state_dict.pt \
+  embedding_property_state_dict.pt fc_out_state_dict.pt \
+  graph_merge_encoder_state_dict.pt projector_gnn_state_dict.pt \
+  projector_llm_state_dict.pt projector_temp_state_dict.pt segment_embeddings.pt \
+  --revision 448236ef3532efd67b7956472df4e8f539b22629 \
+  --local-dir 'artifacts/benchmarks/aionopedia/best_cosine(stable_ver)_qwen0.6b/qwen0.6b-pretrain_simple2.8m(itg_loss)'
+```
+
+上面的可选命令刻意不覆盖 `adapter_config.json`；正式配置要求保留已固定哈希的本地旧版
+pretraining export 元数据，Hugging Face 当前元数据文件不能替换它。本地 snapshot 就位后，
+先做一次环境、哈希、
+Qwen config、LoRA tensor、全部官方模块和 71-output pretraining head 的只读结构验证：
+
+```bash
+PYTHONPATH=src:. ILUME_BENCHMARK_ENVIRONMENT=ilume-aionopedia \
+conda run --no-capture-output -n ilume-aionopedia \
+  python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_aionopedia_environment; validate_aionopedia_environment(load_benchmark_config("configs/benchmarks/aionopedia.yaml"))'
+```
+
+单任务验证通过后，再启动正式 Stage3-only 105-job sweep。每个 job 占一张 GPU，不支持 resume：
+
+```bash
+python scripts/benchmarks/train.py \
+  --config configs/benchmarks/aionopedia.yaml \
+  --benchmark stage3 --task experiment/density --fold 1 \
+  --output outputs/benchmarks/model-native-v1/aionopedia/stage3/experiment__density/fold1/attempt-001
+
+python scripts/benchmarks/sweep.py \
+  --config configs/benchmarks/aionopedia.yaml \
+  --output outputs/benchmarks/model-native-v1/aionopedia \
+  --max-workers 4 \
+  --devices cuda:0,cuda:1,cuda:2,cuda:3
+```
+
+AIonopedia prompt 只包含 composition 与原始单位 conditions，不包含 target 名；图路径保留官方
+35D atom/11D edge、无 explicit-H preprocessing。Temperature 使用 `K/1000`；pressure 使用
+fold train-only sample z-score；pressure、frequency 与 wavelength 均有独立随机初始化的 graph
+projector/segment token。Target 同样只用 fold train rows 标准化，评估反归一化到 raw units。
+训练固定 10 epochs，validation 每轮只报告，最终模型是 epoch 10 state。
 
 ## 输出与结果汇总
 

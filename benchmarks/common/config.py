@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
+import re
 from typing import Any, Literal
 
 import yaml
@@ -44,6 +45,7 @@ class Stage3BenchmarkConfig:
 class BenchmarkConfig:
     name: Literal[
         "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm", "llasmol",
+        "aionopedia",
         "ilume_stage3_single_task_mlp",
     ]
     data: DataConfig
@@ -59,6 +61,7 @@ class BenchmarkConfig:
     def validate(self) -> None:
         if self.name not in {
             "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm", "llasmol",
+            "aionopedia",
             "ilume_stage3_single_task_mlp",
         }:
             raise ValueError(f"Unknown benchmark model: {self.name}")
@@ -95,7 +98,7 @@ class BenchmarkConfig:
                     "training.model_selection=final_training_state"
                 )
         advanced = self.name in {
-            "dmpnn", "molformer", "ilbert", "spmm", "llasmol",
+            "dmpnn", "molformer", "ilbert", "spmm", "llasmol", "aionopedia",
             "ilume_stage3_single_task_mlp",
         }
         if not advanced and self.data.feature_cache is None:
@@ -112,6 +115,8 @@ class BenchmarkConfig:
             self._validate_spmm()
         if self.name == "llasmol":
             self._validate_llasmol()
+        if self.name == "aionopedia":
+            self._validate_aionopedia()
         elif self.name not in {"molformer", "ilbert", "spmm", "llasmol"} and self.runtime:
             raise ValueError("Only token baselines currently declare benchmark runtime settings")
         if not self.model or not self.training or self.seed < 0:
@@ -509,6 +514,101 @@ class BenchmarkConfig:
         }
         if self.runtime != expected_runtime:
             raise ValueError("LlaSMol runtime must match the registered loader recipe")
+
+    def _validate_aionopedia(self) -> None:
+        if self.features is not None:
+            raise ValueError("AIonopedia builds official molecular graphs and does not accept features")
+        if self.environment is None or self.environment.name != "ilume-aionopedia":
+            raise ValueError("AIonopedia requires the ilume-aionopedia environment")
+        expected_model = {
+            "base_repository": "Qwen/Qwen3-0.6B",
+            "base_revision": "c1899de289a04d12100db370d81485cdf75e47ca",
+            "base_snapshot": "artifacts/benchmarks/aionopedia/base",
+            "pretrained_repository": "AIonopedia/AIonopedia",
+            "pretrained_revision": "448236ef3532efd67b7956472df4e8f539b22629",
+            "pretrained_snapshot": (
+                "artifacts/benchmarks/aionopedia/"
+                "best_cosine(stable_ver)_qwen0.6b/"
+                "qwen0.6b-pretrain_simple2.8m(itg_loss)"
+            ),
+            "adapter_config_provenance": "local_generic_pretraining_export_peft_0.14",
+            "upstream_repository": "AIonopedia/AIonopedia-public",
+            "upstream_revision": "17e2f550f91eadcdec39f467c0443f5446d9713c",
+            "base_frozen_except_released_lora": True,
+            "full_multimodal_downstream": True,
+            "pretraining_head_loaded": False,
+            "graph_atom_features": 35,
+            "graph_edge_features": 11,
+            "explicit_hydrogen_expansion": False,
+            "temperature_transform": "temperature_K_div_1000",
+            "pressure_transform": "train_only_sample_zscore",
+            "frequency_transform": "frequency_MHz_div_1000",
+            "wavelength_transform": "wavelength_nm_div_1000",
+            "scalar_head": "linear_512_1024_relu_linear_1024_1",
+        }
+        variable = {"base_files", "pretrained_files"}
+        if {key: value for key, value in self.model.items() if key not in variable} != expected_model:
+            raise ValueError("AIonopedia model must match the registered multimodal recipe")
+        for group in variable:
+            files = self.model.get(group)
+            if not isinstance(files, dict) or not files:
+                raise ValueError(f"AIonopedia {group} must pin local asset hashes")
+            for filename, value in files.items():
+                if (
+                    not isinstance(filename, str)
+                    or not isinstance(value, dict)
+                    or not re.fullmatch(r"[0-9a-f]{64}", str(value.get("sha256", "")))
+                    or not isinstance(value.get("size"), int)
+                    or value["size"] <= 0
+                ):
+                    raise ValueError(f"AIonopedia {group} contains an invalid asset pin")
+        if set(self.model["base_files"]) != {
+            "config.json",
+            "model.safetensors",
+            "tokenizer.json",
+            "tokenizer_config.json",
+        }:
+            raise ValueError("AIonopedia base_files must pin every runtime base asset")
+        if set(self.model["pretrained_files"]) != {
+            "GNN_state_dict.pt",
+            "adapter_config.json",
+            "adapter_model.safetensors",
+            "decoder1_state_dict.pt",
+            "decoder2_state_dict.pt",
+            "embedding_property_state_dict.pt",
+            "fc_out_state_dict.pt",
+            "graph_merge_encoder_state_dict.pt",
+            "projector_gnn_state_dict.pt",
+            "projector_llm_state_dict.pt",
+            "projector_temp_state_dict.pt",
+            "segment_embeddings.pt",
+        }:
+            raise ValueError(
+                "AIonopedia pretrained_files must pin every released downstream asset"
+            )
+        expected_training = {
+            "optimizer": "adamw",
+            "head_learning_rate": 4.0e-5,
+            "decoder_learning_rate": 3.0e-5,
+            "other_learning_rate": 3.0e-5,
+            "weight_decay": 1.0e-2,
+            "scheduler": "linear_warmup_cosine",
+            "warmup_steps": 50,
+            "batch_size": 16,
+            "gradient_accumulation_steps": 1,
+            "max_epochs": 10,
+            "max_grad_norm": 1.0,
+            "loss": "train_sample_zscore_mse",
+            "model_selection": "final_training_state",
+            "validation_policy": "reporting_only_each_epoch",
+            "checkpoint_policy": "nonresumable_trainable_state_each_epoch",
+            "device": "cuda",
+            "precision": "bf16",
+        }
+        if self.training != expected_training:
+            raise ValueError("AIonopedia training must match the registered downstream recipe")
+        if self.runtime != {"num_workers": 0}:
+            raise ValueError("AIonopedia runtime must use the registered single-process loader")
 
     def to_dict(self) -> dict[str, Any]:
         def convert(value: Any) -> Any:
