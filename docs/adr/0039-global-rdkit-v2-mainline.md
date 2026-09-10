@@ -9,6 +9,10 @@
 > 2026-09-07：本文所称 Stage 3 expert topology 与 refinement 不变已由
 > [ADR-0047](0047-stage3-deterministic-four-phase-training.md) 修订为 per-group/task capacity
 > 与 deterministic 四阶段训练；prepared representation 合同不变。
+>
+> 2026-09-10：现役 Stage 3 schedule、PRIVATE width 与 final artifact 已由
+> [ADR-0048](0048-stage3-owner-lifetime-three-phase-training.md) 改为按 `unique_systems` 的
+> owner-lifetime 三阶段合同；prepared representation 合同仍不变。
 
 ## 背景
 

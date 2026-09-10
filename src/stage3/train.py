@@ -355,66 +355,149 @@ def build_resolved_training_plan(
                 for task in active_tasks
             },
         }
-    four_phase = config.training.schedule_mode == "four_phase"
-    if four_phase:
-        phases = config.training.four_phase
-        assert phases is not None
+    three_phase = config.training.schedule_mode == "three_phase"
+    if three_phase:
+        recipe = config.training.three_phase
+        assert recipe is not None
         task_steps = data_plan["task_steps"]
-        phase_plan = {
-            "bootstrap": {
-                **asdict(phases.bootstrap),
-                "steps_per_epoch": steps,
-                "total_steps": phases.bootstrap.epochs * steps,
-                "warmup_steps": math.ceil(
-                    phases.bootstrap.warmup_ratio
-                    * phases.bootstrap.epochs
+        active_groups = sorted(
+            {model.task_specs[task].meta_group for task in active_tasks}
+        )
+        group_steps = {
+            group: max(
+                int(task_steps[task])
+                for task in active_tasks
+                if model.task_specs[task].meta_group == group
+            )
+            for group in active_groups
+        }
+
+        def owner_recipe(
+            *, lr: float, nominal_epochs: int, effective_epochs: int,
+            updates_per_epoch: int, floor: float, warmup_updates: int = 0,
+            **extra: Any,
+        ) -> dict[str, Any]:
+            return {
+                "nominal_lr": lr,
+                "terminal_lr": lr * floor,
+                "nominal_epochs": nominal_epochs,
+                "effective_epochs": effective_epochs,
+                "freeze_epoch": effective_epochs,
+                "updates_per_epoch": updates_per_epoch,
+                "actual_update_budget": effective_epochs * updates_per_epoch,
+                "warmup_updates": warmup_updates,
+                **extra,
+            }
+
+        phase1_owners: dict[str, Any] = {
+            "GLOBAL": owner_recipe(
+                lr=recipe.global_scope.lr,
+                nominal_epochs=recipe.global_scope.epochs,
+                effective_epochs=recipe.global_scope.epochs,
+                updates_per_epoch=steps,
+                floor=recipe.global_scope.min_lr_ratio,
+                warmup_updates=math.ceil(
+                    recipe.global_scope.warmup_ratio
+                    * recipe.global_scope.epochs
                     * steps
                 ),
-                "pcgrad": "hierarchical",
-            },
-            "consolidation": {
-                **asdict(phases.consolidation),
-                "steps_per_epoch": steps,
-                "total_steps": phases.consolidation.epochs * steps,
-                "warmup_steps": 0,
-                "pcgrad": "hierarchical",
-            },
-            "group_specialization": {
-                **asdict(phases.group_specialization),
-                "warmup_steps": 0,
+                capacity={
+                    "experts": config.model.global_experts,
+                    "expert_hidden_ratio": config.model.expert_hidden_ratio,
+                },
+            )
+        }
+        for group in active_groups:
+            budget = config.groups[group].phase1
+            assert budget is not None
+            phase1_owners[f"GROUP:{group}"] = owner_recipe(
+                lr=budget.lr, nominal_epochs=budget.epochs,
+                effective_epochs=budget.epochs,
+                updates_per_epoch=group_steps[group],
+                floor=recipe.phase1_min_lr_ratio,
+                capacity=model.resolved_capacity_recipe()["groups"][group],
+            )
+        for task in active_tasks:
+            task_config = config.tasks[task]
+            class_recipe = recipe.private_classes[str(task_config.size_class)]
+            phase1_owners[f"PRIVATE:{task}"] = owner_recipe(
+                lr=class_recipe.phase1.lr,
+                nominal_epochs=class_recipe.phase1.epochs,
+                effective_epochs=class_recipe.phase1.epochs,
+                updates_per_epoch=int(task_steps[task]),
+                floor=recipe.phase1_min_lr_ratio,
+                size_class=task_config.size_class,
+                unique_systems=task_config.unique_systems,
+                capacity=model.resolved_capacity_recipe()["tasks"][task],
+            )
+        phase2_branches: dict[str, Any] = {}
+        for group in active_groups:
+            group_budget = config.groups[group].phase2
+            assert group_budget is not None
+            owners = {
+                f"GROUP:{group}": owner_recipe(
+                    lr=group_budget.lr,
+                    nominal_epochs=group_budget.epochs,
+                    effective_epochs=group_budget.epochs,
+                    updates_per_epoch=group_steps[group],
+                    floor=recipe.phase2_min_lr_ratio,
+                    capacity=model.resolved_capacity_recipe()["groups"][group],
+                )
+            }
+            for task in active_tasks:
+                if model.task_specs[task].meta_group != group:
+                    continue
+                task_config = config.tasks[task]
+                class_recipe = recipe.private_classes[str(task_config.size_class)]
+                effective = min(class_recipe.phase2.epochs, group_budget.epochs)
+                owners[f"PRIVATE:{task}"] = owner_recipe(
+                    lr=class_recipe.phase2.lr,
+                    nominal_epochs=class_recipe.phase2.epochs,
+                    effective_epochs=effective,
+                    updates_per_epoch=int(task_steps[task]),
+                    floor=recipe.phase2_min_lr_ratio,
+                    size_class=task_config.size_class,
+                    unique_systems=task_config.unique_systems,
+                    capacity=model.resolved_capacity_recipe()["tasks"][task],
+                )
+            phase2_branches[group] = {
+                "epochs": group_budget.epochs,
+                "steps_per_epoch": group_steps[group],
                 "pcgrad": "group_only",
-                "branches": {
-                    group: {
-                        "epochs": int(config.groups[group].phase_c_epochs),
-                        "steps_per_epoch": max(
-                            int(task_steps[task])
-                            for task in active_tasks
-                            if model.task_specs[task].meta_group == group
-                        ),
-                    }
-                    for group in sorted(
-                        {model.task_specs[task].meta_group for task in active_tasks}
+                "owners": owners,
+            }
+        phase3_branches = {}
+        for task in active_tasks:
+            task_config = config.tasks[task]
+            class_recipe = recipe.private_classes[str(task_config.size_class)]
+            assert task_config.phase3_epochs is not None
+            phase3_branches[task] = {
+                "epochs": task_config.phase3_epochs,
+                "steps_per_epoch": int(task_steps[task]),
+                "pcgrad": "off",
+                "owners": {
+                    f"PRIVATE:{task}": owner_recipe(
+                        lr=class_recipe.phase3_lr,
+                        nominal_epochs=task_config.phase3_epochs,
+                        effective_epochs=task_config.phase3_epochs,
+                        updates_per_epoch=int(task_steps[task]),
+                        floor=recipe.phase3_min_lr_ratio,
+                        size_class=task_config.size_class,
+                        unique_systems=task_config.unique_systems,
+                        capacity=model.resolved_capacity_recipe()["tasks"][task],
                     )
                 },
+            }
+        phase_plan = {
+            "phase1": {
+                "epochs": recipe.global_scope.epochs,
+                "steps_per_epoch": steps,
+                "pcgrad": "hierarchical",
+                "owners": phase1_owners,
             },
-            "task_specialization": {
-                **asdict(phases.task_specialization),
-                "warmup_steps": 0,
-                "pcgrad": "off",
-                "branches": {
-                    task: {
-                        "epochs": int(config.tasks[task].phase_d_epochs),
-                        "steps_per_epoch": int(task_steps[task]),
-                    }
-                    for task in active_tasks
-                },
-            },
+            "phase2": {"branches": phase2_branches},
+            "phase3": {"branches": phase3_branches},
         }
-        for phase_name in ("group_specialization", "task_specialization"):
-            for branch in phase_plan[phase_name]["branches"].values():
-                branch["total_steps"] = (
-                    branch["epochs"] * branch["steps_per_epoch"]
-                )
     else:
         boundary_epoch, refinement_epochs = refinement_geometry(
             config.training.epochs, config.training.refinement_ratio
@@ -476,17 +559,16 @@ def build_resolved_training_plan(
             "debug_pcgrad_traces": config.training.debug_pcgrad_traces,
         },
     }
-    if four_phase:
+    if three_phase:
         plan["model"].pop("group_experts")
-        plan["schedule_mode"] = "four_phase"
+        plan["schedule_mode"] = "three_phase"
         plan["phases"] = phase_plan
         plan["model"]["capacity_recipe"] = model.resolved_capacity_recipe()
         plan["optimizer"]["parameter_groups"] = "ownership_decay_split"
         plan["math"]["pcgrad"] = {
-            "bootstrap": "hierarchical_ownership_blocks_v1",
-            "consolidation": "hierarchical_ownership_blocks_v1",
-            "group_specialization": "group_block_only_v1",
-            "task_specialization": "off",
+            "phase1": "hierarchical_ownership_blocks_v1",
+            "phase2": "group_block_only_v1",
+            "phase3": "off",
         }
     else:
         plan["optimizer"]["lr"] = config.training.learning_rate
@@ -1171,10 +1253,10 @@ def run_stage3_training(
             training_identity,
             context="Stage 3 run-directory training identity",
         )
-    if config.training.schedule_mode == "four_phase":
-        from .four_phase import run_four_phase_training
+    if config.training.schedule_mode == "three_phase":
+        from .three_phase import run_three_phase_training
 
-        return run_four_phase_training(
+        return run_three_phase_training(
             config=config,
             fold=fold,
             output_dir=output_dir,

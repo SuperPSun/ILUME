@@ -10,6 +10,10 @@
 > 2026-09-07：现役 v2 Stage 3 与对应消融的 refinement、selection 和 final artifact 已由
 > [ADR-0047](0047-stage3-deterministic-four-phase-training.md) 取代；本文相应条款仅继续约束
 > legacy v1 与 Capacity v1。
+>
+> 2026-09-10：ADR-0047 的现役合同已被
+> [ADR-0048](0048-stage3-owner-lifetime-three-phase-training.md) 取代；本文仍只约束 legacy v1
+> 与 Capacity v1。
 
 ## 背景
 

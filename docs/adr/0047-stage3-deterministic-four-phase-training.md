@@ -1,8 +1,12 @@
 # ADR-0047：Stage 3 deterministic 四阶段训练
 
-- 状态：Accepted
+- 状态：Superseded by ADR-0048
 - 日期：2026-09-07
 - 修订：ADR-0027 的现役 v2 Stage 3 refinement、selection、checkpoint 与 final artifact
+
+> 2026-09-10：本文的现役四阶段训练、checkpoint、evaluator 与 final artifact 已由
+> [ADR-0048](0048-stage3-owner-lifetime-three-phase-training.md) 完全取代。本文只保留历史说明，
+> 当前代码不再加载、恢复或评估 four-phase 合同。
 
 ## 背景
 

@@ -31,9 +31,9 @@ def test_global_rdkit_v2_base_configs_are_isolated() -> None:
     assert stage3.model == legacy_stage3.model
     assert all(group.experts is not None for group in stage3.groups.values())
     assert all(group.experts is None for group in legacy_stage3.groups.values())
-    assert all(task.phase_d_epochs is not None for task in stage3.tasks.values())
-    assert all(task.phase_d_epochs is None for task in legacy_stage3.tasks.values())
-    assert stage3.training.schedule_mode == "four_phase"
+    assert all(task.phase3_epochs is not None for task in stage3.tasks.values())
+    assert all(task.phase3_epochs is None for task in legacy_stage3.tasks.values())
+    assert stage3.training.schedule_mode == "three_phase"
     assert legacy_stage3.training.schedule_mode == "legacy_joint_refinement"
     assert stage3.training.sampling_mode == "raw"
     assert stage3.training.joint_gradient_clip_mode == "ownership"

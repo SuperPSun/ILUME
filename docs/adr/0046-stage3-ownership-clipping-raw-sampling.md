@@ -4,9 +4,9 @@
 - 日期：2026-09-07
 - 修订：ADR-0020 的 joint gradient clipping 与 virtual sampling
 
-> 2026-09-07：现役四阶段训练由
-> [ADR-0047](0047-stage3-deterministic-four-phase-training.md) 定义；本文的 raw sampling 与
-> ownership-aware clipping 继续适用于其全部 phase。
+> 2026-09-10：现役三阶段训练由
+> [ADR-0048](0048-stage3-owner-lifetime-three-phase-training.md) 定义；本文的 raw sampling 与
+> ownership-aware clipping 继续适用于其全部 phase。ADR-0047 仅保留历史说明。
 
 ## 背景
 

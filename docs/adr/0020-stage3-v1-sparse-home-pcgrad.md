@@ -13,6 +13,10 @@
 > 2026-09-07：现役 v2 与上述两个消融的固定统一容量、单一 joint optimizer/scheduler、
 > refinement 和 final artifact 合同已由 [ADR-0047](0047-stage3-deterministic-four-phase-training.md)
 > 修订；本文与 ADR-0027 的对应条款仅继续约束 legacy v1 与 Capacity v1。
+>
+> 2026-09-10：上述现役四阶段条款已由
+> [ADR-0048](0048-stage3-owner-lifetime-three-phase-training.md) 的 owner-lifetime 三阶段合同取代；
+> legacy v1 与 Capacity v1 语义不变。
 
 ## 背景
 

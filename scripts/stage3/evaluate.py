@@ -27,8 +27,8 @@ def _model_selector(config: Stage3Config, checkpoint_epoch: int | None) -> str:
     if checkpoint_epoch is not None:
         return "epoch_checkpoint"
     return (
-        "four_phase_final"
-        if config.training.schedule_mode == "four_phase"
+        "three_phase_final"
+        if config.training.schedule_mode == "three_phase"
         else "taskwise_refined"
     )
 
@@ -45,7 +45,7 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         help=(
             "Evaluate legacy ordinary fold epoch checkpoints; omitted loads the "
-            "config's final artifact. Four-phase configs reject this option."
+            "config's final artifact. Three-phase configs reject this option."
         ),
     )
     parser.add_argument("--tasks", nargs="+")

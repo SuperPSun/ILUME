@@ -397,7 +397,6 @@ class Stage3SparseModel(nn.Module):
                 "tower_hidden": _width(self.d_model, tower_ratio),
                 "film_hidden_ratio": film_ratio,
                 "film_hidden": _width(self.d_model, film_ratio),
-                "private_lr_scale": float(overrides.get("private_lr_scale", 1.0)),
                 "candidate_count": (
                     self.model_config.global_experts
                     + int(groups[spec.meta_group]["experts"])

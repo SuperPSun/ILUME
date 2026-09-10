@@ -36,6 +36,7 @@ class CatalogTaskFact:
     materialized_path: str
     split_strategies: tuple[str, ...]
     catalog_schema_version: int
+    unique_systems: int | None
     provenance: dict[str, str]
 
 
@@ -156,10 +157,17 @@ def load_task_catalog(path: str | Path) -> dict[str, CatalogTaskFact]:
             }
             try:
                 schema_version = int(row["catalog_schema_version"])
+                unique_systems = (
+                    int(row["unique_systems"])
+                    if (row.get("unique_systems") or "").strip()
+                    else None
+                )
             except ValueError as error:
                 raise ValueError(
-                    f"Invalid catalog schema version at row {row_number}"
+                    f"Invalid catalog integer at row {row_number}"
                 ) from error
+            if unique_systems is not None and unique_systems <= 0:
+                raise ValueError(f"Invalid unique_systems for {task_id}")
             result[task_id] = CatalogTaskFact(
                 task_id=task_id,
                 target_column=targets[0],
@@ -169,6 +177,7 @@ def load_task_catalog(path: str | Path) -> dict[str, CatalogTaskFact]:
                 materialized_path=row["materialized_path"].strip(),
                 split_strategies=strategies,
                 catalog_schema_version=schema_version,
+                unique_systems=unique_systems,
                 provenance=provenance,
             )
     return result
@@ -215,6 +224,14 @@ def resolve_task_registry(config: Stage3Config) -> dict[str, ResolvedTaskSpec]:
     resolved: dict[str, ResolvedTaskSpec] = {}
     for task_id, task in config.tasks.items():
         fact = catalog[task_id]
+        if (
+            config.training.schedule_mode == "three_phase"
+            and task.unique_systems != fact.unique_systems
+        ):
+            raise ValueError(
+                f"Stage 3 unique_systems/catalog mismatch for {task_id}: "
+                f"{task.unique_systems} != {fact.unique_systems}"
+            )
         strategy = config.data.split_strategies.get(
             task_id, _default_strategy(fact, config.data.split_policy)
         )

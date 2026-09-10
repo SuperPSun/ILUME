@@ -58,9 +58,22 @@ def _refined_path(root: Path, fold: int) -> Path:
     return nested if nested.is_file() else root / "taskwise_refined.pt"
 
 
-def _four_phase_final_path(root: Path, fold: int) -> Path:
-    nested = root / f"fold{fold}" / "four_phase_final.pt"
-    return nested if nested.is_file() else root / "four_phase_final.pt"
+def _three_phase_final_path(root: Path, fold: int) -> Path:
+    nested = root / f"fold{fold}" / "three_phase_final.pt"
+    direct = root / "three_phase_final.pt"
+    if nested.is_file():
+        return nested
+    if direct.is_file():
+        return direct
+    retired = (
+        root / f"fold{fold}" / "four_phase_final.pt",
+        root / "four_phase_final.pt",
+    )
+    if any(path.is_file() for path in retired):
+        raise ValueError(
+            "Four-phase Stage 3 artifacts are retired and incompatible with three-phase evaluation"
+        )
+    return direct
 
 
 def _validate_refinement_manifest(
@@ -97,18 +110,18 @@ def _validate_refinement_manifest(
     return sha256_file(manifest_path)
 
 
-def _validate_four_phase_manifest(
+def _validate_three_phase_manifest(
     artifact_path: Path, artifact: Mapping[str, Any]
 ) -> str:
-    manifest_path = artifact_path.with_name("four_phase_final.json")
+    manifest_path = artifact_path.with_name("three_phase_final.json")
     if not manifest_path.is_file():
         raise FileNotFoundError(
-            f"Missing Stage 3 four-phase final manifest: {manifest_path}"
+            f"Missing Stage 3 three-phase final manifest: {manifest_path}"
         )
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
-        raise ValueError("Stage 3 four-phase final manifest is unreadable") from error
+        raise ValueError("Stage 3 three-phase final manifest is unreadable") from error
     if (
         not isinstance(manifest, dict)
         or manifest.get("kind") != artifact.get("kind")
@@ -121,12 +134,12 @@ def _validate_four_phase_manifest(
         != json.dumps(artifact.get("validation"), sort_keys=True)
     ):
         raise ValueError(
-            "Stage 3 four-phase final manifest/artifact integrity mismatch"
+            "Stage 3 three-phase final manifest/artifact integrity mismatch"
         )
     require_compatible_identity(
         artifact["training_identity"],
         manifest.get("training_identity", {}),
-        context="Stage 3 four-phase final manifest",
+        context="Stage 3 three-phase final manifest",
     )
     return sha256_file(manifest_path)
 
@@ -140,23 +153,23 @@ def _load_model(
     device: torch.device,
     *,
     taskwise_refined: bool = False,
-    four_phase_final: bool = False,
+    three_phase_final: bool = False,
 ) -> tuple[Stage3SparseModel, dict[str, Any], Stage3RepresentationStore]:
-    if taskwise_refined and four_phase_final:
+    if taskwise_refined and three_phase_final:
         raise ValueError("Stage 3 checkpoint cannot have two final selectors")
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     rdkit = prepared["metadata"].get("kind") != STAGE3_ARTIFACT_KIND
-    if four_phase_final:
-        from .four_phase import (
-            FOUR_PHASE_FINAL_FORMAT_VERSION,
-            FOUR_PHASE_FINAL_KIND,
-            FOUR_PHASE_RDKIT_FINAL_KIND,
+    if three_phase_final:
+        from .three_phase import (
+            THREE_PHASE_FINAL_FORMAT_VERSION,
+            THREE_PHASE_FINAL_KIND,
+            THREE_PHASE_RDKIT_FINAL_KIND,
         )
 
         expected_kind = (
-            FOUR_PHASE_RDKIT_FINAL_KIND if rdkit else FOUR_PHASE_FINAL_KIND
+            THREE_PHASE_RDKIT_FINAL_KIND if rdkit else THREE_PHASE_FINAL_KIND
         )
-        expected_format = FOUR_PHASE_FINAL_FORMAT_VERSION
+        expected_format = THREE_PHASE_FINAL_FORMAT_VERSION
     else:
         expected_format = 1 if taskwise_refined else STAGE3_CHECKPOINT_VERSION
         expected_kind = (
@@ -176,7 +189,7 @@ def _load_model(
             task_id: spec.to_dict() for task_id, spec in prepared["registry"].items()
         },
     }
-    if not taskwise_refined and not four_phase_final:
+    if not taskwise_refined and not three_phase_final:
         expected.update({
             "identity_contract_version": IDENTITY_CONTRACT_VERSION,
             "stage": "stage3",
@@ -232,8 +245,8 @@ def _load_model(
     if checkpoint.get("ownership_manifest") != model.ownership_manifest():
         raise ValueError("Stage 3 checkpoint ownership mismatch")
     state_namespace = (
-        "stage3.four-phase-model-state"
-        if four_phase_final
+        "stage3.three-phase-model-state"
+        if three_phase_final
         else "stage3.taskwise-refined-state"
         if taskwise_refined
         else "stage3.model-state"
@@ -470,14 +483,14 @@ def resolve_stage3_reporting_study_id(
     config: Stage3Config, *, checkpoint_epoch: int | None = None,
 ) -> str:
     """Resolve the fold-independent default reporting study identifier."""
-    if config.training.schedule_mode == "four_phase" and checkpoint_epoch is not None:
+    if config.training.schedule_mode == "three_phase" and checkpoint_epoch is not None:
         raise ValueError(
             "--checkpoint-epoch is only supported by legacy Stage 3 training"
         )
-    four_phase_final = (
-        config.training.schedule_mode == "four_phase" and checkpoint_epoch is None
+    three_phase_final = (
+        config.training.schedule_mode == "three_phase" and checkpoint_epoch is None
     )
-    taskwise_refined = checkpoint_epoch is None and not four_phase_final
+    taskwise_refined = checkpoint_epoch is None and not three_phase_final
     epoch = config.training.epochs if checkpoint_epoch is None else checkpoint_epoch
     if epoch <= 0:
         raise ValueError("Stage 3 checkpoint epoch must be positive")
@@ -488,8 +501,8 @@ def resolve_stage3_reporting_study_id(
         raise ValueError("Stage 3 prepared metadata must contain a JSON object")
     return _default_reporting_study_id(
         metadata,
-        "four-phase-final"
-        if four_phase_final
+        "three-phase-final"
+        if three_phase_final
         else "taskwise-refined"
         if taskwise_refined
         else f"epoch{epoch}",
@@ -631,25 +644,25 @@ def evaluate_checkpoints(
     tasks, expected_tasks = _evaluation_tasks(
         config, prepared["registry"], enabled, split, task_subset
     )
-    if config.training.schedule_mode == "four_phase" and checkpoint_epoch is not None:
+    if config.training.schedule_mode == "three_phase" and checkpoint_epoch is not None:
         raise ValueError(
             "--checkpoint-epoch is only supported by legacy Stage 3 training"
         )
-    four_phase_final = (
-        config.training.schedule_mode == "four_phase" and checkpoint_epoch is None
+    three_phase_final = (
+        config.training.schedule_mode == "three_phase" and checkpoint_epoch is None
     )
-    taskwise_refined = checkpoint_epoch is None and not four_phase_final
-    final_artifact = taskwise_refined or four_phase_final
+    taskwise_refined = checkpoint_epoch is None and not three_phase_final
+    final_artifact = taskwise_refined or three_phase_final
     model_selector = (
-        "four_phase_final"
-        if four_phase_final
+        "three_phase_final"
+        if three_phase_final
         else "taskwise_refined"
         if taskwise_refined
         else "epoch_checkpoint"
     )
     selector_label = (
-        "four-phase-final"
-        if four_phase_final
+        "three-phase-final"
+        if three_phase_final
         else "taskwise-refined"
         if taskwise_refined
         else None
@@ -677,8 +690,8 @@ def evaluate_checkpoints(
         for current_fold in folds:
             assert current_fold is not None
             path = (
-                _four_phase_final_path(root, current_fold)
-                if four_phase_final
+                _three_phase_final_path(root, current_fold)
+                if three_phase_final
                 else _refined_path(root, current_fold)
                 if taskwise_refined
                 else _checkpoint_path(root, current_fold, epoch)
@@ -688,7 +701,7 @@ def evaluate_checkpoints(
             model, checkpoint, representations = _load_model(
                 config, prepared, path, current_fold, epoch, device,
                 taskwise_refined=taskwise_refined,
-                four_phase_final=four_phase_final,
+                three_phase_final=three_phase_final,
             )
             checkpoint_identities.append(checkpoint["training_identity"])
             model_state_hashes.append(checkpoint["model_state_hash"])
@@ -698,9 +711,9 @@ def evaluate_checkpoints(
                         path, checkpoint, epoch, str(checkpoint["kind"])
                     )
                 )
-            elif four_phase_final:
+            elif three_phase_final:
                 selection_manifest_hashes.append(
-                    _validate_four_phase_manifest(path, checkpoint)
+                    _validate_three_phase_manifest(path, checkpoint)
                 )
             per_task: dict[str, Any] = {}
             raw_fold_predictions[current_fold] = {}
@@ -896,18 +909,18 @@ def resolve_stage3_evaluation_identity(
     tasks, _ = _evaluation_tasks(
         config, prepared["registry"], enabled, split, task_subset
     )
-    if config.training.schedule_mode == "four_phase" and checkpoint_epoch is not None:
+    if config.training.schedule_mode == "three_phase" and checkpoint_epoch is not None:
         raise ValueError(
             "--checkpoint-epoch is only supported by legacy Stage 3 training"
         )
-    four_phase_final = (
-        config.training.schedule_mode == "four_phase" and checkpoint_epoch is None
+    three_phase_final = (
+        config.training.schedule_mode == "three_phase" and checkpoint_epoch is None
     )
-    taskwise_refined = checkpoint_epoch is None and not four_phase_final
-    final_artifact = taskwise_refined or four_phase_final
+    taskwise_refined = checkpoint_epoch is None and not three_phase_final
+    final_artifact = taskwise_refined or three_phase_final
     model_selector = (
-        "four_phase_final"
-        if four_phase_final
+        "three_phase_final"
+        if three_phase_final
         else "taskwise_refined"
         if taskwise_refined
         else "epoch_checkpoint"
@@ -922,8 +935,8 @@ def resolve_stage3_evaluation_identity(
     for current_fold in folds:
         assert current_fold is not None
         path = (
-            _four_phase_final_path(Path(checkpoint_dir), current_fold)
-            if four_phase_final
+            _three_phase_final_path(Path(checkpoint_dir), current_fold)
+            if three_phase_final
             else _refined_path(Path(checkpoint_dir), current_fold)
             if taskwise_refined
             else _checkpoint_path(Path(checkpoint_dir), current_fold, epoch)
@@ -933,7 +946,7 @@ def resolve_stage3_evaluation_identity(
         _, checkpoint, _ = _load_model(
             config, prepared, path, current_fold, epoch, torch.device("cpu"),
             taskwise_refined=taskwise_refined,
-            four_phase_final=four_phase_final,
+            three_phase_final=three_phase_final,
         )
         identities.append(checkpoint["training_identity"])
         state_hashes.append(checkpoint["model_state_hash"])
@@ -943,9 +956,9 @@ def resolve_stage3_evaluation_identity(
                     path, checkpoint, epoch, str(checkpoint["kind"])
                 )
             )
-        elif four_phase_final:
+        elif three_phase_final:
             selection_manifest_hashes.append(
-                _validate_four_phase_manifest(path, checkpoint)
+                _validate_three_phase_manifest(path, checkpoint)
             )
     return build_stage3_evaluation_identity(
         prepared_identity=metadata_identity(
