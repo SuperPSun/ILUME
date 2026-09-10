@@ -200,8 +200,9 @@ Stage3 Single-task MLP 内部消融位于 `ablations/`。二者均与 Stage 代�
 不参与 early stopping、checkpoint selection、scheduler 或其他训练决策。checkpoint format 为
 version 2，与旧 validation-selected artifact 不兼容。新正式结果统一写入
 `outputs/benchmarks/fixed-budget-v1/<model>/`；旧输出保持只读且不得混入同一汇总。
-除固定 1000 trees 的 ECFP4-XGBoost 外，六个神经 baseline 的主配置与 split 配置均训练
-50 epochs。
+各 baseline 分别冻结自己的预算：MLP、D-MPNN、MoLFormer、ILBERT 与 SPMM 保持
+50 epochs，LlaSMol 训练 10 epochs，ECFP4-XGBoost 固定 1000 trees；不再假定神经
+baseline 共享统一 epoch 数。
 
 ```bash
 python -m pip install -e ".[benchmarks]"
@@ -414,16 +415,16 @@ conda run --no-capture-output -n ilume-llasmol \
 python scripts/benchmarks/train.py \
   --config configs/benchmarks/llasmol.yaml \
   --benchmark stage3 --task experiment/density --fold 1 \
-  --output outputs/benchmarks/fixed-budget-v1/llasmol/stage3/experiment__density/fold1/attempt-001
+  --output outputs/benchmarks/fixed-budget-v1/llasmol-10e-bs16-ga2/stage3/experiment__density/fold1/attempt-001
 
 python scripts/benchmarks/sweep.py \
   --config configs/benchmarks/llasmol.yaml \
-  --output outputs/benchmarks/fixed-budget-v1/llasmol \
+  --output outputs/benchmarks/fixed-budget-v1/llasmol-10e-bs16-ga2 \
   --max-workers 4 \
   --devices cuda:0,cuda:1,cuda:2,cuda:3
 ```
 
-普通IL使用带task marker的单条`cation.anion`sequence；solvation/transfer只增加whole-IL与partner的共享backbone双view。基座以NF4 double-quant冻结加载，并继续训练官方attention与MLP LoRA及`4096/8192 + conditions → 256 → 1`回归head。输入上限512 tokens并公开截断审计；target和numeric conditions只从train rows拟合scaler。训练固定完成50 epochs并保存最终状态。建议每张GPU仅运行一个job；OOM/NaN不自动缩批或回退。
+普通IL使用带task marker的单条`cation.anion`sequence；solvation/transfer只增加whole-IL与partner的共享backbone双view。基座以NF4 double-quant冻结加载，并继续训练官方attention与MLP LoRA及`4096/8192 + conditions → 256 → 1`回归head。输入上限512 tokens并公开截断审计；target和numeric conditions只从train rows拟合scaler。训练使用batch 16、gradient accumulation 2固定完成10 epochs并保存最终状态。建议每张GPU仅运行一个job；OOM/NaN不自动缩批或回退。
 
 AIonopedia 使用锁定的 PyTorch `2.9.0+cu128` 环境、Qwen3-0.6B 与 generic ionic-liquid
 multimodal checkpoint，完整加载 released LoRA、GNN、projectors、graph merge、cross-modal

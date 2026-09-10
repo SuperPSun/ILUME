@@ -405,7 +405,7 @@ def test_formal_configs_and_registry_resolution(
         ("molformer", 50),
         ("ilbert", 50),
         ("spmm", 50),
-        ("llasmol", 50),
+        ("llasmol", 10),
     ),
 )
 def test_formal_baseline_configs_use_fixed_final_state(
@@ -1686,11 +1686,17 @@ def test_formal_llasmol_config_resolves_105_jobs_and_is_strict() -> None:
     stage3 = configured_tasks(config, "stage3")
     assert len(stage3) == 21
     assert len(stage3) * len(config.stage3.folds) == 105
-    assert config.training["batch_size"] == 32
-    assert config.training["gradient_accumulation_steps"] == 1
+    assert config.training["max_epochs"] == 10
+    assert config.training["batch_size"] == 16
+    assert config.training["gradient_accumulation_steps"] == 2
+    assert (
+        config.training["batch_size"]
+        * config.training["gradient_accumulation_steps"]
+        == 32
+    )
     assert config.training["length_bucketing"] == LLASMOL_TRAINING_ORDER_CONTRACT
     changed = config.to_dict()
-    changed["training"]["batch_size"] = 16
+    changed["training"]["batch_size"] = 8
     with pytest.raises(ValueError, match="registered QLoRA recipe"):
         benchmark_config_from_dict(changed)
     runtime_variant = replace(config, runtime={**config.runtime, "num_workers": 8})
