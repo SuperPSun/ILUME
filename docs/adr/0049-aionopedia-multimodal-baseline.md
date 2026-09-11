@@ -21,7 +21,7 @@ solvation、tension、transfer 或 viscosity property-specific 目录。
 它以自己的 SHA-256/字节数进入身份，并精确校验 LoRA rank、alpha、dropout、target modules、
 Qwen3 auto-mapping 等语义。`task_type: null` 与作者机器的 private base path 只存在于原始输入
 文件，不写入公开 run metadata；运行时始终把 adapter 加载到本地、另行锁定的 Qwen base，
-并把内存中的 PEFT base provenance 重绑定到公开 repository 标识。
+并把内存中的 PEFT base provenance 重绑定到本地 base snapshot，避免 PEFT 触发在线查询。
 
 不重新预训练，也不使用作者未公开的原始 molecule pools、2.8M instantiated corpus、graph
 dictionary、property-specific 数据、checkpoint 或 normalization statistics。Stage 2 不在该

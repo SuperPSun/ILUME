@@ -331,7 +331,11 @@ def _build_model(config: BenchmarkConfig, *, device: torch.device) -> Any:
         is_trainable=True,
     )
     for peft_config in llm.peft_config.values():
-        peft_config.base_model_name_or_path = config.model["base_repository"]
+        # PEFT may probe this field while serializing LoRA state. Keep the
+        # probe local on the offline benchmark host.
+        peft_config.base_model_name_or_path = str(
+            repository_path(config.model["base_snapshot"])
+        )
     model = MultiModalRegressor(llm, llm_dim=1024)
     pretrained = repository_path(config.model["pretrained_snapshot"])
     for filename, attribute in OFFICIAL_MODULE_FILES.items():
