@@ -65,7 +65,10 @@ class Stage3TaskConfig:
     task_weight: float = 1.0
     unique_systems: int | None = None
     size_class: str | None = None
-    phase3_epochs: int | None = None
+    phase1_private_lr: float | None = None
+    phase1_private_epochs: int | None = None
+    phase2_private_epochs: int | None = None
+    phase3_private_epochs: int | None = None
     model_overrides: dict[str, Any] = field(default_factory=dict)
 
 
@@ -190,8 +193,21 @@ class Stage3GlobalBudgetConfig:
 class Stage3PrivateClassConfig:
     width_ratio: float
     phase1: Stage3OwnerBudgetConfig
-    phase2: Stage3OwnerBudgetConfig
+    phase2_epochs: int
+    phase3_epochs: int
+
+
+@dataclass(frozen=True)
+class ResolvedStage3PrivateRecipe:
+    phase1_lr: float
+    phase1_epochs: int
+    phase2_lr: float
+    phase2_epochs: int
     phase3_lr: float
+    phase3_epochs: int
+    private_hidden_ratio: float
+    tower_hidden_ratio: float
+    film_hidden_ratio: float
 
 
 @dataclass(frozen=True)
@@ -246,6 +262,57 @@ class Stage3Config:
     groups: dict[str, Stage3GroupConfig] = field(default_factory=_base_groups)
     tasks: dict[str, Stage3TaskConfig] = field(default_factory=_base_task_registry)
     training: Stage3TrainingConfig = field(default_factory=Stage3TrainingConfig)
+
+    def resolved_private_recipe(
+        self, task_id: str
+    ) -> ResolvedStage3PrivateRecipe:
+        phases = self.training.three_phase
+        if self.training.schedule_mode != "three_phase" or phases is None:
+            raise ValueError("Resolved PRIVATE recipe requires three-phase training")
+        task = self.tasks[task_id]
+        class_recipe = phases.private_classes[str(task.size_class)]
+        phase1_lr = (
+            class_recipe.phase1.lr
+            if task.phase1_private_lr is None
+            else task.phase1_private_lr
+        )
+        phase1_epochs = (
+            class_recipe.phase1.epochs
+            if task.phase1_private_epochs is None
+            else task.phase1_private_epochs
+        )
+        phase2_epochs = (
+            class_recipe.phase2_epochs
+            if task.phase2_private_epochs is None
+            else task.phase2_private_epochs
+        )
+        phase3_epochs = (
+            class_recipe.phase3_epochs
+            if task.phase3_private_epochs is None
+            else task.phase3_private_epochs
+        )
+        width = class_recipe.width_ratio
+        return ResolvedStage3PrivateRecipe(
+            phase1_lr=phase1_lr,
+            phase1_epochs=phase1_epochs,
+            phase2_lr=phase1_lr * phases.phase1_min_lr_ratio,
+            phase2_epochs=phase2_epochs,
+            phase3_lr=(
+                phase1_lr
+                * phases.phase1_min_lr_ratio
+                * phases.phase2_min_lr_ratio
+            ),
+            phase3_epochs=phase3_epochs,
+            private_hidden_ratio=float(
+                task.model_overrides.get("private_hidden_ratio", width)
+            ),
+            tower_hidden_ratio=float(
+                task.model_overrides.get("tower_hidden_ratio", width)
+            ),
+            film_hidden_ratio=float(
+                task.model_overrides.get("film_hidden_ratio", width)
+            ),
+        )
 
     def validate(self) -> None:
         if self.data.split_policy not in {
@@ -322,8 +389,30 @@ class Stage3Config:
                 "tiny", "small", "medium", "large"
             }:
                 raise ValueError(f"Invalid Stage 3 size_class: {task_id}")
-            if task.phase3_epochs is not None and task.phase3_epochs <= 0:
-                raise ValueError(f"Stage 3 Phase 3 epochs must be positive: {task_id}")
+            if task.phase1_private_lr is not None and (
+                isinstance(task.phase1_private_lr, bool)
+                or not isinstance(task.phase1_private_lr, (int, float))
+                or task.phase1_private_lr <= 0
+            ):
+                raise ValueError(
+                    f"Stage 3 Phase 1 PRIVATE LR must be positive: {task_id}"
+                )
+            for name in ("phase1_private_epochs", "phase2_private_epochs"):
+                value = getattr(task, name)
+                if value is not None and (
+                    isinstance(value, bool) or not isinstance(value, int) or value <= 0
+                ):
+                    raise ValueError(
+                        f"Stage 3 {name} must be a positive integer: {task_id}"
+                    )
+            if task.phase3_private_epochs is not None and (
+                isinstance(task.phase3_private_epochs, bool)
+                or not isinstance(task.phase3_private_epochs, int)
+                or task.phase3_private_epochs < 0
+            ):
+                raise ValueError(
+                    f"Stage 3 phase3_private_epochs must be a non-negative integer: {task_id}"
+                )
             unknown_overrides = set(task.model_overrides) - override_keys
             if unknown_overrides:
                 raise ValueError(
@@ -412,7 +501,6 @@ class Stage3Config:
                 if task.enabled and (
                     task.unique_systems is None
                     or task.size_class is None
-                    or task.phase3_epochs is None
                 ):
                     raise ValueError(
                         f"Three-phase Stage 3 task recipe is incomplete: {task_id}"
@@ -435,20 +523,11 @@ class Stage3Config:
                     recipe.width_ratio <= 0
                     or recipe.phase1.lr <= 0
                     or recipe.phase1.epochs <= 0
-                    or recipe.phase2.lr <= 0
-                    or recipe.phase2.epochs <= 0
-                    or recipe.phase3_lr <= 0
+                    or recipe.phase2_epochs <= 0
+                    or recipe.phase3_epochs < 0
                 ):
                     raise ValueError(
                         f"Three-phase Stage 3 private class is invalid: {class_name}"
-                    )
-                if recipe.phase2.lr > recipe.phase1.lr * phases.phase1_min_lr_ratio:
-                    raise ValueError(
-                        f"Three-phase PRIVATE LR jumps upward into Phase 2: {class_name}"
-                    )
-                if recipe.phase3_lr > recipe.phase2.lr * phases.phase2_min_lr_ratio:
-                    raise ValueError(
-                        f"Three-phase PRIVATE LR jumps upward into Phase 3: {class_name}"
                     )
             for name, value in (
                 ("phase1", phases.phase1_min_lr_ratio),
@@ -468,37 +547,28 @@ class Stage3Config:
                 if not group.enabled:
                     continue
                 assert group.phase1 is not None and group.phase2 is not None
-                if group.phase2.lr > group.phase1.lr * phases.phase1_min_lr_ratio:
+                if group.phase2.lr != group.phase1.lr * phases.phase1_min_lr_ratio:
                     raise ValueError(
-                        f"Three-phase GROUP LR jumps upward into Phase 2: {group_id}"
+                        f"Three-phase GROUP Phase 2 LR must equal Phase 1 terminal LR: {group_id}"
                     )
             for task_id, task in self.tasks.items():
                 if not task.enabled:
                     continue
-                class_recipe = phases.private_classes[str(task.size_class)]
+                private_recipe = self.resolved_private_recipe(task_id)
                 group = self.groups[task.meta_group]
                 assert group.phase1 is not None
                 if not (
                     phases.global_scope.lr
                     > group.phase1.lr
-                    > class_recipe.phase1.lr
+                    > private_recipe.phase1_lr
                 ):
                     raise ValueError(
                         f"Three-phase Phase 1 nominal LR ordering is invalid: {task_id}"
                     )
-                for name in (
-                    "private_hidden_ratio", "tower_hidden_ratio", "film_hidden_ratio"
-                ):
-                    default_name = (
-                        "expert_hidden_ratio"
-                        if name == "private_hidden_ratio"
-                        else name
+                if private_recipe.phase1_epochs > phases.global_scope.epochs:
+                    raise ValueError(
+                        f"Three-phase Phase 1 PRIVATE epochs exceed GLOBAL budget: {task_id}"
                     )
-                    actual = task.model_overrides.get(name, getattr(model, default_name))
-                    if actual != class_recipe.width_ratio:
-                        raise ValueError(
-                            f"Three-phase PRIVATE width does not match size class for {task_id}: {name}"
-                        )
         if training.learning_rate <= 0 or training.weight_decay < 0:
             raise ValueError("Stage 3 optimizer values are invalid")
         if len(training.betas) != 2 or not all(0 <= x < 1 for x in training.betas):
@@ -580,7 +650,11 @@ class Stage3Config:
                 if group[name] is None:
                     group.pop(name)
         for task in payload["tasks"].values():
-            for name in ("unique_systems", "size_class", "phase3_epochs"):
+            for name in (
+                "unique_systems", "size_class", "phase1_private_lr",
+                "phase1_private_epochs", "phase2_private_epochs",
+                "phase3_private_epochs",
+            ):
                 if task[name] is None:
                     task.pop(name)
         if training["sampling_mode"] == "virtual":
@@ -658,6 +732,11 @@ def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
         tasks = {}
         for task_id, raw_task in tasks_raw.items():
             value = dict(raw_task)
+            if "phase3_epochs" in value:
+                raise ValueError(
+                    "Stage 3 task phase3_epochs is retired; use "
+                    f"phase3_private_epochs for {task_id}"
+                )
             if "model_overrides" in value:
                 if not isinstance(value["model_overrides"], dict):
                     raise ValueError(
@@ -707,10 +786,9 @@ def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
         resolved_classes = {}
         for class_name, raw_class in private_classes.items():
             class_values = dict(raw_class)
-            for phase_name in ("phase1", "phase2"):
-                class_values[phase_name] = _construct_dataclass(
-                    Stage3OwnerBudgetConfig, class_values.get(phase_name)
-                )
+            class_values["phase1"] = _construct_dataclass(
+                Stage3OwnerBudgetConfig, class_values.get("phase1")
+            )
             resolved_classes[class_name] = _construct_dataclass(
                 Stage3PrivateClassConfig, class_values
             )

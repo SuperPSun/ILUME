@@ -240,6 +240,15 @@ def _load_model(
         representations.output_dim,
         group_configs=config.groups,
         task_configs=config.tasks,
+        task_private_recipes=(
+            {
+                task: config.resolved_private_recipe(task)
+                for task, task_config in config.tasks.items()
+                if task_config.enabled
+            }
+            if config.training.schedule_mode == "three_phase"
+            else {}
+        ),
         descriptor_input_dims=representations.input_dims,
     )
     if checkpoint.get("ownership_manifest") != model.ownership_manifest():

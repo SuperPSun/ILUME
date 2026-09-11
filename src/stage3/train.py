@@ -104,6 +104,16 @@ def _resolved_widths(d_model: int, config: Stage3Config) -> dict[str, int]:
     }
 
 
+def _resolved_private_recipes(config: Stage3Config) -> dict[str, Any]:
+    if config.training.schedule_mode != "three_phase":
+        return {}
+    return {
+        task: config.resolved_private_recipe(task)
+        for task, task_config in config.tasks.items()
+        if task_config.enabled
+    }
+
+
 def _active_tasks(
     config: Stage3Config,
     enabled: Sequence[str],
@@ -419,11 +429,11 @@ def build_resolved_training_plan(
             )
         for task in active_tasks:
             task_config = config.tasks[task]
-            class_recipe = recipe.private_classes[str(task_config.size_class)]
+            private_recipe = config.resolved_private_recipe(task)
             phase1_owners[f"PRIVATE:{task}"] = owner_recipe(
-                lr=class_recipe.phase1.lr,
-                nominal_epochs=class_recipe.phase1.epochs,
-                effective_epochs=class_recipe.phase1.epochs,
+                lr=private_recipe.phase1_lr,
+                nominal_epochs=private_recipe.phase1_epochs,
+                effective_epochs=private_recipe.phase1_epochs,
                 updates_per_epoch=int(task_steps[task]),
                 floor=recipe.phase1_min_lr_ratio,
                 size_class=task_config.size_class,
@@ -448,11 +458,11 @@ def build_resolved_training_plan(
                 if model.task_specs[task].meta_group != group:
                     continue
                 task_config = config.tasks[task]
-                class_recipe = recipe.private_classes[str(task_config.size_class)]
-                effective = min(class_recipe.phase2.epochs, group_budget.epochs)
+                private_recipe = config.resolved_private_recipe(task)
+                effective = min(private_recipe.phase2_epochs, group_budget.epochs)
                 owners[f"PRIVATE:{task}"] = owner_recipe(
-                    lr=class_recipe.phase2.lr,
-                    nominal_epochs=class_recipe.phase2.epochs,
+                    lr=private_recipe.phase2_lr,
+                    nominal_epochs=private_recipe.phase2_epochs,
                     effective_epochs=effective,
                     updates_per_epoch=int(task_steps[task]),
                     floor=recipe.phase2_min_lr_ratio,
@@ -469,17 +479,17 @@ def build_resolved_training_plan(
         phase3_branches = {}
         for task in active_tasks:
             task_config = config.tasks[task]
-            class_recipe = recipe.private_classes[str(task_config.size_class)]
-            assert task_config.phase3_epochs is not None
+            private_recipe = config.resolved_private_recipe(task)
             phase3_branches[task] = {
-                "epochs": task_config.phase3_epochs,
+                "epochs": private_recipe.phase3_epochs,
                 "steps_per_epoch": int(task_steps[task]),
                 "pcgrad": "off",
+                "carried_from_anchor": private_recipe.phase3_epochs == 0,
                 "owners": {
                     f"PRIVATE:{task}": owner_recipe(
-                        lr=class_recipe.phase3_lr,
-                        nominal_epochs=task_config.phase3_epochs,
-                        effective_epochs=task_config.phase3_epochs,
+                        lr=private_recipe.phase3_lr,
+                        nominal_epochs=private_recipe.phase3_epochs,
+                        effective_epochs=private_recipe.phase3_epochs,
                         updates_per_epoch=int(task_steps[task]),
                         floor=recipe.phase3_min_lr_ratio,
                         size_class=task_config.size_class,
@@ -505,7 +515,7 @@ def build_resolved_training_plan(
         total_steps = boundary_epoch * steps
         warmup_steps = math.ceil(config.training.warmup_ratio * total_steps)
     plan = {
-        "format_version": 1,
+        "format_version": 2 if three_phase else 1,
         "fold": fold,
         "active_tasks": list(active_tasks),
         "resolved_registry": {
@@ -1217,6 +1227,7 @@ def run_stage3_training(
         d_model,
         group_configs=config.groups,
         task_configs=config.tasks,
+        task_private_recipes=_resolved_private_recipes(config),
         descriptor_input_dims=representations.input_dims,
     ).to(device)
     representation_source_identity = (
@@ -1712,6 +1723,7 @@ def resolve_stage3_training_identity(
         representations.output_dim,
         group_configs=config.groups,
         task_configs=config.tasks,
+        task_private_recipes=_resolved_private_recipes(config),
         descriptor_input_dims=representations.input_dims,
     )
     encoder_identity = (

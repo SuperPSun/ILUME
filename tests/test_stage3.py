@@ -246,8 +246,8 @@ def _tiny_three_phase(config: Stage3Config) -> Stage3Config:
     private_class = Stage3PrivateClassConfig(
         width_ratio=1.0,
         phase1=Stage3OwnerBudgetConfig(lr=8.0e-5, epochs=1),
-        phase2=Stage3OwnerBudgetConfig(lr=4.0e-5, epochs=1),
-        phase3_lr=2.0e-5,
+        phase2_epochs=1,
+        phase3_epochs=1,
     )
     return replace(
         config,
@@ -270,7 +270,7 @@ def _tiny_three_phase(config: Stage3Config) -> Stage3Config:
                 spec,
                 unique_systems=2,
                 size_class="medium",
-                phase3_epochs=1,
+                phase3_private_epochs=1,
                 model_overrides={},
             )
             for task, spec in config.tasks.items()
@@ -397,6 +397,17 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
     assert v2.training.joint_gradient_clip_mode == "ownership"
     assert v2.training.schedule_mode == "three_phase"
     assert "virtual_min_size" not in v2.to_dict()["training"]
+    for path in (
+        "configs/v2/stage3/splits/random.yaml",
+        "configs/v2/stage3/splits/system.yaml",
+        "configs/v2/stage3/splits/individual.yaml",
+        "configs/ablations/stage1_stage2_rdkit_home.yaml",
+        "configs/ablations/no_stage1_rdkit_stage3.yaml",
+    ):
+        active = load_stage3_config(path)
+        assert active.groups == v2.groups
+        assert active.tasks == v2.tasks
+        assert active.training.three_phase == v2.training.three_phase
 
 
 def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
@@ -463,33 +474,35 @@ def test_three_phase_config_and_task_specific_gate_contract() -> None:
     } == {
         "biological": (1, 0.5, (7.5e-5, 8), (3.75e-5, 5)),
         "dielectric_optical": (1, 0.75, (1e-4, 8), (5e-5, 3)),
-        "thermophysical": (2, 1.5, (1.25e-4, 10), (6.25e-5, 5)),
-        "transport": (2, 1.5, (1.25e-4, 12), (6.25e-5, 12)),
-        "phase_stability": (3, 1.5, (1.5e-4, 15), (7.5e-5, 20)),
-        "solvation": (3, 1.5, (1.5e-4, 15), (7.5e-5, 24)),
+        "thermophysical": (2, 1.5, (1.5e-4, 10), (7.5e-5, 4)),
+        "transport": (2, 1.5, (1.5e-4, 12), (7.5e-5, 12)),
+        "phase_stability": (3, 1.5, (2e-4, 15), (1e-4, 20)),
+        "solvation": (3, 1.5, (2e-4, 15), (1e-4, 24)),
     }
     expected_tasks = {
-        "isobaric_coefficient_of_volume_expansion": (25, "tiny", 2),
-        "self_diffusion_coefficient": (36, "tiny", 8),
-        "static_relative_permittivity": (44, "tiny", 2),
+        "isobaric_coefficient_of_volume_expansion": (25, "tiny", 0),
+        "self_diffusion_coefficient": (36, "tiny", 6),
+        "static_relative_permittivity": (44, "tiny", 0),
         "dynamic_relative_permittivity": (49, "tiny", 2),
-        "thermal_conductivity": (93, "tiny", 2),
+        "thermal_conductivity": (93, "tiny", 3),
         "equilibrium_pressure": (95, "tiny", 2),
         "x_co2": (122, "small", 3), "speed_of_sound": (216, "small", 3),
         "pec50": (305, "small", 3), "heat_capacity": (352, "small", 3),
-        "electrical_conductivity": (703, "medium", 5),
+        "electrical_conductivity": (703, "medium", 4),
         "refractive_index": (726, "medium", 5),
         "glass_transition_temperature": (793, "medium", 5),
-        "surface_tension": (1141, "medium", 8),
+        "surface_tension": (1141, "medium", 6),
         "transfer_organic": (1914, "medium", 15),
-        "viscosity": (2586, "large", 8),
-        "thermal_decomposition_temperature": (2756, "large", 10),
+        "viscosity": (2586, "large", 6),
+        "thermal_decomposition_temperature": (2756, "large", 8),
         "transfer": (3079, "large", 10), "melting_point": (3460, "large", 8),
         "solvation": (3611, "large", 8), "density": (5966, "large", 8),
     }
     assert {
         task.removeprefix("experiment/"): (
-            spec.unique_systems, spec.size_class, spec.phase3_epochs
+            spec.unique_systems,
+            spec.size_class,
+            config.resolved_private_recipe(task).phase3_epochs,
         )
         for task, spec in config.tasks.items()
     } == expected_tasks
@@ -505,6 +518,18 @@ def test_three_phase_config_and_task_specific_gate_contract() -> None:
         stage3_config_from_dict(
             {**serialized, "training": {"schedule_mode": "four_phase"}}
         )
+    retired_task = {
+        **serialized,
+        "tasks": {
+            **serialized["tasks"],
+            "experiment/pec50": {
+                **serialized["tasks"]["experiment/pec50"],
+                "phase3_epochs": 3,
+            },
+        },
+    }
+    with pytest.raises(ValueError, match="phase3_epochs is retired"):
+        stage3_config_from_dict(retired_task)
 
     task_a = Stage3TaskConfig(meta_group="g1")
     task_b = Stage3TaskConfig(meta_group="g2")
@@ -552,15 +577,33 @@ def test_three_phase_config_and_task_specific_gate_contract() -> None:
 
 def test_three_phase_private_capacity_ratios_follow_size_class() -> None:
     config = load_stage3_config("configs/v2/stage3/base.yaml")
-    for task_config in config.tasks.values():
-        overrides = task_config.model_overrides
-        ratio = config.training.three_phase.private_classes[
-            task_config.size_class
-        ].width_ratio
-        assert overrides["private_hidden_ratio"] == ratio
-        assert overrides["tower_hidden_ratio"] == ratio
-        assert overrides["film_hidden_ratio"] == ratio
-        assert "private_lr_scale" not in overrides
+    fallback_task = "experiment/dynamic_relative_permittivity"
+    fallback_config = replace(
+        config,
+        tasks={
+            **config.tasks,
+            fallback_task: replace(
+                config.tasks[fallback_task],
+                phase1_private_epochs=5,
+                model_overrides={},
+            ),
+        },
+    )
+    fallback_config.validate()
+    fallback = fallback_config.resolved_private_recipe(fallback_task)
+    assert (
+        fallback.private_hidden_ratio,
+        fallback.tower_hidden_ratio,
+        fallback.film_hidden_ratio,
+    ) == (0.5, 0.5, 0.5)
+    assert fallback.phase1_epochs == 5
+    assert config.resolved_private_recipe("experiment/pec50").private_hidden_ratio == 1.0
+    glass = config.resolved_private_recipe(
+        "experiment/glass_transition_temperature"
+    )
+    assert (glass.private_hidden_ratio, glass.tower_hidden_ratio, glass.film_hidden_ratio) == (
+        1.25, 1.25, 1.0,
+    )
 
     task_id = "experiment/static_relative_permittivity"
     task = config.tasks[task_id]
@@ -573,30 +616,80 @@ def test_three_phase_private_capacity_ratios_follow_size_class() -> None:
         1024,
         group_configs=config.groups,
         task_configs={task_id: task},
+        task_private_recipes={task_id: config.resolved_private_recipe(task_id)},
     )
     key = task_id.replace("/", "__")
     recipe = model.resolved_capacity_recipe()["tasks"][task_id]
-    assert recipe["private_hidden"] == 512
-    assert recipe["tower_hidden"] == 512
-    assert recipe["film_hidden"] == 512
-    assert model.private_experts[key][0].layers[0].out_features == 512
-    assert model.towers[key].layers[0].out_features == 512
-    assert model.condition_films[key].network[0].out_features == 512
+    assert recipe["private_hidden"] == 256
+    assert recipe["tower_hidden"] == 256
+    assert recipe["film_hidden"] == 256
+    assert model.private_experts[key][0].layers[0].out_features == 256
+    assert model.towers[key].layers[0].out_features == 256
+    assert model.condition_films[key].network[0].out_features == 256
     assert model.task_gates[key].in_features == 2048
+
+    expected_lrs = {
+        "experiment/transfer_organic": (1.2e-4, 6.0e-5, 3.0e-5),
+        "experiment/solvation": (1.5e-4, 7.5e-5, 3.75e-5),
+        "experiment/electrical_conductivity": (8.0e-5, 4.0e-5, 2.0e-5),
+        "experiment/refractive_index": (8.0e-5, 4.0e-5, 2.0e-5),
+        "experiment/surface_tension": (8.0e-5, 4.0e-5, 2.0e-5),
+        "experiment/viscosity": (1.0e-4, 5.0e-5, 2.5e-5),
+        "experiment/density": (1.25e-4, 6.25e-5, 3.125e-5),
+    }
+    for resolved_task, expected in expected_lrs.items():
+        resolved = config.resolved_private_recipe(resolved_task)
+        assert (resolved.phase1_lr, resolved.phase2_lr, resolved.phase3_lr) == expected
+    thermal = config.resolved_private_recipe("experiment/thermal_conductivity")
+    assert (thermal.phase2_epochs, thermal.phase3_epochs) == (6, 3)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("phase1_private_lr", 1.5e-4, "nominal LR ordering"),
+        ("phase1_private_epochs", 16, "exceed GLOBAL budget"),
+        ("phase2_private_epochs", 0, "positive integer"),
+        ("phase3_private_epochs", -1, "non-negative integer"),
+    ),
+)
+def test_three_phase_task_budget_overrides_are_strict(
+    field: str, value: object, message: str
+) -> None:
+    payload = load_stage3_config("configs/v2/stage3/base.yaml").to_dict()
+    payload = json.loads(json.dumps(payload))
+    payload["tasks"]["experiment/density"][field] = value
+    with pytest.raises(ValueError, match=message):
+        stage3_config_from_dict(payload)
 
 
 def test_three_phase_training_publishes_fixed_final_state(
     tiny_prepared: Stage3Config,
 ) -> None:
     config = _tiny_three_phase(tiny_prepared)
+    config = replace(
+        config,
+        tasks={
+            **config.tasks,
+            "experiment/a": replace(
+                config.tasks["experiment/a"],
+                phase3_private_epochs=0,
+                model_overrides={"private_hidden_ratio": 0.5},
+            ),
+            "experiment/b": replace(
+                config.tasks["experiment/b"], phase2_private_epochs=3
+            ),
+        },
+    )
     output = config.data.artifacts_dir.parent / "three-phase-train"
     rows = run_stage3_training(config, 1, output_dir=output)
 
     assert rows[-1]["phase"] == "three_phase_final"
     assert (output / "phase_1/checkpoint_epoch_00002.pt").is_file()
     assert (output / "phase_2/g1/checkpoint_epoch_00002.pt").is_file()
+    assert not (output / "phase_3/experiment__a").exists()
     assert (
-        output / "phase_3/experiment__a/checkpoint_epoch_00001.pt"
+        output / "phase_3/experiment__b/checkpoint_epoch_00001.pt"
     ).is_file()
     artifact = torch.load(
         output / "three_phase_final.pt", map_location="cpu", weights_only=False
@@ -612,22 +705,55 @@ def test_three_phase_training_publishes_fixed_final_state(
     assert set(manifest["phases"]["phase3"]["tasks"]) == set(
         config.tasks
     )
+    assert manifest["phases"]["phase3"]["tasks"]["experiment/a"][
+        "carried_from_anchor"
+    ] is True
     assert "best_metric" not in json.dumps(manifest)
     assert "selected_epoch" not in json.dumps(manifest)
     assert "best_state" not in json.dumps(manifest)
     plan = json.loads((output / "resolved_training_plan.json").read_text())
+    assert plan["format_version"] == 2
+    assert artifact["training_identity"]["payload"]["contract_version"] == 4
     assert plan["phases"]["phase1"]["owners"]["PRIVATE:experiment/a"][
         "freeze_epoch"
     ] == 1
+    assert plan["phases"]["phase1"]["owners"]["PRIVATE:experiment/a"][
+        "capacity"
+    ]["private_hidden_ratio"] == 0.5
+    assert plan["phases"]["phase1"]["owners"]["PRIVATE:experiment/a"][
+        "capacity"
+    ]["tower_hidden_ratio"] == 1.0
     phase2_private = plan["phases"]["phase2"]["branches"]["g1"]["owners"][
         "PRIVATE:experiment/a"
     ]
     assert phase2_private["nominal_epochs"] == 1
     assert phase2_private["effective_epochs"] == 1
     assert phase2_private["terminal_lr"] == pytest.approx(2.0e-5)
+    phase2_truncated = plan["phases"]["phase2"]["branches"]["g1"]["owners"][
+        "PRIVATE:experiment/b"
+    ]
+    assert phase2_truncated["nominal_epochs"] == 3
+    assert phase2_truncated["effective_epochs"] == 2
     assert plan["phases"]["phase3"]["branches"]["experiment/a"]["owners"][
         "PRIVATE:experiment/a"
     ]["nominal_lr"] == pytest.approx(2.0e-5)
+    zero_branch = plan["phases"]["phase3"]["branches"]["experiment/a"]
+    assert zero_branch["carried_from_anchor"] is True
+    assert zero_branch["owners"]["PRIVATE:experiment/a"][
+        "actual_update_budget"
+    ] == 0
+
+    phase2 = torch.load(
+        output / "phase_2/stitched.pt", map_location="cpu", weights_only=False
+    )
+    private_names = {
+        name for name, owner in artifact["ownership_manifest"].items()
+        if owner == "PRIVATE:experiment/a"
+    }
+    assert all(
+        torch.equal(phase2["model"][name], artifact["model"][name])
+        for name in private_names
+    )
 
     phase1_epoch1 = torch.load(
         output / "phase_1/checkpoint_epoch_00001.pt",

@@ -187,7 +187,7 @@ def build_stage3_training_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
         "stage3.training",
         {
             "contract_version": (
-                3 if three_phase else STAGE3_TRAINING_IDENTITY_CONTRACT_VERSION
+                4 if three_phase else STAGE3_TRAINING_IDENTITY_CONTRACT_VERSION
             ),
             "plan": semantic_plan,
         },

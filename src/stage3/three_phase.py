@@ -1189,24 +1189,41 @@ def run_three_phase_training(
     for task in sorted(active):
         owner = private_owner(task)
         branch = phase3["branches"][task]
-        state, validation, state_hash = _run_delta_branch(
-            phase="phase_3", scope=task,
-            root=output / "phase_3" / sanitize_task(task), model=model,
-            tasks=(task,), owners=(owner,), owner_recipes=branch["owners"],
-            epochs=int(branch["epochs"]),
-            steps_per_epoch=int(branch["steps_per_epoch"]),
-            config=config, fold=fold, plan=plan, train_data=train_data, valid_data=valid_data,
-            representations=representations, normalizations=normalizations,
-            registry=registry, device=device, resume=resume,
-            anchor_state=phase2_state, anchor_hash=phase2_hash,
-        )
+        carried_from_anchor = int(branch["epochs"]) == 0
+        if carried_from_anchor:
+            model.load_state_dict(phase2_state, strict=True)
+            _set_trainable(model, ())
+            state = _owner_state(model, (owner,))
+            state_hash = _owner_hash(state)
+            validation = validate_tasks(
+                model,
+                {task: valid_data[task]},
+                representations,
+                {task: normalizations[task]},
+                config,
+                device,
+            )
+        else:
+            state, validation, state_hash = _run_delta_branch(
+                phase="phase_3", scope=task,
+                root=output / "phase_3" / sanitize_task(task), model=model,
+                tasks=(task,), owners=(owner,), owner_recipes=branch["owners"],
+                epochs=int(branch["epochs"]),
+                steps_per_epoch=int(branch["steps_per_epoch"]),
+                config=config, fold=fold, plan=plan, train_data=train_data,
+                valid_data=valid_data, representations=representations,
+                normalizations=normalizations, registry=registry, device=device,
+                resume=resume, anchor_state=phase2_state, anchor_hash=phase2_hash,
+            )
         phase3_deltas[task] = ((owner,), state, state_hash)
         phase3_records[task] = {
             "epochs": int(branch["epochs"]),
             "owner_recipe": branch["owners"][owner.label],
             "capacity": capacity["tasks"][task],
             "anchor_model_state_hash": phase2_hash,
-            "private_state_hash": state_hash, "validation": validation,
+            "private_state_hash": state_hash,
+            "carried_from_anchor": carried_from_anchor,
+            "validation": validation,
         }
 
     if set(phase3_deltas) != set(active):

@@ -6,7 +6,12 @@ from typing import Iterable, Mapping
 import torch
 from torch import nn
 
-from .config import Stage3GroupConfig, Stage3ModelConfig, Stage3TaskConfig
+from .config import (
+    ResolvedStage3PrivateRecipe,
+    Stage3GroupConfig,
+    Stage3ModelConfig,
+    Stage3TaskConfig,
+)
 from .data import ResolvedTaskSpec, sanitize_task
 
 
@@ -178,6 +183,7 @@ class Stage3SparseModel(nn.Module):
         *,
         group_configs: Mapping[str, Stage3GroupConfig] | None = None,
         task_configs: Mapping[str, Stage3TaskConfig] | None = None,
+        task_private_recipes: Mapping[str, ResolvedStage3PrivateRecipe] | None = None,
         descriptor_input_dims: Mapping[str, int] | None = None,
     ) -> None:
         super().__init__()
@@ -185,6 +191,7 @@ class Stage3SparseModel(nn.Module):
         self.task_specs = dict(task_specs)
         self.group_configs = dict(group_configs or {})
         self.task_configs = dict(task_configs or {})
+        self.task_private_recipes = dict(task_private_recipes or {})
         self.d_model = d_model
         self.groups = tuple(
             sorted({spec.meta_group for spec in self.task_specs.values() if spec.enabled})
@@ -289,17 +296,24 @@ class Stage3SparseModel(nn.Module):
             key = sanitize_task(task_id)
             task_config = self.task_configs.get(task_id)
             overrides = task_config.model_overrides if task_config is not None else {}
+            private_recipe = self.task_private_recipes.get(task_id)
             private_experts = int(
                 overrides.get("private_experts", model_config.private_experts)
             )
             private_hidden_ratio = float(
-                overrides.get("private_hidden_ratio", model_config.expert_hidden_ratio)
+                private_recipe.private_hidden_ratio
+                if private_recipe is not None
+                else overrides.get("private_hidden_ratio", model_config.expert_hidden_ratio)
             )
             tower_hidden_ratio = float(
-                overrides.get("tower_hidden_ratio", model_config.tower_hidden_ratio)
+                private_recipe.tower_hidden_ratio
+                if private_recipe is not None
+                else overrides.get("tower_hidden_ratio", model_config.tower_hidden_ratio)
             )
             film_hidden_ratio = float(
-                overrides.get("film_hidden_ratio", model_config.film_hidden_ratio)
+                private_recipe.film_hidden_ratio
+                if private_recipe is not None
+                else overrides.get("film_hidden_ratio", model_config.film_hidden_ratio)
             )
             group_config = self.group_configs.get(spec.meta_group)
             group_experts = (
@@ -375,19 +389,26 @@ class Stage3SparseModel(nn.Module):
                 continue
             config = self.task_configs.get(task_id)
             overrides = config.model_overrides if config is not None else {}
+            private_recipe = self.task_private_recipes.get(task_id)
             private_experts = int(
                 overrides.get("private_experts", self.model_config.private_experts)
             )
             private_ratio = float(
-                overrides.get(
+                private_recipe.private_hidden_ratio
+                if private_recipe is not None
+                else overrides.get(
                     "private_hidden_ratio", self.model_config.expert_hidden_ratio
                 )
             )
             tower_ratio = float(
-                overrides.get("tower_hidden_ratio", self.model_config.tower_hidden_ratio)
+                private_recipe.tower_hidden_ratio
+                if private_recipe is not None
+                else overrides.get("tower_hidden_ratio", self.model_config.tower_hidden_ratio)
             )
             film_ratio = float(
-                overrides.get("film_hidden_ratio", self.model_config.film_hidden_ratio)
+                private_recipe.film_hidden_ratio
+                if private_recipe is not None
+                else overrides.get("film_hidden_ratio", self.model_config.film_hidden_ratio)
             )
             tasks[task_id] = {
                 "private_experts": private_experts,

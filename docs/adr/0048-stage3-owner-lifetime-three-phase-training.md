@@ -3,6 +3,7 @@
 - 状态：Accepted
 - 日期：2026-09-10
 - 取代：ADR-0047 的现役 v2 Stage 3 四阶段 schedule、checkpoint 与 final artifact
+- 数值修订：ADR-0050 取代本文的 owner LR、epoch、PRIVATE width 与 task 字段
 
 ## 背景
 
@@ -28,7 +29,8 @@ owner 尚未充分训练。需要在不改变 raw sampling、loss、weighting、
    weight。各 owner 无 warmup并 cosine 到 0.5。
 4. Phase 3 冻结 GLOBAL/GROUP，每个 branch 只训练一个 PRIVATE，关闭 PCGrad 与 task/group
    weight，无 warmup并 cosine 到 0.2。各 task 的固定 epoch（含五个显式例外）由 YAML 记录。
-5. PRIVATE size class 与 `unique_systems` 显式写入 YAML；catalog 数值必须一致，但程序不自动
+5. 以下数值 recipe 是 2026-09-10 的历史基线，现役值由 ADR-0050 修订。PRIVATE size class 与
+   `unique_systems` 显式写入 YAML；catalog 数值必须一致，但程序不自动
    分桶。tiny/small/medium/large 的 private/tower/FiLM ratio 固定为 0.5/0.75/1.0/1.0，且
    `private_experts=1`。GLOBAL/GROUP expert 数和 hidden ratio 保持 ADR-0047 的容量设计。
    GROUP 的 Phase 1/2 `LR × epoch` 分别固定为：biological `7.5e-5×8 / 3.75e-5×5`、
