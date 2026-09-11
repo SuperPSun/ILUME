@@ -342,7 +342,7 @@ def _execute_job(
 def _schedule(
     *, jobs: list[_Job], ensembles: dict[str, _Job], folds: tuple[int, ...],
     max_workers: int, state: _SweepState, config_path: str, root: Path,
-    train_script: Path, evaluate_script: Path,
+    train_script: Path, evaluate_script: Path, devices: tuple[str, ...] = (),
 ) -> None:
     ready: list[tuple[tuple[int, int, int], int, _Job]] = []
     sequence = 0
@@ -352,14 +352,42 @@ def _schedule(
     fold_results: dict[str, dict[int, bool]] = {task: {} for task in ensembles}
     submitted_keys: set[tuple[str, str, int | None]] = set()
     running: dict[Future[_JobResult], _Job] = {}
+    device_limit = (
+        (max_workers + len(devices) - 1) // len(devices)
+        if devices
+        else None
+    )
+    active_by_device: dict[str, int] = {}
+
+    def pop_ready_job() -> _Job | None:
+        blocked: list[tuple[tuple[int, int, int], int, _Job]] = []
+        selected: _Job | None = None
+        while ready:
+            item = heapq.heappop(ready)
+            job = item[2]
+            if (
+                device_limit is None
+                or job.device is None
+                or active_by_device.get(job.device, 0) < device_limit
+            ):
+                selected = job
+                break
+            blocked.append(item)
+        for item in blocked:
+            heapq.heappush(ready, item)
+        return selected
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         while ready or running:
             while ready and len(running) < max_workers:
-                _, _, job = heapq.heappop(ready)
+                job = pop_ready_job()
+                if job is None:
+                    break
                 if job.key in submitted_keys:
                     raise RuntimeError(f"Duplicate benchmark job submission: {job.key}")
                 submitted_keys.add(job.key)
+                if job.device is not None:
+                    active_by_device[job.device] = active_by_device.get(job.device, 0) + 1
                 future = executor.submit(
                     _execute_job, job, state=state, config_path=config_path,
                     root=root, train_script=train_script, evaluate_script=evaluate_script,
@@ -368,6 +396,8 @@ def _schedule(
             completed, _ = wait(tuple(running), return_when=FIRST_COMPLETED)
             for future in sorted(completed, key=lambda item: running[item].priority):
                 job = running.pop(future)
+                if job.device is not None:
+                    active_by_device[job.device] -= 1
                 try:
                     result = future.result()
                 except Exception as error:
@@ -588,7 +618,8 @@ def main() -> None:
     parser.add_argument(
         "--max-workers", type=_positive_int, default=1,
         help=("maximum concurrent train/evaluate subprocesses (default: 1); for "
-              "XGBoost, size max-workers * training.n_jobs for the available CPUs"),
+              "GPU runs, each listed GPU is capped at ceil(max-workers / GPU count); "
+              "for XGBoost, size max-workers * training.n_jobs for the available CPUs"),
     )
     parser.add_argument(
         "--devices",
@@ -643,6 +674,7 @@ def main() -> None:
     try:
         _schedule(
             jobs=jobs, ensembles=ensembles, folds=config.stage3.folds,
+            devices=devices,
             max_workers=args.max_workers, state=state, config_path=args.config,
             root=root, train_script=train_script, evaluate_script=evaluate_script,
         )

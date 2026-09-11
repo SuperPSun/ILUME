@@ -789,6 +789,54 @@ def test_sweep_scheduler_is_bounded_and_preserves_dependencies(
     }
     assert {job.key for job in [*jobs, *ensembles.values()]} == finished
 
+def test_sweep_scheduler_caps_concurrency_per_gpu(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    jobs, ensembles = _build_jobs(
+        root=tmp_path,
+        stage3_tasks=("experiment/one", "experiment/two"),
+        folds=(1, 2),
+        devices=("cuda:0", "cuda:1"),
+    )
+    lock = threading.Lock()
+    active = 0
+    maximum_active = 0
+    active_by_device: dict[str, int] = {"cuda:0": 0, "cuda:1": 0}
+    maximum_by_device: dict[str, int] = {"cuda:0": 0, "cuda:1": 0}
+
+    def execute(job, **_kwargs):
+        nonlocal active, maximum_active
+        with lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+            assert job.device is not None
+            active_by_device[job.device] += 1
+            maximum_by_device[job.device] = max(
+                maximum_by_device[job.device], active_by_device[job.device]
+            )
+        time.sleep(0.03)
+        with lock:
+            active -= 1
+            active_by_device[job.device] -= 1
+        return _JobResult(job, job.kind != "stage3_ensemble")
+
+    monkeypatch.setattr(sweep_module, "_execute_job", execute)
+    state = _SweepState(rows=[], status_path=tmp_path / "status.tsv")
+    _schedule(
+        jobs=jobs,
+        ensembles=ensembles,
+        folds=(1, 2),
+        devices=("cuda:0", "cuda:1"),
+        max_workers=4,
+        state=state,
+        config_path="unused.yaml",
+        root=tmp_path,
+        train_script=tmp_path / "train.py",
+        evaluate_script=tmp_path / "evaluate.py",
+    )
+    assert maximum_active == 4
+    assert maximum_by_device == {"cuda:0": 2, "cuda:1": 2}
+
 def test_stage3_only_ablation_aggregate_has_one_model_and_no_stage2_sections(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
