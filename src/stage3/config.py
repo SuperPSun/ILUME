@@ -208,6 +208,7 @@ class ResolvedStage3PrivateRecipe:
     private_hidden_ratio: float
     tower_hidden_ratio: float
     film_hidden_ratio: float
+    private_dropout: float
 
 
 @dataclass(frozen=True)
@@ -312,6 +313,9 @@ class Stage3Config:
             film_hidden_ratio=float(
                 task.model_overrides.get("film_hidden_ratio", width)
             ),
+            private_dropout=float(
+                task.model_overrides.get("private_dropout", self.model.dropout)
+            ),
         )
 
     def validate(self) -> None:
@@ -364,7 +368,7 @@ class Stage3Config:
                     )
         override_keys = {
             "private_experts", "private_hidden_ratio", "tower_hidden_ratio",
-            "film_hidden_ratio",
+            "film_hidden_ratio", "private_dropout",
         }
         for task_id, task in self.tasks.items():
             if not task_id or "." in task_id:
@@ -400,10 +404,14 @@ class Stage3Config:
             for name in ("phase1_private_epochs", "phase2_private_epochs"):
                 value = getattr(task, name)
                 if value is not None and (
-                    isinstance(value, bool) or not isinstance(value, int) or value <= 0
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or value < (1 if name == "phase1_private_epochs" else 0)
                 ):
                     raise ValueError(
-                        f"Stage 3 {name} must be a positive integer: {task_id}"
+                        f"Stage 3 {name} must be a "
+                        f"{'positive' if name == 'phase1_private_epochs' else 'non-negative'} "
+                        f"integer: {task_id}"
                     )
             if task.phase3_private_epochs is not None and (
                 isinstance(task.phase3_private_epochs, bool)
@@ -435,6 +443,16 @@ class Stage3Config:
                         raise ValueError(
                             f"Stage 3 {name} must be positive: {task_id}"
                         )
+            if "private_dropout" in task.model_overrides:
+                value = task.model_overrides["private_dropout"]
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not 0.0 <= value <= 0.15
+                ):
+                    raise ValueError(
+                        f"Stage 3 private_dropout must be in [0, 0.15]: {task_id}"
+                    )
         enabled_tasks = [task for task in self.tasks.values() if task.enabled]
         if not enabled_tasks:
             raise ValueError("Stage 3 requires at least one enabled task")

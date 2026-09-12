@@ -515,7 +515,7 @@ def build_resolved_training_plan(
         total_steps = boundary_epoch * steps
         warmup_steps = math.ceil(config.training.warmup_ratio * total_steps)
     plan = {
-        "format_version": 2 if three_phase else 1,
+        "format_version": 3 if three_phase else 1,
         "fold": fold,
         "active_tasks": list(active_tasks),
         "resolved_registry": {

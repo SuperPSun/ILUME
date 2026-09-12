@@ -484,17 +484,17 @@ def test_three_phase_config_and_task_specific_gate_contract() -> None:
         "self_diffusion_coefficient": (36, "tiny", 6),
         "static_relative_permittivity": (44, "tiny", 0),
         "dynamic_relative_permittivity": (49, "tiny", 2),
-        "thermal_conductivity": (93, "tiny", 3),
+        "thermal_conductivity": (93, "tiny", 4),
         "equilibrium_pressure": (95, "tiny", 2),
-        "x_co2": (122, "small", 3), "speed_of_sound": (216, "small", 3),
+        "x_co2": (122, "small", 3), "speed_of_sound": (216, "small", 0),
         "pec50": (305, "small", 3), "heat_capacity": (352, "small", 3),
         "electrical_conductivity": (703, "medium", 4),
-        "refractive_index": (726, "medium", 5),
-        "glass_transition_temperature": (793, "medium", 5),
-        "surface_tension": (1141, "medium", 6),
+        "refractive_index": (726, "medium", 3),
+        "glass_transition_temperature": (793, "medium", 2),
+        "surface_tension": (1141, "medium", 5),
         "transfer_organic": (1914, "medium", 15),
         "viscosity": (2586, "large", 6),
-        "thermal_decomposition_temperature": (2756, "large", 8),
+        "thermal_decomposition_temperature": (2756, "large", 7),
         "transfer": (3079, "large", 10), "melting_point": (3460, "large", 8),
         "solvation": (3611, "large", 8), "density": (5966, "large", 8),
     }
@@ -597,13 +597,22 @@ def test_three_phase_private_capacity_ratios_follow_size_class() -> None:
         fallback.film_hidden_ratio,
     ) == (0.5, 0.5, 0.5)
     assert fallback.phase1_epochs == 5
-    assert config.resolved_private_recipe("experiment/pec50").private_hidden_ratio == 1.0
+    assert config.resolved_private_recipe("experiment/pec50").private_hidden_ratio == 0.75
     glass = config.resolved_private_recipe(
         "experiment/glass_transition_temperature"
     )
     assert (glass.private_hidden_ratio, glass.tower_hidden_ratio, glass.film_hidden_ratio) == (
         1.25, 1.25, 1.0,
     )
+    assert glass.private_dropout == 0.10
+    for task in (
+        "experiment/electrical_conductivity",
+        "experiment/refractive_index",
+        "experiment/viscosity",
+        "experiment/surface_tension",
+        "experiment/thermal_decomposition_temperature",
+    ):
+        assert config.resolved_private_recipe(task).private_dropout == 0.15
 
     task_id = "experiment/static_relative_permittivity"
     task = config.tasks[task_id]
@@ -628,6 +637,33 @@ def test_three_phase_private_capacity_ratios_follow_size_class() -> None:
     assert model.condition_films[key].network[0].out_features == 256
     assert model.task_gates[key].in_features == 2048
 
+    dropout_task = "experiment/refractive_index"
+    dropout_model = Stage3SparseModel(
+        config.model,
+        {dropout_task: resolve_task_registry(config)[dropout_task]},
+        16,
+        group_configs=config.groups,
+        task_configs={dropout_task: config.tasks[dropout_task]},
+        task_private_recipes={
+            dropout_task: config.resolved_private_recipe(dropout_task)
+        },
+    )
+    dropout_key = dropout_task.replace("/", "__")
+    private_dropouts = [
+        module.p
+        for owner_module in (
+            dropout_model.private_experts[dropout_key],
+            dropout_model.towers[dropout_key],
+            dropout_model.condition_films[dropout_key],
+        )
+        for module in owner_module.modules()
+        if isinstance(module, torch.nn.Dropout)
+    ]
+    assert private_dropouts == [0.15, 0.15, 0.15]
+    assert dropout_model.resolved_capacity_recipe()["tasks"][dropout_task][
+        "private_dropout"
+    ] == 0.15
+
     expected_lrs = {
         "experiment/transfer_organic": (1.2e-4, 6.0e-5, 3.0e-5),
         "experiment/solvation": (1.5e-4, 7.5e-5, 3.75e-5),
@@ -641,7 +677,11 @@ def test_three_phase_private_capacity_ratios_follow_size_class() -> None:
         resolved = config.resolved_private_recipe(resolved_task)
         assert (resolved.phase1_lr, resolved.phase2_lr, resolved.phase3_lr) == expected
     thermal = config.resolved_private_recipe("experiment/thermal_conductivity")
-    assert (thermal.phase2_epochs, thermal.phase3_epochs) == (6, 3)
+    assert (thermal.phase2_epochs, thermal.phase3_epochs) == (3, 4)
+    volume = config.resolved_private_recipe(
+        "experiment/isobaric_coefficient_of_volume_expansion"
+    )
+    assert (volume.phase2_epochs, volume.phase3_epochs) == (0, 0)
 
 
 @pytest.mark.parametrize(
@@ -649,7 +689,7 @@ def test_three_phase_private_capacity_ratios_follow_size_class() -> None:
     (
         ("phase1_private_lr", 1.5e-4, "nominal LR ordering"),
         ("phase1_private_epochs", 16, "exceed GLOBAL budget"),
-        ("phase2_private_epochs", 0, "positive integer"),
+        ("phase2_private_epochs", -1, "non-negative integer"),
         ("phase3_private_epochs", -1, "non-negative integer"),
     ),
 )
@@ -663,6 +703,17 @@ def test_three_phase_task_budget_overrides_are_strict(
         stage3_config_from_dict(payload)
 
 
+@pytest.mark.parametrize("value", (True, -0.01, 0.151, "0.15"))
+def test_three_phase_private_dropout_override_is_bounded(value: object) -> None:
+    payload = load_stage3_config("configs/v2/stage3/base.yaml").to_dict()
+    payload = json.loads(json.dumps(payload))
+    payload["tasks"]["experiment/density"]["model_overrides"] = {
+        "private_dropout": value
+    }
+    with pytest.raises(ValueError, match="private_dropout must be in"):
+        stage3_config_from_dict(payload)
+
+
 def test_three_phase_training_publishes_fixed_final_state(
     tiny_prepared: Stage3Config,
 ) -> None:
@@ -673,6 +724,7 @@ def test_three_phase_training_publishes_fixed_final_state(
             **config.tasks,
             "experiment/a": replace(
                 config.tasks["experiment/a"],
+                phase2_private_epochs=0,
                 phase3_private_epochs=0,
                 model_overrides={"private_hidden_ratio": 0.5},
             ),
@@ -712,8 +764,8 @@ def test_three_phase_training_publishes_fixed_final_state(
     assert "selected_epoch" not in json.dumps(manifest)
     assert "best_state" not in json.dumps(manifest)
     plan = json.loads((output / "resolved_training_plan.json").read_text())
-    assert plan["format_version"] == 2
-    assert artifact["training_identity"]["payload"]["contract_version"] == 4
+    assert plan["format_version"] == 3
+    assert artifact["training_identity"]["payload"]["contract_version"] == 5
     assert plan["phases"]["phase1"]["owners"]["PRIVATE:experiment/a"][
         "freeze_epoch"
     ] == 1
@@ -723,11 +775,15 @@ def test_three_phase_training_publishes_fixed_final_state(
     assert plan["phases"]["phase1"]["owners"]["PRIVATE:experiment/a"][
         "capacity"
     ]["tower_hidden_ratio"] == 1.0
+    assert plan["phases"]["phase1"]["owners"]["PRIVATE:experiment/a"][
+        "capacity"
+    ]["private_dropout"] == config.model.dropout
     phase2_private = plan["phases"]["phase2"]["branches"]["g1"]["owners"][
         "PRIVATE:experiment/a"
     ]
-    assert phase2_private["nominal_epochs"] == 1
-    assert phase2_private["effective_epochs"] == 1
+    assert phase2_private["nominal_epochs"] == 0
+    assert phase2_private["effective_epochs"] == 0
+    assert phase2_private["actual_update_budget"] == 0
     assert phase2_private["terminal_lr"] == pytest.approx(2.0e-5)
     phase2_truncated = plan["phases"]["phase2"]["branches"]["g1"]["owners"][
         "PRIVATE:experiment/b"
@@ -796,6 +852,17 @@ def test_three_phase_training_publishes_fixed_final_state(
         name for name, owner in phase2_epoch1["ownership_manifest"].items()
         if owner == "GROUP:g1"
     }
+    assert "PRIVATE:experiment/a" not in {
+        group["owner"] for group in phase2_epoch1["optimizer"]["param_groups"]
+    }
+    assert phase2_epoch1["owner_updates"]["PRIVATE:experiment/a"] == 0
+    assert all(
+        torch.equal(
+            phase1_epoch2["model"][name],
+            phase2_epoch2["owner_state"][name],
+        )
+        for name in private_delta_names
+    )
     assert all(
         torch.equal(
             phase2_epoch1["owner_state"][name],

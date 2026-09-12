@@ -73,7 +73,7 @@ tasks:
     size_class: medium
     phase1_private_lr: 8.0e-5
     phase3_private_epochs: 4
-    model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75}
+    model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75, private_dropout: 0.15}
   experiment/self_diffusion_coefficient:
     meta_group: transport
     unique_systems: 36
@@ -85,14 +85,14 @@ tasks:
     size_class: large
     phase1_private_lr: 1.0e-4
     phase3_private_epochs: 6
-    model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75}
+    model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75, private_dropout: 0.15}
   experiment/thermal_conductivity:
     meta_group: transport
     unique_systems: 93
     size_class: tiny
-    phase2_private_epochs: 6
-    phase3_private_epochs: 3
-    model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75}
+    phase2_private_epochs: 3
+    phase3_private_epochs: 4
+    model_overrides: {private_hidden_ratio: 0.5, tower_hidden_ratio: 0.5, film_hidden_ratio: 0.5}
   experiment/density:
     meta_group: thermophysical
     unique_systems: 5966
@@ -106,19 +106,21 @@ tasks:
     meta_group: thermophysical
     unique_systems: 25
     size_class: tiny
+    phase2_private_epochs: 0
     phase3_private_epochs: 0
     model_overrides: {private_hidden_ratio: 0.25, tower_hidden_ratio: 0.25, film_hidden_ratio: 0.25}
   experiment/speed_of_sound:
     meta_group: thermophysical
     unique_systems: 216
     size_class: small
+    phase3_private_epochs: 0
   experiment/surface_tension:
     meta_group: thermophysical
     unique_systems: 1141
     size_class: medium
     phase1_private_lr: 8.0e-5
-    phase3_private_epochs: 6
-    model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75}
+    phase3_private_epochs: 5
+    model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75, private_dropout: 0.15}
   experiment/equilibrium_pressure:
     meta_group: phase_stability
     unique_systems: 95
@@ -127,6 +129,7 @@ tasks:
     meta_group: phase_stability
     unique_systems: 793
     size_class: medium
+    phase3_private_epochs: 2
     model_overrides: {private_hidden_ratio: 1.25, tower_hidden_ratio: 1.25}
   experiment/melting_point:
     meta_group: phase_stability
@@ -136,7 +139,8 @@ tasks:
     meta_group: phase_stability
     unique_systems: 2756
     size_class: large
-    model_overrides: {private_hidden_ratio: 1.25, tower_hidden_ratio: 1.25}
+    phase3_private_epochs: 7
+    model_overrides: {private_hidden_ratio: 1.25, tower_hidden_ratio: 1.25, private_dropout: 0.15}
   experiment/dynamic_relative_permittivity:
     meta_group: dielectric_optical
     unique_systems: 49
@@ -145,6 +149,8 @@ tasks:
     meta_group: dielectric_optical
     unique_systems: 44
     size_class: tiny
+    phase1_private_epochs: 4
+    phase2_private_epochs: 1
     phase3_private_epochs: 0
     model_overrides: {private_hidden_ratio: 0.25, tower_hidden_ratio: 0.25, film_hidden_ratio: 0.25}
   experiment/refractive_index:
@@ -152,7 +158,8 @@ tasks:
     unique_systems: 726
     size_class: medium
     phase1_private_lr: 8.0e-5
-    model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75}
+    phase3_private_epochs: 3
+    model_overrides: {private_hidden_ratio: 1.0, tower_hidden_ratio: 1.0, film_hidden_ratio: 1.0, private_dropout: 0.15}
   experiment/solvation:
     meta_group: solvation
     unique_systems: 3611
@@ -192,7 +199,7 @@ tasks:
     meta_group: biological
     unique_systems: 305
     size_class: small
-    model_overrides: {private_hidden_ratio: 1.0, tower_hidden_ratio: 1.0, film_hidden_ratio: 1.0}
+    model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75}
 training:
   composite_batch_size: 2048
   microbatch_size: 1024

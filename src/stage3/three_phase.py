@@ -817,13 +817,19 @@ def _run_delta_branch(
     root.mkdir(parents=True, exist_ok=True)
     model.load_state_dict(anchor_state, strict=True)
     owners_by_label = {owner.label: owner for owner in owners}
-    _set_trainable(model, owners)
+    trainable_owners = tuple(
+        owners_by_label[label]
+        for label, recipe in owner_recipes.items()
+        if int(recipe["effective_epochs"]) > 0
+    )
+    _set_trainable(model, trainable_owners)
     optimizer = _optimizer(
         model,
         config,
         {
             owners_by_label[label]: float(recipe["nominal_lr"])
             for label, recipe in owner_recipes.items()
+            if int(recipe["effective_epochs"]) > 0
         },
     )
     scheduler = _OwnerScheduler(optimizer, owner_recipes)

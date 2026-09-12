@@ -315,6 +315,11 @@ class Stage3SparseModel(nn.Module):
                 if private_recipe is not None
                 else overrides.get("film_hidden_ratio", model_config.film_hidden_ratio)
             )
+            private_dropout = float(
+                private_recipe.private_dropout
+                if private_recipe is not None
+                else overrides.get("private_dropout", model_config.dropout)
+            )
             group_config = self.group_configs.get(spec.meta_group)
             group_experts = (
                 model_config.group_experts
@@ -329,7 +334,7 @@ class Stage3SparseModel(nn.Module):
                     Expert(
                         d_model,
                         hidden_ratio=private_hidden_ratio,
-                        dropout=model_config.dropout,
+                        dropout=private_dropout,
                         activation=model_config.activation,
                     )
                     for _ in range(private_experts)
@@ -341,7 +346,7 @@ class Stage3SparseModel(nn.Module):
                     len(spec.condition_columns),
                     d_model,
                     hidden_ratio=film_hidden_ratio,
-                    dropout=model_config.dropout,
+                    dropout=private_dropout,
                     activation=model_config.activation,
                 )
             self.task_normalizations[key] = (
@@ -350,7 +355,7 @@ class Stage3SparseModel(nn.Module):
             self.towers[key] = TaskTower(
                 d_model,
                 hidden_ratio=tower_hidden_ratio,
-                dropout=model_config.dropout,
+                dropout=private_dropout,
                 activation=model_config.activation,
             )
             modules = [
@@ -410,6 +415,11 @@ class Stage3SparseModel(nn.Module):
                 if private_recipe is not None
                 else overrides.get("film_hidden_ratio", self.model_config.film_hidden_ratio)
             )
+            private_dropout = float(
+                private_recipe.private_dropout
+                if private_recipe is not None
+                else overrides.get("private_dropout", self.model_config.dropout)
+            )
             tasks[task_id] = {
                 "private_experts": private_experts,
                 "private_hidden_ratio": private_ratio,
@@ -418,6 +428,7 @@ class Stage3SparseModel(nn.Module):
                 "tower_hidden": _width(self.d_model, tower_ratio),
                 "film_hidden_ratio": film_ratio,
                 "film_hidden": _width(self.d_model, film_ratio),
+                "private_dropout": private_dropout,
                 "candidate_count": (
                     self.model_config.global_experts
                     + int(groups[spec.meta_group]["experts"])

@@ -59,7 +59,7 @@ Stage 2 只从完整 Object v3 joint epoch 恢复，旧 Object v2、旧式 v2 re
 
 ## Stage 3
 
-Stage 3 使用冻结的 Stage 2 Object v3 表示、动态 HoME、raw sampling 与 ownership-aware clipping。现役 v2 按 owner-specific LR 与固定训练寿命执行三阶段训练：15 个全任务 epoch、六个同源 GROUP 分支，以及从同一 anchor 独立解析的 21 个 PRIVATE task scope；零预算 scope 直接继承 anchor，其余 scope 固定训练并 stitch。owner 提前冻结不删除 task，validation 只记录，最终发布固定预算状态拼接的 `three_phase_final.pt`。数据、模型、五折调度和恢复合同见 [ADR 索引](docs/adr/README.md)。
+Stage 3 使用冻结的 Stage 2 Object v3 表示、动态 HoME、raw sampling 与 ownership-aware clipping。现役 v2 按 owner-specific LR、固定训练寿命和 task-specific PRIVATE capacity/dropout 执行三阶段训练：15 个全任务 epoch、六个同源 GROUP 分支，以及从同一 anchor 独立解析的 21 个 PRIVATE task scope；零预算 scope 直接继承 anchor，其余 scope 固定训练并 stitch。owner 提前冻结不删除 task，validation 只记录，最终发布固定预算状态拼接的 `three_phase_final.pt`。数据、模型、五折调度和恢复合同见 [ADR 索引](docs/adr/README.md)。
 
 ```bash
 python scripts/stage3/prepare.py \

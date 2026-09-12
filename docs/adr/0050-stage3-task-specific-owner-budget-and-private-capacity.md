@@ -4,6 +4,10 @@
 - 日期：2026-09-12
 - 修订：ADR-0048 的现役 owner LR、epoch、PRIVATE width 与 task 配置字段
 
+> 数值状态：本 ADR 记录上一轮 recipe；现役 task-specific capacity、dropout 与 epoch 修订见
+> [ADR-0051](0051-stage3-weak-task-private-regularization.md)。未被 ADR-0051 修订的 LR、
+> size-class 默认与三阶段语义继续有效。
+
 ## 背景
 
 最新五折 validation 与 test benchmark 显示，统一按 `unique_systems` size class 设置 PRIVATE
