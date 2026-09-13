@@ -4,6 +4,10 @@
 - 日期：2026-09-13
 - 修订：ADR-0051 的 task-specific PRIVATE capacity、dropout 与 epoch 数值
 
+> 数值状态：本 ADR 记录上一轮 recipe；现役 clean hybrid recipe 见
+> [ADR-0053](0053-stage3-clean-hybrid-task-recipe.md)。未被 ADR-0053 修订的 three-phase
+> 语义与 task 设置继续有效。
+
 ## 背景
 
 ADR-0051 保留了有效的 three-phase 全局策略，但最新五折与 test 结果显示，部分 task 的定向

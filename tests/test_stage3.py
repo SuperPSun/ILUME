@@ -602,7 +602,7 @@ def test_three_phase_private_capacity_ratios_follow_size_class() -> None:
         pec50.private_hidden_ratio,
         pec50.tower_hidden_ratio,
         pec50.film_hidden_ratio,
-    ) == (1.0, 1.0, 1.0)
+    ) == (0.75, 0.75, 0.75)
     glass = config.resolved_private_recipe(
         "experiment/glass_transition_temperature"
     )
@@ -692,9 +692,9 @@ def test_three_phase_private_capacity_ratios_follow_size_class() -> None:
         resolved = config.resolved_private_recipe(resolved_task)
         assert (resolved.phase1_lr, resolved.phase2_lr, resolved.phase3_lr) == expected
     changed_recipes = {
-        "experiment/isobaric_coefficient_of_volume_expansion": (3, 0, 0.25, 0.25, 0.25, 0.10),
+        "experiment/isobaric_coefficient_of_volume_expansion": (4, 0, 0.25, 0.25, 0.25, 0.10),
         "experiment/thermal_conductivity": (3, 2, 0.50, 0.50, 0.50, 0.10),
-        "experiment/pec50": (4, 3, 1.00, 1.00, 1.00, 0.10),
+        "experiment/pec50": (4, 3, 0.75, 0.75, 0.75, 0.10),
         "experiment/refractive_index": (8, 3, 0.75, 0.75, 0.75, 0.15),
         "experiment/thermal_decomposition_temperature": (12, 6, 1.25, 1.25, 1.00, 0.10),
         "experiment/viscosity": (12, 6, 0.75, 0.75, 0.75, 0.10),
@@ -715,7 +715,7 @@ def test_three_phase_private_capacity_ratios_follow_size_class() -> None:
         "experiment/isobaric_coefficient_of_volume_expansion"
     )
     refractive = config.resolved_private_recipe("experiment/refractive_index")
-    assert min(volume.phase2_epochs, config.groups["thermophysical"].phase2.epochs) == 3
+    assert min(volume.phase2_epochs, config.groups["thermophysical"].phase2.epochs) == 4
     assert min(refractive.phase2_epochs, config.groups["dielectric_optical"].phase2.epochs) == 3
 
 

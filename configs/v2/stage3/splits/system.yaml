@@ -106,7 +106,7 @@ tasks:
     meta_group: thermophysical
     unique_systems: 25
     size_class: tiny
-    phase2_private_epochs: 3
+    phase2_private_epochs: 4
     phase3_private_epochs: 0
     model_overrides: {private_hidden_ratio: 0.25, tower_hidden_ratio: 0.25, film_hidden_ratio: 0.25}
   experiment/speed_of_sound:
@@ -200,7 +200,7 @@ tasks:
     meta_group: biological
     unique_systems: 305
     size_class: small
-    model_overrides: {private_hidden_ratio: 1.0, tower_hidden_ratio: 1.0, film_hidden_ratio: 1.0}
+    model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75}
 training:
   composite_batch_size: 2048
   microbatch_size: 1024
