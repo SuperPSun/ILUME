@@ -481,10 +481,10 @@ def test_three_phase_config_and_task_specific_gate_contract() -> None:
     }
     expected_tasks = {
         "isobaric_coefficient_of_volume_expansion": (25, "tiny", 0),
-        "self_diffusion_coefficient": (36, "tiny", 6),
+        "self_diffusion_coefficient": (36, "tiny", 4),
         "static_relative_permittivity": (44, "tiny", 0),
         "dynamic_relative_permittivity": (49, "tiny", 2),
-        "thermal_conductivity": (93, "tiny", 4),
+        "thermal_conductivity": (93, "tiny", 2),
         "equilibrium_pressure": (95, "tiny", 2),
         "x_co2": (122, "small", 3), "speed_of_sound": (216, "small", 0),
         "pec50": (305, "small", 3), "heat_capacity": (352, "small", 3),
@@ -494,8 +494,8 @@ def test_three_phase_config_and_task_specific_gate_contract() -> None:
         "surface_tension": (1141, "medium", 5),
         "transfer_organic": (1914, "medium", 15),
         "viscosity": (2586, "large", 6),
-        "thermal_decomposition_temperature": (2756, "large", 7),
-        "transfer": (3079, "large", 10), "melting_point": (3460, "large", 8),
+        "thermal_decomposition_temperature": (2756, "large", 6),
+        "transfer": (3079, "large", 10), "melting_point": (3460, "large", 5),
         "solvation": (3611, "large", 8), "density": (5966, "large", 8),
     }
     assert {
@@ -597,7 +597,12 @@ def test_three_phase_private_capacity_ratios_follow_size_class() -> None:
         fallback.film_hidden_ratio,
     ) == (0.5, 0.5, 0.5)
     assert fallback.phase1_epochs == 5
-    assert config.resolved_private_recipe("experiment/pec50").private_hidden_ratio == 0.75
+    pec50 = config.resolved_private_recipe("experiment/pec50")
+    assert (
+        pec50.private_hidden_ratio,
+        pec50.tower_hidden_ratio,
+        pec50.film_hidden_ratio,
+    ) == (1.0, 1.0, 1.0)
     glass = config.resolved_private_recipe(
         "experiment/glass_transition_temperature"
     )
@@ -608,11 +613,14 @@ def test_three_phase_private_capacity_ratios_follow_size_class() -> None:
     for task in (
         "experiment/electrical_conductivity",
         "experiment/refractive_index",
-        "experiment/viscosity",
         "experiment/surface_tension",
-        "experiment/thermal_decomposition_temperature",
     ):
         assert config.resolved_private_recipe(task).private_dropout == 0.15
+    for task in (
+        "experiment/viscosity",
+        "experiment/thermal_decomposition_temperature",
+    ):
+        assert config.resolved_private_recipe(task).private_dropout == 0.10
 
     task_id = "experiment/static_relative_permittivity"
     task = config.tasks[task_id]
@@ -663,6 +671,13 @@ def test_three_phase_private_capacity_ratios_follow_size_class() -> None:
     assert dropout_model.resolved_capacity_recipe()["tasks"][dropout_task][
         "private_dropout"
     ] == 0.15
+    refractive = config.resolved_private_recipe(dropout_task)
+    assert (
+        refractive.private_hidden_ratio,
+        refractive.tower_hidden_ratio,
+        refractive.film_hidden_ratio,
+        refractive.phase3_epochs,
+    ) == (0.75, 0.75, 0.75, 3)
 
     expected_lrs = {
         "experiment/transfer_organic": (1.2e-4, 6.0e-5, 3.0e-5),
@@ -676,12 +691,32 @@ def test_three_phase_private_capacity_ratios_follow_size_class() -> None:
     for resolved_task, expected in expected_lrs.items():
         resolved = config.resolved_private_recipe(resolved_task)
         assert (resolved.phase1_lr, resolved.phase2_lr, resolved.phase3_lr) == expected
-    thermal = config.resolved_private_recipe("experiment/thermal_conductivity")
-    assert (thermal.phase2_epochs, thermal.phase3_epochs) == (3, 4)
+    changed_recipes = {
+        "experiment/isobaric_coefficient_of_volume_expansion": (3, 0, 0.25, 0.25, 0.25, 0.10),
+        "experiment/thermal_conductivity": (3, 2, 0.50, 0.50, 0.50, 0.10),
+        "experiment/pec50": (4, 3, 1.00, 1.00, 1.00, 0.10),
+        "experiment/refractive_index": (8, 3, 0.75, 0.75, 0.75, 0.15),
+        "experiment/thermal_decomposition_temperature": (12, 6, 1.25, 1.25, 1.00, 0.10),
+        "experiment/viscosity": (12, 6, 0.75, 0.75, 0.75, 0.10),
+        "experiment/self_diffusion_coefficient": (3, 4, 0.50, 0.50, 0.50, 0.10),
+        "experiment/melting_point": (12, 5, 1.00, 1.00, 1.00, 0.10),
+    }
+    for changed_task, expected in changed_recipes.items():
+        resolved = config.resolved_private_recipe(changed_task)
+        assert (
+            resolved.phase2_epochs,
+            resolved.phase3_epochs,
+            resolved.private_hidden_ratio,
+            resolved.tower_hidden_ratio,
+            resolved.film_hidden_ratio,
+            resolved.private_dropout,
+        ) == expected
     volume = config.resolved_private_recipe(
         "experiment/isobaric_coefficient_of_volume_expansion"
     )
-    assert (volume.phase2_epochs, volume.phase3_epochs) == (0, 0)
+    refractive = config.resolved_private_recipe("experiment/refractive_index")
+    assert min(volume.phase2_epochs, config.groups["thermophysical"].phase2.epochs) == 3
+    assert min(refractive.phase2_epochs, config.groups["dielectric_optical"].phase2.epochs) == 3
 
 
 @pytest.mark.parametrize(

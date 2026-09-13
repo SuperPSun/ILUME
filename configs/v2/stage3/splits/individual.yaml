@@ -79,7 +79,7 @@ tasks:
     meta_group: transport
     unique_systems: 36
     size_class: tiny
-    phase3_private_epochs: 6
+    phase3_private_epochs: 4
     enabled: true
   experiment/viscosity:
     meta_group: transport
@@ -87,14 +87,14 @@ tasks:
     size_class: large
     phase1_private_lr: 1.0e-4
     phase3_private_epochs: 6
-    model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75, private_dropout: 0.15}
+    model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75, private_dropout: 0.10}
     enabled: true
   experiment/thermal_conductivity:
     meta_group: transport
     unique_systems: 93
     size_class: tiny
     phase2_private_epochs: 3
-    phase3_private_epochs: 4
+    phase3_private_epochs: 2
     model_overrides: {private_hidden_ratio: 0.5, tower_hidden_ratio: 0.5, film_hidden_ratio: 0.5}
     enabled: true
   experiment/density:
@@ -112,7 +112,7 @@ tasks:
     meta_group: thermophysical
     unique_systems: 25
     size_class: tiny
-    phase2_private_epochs: 0
+    phase2_private_epochs: 3
     phase3_private_epochs: 0
     model_overrides: {private_hidden_ratio: 0.25, tower_hidden_ratio: 0.25, film_hidden_ratio: 0.25}
     enabled: true
@@ -146,13 +146,14 @@ tasks:
     meta_group: phase_stability
     unique_systems: 3460
     size_class: large
+    phase3_private_epochs: 5
     enabled: true
   experiment/thermal_decomposition_temperature:
     meta_group: phase_stability
     unique_systems: 2756
     size_class: large
-    phase3_private_epochs: 7
-    model_overrides: {private_hidden_ratio: 1.25, tower_hidden_ratio: 1.25, private_dropout: 0.15}
+    phase3_private_epochs: 6
+    model_overrides: {private_hidden_ratio: 1.25, tower_hidden_ratio: 1.25, film_hidden_ratio: 1.0, private_dropout: 0.10}
     enabled: true
   experiment/dynamic_relative_permittivity:
     meta_group: dielectric_optical
@@ -174,7 +175,7 @@ tasks:
     size_class: medium
     phase1_private_lr: 8.0e-5
     phase3_private_epochs: 3
-    model_overrides: {private_hidden_ratio: 1.0, tower_hidden_ratio: 1.0, film_hidden_ratio: 1.0, private_dropout: 0.15}
+    model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75, private_dropout: 0.15}
     enabled: true
   experiment/solvation:
     meta_group: solvation
@@ -219,7 +220,7 @@ tasks:
     meta_group: biological
     unique_systems: 305
     size_class: small
-    model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75}
+    model_overrides: {private_hidden_ratio: 1.0, tower_hidden_ratio: 1.0, film_hidden_ratio: 1.0}
     enabled: true
 training:
   composite_batch_size: 2048

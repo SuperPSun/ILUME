@@ -4,6 +4,10 @@
 - 日期：2026-09-12
 - 修订：ADR-0050 的 task-specific PRIVATE capacity、dropout 与 epoch 数值
 
+> 数值状态：本 ADR 记录上一轮 recipe；现役定向回滚与 epoch cleanup 见
+> [ADR-0052](0052-stage3-task-recipe-rollback-and-epoch-cleanup.md)。未被 ADR-0052 修订的
+> three-phase 语义与 task 设置继续有效。
+
 ## 背景
 
 最新五折 validation 与 test benchmark 表明，ADR-0050 的 medium/large Phase 1 LR 调整整体有效，
