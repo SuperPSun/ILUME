@@ -30,7 +30,11 @@ from .data import (
     source_path,
     test_path,
 )
-from .model import Stage3SparseModel
+from .model import (
+    Stage3SparseModel,
+    summarize_task_gate_observations,
+    task_gate_observations,
+)
 from .prepare import load_prepared_stage3
 from .train import (
     STAGE3_CHECKPOINT_KIND,
@@ -281,8 +285,9 @@ def _predict(
     progress_bar: Any | None = None,
     fold: int | None = None,
     fold_count: int | None = None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     normalized_predictions: list[torch.Tensor] = []
+    gate_observations: list[torch.Tensor] = []
     target_stats = normalization["target"]
 
     microbatch_size = config.training.microbatch_size
@@ -321,12 +326,13 @@ def _predict(
             dtype=torch.bfloat16,
             enabled=config.training.amp_dtype == "bf16",
         ):
-            prediction = model(
-                task_id, primary, conditions, partner_embedding=partner
-            ).predictions
+            output = model(task_id, primary, conditions, partner_embedding=partner)
+            prediction = output.predictions
         if not torch.isfinite(prediction).all():
             raise RuntimeError(f"Non-finite Stage 3 evaluation prediction: {task_id}")
         normalized_predictions.append(prediction.float().cpu())
+        if config.training.schedule_mode == "three_phase":
+            gate_observations.append(task_gate_observations(output.diagnostics).cpu())
     normalized = (
         torch.cat(normalized_predictions) if normalized_predictions else torch.empty(0)
     )
@@ -336,7 +342,12 @@ def _predict(
     normalized_targets = (
         dataset.raw_targets.float() - float(target_stats["mean"])
     ) / float(target_stats["scale"])
-    return normalized, raw_predictions, normalized_targets
+    return (
+        normalized,
+        raw_predictions,
+        normalized_targets,
+        torch.cat(gate_observations) if gate_observations else torch.empty((0, 4)),
+    )
 
 
 def _raw_ensemble_metrics(
@@ -695,6 +706,10 @@ def evaluate_checkpoints(
     model_state_hashes: list[str] = []
     selection_manifest_hashes: list[str] = []
     raw_fold_predictions: dict[int, dict[str, torch.Tensor]] = {}
+    fold_gate_observations: dict[int, dict[str, torch.Tensor]] = {}
+    pooled_gate_observations: dict[str, list[torch.Tensor]] = {
+        task: [] for task in tasks
+    }
     try:
         for current_fold in folds:
             assert current_fold is not None
@@ -726,12 +741,13 @@ def evaluate_checkpoints(
                 )
             per_task: dict[str, Any] = {}
             raw_fold_predictions[current_fold] = {}
+            fold_gate_observations[current_fold] = {}
             for task in tasks:
                 dataset = Stage3TaskDataset(
                     config.data.artifacts_dir, current_fold, task, split
                 )
                 normalization = checkpoint["normalization"][task]
-                normalized, raw, normalized_targets = _predict(
+                normalized, raw, normalized_targets, gate_observations = _predict(
                     model,
                     task,
                     dataset,
@@ -748,6 +764,9 @@ def evaluate_checkpoints(
                 )
                 ensemble_predictions[task].append(raw)
                 raw_fold_predictions[current_fold][task] = raw
+                if config.training.schedule_mode == "three_phase":
+                    fold_gate_observations[current_fold][task] = gate_observations
+                    pooled_gate_observations[task].append(gate_observations)
                 normalizations[task].append(normalization)
                 if task in raw_targets and not torch.equal(
                     raw_targets[task], dataset.raw_targets
@@ -757,10 +776,18 @@ def evaluate_checkpoints(
                     )
                 raw_targets[task] = dataset.raw_targets.float()
                 evaluation_progress.update(1)
-            fold_results[f"fold{current_fold}"] = {
+            fold_result = {
                 "tasks": per_task,
                 **_macro(per_task, prepared["registry"]),
             }
+            if config.training.schedule_mode == "three_phase":
+                fold_result["gate_diagnostics"] = {
+                    task: summarize_task_gate_observations(observations)
+                    for task, observations in fold_gate_observations[
+                        current_fold
+                    ].items()
+                }
+            fold_results[f"fold{current_fold}"] = fold_result
     finally:
         evaluation_progress.close()
     evaluation_identity = build_stage3_evaluation_identity(
@@ -859,15 +886,21 @@ def evaluate_checkpoints(
     comparison = _reporting_comparison(
         config, prepared, split=split, expected_tasks=expected_tasks
     )
+    ensemble_result = {
+        "tasks": ensemble,
+        **_macro(ensemble, prepared["registry"]),
+    }
+    if config.training.schedule_mode == "three_phase":
+        ensemble_result["gate_diagnostics"] = {
+            task: summarize_task_gate_observations(torch.cat(observations))
+            for task, observations in pooled_gate_observations.items()
+        }
     result = {
         "split": split,
         "checkpoint_epoch": None if final_artifact else epoch,
         "model_selector": model_selector,
         "folds": fold_results,
-        "ensemble": {
-            "tasks": ensemble,
-            **_macro(ensemble, prepared["registry"]),
-        },
+        "ensemble": ensemble_result,
     }
     default_study_id = _default_reporting_study_id(
         prepared["metadata"],

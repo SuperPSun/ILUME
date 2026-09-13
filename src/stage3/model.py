@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
@@ -172,6 +173,71 @@ def _expert_outputs(
 class Stage3ForwardOutput:
     predictions: torch.Tensor
     diagnostics: dict[str, torch.Tensor]
+
+
+def task_gate_observations(
+    diagnostics: Mapping[str, torch.Tensor],
+) -> torch.Tensor:
+    """Return per-sample GLOBAL/GROUP/PRIVATE mass and normalized entropy."""
+    task_gate = diagnostics["task_gate"].detach().float()
+    candidate_counts = tuple(
+        int(diagnostics[name].shape[1])
+        for name in (
+            "l2_global_candidates",
+            "l2_group_candidates",
+            "l2_private_candidates",
+        )
+    )
+    if task_gate.ndim != 2 or sum(candidate_counts) != task_gate.shape[1]:
+        raise ValueError("Stage 3 task-gate candidate partition mismatch")
+    masses = []
+    offset = 0
+    for count in candidate_counts:
+        masses.append(task_gate[:, offset : offset + count].sum(dim=1))
+        offset += count
+    if task_gate.shape[1] > 1:
+        entropy = torch.special.entr(task_gate).sum(dim=1) / math.log(
+            task_gate.shape[1]
+        )
+    else:
+        entropy = task_gate.new_zeros(task_gate.shape[0])
+    return torch.stack((*masses, entropy), dim=1)
+
+
+def summarize_task_gate_observations(
+    observations: torch.Tensor,
+) -> dict[str, float]:
+    """Summarize rows produced by :func:`task_gate_observations`."""
+    if observations.ndim != 2 or observations.shape[1] != 4:
+        raise ValueError("Stage 3 task-gate observations must have four columns")
+    values = observations.detach().double().cpu()
+    if not torch.isfinite(values).all():
+        raise RuntimeError("Non-finite Stage 3 task-gate diagnostics")
+    if values.shape[0] == 0:
+        return {
+            name: float("nan")
+            for name in (
+                "mean_global_gate_weight",
+                "mean_group_gate_weight",
+                "mean_private_gate_weight",
+                "task_gate_entropy",
+                "private_gate_weight_p10",
+                "private_gate_weight_p50",
+                "private_gate_weight_p90",
+            )
+        }
+    private_quantiles = torch.quantile(
+        values[:, 2], torch.tensor((0.1, 0.5, 0.9), dtype=torch.float64)
+    )
+    return {
+        "mean_global_gate_weight": float(values[:, 0].mean()),
+        "mean_group_gate_weight": float(values[:, 1].mean()),
+        "mean_private_gate_weight": float(values[:, 2].mean()),
+        "task_gate_entropy": float(values[:, 3].mean()),
+        "private_gate_weight_p10": float(private_quantiles[0]),
+        "private_gate_weight_p50": float(private_quantiles[1]),
+        "private_gate_weight_p90": float(private_quantiles[2]),
+    }
 
 
 class Stage3SparseModel(nn.Module):

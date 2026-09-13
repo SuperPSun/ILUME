@@ -12,6 +12,8 @@ Stage 3 现役合同以 ADR-0020、ADR-0039、ADR-0046、ADR-0048、ADR-0050、A
 
 Capacity v1 是 ADR-0026/0027 和 `configs/experiments_v1/{stage1,stage2,stage3}` 限定的预注册端到端 legacy 实验；它不修改 `configs/v1` 或现役 v2 Stage 1/2/3 合同，也不得被解释为正式多容量配置、strict scaling law 或 encoder-only effect。该实验只用 Stage 1 Base 配置 prepare 一次，四规模共享 `outputs/experiments_v1/stage1/prepare/artifacts`；Stage 3 选择统一读取 taskwise-refined stitched validation，不读取末轮均值或 test。Capacity v1 HPO 与 v2 Stage 3 A/B/C 搜索已退役，不得恢复搜索入口、study 配置或 Optuna 依赖；Capacity Stage 3 正式运行只读取已冻结的 `configs/experiments_v1/stage3/formal/*.yaml`。
 
+ADR-0054 进一步定义现役 Stage 3 的弱任务 recipe 与只读 task-gate diagnostics：three-phase validation 和独立 evaluation 按 task 报告 GLOBAL/GROUP/PRIVATE gate mass、归一化 gate entropy 与 PRIVATE mass 分位数；test aggregate 合并五折的 fold-sample 观测。该诊断不得增加 forward、进入 loss/selection 或改变 prediction CSV，legacy v1/Capacity 不输出该字段。
+
 ## 结构与入口
 
 - 现役 Stage 实现只位于 `src/common`、`src/stage1`、`src/stage2`、`src/stage3`；论文对比 baseline 位于顶层 `benchmarks/`，内部消融位于顶层 `ablations/`，二者均不得被 Stage 1/2/3 导入。

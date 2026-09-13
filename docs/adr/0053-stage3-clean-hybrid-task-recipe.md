@@ -4,6 +4,10 @@
 - 日期：2026-09-13
 - 修订：ADR-0052 的 pEC50 capacity 与 volume expansion Phase 2 PRIVATE lifetime
 
+> 数值状态：本 ADR 记录上一轮 recipe；现役弱任务微调与 task-gate diagnostics 见
+> [ADR-0054](0054-stage3-task-gate-diagnostics-and-weak-task-tuning.md)。未被 ADR-0054
+> 修订的 three-phase 语义与 task 设置继续有效。
+
 ## 背景
 
 以五折 macro normalized MAE 约为 0.21173 的 recipe 为基线，对最新一轮结果逐 task

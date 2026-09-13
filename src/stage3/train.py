@@ -46,7 +46,15 @@ from .data import (
     shuffled_epoch_indices,
     stable_seed,
 )
-from .model import GLOBAL, Ownership, Stage3SparseModel, group_owner, private_owner
+from .model import (
+    GLOBAL,
+    Ownership,
+    Stage3SparseModel,
+    group_owner,
+    private_owner,
+    summarize_task_gate_observations,
+    task_gate_observations,
+)
 from .pcgrad import GradientMap, HierarchicalPCGradResult, hierarchical_pcgrad
 from .prepare import load_prepared_stage3
 from .identity import (
@@ -1064,9 +1072,11 @@ def validate_tasks(
 ) -> dict[str, Any]:
     model.eval()
     per_task: dict[str, Any] = {}
+    gate_diagnostics: dict[str, dict[str, float]] = {}
     for task_id, dataset in datasets.items():
         predictions: list[torch.Tensor] = []
         targets: list[torch.Tensor] = []
+        gate_observations: list[torch.Tensor] = []
         for start in range(0, len(dataset), config.training.microbatch_size):
             indices = torch.arange(start, min(len(dataset), start + config.training.microbatch_size))
             primary, conditions, partner, target = _batch(
@@ -1078,16 +1088,25 @@ def validate_tasks(
                 device,
             )
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=config.training.amp_dtype == "bf16"):
-                prediction = model(task_id, primary, conditions, partner_embedding=partner).predictions
+                output = model(task_id, primary, conditions, partner_embedding=partner)
+                prediction = output.predictions
             if not torch.isfinite(prediction).all():
                 raise RuntimeError(
                     f"Non-finite Stage 3 validation prediction: {task_id}"
                 )
             predictions.append(prediction.float().cpu())
             targets.append(target.float().cpu())
+            if config.training.schedule_mode == "three_phase":
+                gate_observations.append(
+                    task_gate_observations(output.diagnostics).cpu()
+                )
         per_task[task_id] = regression_metrics(
             torch.cat(predictions), torch.cat(targets), normalizations[task_id]
         )
+        if gate_observations:
+            gate_diagnostics[task_id] = summarize_task_gate_observations(
+                torch.cat(gate_observations)
+            )
     metrics = ("mae", "rmse", "r2", "pearson_r", "normalized_mae", "normalized_rmse")
     macro_task: dict[str, Any] = {}
     macro_group: dict[str, Any] = {}
@@ -1115,12 +1134,15 @@ def validate_tasks(
             "valid_groups": len(group_values),
             "total_groups": len({model.task_specs[task].meta_group for task in per_task}),
         }
-    return {
+    result = {
         "tasks": per_task,
         "groups": per_group,
         "macro_task_equal": macro_task,
         "macro_group_equal": macro_group,
     }
+    if config.training.schedule_mode == "three_phase":
+        result["gate_diagnostics"] = gate_diagnostics
+    return result
 
 
 def _pair_matrix(names: Sequence[str], diagnostics: Mapping[tuple[str, str], Any]) -> dict[str, Any]:

@@ -87,7 +87,7 @@ tasks:
     size_class: large
     phase1_private_lr: 1.0e-4
     phase3_private_epochs: 6
-    model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75, private_dropout: 0.10}
+    model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75, private_dropout: 0.15}
     enabled: true
   experiment/thermal_conductivity:
     meta_group: transport
@@ -112,7 +112,7 @@ tasks:
     meta_group: thermophysical
     unique_systems: 25
     size_class: tiny
-    phase2_private_epochs: 4
+    phase2_private_epochs: 0
     phase3_private_epochs: 0
     model_overrides: {private_hidden_ratio: 0.25, tower_hidden_ratio: 0.25, film_hidden_ratio: 0.25}
     enabled: true
@@ -215,11 +215,13 @@ tasks:
     meta_group: solvation
     unique_systems: 122
     size_class: small
+    phase3_private_epochs: 5
     enabled: true
   experiment/pec50:
     meta_group: biological
     unique_systems: 305
     size_class: small
+    phase3_private_epochs: 5
     model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75}
     enabled: true
 training:

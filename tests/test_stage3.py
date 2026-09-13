@@ -60,7 +60,14 @@ from stage3.data import (
     source_path,
 )
 
-from stage3.model import GLOBAL, Stage3SparseModel, group_owner, private_owner
+from stage3.model import (
+    GLOBAL,
+    Stage3SparseModel,
+    group_owner,
+    private_owner,
+    summarize_task_gate_observations,
+    task_gate_observations,
+)
 
 from stage3.pcgrad import hierarchical_pcgrad
 
@@ -486,8 +493,8 @@ def test_three_phase_config_and_task_specific_gate_contract() -> None:
         "dynamic_relative_permittivity": (49, "tiny", 2),
         "thermal_conductivity": (93, "tiny", 2),
         "equilibrium_pressure": (95, "tiny", 2),
-        "x_co2": (122, "small", 3), "speed_of_sound": (216, "small", 0),
-        "pec50": (305, "small", 3), "heat_capacity": (352, "small", 3),
+        "x_co2": (122, "small", 5), "speed_of_sound": (216, "small", 0),
+        "pec50": (305, "small", 5), "heat_capacity": (352, "small", 3),
         "electrical_conductivity": (703, "medium", 4),
         "refractive_index": (726, "medium", 3),
         "glass_transition_temperature": (793, "medium", 2),
@@ -616,11 +623,12 @@ def test_three_phase_private_capacity_ratios_follow_size_class() -> None:
         "experiment/surface_tension",
     ):
         assert config.resolved_private_recipe(task).private_dropout == 0.15
-    for task in (
-        "experiment/viscosity",
-        "experiment/thermal_decomposition_temperature",
-    ):
-        assert config.resolved_private_recipe(task).private_dropout == 0.10
+    assert config.resolved_private_recipe(
+        "experiment/viscosity"
+    ).private_dropout == 0.15
+    assert config.resolved_private_recipe(
+        "experiment/thermal_decomposition_temperature"
+    ).private_dropout == 0.10
 
     task_id = "experiment/static_relative_permittivity"
     task = config.tasks[task_id]
@@ -692,12 +700,13 @@ def test_three_phase_private_capacity_ratios_follow_size_class() -> None:
         resolved = config.resolved_private_recipe(resolved_task)
         assert (resolved.phase1_lr, resolved.phase2_lr, resolved.phase3_lr) == expected
     changed_recipes = {
-        "experiment/isobaric_coefficient_of_volume_expansion": (4, 0, 0.25, 0.25, 0.25, 0.10),
+        "experiment/isobaric_coefficient_of_volume_expansion": (0, 0, 0.25, 0.25, 0.25, 0.10),
         "experiment/thermal_conductivity": (3, 2, 0.50, 0.50, 0.50, 0.10),
-        "experiment/pec50": (4, 3, 0.75, 0.75, 0.75, 0.10),
+        "experiment/pec50": (4, 5, 0.75, 0.75, 0.75, 0.10),
+        "experiment/x_co2": (4, 5, 0.75, 0.75, 0.75, 0.10),
         "experiment/refractive_index": (8, 3, 0.75, 0.75, 0.75, 0.15),
         "experiment/thermal_decomposition_temperature": (12, 6, 1.25, 1.25, 1.00, 0.10),
-        "experiment/viscosity": (12, 6, 0.75, 0.75, 0.75, 0.10),
+        "experiment/viscosity": (12, 6, 0.75, 0.75, 0.75, 0.15),
         "experiment/self_diffusion_coefficient": (3, 4, 0.50, 0.50, 0.50, 0.10),
         "experiment/melting_point": (12, 5, 1.00, 1.00, 1.00, 0.10),
     }
@@ -715,8 +724,41 @@ def test_three_phase_private_capacity_ratios_follow_size_class() -> None:
         "experiment/isobaric_coefficient_of_volume_expansion"
     )
     refractive = config.resolved_private_recipe("experiment/refractive_index")
-    assert min(volume.phase2_epochs, config.groups["thermophysical"].phase2.epochs) == 4
+    assert min(volume.phase2_epochs, config.groups["thermophysical"].phase2.epochs) == 0
     assert min(refractive.phase2_epochs, config.groups["dielectric_optical"].phase2.epochs) == 3
+
+
+def test_task_gate_diagnostics_partition_entropy_and_pooled_quantiles() -> None:
+    task_gate = torch.tensor(
+        (
+            (0.10, 0.10, 0.10, 0.10, 0.10, 0.50),
+            (1 / 6, 1 / 6, 1 / 6, 1 / 6, 1 / 6, 1 / 6),
+        ),
+        dtype=torch.float64,
+    )
+    diagnostics = {
+        "task_gate": task_gate,
+        "l2_global_candidates": torch.empty((2, 2, 3)),
+        "l2_group_candidates": torch.empty((2, 3, 3)),
+        "l2_private_candidates": torch.empty((2, 1, 3)),
+    }
+    observations = task_gate_observations(diagnostics)
+    assert observations[:, :3] == pytest.approx(
+        torch.tensor(((0.2, 0.3, 0.5), (1 / 3, 0.5, 1 / 6)))
+    )
+    expected_entropy = torch.special.entr(task_gate).sum(dim=1) / math.log(6)
+    assert observations[:, 3] == pytest.approx(expected_entropy)
+
+    pooled = summarize_task_gate_observations(
+        torch.cat((observations, observations.flip(0)))
+    )
+    assert pooled["mean_global_gate_weight"] == pytest.approx(4 / 15)
+    assert pooled["mean_group_gate_weight"] == pytest.approx(0.4)
+    assert pooled["mean_private_gate_weight"] == pytest.approx(1 / 3)
+    assert pooled["task_gate_entropy"] == pytest.approx(expected_entropy.mean())
+    assert pooled["private_gate_weight_p10"] == pytest.approx(1 / 6)
+    assert pooled["private_gate_weight_p50"] == pytest.approx(1 / 3)
+    assert pooled["private_gate_weight_p90"] == pytest.approx(0.5)
 
 
 @pytest.mark.parametrize(
@@ -795,6 +837,30 @@ def test_three_phase_training_publishes_fixed_final_state(
     assert manifest["phases"]["phase3"]["tasks"]["experiment/a"][
         "carried_from_anchor"
     ] is True
+    gate_fields = {
+        "mean_global_gate_weight",
+        "mean_group_gate_weight",
+        "mean_private_gate_weight",
+        "task_gate_entropy",
+        "private_gate_weight_p10",
+        "private_gate_weight_p50",
+        "private_gate_weight_p90",
+    }
+    assert set(rows[-1]["validation"]["gate_diagnostics"]) == set(config.tasks)
+    assert set(
+        rows[-1]["validation"]["gate_diagnostics"]["experiment/a"]
+    ) == gate_fields
+    phase1_metric = json.loads(
+        (output / "phase_1/metrics.jsonl").read_text().splitlines()[0]
+    )
+    phase2_metric = json.loads(
+        (output / "phase_2/g1/metrics.jsonl").read_text().splitlines()[0]
+    )
+    phase2_manifest = json.loads((output / "phase_2/stitched.json").read_text())
+    assert "gate_diagnostics" in phase1_metric["validation"]
+    assert "gate_diagnostics" in phase2_metric["validation"]
+    assert "gate_diagnostics" in phase2_manifest["validation"]
+    assert "gate_diagnostics" in manifest["validation"]
     assert "best_metric" not in json.dumps(manifest)
     assert "selected_epoch" not in json.dumps(manifest)
     assert "best_state" not in json.dumps(manifest)
@@ -926,6 +992,13 @@ def test_three_phase_training_publishes_fixed_final_state(
         fold=1,
     )
     assert evaluated["model_selector"] == "three_phase_final"
+    assert set(evaluated["gate_diagnostics"]) == {"experiment/a"}
+    gate = evaluated["gate_diagnostics"]["experiment/a"]
+    assert set(gate) == gate_fields
+    assert gate["mean_global_gate_weight"] + gate[
+        "mean_group_gate_weight"
+    ] + gate["mean_private_gate_weight"] == pytest.approx(1.0)
+    assert 0.0 <= gate["task_gate_entropy"] <= 1.0
     with pytest.raises(ValueError, match="only supported by legacy"):
         evaluate_checkpoints(
             config,
@@ -936,6 +1009,58 @@ def test_three_phase_training_publishes_fixed_final_state(
             task_subset=("experiment/a",),
             fold=1,
         )
+
+
+def test_three_phase_test_reports_fold_and_pooled_gate_diagnostics(
+    tiny_prepared: Stage3Config,
+) -> None:
+    config = _tiny_three_phase(tiny_prepared)
+    output = config.data.artifacts_dir.parent / "three-phase-ensemble"
+    for fold in range(1, 6):
+        run_stage3_training(config, fold, output_dir=output / f"fold{fold}")
+    predictions = output / "evaluation-predictions"
+    evaluated = evaluate_checkpoints(
+        config,
+        output,
+        split="test",
+        ensemble_folds=True,
+        task_subset=("experiment/a",),
+        predictions_dir=predictions,
+    )
+    gate_fields = {
+        "mean_global_gate_weight",
+        "mean_group_gate_weight",
+        "mean_private_gate_weight",
+        "task_gate_entropy",
+        "private_gate_weight_p10",
+        "private_gate_weight_p50",
+        "private_gate_weight_p90",
+    }
+    assert set(evaluated["folds"]) == {f"fold{fold}" for fold in range(1, 6)}
+    for fold_result in evaluated["folds"].values():
+        assert set(fold_result["gate_diagnostics"]["experiment/a"]) == gate_fields
+    aggregate = evaluated["ensemble"]["gate_diagnostics"]["experiment/a"]
+    assert set(aggregate) == gate_fields
+    assert aggregate["mean_global_gate_weight"] + aggregate[
+        "mean_group_gate_weight"
+    ] + aggregate["mean_private_gate_weight"] == pytest.approx(1.0)
+    assert 0.0 <= aggregate["task_gate_entropy"] <= 1.0
+
+    with (predictions / "experiment__a.csv").open(
+        newline="", encoding="utf-8"
+    ) as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows
+    spec = resolve_task_registry(config)["experiment/a"]
+    assert set(rows[0]) == {
+        "source_row",
+        *spec.identity_columns,
+        *spec.condition_columns,
+        "target",
+        *(f"prediction_fold{fold}" for fold in range(1, 6)),
+        "prediction_ensemble",
+        "absolute_error_ensemble",
+    }
 
 
 def test_three_phase_optimizer_groups_follow_ownership(
@@ -1667,6 +1792,7 @@ def test_short_training_checkpoint_and_resume_are_exact(tiny_prepared: Stage3Con
     )
     assert evaluation["checkpoint_epoch"] == 2
     assert set(evaluation["tasks"]) == {"experiment/a"}
+    assert "gate_diagnostics" not in evaluation
     prediction_path = prediction_dir / "experiment__a.csv"
     with prediction_path.open(newline="", encoding="utf-8") as handle:
         prediction_rows = list(csv.DictReader(handle))
