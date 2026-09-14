@@ -110,33 +110,6 @@ python scripts/stage3/evaluate.py \
 同时记录 intervention 后 gate diagnostics 及相对 `learned_gate` 的 NMAE 变化；该结果
 只用于诊断，不作为 test-driven 模型选择依据。
 
-训练时 hierarchical GLOBAL-vs-LOCAL routing 是独立的 Base 结构消融；它与上述
-inference-only `--routing-mode` 不同，必须使用新配置重新训练 Stage 3：
-
-```bash
-python scripts/stage3/train.py \
-  --config configs/ablations/stage3_hierarchical_routing.yaml \
-  --fold 1 2 3 4 5 \
-  --output outputs/ablations/stage3_hierarchical_routing/train \
-  --max-parallel 4 \
-  --devices cuda:0,cuda:1,cuda:2,cuda:3
-
-python scripts/stage3/evaluate.py \
-  --config configs/ablations/stage3_hierarchical_routing.yaml \
-  --checkpoint-dir outputs/ablations/stage3_hierarchical_routing/train \
-  --split valid --fold 1 2 3 4 5 \
-  --output outputs/ablations/stage3_hierarchical_routing/evaluate_valid
-
-python scripts/stage3/evaluate.py \
-  --config configs/ablations/stage3_hierarchical_routing.yaml \
-  --checkpoint-dir outputs/ablations/stage3_hierarchical_routing/train \
-  --split test --ensemble-folds \
-  --output outputs/ablations/stage3_hierarchical_routing/evaluate_test
-```
-
-该配置直接复用 Base prepared artifact和Stage 2 checkpoint，不需要重新prepare；其三个
-task-specific router仍归属PRIVATE owner，并额外报告family/internal routing diagnostics。
-
 ### 超参数搜索退役
 
 ILUME 的 v2 Stage 3 A/B/C 搜索与 Capacity v1 HPO 已于 2026-09-06 退役；仓库不再提供

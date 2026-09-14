@@ -18,8 +18,6 @@ ADR-0055 将现役六套 Stage 3 配置中 pEC50 的 Phase 3 PRIVATE lifetime �
 
 ADR-0056 定义现役 three-phase Stage 3 的 inference-only task-gate routing ablation：只允许 evaluator 对 L2 GLOBAL/GROUP/PRIVATE mixture weights 应用 `no_private`、`global_only` 或 GLOBAL mass floor，默认 `learned_gate` 必须保持逐 bit 不变；forced mode 不得进入训练、修改 checkpoint/training identity、污染正式 benchmark 或驱动 test-based 模型选择，legacy v1/Capacity 不支持 forced routing。
 
-ADR-0058 定义 Stage 3 hierarchical GLOBAL-vs-LOCAL routing 结构消融：现役 Base 继续默认 flat 且旧 identity/数值路径不变；仅 `configs/ablations/stage3_hierarchical_routing.yaml` 使用三个 PRIVATE-owned task gate 先路由 GLOBAL/LOCAL family、再路由 family 内部 experts。除必要 gate 参数外，expert capacity、three-phase recipe和全部训练数学不变；hierarchical必须重新训练且不得与flat checkpoint交叉加载。
-
 ## 结构与入口
 
 - 现役 Stage 实现只位于 `src/common`、`src/stage1`、`src/stage2`、`src/stage3`；论文对比 baseline 位于顶层 `benchmarks/`，内部消融位于顶层 `ablations/`，二者均不得被 Stage 1/2/3 导入。

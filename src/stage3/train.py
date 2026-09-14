@@ -150,13 +150,6 @@ def _scope_matches(scope: str, ownership: str) -> bool:
     return scope.endswith(":*") and ownership.startswith(scope[:-1])
 
 
-def _model_structure_config(config: Stage3Config) -> dict[str, Any]:
-    resolved = asdict(config.model)
-    if config.model.routing.type == "flat":
-        resolved.pop("routing")
-    return resolved
-
-
 def _load_plugin(
     config: Stage3Config,
     model: Stage3SparseModel,
@@ -196,7 +189,7 @@ def _load_plugin(
     source_model_config = source_plan.get("model")
     if not isinstance(source_model_config, dict) or any(
         source_model_config.get(name) != value
-        for name, value in _model_structure_config(config).items()
+        for name, value in asdict(config.model).items()
     ):
         raise ValueError("Plugin model structure signature mismatch")
     source_registry = source.get("resolved_registry")
@@ -541,10 +534,7 @@ def build_resolved_training_plan(
             for group, spec in resolve_group_registry(config).items()
         },
         "data": data_plan,
-        "model": {
-            **_model_structure_config(config),
-            "resolved_widths": _resolved_widths(model.d_model, config),
-        },
+        "model": {**asdict(config.model), "resolved_widths": _resolved_widths(model.d_model, config)},
         "optimizer": {
             "name": "AdamW", "implementation": config.training.optimizer_implementation,
             "weight_decay": config.training.weight_decay,
