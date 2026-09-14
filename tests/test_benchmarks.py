@@ -467,7 +467,7 @@ def test_native_split_benchmark_configs_follow_v2_authorities() -> None:
 def test_default_benchmark_configs_follow_v2_system_authority() -> None:
     for benchmark in (
         "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm",
-        "llasmol", "aionopedia",
+        "llasmol", "aionopedia", "iltransr",
     ):
         config = load_benchmark_config(
             Path("configs/benchmarks") / f"{benchmark}.yaml"
@@ -2103,3 +2103,176 @@ def test_aionopedia_sample_std_scheduler_and_condition_tokens() -> None:
         active_conditions=("pressure", "frequency", "wavelength"),
     )
     assert with_conditions.shape[1] == without.shape[1] + 3
+
+
+# --- ILTransR baseline contracts ---
+
+from benchmarks.iltransr.adapter import (
+    CharacterVocabulary as ILTransRCharacterVocabulary,
+    ConditionStats as ILTransRConditionStats,
+    TwoBucketBatchSampler as ILTransRTwoBucketBatchSampler,
+    _condition_population as iltransr_condition_population,
+    iltransr_model_views,
+    resolve_iltransr_recipe,
+)
+from benchmarks.iltransr.model import (
+    ILTransRRegressor,
+    ILTransRTransformer,
+    load_converted_transformer,
+)
+
+
+def _iltransr_task(
+    tmp_path: Path,
+    *,
+    slots: tuple[str, ...] = ("cation", "anion"),
+    conditions: tuple[str, ...] = (),
+    train_paths: tuple[Path, ...] = (),
+    valid_paths: tuple[Path, ...] = (),
+    test_path: Path | None = None,
+) -> BenchmarkTask:
+    return BenchmarkTask(
+        benchmark="stage3",
+        task_id="experiment/iltransr_tiny",
+        slots=slots,
+        condition_columns=conditions,
+        target_columns=("secret_target",),
+        audit_columns=(),
+        train_paths=train_paths,
+        valid_paths=valid_paths,
+        test_path=test_path or tmp_path / "test.csv",
+        fold=1,
+        meta_group="tiny",
+        registry_payload={"task_id": "experiment/iltransr_tiny"},
+    )
+
+
+def test_formal_iltransr_config_recipes_and_property_weight_guard() -> None:
+    config = load_benchmark_config("configs/benchmarks/iltransr.yaml")
+    tasks = configured_tasks(config, "stage3")
+    assert len(tasks) == 21
+    assert len(tasks) * len(config.stage3.folds) == 105
+    official = {
+        "experiment/density", "experiment/viscosity", "experiment/heat_capacity",
+        "experiment/melting_point", "experiment/thermal_decomposition_temperature",
+        "experiment/x_co2", "experiment/pec50",
+    }
+    assert set(config.training["official_recipes"]) == official
+    assert sum(resolve_iltransr_recipe(config, task)["source"] == "official_notebook" for task in tasks) == 7
+    assert sum(resolve_iltransr_recipe(config, task)["source"] == "registered_fallback" for task in tasks) == 14
+    assert resolve_iltransr_recipe(config, "experiment/x_co2")["epochs"] == 160
+    assert config.training["loss"] == "train_population_zscore_l1"
+    assert config.training["model_selection"] == "final_training_state"
+    changed = config.to_dict()
+    changed["model"]["generic_checkpoint"] = "density_best.params"
+    with pytest.raises(ValueError, match="generic-pretraining recipe"):
+        benchmark_config_from_dict(changed)
+
+
+def test_iltransr_character_vocab_eos_padding_clip_and_unknown(tmp_path: Path) -> None:
+    mapping = {"<unk>": 0, "<pad>": 1, "<bos>": 2, "<eos>": 3, "A": 4}
+    mapping.update({chr(0x100 + index): index + 5 for index in range(67)})
+    path = tmp_path / "vocab.json"
+    path.write_text(json.dumps({"token_to_idx": mapping}), encoding="utf-8")
+    vocabulary = ILTransRCharacterVocabulary(path)
+
+    values, length, audit = vocabulary.encode("A" * 99)
+    assert length == 100 and values[-1].item() == 3
+    assert audit == {
+        "characters": 99, "tokens_before_clip": 100, "clipped": 0,
+        "eos_clipped": 0, "unknown_tokens": 0,
+    }
+    values, length, audit = vocabulary.encode("A" * 100 + "X")
+    assert length == 100 and 3 not in values.tolist()
+    assert audit["clipped"] == audit["eos_clipped"] == 1
+    assert audit["unknown_tokens"] == 1
+
+
+@pytest.mark.parametrize(
+    ("slots", "components", "roles"),
+    (
+        (("cation", "anion"), ("[Na+]", "[Cl-]"), ("ionic_liquid",)),
+        (("cation", "anion", "solute"), ("[Na+]", "[Cl-]", "F[C@H](Cl)Br"), ("ionic_liquid", "solute")),
+        (("solute", "solvent"), ("F[C@H](Cl)Br", "CCO"), ("solute", "solvent")),
+    ),
+)
+def test_iltransr_registry_views_are_non_isomeric_and_ordered(
+    tmp_path: Path, slots, components, roles,
+) -> None:
+    views, names = iltransr_model_views(
+        _iltransr_task(tmp_path, slots=slots), components
+    )
+    assert names == roles
+    assert all("@" not in value for value in views)
+    if slots[:2] == ("cation", "anion"):
+        assert "." in views[0]
+
+
+def test_iltransr_condition_population_includes_all_covariates_and_constants(
+    tmp_path: Path,
+) -> None:
+    paths = tuple(tmp_path / f"fold{fold}.csv" for fold in range(1, 3))
+    test_path = tmp_path / "test.csv"
+    for path, temperature in zip((*paths, test_path), (280.0, 300.0, 320.0), strict=True):
+        _write_csv(
+            path,
+            ["temperature_K", "pressure_kPa", "secret_target"],
+            [{"temperature_K": temperature, "pressure_kPa": 101.325, "secret_target": "not-read"}],
+        )
+    task = _iltransr_task(
+        tmp_path,
+        conditions=("temperature_K", "pressure_kPa"),
+        train_paths=(paths[0],),
+        valid_paths=(paths[1],),
+        test_path=test_path,
+    )
+    values, digest = iltransr_condition_population(task)
+    stats = ILTransRConditionStats.fit(task.condition_columns, values, digest)
+    assert stats.population_rows == 3
+    assert stats.mean == pytest.approx((300.0, 101.325))
+    assert stats.scale[0] == pytest.approx(np.std([280.0, 300.0, 320.0], ddof=0))
+    assert stats.scale[1] == 1.0 and stats.constant == (False, True)
+    assert stats.normalize(np.asarray([[300.0, 101.325]])).tolist() == [[0.0, 0.0]]
+
+
+def test_iltransr_shared_backbone_full_fine_tuning_and_strict_state(
+    tmp_path: Path,
+) -> None:
+    from safetensors.torch import save_file
+
+    transformer = ILTransRTransformer(72)
+    converted = tmp_path / "encoder.safetensors"
+    save_file(transformer.state_dict(), str(converted))
+    loaded, audit = load_converted_transformer(str(converted), vocab_size=72)
+    assert audit["strict"] and audit["loaded_tensors"] == 40
+    model = ILTransRRegressor(
+        loaded,
+        topology="smiles_only",
+        view_count=2,
+        condition_dim=0,
+        dropout=0.1,
+        load_audit=audit,
+    )
+    calls = []
+    hook = model.transformer.register_forward_hook(lambda *_: calls.append(1))
+    optimizer = torch.optim.Adam(model.parameters(), lr=1.0e-3)
+    before = model.transformer.embedding.weight.detach().clone()
+    token_ids = torch.randint(4, 72, (4, 10))
+    predictions = model(token_ids, torch.full((4,), 10), torch.empty((2, 0)))
+    torch.nn.functional.l1_loss(predictions, torch.asarray([0.0, 1.0])).backward()
+    assert len(calls) == 1
+    assert all(parameter.requires_grad and parameter.grad is not None for parameter in model.transformer.parameters())
+    assert all(parameter.grad is not None for parameter in model.textcnn.parameters())
+    optimizer.step()
+    hook.remove()
+    assert not torch.equal(before, model.transformer.embedding.weight)
+
+
+def test_iltransr_two_bucket_sampler_is_deterministic_and_complete() -> None:
+    sampler = ILTransRTwoBucketBatchSampler(range(1, 10), batch_size=3, seed=42)
+    first = list(sampler)
+    assert len(first) == len(sampler) == 4
+    assert sorted(index for batch in first for index in batch) == list(range(9))
+    assert first == list(sampler)
+    sampler.set_epoch(1)
+    assert first != list(sampler)

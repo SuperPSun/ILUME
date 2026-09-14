@@ -45,7 +45,7 @@ class Stage3BenchmarkConfig:
 class BenchmarkConfig:
     name: Literal[
         "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm", "llasmol",
-        "aionopedia",
+        "aionopedia", "iltransr",
         "ilume_stage3_single_task_mlp",
     ]
     data: DataConfig
@@ -61,7 +61,7 @@ class BenchmarkConfig:
     def validate(self) -> None:
         if self.name not in {
             "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm", "llasmol",
-            "aionopedia",
+            "aionopedia", "iltransr",
             "ilume_stage3_single_task_mlp",
         }:
             raise ValueError(f"Unknown benchmark model: {self.name}")
@@ -98,7 +98,7 @@ class BenchmarkConfig:
                     "training.model_selection=final_training_state"
                 )
         advanced = self.name in {
-            "dmpnn", "molformer", "ilbert", "spmm", "llasmol", "aionopedia",
+            "dmpnn", "molformer", "ilbert", "spmm", "llasmol", "aionopedia", "iltransr",
             "ilume_stage3_single_task_mlp",
         }
         if not advanced and self.data.feature_cache is None:
@@ -117,7 +117,9 @@ class BenchmarkConfig:
             self._validate_llasmol()
         if self.name == "aionopedia":
             self._validate_aionopedia()
-        elif self.name not in {"molformer", "ilbert", "spmm", "llasmol"} and self.runtime:
+        if self.name == "iltransr":
+            self._validate_iltransr()
+        elif self.name not in {"molformer", "ilbert", "spmm", "llasmol", "aionopedia"} and self.runtime:
             raise ValueError("Only token baselines currently declare benchmark runtime settings")
         if not self.model or not self.training or self.seed < 0:
             raise ValueError("Benchmark model/training contract is incomplete")
@@ -609,6 +611,78 @@ class BenchmarkConfig:
             raise ValueError("AIonopedia training must match the registered downstream recipe")
         if self.runtime != {"num_workers": 0}:
             raise ValueError("AIonopedia runtime must use the registered single-process loader")
+
+    def _validate_iltransr(self) -> None:
+        if self.features is not None:
+            raise ValueError("ILTransR tokenizes official character SMILES and does not accept features")
+        if self.environment is None or self.environment.name != "ilume-iltransr":
+            raise ValueError("ILTransR requires the ilume-iltransr environment")
+        expected_model = {
+            "repository": "GuzhongChen/ILTransR",
+            "revision": "ff5e55cfb8162b0706fc2d88ca5cd384705686b1",
+            "generic_checkpoint": "artifacts/benchmarks/iltransr/pretraining/valid_best.params",
+            "generic_checkpoint_sha256": "36a3401175dd372725bd2f5e4e041642a754eeaf3f46845b6ff949065871735a",
+            "source_vocab": "artifacts/benchmarks/iltransr/pretraining/vocab.random_smiles.json",
+            "source_vocab_sha256": "cfa1dca1642b105693981686b6bd300e6faea37de88f137069f131b3d85d5295",
+            "target_vocab": "artifacts/benchmarks/iltransr/pretraining/vocab.rdkit_canonical_smiles.json",
+            "target_vocab_sha256": "856ad43fd6c13e7634c072ae3e58fbc92b641466184eb4577681bac74fd71116",
+            "converted_checkpoint": "artifacts/benchmarks/iltransr/pretraining/encoder.safetensors",
+            "parity_reference": "artifacts/benchmarks/iltransr/pretraining/parity_reference.safetensors",
+            "conversion_manifest": "artifacts/benchmarks/iltransr/pretraining/conversion_manifest.json",
+            "pretrained": True,
+            "full_fine_tuning": True,
+            "character_tokenization": True,
+            "isomeric_smiles": False,
+            "max_length": 100,
+            "shared_encoder": True,
+            "fusion": "registry_role_ordered_concat",
+            "property_specific_weights": False,
+        }
+        variable = {
+            "converted_checkpoint_sha256",
+            "converted_tensor_state_sha256",
+            "parity_reference_sha256",
+            "conversion_manifest_sha256",
+        }
+        fixed = {key: value for key, value in self.model.items() if key not in variable}
+        if fixed != expected_model:
+            raise ValueError("ILTransR model must match the registered generic-pretraining recipe")
+        for key in variable:
+            if not re.fullmatch(r"[0-9a-f]{64}", str(self.model.get(key, ""))):
+                raise ValueError(f"ILTransR {key} must pin a SHA256 digest")
+        expected_official = {
+            "experiment/density": {"epochs": 150, "batch_size": 128, "dropout": 0.05, "notebook": "Density_train.ipynb"},
+            "experiment/viscosity": {"epochs": 150, "batch_size": 128, "dropout": 0.05, "notebook": "viscosity_train.ipynb"},
+            "experiment/heat_capacity": {"epochs": 150, "batch_size": 256, "dropout": 0.05, "notebook": "CP_train.ipynb"},
+            "experiment/melting_point": {"epochs": 150, "batch_size": 64, "dropout": 0.1, "notebook": "melting point_train.ipynb"},
+            "experiment/thermal_decomposition_temperature": {"epochs": 150, "batch_size": 128, "dropout": 0.05, "notebook": "TD_train.ipynb"},
+            "experiment/x_co2": {"epochs": 160, "batch_size": 64, "dropout": 0.05, "notebook": "co2solubility_train.ipynb"},
+            "experiment/pec50": {"epochs": 150, "batch_size": 64, "dropout": 0.1, "notebook": "tox_train.ipynb"},
+        }
+        expected_training = {
+            "optimizer": "adam",
+            "learning_rate": 1.0e-3,
+            "betas": [0.9, 0.999],
+            "eps": 1.0e-8,
+            "weight_decay": 0.0,
+            "scheduler": "factor_every_10_epochs",
+            "lr_decay_epochs": 10,
+            "lr_decay_factor": 0.5,
+            "loss": "train_population_zscore_l1",
+            "condition_transform": "task_global_stage3_population_zscore",
+            "model_selection": "final_training_state",
+            "validation_policy": "reporting_only_each_epoch",
+            "checkpoint_policy": "nonresumable_final_state_only",
+            "device": "cuda",
+            "precision": "fp32",
+            "tf32": False,
+            "fallback_recipe": {"epochs": 150, "batch_size": 64, "dropout": 0.1},
+            "official_recipes": expected_official,
+        }
+        if self.training != expected_training:
+            raise ValueError("ILTransR training must match the registered downstream recipes")
+        if self.runtime != {"num_workers": 0}:
+            raise ValueError("ILTransR runtime must use the registered single-process loader")
 
     def to_dict(self) -> dict[str, Any]:
         def convert(value: Any) -> Any:

@@ -634,7 +634,7 @@ def main() -> None:
     except ValueError as error:
         parser.error(str(error))
     if devices and config.name not in {
-        "mlp", "dmpnn", "molformer", "ilbert", "spmm", "llasmol", "aionopedia",
+        "mlp", "dmpnn", "molformer", "ilbert", "spmm", "llasmol", "aionopedia", "iltransr",
         "ilume_stage3_single_task_mlp",
     }:
         parser.error("--devices is only supported for GPU neural-network benchmarks")

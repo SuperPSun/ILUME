@@ -1,0 +1,9 @@
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+numpy==1.26.4
+pytest==8.4.2
+PyYAML==6.0.3
+rdkit-pypi==2022.3.2.1
+safetensors==0.4.5
+torch==2.9.0+cu128
+tqdm==4.67.1

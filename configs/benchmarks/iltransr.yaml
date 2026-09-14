@@ -1,0 +1,67 @@
+name: iltransr
+display_name: ILTransR
+seed: 42
+environment:
+  name: ilume-iltransr
+  definition: benchmarks/iltransr/environment.yml
+  lock: benchmarks/iltransr/requirements-linux-x86_64-cu128.lock
+data:
+  data_root: data
+  task_catalog: data/task_catalog.csv
+  stage3_authority_config: configs/v2/stage3/splits/system.yaml
+model:
+  repository: GuzhongChen/ILTransR
+  revision: ff5e55cfb8162b0706fc2d88ca5cd384705686b1
+  generic_checkpoint: artifacts/benchmarks/iltransr/pretraining/valid_best.params
+  generic_checkpoint_sha256: 36a3401175dd372725bd2f5e4e041642a754eeaf3f46845b6ff949065871735a
+  source_vocab: artifacts/benchmarks/iltransr/pretraining/vocab.random_smiles.json
+  source_vocab_sha256: cfa1dca1642b105693981686b6bd300e6faea37de88f137069f131b3d85d5295
+  target_vocab: artifacts/benchmarks/iltransr/pretraining/vocab.rdkit_canonical_smiles.json
+  target_vocab_sha256: 856ad43fd6c13e7634c072ae3e58fbc92b641466184eb4577681bac74fd71116
+  converted_checkpoint: artifacts/benchmarks/iltransr/pretraining/encoder.safetensors
+  converted_checkpoint_sha256: dbfc010f21fd17e19b1ddc8fb45b86597655e1a7dbbc5b53c5a7768dad99c952
+  converted_tensor_state_sha256: 6ccb5a02377d866fee3f97b1f1261b3d250c39b7f633628b5d109b90ffa0eaf8
+  parity_reference: artifacts/benchmarks/iltransr/pretraining/parity_reference.safetensors
+  parity_reference_sha256: 45e841123c9076369f3d55796166e08698e325ce94c8be68464c0d2efad750b6
+  conversion_manifest: artifacts/benchmarks/iltransr/pretraining/conversion_manifest.json
+  conversion_manifest_sha256: b1d386e8e501ffab171819a24008115e1704dfa72b2095f871fd2f1dd609619d
+  pretrained: true
+  full_fine_tuning: true
+  character_tokenization: true
+  isomeric_smiles: false
+  max_length: 100
+  shared_encoder: true
+  fusion: registry_role_ordered_concat
+  property_specific_weights: false
+training:
+  optimizer: adam
+  learning_rate: 1.0e-3
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+  weight_decay: 0.0
+  scheduler: factor_every_10_epochs
+  lr_decay_epochs: 10
+  lr_decay_factor: 0.5
+  loss: train_population_zscore_l1
+  condition_transform: task_global_stage3_population_zscore
+  model_selection: final_training_state
+  validation_policy: reporting_only_each_epoch
+  checkpoint_policy: nonresumable_final_state_only
+  device: cuda
+  precision: fp32
+  tf32: false
+  fallback_recipe: {epochs: 150, batch_size: 64, dropout: 0.1}
+  official_recipes:
+    experiment/density: {epochs: 150, batch_size: 128, dropout: 0.05, notebook: Density_train.ipynb}
+    experiment/viscosity: {epochs: 150, batch_size: 128, dropout: 0.05, notebook: viscosity_train.ipynb}
+    experiment/heat_capacity: {epochs: 150, batch_size: 256, dropout: 0.05, notebook: CP_train.ipynb}
+    experiment/melting_point: {epochs: 150, batch_size: 64, dropout: 0.1, notebook: "melting point_train.ipynb"}
+    experiment/thermal_decomposition_temperature: {epochs: 150, batch_size: 128, dropout: 0.05, notebook: TD_train.ipynb}
+    experiment/x_co2: {epochs: 160, batch_size: 64, dropout: 0.05, notebook: co2solubility_train.ipynb}
+    experiment/pec50: {epochs: 150, batch_size: 64, dropout: 0.1, notebook: tox_train.ipynb}
+runtime:
+  num_workers: 0
+stage3:
+  enabled: true
+  tasks: all
+  folds: [1, 2, 3, 4, 5]

@@ -146,6 +146,10 @@ def prepare_training(
         from benchmarks.aionopedia.adapter import prepare_aionopedia_training
 
         return prepare_aionopedia_training(config, benchmark, task_id, fold)  # type: ignore[return-value]
+    if config.name == "iltransr":
+        from benchmarks.iltransr.adapter import prepare_iltransr_training
+
+        return prepare_iltransr_training(config, benchmark, task_id, fold)  # type: ignore[return-value]
     task = resolve_task(config, benchmark, task_id, fold)
     train = load_split(task, "train")
     valid = load_split(task, "valid")
@@ -480,6 +484,12 @@ def train_bundle(
         return train_aionopedia_bundle(  # type: ignore[arg-type]
             config, bundle, output_dir, reporter=reporter
         )
+    if config.name == "iltransr":
+        from benchmarks.iltransr.adapter import train_iltransr_bundle
+
+        return train_iltransr_bundle(  # type: ignore[arg-type]
+            config, bundle, output_dir, reporter=reporter
+        )
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
     if config.name == "mlp":
@@ -617,6 +627,12 @@ def evaluate_checkpoint(
         from benchmarks.aionopedia.adapter import evaluate_aionopedia_checkpoint
 
         return evaluate_aionopedia_checkpoint(
+            config, benchmark, task_id, fold, checkpoint_dir, split
+        )
+    if config.name == "iltransr":
+        from benchmarks.iltransr.adapter import evaluate_iltransr_checkpoint
+
+        return evaluate_iltransr_checkpoint(
             config, benchmark, task_id, fold, checkpoint_dir, split
         )
     if split not in {"valid", "test"}:

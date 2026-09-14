@@ -208,16 +208,18 @@ Stage2/Stage3 resume 分别在上述 train 命令追加 `--resume <checkpoint>` 
 
 ## Baselines and Ablations
 
-MLP、ECFP4-XGBoost、Chemprop D-MPNN、MoLFormer、ILBERT、SPMM、LlaSMol 与 AIonopedia 位于 `benchmarks/`；
+MLP、ECFP4-XGBoost、Chemprop D-MPNN、MoLFormer、ILBERT、SPMM、LlaSMol、AIonopedia 与 ILTransR 位于 `benchmarks/`；
 Stage3 Single-task MLP 内部消融位于 `ablations/`。二者均与 Stage 代码隔离，并继续
-复用 benchmark 运行与 reporting 入口；旧七模型合同见 [ADR-0045](docs/adr/0045-fixed-budget-baseline-training.md) 及其引用，AIonopedia 合同见 [ADR-0049](docs/adr/0049-aionopedia-multimodal-baseline.md)。
+复用 benchmark 运行与 reporting 入口；旧七模型合同见 [ADR-0045](docs/adr/0045-fixed-budget-baseline-training.md) 及其引用，AIonopedia 合同见 [ADR-0049](docs/adr/0049-aionopedia-multimodal-baseline.md)，ILTransR 合同见 [ADR-0057](docs/adr/0057-iltransr-stage3-baseline.md)。
 
 七个论文 baseline 均固定跑满 YAML 预算并保存最终训练状态；每轮 validation 只写入 history，
 不参与 early stopping、checkpoint selection、scheduler 或其他训练决策。checkpoint format 为
 version 2，与旧 validation-selected artifact 不兼容。新正式结果统一写入
-`outputs/benchmarks/fixed-budget-v1/<model>/`；旧输出保持只读且不得混入同一汇总。
+旧七模型的 `outputs/benchmarks/fixed-budget-v1/<model>/`；AIonopedia 与 ILTransR 使用各自
+`outputs/benchmarks/model-native-v1/<model>/`。旧输出保持只读且不得混入同一汇总。
 各 baseline 分别冻结自己的预算：MLP、D-MPNN、MoLFormer、ILBERT 与 SPMM 保持
-50 epochs，LlaSMol 训练 10 epochs，ECFP4-XGBoost 固定 1000 trees；不再假定神经
+50 epochs，LlaSMol 与 AIonopedia 训练 10 epochs，ECFP4-XGBoost 固定 1000 trees；
+ILTransR 按同性质官方 notebook 或登记 fallback 分 task 使用 150/160 epochs，不再假定神经
 baseline 共享统一 epoch 数。
 
 ```bash
@@ -274,7 +276,7 @@ python scripts/benchmarks/sweep.py \
   --max-workers 1
 ```
 
-`--max-workers 1` 保持串行行为。MLP、D-MPNN、MoLFormer、ILBERT、SPMM 与 LlaSMol 多 GPU sweep 可通过 `--devices cuda:0,cuda:1,...` 分配逻辑 job；XGBoost 的 CPU 并行度由 YAML 中的 `training.n_jobs` 控制。每个 baseline 正式 sweep 均为 21 tasks × 5 folds，即 105 个单 seed 训练任务；上述命令不会 resume，失败任务由 sweep 在新 attempt 中完整重跑。
+`--max-workers 1` 保持串行行为。MLP、D-MPNN、MoLFormer、ILBERT、SPMM、LlaSMol、AIonopedia 与 ILTransR 多 GPU sweep 可通过 `--devices cuda:0,cuda:1,...` 分配逻辑 job；XGBoost 的 CPU 并行度由 YAML 中的 `training.n_jobs` 控制。每个 baseline 正式 sweep 均为 21 tasks × 5 folds，即 105 个单 seed 训练任务；上述命令不会 resume，失败任务由 sweep 在新 attempt 中完整重跑。
 
 MoLFormer同样使用独立hash-lock环境。先显式安装环境并下载固定HF snapshot；正式launcher只使用本地cache，不会自动联网或切换revision。
 
@@ -513,6 +515,106 @@ AIonopedia prompt 只包含 composition 与原始单位 conditions，不包含 t
 fold train-only sample z-score；pressure、frequency 与 wavelength 均有独立随机初始化的 graph
 projector/segment token。Target 同样只用 fold train rows 标准化，评估反归一化到 raw units。
 训练固定 10 epochs，validation 每轮只报告，最终模型是 epoch 10 state。
+
+ILTransR 使用官方仓库 commit `ff5e55cfb8162b0706fc2d88ca5cd384705686b1` 的 generic
+`pretraining/valid_best.params`，不下载或读取任何 property dataset 和 supervised
+`*_best.params`。正式训练是 PyTorch `2.9.0+cu128` FP32；MXNet 1.9.1 只在 CPU 转换环境生成
+encoder-only safetensors 与固定 parity reference。先建立两个独立环境：
+
+```bash
+conda env create -f benchmarks/iltransr/environment.yml
+conda run --no-capture-output -n ilume-iltransr \
+  python -m pip install --require-hashes \
+  -r benchmarks/iltransr/requirements-linux-x86_64-cu128.lock
+
+conda env create -f benchmarks/iltransr/conversion-environment.yml
+```
+
+新服务器能访问 GitHub 时，只下载固定 commit 的三个公开 generic-pretraining 文件：
+
+```bash
+mkdir -p artifacts/benchmarks/iltransr/pretraining
+curl -fL \
+  https://raw.githubusercontent.com/GuzhongChen/ILTransR/ff5e55cfb8162b0706fc2d88ca5cd384705686b1/pretraining/valid_best.params \
+  -o artifacts/benchmarks/iltransr/pretraining/valid_best.params
+curl -fL \
+  https://raw.githubusercontent.com/GuzhongChen/ILTransR/ff5e55cfb8162b0706fc2d88ca5cd384705686b1/datasets/pubchem/vocab.random_smiles.json \
+  -o artifacts/benchmarks/iltransr/pretraining/vocab.random_smiles.json
+curl -fL \
+  https://raw.githubusercontent.com/GuzhongChen/ILTransR/ff5e55cfb8162b0706fc2d88ca5cd384705686b1/datasets/pubchem/vocab.rdkit_canonical_smiles.json \
+  -o artifacts/benchmarks/iltransr/pretraining/vocab.rdkit_canonical_smiles.json
+
+sha256sum \
+  artifacts/benchmarks/iltransr/pretraining/valid_best.params \
+  artifacts/benchmarks/iltransr/pretraining/vocab.random_smiles.json \
+  artifacts/benchmarks/iltransr/pretraining/vocab.rdkit_canonical_smiles.json
+```
+
+预期 SHA-256 依次为
+`36a3401175dd372725bd2f5e4e041642a754eeaf3f46845b6ff949065871735a`、
+`cfa1dca1642b105693981686b6bd300e6faea37de88f137069f131b3d85d5295`、
+`856ad43fd6c13e7634c072ae3e58fbc92b641466184eb4577681bac74fd71116`。
+若新服务器不能访问 GitHub，在旧服务器仓库根目录执行：
+
+```bash
+rsync -av --progress \
+  artifacts/benchmarks/iltransr/pretraining/ \
+  NEW_SERVER:/home/sunp/ILUME/artifacts/benchmarks/iltransr/pretraining/
+```
+
+原始三个文件就位后执行确定性转换；它只导出 source embedding/Transformer encoder，并把
+decoder、one-step decoder、target embedding/projection 写入 ignored tensor 清单：
+
+```bash
+PYTHONPATH=src:. conda run --no-capture-output -n ilume-iltransr-convert \
+  python -m benchmarks.iltransr.conversion \
+  --checkpoint artifacts/benchmarks/iltransr/pretraining/valid_best.params \
+  --source-vocab artifacts/benchmarks/iltransr/pretraining/vocab.random_smiles.json \
+  --target-vocab artifacts/benchmarks/iltransr/pretraining/vocab.rdkit_canonical_smiles.json \
+  --output artifacts/benchmarks/iltransr/pretraining/encoder.safetensors \
+  --parity-reference artifacts/benchmarks/iltransr/pretraining/parity_reference.safetensors \
+  --manifest artifacts/benchmarks/iltransr/pretraining/conversion_manifest.json
+
+sha256sum \
+  artifacts/benchmarks/iltransr/pretraining/encoder.safetensors \
+  artifacts/benchmarks/iltransr/pretraining/parity_reference.safetensors \
+  artifacts/benchmarks/iltransr/pretraining/conversion_manifest.json
+```
+
+预期转换 SHA-256 为
+`dbfc010f21fd17e19b1ddc8fb45b86597655e1a7dbbc5b53c5a7768dad99c952` 和
+`45e841123c9076369f3d55796166e08698e325ce94c8be68464c0d2efad750b6`，manifest SHA-256 为
+`b1d386e8e501ffab171819a24008115e1704dfa72b2095f871fd2f1dd609619d`。正式运行前，validator
+还会在 CPU 重放 MXNet/PyTorch parity、检查全部 40 个 encoder tensors，并在发现任意资产或
+环境漂移时拒绝训练：
+
+```bash
+PYTHONPATH=src:. ILUME_BENCHMARK_ENVIRONMENT=ilume-iltransr \
+conda run --no-capture-output -n ilume-iltransr \
+  python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_iltransr_environment; print(validate_iltransr_environment(load_benchmark_config("configs/benchmarks/iltransr.yaml"))["pretrained_snapshot"]["structure"])'
+```
+
+单任务与正式 105-job sweep 命令如下；每个 job 使用一张 GPU，不支持 resume：
+
+```bash
+python scripts/benchmarks/train.py \
+  --config configs/benchmarks/iltransr.yaml \
+  --benchmark stage3 --task experiment/density --fold 1 \
+  --output outputs/benchmarks/model-native-v1/iltransr/stage3/experiment__density/fold1/attempt-001
+
+python scripts/benchmarks/sweep.py \
+  --config configs/benchmarks/iltransr.yaml \
+  --output outputs/benchmarks/model-native-v1/iltransr \
+  --max-workers 4 \
+  --devices cuda:0,cuda:1,cuda:2,cuda:3
+```
+
+ILTransR 对 partner task 使用共享 backbone 的 ordered multi-view fusion；所有 pretrained
+embedding/Transformer 参数 full fine-tune。Condition 使用全五折加 test covariates 的 task-global
+population z-score，这是显式 transductive feature scaling；target 仍只从当前 fold train rows 拟合，
+normalized L1 训练后恢复 raw units。七个有同性质官方 notebook 的 task 使用其 epochs/batch/dropout，
+其余任务使用登记的 150-epoch fallback；validation 只报告并始终发布 final epoch state。完整合同见
+[ADR-0057](docs/adr/0057-iltransr-stage3-baseline.md)。
 
 ## 输出与结果汇总
 
