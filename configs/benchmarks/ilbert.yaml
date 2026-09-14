@@ -4,11 +4,11 @@ seed: 42
 environment:
   name: ilume-ilbert
   definition: benchmarks/ilbert/environment.yml
-  lock: benchmarks/ilbert/requirements-linux-x86_64-cu121.lock
+  lock: benchmarks/ilbert/requirements-linux-x86_64-cu128.lock
 data:
   data_root: data
   task_catalog: data/task_catalog.csv
-  stage3_authority_config: configs/v1/stage3/base.yaml
+  stage3_authority_config: configs/v2/stage3/splits/system.yaml
 model:
   repository: Yu-Xin-Qiu/ILBERT
   revision: f9dc6f1b23a40b6988480735f3724a6332f68c12
@@ -39,18 +39,13 @@ training:
   optimizer: adam
   learning_rate: 1.0e-4
   weight_decay: 0.0
-  scheduler: reduce_on_plateau
-  scheduler_metric: validation_raw_rmse
-  scheduler_patience: 7
-  scheduler_factor: 0.3
-  minimum_learning_rate: 3.0e-5
+  scheduler: constant
   batch_size: 16
   gradient_accumulation_steps: 1
-  max_epochs: 100
-  early_stopping_patience: 15
+  max_epochs: 50
   tf32: true
   loss: mse
-  selection_metric: validation_raw_mae
+  model_selection: final_training_state
   condition_transform: raw_physical_units
   device: cuda
   precision: fp32
@@ -64,9 +59,3 @@ stage3:
   enabled: true
   tasks: all
   folds: [1, 2, 3, 4, 5]
-stage2_physics:
-  enabled: true
-  tasks:
-    - simulation/heat_of_vaporization
-    - simulation/homo
-    - simulation/lumo

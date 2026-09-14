@@ -12,6 +12,7 @@ from rdkit.Chem import Descriptors
 
 from common.identity import require_compatible_identity
 from .config import (
+    GLOBAL_RDKIT_STAGE1_CHECKPOINT_VERSION,
     STAGE1_CHECKPOINT_KIND,
     STAGE1_CHECKPOINT_VERSION,
     PretrainConfig,
@@ -104,7 +105,7 @@ def build_entity_sample(
             + ", ".join(names)
         )
     graph = featurize_mol(mol)
-    return {
+    sample = {
         **record,
         "token_ids": torch.tensor(encoded, dtype=torch.long),
         "atom_categorical": graph.atom_categorical,
@@ -113,11 +114,13 @@ def build_entity_sample(
         "bond_index": graph.bond_index,
         "descriptors": torch.from_numpy(standardized[0]),
         "descriptor_valid": torch.from_numpy(descriptor_valid[0]),
-        "fingerprints": {
+    }
+    if not config.is_global_rdkit:
+        sample["fingerprints"] = {
             name: torch.from_numpy(value).float()
             for name, value in calculate_fingerprints(mol, config.fingerprint).items()
-        },
-    }
+        }
+    return sample
 
 
 def load_stage1_feature_inputs(
@@ -133,12 +136,17 @@ def load_stage1_feature_inputs(
     checkpoint = torch.load(
         Path(checkpoint_path), map_location="cpu", weights_only=False
     )
+    config = config_from_dict(checkpoint["config"])
     if (
         checkpoint.get("kind") != STAGE1_CHECKPOINT_KIND
-        or checkpoint.get("format_version") != STAGE1_CHECKPOINT_VERSION
+        or checkpoint.get("format_version") != config.checkpoint_version
+        or checkpoint.get("format_version")
+        not in {
+            STAGE1_CHECKPOINT_VERSION,
+            GLOBAL_RDKIT_STAGE1_CHECKPOINT_VERSION,
+        }
     ):
-        raise ValueError("Stage 2 requires a Stage 1 pretraining checkpoint v2")
-    config = config_from_dict(checkpoint["config"])
+        raise ValueError("Stage 1 checkpoint architecture/version mismatch")
     artifact_dir = Path(artifact_dir)
     metadata = json.loads(
         (artifact_dir / "metadata.json").read_text(encoding="utf-8")

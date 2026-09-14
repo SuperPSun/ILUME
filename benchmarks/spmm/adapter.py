@@ -15,8 +15,6 @@ from common.identity import require_compatible_identity, semantic_identity, tens
 from common.io import atomic_json, atomic_torch_save, sha256_file
 from common.outputs import repository_path
 from common.progress import ProgressReporter
-from common.reporting import role_mae_diagnostics
-from stage2.registry import ORBITAL_TASK_TARGETS
 
 from benchmarks.common.config import BenchmarkConfig, BenchmarkName
 from benchmarks.common.data import BenchmarkTask, RawDataset, load_split, resolve_task
@@ -29,6 +27,7 @@ SPMM_INPUT_CONTRACT = {
     "canonical_identity": "ilume_isomeric_smiles",
     "model_input": "rdkit_canonical_isomeric_false",
     "tokenizer": "official_bert_wordpiece",
+    "wordpiece_max_input_chars_per_word": 350,
     "manual_prefix": "[CLS]",
     "tokenizer_add_special_tokens": True,
     "tokenizer_max_length": 100,
@@ -40,6 +39,7 @@ SPMM_INPUT_CONTRACT = {
     "component_forward": "merged_component_backbone_forward",
     "conditions": "train_only_zscore_in_registry_order",
 }
+SPMM_TRAINING_ORDER_CONTRACT = "sortish_length_bucketing_v1"
 TokenCache = dict[str, tuple[torch.Tensor, int]]
 
 
@@ -143,10 +143,18 @@ class SharedSPMMRegressor(torch.nn.Module):
         return self.predictor(representation)
 
 
-class EpochBatchSampler(torch.utils.data.Sampler[list[int]]):
-    def __init__(self, row_count: int, *, batch_size: int, seed: int) -> None:
-        self.row_count = int(row_count)
+class SortishBatchSampler(torch.utils.data.Sampler[list[int]]):
+    def __init__(
+        self,
+        lengths: Sequence[int],
+        *,
+        batch_size: int,
+        window_batches: int,
+        seed: int,
+    ) -> None:
+        self.lengths = tuple(int(value) for value in lengths)
         self.batch_size = int(batch_size)
+        self.window_batches = int(window_batches)
         self.seed = int(seed)
         self.epoch = 0
 
@@ -154,15 +162,22 @@ class EpochBatchSampler(torch.utils.data.Sampler[list[int]]):
         self.epoch = int(epoch)
 
     def __len__(self) -> int:
-        return math.ceil(self.row_count / self.batch_size)
+        return math.ceil(len(self.lengths) / self.batch_size)
 
     def __iter__(self) -> Any:
         generator = torch.Generator().manual_seed(self.seed + self.epoch)
-        order = torch.randperm(self.row_count, generator=generator).tolist()
-        return iter(
-            order[start : start + self.batch_size]
-            for start in range(0, len(order), self.batch_size)
-        )
+        permutation = torch.randperm(len(self.lengths), generator=generator).tolist()
+        window_size = self.window_batches * self.batch_size
+        batches: list[list[int]] = []
+        for start in range(0, len(permutation), window_size):
+            window = permutation[start : start + window_size]
+            window.sort(key=self.lengths.__getitem__)
+            batches.extend(
+                window[offset : offset + self.batch_size]
+                for offset in range(0, len(window), self.batch_size)
+            )
+        order = torch.randperm(len(batches), generator=generator).tolist()
+        return iter(batches[index] for index in order)
 
 
 def _upstream_paths(config: BenchmarkConfig) -> tuple[Path, Path, Path, Path]:
@@ -194,7 +209,9 @@ def _tokenizer(config: BenchmarkConfig) -> Any:
     tokenizer.wordpiece_tokenizer = WordpieceTokenizer(
         vocab=tokenizer.vocab,
         unk_token=tokenizer.unk_token,
-        max_input_chars_per_word=250,
+        max_input_chars_per_word=int(
+            config.model["wordpiece_max_input_chars_per_word"]
+        ),
     )
     return tokenizer
 
@@ -245,6 +262,15 @@ def _token_cache_audit(token_cache: TokenCache) -> dict[str, int | str]:
         "total_pre_truncation_tokens": sum(lengths),
         "maximum_pre_truncation_token_length": max(lengths, default=0),
     }
+
+
+def _row_token_lengths(
+    prepared: PreparedSplit, token_cache: TokenCache
+) -> tuple[int, ...]:
+    return tuple(
+        max(len(token_cache[smiles][0]) for smiles in components)
+        for components in prepared.model_components
+    )
 
 
 def _input_audit(
@@ -428,6 +454,7 @@ def prepare_spmm_training(
             "component_order": list(task.slots),
             "source_hashes": source_hashes,
             "input_contract": SPMM_INPUT_CONTRACT,
+            "training_order_contract": SPMM_TRAINING_ORDER_CONTRACT,
             "token_cache_audit": _token_cache_audit(token_cache),
             "train_input_audit": train.audit,
             "valid_input_audit": valid.audit,
@@ -463,7 +490,14 @@ def _load_pretrained_encoder(
         or sha256_file(checkpoint_path) != str(config.model["pretrained_sha256"])
     ):
         raise RuntimeError("SPMM checkpoint trust boundary changed before deserialization")
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    # This is the pinned official Lightning pickle; its metadata includes
+    # tokenizer objects, so it cannot be loaded with PyTorch's weights-only
+    # default. The size and SHA256 trust checks above must remain first.
+    checkpoint = torch.load(
+        checkpoint_path,
+        map_location="cpu",
+        weights_only=False,
+    )
     if not isinstance(checkpoint, Mapping) or not isinstance(
         checkpoint.get("state_dict"), Mapping
     ):
@@ -603,7 +637,7 @@ def _data_loader(
     target_stats: TargetStats,
     *,
     pad_token_id: int,
-    batch_sampler: EpochBatchSampler | None = None,
+    batch_sampler: SortishBatchSampler | None = None,
 ) -> torch.utils.data.DataLoader:
     common = {
         "num_workers": int(config.runtime["num_workers"]),
@@ -627,10 +661,14 @@ def _data_loader(
 
 
 def _configure_backend(config: BenchmarkConfig) -> None:
-    torch.backends.cuda.matmul.allow_tf32 = bool(
-        config.training["cuda_matmul_tf32"]
+    cuda_tf32 = bool(config.training["cuda_matmul_tf32"])
+    cudnn_tf32 = bool(config.training["cudnn_tf32"])
+    torch.backends.cuda.matmul.fp32_precision = (
+        "tf32" if cuda_tf32 else "ieee"
     )
-    torch.backends.cudnn.allow_tf32 = bool(config.training["cudnn_tf32"])
+    torch.backends.cudnn.conv.fp32_precision = (
+        "tf32" if cudnn_tf32 else "ieee"
+    )
     torch.backends.cudnn.deterministic = False
     torch.backends.cudnn.benchmark = bool(config.training["cudnn_benchmark"])
 
@@ -703,9 +741,10 @@ def train_spmm_bundle(
         lr=float(config.training["warmup_learning_rate"]),
         weight_decay=float(config.training["weight_decay"]),
     )
-    sampler = EpochBatchSampler(
-        len(bundle.train.raw),
+    sampler = SortishBatchSampler(
+        _row_token_lengths(bundle.train, bundle.token_cache),
         batch_size=int(config.training["batch_size"]),
+        window_batches=int(config.training["bucket_window_batches"]),
         seed=config.seed,
     )
     train_loader = _data_loader(
@@ -728,10 +767,6 @@ def train_spmm_bundle(
     total_steps = steps_per_epoch * max_epochs
     warmup_steps = steps_per_epoch * int(config.training["warmup_epochs"])
     non_blocking = bool(config.runtime["non_blocking_transfer"])
-    best_mae = float("inf")
-    best_epoch = 0
-    best_state: dict[str, torch.Tensor] | None = None
-    stale = 0
     global_step = 0
     history: list[dict[str, Any]] = []
     progress = (reporter or ProgressReporter()).bar(
@@ -800,40 +835,31 @@ def train_spmm_bundle(
                     "learning_rate": float(optimizer.param_groups[0]["lr"]),
                 }
             )
-            if raw_mae < best_mae:
-                best_mae = raw_mae
-                best_epoch = epoch
-                best_state = {
-                    name: value.detach().cpu().clone()
-                    for name, value in model.state_dict().items()
-                }
-                stale = 0
-            else:
-                stale += 1
             progress.set_postfix(
                 {
                     "train_mse": f"{loss_sum / seen:.4f}",
                     "val_mae": f"{raw_mae:.4f}",
-                    "best": f"{best_mae:.4f}@{best_epoch}",
-                    "patience": f"{stale}/{config.training['early_stopping_patience']}",
                 }
             )
             progress.update(1)
-            if stale >= int(config.training["early_stopping_patience"]):
-                break
     finally:
         progress.close()
-    if best_state is None:
-        raise RuntimeError("SPMM training did not produce a best checkpoint")
-    state_hash = tensor_state_hash("benchmark.spmm-state.v1", best_state)
+    if len(history) != max_epochs:
+        raise RuntimeError("SPMM training did not complete its fixed epoch budget")
+    final_state = {
+        name: value.detach().cpu().clone()
+        for name, value in model.state_dict().items()
+    }
+    final_mae = float(history[-1]["valid_raw_mae"])
+    state_hash = tensor_state_hash("benchmark.spmm-state.v2", final_state)
     model_path = root / "model.pt"
     history_path = root / "history.json"
     audit_path = root / "input_audit.json"
-    atomic_torch_save(model_path, {"state_dict": best_state, "state_hash": state_hash})
+    atomic_torch_save(model_path, {"state_dict": final_state, "state_hash": state_hash})
     atomic_json(history_path, history)
     atomic_json(audit_path, {"train": bundle.train.audit, "valid": bundle.valid.audit})
     manifest = {
-        "format_version": 1,
+        "format_version": 2,
         "kind": "ilume_baseline_model",
         "model_kind": "spmm",
         "training_identity": bundle.training_identity,
@@ -842,8 +868,8 @@ def train_spmm_bundle(
         "target_columns": list(bundle.task.target_columns),
         "component_count": bundle.train.component_count,
         "condition_dim": len(bundle.task.condition_columns),
-        "best_epoch": best_epoch,
-        "best_valid_raw_mae": best_mae,
+        "final_epoch": max_epochs,
+        "final_valid_raw_mae": final_mae,
         "model_state_hash": state_hash,
         "pretrained_load_audit": model.load_audit,
         "upstream_assets": bundle.assets,
@@ -857,8 +883,8 @@ def train_spmm_bundle(
     }
     atomic_json(root / "checkpoint.json", manifest)
     return {
-        "best_epoch": best_epoch,
-        "best_valid_raw_mae": best_mae,
+        "final_epoch": max_epochs,
+        "final_valid_raw_mae": final_mae,
         "epochs_ran": len(history),
         "input_audit": manifest["input_audit"],
     }
@@ -870,7 +896,7 @@ def _manifest(root: Path) -> dict[str, Any]:
         raise FileNotFoundError(f"Missing SPMM checkpoint manifest: {path}")
     payload = json.loads(path.read_text(encoding="utf-8"))
     if (
-        payload.get("format_version") != 1
+        payload.get("format_version") != 2
         or payload.get("kind") != "ilume_baseline_model"
         or payload.get("model_kind") != "spmm"
     ):
@@ -947,7 +973,7 @@ def evaluate_spmm_checkpoint(
     )
     payload = torch.load(root / "model.pt", map_location="cpu")
     if tensor_state_hash(
-        "benchmark.spmm-state.v1", payload["state_dict"]
+        "benchmark.spmm-state.v2", payload["state_dict"]
     ) != manifest["model_state_hash"]:
         raise ValueError("SPMM checkpoint state hash mismatch")
     model.load_state_dict(payload["state_dict"], strict=True)
@@ -976,13 +1002,6 @@ def evaluate_spmm_checkpoint(
         bundle.task.target_columns,
         bundle.target_stats.scale,
     )
-    if task_id in ORBITAL_TASK_TARGETS:
-        target = ORBITAL_TASK_TARGETS[task_id]
-        metrics[target]["role_diagnostics"] = role_mae_diagnostics(
-            predictions[:, 0],
-            raw.targets[:, 0],
-            [row["ion_role"] for row in raw.audit_rows],
-        )
     return EvaluationResult(
         predictions=predictions,
         targets=raw.targets,
@@ -999,11 +1018,12 @@ def evaluate_spmm_checkpoint(
 
 __all__ = [
     "ConditionStats",
-    "EpochBatchSampler",
     "PreparedSplit",
+    "SPMM_TRAINING_ORDER_CONTRACT",
     "SPMMTrainingBundle",
     "SPMM_INPUT_CONTRACT",
     "SharedSPMMRegressor",
+    "SortishBatchSampler",
     "build_spmm_model",
     "evaluate_spmm_checkpoint",
     "prepare_spmm_training",

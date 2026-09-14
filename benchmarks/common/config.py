@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
+import re
 from typing import Any, Literal
 
 import yaml
 
 
-BenchmarkName = Literal["stage3", "stage2_physics"]
+BenchmarkName = Literal["stage3"]
 
 
 @dataclass(frozen=True)
@@ -16,7 +17,6 @@ class DataConfig:
     task_catalog: Path
     stage3_authority_config: Path
     feature_cache: Path | None
-    stage2_authority_config: Path | None = None
     stage3_prepared_artifacts: Path | None = None
 
 
@@ -42,15 +42,10 @@ class Stage3BenchmarkConfig:
 
 
 @dataclass(frozen=True)
-class Stage2PhysicsConfig:
-    enabled: bool
-    tasks: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class BenchmarkConfig:
     name: Literal[
-        "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm",
+        "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm", "llasmol",
+        "aionopedia",
         "ilume_stage3_single_task_mlp",
     ]
     data: DataConfig
@@ -60,13 +55,13 @@ class BenchmarkConfig:
     training: dict[str, Any]
     runtime: dict[str, Any]
     stage3: Stage3BenchmarkConfig
-    stage2_physics: Stage2PhysicsConfig
     seed: int
     display_name: str = ""
 
     def validate(self) -> None:
         if self.name not in {
-            "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm",
+            "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm", "llasmol",
+            "aionopedia",
             "ilume_stage3_single_task_mlp",
         }:
             raise ValueError(f"Unknown benchmark model: {self.name}")
@@ -86,8 +81,24 @@ class BenchmarkConfig:
             raise ValueError("Fingerprint radius and n_bits must be positive")
         if self.name == "ilume_stage3_single_task_mlp":
             self._validate_ilume_stage3_single_task_mlp()
+        else:
+            retired = {
+                "early_stopping_patience",
+                "early_stopping_rounds",
+                "selection_metric",
+            }.intersection(self.training)
+            if retired:
+                raise ValueError(
+                    "Fixed-budget baselines forbid validation-driven training fields: "
+                    + ", ".join(sorted(retired))
+                )
+            if self.training.get("model_selection") != "final_training_state":
+                raise ValueError(
+                    "Fixed-budget baselines require "
+                    "training.model_selection=final_training_state"
+                )
         advanced = self.name in {
-            "dmpnn", "molformer", "ilbert", "spmm",
+            "dmpnn", "molformer", "ilbert", "spmm", "llasmol", "aionopedia",
             "ilume_stage3_single_task_mlp",
         }
         if not advanced and self.data.feature_cache is None:
@@ -102,7 +113,11 @@ class BenchmarkConfig:
             self._validate_ilbert()
         if self.name == "spmm":
             self._validate_spmm()
-        elif self.name not in {"molformer", "ilbert", "spmm"} and self.runtime:
+        if self.name == "llasmol":
+            self._validate_llasmol()
+        if self.name == "aionopedia":
+            self._validate_aionopedia()
+        elif self.name not in {"molformer", "ilbert", "spmm", "llasmol"} and self.runtime:
             raise ValueError("Only token baselines currently declare benchmark runtime settings")
         if not self.model or not self.training or self.seed < 0:
             raise ValueError("Benchmark model/training contract is incomplete")
@@ -112,8 +127,6 @@ class BenchmarkConfig:
             raise ValueError("Benchmark Stage 3 folds must be unique")
         if self.stage3.enabled and self.stage3.tasks != "all" and not self.stage3.tasks:
             raise ValueError("Enabled Stage 3 benchmark has no tasks")
-        if self.stage2_physics.enabled and not self.stage2_physics.tasks:
-            raise ValueError("Enabled Stage 2 physics benchmark has no tasks")
 
     def _validate_ilume_stage3_single_task_mlp(self) -> None:
         if self.features is not None or self.environment is not None:
@@ -135,10 +148,6 @@ class BenchmarkConfig:
         if self.stage3.folds != (1, 2, 3, 4, 5):
             raise ValueError(
                 "ILUME Stage3 Single-task MLP requires folds [1, 2, 3, 4, 5]"
-            )
-        if self.stage2_physics.enabled or self.stage2_physics.tasks:
-            raise ValueError(
-                "ILUME Stage3 Single-task MLP is a Stage 3-only ablation"
             )
         expected_model = {
             "hidden_dims": [512, 256],
@@ -181,8 +190,6 @@ class BenchmarkConfig:
             raise ValueError("D-MPNN requires a dedicated environment definition and lock")
         if self.environment.name != "ilume-dmpnn":
             raise ValueError("D-MPNN environment name must be ilume-dmpnn")
-        if self.data.stage2_authority_config is None:
-            raise ValueError("D-MPNN requires data.stage2_authority_config")
         expected_model = {
             "message_hidden_dim": 300,
             "depth": 3,
@@ -193,7 +200,7 @@ class BenchmarkConfig:
             "ffn_hidden_dim": 300,
             "ffn_hidden_layers": 1,
             "batch_norm": False,
-            "multicomponent_shared": False,
+            "multicomponent_shared": True,
         }
         if self.model != expected_model:
             raise ValueError("D-MPNN model must match the registered Chemprop recipe")
@@ -206,9 +213,8 @@ class BenchmarkConfig:
             "final_learning_rate": 1.0e-4,
             "batch_size": 64,
             "max_epochs": 50,
-            "early_stopping_patience": 10,
             "loss": "mse",
-            "selection_metric": "validation_mae",
+            "model_selection": "final_training_state",
             "device": "cuda",
             "precision": "fp32",
         }
@@ -224,8 +230,6 @@ class BenchmarkConfig:
             raise ValueError("MoLFormer requires a dedicated environment definition and lock")
         if self.environment.name != "ilume-molformer":
             raise ValueError("MoLFormer environment name must be ilume-molformer")
-        if self.data.stage2_authority_config is not None:
-            raise ValueError("MoLFormer does not use a Stage 2 prepare authority")
         expected_model = {
             "repository": "ibm-research/MoLFormer-XL-both-10pct",
             "revision": "361063d0ad524ef77cf39b08469f6be770dc550f",
@@ -254,12 +258,11 @@ class BenchmarkConfig:
             "batch_size": 128,
             "gradient_accumulation_steps": 1,
             "max_epochs": 50,
-            "early_stopping_patience": 8,
             "tf32": True,
             "length_bucketing": "sortish_length_bucketing_v1",
             "bucket_window_batches": 20,
             "loss": "mse",
-            "selection_metric": "validation_mae",
+            "model_selection": "final_training_state",
             "device": "cuda",
             "precision": "fp32",
         }
@@ -284,8 +287,6 @@ class BenchmarkConfig:
             raise ValueError("ILBERT requires a dedicated environment definition and lock")
         if self.environment.name != "ilume-ilbert":
             raise ValueError("ILBERT environment name must be ilume-ilbert")
-        if self.data.stage2_authority_config is not None:
-            raise ValueError("ILBERT does not use a Stage 2 prepare authority")
         expected_model = {
             "repository": "Yu-Xin-Qiu/ILBERT",
             "revision": "f9dc6f1b23a40b6988480735f3724a6332f68c12",
@@ -319,18 +320,13 @@ class BenchmarkConfig:
             "optimizer": "adam",
             "learning_rate": 1.0e-4,
             "weight_decay": 0.0,
-            "scheduler": "reduce_on_plateau",
-            "scheduler_metric": "validation_raw_rmse",
-            "scheduler_patience": 7,
-            "scheduler_factor": 0.3,
-            "minimum_learning_rate": 3.0e-5,
+            "scheduler": "constant",
             "batch_size": 16,
             "gradient_accumulation_steps": 1,
-            "max_epochs": 100,
-            "early_stopping_patience": 15,
+            "max_epochs": 50,
             "tf32": True,
             "loss": "mse",
-            "selection_metric": "validation_raw_mae",
+            "model_selection": "final_training_state",
             "condition_transform": "raw_physical_units",
             "device": "cuda",
             "precision": "fp32",
@@ -356,8 +352,6 @@ class BenchmarkConfig:
             raise ValueError("SPMM requires a dedicated environment definition and lock")
         if self.environment.name != "ilume-spmm":
             raise ValueError("SPMM environment name must be ilume-spmm")
-        if self.data.stage2_authority_config is not None:
-            raise ValueError("SPMM does not use a Stage 2 prepare authority")
         expected_model = {
             "repository": "jinhojsk515/SPMM",
             "revision": "046976484f31b3cbc862b8f2094e38df72fcfce7",
@@ -375,6 +369,7 @@ class BenchmarkConfig:
             "modality": "smiles_text_only",
             "remove_stereochemistry": True,
             "tokenizer": "official_bert_wordpiece",
+            "wordpiece_max_input_chars_per_word": 350,
             "vocab_size": 300,
             "hidden_dim": 768,
             "text_layers": 6,
@@ -400,16 +395,17 @@ class BenchmarkConfig:
             "warmup_epochs": 1,
             "warmup_learning_rate": 5.0e-6,
             "minimum_learning_rate": 3.0e-6,
-            "batch_size": 8,
+            "batch_size": 128,
             "gradient_accumulation_steps": 1,
             "max_epochs": 50,
-            "early_stopping_patience": 10,
+            "length_bucketing": "sortish_length_bucketing_v1",
+            "bucket_window_batches": 20,
             "loss": "mse",
-            "selection_metric": "validation_raw_mae",
+            "model_selection": "final_training_state",
             "condition_transform": "train_only_zscore",
             "device": "cuda",
             "precision": "fp32",
-            "cuda_matmul_tf32": False,
+            "cuda_matmul_tf32": True,
             "cudnn_tf32": True,
             "cudnn_benchmark": True,
         }
@@ -424,6 +420,195 @@ class BenchmarkConfig:
         }
         if self.runtime != expected_runtime:
             raise ValueError("SPMM runtime must match the registered loader recipe")
+
+    def _validate_llasmol(self) -> None:
+        if self.features is not None:
+            raise ValueError("LlaSMol tokenizes SMILES and does not accept features")
+        if self.environment is None or not all(
+            (self.environment.name, str(self.environment.definition), str(self.environment.lock))
+        ):
+            raise ValueError("LlaSMol requires a dedicated environment definition and lock")
+        if self.environment.name != "ilume-llasmol":
+            raise ValueError("LlaSMol environment name must be ilume-llasmol")
+        expected_model = {
+            "base_repository": "mistralai/Mistral-7B-v0.1",
+            "base_revision": "27d67f1b5f57dc0953326b2601d68371d40ea8da",
+            "base_snapshot": "artifacts/benchmarks/llasmol/base",
+            "base_config_sha256": "cf25cdf4719f181d1d1d371973285d9afe9afde0d0c6a6fd48de857555ce1e0d",
+            "base_index_sha256": "c94ab46aaf5fcca44720c10bcc498c1b0d9759d47534a396e3512edc451ebd06",
+            "base_shard_sha256": [
+                "9742cb4764964155b7a5f35eefad651f590006091ddeb536863d6c5865cca1b9",
+                "9bcf56354ec0c68b5f8e97b4f3b02d16af899a65b0868d6dba5a51c1b30f01cb",
+            ],
+            "base_shard_size": [9942981696, 4540516344],
+            "tokenizer_json_sha256": "11c08db21487c885d8c792180f0be237f6a261b89a46f128a6a80a3aa4bd1720",
+            "tokenizer_model_sha256": "dadfd56d766715c61d2ef780a525ab43b8e6da4de6865bda3d95fdef5e134055",
+            "tokenizer_config_sha256": "ddb008229511e51607002ffe28925001c4a9ca4177dc4de3a655d085cc610b99",
+            "special_tokens_sha256": "6fa06efa2785e450051989a6f8fb4416b10149ded485ddd3f127a40734f5cfd0",
+            "adapter_repository": "osunlp/LlaSMol-Mistral-7B",
+            "adapter_revision": "044d6124448733615c5a3d6ab14b947f71fc6728",
+            "adapter_snapshot": "artifacts/benchmarks/llasmol/adapter",
+            "adapter_config_sha256": "5ce324c408d6a24f67fced865778d1de1d9b62ce39ccca15ddf2e5b6b2087cfd",
+            "adapter_model_sha256": "caa85963742ccf0b5c5fac60db6b10116562dd0be138f9cffb2765f0235b23b2",
+            "adapter_model_size": 84047501,
+            "adapter_state_entries": 448,
+            "pretrained": True,
+            "load_in_4bit": True,
+            "base_frozen": True,
+            "quantization": "nf4_double_quant",
+            "compute_dtype": "bfloat16",
+            "gradient_checkpointing": False,
+            "use_cache": False,
+            "continue_official_adapter": True,
+            "lora_rank": 16,
+            "lora_alpha": 16,
+            "lora_dropout": 0.05,
+            "lora_target_modules": [
+                "q_proj", "k_proj", "v_proj", "o_proj",
+                "gate_proj", "up_proj", "down_proj",
+            ],
+            "hidden_dim": 4096,
+            "pooling": "masked_mean",
+            "head_hidden_dim": 256,
+            "head_activation": "silu",
+            "head_dropout": 0.0,
+            "task_prefix": "uppercase_task_leaf_angle_brackets",
+            "max_length": 512,
+            "truncation": True,
+            "padding": "left_longest_multiple_of_8",
+            "shared_backbone": True,
+            "component_forward": "merged_sequence_view_forward",
+            "fusion": "ordered_concat_conditions_thin_mlp",
+            "input_cache": "unique_sequence_memory_token_cache",
+        }
+        if self.model != expected_model:
+            raise ValueError("LlaSMol model must match the registered QLoRA recipe")
+        expected_training = {
+            "optimizer": "adamw",
+            "lora_learning_rate": 2.0e-5,
+            "head_learning_rate": 1.0e-4,
+            "weight_decay": 1.0e-2,
+            "scheduler": "linear_warmup_cosine",
+            "warmup_fraction": 0.05,
+            "batch_size": 16,
+            "gradient_accumulation_steps": 2,
+            "max_epochs": 10,
+            "max_grad_norm": 1.0,
+            "length_bucketing": "sortish_length_bucketing_v1",
+            "bucket_window_batches": 20,
+            "loss": "mse",
+            "model_selection": "final_training_state",
+            "condition_transform": "train_only_zscore",
+            "device": "cuda",
+            "precision": "qlora_nf4_bf16",
+            "tf32": False,
+        }
+        if self.training != expected_training:
+            raise ValueError("LlaSMol training must match the registered QLoRA recipe")
+        expected_runtime = {
+            "num_workers": 8,
+            "prefetch_factor": 2,
+            "persistent_workers": True,
+            "pin_memory": True,
+            "non_blocking_transfer": True,
+        }
+        if self.runtime != expected_runtime:
+            raise ValueError("LlaSMol runtime must match the registered loader recipe")
+
+    def _validate_aionopedia(self) -> None:
+        if self.features is not None:
+            raise ValueError("AIonopedia builds official molecular graphs and does not accept features")
+        if self.environment is None or self.environment.name != "ilume-aionopedia":
+            raise ValueError("AIonopedia requires the ilume-aionopedia environment")
+        expected_model = {
+            "base_repository": "Qwen/Qwen3-0.6B",
+            "base_revision": "c1899de289a04d12100db370d81485cdf75e47ca",
+            "base_snapshot": "artifacts/benchmarks/aionopedia/base",
+            "pretrained_repository": "AIonopedia/AIonopedia",
+            "pretrained_revision": "448236ef3532efd67b7956472df4e8f539b22629",
+            "pretrained_snapshot": (
+                "artifacts/benchmarks/aionopedia/"
+                "best_cosine(stable_ver)_qwen0.6b/"
+                "qwen0.6b-pretrain_simple2.8m(itg_loss)"
+            ),
+            "adapter_config_provenance": "local_generic_pretraining_export_peft_0.14",
+            "upstream_repository": "AIonopedia/AIonopedia-public",
+            "upstream_revision": "17e2f550f91eadcdec39f467c0443f5446d9713c",
+            "base_frozen_except_released_lora": True,
+            "full_multimodal_downstream": True,
+            "pretraining_head_loaded": False,
+            "graph_atom_features": 35,
+            "graph_edge_features": 11,
+            "explicit_hydrogen_expansion": False,
+            "temperature_transform": "temperature_K_div_1000",
+            "pressure_transform": "train_only_sample_zscore",
+            "frequency_transform": "frequency_MHz_div_1000",
+            "wavelength_transform": "wavelength_nm_div_1000",
+            "scalar_head": "linear_512_1024_relu_linear_1024_1",
+        }
+        variable = {"base_files", "pretrained_files"}
+        if {key: value for key, value in self.model.items() if key not in variable} != expected_model:
+            raise ValueError("AIonopedia model must match the registered multimodal recipe")
+        for group in variable:
+            files = self.model.get(group)
+            if not isinstance(files, dict) or not files:
+                raise ValueError(f"AIonopedia {group} must pin local asset hashes")
+            for filename, value in files.items():
+                if (
+                    not isinstance(filename, str)
+                    or not isinstance(value, dict)
+                    or not re.fullmatch(r"[0-9a-f]{64}", str(value.get("sha256", "")))
+                    or not isinstance(value.get("size"), int)
+                    or value["size"] <= 0
+                ):
+                    raise ValueError(f"AIonopedia {group} contains an invalid asset pin")
+        if set(self.model["base_files"]) != {
+            "config.json",
+            "model.safetensors",
+            "tokenizer.json",
+            "tokenizer_config.json",
+        }:
+            raise ValueError("AIonopedia base_files must pin every runtime base asset")
+        if set(self.model["pretrained_files"]) != {
+            "GNN_state_dict.pt",
+            "adapter_config.json",
+            "adapter_model.safetensors",
+            "decoder1_state_dict.pt",
+            "decoder2_state_dict.pt",
+            "embedding_property_state_dict.pt",
+            "fc_out_state_dict.pt",
+            "graph_merge_encoder_state_dict.pt",
+            "projector_gnn_state_dict.pt",
+            "projector_llm_state_dict.pt",
+            "projector_temp_state_dict.pt",
+            "segment_embeddings.pt",
+        }:
+            raise ValueError(
+                "AIonopedia pretrained_files must pin every released downstream asset"
+            )
+        expected_training = {
+            "optimizer": "adamw",
+            "head_learning_rate": 4.0e-5,
+            "decoder_learning_rate": 3.0e-5,
+            "other_learning_rate": 3.0e-5,
+            "weight_decay": 1.0e-2,
+            "scheduler": "linear_warmup_cosine",
+            "warmup_steps": 50,
+            "batch_size": 16,
+            "gradient_accumulation_steps": 1,
+            "max_epochs": 10,
+            "max_grad_norm": 1.0,
+            "loss": "train_sample_zscore_mse",
+            "model_selection": "final_training_state",
+            "validation_policy": "reporting_only_each_epoch",
+            "checkpoint_policy": "nonresumable_trainable_state_each_epoch",
+            "device": "cuda",
+            "precision": "bf16",
+        }
+        if self.training != expected_training:
+            raise ValueError("AIonopedia training must match the registered downstream recipe")
+        if self.runtime != {"num_workers": 0}:
+            raise ValueError("AIonopedia runtime must use the registered single-process loader")
 
     def to_dict(self) -> dict[str, Any]:
         def convert(value: Any) -> Any:
@@ -458,7 +643,7 @@ def _only(values: dict[str, Any], allowed: set[str], context: str) -> None:
 def benchmark_config_from_dict(raw: dict[str, Any]) -> BenchmarkConfig:
     _only(
         raw,
-        {"name", "display_name", "seed", "data", "features", "environment", "model", "training", "runtime", "stage3", "stage2_physics"},
+        {"name", "display_name", "seed", "data", "features", "environment", "model", "training", "runtime", "stage3"},
         "benchmark config",
     )
     data = _mapping(raw.get("data"), "data")
@@ -466,7 +651,7 @@ def benchmark_config_from_dict(raw: dict[str, Any]) -> BenchmarkConfig:
         data,
         {
             "data_root", "task_catalog", "stage3_authority_config",
-            "feature_cache", "stage2_authority_config",
+            "feature_cache",
             "stage3_prepared_artifacts",
         },
         "data",
@@ -485,8 +670,6 @@ def benchmark_config_from_dict(raw: dict[str, Any]) -> BenchmarkConfig:
         _only(environment, {"name", "definition", "lock"}, "environment")
     stage3 = _mapping(raw.get("stage3"), "stage3")
     _only(stage3, {"enabled", "tasks", "folds"}, "stage3")
-    stage2 = _mapping(raw.get("stage2_physics"), "stage2_physics")
-    _only(stage2, {"enabled", "tasks"}, "stage2_physics")
     tasks: Literal["all"] | tuple[str, ...]
     if stage3.get("tasks") == "all":
         tasks = "all"
@@ -504,11 +687,6 @@ def benchmark_config_from_dict(raw: dict[str, Any]) -> BenchmarkConfig:
             stage3_authority_config=Path(data["stage3_authority_config"]),
             feature_cache=(
                 None if data.get("feature_cache") is None else Path(data["feature_cache"])
-            ),
-            stage2_authority_config=(
-                None
-                if data.get("stage2_authority_config") is None
-                else Path(data["stage2_authority_config"])
             ),
             stage3_prepared_artifacts=(
                 None
@@ -541,10 +719,6 @@ def benchmark_config_from_dict(raw: dict[str, Any]) -> BenchmarkConfig:
             enabled=bool(stage3.get("enabled", False)),
             tasks=tasks,
             folds=tuple(int(value) for value in stage3.get("folds", ())),
-        ),
-        stage2_physics=Stage2PhysicsConfig(
-            enabled=bool(stage2.get("enabled", False)),
-            tasks=tuple(str(value) for value in stage2.get("tasks", ())),
         ),
     )
     config.validate()

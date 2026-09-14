@@ -7,6 +7,16 @@
 > 2026-08-20：本文的 Stage 2 checkpoint SHA、plugin lineage、run resume 与 evaluation identity 规则已由 [ADR-0021](0021-identity-audit-contract-v1.md) 取代；模型、采样、PCGrad 与数值训练合同不变。
 >
 > 2026-08-26：本文的全程 PCGrad、固定 final epoch 评估与 checkpoint v1 合同已由 [ADR-0027](0027-late-taskwise-refinement.md) 修订；joint phase 的 HoME、采样与 hierarchical PCGrad 合同保持不变。
+>
+> 2026-09-07：现役 v2 与对应 ADR-0034/0036 消融的 joint gradient clipping 和 sampling 已由 [ADR-0046](0046-stage3-ownership-clipping-raw-sampling.md) 修订；legacy v1 与 Capacity v1 保留本文合同。
+>
+> 2026-09-07：现役 v2 与上述两个消融的固定统一容量、单一 joint optimizer/scheduler、
+> refinement 和 final artifact 合同已由 [ADR-0047](0047-stage3-deterministic-four-phase-training.md)
+> 修订；本文与 ADR-0027 的对应条款仅继续约束 legacy v1 与 Capacity v1。
+>
+> 2026-09-10：上述现役四阶段条款已由
+> [ADR-0048](0048-stage3-owner-lifetime-three-phase-training.md) 的 owner-lifetime 三阶段合同取代；
+> legacy v1 与 Capacity v1 语义不变。
 
 ## 背景
 

@@ -1060,7 +1060,7 @@ def stage1_encoding_contract(loaded: LoadedStage1Model) -> dict[str, Any]:
     raw_config = loaded.config.to_dict()
     model = raw_config["model"]
     schema = loaded.model.descriptor_schema
-    return {
+    contract = {
         "contract_version": STAGE1_ENCODING_CONTRACT_VERSION,
         "max_smiles_tokens": raw_config["data"]["max_smiles_tokens"],
         "descriptor": raw_config["descriptor"],
@@ -1073,7 +1073,6 @@ def stage1_encoding_contract(loaded: LoadedStage1Model) -> dict[str, Any]:
             "mode": schema.mode,
             "token_count": schema.token_count,
         },
-        "fingerprint": raw_config["fingerprint"],
         "model": {
             name: model[name]
             for name in (
@@ -1085,6 +1084,22 @@ def stage1_encoding_contract(loaded: LoadedStage1Model) -> dict[str, Any]:
         },
         "role_to_id": dict(ROLE_TO_ID),
     }
+    if loaded.config.is_global_rdkit:
+        contract.update(
+            {
+                "contract_version": 2,
+                "encoding_api": "encode-entity-v2",
+                "representation": {
+                    "kind": loaded.model.representation_kind,
+                    "token_dim": loaded.model.token_dim,
+                    "atom_dim": loaded.model.atom_dim,
+                    "entity_dim": loaded.model.entity_dim,
+                },
+            }
+        )
+    else:
+        contract["fingerprint"] = raw_config["fingerprint"]
+    return contract
 
 
 def stage1_encoder_identity(
@@ -1108,7 +1123,11 @@ def teacher_cache_identity(
     return semantic_identity(
         "stage2.teacher-cache",
         {
-            "extraction_contract_version": TEACHER_EXTRACTION_CONTRACT_VERSION,
+            "extraction_contract_version": (
+                3
+                if loaded.config.is_global_rdkit
+                else TEACHER_EXTRACTION_CONTRACT_VERSION
+            ),
             "entity_identity": entity_identity["hash"],
             "stage1_encoder_identity": encoder_identity["hash"],
         },
@@ -1198,7 +1217,7 @@ def prepare_teacher_cache(
     entity_dataset = Stage2EntityDataset(config.data.artifacts_dir)
     packer = MultimodalPacker(loaded.vocabulary)
     embeddings = torch.empty(
-        (len(entity_dataset), loaded.config.model.d_model),
+        (len(entity_dataset), loaded.model.entity_dim),
         dtype=torch.float32,
     )
     loaded.model.eval()
@@ -1217,7 +1236,11 @@ def prepare_teacher_cache(
             batch = packer(
                 [entity_dataset[index] for index in range(start, end)]
             ).to(device)
-            encoded = loaded.model.encode(batch).float().cpu()
+            encoded = (
+                loaded.model.encode_entity(batch).entity_embedding
+                if loaded.config.is_global_rdkit
+                else loaded.model.encode(batch)
+            ).float().cpu()
             if not torch.isfinite(encoded).all():
                 raise RuntimeError(
                     f"Non-finite teacher embedding in entity rows {start}:{end}"
@@ -1239,7 +1262,7 @@ def prepare_teacher_cache(
         "entity_artifact_hash": data_metadata["entity_artifact_hash"],
         "stage1_encoder_identity": encoder_identity,
         "entity_count": len(entity_dataset),
-        "embedding_dim": loaded.config.model.d_model,
+        "embedding_dim": loaded.model.entity_dim,
         "dtype": "float32",
         "math_contract": math_contract,
         "embeddings_hash": embedding_digest,
@@ -1271,7 +1294,7 @@ def prepare_teacher_cache(
         {
             "event": "stage2_teacher_cache_complete",
             "entity_count": len(entity_dataset),
-            "embedding_dim": loaded.config.model.d_model,
+            "embedding_dim": loaded.model.entity_dim,
             "checkpoint": str(config.initialization.checkpoint),
             "identity": identity["hash"],
         }

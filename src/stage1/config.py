@@ -8,7 +8,13 @@ import yaml
 
 
 STAGE1_CHECKPOINT_VERSION = 2
+GLOBAL_RDKIT_STAGE1_CHECKPOINT_VERSION = 3
 STAGE1_CHECKPOINT_KIND = "ilume_stage1_pretraining"
+
+
+@dataclass(frozen=True)
+class ArchitectureConfig:
+    kind: str = "legacy_five_modality_v1"
 
 
 @dataclass(frozen=True)
@@ -118,6 +124,7 @@ class TrainingConfig:
 
 @dataclass(frozen=True)
 class PretrainConfig:
+    architecture: ArchitectureConfig = field(default_factory=ArchitectureConfig)
     data: DataConfig = field(default_factory=DataConfig)
     tokenizer: TokenizerConfig = field(default_factory=TokenizerConfig)
     descriptor: DescriptorConfig = field(default_factory=DescriptorConfig)
@@ -129,6 +136,11 @@ class PretrainConfig:
     training: TrainingConfig = field(default_factory=TrainingConfig)
 
     def validate(self) -> None:
+        if self.architecture.kind not in {
+            "legacy_five_modality_v1",
+            "global_rdkit_v2",
+        }:
+            raise ValueError("Unsupported Stage 1 architecture kind")
         if not 0.0 < self.data.valid_fraction < 1.0:
             raise ValueError("data.valid_fraction must be between 0 and 1")
         if self.data.max_smiles_tokens < 3:
@@ -153,6 +165,12 @@ class PretrainConfig:
             raise ValueError("descriptor.token_count must be 1, 8, or 12")
         if not 0.0 < self.descriptor.correlation_threshold < 1.0:
             raise ValueError("descriptor.correlation_threshold must be between 0 and 1")
+        if self.is_global_rdkit and (
+            self.descriptor.mode != "full" or self.descriptor.token_count != 1
+        ):
+            raise ValueError(
+                "global_rdkit_v2 requires all 217 descriptors in one token"
+            )
         if self.fingerprint.kind not in {"none", "morgan", "maccs", "both"}:
             raise ValueError("fingerprint.kind must be none, morgan, maccs, or both")
         if (
@@ -230,7 +248,27 @@ class PretrainConfig:
                 return [convert(item) for item in value]
             return value
 
-        return convert(asdict(self))
+        payload = convert(asdict(self))
+        if self.is_global_rdkit:
+            payload.pop("fingerprint")
+            payload["masking"].pop("fingerprint_ratio")
+            payload["masking"].pop("fingerprint_dropout")
+            payload["loss"].pop("lambda_fingerprint")
+        else:
+            payload.pop("architecture")
+        return payload
+
+    @property
+    def is_global_rdkit(self) -> bool:
+        return self.architecture.kind == "global_rdkit_v2"
+
+    @property
+    def checkpoint_version(self) -> int:
+        return (
+            GLOBAL_RDKIT_STAGE1_CHECKPOINT_VERSION
+            if self.is_global_rdkit
+            else STAGE1_CHECKPOINT_VERSION
+        )
 
     def experiment_dict(self) -> dict[str, Any]:
         payload = self.to_dict()
@@ -240,6 +278,7 @@ class PretrainConfig:
 
 
 _SECTIONS: dict[str, type] = {
+    "architecture": ArchitectureConfig,
     "data": DataConfig,
     "tokenizer": TokenizerConfig,
     "descriptor": DescriptorConfig,
@@ -274,6 +313,24 @@ def config_from_dict(raw: dict[str, Any]) -> PretrainConfig:
     unknown = set(raw) - set(_SECTIONS)
     if unknown:
         raise ValueError(f"Unknown config sections: {', '.join(sorted(unknown))}")
+    architecture = raw.get("architecture") or {}
+    if architecture.get("kind") == "global_rdkit_v2":
+        forbidden = []
+        if "fingerprint" in raw:
+            forbidden.append("fingerprint")
+        for section, fields in (
+            ("masking", ("fingerprint_ratio", "fingerprint_dropout")),
+            ("loss", ("lambda_fingerprint",)),
+        ):
+            values = raw.get(section) or {}
+            forbidden.extend(
+                f"{section}.{field}" for field in fields if field in values
+            )
+        if forbidden:
+            raise ValueError(
+                "global_rdkit_v2 forbids fingerprint configuration: "
+                + ", ".join(forbidden)
+            )
     parts = {
         name: _construct(section, raw.get(name))
         for name, section in _SECTIONS.items()

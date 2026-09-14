@@ -134,6 +134,21 @@ def task_compensation_scale(task_weight: float, total_epoch_batches: int, batch_
     return task_weight * total_epoch_batches * batch_rows / task_rows
 
 
+def joint_stage2_loss(
+    physics_loss: torch.Tensor,
+    teacher_loss: torch.Tensor,
+    *,
+    compensation: float,
+    lambda_teacher: float,
+    teacher_weighting: str,
+) -> torch.Tensor:
+    if teacher_weighting == "task_compensated":
+        return compensation * (physics_loss + lambda_teacher * teacher_loss)
+    if teacher_weighting == "uncompensated":
+        return compensation * physics_loss + lambda_teacher * teacher_loss
+    raise ValueError(f"Unsupported Stage 2 teacher weighting: {teacher_weighting}")
+
+
 def _training_geometry(config: Stage2Config, datasets: dict[str, Stage2TaskDataset]) -> tuple[dict[str, int], int, int, int]:
     if config.training.gradient_accumulation_steps != 1:
         raise ValueError("Stage 2 Object v3 requires one batch per optimizer step")
@@ -694,6 +709,18 @@ def _export_encoder(path: Path, *, model: Stage2ObjectModel, config: Stage2Confi
             "feature_generation_contract"
         ],
     }
+    if model.backbone.config.is_global_rdkit:
+        stage1_contract.update(
+            {
+                "encoding_api": "encode-entity-v2",
+                "representation": {
+                    "kind": model.backbone.representation_kind,
+                    "token_dim": model.backbone.token_dim,
+                    "atom_dim": model.backbone.atom_dim,
+                    "entity_dim": model.backbone.entity_dim,
+                },
+            }
+        )
     encoder_identity = build_stage2_encoder_identity(
         stage1_feature_identity=feature_identity,
         stage1_encoding_contract=stage1_contract,
@@ -943,7 +970,13 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
         raise ValueError("Stage 2 data artifact does not match Stage 1 features")
     if data_metadata.get("registry_hash") != registry.registry_hash:
         raise ValueError("Stage 2 data artifact registry mismatch")
-    teacher_cpu, teacher_metadata = load_teacher_embeddings(config, loaded, data_metadata, expected_count=len(entity_dataset), expected_dim=loaded.config.model.d_model)
+    teacher_cpu, teacher_metadata = load_teacher_embeddings(
+        config,
+        loaded,
+        data_metadata,
+        expected_count=len(entity_dataset),
+        expected_dim=loaded.model.entity_dim,
+    )
     teacher_embeddings = teacher_cpu.to(device)
     del teacher_cpu
     train_datasets = {task: Stage2TaskDataset(config.data.artifacts_dir, task, "train") for task in registry.task_ids}
@@ -1167,7 +1200,13 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
                         loss = batch_output.physics_loss
                     else:
                         compensation = task_compensation_scale(normalized_weights[descriptor.task], total_epoch_batches, int(descriptor.indices.numel()), task_rows[descriptor.task])
-                        loss = compensation * batch_output.physics_loss + config.loss.lambda_teacher * batch_output.teacher_loss
+                        loss = joint_stage2_loss(
+                            batch_output.physics_loss,
+                            batch_output.teacher_loss,
+                            compensation=compensation,
+                            lambda_teacher=config.loss.lambda_teacher,
+                            teacher_weighting=config.loss.teacher_weighting,
+                        )
                 interval_finite = interval_finite & torch.isfinite(loss.detach())
                 scaler.scale(loss).backward()
                 if config.training.max_grad_norm > 0:
@@ -1277,6 +1316,18 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
             data_identity=data_identity,
             refinement_state=refinement_state,
         )
+    if refinement_epochs == 0:
+        final = {
+            "event": "stage2_training_complete",
+            "final_epoch": boundary_epoch,
+            "final_validation": validation,
+            "stage2_encoder": {
+                "artifact": encoder_path.name,
+                "artifact_sha256": sha256_file(encoder_path),
+            },
+        }
+        atomic_json(output / "final_metrics.json", final)
+        return results
     for task_id in refinement_tasks:
         model.task_head_module(task_id).load_state_dict(
             refinement_state["selected_tasks"][task_id]["best_state"], strict=True
@@ -1310,6 +1361,7 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
 __all__ = [
     "STAGE2_CHECKPOINT_KIND", "STAGE2_CHECKPOINT_VERSION",
     "STAGE2_REFINED_KIND", "STAGE2_REFINED_VERSION", "evaluate_stage2",
+    "joint_stage2_loss",
     "load_stage2_encoder_artifact", "resolve_stage2_training_identity",
     "run_stage2_training", "task_compensation_scale",
 ]

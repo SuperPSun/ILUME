@@ -14,8 +14,6 @@ from common.identity import require_compatible_identity, semantic_identity, tens
 from common.io import atomic_json, atomic_torch_save, sha256_file
 from common.outputs import repository_path
 from common.progress import ProgressReporter
-from common.reporting import role_mae_diagnostics
-from stage2.registry import ORBITAL_TASK_TARGETS
 
 from benchmarks.common.config import BenchmarkConfig, BenchmarkName
 from benchmarks.common.data import BenchmarkTask, RawDataset, load_split, resolve_task
@@ -759,10 +757,6 @@ def train_molformer_bundle(
         pad_token_id=bundle.pad_token_id,
     )
     non_blocking = bool(config.runtime["non_blocking_transfer"])
-    best_score = float("inf")
-    best_epoch = 0
-    best_state: dict[str, torch.Tensor] | None = None
-    stale = 0
     history: list[dict[str, Any]] = []
     progress = (reporter or ProgressReporter()).bar(
         total=max_epochs,
@@ -815,40 +809,31 @@ def train_molformer_bundle(
                     "new_parameter_learning_rate": float(optimizer.param_groups[1]["lr"]),
                 }
             )
-            if normalized_mae < best_score:
-                best_score = normalized_mae
-                best_epoch = epoch
-                best_state = {
-                    name: value.detach().cpu().clone()
-                    for name, value in model.state_dict().items()
-                }
-                stale = 0
-            else:
-                stale += 1
             progress.set_postfix(
                 {
                     "train_mse": f"{loss_sum / seen:.4f}",
                     "val_mae": f"{raw_mae:.4f}",
-                    "best": f"{best_score:.4f}@{best_epoch}",
-                    "patience": f"{stale}/{config.training['early_stopping_patience']}",
                 }
             )
             progress.update(1)
-            if stale >= int(config.training["early_stopping_patience"]):
-                break
     finally:
         progress.close()
-    if best_state is None:
-        raise RuntimeError("MoLFormer training did not produce a best checkpoint")
-    state_hash = tensor_state_hash("benchmark.molformer-state.v1", best_state)
+    if len(history) != max_epochs:
+        raise RuntimeError("MoLFormer training did not complete its fixed epoch budget")
+    final_state = {
+        name: value.detach().cpu().clone()
+        for name, value in model.state_dict().items()
+    }
+    final_score = float(history[-1]["valid_normalized_mae"])
+    state_hash = tensor_state_hash("benchmark.molformer-state.v2", final_state)
     model_path = root / "model.pt"
-    atomic_torch_save(model_path, {"state_dict": best_state, "state_hash": state_hash})
+    atomic_torch_save(model_path, {"state_dict": final_state, "state_hash": state_hash})
     history_path = root / "history.json"
     audit_path = root / "input_audit.json"
     atomic_json(history_path, history)
     atomic_json(audit_path, {"train": bundle.train.audit, "valid": bundle.valid.audit})
     manifest = {
-        "format_version": 1,
+        "format_version": 2,
         "kind": "ilume_baseline_model",
         "model_kind": "molformer",
         "training_identity": bundle.training_identity,
@@ -857,9 +842,9 @@ def train_molformer_bundle(
         "target_columns": list(bundle.task.target_columns),
         "component_count": bundle.train.raw.component_count,
         "condition_dim": bundle.train.raw.conditions.shape[1],
-        "best_epoch": best_epoch,
-        "best_valid_normalized_mae": best_score,
-        "best_valid_raw_mae": best_score * bundle.target_stats.scale[0],
+        "final_epoch": max_epochs,
+        "final_valid_normalized_mae": final_score,
+        "final_valid_raw_mae": final_score * bundle.target_stats.scale[0],
         "warmup_steps": warmup_steps,
         "max_total_optimizer_steps": total_steps,
         "model_state_hash": state_hash,
@@ -874,8 +859,8 @@ def train_molformer_bundle(
     }
     atomic_json(root / "checkpoint.json", manifest)
     return {
-        "best_epoch": best_epoch,
-        "best_valid_raw_mae": manifest["best_valid_raw_mae"],
+        "final_epoch": max_epochs,
+        "final_valid_raw_mae": manifest["final_valid_raw_mae"],
         "epochs_ran": len(history),
         "input_audit": manifest["input_audit"],
     }
@@ -887,7 +872,7 @@ def _manifest(root: Path) -> dict[str, Any]:
         raise FileNotFoundError(f"Missing MoLFormer checkpoint manifest: {path}")
     payload = json.loads(path.read_text(encoding="utf-8"))
     if (
-        payload.get("format_version") != 1
+        payload.get("format_version") != 2
         or payload.get("kind") != "ilume_baseline_model"
         or payload.get("model_kind") != "molformer"
     ):
@@ -959,7 +944,7 @@ def evaluate_molformer_checkpoint(
     )
     model = build_molformer_model(config, bundle)
     payload = torch.load(root / "model.pt", map_location="cpu", weights_only=True)
-    if tensor_state_hash("benchmark.molformer-state.v1", payload["state_dict"]) != manifest["model_state_hash"]:
+    if tensor_state_hash("benchmark.molformer-state.v2", payload["state_dict"]) != manifest["model_state_hash"]:
         raise ValueError("MoLFormer checkpoint state hash mismatch")
     model.load_state_dict(payload["state_dict"], strict=True)
     device = torch.device(str(config.training["device"]))
@@ -987,13 +972,6 @@ def evaluate_molformer_checkpoint(
         bundle.task.target_columns,
         bundle.target_stats.scale,
     )
-    if task_id in ORBITAL_TASK_TARGETS:
-        target = ORBITAL_TASK_TARGETS[task_id]
-        metrics[target]["role_diagnostics"] = role_mae_diagnostics(
-            predictions[:, 0],
-            raw.targets[:, 0],
-            [row["ion_role"] for row in raw.audit_rows],
-        )
     return EvaluationResult(
         predictions=predictions,
         targets=raw.targets,

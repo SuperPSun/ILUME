@@ -3,6 +3,8 @@
 - 状态：Accepted
 - 日期：2026-08-28
 
+> Early stopping 与 validation-best checkpoint 由 [ADR-0045](0045-fixed-budget-baseline-training.md) 取代。
+
 ## 背景
 
 ILUME 需要一个 pretrained 分子语言模型 baseline，与 ADR-0022/0028 的既有 baseline 使用相同 registry、split、canonical identity、train-only normalization 与 evaluation/reporting 口径。MoLFormer 没有原生离子液体多组分结构，也没有满足 Partial Charge 严格 atom mapping 的可靠输出合同。

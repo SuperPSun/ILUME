@@ -4,6 +4,17 @@
 - 日期：2026-08-26
 - 修订：ADR-0019、ADR-0020、ADR-0021、ADR-0026 中的末期训练、最终模型选择、checkpoint 与 HPO 评分合同
 
+> 2026-09-06：HPO 执行能力已退役。下文 HPO 相关段落仅记录历史评分语义；refinement、
+> stitched validation、artifact 与普通训练合同继续有效。
+>
+> 2026-09-07：现役 v2 Stage 3 与对应消融的 refinement、selection 和 final artifact 已由
+> [ADR-0047](0047-stage3-deterministic-four-phase-training.md) 取代；本文相应条款仅继续约束
+> legacy v1 与 Capacity v1。
+>
+> 2026-09-10：ADR-0047 的现役合同已被
+> [ADR-0048](0048-stage3-owner-lifetime-three-phase-training.md) 取代；本文仍只约束 legacy v1
+> 与 Capacity v1。
+
 ## 背景
 
 联合多任务训练能在共享参数中迁移知识，但训练末期继续更新 shared state 与使用跨任务

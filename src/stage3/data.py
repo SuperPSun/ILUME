@@ -36,6 +36,7 @@ class CatalogTaskFact:
     materialized_path: str
     split_strategies: tuple[str, ...]
     catalog_schema_version: int
+    unique_systems: int | None
     provenance: dict[str, str]
 
 
@@ -60,6 +61,13 @@ class ResolvedTaskSpec:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    def prepared_dict(self) -> dict[str, Any]:
+        """Return only fields that determine prepared tensors and data identity."""
+        payload = self.to_dict()
+        for name in ("meta_group", "enabled", "task_weight"):
+            payload.pop(name)
+        return payload
 
 
 @dataclass(frozen=True)
@@ -149,10 +157,17 @@ def load_task_catalog(path: str | Path) -> dict[str, CatalogTaskFact]:
             }
             try:
                 schema_version = int(row["catalog_schema_version"])
+                unique_systems = (
+                    int(row["unique_systems"])
+                    if (row.get("unique_systems") or "").strip()
+                    else None
+                )
             except ValueError as error:
                 raise ValueError(
-                    f"Invalid catalog schema version at row {row_number}"
+                    f"Invalid catalog integer at row {row_number}"
                 ) from error
+            if unique_systems is not None and unique_systems <= 0:
+                raise ValueError(f"Invalid unique_systems for {task_id}")
             result[task_id] = CatalogTaskFact(
                 task_id=task_id,
                 target_column=targets[0],
@@ -162,12 +177,29 @@ def load_task_catalog(path: str | Path) -> dict[str, CatalogTaskFact]:
                 materialized_path=row["materialized_path"].strip(),
                 split_strategies=strategies,
                 catalog_schema_version=schema_version,
+                unique_systems=unique_systems,
                 provenance=provenance,
             )
     return result
 
 
-def _default_strategy(fact: CatalogTaskFact) -> str:
+def _default_strategy(fact: CatalogTaskFact, policy: str = "prefer_il") -> str:
+    if policy == "random":
+        return "random"
+    if policy == "system":
+        topology = fact.system_type.replace("-", "_")
+        if topology in fact.split_strategies:
+            return topology
+        raise ValueError(
+            f"Stage 3 task has no system split strategy: {fact.task_id}"
+        )
+    if policy == "individual":
+        strategy = "cation" if "cation" in fact.identity_columns else "solvent"
+        if strategy in fact.split_strategies:
+            return strategy
+        raise ValueError(
+            f"Stage 3 task has no individual split strategy: {fact.task_id}"
+        )
     if "il" in fact.split_strategies:
         return "il"
     topology = fact.system_type.replace("-", "_")
@@ -192,7 +224,17 @@ def resolve_task_registry(config: Stage3Config) -> dict[str, ResolvedTaskSpec]:
     resolved: dict[str, ResolvedTaskSpec] = {}
     for task_id, task in config.tasks.items():
         fact = catalog[task_id]
-        strategy = config.data.split_strategies.get(task_id, _default_strategy(fact))
+        if (
+            config.training.schedule_mode == "three_phase"
+            and task.unique_systems != fact.unique_systems
+        ):
+            raise ValueError(
+                f"Stage 3 unique_systems/catalog mismatch for {task_id}: "
+                f"{task.unique_systems} != {fact.unique_systems}"
+            )
+        strategy = config.data.split_strategies.get(
+            task_id, _default_strategy(fact, config.data.split_policy)
+        )
         strategy = strategy.replace("-", "_")
         if strategy not in fact.split_strategies:
             raise ValueError(f"Illegal split strategy for {task_id}: {strategy}")
@@ -654,6 +696,68 @@ def composite_steps_per_epoch(
         math.ceil(max(counts[task], virtual_min_size) / allocation[task])
         for task in counts
     )
+
+
+def resolve_raw_batch_allocation(
+    counts: Mapping[str, int], composite_batch_size: int
+) -> dict[str, int]:
+    if not counts or any(value <= 0 for value in counts.values()):
+        raise ValueError("Stage 3 task counts must be positive")
+    if len(counts) > composite_batch_size:
+        raise ValueError("Stage 3 active tasks exceed composite batch size")
+    total = sum(counts.values())
+    target = min(total, composite_batch_size)
+    quotas = {task: target * count / total for task, count in counts.items()}
+    allocation = {
+        task: min(count, max(1, math.floor(quotas[task])))
+        for task, count in counts.items()
+    }
+    while sum(allocation.values()) < target:
+        candidates = [task for task in counts if allocation[task] < counts[task]]
+        task = min(
+            candidates,
+            key=lambda name: (allocation[name] - quotas[name], name),
+        )
+        allocation[task] += 1
+    while sum(allocation.values()) > target:
+        candidates = [task for task in counts if allocation[task] > 1]
+        task = min(
+            candidates,
+            key=lambda name: (quotas[name] - allocation[name], name),
+        )
+        allocation[task] -= 1
+    return allocation
+
+
+def raw_task_steps(
+    counts: Mapping[str, int], allocation: Mapping[str, int]
+) -> dict[str, int]:
+    if set(counts) != set(allocation):
+        raise ValueError("Stage 3 count/allocation tasks differ")
+    if any(
+        allocation[task] <= 0 or allocation[task] > counts[task]
+        for task in counts
+    ):
+        raise ValueError("Stage 3 raw allocation is outside task size")
+    return {
+        task: math.ceil(counts[task] / allocation[task])
+        for task in counts
+    }
+
+
+def shuffled_epoch_indices(
+    real_size: int,
+    *,
+    seed: int,
+    epoch: int,
+    task_id: str,
+) -> torch.Tensor:
+    if real_size <= 0:
+        raise ValueError("Stage 3 raw sequence size must be positive")
+    generator = torch.Generator().manual_seed(
+        stable_seed(seed, "raw", epoch, task_id)
+    )
+    return torch.randperm(real_size, generator=generator)
 
 
 def balanced_virtual_indices(

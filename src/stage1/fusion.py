@@ -37,11 +37,15 @@ class FusionTransformer(nn.Module):
         dropout: float,
         role_embedding: bool = True,
         gradient_checkpointing: bool = False,
+        fingerprint_enabled: bool = True,
     ) -> None:
         super().__init__()
         self.cls_token = nn.Parameter(torch.empty(d_model))
         nn.init.normal_(self.cls_token, std=0.02)
-        self.modality_embedding = nn.Embedding(5, d_model)
+        self.fingerprint_enabled = fingerprint_enabled
+        self.modality_embedding = nn.Embedding(
+            5 if fingerprint_enabled else 4, d_model
+        )
         self.role_embedding = nn.Embedding(3, d_model) if role_embedding else None
         self.gradient_checkpointing = gradient_checkpointing
         layer = nn.TransformerEncoderLayer(
@@ -75,6 +79,8 @@ class FusionTransformer(nn.Module):
         batch_size, smiles_width, d_model = smiles_tokens.shape
         descriptor_count = descriptor_tokens.shape[1]
         fingerprint_count = fingerprint_tokens.shape[1]
+        if not self.fingerprint_enabled and fingerprint_count:
+            raise ValueError("global_rdkit_v2 Fusion forbids fingerprint tokens")
         smiles_lengths = batch_layout.smiles_lengths
         atom_counts = batch_layout.atom_counts
         bond_counts = batch_layout.bond_counts
@@ -159,11 +165,12 @@ class FusionTransformer(nn.Module):
             + descriptor_count
             + fingerprint_columns[None, :]
         )
-        fused_inputs[rows[:, None], fingerprint_indices] = (
-            fingerprint_tokens
-            + modality[self.FINGERPRINT_MODALITY]
-            + role_types[:, None, :]
-        )
+        if fingerprint_count:
+            fused_inputs[rows[:, None], fingerprint_indices] = (
+                fingerprint_tokens
+                + modality[self.FINGERPRINT_MODALITY]
+                + role_types[:, None, :]
+            )
 
         return fused_inputs, FusionLayout(
             smiles_indices=smiles_indices,

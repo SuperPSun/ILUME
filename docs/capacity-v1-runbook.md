@@ -89,123 +89,54 @@ python scripts/stage3/capacity.py \
 该命令自动汇总主指标、task/group 指标、fold sample-SD 和原始 run 路径；参数量、峰值
 显存、吞吐、wall time 与 Stage 1/2 稳定性不会由报告器推断，必须从同类硬件上的训练
 日志和监控记录中另行取证，并随人工 decision 一起保留。
-人工 Pareto 只能使用该 Base winner 作为 anchor。创建
-`outputs/experiments_v1/decisions/anchor.yaml`：
+超参数搜索、五折 confirmation、seed 配置物化和基于 trial 输出生成 final recipe 的能力已于
+2026-09-06 退役。不要创建新的 HPO study，也不要尝试用当前代码恢复旧 SQLite study。
+既有 HPO 输出只可作为历史证据读取，不再是运行输入。
 
-```yaml
-schema_version: 1
-kind: anchor
-selected_candidate: base-r4
-selected_config: configs/experiments_v1/stage3/probe/base-r4.yaml
-probe_report: outputs/experiments_v1/reports/probe/summary.json
-reason: >-
-  在 validation、fold 波动、参数量、峰值显存、吞吐和 wall time 的 Pareto 证据下选择。
-```
+## 4. 冻结的四规模 formal 配置
 
-`selected_candidate` 和 `selected_config` 必须替换为真实决定；HPO 会验证它确实是一个
-scale winner，并拒绝缺失 decision/reason/probe report 的运行。
-
-## 4. Anchor HPO 与五折 confirmation
-
-安装项目的 HPO extra 后，传入 anchor 对应 probe config。控制器使用四张 GPU、同步两
-trial wave、SQLite resume、一次 fold retry，并自动完成 Top-5+Base 的 folds 3/4/5：
+Stage 3 正式配方已经冻结在 `configs/experiments_v1/stage3/formal/{s,base,l,xl}.yaml`。
+这些 YAML 是唯一现役 Capacity Stage 3 训练输入；不得从旧 HPO artifact 重新生成或修改其
+model、optimizer、seed、epoch 与数据身份。对每个 `<scale>` 先准备数据：
 
 ```bash
-python -m pip install -e '.[hpo]'
-python scripts/stage3/train.py \
-  --config configs/experiments_v1/stage3/probe/base-r4.yaml \
-  --study-config configs/experiments_v1/stage3/hpo.yaml \
-  --output outputs/experiments_v1/stage3/hpo \
+python scripts/stage3/prepare.py \\
+  --config configs/experiments_v1/stage3/formal/<scale>.yaml \\
+  --output outputs/experiments_v1/stage3/formal/<scale>/prepare
+```
+
+然后运行五折训练：
+
+```bash
+python scripts/stage3/train.py \\
+  --config configs/experiments_v1/stage3/formal/<scale>.yaml \\
+  --fold 1 2 3 4 5 \\
+  --output outputs/experiments_v1/stage3/formal/<scale>/train \\
+  --max-parallel 4 \\
   --devices cuda:0,cuda:1,cuda:2,cuda:3
 ```
 
-中断后原命令追加 `--resume`。结果位于 `confirmation_report.json`；人工选择一个完成
-五折 confirmation 的 trial，并创建 `final-recipe.yaml`：
-
-```yaml
-schema_version: 1
-kind: final_recipe
-hpo_output: outputs/experiments_v1/stage3/hpo
-trial_number: 17
-reason: >-
-  根据五折 stitched validation 主指标、fold sample-SD、per-task 指标与完整曲线选择。
-scale_configs:
-  s: <separately-frozen-s-stage3-config>
-  base: configs/experiments_v1/stage3/probe/base-r4.yaml
-  l: <separately-frozen-l-stage3-config>
-  xl: <separately-frozen-xl-stage3-config>
-seed_output_root: outputs/experiments_v1/stage3/seed-robustness
-formal_output_root: outputs/experiments_v1/stage3/formal
-```
-
-`trial_number` 与四个 `scale_configs` 必须替换为真实决定。Base winner 的 encoder 不可直接
-写入 S/L/XL；先冻结它们各自的 Stage 2 encoder 与 Stage 3 配置，再物化完整 seed/formal YAML：
+四个 scale 全部完成后，使用提交到仓库的固定 manifest 汇总 validation：
 
 ```bash
-python scripts/stage3/capacity.py \
-  --recipe-decision outputs/experiments_v1/decisions/final-recipe.yaml \
-  --output-dir outputs/experiments_v1/decisions/final-recipe
-```
-
-## 5. Seed robustness
-
-seed 42 的 folds 1/2 已由 HPO 复用。其余四个 seed 分别运行：
-
-```bash
-python scripts/stage3/train.py \
-  --config outputs/experiments_v1/decisions/final-recipe/seed/seed<seed>.yaml \
-  --fold 1 2 \
-  --output outputs/experiments_v1/stage3/seed-robustness/seed<seed> \
-  --max-parallel 2 \
-  --devices cuda:0,cuda:1
-```
-
-其中 `<seed>` 依次为 `10042/20042/30042/40042`。生成 robustness 报告：
-
-```bash
-python scripts/stage3/capacity.py \
-  --manifest outputs/experiments_v1/decisions/final-recipe/robustness-report.yaml \
-  --output outputs/experiments_v1/reports/seed-robustness
-```
-
-人工复核并写 `decisions/seed-acceptance.yaml`，至少包含 `schema_version: 1`、
-`kind: seed_acceptance`、`accepted: true|false`、报告路径和非空 reason。`false` 时停止，
-不得运行 formal comparison。
-
-## 6. 四规模 50-epoch formal comparison 与 test
-
-只有 seed acceptance 为 true 后，四规模分别运行生成的 self-contained formal YAML：
-
-```bash
-python scripts/stage3/train.py \
-  --config outputs/experiments_v1/decisions/final-recipe/formal/<scale>.yaml \
-  --fold 1 2 3 4 5 \
-  --output outputs/experiments_v1/stage3/formal/<scale> \
-  --max-parallel 4 \
-  --devices cuda:0,cuda:1,cuda:2,cuda:3
-```
-
-四者完成后生成 validation 汇总：
-
-```bash
-python scripts/stage3/capacity.py \
-  --manifest outputs/experiments_v1/decisions/final-recipe/formal-report.yaml \
+python scripts/stage3/capacity.py \\
+  --manifest configs/experiments_v1/stage3/formal-report.yaml \\
   --output outputs/experiments_v1/reports/formal-validation
 ```
 
 再把同类硬件上的参数量、峰值显存、吞吐和 wall time 证据附入决策记录。在查看 test
-前写入 `decisions/main-scale.yaml`，记录所选 scale、validation/resource Pareto 理由和
-formal report。然后才允许对四个 scale 各执行一次 test ensemble：
+前写入 `outputs/experiments_v1/decisions/main-scale.yaml`，记录所选 scale、validation/resource
+Pareto 理由和 formal report。然后才允许对四个 scale 各执行一次 test ensemble：
 
 ```bash
-python scripts/stage3/evaluate.py \
-  --config outputs/experiments_v1/decisions/final-recipe/formal/<scale>.yaml \
-  --checkpoint-dir outputs/experiments_v1/stage3/formal/<scale> \
-  --split test \
-  --ensemble-folds \
-  --study-id capacity-v1-<scale> \
+python scripts/stage3/evaluate.py \\
+  --config configs/experiments_v1/stage3/formal/<scale>.yaml \\
+  --checkpoint-dir outputs/experiments_v1/stage3/formal/<scale>/train \\
+  --split test \\
+  --ensemble-folds \\
+  --study-id capacity-v1-<scale> \\
   --output outputs/experiments_v1/stage3/test/<scale>
 ```
 
-Test 只发布四点 capacity trend，不得修改 main scale、recipe 或 refined artifact。任何正式命令
-失败时先保存原日志和 metadata；同配置最多原样重跑一次，不做动态 rescue。
+Test 只发布四点 capacity trend，不得修改 main scale、冻结配方或 refined artifact。任何正式
+命令失败时先保存原日志和 metadata；同配置最多原样重跑一次，不做动态 rescue。

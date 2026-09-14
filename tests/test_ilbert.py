@@ -71,17 +71,11 @@ def _raw() -> RawDataset:
     )
 
 
-def test_formal_ilbert_config_resolves_108_training_jobs() -> None:
+def test_formal_ilbert_config_resolves_105_training_jobs() -> None:
     config = load_benchmark_config("configs/benchmarks/ilbert.yaml")
     stage3 = configured_tasks(config, "stage3")
-    stage2 = configured_tasks(config, "stage2_physics")
     assert len(stage3) == 21
-    assert stage2 == (
-        "simulation/heat_of_vaporization",
-        "simulation/homo",
-        "simulation/lumo",
-    )
-    assert len(stage3) * len(config.stage3.folds) + len(stage2) == 108
+    assert len(stage3) * len(config.stage3.folds) == 105
     assert config.training["batch_size"] == 16
     assert config.training["condition_transform"] == "raw_physical_units"
     old_recipe = copy.deepcopy(config.to_dict())

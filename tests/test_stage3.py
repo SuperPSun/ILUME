@@ -8,7 +8,7 @@ import math
 
 import shutil
 
-from dataclasses import asdict, replace
+from dataclasses import replace
 
 from pathlib import Path
 
@@ -27,17 +27,22 @@ from stage3.config import (
     BASE_GROUP_TASKS,
     Stage3Config,
     Stage3DataConfig,
+    Stage3GlobalBudgetConfig,
     Stage3GroupConfig,
     Stage3InitializationConfig,
     Stage3ModelConfig,
+    Stage3OwnerBudgetConfig,
     Stage3PluginAdaptationConfig,
     Stage3PluginConfig,
     Stage3PreparationConfig,
+    Stage3PrivateClassConfig,
     Stage3RepresentationConfig,
     Stage3TaskConfig,
+    Stage3ThreePhaseConfig,
     Stage3TrainingConfig,
     effective_training_seed,
     load_stage3_config,
+    stage3_config_from_dict,
 )
 
 from stage3.data import (
@@ -47,11 +52,22 @@ from stage3.data import (
     Stage3RepresentationStore,
     balanced_virtual_indices,
     composite_steps_per_epoch,
+    raw_task_steps,
     resolve_batch_allocation,
+    resolve_raw_batch_allocation,
     resolve_task_registry,
+    shuffled_epoch_indices,
+    source_path,
 )
 
-from stage3.model import GLOBAL, Stage3SparseModel, group_owner, private_owner
+from stage3.model import (
+    GLOBAL,
+    Stage3SparseModel,
+    group_owner,
+    private_owner,
+    summarize_task_gate_observations,
+    task_gate_observations,
+)
 
 from stage3.pcgrad import hierarchical_pcgrad
 
@@ -68,6 +84,7 @@ from stage3.train import (
     STAGE3_CHECKPOINT_VERSION,
     STAGE3_RDKIT_CHECKPOINT_KIND,
     STAGE3_RDKIT_REFINED_KIND,
+    _clip_joint_gradients,
     _load_plugin,
     checkpoint_epochs,
     compute_task_gradient,
@@ -76,25 +93,22 @@ from stage3.train import (
 )
 
 from stage3.identity import build_stage3_training_identity, metadata_identity
+from stage3.three_phase import (
+    _OwnerScheduler,
+    _lr_factor as _three_phase_lr_factor,
+    _model_state as _three_phase_model_state,
+    _optimizer as _three_phase_optimizer,
+    _owner_hash as _three_phase_owner_hash,
+    _owner_state as _three_phase_owner_state,
+    _stitch_owner_deltas,
+)
 
 from dataclasses import replace
 
-import yaml
 
 from common.identity import semantic_identity
 
-from stage3.capacity import (
-    CapacityStudyConfig,
-    aggregate_fold_summaries,
-    config_for_trial,
-    confirmation_trial_numbers,
-    load_capacity_study_config,
-    materialize_final_recipe_configs,
-    select_probe_winners,
-    summarize_capacity_manifest,
-    refined_validation_summary,
-    validate_anchor_decision,
-)
+from stage3.capacity import refined_validation_summary, summarize_capacity_manifest
 
 from stage3.config import load_stage3_config
 
@@ -114,6 +128,8 @@ import hashlib
 from typing import Any
 
 from stage3.config import validate_stage3_folds
+
+
 
 import argparse
 
@@ -145,6 +161,7 @@ def _catalog_row(
     conditions: str,
     system_type: str,
     strategies: str,
+    unique_systems: int = 2,
 ) -> dict[str, object]:
     return {
         "catalog_schema_version": 1,
@@ -156,6 +173,7 @@ def _catalog_row(
         "system_type": system_type,
         "materialized_path": f"stage3/{task}",
         "strategies": strategies,
+        "unique_systems": unique_systems,
     }
 
 def _tiny_config(tmp_path: Path) -> Stage3Config:
@@ -230,6 +248,61 @@ def _tiny_config(tmp_path: Path) -> Stage3Config:
         ),
     )
 
+
+def _tiny_three_phase(config: Stage3Config) -> Stage3Config:
+    private_class = Stage3PrivateClassConfig(
+        width_ratio=1.0,
+        phase1=Stage3OwnerBudgetConfig(lr=8.0e-5, epochs=1),
+        phase2_epochs=1,
+        phase3_epochs=1,
+    )
+    return replace(
+        config,
+        groups={
+            "g1": Stage3GroupConfig(
+                experts=2,
+                expert_hidden_ratio=1.5,
+                phase1=Stage3OwnerBudgetConfig(lr=1.25e-4, epochs=1),
+                phase2=Stage3OwnerBudgetConfig(lr=6.25e-5, epochs=2),
+            ),
+            "g2": Stage3GroupConfig(
+                experts=1,
+                expert_hidden_ratio=0.5,
+                phase1=Stage3OwnerBudgetConfig(lr=1.25e-4, epochs=1),
+                phase2=Stage3OwnerBudgetConfig(lr=6.25e-5, epochs=1),
+            ),
+        },
+        tasks={
+            task: replace(
+                spec,
+                unique_systems=2,
+                size_class="medium",
+                phase3_private_epochs=1,
+                model_overrides={},
+            )
+            for task, spec in config.tasks.items()
+        },
+        training=replace(
+            config.training,
+            sampling_mode="raw",
+            joint_gradient_clip_mode="ownership",
+            schedule_mode="three_phase",
+            three_phase=Stage3ThreePhaseConfig(
+                global_scope=Stage3GlobalBudgetConfig(
+                    lr=2.5e-4, epochs=2, warmup_ratio=0.05,
+                    min_lr_ratio=0.1,
+                ),
+                private_classes={
+                    name: private_class
+                    for name in ("tiny", "small", "medium", "large")
+                },
+                phase1_min_lr_ratio=0.5,
+                phase2_min_lr_ratio=0.5,
+                phase3_min_lr_ratio=0.2,
+            ),
+        ),
+    )
+
 @pytest.fixture()
 def tiny_prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Stage3Config:
     config = _tiny_config(tmp_path)
@@ -293,6 +366,10 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
     assert config.training.microbatch_size == 1024
     assert config.training.checkpoint_interval_epochs == 10
     assert config.training.seed is None
+    assert config.training.sampling_mode == "virtual"
+    assert config.training.joint_gradient_clip_mode == "global"
+    assert "sampling_mode" not in config.to_dict()["training"]
+    assert "joint_gradient_clip_mode" not in config.to_dict()["training"]
     assert effective_training_seed(config) == config.data.seed
     assert config.model.dropout == 0.10
     assert config.model.expert_hidden_ratio == 2.0
@@ -313,6 +390,791 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
     )
     assert ablation.initialization.stage2_encoder is None
     assert ablation.initialization.plugin is None
+    assert ablation.training.sampling_mode == "raw"
+    assert ablation.training.joint_gradient_clip_mode == "ownership"
+    assert ablation.training.schedule_mode == "three_phase"
+
+    no_stage1 = load_stage3_config(
+        "configs/ablations/no_stage1_rdkit_stage3.yaml"
+    )
+    assert no_stage1.training.schedule_mode == "three_phase"
+
+    v2 = load_stage3_config("configs/v2/stage3/base.yaml")
+    assert v2.training.sampling_mode == "raw"
+    assert v2.training.joint_gradient_clip_mode == "ownership"
+    assert v2.training.schedule_mode == "three_phase"
+    assert "virtual_min_size" not in v2.to_dict()["training"]
+    for path in (
+        "configs/v2/stage3/splits/random.yaml",
+        "configs/v2/stage3/splits/system.yaml",
+        "configs/v2/stage3/splits/individual.yaml",
+        "configs/ablations/stage1_stage2_rdkit_home.yaml",
+        "configs/ablations/no_stage1_rdkit_stage3.yaml",
+    ):
+        active = load_stage3_config(path)
+        assert active.groups == v2.groups
+        assert active.tasks == v2.tasks
+        assert active.training.three_phase == v2.training.three_phase
+
+
+def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
+    expected = {
+        "system": ({"il", "il_solute", "solute_solvent"}, 21),
+        "random": ({"random"}, 21),
+        "individual": ({"cation", "solvent"}, 21),
+    }
+    root = Path("configs/v2/stage3/splits")
+    for name, (strategies, task_count) in expected.items():
+        config = load_stage3_config(root / f"{name}.yaml")
+        registry = resolve_task_registry(config)
+        enabled = {
+            task_id: spec for task_id, spec in registry.items() if spec.enabled
+        }
+        assert len(enabled) == task_count
+        assert {spec.split_strategy for spec in enabled.values()} == set(strategies)
+        assert config.data.artifacts_dir == Path(
+            f"outputs/v2/stage3/splits/{name}/prepare/artifacts"
+        )
+        assert config.preparation.cache_dir == Path(
+            f"outputs/v2/stage3/splits/{name}/prepare/object_cache"
+        )
+        assert config.training.sampling_mode == "raw"
+        assert config.training.joint_gradient_clip_mode == "ownership"
+        assert config.training.schedule_mode == "three_phase"
+        for spec in enabled.values():
+            for fold in range(1, 6):
+                assert source_path(config, spec, fold).is_file()
+
+
+def test_v2_split_policies_follow_catalog_topology_and_identity() -> None:
+    system = resolve_task_registry(
+        load_stage3_config("configs/v2/stage3/splits/system.yaml")
+    )
+    assert {
+        spec.system_type for spec in system.values()
+    } == {"il", "il_solute", "solute_solvent"}
+    assert {
+        spec.split_strategy for spec in system.values()
+    } == {"il", "il_solute", "solute_solvent"}
+
+    individual = resolve_task_registry(
+        load_stage3_config("configs/v2/stage3/splits/individual.yaml")
+    )
+    assert sum(spec.split_strategy == "cation" for spec in individual.values()) == 20
+    assert individual["experiment/transfer_organic"].split_strategy == "solvent"
+
+
+def test_three_phase_config_and_task_specific_gate_contract() -> None:
+    config = load_stage3_config("configs/v2/stage3/base.yaml")
+    assert config.training.schedule_mode == "three_phase"
+    assert config.training.three_phase is not None
+    assert config.training.three_phase.global_scope == Stage3GlobalBudgetConfig(
+        lr=2.5e-4, epochs=15, warmup_ratio=0.05, min_lr_ratio=0.1
+    )
+    assert {
+        group: (
+            spec.experts, spec.expert_hidden_ratio,
+            (spec.phase1.lr, spec.phase1.epochs),
+            (spec.phase2.lr, spec.phase2.epochs),
+        )
+        for group, spec in config.groups.items()
+    } == {
+        "biological": (1, 0.5, (7.5e-5, 8), (3.75e-5, 5)),
+        "dielectric_optical": (1, 0.75, (1e-4, 8), (5e-5, 3)),
+        "thermophysical": (2, 1.5, (1.5e-4, 10), (7.5e-5, 4)),
+        "transport": (2, 1.5, (1.5e-4, 12), (7.5e-5, 12)),
+        "phase_stability": (3, 1.5, (2e-4, 15), (1e-4, 20)),
+        "solvation": (3, 1.5, (2e-4, 15), (1e-4, 24)),
+    }
+    expected_tasks = {
+        "isobaric_coefficient_of_volume_expansion": (25, "tiny", 0),
+        "self_diffusion_coefficient": (36, "tiny", 4),
+        "static_relative_permittivity": (44, "tiny", 0),
+        "dynamic_relative_permittivity": (49, "tiny", 2),
+        "thermal_conductivity": (93, "tiny", 2),
+        "equilibrium_pressure": (95, "tiny", 2),
+        "x_co2": (122, "small", 5), "speed_of_sound": (216, "small", 0),
+        "pec50": (305, "small", 3), "heat_capacity": (352, "small", 3),
+        "electrical_conductivity": (703, "medium", 4),
+        "refractive_index": (726, "medium", 3),
+        "glass_transition_temperature": (793, "medium", 2),
+        "surface_tension": (1141, "medium", 5),
+        "transfer_organic": (1914, "medium", 15),
+        "viscosity": (2586, "large", 6),
+        "thermal_decomposition_temperature": (2756, "large", 6),
+        "transfer": (3079, "large", 10), "melting_point": (3460, "large", 5),
+        "solvation": (3611, "large", 8), "density": (5966, "large", 8),
+    }
+    assert {
+        task.removeprefix("experiment/"): (
+            spec.unique_systems,
+            spec.size_class,
+            config.resolved_private_recipe(task).phase3_epochs,
+        )
+        for task, spec in config.tasks.items()
+    } == expected_tasks
+    serialized = config.to_dict()
+    assert "epochs" not in serialized["training"]
+    assert "refinement_ratio" not in serialized["training"]
+    assert "group_experts" not in serialized["model"]
+    mixed = {**serialized, "training": {**serialized["training"], "epochs": 20}}
+    with pytest.raises(ValueError, match="forbids legacy fields"):
+        stage3_config_from_dict(mixed)
+
+    with pytest.raises(ValueError, match="retired"):
+        stage3_config_from_dict(
+            {**serialized, "training": {"schedule_mode": "four_phase"}}
+        )
+    retired_task = {
+        **serialized,
+        "tasks": {
+            **serialized["tasks"],
+            "experiment/pec50": {
+                **serialized["tasks"]["experiment/pec50"],
+                "phase3_epochs": 3,
+            },
+        },
+    }
+    with pytest.raises(ValueError, match="phase3_epochs is retired"):
+        stage3_config_from_dict(retired_task)
+
+    task_a = Stage3TaskConfig(meta_group="g1")
+    task_b = Stage3TaskConfig(meta_group="g2")
+    tiny = Stage3Config(
+        model=Stage3ModelConfig(global_experts=1, group_experts=9),
+        groups={
+            "g1": Stage3GroupConfig(experts=3, expert_hidden_ratio=1.0),
+            "g2": Stage3GroupConfig(experts=1, expert_hidden_ratio=1.0),
+        },
+        tasks={"experiment/a": task_a, "experiment/b": task_b},
+    )
+    specs = {
+        task: ResolvedTaskSpec(
+            task_id=task,
+            target_column="value",
+            identity_columns=("cation", "anion"),
+            condition_columns=(),
+            system_type="il",
+            materialized_path=task,
+            split_strategy="il",
+            cv_repeat=1,
+            meta_group=spec.meta_group,
+            partner_mode="none",
+            primary_slots=("cation", "anion"),
+            partner_slots=(),
+            enabled=True,
+            task_weight=1.0,
+            catalog_schema_version=1,
+            provenance={},
+        )
+        for task, spec in tiny.tasks.items()
+    }
+    model = Stage3SparseModel(
+        tiny.model,
+        specs,
+        4,
+        group_configs=tiny.groups,
+        task_configs=tiny.tasks,
+    )
+    assert model.task_gates["experiment__a"].out_features == 5
+    assert model.task_gates["experiment__b"].out_features == 3
+    assert len(model.l1_group_experts["g1"]) == 3
+    assert len(model.l1_group_experts["g2"]) == 1
+
+
+def test_three_phase_private_capacity_ratios_follow_size_class() -> None:
+    config = load_stage3_config("configs/v2/stage3/base.yaml")
+    fallback_task = "experiment/dynamic_relative_permittivity"
+    fallback_config = replace(
+        config,
+        tasks={
+            **config.tasks,
+            fallback_task: replace(
+                config.tasks[fallback_task],
+                phase1_private_epochs=5,
+                model_overrides={},
+            ),
+        },
+    )
+    fallback_config.validate()
+    fallback = fallback_config.resolved_private_recipe(fallback_task)
+    assert (
+        fallback.private_hidden_ratio,
+        fallback.tower_hidden_ratio,
+        fallback.film_hidden_ratio,
+    ) == (0.5, 0.5, 0.5)
+    assert fallback.phase1_epochs == 5
+    pec50 = config.resolved_private_recipe("experiment/pec50")
+    assert (
+        pec50.private_hidden_ratio,
+        pec50.tower_hidden_ratio,
+        pec50.film_hidden_ratio,
+    ) == (0.75, 0.75, 0.75)
+    glass = config.resolved_private_recipe(
+        "experiment/glass_transition_temperature"
+    )
+    assert (glass.private_hidden_ratio, glass.tower_hidden_ratio, glass.film_hidden_ratio) == (
+        1.25, 1.25, 1.0,
+    )
+    assert glass.private_dropout == 0.10
+    for task in (
+        "experiment/electrical_conductivity",
+        "experiment/refractive_index",
+        "experiment/surface_tension",
+    ):
+        assert config.resolved_private_recipe(task).private_dropout == 0.15
+    assert config.resolved_private_recipe(
+        "experiment/viscosity"
+    ).private_dropout == 0.15
+    assert config.resolved_private_recipe(
+        "experiment/thermal_decomposition_temperature"
+    ).private_dropout == 0.10
+
+    task_id = "experiment/static_relative_permittivity"
+    task = config.tasks[task_id]
+    assert task.size_class == "tiny"
+
+    spec = resolve_task_registry(config)[task_id]
+    model = Stage3SparseModel(
+        config.model,
+        {task_id: spec},
+        1024,
+        group_configs=config.groups,
+        task_configs={task_id: task},
+        task_private_recipes={task_id: config.resolved_private_recipe(task_id)},
+    )
+    key = task_id.replace("/", "__")
+    recipe = model.resolved_capacity_recipe()["tasks"][task_id]
+    assert recipe["private_hidden"] == 256
+    assert recipe["tower_hidden"] == 256
+    assert recipe["film_hidden"] == 256
+    assert model.private_experts[key][0].layers[0].out_features == 256
+    assert model.towers[key].layers[0].out_features == 256
+    assert model.condition_films[key].network[0].out_features == 256
+    assert model.task_gates[key].in_features == 2048
+
+    dropout_task = "experiment/refractive_index"
+    dropout_model = Stage3SparseModel(
+        config.model,
+        {dropout_task: resolve_task_registry(config)[dropout_task]},
+        16,
+        group_configs=config.groups,
+        task_configs={dropout_task: config.tasks[dropout_task]},
+        task_private_recipes={
+            dropout_task: config.resolved_private_recipe(dropout_task)
+        },
+    )
+    dropout_key = dropout_task.replace("/", "__")
+    private_dropouts = [
+        module.p
+        for owner_module in (
+            dropout_model.private_experts[dropout_key],
+            dropout_model.towers[dropout_key],
+            dropout_model.condition_films[dropout_key],
+        )
+        for module in owner_module.modules()
+        if isinstance(module, torch.nn.Dropout)
+    ]
+    assert private_dropouts == [0.15, 0.15, 0.15]
+    assert dropout_model.resolved_capacity_recipe()["tasks"][dropout_task][
+        "private_dropout"
+    ] == 0.15
+    refractive = config.resolved_private_recipe(dropout_task)
+    assert (
+        refractive.private_hidden_ratio,
+        refractive.tower_hidden_ratio,
+        refractive.film_hidden_ratio,
+        refractive.phase3_epochs,
+    ) == (0.75, 0.75, 0.75, 3)
+
+    expected_lrs = {
+        "experiment/transfer_organic": (1.2e-4, 6.0e-5, 3.0e-5),
+        "experiment/solvation": (1.5e-4, 7.5e-5, 3.75e-5),
+        "experiment/electrical_conductivity": (8.0e-5, 4.0e-5, 2.0e-5),
+        "experiment/refractive_index": (8.0e-5, 4.0e-5, 2.0e-5),
+        "experiment/surface_tension": (8.0e-5, 4.0e-5, 2.0e-5),
+        "experiment/viscosity": (1.0e-4, 5.0e-5, 2.5e-5),
+        "experiment/density": (1.25e-4, 6.25e-5, 3.125e-5),
+    }
+    for resolved_task, expected in expected_lrs.items():
+        resolved = config.resolved_private_recipe(resolved_task)
+        assert (resolved.phase1_lr, resolved.phase2_lr, resolved.phase3_lr) == expected
+    changed_recipes = {
+        "experiment/isobaric_coefficient_of_volume_expansion": (0, 0, 0.25, 0.25, 0.25, 0.10),
+        "experiment/thermal_conductivity": (3, 2, 0.50, 0.50, 0.50, 0.10),
+        "experiment/pec50": (4, 3, 0.75, 0.75, 0.75, 0.10),
+        "experiment/x_co2": (4, 5, 0.75, 0.75, 0.75, 0.10),
+        "experiment/refractive_index": (8, 3, 0.75, 0.75, 0.75, 0.15),
+        "experiment/thermal_decomposition_temperature": (12, 6, 1.25, 1.25, 1.00, 0.10),
+        "experiment/viscosity": (12, 6, 0.75, 0.75, 0.75, 0.15),
+        "experiment/self_diffusion_coefficient": (3, 4, 0.50, 0.50, 0.50, 0.10),
+        "experiment/melting_point": (12, 5, 1.00, 1.00, 1.00, 0.10),
+    }
+    for changed_task, expected in changed_recipes.items():
+        resolved = config.resolved_private_recipe(changed_task)
+        assert (
+            resolved.phase2_epochs,
+            resolved.phase3_epochs,
+            resolved.private_hidden_ratio,
+            resolved.tower_hidden_ratio,
+            resolved.film_hidden_ratio,
+            resolved.private_dropout,
+        ) == expected
+    volume = config.resolved_private_recipe(
+        "experiment/isobaric_coefficient_of_volume_expansion"
+    )
+    refractive = config.resolved_private_recipe("experiment/refractive_index")
+    assert min(volume.phase2_epochs, config.groups["thermophysical"].phase2.epochs) == 0
+    assert min(refractive.phase2_epochs, config.groups["dielectric_optical"].phase2.epochs) == 3
+
+
+def test_task_gate_diagnostics_partition_entropy_and_pooled_quantiles() -> None:
+    task_gate = torch.tensor(
+        (
+            (0.10, 0.10, 0.10, 0.10, 0.10, 0.50),
+            (1 / 6, 1 / 6, 1 / 6, 1 / 6, 1 / 6, 1 / 6),
+        ),
+        dtype=torch.float64,
+    )
+    diagnostics = {
+        "task_gate": task_gate,
+        "l2_global_candidates": torch.empty((2, 2, 3)),
+        "l2_group_candidates": torch.empty((2, 3, 3)),
+        "l2_private_candidates": torch.empty((2, 1, 3)),
+    }
+    observations = task_gate_observations(diagnostics)
+    assert observations[:, :3] == pytest.approx(
+        torch.tensor(((0.2, 0.3, 0.5), (1 / 3, 0.5, 1 / 6)))
+    )
+    expected_entropy = torch.special.entr(task_gate).sum(dim=1) / math.log(6)
+    assert observations[:, 3] == pytest.approx(expected_entropy)
+
+    pooled = summarize_task_gate_observations(
+        torch.cat((observations, observations.flip(0)))
+    )
+    assert pooled["mean_global_gate_weight"] == pytest.approx(4 / 15)
+    assert pooled["mean_group_gate_weight"] == pytest.approx(0.4)
+    assert pooled["mean_private_gate_weight"] == pytest.approx(1 / 3)
+    assert pooled["task_gate_entropy"] == pytest.approx(expected_entropy.mean())
+    assert pooled["private_gate_weight_p10"] == pytest.approx(1 / 6)
+    assert pooled["private_gate_weight_p50"] == pytest.approx(1 / 3)
+    assert pooled["private_gate_weight_p90"] == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("phase1_private_lr", 1.5e-4, "nominal LR ordering"),
+        ("phase1_private_epochs", 16, "exceed GLOBAL budget"),
+        ("phase2_private_epochs", -1, "non-negative integer"),
+        ("phase3_private_epochs", -1, "non-negative integer"),
+    ),
+)
+def test_three_phase_task_budget_overrides_are_strict(
+    field: str, value: object, message: str
+) -> None:
+    payload = load_stage3_config("configs/v2/stage3/base.yaml").to_dict()
+    payload = json.loads(json.dumps(payload))
+    payload["tasks"]["experiment/density"][field] = value
+    with pytest.raises(ValueError, match=message):
+        stage3_config_from_dict(payload)
+
+
+@pytest.mark.parametrize("value", (True, -0.01, 0.151, "0.15"))
+def test_three_phase_private_dropout_override_is_bounded(value: object) -> None:
+    payload = load_stage3_config("configs/v2/stage3/base.yaml").to_dict()
+    payload = json.loads(json.dumps(payload))
+    payload["tasks"]["experiment/density"]["model_overrides"] = {
+        "private_dropout": value
+    }
+    with pytest.raises(ValueError, match="private_dropout must be in"):
+        stage3_config_from_dict(payload)
+
+
+def test_three_phase_training_publishes_fixed_final_state(
+    tiny_prepared: Stage3Config,
+) -> None:
+    config = _tiny_three_phase(tiny_prepared)
+    config = replace(
+        config,
+        tasks={
+            **config.tasks,
+            "experiment/a": replace(
+                config.tasks["experiment/a"],
+                phase2_private_epochs=0,
+                phase3_private_epochs=0,
+                model_overrides={"private_hidden_ratio": 0.5},
+            ),
+            "experiment/b": replace(
+                config.tasks["experiment/b"], phase2_private_epochs=3
+            ),
+        },
+    )
+    output = config.data.artifacts_dir.parent / "three-phase-train"
+    rows = run_stage3_training(config, 1, output_dir=output)
+
+    assert rows[-1]["phase"] == "three_phase_final"
+    assert (output / "phase_1/checkpoint_epoch_00002.pt").is_file()
+    assert (output / "phase_2/g1/checkpoint_epoch_00002.pt").is_file()
+    assert not (output / "phase_3/experiment__a").exists()
+    assert (
+        output / "phase_3/experiment__b/checkpoint_epoch_00001.pt"
+    ).is_file()
+    artifact = torch.load(
+        output / "three_phase_final.pt", map_location="cpu", weights_only=False
+    )
+    manifest = json.loads((output / "three_phase_final.json").read_text())
+    assert artifact["kind"] == "ilume_stage3_three_phase_final"
+    assert manifest["artifact_sha256"] == sha256_file(
+        output / "three_phase_final.pt"
+    )
+    assert set(manifest["phases"]["phase2"]["groups"]) == {
+        "g1", "g2"
+    }
+    assert set(manifest["phases"]["phase3"]["tasks"]) == set(
+        config.tasks
+    )
+    assert manifest["phases"]["phase3"]["tasks"]["experiment/a"][
+        "carried_from_anchor"
+    ] is True
+    gate_fields = {
+        "mean_global_gate_weight",
+        "mean_group_gate_weight",
+        "mean_private_gate_weight",
+        "task_gate_entropy",
+        "private_gate_weight_p10",
+        "private_gate_weight_p50",
+        "private_gate_weight_p90",
+    }
+    assert set(rows[-1]["validation"]["gate_diagnostics"]) == set(config.tasks)
+    assert set(
+        rows[-1]["validation"]["gate_diagnostics"]["experiment/a"]
+    ) == gate_fields
+    phase1_metric = json.loads(
+        (output / "phase_1/metrics.jsonl").read_text().splitlines()[0]
+    )
+    phase2_metric = json.loads(
+        (output / "phase_2/g1/metrics.jsonl").read_text().splitlines()[0]
+    )
+    phase2_manifest = json.loads((output / "phase_2/stitched.json").read_text())
+    assert "gate_diagnostics" in phase1_metric["validation"]
+    assert "gate_diagnostics" in phase2_metric["validation"]
+    assert "gate_diagnostics" in phase2_manifest["validation"]
+    assert "gate_diagnostics" in manifest["validation"]
+    assert "best_metric" not in json.dumps(manifest)
+    assert "selected_epoch" not in json.dumps(manifest)
+    assert "best_state" not in json.dumps(manifest)
+    plan = json.loads((output / "resolved_training_plan.json").read_text())
+    assert plan["format_version"] == 3
+    assert artifact["training_identity"]["payload"]["contract_version"] == 5
+    assert plan["phases"]["phase1"]["owners"]["PRIVATE:experiment/a"][
+        "freeze_epoch"
+    ] == 1
+    assert plan["phases"]["phase1"]["owners"]["PRIVATE:experiment/a"][
+        "capacity"
+    ]["private_hidden_ratio"] == 0.5
+    assert plan["phases"]["phase1"]["owners"]["PRIVATE:experiment/a"][
+        "capacity"
+    ]["tower_hidden_ratio"] == 1.0
+    assert plan["phases"]["phase1"]["owners"]["PRIVATE:experiment/a"][
+        "capacity"
+    ]["private_dropout"] == config.model.dropout
+    phase2_private = plan["phases"]["phase2"]["branches"]["g1"]["owners"][
+        "PRIVATE:experiment/a"
+    ]
+    assert phase2_private["nominal_epochs"] == 0
+    assert phase2_private["effective_epochs"] == 0
+    assert phase2_private["actual_update_budget"] == 0
+    assert phase2_private["terminal_lr"] == pytest.approx(2.0e-5)
+    phase2_truncated = plan["phases"]["phase2"]["branches"]["g1"]["owners"][
+        "PRIVATE:experiment/b"
+    ]
+    assert phase2_truncated["nominal_epochs"] == 3
+    assert phase2_truncated["effective_epochs"] == 2
+    assert plan["phases"]["phase3"]["branches"]["experiment/a"]["owners"][
+        "PRIVATE:experiment/a"
+    ]["nominal_lr"] == pytest.approx(2.0e-5)
+    zero_branch = plan["phases"]["phase3"]["branches"]["experiment/a"]
+    assert zero_branch["carried_from_anchor"] is True
+    assert zero_branch["owners"]["PRIVATE:experiment/a"][
+        "actual_update_budget"
+    ] == 0
+
+    phase2 = torch.load(
+        output / "phase_2/stitched.pt", map_location="cpu", weights_only=False
+    )
+    private_names = {
+        name for name, owner in artifact["ownership_manifest"].items()
+        if owner == "PRIVATE:experiment/a"
+    }
+    assert all(
+        torch.equal(phase2["model"][name], artifact["model"][name])
+        for name in private_names
+    )
+
+    phase1_epoch1 = torch.load(
+        output / "phase_1/checkpoint_epoch_00001.pt",
+        map_location="cpu", weights_only=False,
+    )
+    phase1_epoch2 = torch.load(
+        output / "phase_1/checkpoint_epoch_00002.pt",
+        map_location="cpu", weights_only=False,
+    )
+    private_names = {
+        name for name, owner in phase1_epoch1["ownership_manifest"].items()
+        if owner == "PRIVATE:experiment/a"
+    }
+    global_names = {
+        name for name, owner in phase1_epoch1["ownership_manifest"].items()
+        if owner == "GLOBAL"
+    }
+    assert all(
+        torch.equal(phase1_epoch1["model"][name], phase1_epoch2["model"][name])
+        for name in private_names
+    )
+    assert any(
+        not torch.equal(phase1_epoch1["model"][name], phase1_epoch2["model"][name])
+        for name in global_names
+    )
+
+    phase2_epoch1 = torch.load(
+        output / "phase_2/g1/checkpoint_epoch_00001.pt",
+        map_location="cpu", weights_only=False,
+    )
+    phase2_epoch2 = torch.load(
+        output / "phase_2/g1/checkpoint_epoch_00002.pt",
+        map_location="cpu", weights_only=False,
+    )
+    private_delta_names = {
+        name for name, owner in phase2_epoch1["ownership_manifest"].items()
+        if owner == "PRIVATE:experiment/a"
+    }
+    group_delta_names = {
+        name for name, owner in phase2_epoch1["ownership_manifest"].items()
+        if owner == "GROUP:g1"
+    }
+    assert "PRIVATE:experiment/a" not in {
+        group["owner"] for group in phase2_epoch1["optimizer"]["param_groups"]
+    }
+    assert phase2_epoch1["owner_updates"]["PRIVATE:experiment/a"] == 0
+    assert all(
+        torch.equal(
+            phase1_epoch2["model"][name],
+            phase2_epoch2["owner_state"][name],
+        )
+        for name in private_delta_names
+    )
+    assert all(
+        torch.equal(
+            phase2_epoch1["owner_state"][name],
+            phase2_epoch2["owner_state"][name],
+        )
+        for name in private_delta_names
+    )
+    assert any(
+        not torch.equal(
+            phase2_epoch1["owner_state"][name],
+            phase2_epoch2["owner_state"][name],
+        )
+        for name in group_delta_names
+    )
+
+    resumed = run_stage3_training(
+        config, 1, output_dir=output, resume_from=output
+    )
+    assert resumed[-1]["phase"] == "three_phase_final"
+    evaluated = evaluate_checkpoints(
+        config,
+        output,
+        split="valid",
+        ensemble_folds=False,
+        task_subset=("experiment/a",),
+        fold=1,
+    )
+    assert evaluated["model_selector"] == "three_phase_final"
+    assert set(evaluated["gate_diagnostics"]) == {"experiment/a"}
+    gate = evaluated["gate_diagnostics"]["experiment/a"]
+    assert set(gate) == gate_fields
+    assert gate["mean_global_gate_weight"] + gate[
+        "mean_group_gate_weight"
+    ] + gate["mean_private_gate_weight"] == pytest.approx(1.0)
+    assert 0.0 <= gate["task_gate_entropy"] <= 1.0
+    with pytest.raises(ValueError, match="only supported by legacy"):
+        evaluate_checkpoints(
+            config,
+            output,
+            split="valid",
+            ensemble_folds=False,
+            checkpoint_epoch=1,
+            task_subset=("experiment/a",),
+            fold=1,
+        )
+
+
+def test_three_phase_test_reports_fold_and_pooled_gate_diagnostics(
+    tiny_prepared: Stage3Config,
+) -> None:
+    config = _tiny_three_phase(tiny_prepared)
+    output = config.data.artifacts_dir.parent / "three-phase-ensemble"
+    for fold in range(1, 6):
+        run_stage3_training(config, fold, output_dir=output / f"fold{fold}")
+    predictions = output / "evaluation-predictions"
+    evaluated = evaluate_checkpoints(
+        config,
+        output,
+        split="test",
+        ensemble_folds=True,
+        task_subset=("experiment/a",),
+        predictions_dir=predictions,
+    )
+    gate_fields = {
+        "mean_global_gate_weight",
+        "mean_group_gate_weight",
+        "mean_private_gate_weight",
+        "task_gate_entropy",
+        "private_gate_weight_p10",
+        "private_gate_weight_p50",
+        "private_gate_weight_p90",
+    }
+    assert set(evaluated["folds"]) == {f"fold{fold}" for fold in range(1, 6)}
+    for fold_result in evaluated["folds"].values():
+        assert set(fold_result["gate_diagnostics"]["experiment/a"]) == gate_fields
+    aggregate = evaluated["ensemble"]["gate_diagnostics"]["experiment/a"]
+    assert set(aggregate) == gate_fields
+    assert aggregate["mean_global_gate_weight"] + aggregate[
+        "mean_group_gate_weight"
+    ] + aggregate["mean_private_gate_weight"] == pytest.approx(1.0)
+    assert 0.0 <= aggregate["task_gate_entropy"] <= 1.0
+
+    with (predictions / "experiment__a.csv").open(
+        newline="", encoding="utf-8"
+    ) as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows
+    spec = resolve_task_registry(config)["experiment/a"]
+    assert set(rows[0]) == {
+        "source_row",
+        *spec.identity_columns,
+        *spec.condition_columns,
+        "target",
+        *(f"prediction_fold{fold}" for fold in range(1, 6)),
+        "prediction_ensemble",
+        "absolute_error_ensemble",
+    }
+
+
+def test_three_phase_optimizer_groups_follow_ownership(
+    tiny_prepared: Stage3Config,
+) -> None:
+    config = _tiny_three_phase(tiny_prepared)
+    model = Stage3SparseModel(
+        config.model,
+        resolve_task_registry(config),
+        4,
+        group_configs=config.groups,
+        task_configs=config.tasks,
+    )
+    owners = (group_owner("g1"), private_owner("experiment/a"))
+    model.set_trainable_owners(owners)
+    optimizer = _three_phase_optimizer(
+        model,
+        config,
+        {owners[0]: 7.5e-5, owners[1]: 5.0e-5},
+    )
+
+    assert optimizer.state == {}
+    assert {group["owner"] for group in optimizer.param_groups} == {
+        "GROUP:g1", "PRIVATE:experiment/a"
+    }
+    assert {
+        (group["owner"], group["lr"])
+        for group in optimizer.param_groups
+    } == {
+        ("GROUP:g1", 7.5e-5),
+        ("PRIVATE:experiment/a", 5.0e-5),
+    }
+    optimized = {
+        id(parameter)
+        for group in optimizer.param_groups
+        for parameter in group["params"]
+    }
+    expected = {
+        id(parameter)
+        for parameter, owner in model.parameter_ownership().items()
+        if owner in owners
+    }
+    assert optimized == expected
+    assert all(
+        parameter.requires_grad == (owner in owners)
+        for parameter, owner in model.parameter_ownership().items()
+    )
+
+
+def test_three_phase_scheduler_recipes_reach_owner_local_floors() -> None:
+    assert _three_phase_lr_factor(0, 5, 100, 0.5) == pytest.approx(0.2)
+    assert _three_phase_lr_factor(4, 5, 100, 0.5) == pytest.approx(1.0)
+    assert _three_phase_lr_factor(99, 5, 100, 0.1) == pytest.approx(0.1)
+    assert _three_phase_lr_factor(99, 0, 100, 0.5) == pytest.approx(0.5)
+    assert _three_phase_lr_factor(99, 0, 100, 0.2) == pytest.approx(0.2)
+    left = torch.nn.Parameter(torch.ones(()))
+    right = torch.nn.Parameter(torch.ones(()))
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": [left], "lr": 1.0, "owner": "LEFT"},
+            {"params": [right], "lr": 1.0, "owner": "RIGHT"},
+        ]
+    )
+    scheduler = _OwnerScheduler(
+        optimizer,
+        {
+            owner: {
+                "nominal_lr": 1.0,
+                "terminal_lr": 0.5,
+                "actual_update_budget": 2,
+            }
+            for owner in ("LEFT", "RIGHT")
+        },
+    )
+    left.grad = torch.ones_like(left)
+    scheduler.step(("LEFT",))
+    assert scheduler.updates == {"LEFT": 1, "RIGHT": 0}
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(1.0)
+    assert optimizer.param_groups[1]["lr"] == pytest.approx(1.0)
+    left.grad = torch.ones_like(left)
+    scheduler.step(("LEFT",))
+    assert scheduler.updates == {"LEFT": 2, "RIGHT": 0}
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(0.5)
+
+
+def test_three_phase_owner_delta_stitch_is_order_independent(
+    tiny_prepared: Stage3Config,
+) -> None:
+    config = _tiny_three_phase(tiny_prepared)
+    registry = resolve_task_registry(config)
+    first = Stage3SparseModel(
+        config.model, registry, 4,
+        group_configs=config.groups, task_configs=config.tasks,
+    )
+    second = Stage3SparseModel(
+        config.model, registry, 4,
+        group_configs=config.groups, task_configs=config.tasks,
+    )
+    second.load_state_dict(first.state_dict())
+    anchor = _three_phase_model_state(first)
+    owners = (group_owner("g1"), private_owner("experiment/c"))
+    deltas = {}
+    for index, owner in enumerate(owners, start=1):
+        state = _three_phase_owner_state(first, (owner,))
+        state = {name: value + index for name, value in state.items()}
+        deltas[owner.label] = ((owner,), state, _three_phase_owner_hash(state))
+
+    forward = _stitch_owner_deltas(first, anchor, deltas)
+    reverse = _stitch_owner_deltas(
+        second, anchor, dict(reversed(list(deltas.items())))
+    )
+    assert set(forward) == set(reverse)
+    assert all(torch.equal(forward[name], reverse[name]) for name in forward)
+
 
 def test_training_seed_changes_training_identity_not_prepared_artifact(
     tiny_prepared: Stage3Config,
@@ -333,6 +1195,96 @@ def test_training_seed_changes_training_identity_not_prepared_artifact(
     ) == original_metadata
     assert resolve_stage3_training_identity(changed, 1) != (
         resolve_stage3_training_identity(tiny_prepared, 1)
+    )
+
+    changed_sampling = replace(
+        tiny_prepared,
+        training=replace(
+            tiny_prepared.training,
+            sampling_mode="raw",
+        ),
+    )
+    assert resolve_stage3_training_identity(changed_sampling, 1) != (
+        resolve_stage3_training_identity(tiny_prepared, 1)
+    )
+
+
+def test_raw_sampling_uses_every_index_once_without_padding() -> None:
+    counts = {"tiny": 10, "medium": 400, "large": 2000}
+    allocation = resolve_raw_batch_allocation(counts, 30)
+    task_steps = raw_task_steps(counts, allocation)
+    steps = max(task_steps.values())
+    sequences = {
+        task: shuffled_epoch_indices(
+            count, seed=42, epoch=1, task_id=task
+        )
+        for task, count in counts.items()
+    }
+
+    assert sum(allocation.values()) == 30
+    assert all(1 <= allocation[task] <= counts[task] for task in counts)
+    for task, count in counts.items():
+        batches = [
+            sequences[task][
+                step * allocation[task] : (step + 1) * allocation[task]
+            ]
+            for step in range(steps)
+        ]
+        observed = torch.cat([batch for batch in batches if len(batch)])
+        assert len(observed) == count
+        assert sorted(observed.tolist()) == list(range(count))
+        assert sum(bool(len(batch)) for batch in batches) == task_steps[task]
+    assert all(
+        sum(
+            len(
+                sequences[task][
+                    step * allocation[task] : (step + 1) * allocation[task]
+                ]
+            )
+            for task in counts
+        )
+        <= 30
+        for step in range(steps)
+    )
+
+    legacy = resolve_batch_allocation(counts, 30, 1000)
+    legacy_steps = composite_steps_per_epoch(counts, legacy, 1000)
+    assert legacy_steps * legacy["tiny"] > counts["tiny"]
+
+
+def test_grouping_and_task_weights_change_training_not_prepared_identity(
+    tiny_prepared: Stage3Config,
+) -> None:
+    regrouped = replace(
+        tiny_prepared,
+        groups={"merged": Stage3GroupConfig(group_weight=2.0)},
+        tasks={
+            task: replace(spec, meta_group="merged", task_weight=2.0)
+            for task, spec in tiny_prepared.tasks.items()
+        },
+    )
+    variants = (
+        regrouped,
+        replace(
+            tiny_prepared,
+            groups={
+                name: replace(spec, group_weight=2.0)
+                for name, spec in tiny_prepared.groups.items()
+            },
+        ),
+        replace(
+            tiny_prepared,
+            model=replace(tiny_prepared.model, group_experts=2),
+        ),
+    )
+    original_identity = resolve_stage3_training_identity(tiny_prepared, 1)
+    for changed in variants:
+        prepared = load_prepared_stage3(changed)
+        assert set(prepared["registry"]) == set(tiny_prepared.tasks)
+        assert resolve_stage3_training_identity(changed, 1) != original_identity
+    assert all(
+        spec.meta_group == "merged"
+        for spec in load_prepared_stage3(regrouped)["registry"].values()
     )
 
 def test_registry_catalog_precedence_split_and_topology(tmp_path: Path) -> None:
@@ -359,6 +1311,82 @@ def test_ownership_is_complete_and_isolated(tiny_prepared: Stage3Config) -> None
         model.parameters_for_owner(group_owner("g2"))
     )
     assert model.parameters_for_owner(GLOBAL)
+
+
+def test_joint_gradient_clipping_isolated_by_owner(
+    tiny_prepared: Stage3Config,
+) -> None:
+    registry = resolve_task_registry(tiny_prepared)
+    model = Stage3SparseModel(tiny_prepared.model, registry, 4)
+    requested_norms = {
+        "GLOBAL": 0.25,
+        "GROUP:g1": 0.50,
+        "GROUP:g2": 0.75,
+        "PRIVATE:experiment/a": 10.0,
+        "PRIVATE:experiment/b": 20.0,
+        "PRIVATE:experiment/c": 30.0,
+    }
+    ownership = model.parameter_ownership()
+    for owner in sorted(set(ownership.values())):
+        parameters = model.parameters_for_owner(owner)
+        element_count = sum(parameter.numel() for parameter in parameters)
+        value = requested_norms[owner.label] / math.sqrt(element_count)
+        for parameter in parameters:
+            parameter.grad = torch.full_like(parameter, value)
+
+    pre, post, owner_pre, owner_post = _clip_joint_gradients(
+        model, 1.0, "ownership"
+    )
+
+    assert pre > 30.0
+    assert post == pytest.approx(
+        math.sqrt(0.25**2 + 0.50**2 + 0.75**2 + 3.0), rel=1e-5
+    )
+    assert owner_pre == pytest.approx(requested_norms, rel=1e-5)
+    assert owner_post["GLOBAL"] == pytest.approx(0.25, rel=1e-5)
+    assert owner_post["GROUP:g1"] == pytest.approx(0.50, rel=1e-5)
+    assert owner_post["GROUP:g2"] == pytest.approx(0.75, rel=1e-5)
+    assert owner_post["PRIVATE:experiment/a"] == pytest.approx(1.0, rel=1e-5)
+    assert owner_post["PRIVATE:experiment/b"] == pytest.approx(1.0, rel=1e-5)
+    assert owner_post["PRIVATE:experiment/c"] == pytest.approx(1.0, rel=1e-5)
+
+
+@pytest.mark.parametrize("global_count,private_count", [(0, 0), (0, 1), (1, 0)])
+def test_zero_global_or_private_experts_preserve_forward_and_ownership(
+    tiny_prepared: Stage3Config,
+    global_count: int,
+    private_count: int,
+) -> None:
+    config = replace(
+        tiny_prepared,
+        model=replace(
+            tiny_prepared.model,
+            global_experts=global_count,
+            private_experts=private_count,
+        ),
+    )
+    config.validate()
+    registry = resolve_task_registry(config)
+    model = Stage3SparseModel(config.model, registry, 4)
+    task = "experiment/a"
+    result = model(
+        task,
+        torch.randn(3, 4),
+        torch.empty(3, len(registry[task].condition_columns)),
+    )
+    assert result.predictions.shape == (3,)
+    assert result.diagnostics["l1_global_gate"].shape == (3, global_count)
+    assert result.diagnostics["l2_global_candidates"].shape == (
+        3, global_count, 4
+    )
+    assert result.diagnostics["l2_private_candidates"].shape == (
+        3, private_count, 4
+    )
+    if global_count == 0:
+        assert model.parameters_for_owner(GLOBAL) == ()
+    assert model.parameters_for_owner(private_owner(task))
+
+
 
 
 def test_rdkit_prepare_adapter_refinement_and_reporting_contract(
@@ -614,7 +1642,77 @@ def test_pcgrad_keeps_global_and_group_as_separate_blocks(
     private = model.parameters_for_owner(private_owner("experiment/a"))[0]
     assert torch.equal(result.gradients[private], gradients["experiment/a"][private])
 
+
+def test_pcgrad_accepts_only_tasks_present_in_raw_step(
+    tiny_prepared: Stage3Config,
+) -> None:
+    registry = resolve_task_registry(tiny_prepared)
+    model = Stage3SparseModel(tiny_prepared.model, registry, 4)
+    task = "experiment/a"
+    owners = (GLOBAL, group_owner(registry[task].meta_group), private_owner(task))
+    gradients = {
+        task: {
+            parameter: torch.ones_like(parameter, dtype=torch.float32)
+            for owner in owners
+            for parameter in model.parameters_for_owner(owner)
+        }
+    }
+
+    result = hierarchical_pcgrad(
+        model,
+        gradients,
+        registry,
+        {"g1": 1.0, "g2": 1.0},
+        __import__("random").Random(3),
+    )
+
+    assert set(result.private_norms) == {task}
+    absent_private = {
+        parameter
+        for absent in ("experiment/b", "experiment/c")
+        for parameter in model.parameters_for_owner(private_owner(absent))
+    }
+    assert absent_private.isdisjoint(result.gradients)
+
+
+def test_pcgrad_accepts_empty_global_expert_block(
+    tiny_prepared: Stage3Config,
+) -> None:
+    config = replace(
+        tiny_prepared,
+        model=replace(
+            tiny_prepared.model, global_experts=0, private_experts=0
+        ),
+    )
+    registry = resolve_task_registry(config)
+    model = Stage3SparseModel(config.model, registry, 4)
+    gradients = {}
+    for task in registry:
+        owners = (group_owner(registry[task].meta_group), private_owner(task))
+        gradients[task] = {
+            parameter: torch.ones_like(parameter, dtype=torch.float32)
+            for owner in owners
+            for parameter in model.parameters_for_owner(owner)
+        }
+    result = hierarchical_pcgrad(
+        model,
+        gradients,
+        registry,
+        {"g1": 1.0, "g2": 1.0},
+        __import__("random").Random(3),
+    )
+    assert result.assembled_owner_norms["GLOBAL"] == 0.0
+    assert result.gradients
+
 def test_short_training_checkpoint_and_resume_are_exact(tiny_prepared: Stage3Config) -> None:
+    tiny_prepared = replace(
+        tiny_prepared,
+        training=replace(
+            tiny_prepared.training,
+            sampling_mode="raw",
+            joint_gradient_clip_mode="ownership",
+        ),
+    )
     continuous = tiny_prepared.data.artifacts_dir.parent / "continuous"
     rows = run_stage3_training(tiny_prepared, 1, output_dir=continuous)
     assert [row["epoch"] for row in rows] == [1, 2]
@@ -623,6 +1721,22 @@ def test_short_training_checkpoint_and_resume_are_exact(tiny_prepared: Stage3Con
     ]
     assert (continuous / "taskwise_refined.pt").is_file()
     assert (continuous / "taskwise_refinement.json").is_file()
+    plan = json.loads((continuous / "resolved_training_plan.json").read_text())
+    assert plan["data"]["sampling"] == "raw_without_replacement_v1"
+    assert plan["data"]["epoch_exposures"] == plan["data"]["N_t"]
+    assert not {
+        "N_prime_t", "padded_sizes", "replication_ratios"
+    } & plan["data"].keys()
+    assert plan["math"]["joint_gradient_clip_mode"] == "ownership"
+    joint_diagnostics = json.loads(
+        (continuous / "diagnostics.jsonl").read_text().splitlines()[0]
+    )
+    assert joint_diagnostics["clip_owner_pre_norms"]
+    assert joint_diagnostics["clip_owner_post_norms"]
+    assert all(
+        norm <= tiny_prepared.training.max_grad_norm + 1e-5
+        for norm in joint_diagnostics["clip_owner_post_norms"].values()
+    )
     boundary_checkpoint = torch.load(
         continuous / "checkpoint_epoch_00001.pt", map_location="cpu", weights_only=False
     )
@@ -654,7 +1768,17 @@ def test_short_training_checkpoint_and_resume_are_exact(tiny_prepared: Stage3Con
     )["model"]
     assert expected.keys() == actual.keys()
     assert all(torch.equal(expected[name], actual[name]) for name in expected)
+    final_checkpoint = torch.load(
+        continuous / "checkpoint_epoch_00002.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    assert final_checkpoint["refinement"]["task_updates"] == {
+        task: plan["data"]["task_steps"][task]
+        for task in plan["active_tasks"]
+    }
     assert (resumed / "taskwise_refined.pt").is_file()
+
     prediction_dir = tiny_prepared.data.artifacts_dir.parent / "evaluation-predictions"
     evaluation = evaluate_checkpoints(
         tiny_prepared,
@@ -668,6 +1792,7 @@ def test_short_training_checkpoint_and_resume_are_exact(tiny_prepared: Stage3Con
     )
     assert evaluation["checkpoint_epoch"] == 2
     assert set(evaluation["tasks"]) == {"experiment/a"}
+    assert "gate_diagnostics" not in evaluation
     prediction_path = prediction_dir / "experiment__a.csv"
     with prediction_path.open(newline="", encoding="utf-8") as handle:
         prediction_rows = list(csv.DictReader(handle))
@@ -711,6 +1836,28 @@ def test_short_training_checkpoint_and_resume_are_exact(tiny_prepared: Stage3Con
         fold=1,
     )
     assert epoch_only["model_selector"] == "epoch_checkpoint"
+
+
+def test_zero_global_private_experts_train_and_checkpoint(
+    tiny_prepared: Stage3Config,
+) -> None:
+    config = replace(
+        tiny_prepared,
+        model=replace(
+            tiny_prepared.model, global_experts=0, private_experts=0
+        ),
+    )
+    output = tiny_prepared.data.artifacts_dir.parent / "zero-expert-train"
+    rows = run_stage3_training(config, 1, output_dir=output)
+    assert [row["phase"] for row in rows] == ["joint", "refinement"]
+    checkpoint = torch.load(
+        output / "checkpoint_epoch_00002.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    assert checkpoint["config"]["model"]["global_experts"] == 0
+    assert checkpoint["config"]["model"]["private_experts"] == 0
+    assert (output / "taskwise_refined.pt").is_file()
 
 # --- Capacity v1 selection contract ---
 
@@ -762,193 +1909,49 @@ def test_refined_score_uses_stitched_validation(tmp_path: Path) -> None:
     assert summary["score"] == pytest.approx(0.25)
     assert summary["model_selector"] == "taskwise_refined"
 
-def test_capacity_study_and_trial_config_are_strict(tmp_path: Path) -> None:
-    study = tmp_path / "study.yaml"
-    study.write_text(
-        """
-schema_version: 2
-study_name: test
-anchor_decision: outputs/test/anchor.yaml
-attempted_trials: 40
-startup_trials: 10
-trials_per_wave: 2
-folds: [1, 2]
-confirmation_folds: [3, 4, 5]
-top_k: 5
-max_retries: 1
-sampler_seed: 42
-global_experts: [1, 2, 3, 4]
-group_experts: [1, 2, 3, 4]
-private_experts: [1, 2]
-expert_hidden_ratio: [1.0, 1.5, 2.0, 3.0, 4.0]
-dropout: [0.0, 0.3]
-learning_rate: [0.0001, 0.001]
-weight_decay: [0.0001, 0.1]
-baseline:
-  global_experts: 2
-  group_experts: 2
-  private_experts: 1
-  expert_hidden_ratio: 2.0
-  dropout: 0.1
-  learning_rate: 0.0003
-  weight_decay: 0.01
-""".lstrip(),
-        encoding="utf-8",
-    )
-    spec = load_capacity_study_config(study)
-    base = load_stage3_config("configs/v1/stage3/base.yaml")
-    base = replace(base, training=replace(base.training, epochs=20, seed=42))
-    trial = config_for_trial(base, spec.baseline)
-    assert trial.model.global_experts == 2
-    assert trial.model.expert_hidden_ratio == 2.0
-    assert trial.training.learning_rate == pytest.approx(3.0e-4)
-    assert trial.training.seed == 42
 
-def test_capacity_study_runs_synchronous_waves_and_resumes(tmp_path: Path) -> None:
-    baseline = {
-        "global_experts": 2,
-        "group_experts": 2,
-        "private_experts": 1,
-        "expert_hidden_ratio": 2.0,
-        "dropout": 0.1,
-        "learning_rate": 3.0e-4,
-        "weight_decay": 1.0e-2,
-    }
-    spec = CapacityStudyConfig(
-        study_name="capacity-test",
-        anchor_decision="outputs/test/anchor.yaml",
-        attempted_trials=4,
-        startup_trials=2,
-        trials_per_wave=2,
-        folds=(1, 2),
-        confirmation_folds=(3, 4, 5),
-        top_k=2,
-        max_retries=1,
-        sampler_seed=42,
-        global_experts=(1, 2),
-        group_experts=(1, 2),
-        private_experts=(1, 2),
-        expert_hidden_ratio=(1.0, 2.0),
-        dropout=(0.0, 0.3),
-        learning_rate=(1.0e-4, 1.0e-3),
-        weight_decay=(1.0e-4, 1.0e-1),
-        baseline=baseline,
-    )
-    spec.validate()
-    base = load_stage3_config("configs/v1/stage3/base.yaml")
-    base = replace(base, training=replace(base.training, epochs=20, seed=42))
-    calls: list[tuple[str, tuple[int, ...], tuple[int, ...]]] = []
+@pytest.mark.parametrize("scale", ("s", "base", "l", "xl"))
+def test_capacity_formal_configs_remain_loadable(scale: str) -> None:
+    config = load_stage3_config(f"configs/experiments_v1/stage3/formal/{scale}.yaml")
+    assert config.training.seed == 42
+    assert config.training.epochs == 100
 
-    def run_wave(trials, *, phase, folds, devices, max_retries):
-        assert max_retries == 1
-        calls.append(
-            (
-                phase,
-                tuple(number for number, _, _ in trials),
-                tuple(folds),
-            )
-        )
-        result = {}
-        for number, _, trial_root in trials:
-            result[number] = {}
-            for fold in folds:
-                root = trial_root / phase / "attempt0" / f"fold{fold}"
-                _write_metrics(root, [0.1 + number / 100] * 20)
-                result[number][fold] = root
-        return result
 
-    output = tmp_path / "study"
-    report = train_launcher._run_capacity_study(
-        base_config=base,
-        study_config=spec,
-        output=output,
-        resume=False,
-        devices=("cuda:0", "cuda:1", "cuda:2", "cuda:3"),
-        run_wave=run_wave,
-    )
-    assert calls[:2] == [
-        ("search", (0, 1), (1, 2)),
-        ("search", (2, 3), (1, 2)),
-    ]
-    assert report["shortlist"] == [0, 1]
-    assert [row["trial_number"] for row in report["ranking"]] == [0, 1]
-    calls.clear()
-    resumed = train_launcher._run_capacity_study(
-        base_config=base,
-        study_config=spec,
-        output=output,
-        resume=True,
-        devices=("cuda:0", "cuda:1", "cuda:2", "cuda:3"),
-        run_wave=run_wave,
-    )
-    assert resumed == report
-    assert calls == []
-
-    decision = tmp_path / "final-recipe.yaml"
-    probe_config = "configs/experiments_v1/stage3/probe/base-r4.yaml"
-    decision.write_text(
+def test_capacity_probe_report_remains_supported(tmp_path: Path) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    _write_metrics(first, [0.4] * 20)
+    _write_metrics(second, [0.2] * 20)
+    manifest = tmp_path / "probe.yaml"
+    manifest.write_text(
         __import__("yaml").safe_dump(
             {
-                    "schema_version": 1,
-                "kind": "final_recipe",
-                "hpo_output": str(output),
-                "trial_number": 0,
-                "reason": "test confirmed baseline",
-                "scale_configs": {
-                    scale: probe_config for scale in ("s", "base", "l", "xl")
-                },
-                "seed_output_root": "outputs/test/seeds",
-                "formal_output_root": "outputs/test/formal",
+                "schema_version": 2,
+                "kind": "probe",
+                "expected_epochs": 20,
+                "candidates": [
+                    {
+                        "id": "base-r4",
+                        "scale": "Base",
+                        "recipe": "r4",
+                        "folds": {1: str(first)},
+                    },
+                    {
+                        "id": "base-r6",
+                        "scale": "Base",
+                        "recipe": "r6",
+                        "folds": {1: str(second)},
+                    },
+                ],
             },
             sort_keys=False,
         ),
         encoding="utf-8",
     )
-    materialized = materialize_final_recipe_configs(
-        decision, tmp_path / "materialized"
-    )
-    assert materialized["trial_number"] == 0
-    seed_config = load_stage3_config(
-        tmp_path / "materialized/seed/seed10042.yaml"
-    )
-    formal_config = load_stage3_config(tmp_path / "materialized/formal/xl.yaml")
-    assert (seed_config.training.seed, seed_config.training.epochs) == (10042, 20)
-    assert (formal_config.training.seed, formal_config.training.epochs) == (42, 50)
+    result = summarize_capacity_manifest(manifest)
+    assert [row["id"] for row in result["ranking"]] == ["base-r6", "base-r4"]
+    assert result["scale_winners"][0]["id"] == "base-r6"
 
-def test_anchor_decision_requires_selected_probe_winner(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import common.outputs as outputs_module
-
-    monkeypatch.setattr(outputs_module, "REPOSITORY_ROOT", tmp_path)
-    config_path = tmp_path / "configs/anchor.yaml"
-    config_path.parent.mkdir(parents=True)
-    config_path.write_text("training: {}\n", encoding="utf-8")
-    report_path = tmp_path / "outputs/probe/summary.json"
-    report_path.parent.mkdir(parents=True)
-    report_path.write_text(
-        json.dumps({"scale_winners": [{"id": "l-default"}]}), encoding="utf-8"
-    )
-    decision_path = tmp_path / "outputs/anchor.yaml"
-    decision_path.write_text(
-        yaml.safe_dump(
-            {
-                "schema_version": 1,
-                "kind": "anchor",
-                "selected_candidate": "l-default",
-                "selected_config": "configs/anchor.yaml",
-                "probe_report": "outputs/probe/summary.json",
-                "reason": "Pareto evidence",
-            }
-        ),
-        encoding="utf-8",
-    )
-    base_spec = load_capacity_study_config(
-        "configs/experiments_v1/stage3/hpo.yaml"
-    )
-    spec = replace(base_spec, anchor_decision="outputs/anchor.yaml")
-    decision = validate_anchor_decision(spec, config_path)
-    assert decision["selected_candidate"] == "l-default"
 
 # --- Multi-fold training launcher contract ---
 

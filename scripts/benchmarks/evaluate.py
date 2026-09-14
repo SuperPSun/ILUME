@@ -23,19 +23,11 @@ from common.io import sha256_file
 from common.outputs import open_run_directory, repository_path, repository_relative
 from common.progress import ProgressReporter
 from common.reporting import (
-    STAGE2_CORE_EVALUATION_CONTRACT,
-    STAGE2_PARTIAL_EVALUATION_CONTRACT,
     REPORTING_SCHEMA_VERSION,
     comparison_identity,
     reporting_block,
     sanitize_task_id,
     write_prediction_csv,
-)
-from stage2.atom_evaluation import (
-    PARTIAL_CHARGE_TASK,
-    PARTIAL_CHARGE_UNIT,
-    public_partial_charge_score,
-    write_partial_charge_predictions,
 )
 
 
@@ -80,24 +72,6 @@ def _comparison_fragment(
     ensemble: bool,
     ensemble_results: list[Any] | None = None,
 ) -> dict[str, Any]:
-    if task.benchmark == "stage2_physics":
-        if len(task.target_columns) != 1:
-            raise ValueError(f"Stage 2 Core task must be scalar: {task.task_id}")
-        expected = (task.task_id,)
-        sources = {
-            f"{task.task_id}:train": sha256_file(task.train_paths[0]),
-            f"{task.task_id}:test": sha256_file(task.test_path),
-        }
-        normalization = {
-            task.task_id: {"scale": float(result.target_stats.scale[0])}
-        }
-        return comparison_identity(
-            "stage2_physics",
-            split="test",
-            expected=expected,
-            sources=sources,
-            normalization=normalization,
-        )
     sources = {
         f"{task.task_id}:fold{path.stem.removeprefix('fold')}": sha256_file(path)
         for path in (*task.train_paths, *task.valid_paths)
@@ -217,7 +191,7 @@ def _write_task_predictions(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate ILUME baseline checkpoints.")
     parser.add_argument("--config", required=True)
-    parser.add_argument("--benchmark", required=True, choices=("stage3", "stage2_physics"))
+    parser.add_argument("--benchmark", required=True, choices=("stage3",))
     parser.add_argument("--task", required=True)
     parser.add_argument("--split", required=True, choices=("valid", "test"))
     parser.add_argument("--checkpoint")
@@ -227,17 +201,14 @@ def main() -> None:
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     config = load_benchmark_config(args.config)
-    validation_best = config.name == "ilume_stage3_single_task_mlp"
+    model_selector = (
+        "validation_best"
+        if config.name == "ilume_stage3_single_task_mlp"
+        else str(config.training["model_selection"])
+    )
     environment_snapshot = ensure_benchmark_environment(config)
     reporter = ProgressReporter()
-    partial_charge = args.task == PARTIAL_CHARGE_TASK
-    if partial_charge and (
-        config.name != "dmpnn"
-        or args.benchmark != "stage2_physics"
-        or args.split != "test"
-    ):
-        raise ValueError("Partial Charge baseline evaluation requires D-MPNN Stage 2 test")
-    if args.benchmark == "stage3" and args.split == "test":
+    if args.split == "test":
         if not args.ensemble_folds or args.fold is not None or not args.checkpoint_dir or args.checkpoint:
             raise ValueError("Stage 3 test requires --checkpoint-dir and --ensemble-folds only")
         checkpoint_root = repository_path(args.checkpoint_dir)
@@ -245,11 +216,9 @@ def main() -> None:
         selector_fold = None
     else:
         if args.ensemble_folds or not args.checkpoint or args.checkpoint_dir:
-            raise ValueError("Single-fold/Stage 2 evaluation requires exactly --checkpoint")
-        if args.benchmark == "stage3" and args.fold not in config.stage3.folds:
+            raise ValueError("Single-fold evaluation requires exactly --checkpoint")
+        if args.fold not in config.stage3.folds:
             raise ValueError("Stage 3 validation requires a configured --fold")
-        if args.benchmark == "stage2_physics" and args.fold is not None:
-            raise ValueError("Stage 2 physics evaluation does not accept --fold")
         checkpoints = [repository_path(args.checkpoint)]
         selector_fold = args.fold
     checkpoint_fingerprints = [_checkpoint_fingerprint(path) for path in checkpoints]
@@ -294,6 +263,26 @@ def main() -> None:
             config.stage3.folds[0] if args.ensemble_folds else selector_fold,
             args.split,
         )
+    if config.name == "llasmol":
+        from benchmarks.llasmol.adapter import llasmol_evaluation_audit
+
+        input_audit = llasmol_evaluation_audit(
+            config,
+            args.benchmark,
+            args.task,
+            config.stage3.folds[0] if args.ensemble_folds else selector_fold,
+            args.split,
+        )
+    if config.name == "aionopedia":
+        from benchmarks.aionopedia.adapter import aionopedia_evaluation_audit
+
+        input_audit = aionopedia_evaluation_audit(
+            config,
+            args.benchmark,
+            args.task,
+            config.stage3.folds[0] if args.ensemble_folds else selector_fold,
+            args.split,
+        )
     evaluation_identity = semantic_identity(
         "benchmark.evaluation.v1",
         {
@@ -312,27 +301,14 @@ def main() -> None:
         stage="benchmark", operation="evaluate", config_path=args.config,
         config_payload=config.to_dict(), semantic_identity=evaluation_identity,
         output=args.output, seed=config.seed,
-        data_metadata=["data/task_catalog.csv", "data/stage2/metadata.json"],
+        data_metadata="data/stage3/metadata.json",
         details={
             "reporting_schema_version": REPORTING_SCHEMA_VERSION,
-            **(
-                {
-                    "reporting_contract": (
-                        STAGE2_PARTIAL_EVALUATION_CONTRACT
-                        if partial_charge
-                        else STAGE2_CORE_EVALUATION_CONTRACT
-                    )
-                }
-                if args.benchmark == "stage2_physics" else {}
-            ),
             "benchmark": args.benchmark, "task": args.task, "split": args.split,
             "fold": selector_fold, "ensemble_folds": args.ensemble_folds,
             "checkpoints": [repository_relative(path) for path in checkpoints],
-            **(
-                {"model_selector": "validation_best", "checkpoint_epoch": None}
-                if validation_best
-                else {}
-            ),
+            "model_selector": model_selector,
+            "checkpoint_epoch": None,
             **environment_run_details(environment_snapshot),
         },
     )
@@ -341,58 +317,6 @@ def main() -> None:
             write_environment_snapshot(
                 run.root / "environment.json", environment_snapshot
             )
-        if partial_charge:
-            from benchmarks.dmpnn.adapter import evaluate_dmpnn_partial
-
-            partial = evaluate_dmpnn_partial(config, checkpoints[0])
-            if _source_hash(evaluation_source) != evaluation_source_hash:
-                raise ValueError("Benchmark evaluation source changed during evaluation")
-            if [_checkpoint_fingerprint(path) for path in checkpoints] != checkpoint_fingerprints:
-                raise ValueError("Benchmark checkpoint changed during evaluation")
-            prediction_manifest = write_partial_charge_predictions(
-                run.root / "predictions" / f"{sanitize_task_id(args.task)}.csv",
-                partial.benchmark,
-                partial.score,
-            )
-            prediction_manifest["path"] = (
-                f"predictions/{sanitize_task_id(args.task)}.csv"
-            )
-            study = semantic_identity(
-                "benchmark.reporting-study.v1",
-                {
-                    "model": config.name,
-                    "config": {
-                        key: value
-                        for key, value in config.to_dict().items()
-                        if key not in {"display_name", "runtime"}
-                    },
-                },
-            )["hash"]
-            summary = {
-                "benchmark": args.benchmark,
-                "task": args.task,
-                "split": args.split,
-                "stage2_partial_charge_benchmark": {
-                    "test": public_partial_charge_score(partial.score)
-                },
-                "reporting": reporting_block(
-                    model_id=config.name,
-                    model_display_name=config.display_name,
-                    benchmark="stage2_partial_charge",
-                    protocol={
-                        "split": "test",
-                        "folds": [],
-                        "ensemble": False,
-                        "expected_units": [PARTIAL_CHARGE_UNIT],
-                    },
-                    comparison=partial.benchmark.comparison_identity,
-                    study_id=f"{config.name}-{study}",
-                    predictions=[prediction_manifest],
-                ),
-            }
-            summary["reporting"]["contract"] = STAGE2_PARTIAL_EVALUATION_CONTRACT
-            run.complete(summary)
-            return
         results = [
             evaluate_checkpoint(
                 config, args.benchmark, args.task,
@@ -430,10 +354,9 @@ def main() -> None:
                 "fold": selector_fold, "targets": first.metrics,
             }
             extras = None
-        if validation_best:
-            summary.update(
-                {"model_selector": "validation_best", "checkpoint_epoch": None}
-            )
+        summary.update(
+            {"model_selector": model_selector, "checkpoint_epoch": None}
+        )
         if input_audit is not None:
             summary["input_audit"] = input_audit
         prediction_manifest = _write_task_predictions(
@@ -465,29 +388,20 @@ def main() -> None:
         summary["reporting"] = reporting_block(
             model_id=config.name,
             model_display_name=config.display_name,
-            benchmark=(
-                "stage3_property"
-                if args.benchmark == "stage3"
-                else "stage2_physics"
-            ),
+            benchmark="stage3_property",
             protocol={
                 "split": args.split,
                 "fold": selector_fold,
-                "folds": list(config.stage3.folds) if args.benchmark == "stage3" else [],
+                "folds": list(config.stage3.folds),
                 "ensemble": args.ensemble_folds,
                 "expected_tasks": [args.task],
-                **(
-                    {"model_selector": "validation_best", "checkpoint_epoch": None}
-                    if validation_best
-                    else {}
-                ),
+                "model_selector": model_selector,
+                "checkpoint_epoch": None,
             },
             comparison=comparison,
             study_id=f"{config.name}-{study}",
             predictions=[prediction_manifest],
         )
-        if args.benchmark == "stage2_physics":
-            summary["reporting"]["contract"] = STAGE2_CORE_EVALUATION_CONTRACT
         run.complete(summary)
     except BaseException:
         run.fail()

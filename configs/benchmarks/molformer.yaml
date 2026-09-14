@@ -8,7 +8,7 @@ environment:
 data:
   data_root: data
   task_catalog: data/task_catalog.csv
-  stage3_authority_config: configs/v1/stage3/base.yaml
+  stage3_authority_config: configs/v2/stage3/splits/system.yaml
 model:
   repository: ibm-research/MoLFormer-XL-both-10pct
   revision: 361063d0ad524ef77cf39b08469f6be770dc550f
@@ -34,12 +34,11 @@ training:
   batch_size: 128
   gradient_accumulation_steps: 1
   max_epochs: 50
-  early_stopping_patience: 8
   tf32: true
   length_bucketing: sortish_length_bucketing_v1
   bucket_window_batches: 20
   loss: mse
-  selection_metric: validation_mae
+  model_selection: final_training_state
   device: cuda
   precision: fp32
 runtime:
@@ -52,9 +51,3 @@ stage3:
   enabled: true
   tasks: all
   folds: [1, 2, 3, 4, 5]
-stage2_physics:
-  enabled: true
-  tasks:
-    - simulation/heat_of_vaporization
-    - simulation/homo
-    - simulation/lumo

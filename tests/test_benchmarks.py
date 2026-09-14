@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 
+import hashlib
+
 import json
 
 import re
@@ -55,14 +57,14 @@ from common.identity import semantic_identity
 
 from common.reporting import (
     REPORTING_SCHEMA_VERSION,
-    STAGE2_CORE_EVALUATION_CONTRACT,
-    STAGE2_PARTIAL_EVALUATION_CONTRACT,
     comparison_identity,
 )
 
-from stage2.atom_evaluation import PARTIAL_CHARGE_TASK, PARTIAL_CHARGE_UNIT
+from stage3.config import load_stage3_config
 
 import scripts.benchmarks.sweep as sweep_module
+import scripts.benchmarks.evaluate as benchmark_evaluate_launcher
+import scripts.benchmarks.train as benchmark_train_launcher
 
 from scripts.benchmarks.sweep import (
     _JobResult,
@@ -78,14 +80,8 @@ from scripts.benchmarks.sweep import (
 from benchmarks.common.summary import SUMMARY_FILES, publish_summary
 
 from common.reporting import (
-    STAGE2_BENCHMARK_SUITE_CONTRACT,
-    comparison_identity,
-    role_mae_diagnostics,
-    stage2_full_comparison_identity,
     write_prediction_csv,
 )
-
-from stage2.evaluate import resolve_checkpoint_path
 
 from dataclasses import replace
 
@@ -111,7 +107,6 @@ try:
     from benchmarks.dmpnn.adapter import (
         ConditionStats,
         DMPNNTrainingBundle,
-        _partial_dataset,
         _predict,
         _prepare_scalar,
         _scalar_dataset,
@@ -189,20 +184,20 @@ def _tiny_config(tmp_path: Path, *, name: str = "mlp", targets: str = "value"):
         writer.writerow(
             {
                 "catalog_schema_version": 1,
-                "stage": 2,
-                "task_id": "simulation/tiny",
-                "task_kind": "object_property",
+                "stage": 3,
+                "task_id": "experiment/tiny",
+                "task_kind": "observation",
                 "target_level": "object",
-                "source_file": "simulation/tiny.csv",
+                "source_file": "experiment/tiny.csv",
                 "target_columns": targets,
                 "identity_columns": "cation;anion",
                 "condition_columns": "temperature_K",
                 "system_type": "il",
                 "simulation_method": "test",
-                "materialized_path": "stage2/tiny",
+                "materialized_path": "stage3/experiment/tiny",
                 "label_source": "materialized_csv",
                 "resource_manifest": "",
-                "strategies": "system_holdout",
+                "strategies": "il",
             }
         )
     fields = ["cation", "anion", "temperature_K", *targets.split(";")]
@@ -217,16 +212,39 @@ def _tiny_config(tmp_path: Path, *, name: str = "mlp", targets: str = "value"):
         for column, target in enumerate(targets.split(";")):
             row[target] = float(index + column * 0.5)
         values.append(row)
-    _write_csv(tmp_path / "stage2/tiny/train.csv", fields, values[:4])
-    _write_csv(tmp_path / "stage2/tiny/valid.csv", fields, values[4:6])
-    _write_csv(tmp_path / "stage2/tiny/test.csv", fields, values[6:])
+    for fold in range(1, 6):
+        _write_csv(
+            tmp_path / f"stage3/experiment/tiny/IL/fold{fold}.csv",
+            fields,
+            values[(fold - 1) % 4 : (fold - 1) % 4 + 2],
+        )
+    _write_csv(tmp_path / "stage3/experiment/tiny/test.csv", fields, values[6:])
+    authority = tmp_path / "stage3.yaml"
+    authority.write_text(
+        yaml.safe_dump(
+            {
+                "data": {
+                    "stage3_dir": str(tmp_path / "stage3"),
+                    "task_catalog": str(catalog),
+                    "artifacts_dir": str(tmp_path / "unused-artifacts"),
+                },
+                "preparation": {"cache_dir": str(tmp_path / "unused-cache")},
+                "initialization": {"stage2_encoder": str(tmp_path / "unused.pt")},
+                "groups": {"tiny": {"enabled": True, "group_weight": 1.0}},
+                "tasks": {"experiment/tiny": {"meta_group": "tiny"}},
+                "training": {"device": "cpu", "amp_dtype": "none"},
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
     if name == "mlp":
         features = {"kind": "rdkit_2d", "radius": 2, "n_bits": 2048}
         model = {"hidden_dims": [8], "dropout": 0.0}
         training = {
             "optimizer": "adamw", "learning_rate": 0.01, "weight_decay": 0.0,
-            "batch_size": 2, "max_epochs": 4, "early_stopping_patience": 2,
-            "loss": "normalized_mse", "selection_metric": "raw_target_macro_mae",
+            "batch_size": 2, "max_epochs": 4,
+            "loss": "normalized_mse", "model_selection": "final_training_state",
             "device": "cpu", "precision": "fp32",
         }
     else:
@@ -236,21 +254,25 @@ def _tiny_config(tmp_path: Path, *, name: str = "mlp", targets: str = "value"):
             "subsample": 1.0, "colsample_bytree": 1.0, "reg_lambda": 1.0,
             "objective": "reg:squarederror", "eval_metric": "mae", "tree_method": "hist",
         }
-        training = {"early_stopping_rounds": 2, "n_jobs": 1, "device": "cpu", "target_space": "raw"}
+        training = {
+            "model_selection": "final_training_state",
+            "n_jobs": 1,
+            "device": "cpu",
+            "target_space": "raw",
+        }
     return benchmark_config_from_dict(
         {
             "name": name,
             "seed": 42,
             "data": {
                 "data_root": str(tmp_path), "task_catalog": str(catalog),
-                "stage3_authority_config": str(tmp_path / "unused.yaml"),
+                "stage3_authority_config": str(authority),
                 "feature_cache": str(tmp_path / "features.sqlite3"),
             },
             "features": features,
             "model": model,
             "training": training,
-            "stage3": {"enabled": False, "tasks": "all", "folds": [1, 2, 3, 4, 5]},
-            "stage2_physics": {"enabled": True, "tasks": ["simulation/tiny"]},
+            "stage3": {"enabled": True, "tasks": "all", "folds": [1, 2, 3, 4, 5]},
         }
     )
 
@@ -327,32 +349,42 @@ def _tiny_stage3_config(tmp_path: Path):
             "model": {"hidden_dims": [8], "dropout": 0.0},
             "training": {
                 "optimizer": "adamw", "learning_rate": 0.01, "weight_decay": 0.0,
-                "batch_size": 2, "max_epochs": 3, "early_stopping_patience": 2,
-                "loss": "normalized_mse", "selection_metric": "raw_target_macro_mae",
+                "batch_size": 2, "max_epochs": 3,
+                "loss": "normalized_mse", "model_selection": "final_training_state",
                 "device": "cpu", "precision": "fp32",
             },
             "stage3": {"enabled": True, "tasks": "all", "folds": [1, 2, 3, 4, 5]},
-            "stage2_physics": {"enabled": False, "tasks": []},
         }
     )
 
-def test_formal_configs_and_registry_resolution(tmp_path: Path) -> None:
+def test_formal_configs_and_registry_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = load_benchmark_config("configs/benchmarks/mlp.yaml")
     assert len(configured_tasks(config, "stage3")) == 21
-    assert configured_tasks(config, "stage2_physics") == (
-        "simulation/heat_of_vaporization",
-        "simulation/homo",
-        "simulation/lumo",
-    )
+    retired = config.to_dict()
+    retired["stage2_physics"] = {"enabled": True, "tasks": ["simulation/homo"]}
+    with pytest.raises(ValueError, match="Unknown benchmark config fields: stage2_physics"):
+        benchmark_config_from_dict(retired)
+    for launcher in (
+        benchmark_train_launcher,
+        benchmark_evaluate_launcher,
+    ):
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                str(launcher.__file__), "--config", "config.yaml",
+                "--benchmark", "stage2_physics", "--task", "simulation/homo",
+                "--output", "output",
+            ],
+        )
+        with pytest.raises(SystemExit):
+            launcher.main()
     solvation = resolve_task(config, "stage3", "experiment/solvation", 1)
     organic = resolve_task(config, "stage3", "experiment/transfer_organic", 1)
-    orbital = resolve_task(config, "stage2_physics", "simulation/homo", None)
     assert solvation.slots == ("cation", "anion", "solute")
     assert organic.slots == ("solute", "solvent")
-    assert orbital.slots == ("SMILES",) and orbital.target_columns == ("HOMO_eV",)
-    assert orbital.audit_columns == (
-        "ion_role", "provenance_source_file", "provenance_source_row"
-    )
     missing_test = resolve_task(config, "stage3", "experiment/self_diffusion_coefficient", 1)
     empty = load_split(missing_test, "test")
     reporter = RecordingReporter()
@@ -364,13 +396,93 @@ def test_formal_configs_and_registry_resolution(tmp_path: Path) -> None:
     assert reporter.bars == []
 
 
+@pytest.mark.parametrize(
+    ("name", "fixed_budget"),
+    (
+        ("mlp", 50),
+        ("ecfp_xgboost", 1000),
+        ("dmpnn", 50),
+        ("molformer", 50),
+        ("ilbert", 50),
+        ("spmm", 50),
+        ("llasmol", 10),
+    ),
+)
+def test_formal_baseline_configs_use_fixed_final_state(
+    name: str, fixed_budget: int,
+) -> None:
+    config = load_benchmark_config(Path("configs/benchmarks") / f"{name}.yaml")
+    assert config.training["model_selection"] == "final_training_state"
+    assert {
+        "early_stopping_patience", "early_stopping_rounds", "selection_metric",
+    }.isdisjoint(config.training)
+    if name == "ecfp_xgboost":
+        assert config.model["n_estimators"] == fixed_budget
+    else:
+        assert config.training["max_epochs"] == fixed_budget
+    if name == "ilbert":
+        assert config.training["scheduler"] == "constant"
+        assert {
+            "scheduler_metric", "scheduler_patience", "scheduler_factor",
+            "minimum_learning_rate",
+        }.isdisjoint(config.training)
+    for retired_field in (
+        "selection_metric", "early_stopping_patience", "early_stopping_rounds",
+    ):
+        retired = config.to_dict()
+        retired["training"][retired_field] = 1
+        with pytest.raises(ValueError, match="forbid validation-driven"):
+            benchmark_config_from_dict(retired)
+
+
+def test_native_split_benchmark_configs_follow_v2_authorities() -> None:
+    splits = ("system", "random", "individual")
+    benchmarks = ("mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm")
+    root = Path("configs/benchmarks/splits")
+    for split in splits:
+        authority = load_stage3_config(
+            Path("configs/v2/stage3/splits") / f"{split}.yaml"
+        )
+        expected = tuple(authority.enabled_task_ids)
+        for benchmark in benchmarks:
+            config = load_benchmark_config(root / f"{benchmark}__{split}.yaml")
+            assert config.data.stage3_authority_config == Path(
+                f"configs/v2/stage3/splits/{split}.yaml"
+            )
+            assert configured_tasks(config, "stage3") == expected
+            assert config.training["model_selection"] == "final_training_state"
+            assert {
+                "early_stopping_patience", "early_stopping_rounds", "selection_metric",
+            }.isdisjoint(config.training)
+            if benchmark == "ecfp_xgboost":
+                assert config.model["n_estimators"] == 1000
+            else:
+                assert config.training["max_epochs"] == 50
+            if benchmark == "ilbert":
+                assert config.training["scheduler"] == "constant"
+            if benchmark == "dmpnn":
+                assert config.model["multicomponent_shared"] is True
+
+
+def test_default_benchmark_configs_follow_v2_system_authority() -> None:
+    for benchmark in (
+        "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm",
+        "llasmol", "aionopedia",
+    ):
+        config = load_benchmark_config(
+            Path("configs/benchmarks") / f"{benchmark}.yaml"
+        )
+        assert config.data.stage3_authority_config == Path(
+            "configs/v2/stage3/splits/system.yaml"
+        )
+
+
 def test_stage3_single_task_mlp_config_and_ordered_concat() -> None:
     config = load_benchmark_config(
         "configs/ablations/ilume_stage3_single_task_mlp.yaml"
     )
     assert config.display_name == "ILUME Stage3 Single-task MLP"
     assert len(configured_tasks(config, "stage3")) == 21
-    assert configured_tasks(config, "stage2_physics") == ()
     assert config.data.feature_cache is None and config.features is None
     with pytest.raises(ValueError, match="registered recipe"):
         replace(config, model={**config.model, "dropout": 0.2}).validate()
@@ -456,20 +568,19 @@ def test_stage3_single_task_mlp_runs_full_budget_and_selects_best() -> None:
     restored.load_state_dict(best_state, strict=True)
     assert reporter.bars[0].n == 3 and reporter.bars[0].closed
 
-def test_formal_dmpnn_config_resolves_109_training_jobs() -> None:
+def test_formal_dmpnn_config_resolves_105_training_jobs() -> None:
     config = load_benchmark_config("configs/benchmarks/dmpnn.yaml")
     stage3_tasks = configured_tasks(config, "stage3")
-    stage2_tasks = configured_tasks(config, "stage2_physics")
     assert len(stage3_tasks) == 21
-    assert stage2_tasks == (
-        "simulation/heat_of_vaporization",
-        "simulation/homo",
-        "simulation/lumo",
-        "simulation/partial_atomic_charge",
-    )
-    assert len(stage3_tasks) * len(config.stage3.folds) + len(stage2_tasks) == 109
+    assert len(stage3_tasks) * len(config.stage3.folds) == 105
     assert config.features is None
     assert config.data.feature_cache is None
+    assert config.model["multicomponent_shared"] is True
+    with pytest.raises(ValueError, match="registered Chemprop recipe"):
+        replace(
+            config,
+            model={**config.model, "multicomponent_shared": False},
+        ).validate()
 
 def test_dmpnn_environment_dispatches_once_before_validation(
     monkeypatch: pytest.MonkeyPatch,
@@ -512,27 +623,27 @@ def test_preprocessor_uses_train_mask_median_and_population_zscore() -> None:
 
 def test_training_prepare_uses_only_training_and_validation_splits(tmp_path: Path) -> None:
     config = _tiny_config(tmp_path)
-    test_path = tmp_path / "stage2/tiny/test.csv"
+    test_path = tmp_path / "stage3/experiment/tiny/test.csv"
     test_path.unlink()
     reporter = RecordingReporter()
     bundle = prepare_training(
         config,
-        "stage2_physics",
-        "simulation/tiny",
-        None,
+        "stage3",
+        "experiment/tiny",
+        1,
         reporter=reporter,
     )
-    assert bundle.train_features.shape[0] == 4
+    assert bundle.train_features.shape[0] == 8
     assert [(bar.total, bar.n, bar.closed) for bar in reporter.bars] == [
-        (4, 4, True),
+        (8, 8, True),
         (2, 2, True),
     ]
     assert "train features" in reporter.bars[0].desc
     assert "valid features" in reporter.bars[1].desc
 
 def test_mlp_train_checkpoint_and_test_evaluation(tmp_path: Path) -> None:
-    config = _tiny_config(tmp_path, targets="left;right")
-    bundle = prepare_training(config, "stage2_physics", "simulation/tiny", None)
+    config = _tiny_config(tmp_path)
+    bundle = prepare_training(config, "stage3", "experiment/tiny", 1)
     output = tmp_path / "mlp_run"
     reporter = RecordingReporter()
     summary = train_bundle(config, bundle, output, reporter=reporter)
@@ -544,33 +655,37 @@ def test_mlp_train_checkpoint_and_test_evaluation(tmp_path: Path) -> None:
     ] == json.loads(
         (reference_output / "checkpoint.json").read_text(encoding="utf-8")
     )["model_state_hash"]
-    assert 1 <= summary["best_epoch"] <= 4
+    assert summary["final_epoch"] == 4
+    assert summary["epochs_ran"] == 4
+    assert "best_epoch" not in summary
+    checkpoint = json.loads((output / "checkpoint.json").read_text(encoding="utf-8"))
+    assert checkpoint["format_version"] == 2
+    assert checkpoint["final_epoch"] == 4
+    assert "best_valid_raw_macro_mae" not in checkpoint
     assert len(reporter.bars) == 1
     assert reporter.bars[0].n == summary["epochs_ran"]
     assert reporter.bars[0].closed
-    assert set(reporter.bars[0].postfixes[-1]) == {
-        "train_mse", "val_mae", "best", "patience"
-    }
+    assert set(reporter.bars[0].postfixes[-1]) == {"train_mse", "val_mae"}
     evaluation_reporter = RecordingReporter()
     result = evaluate_checkpoint(
         config,
-        "stage2_physics",
-        "simulation/tiny",
-        None,
+        "stage3",
+        "experiment/tiny",
+        1,
         output,
         "test",
         reporter=evaluation_reporter,
     )
-    assert result.predictions.shape == (2, 2)
-    assert set(result.metrics) == {"left", "right"}
+    assert result.predictions.shape == (2, 1)
+    assert set(result.metrics) == {"value"}
     assert [(bar.total, bar.n, bar.closed) for bar in evaluation_reporter.bars] == [
-        (4, 4, True),
+        (8, 8, True),
         (2, 2, True),
         (2, 2, True),
     ]
     assert "test features" in evaluation_reporter.bars[-1].desc
-    assert "normalized_mae" in result.metrics["left"]
-    assert "normalized_rmse" in result.metrics["right"]
+    assert "normalized_mae" in result.metrics["value"]
+    assert "normalized_rmse" in result.metrics["value"]
 
 def test_stage3_fold_training_and_normalized_evaluation(tmp_path: Path) -> None:
     config = _tiny_stage3_config(tmp_path)
@@ -583,22 +698,27 @@ def test_stage3_fold_training_and_normalized_evaluation(tmp_path: Path) -> None:
     assert result.predictions.shape == (2, 1)
     assert "normalized_mae" in result.metrics["value"]
 
-def test_xgboost_uses_independent_models_and_best_iteration(tmp_path: Path) -> None:
+def test_xgboost_uses_independent_models_and_fixed_budget(tmp_path: Path) -> None:
     pytest.importorskip("xgboost")
-    config = _tiny_config(tmp_path, name="ecfp_xgboost", targets="left;right")
-    bundle = prepare_training(config, "stage2_physics", "simulation/tiny", None)
+    config = _tiny_config(tmp_path, name="ecfp_xgboost")
+    bundle = prepare_training(config, "stage3", "experiment/tiny", 1)
     output = tmp_path / "xgb_run"
     reporter = RecordingReporter()
     summary = train_bundle(config, bundle, output, reporter=reporter)
     reference_summary = train_bundle(config, bundle, tmp_path / "xgb_reference")
     assert summary == reference_summary
-    assert set(summary["targets"]) == {"left", "right"}
-    assert len(list(output.glob("model_*.json"))) == 2
-    assert len(reporter.bars) == 2
+    assert set(summary["targets"]) == {"value"}
+    assert summary["targets"]["value"]["trained_rounds"] == 8
+    assert "best_iteration" not in summary["targets"]["value"]
+    assert len(list(output.glob("model_*.json"))) == 1
+    assert len(reporter.bars) == 1
     assert all(0 < bar.n <= bar.total and bar.closed for bar in reporter.bars)
-    assert all("best" in bar.postfixes[-1] for bar in reporter.bars)
-    result = evaluate_checkpoint(config, "stage2_physics", "simulation/tiny", None, output, "test")
-    assert result.predictions.shape == (2, 2)
+    assert all(set(bar.postfixes[-1]) == {"val_mae"} for bar in reporter.bars)
+    checkpoint = json.loads((output / "checkpoint.json").read_text(encoding="utf-8"))
+    assert checkpoint["format_version"] == 2
+    assert checkpoint["models"][0]["trained_rounds"] == 8
+    result = evaluate_checkpoint(config, "stage3", "experiment/tiny", 1, output, "test")
+    assert result.predictions.shape == (2, 1)
 
 def test_five_fold_ensemble_averages_predictions_before_metrics() -> None:
     results = [
@@ -624,7 +744,6 @@ def test_sweep_scheduler_is_bounded_and_preserves_dependencies(
         root=tmp_path,
         stage3_tasks=("experiment/one", "experiment/two"),
         folds=(1, 2),
-        stage2_tasks=("simulation/one", "simulation/two"),
         devices=(),
     )
     lock = threading.Lock()
@@ -670,111 +789,53 @@ def test_sweep_scheduler_is_bounded_and_preserves_dependencies(
     }
     assert {job.key for job in [*jobs, *ensembles.values()]} == finished
 
-def test_dmpnn_full_requires_complete_core_and_partial_from_same_sweep(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+def test_sweep_scheduler_caps_concurrency_per_gpu(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    config = load_benchmark_config("configs/benchmarks/dmpnn.yaml")
-    monkeypatch.setattr(
-        sweep_module, "repository_relative", lambda value: Path(value).as_posix()
+    jobs, ensembles = _build_jobs(
+        root=tmp_path,
+        stage3_tasks=("experiment/one", "experiment/two"),
+        folds=(1, 2),
+        devices=("cuda:0", "cuda:1"),
     )
-    study_id = f"dmpnn-{semantic_identity(
-        'benchmark.reporting-study.v1',
-        {'model': config.name, 'config': sweep_module._scientific_config(config)},
-    )['hash']}"
+    lock = threading.Lock()
+    active = 0
+    maximum_active = 0
+    active_by_device: dict[str, int] = {"cuda:0": 0, "cuda:1": 0}
+    maximum_by_device: dict[str, int] = {"cuda:0": 0, "cuda:1": 0}
 
-    def completed(task: str, summary: dict[str, object]) -> None:
-        run = (
-            tmp_path
-            / "stage2_physics"
-            / task.replace("/", "__")
-            / "evaluate_test"
-            / "attempt-001"
-        )
-        run.mkdir(parents=True)
-        (run / "metadata.json").write_text(
-            '{"status":"completed"}\n', encoding="utf-8"
-        )
-        (run / "summary.json").write_text(
-            json.dumps(summary), encoding="utf-8"
-        )
+    def execute(job, **_kwargs):
+        nonlocal active, maximum_active
+        with lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+            assert job.device is not None
+            active_by_device[job.device] += 1
+            maximum_by_device[job.device] = max(
+                maximum_by_device[job.device], active_by_device[job.device]
+            )
+        time.sleep(0.03)
+        with lock:
+            active -= 1
+            active_by_device[job.device] -= 1
+        return _JobResult(job, job.kind != "stage3_ensemble")
 
-    core_tasks = config.stage2_physics.tasks[:-1]
-    for index, task in enumerate(core_tasks, start=1):
-        spec = resolve_task(config, "stage2_physics", task, None)
-        target = spec.target_columns[0]
-        comparison = comparison_identity(
-            "stage2_physics",
-            split="test",
-            expected=(task,),
-            sources={f"{task}:test": f"hash-{index}"},
-            normalization={task: {"scale": float(index)}},
-        )
-        completed(
-            task,
-            {
-                "targets": {target: {"normalized_mae": index / 10}},
-                "reporting": {
-                    "schema_version": REPORTING_SCHEMA_VERSION,
-                    "contract": STAGE2_CORE_EVALUATION_CONTRACT,
-                    "study_id": study_id,
-                    "comparison_identity": comparison,
-                },
-            },
-        )
-    partial_comparison = comparison_identity(
-        "stage2_partial_charge",
-        split="test",
-        expected=(PARTIAL_CHARGE_UNIT,),
-        sources={"partial:test": "partial-hash"},
-        normalization={PARTIAL_CHARGE_UNIT: {"scale": 1.5}},
+    monkeypatch.setattr(sweep_module, "_execute_job", execute)
+    state = _SweepState(rows=[], status_path=tmp_path / "status.tsv")
+    _schedule(
+        jobs=jobs,
+        ensembles=ensembles,
+        folds=(1, 2),
+        devices=("cuda:0", "cuda:1"),
+        max_workers=4,
+        state=state,
+        config_path="unused.yaml",
+        root=tmp_path,
+        train_script=tmp_path / "train.py",
+        evaluate_script=tmp_path / "evaluate.py",
     )
-    completed(
-        PARTIAL_CHARGE_TASK,
-        {
-            "stage2_partial_charge_benchmark": {
-                "test": {
-                    "status": "complete",
-                    "primary": {"molecule_macro_normalized_mae": 0.4},
-                }
-            },
-            "reporting": {
-                "schema_version": REPORTING_SCHEMA_VERSION,
-                "contract": STAGE2_PARTIAL_EVALUATION_CONTRACT,
-                "study_id": study_id,
-                "comparison_identity": partial_comparison,
-            },
-        },
-    )
-    complete = _aggregate(tmp_path, config)
-    assert complete["reporting"]["benchmarks"]["stage2_core_physics"][
-        "protocol"
-    ]["expected_tasks"] == list(core_tasks)
-    assert complete["reporting"]["benchmarks"]["stage2_partial_charge"][
-        "status"
-    ] == "complete"
-    assert complete["reporting"]["benchmarks"]["stage2_physics_full"][
-        "status"
-    ] == "complete"
-
-    partial_run = (
-        tmp_path
-        / "stage2_physics"
-        / PARTIAL_CHARGE_TASK.replace("/", "__")
-        / "evaluate_test"
-        / "attempt-001"
-        / "summary.json"
-    )
-    payload = json.loads(partial_run.read_text(encoding="utf-8"))
-    payload["stage2_partial_charge_benchmark"]["test"]["status"] = "incomplete"
-    partial_run.write_text(json.dumps(payload), encoding="utf-8")
-    incomplete = _aggregate(tmp_path, config)
-    assert incomplete["reporting"]["benchmarks"]["stage2_partial_charge"][
-        "status"
-    ] == "incomplete"
-    assert incomplete["reporting"]["benchmarks"]["stage2_physics_full"][
-        "status"
-    ] == "incomplete"
-
+    assert maximum_active == 4
+    assert maximum_by_device == {"cuda:0": 2, "cuda:1": 2}
 
 def test_stage3_only_ablation_aggregate_has_one_model_and_no_stage2_sections(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -879,114 +940,8 @@ def test_stage3_only_ablation_aggregate_has_one_model_and_no_stage2_sections(
 
 # --- Reporting contract ---
 
-TASK_TARGETS = {
-    "simulation/heat_of_vaporization": ("heat",),
-    "simulation/homo": ("HOMO_eV",),
-    "simulation/lumo": ("LUMO_eV",),
-}
-
-def _comparison() -> dict[str, object]:
-    expected = list(TASK_TARGETS)
-    return comparison_identity(
-        "stage2_physics",
-        split="test",
-        expected=expected,
-        sources={"shared:train": "a", "shared:test": "b"},
-        normalization={name: {"scale": 2.0} for name in expected},
-    )
-
-def _stage2_summary(model: str, display: str, offset: float) -> dict[str, object]:
-    metrics = {}
-    expected = list(TASK_TARGETS)
-    for task, targets in TASK_TARGETS.items():
-        metrics[task] = {}
-        for index, target in enumerate(targets):
-            value = offset + index / 10
-            metrics[task][target] = {
-                "count": 4,
-                "mae": value * 2,
-                "rmse": value * 3,
-                "r2": 0.5,
-                "normalized_mae": value,
-                "normalized_rmse": value * 1.5,
-            }
-            if task in {"simulation/homo", "simulation/lumo"}:
-                metrics[task][target]["role_diagnostics"] = {
-                    "cation": {"count": 2, "mae": value * 1.5},
-                    "anion": {"count": 2, "mae": value * 2.5},
-                }
-    partial_comparison = comparison_identity(
-        "stage2_partial_charge",
-        split="test",
-        expected=[PARTIAL_CHARGE_UNIT],
-        sources={"test": "p", "manifest": "m", "mapping": "a"},
-        normalization={PARTIAL_CHARGE_UNIT: {"scale": 2.0, "weighting": "molecule_equal"}},
-    )
-    full_comparison = stage2_full_comparison_identity(
-        _comparison(), partial_comparison,
-        ordered_units=(*expected, PARTIAL_CHARGE_UNIT),
-    )
-    subsets = {
-        name: {
-            "molecule_count": 4 if name == "all_mapped" else 0,
-            "atom_count": 8 if name == "all_mapped" else 0,
-            "molecule_macro_mae": offset * 2 if name == "all_mapped" else None,
-            "molecule_macro_normalized_mae": offset if name == "all_mapped" else None,
-            "atom_micro_mae": offset * 2 if name == "all_mapped" else None,
-            "atom_micro_rmse": offset * 3 if name == "all_mapped" else None,
-            "atom_micro_r2": 0.5 if name == "all_mapped" else None,
-            "atom_micro_r2_reason": None if name == "all_mapped" else "no_samples",
-        }
-        for name in ("all_mapped", "unique", "ambiguous", "typed", "connectivity_only")
-    }
-    metrics[PARTIAL_CHARGE_TASK] = {
-        "target_level": "atom", "capability": "supported", "status": "complete",
-        "primary": {
-            "molecule_macro_mae": offset * 2,
-            "molecule_macro_normalized_mae": offset,
-        },
-        "atom_micro": {"count": 8, "mae": offset * 2, "rmse": offset * 3, "r2": 0.5, "r2_reason": None},
-        "subsets": subsets,
-        "coverage": {"test_molecule_count": 4, "mapped_molecule_count": 4, "issues": []},
-    }
-    return {
-        "split": "test",
-        "checkpoint_epoch": 5,
-        "tasks": metrics,
-        "reporting": {
-            "schema_version": 1,
-            "contract": STAGE2_BENCHMARK_SUITE_CONTRACT,
-            "model_id": model,
-            "model_display_name": display,
-            "study_id": f"{model}-study",
-            "capabilities": {
-                "stage2_core_physics": "supported",
-                "stage2_partial_charge": "supported",
-                "stage2_physics_full": "supported",
-            },
-            "benchmarks": {
-                "stage2_core_physics": {
-                    "status": "complete", "benchmark": "stage2_physics",
-                    "protocol": {"split": "test", "expected_tasks": list(TASK_TARGETS), "checkpoint_epoch": 5, "checkpoint_sha256": "checkpoint"},
-                    "comparison_identity": _comparison(),
-                },
-                "stage2_partial_charge": {
-                    "status": "complete", "benchmark": "stage2_partial_charge",
-                    "protocol": {"split": "test", "expected_tasks": [PARTIAL_CHARGE_TASK], "expected_units": [PARTIAL_CHARGE_UNIT], "checkpoint_epoch": 5, "checkpoint_sha256": "checkpoint"},
-                    "comparison_identity": partial_comparison,
-                },
-                "stage2_physics_full": {
-                    "status": "complete", "benchmark": "stage2_physics_full",
-                    "protocol": {"split": "test", "ordered_units": [*expected, PARTIAL_CHARGE_UNIT], "checkpoint_epoch": 5, "checkpoint_sha256": "checkpoint"},
-                    "comparison_identity": full_comparison,
-                },
-            },
-            "predictions": [],
-        },
-    }
-
 def _write_run(
-    root: Path, summary: dict[str, object], *, stage: str = "stage2"
+    root: Path, summary: dict[str, object], *, stage: str = "benchmark"
 ) -> None:
     root.mkdir(parents=True)
     metadata = {
@@ -1073,6 +1028,44 @@ def _stage3_benchmark_summary(
     }
 
 
+def _stage3_validation_summary(
+    study_id: str, fold: int, *, mae: float
+) -> dict[str, object]:
+    task = "experiment/example"
+    comparison = comparison_identity(
+        "stage3_property",
+        split="valid",
+        expected=[task],
+        sources={f"{task}:fold{index}": "shared" for index in range(1, 6)},
+        normalization={
+            f"{task}:fold{index}": {"scale": 1.0}
+            for index in range(1, 6)
+        },
+        folds=range(1, 6),
+    )
+    metrics = {
+        "count": 1, "mae": mae, "rmse": mae, "r2": 0.5,
+        "normalized_mae": mae, "normalized_rmse": mae,
+    }
+    return {
+        "split": "valid",
+        "checkpoint_epoch": None,
+        "tasks": {task: metrics},
+        "reporting": {
+            "schema_version": REPORTING_SCHEMA_VERSION,
+            "model_id": "ilume",
+            "model_display_name": "ILUME",
+            "study_id": study_id,
+            "protocol": {
+                "split": "valid", "fold": fold,
+                "folds": list(range(1, 6)), "ensemble": False,
+                "expected_tasks": [task],
+            },
+            "comparison_identity": comparison,
+        },
+    }
+
+
 def test_stage3_summary_ignores_normalization_but_requires_shared_sources(
     tmp_path: Path,
 ) -> None:
@@ -1089,6 +1082,29 @@ def test_stage3_summary_ignores_normalization_but_requires_shared_sources(
     payload = publish_summary(inputs, tmp_path / "summary", tmp_path)
     assert len(payload["leaderboards"]["stage3_test"]) == 2
     assert len(payload["leaderboards"]["stage3_validation"]) == 2
+    assert "stage2" not in json.dumps(payload).lower()
+    assert all("stage2" not in name for name in SUMMARY_FILES)
+    with (tmp_path / "summary" / "stage3_test_task_mae.csv").open(
+        newline="", encoding="utf-8"
+    ) as handle:
+        test_mae_rows = list(csv.DictReader(handle))
+    with (tmp_path / "summary" / "stage3_test_task_rank.csv").open(
+        newline="", encoding="utf-8"
+    ) as handle:
+        test_rank_rows = list(csv.DictReader(handle))
+    with (tmp_path / "summary" / "stage3_validation_task_mae.csv").open(
+        newline="", encoding="utf-8"
+    ) as handle:
+        validation_mae_rows = list(csv.DictReader(handle))
+    with (tmp_path / "summary" / "stage3_validation_task_rank.csv").open(
+        newline="", encoding="utf-8"
+    ) as handle:
+        validation_rank_rows = list(csv.DictReader(handle))
+    for rows in (test_mae_rows, validation_mae_rows):
+        assert [row["model"] for row in rows] == ["ONE", "TWO"]
+        assert [float(row["experiment/example"]) for row in rows] == [1.0, 2.0]
+    for rows in (test_rank_rows, validation_rank_rows):
+        assert [int(row["experiment/example"]) for row in rows] == [1, 2]
 
     incompatible = tmp_path / "incompatible"
     _write_run(
@@ -1102,6 +1118,27 @@ def test_stage3_summary_ignores_normalization_but_requires_shared_sources(
     )
     with pytest.raises(ValueError, match="incompatible comparison identities"):
         publish_summary(incompatible, tmp_path / "bad-summary", tmp_path)
+
+
+def test_stage3_summary_separates_ilume_variants_by_output_directory(
+    tmp_path: Path,
+) -> None:
+    inputs = tmp_path / "outputs"
+    for variant, mae in (("base", 1.0), ("base-uniform", 2.0)):
+        for fold in range(1, 6):
+            _write_run(
+                inputs / "v2" / "stage3" / variant / "validation" / f"fold{fold}",
+                _stage3_validation_summary("shared-study", fold, mae=mae),
+                stage="stage3",
+            )
+
+    payload = publish_summary(inputs, tmp_path / "summary", tmp_path)
+    rows = payload["leaderboards"]["stage3_validation"]
+    assert [row["model"] for row in rows] == [
+        "ILUME (base)", "ILUME (base-uniform)"
+    ]
+    assert [row["macro_normalized_mae"] for row in rows] == [1.0, 2.0]
+    assert all("duplicate_folds" not in row["issues"] for row in payload["health"])
 
 
 def test_prediction_csv_is_atomic_and_records_integrity(tmp_path: Path) -> None:
@@ -1118,52 +1155,6 @@ def test_prediction_csv_is_atomic_and_records_integrity(tmp_path: Path) -> None:
             {"source_row": "2", "target": "1", "prediction": "1.25"}
         ]
     assert not path.with_suffix(".csv.tmp").exists()
-
-def test_stage2_suite_v1_is_health_only_after_breaking_contract(tmp_path: Path) -> None:
-    inputs = tmp_path / "outputs"
-    legacy = _stage2_summary("ilume", "ILUME", 0.3)
-    legacy["reporting"]["contract"] = "stage2-benchmark-suite-v1"
-    _write_run(inputs / "legacy", legacy)
-
-    payload = publish_summary(inputs, tmp_path / "summary", tmp_path)
-    assert payload["leaderboards"]["stage2_core_physics"] == []
-    health = {row["source_run"]: row for row in payload["health"]}
-    assert health["outputs/legacy"]["stage2_core_eligibility"] == "legacy"
-    assert "legacy_stage2_reporting_contract" in health["outputs/legacy"]["issues"]
-
-
-def test_summary_publishes_radar_and_marks_unsupported_partial_charge_zero(
-    tmp_path: Path,
-) -> None:
-    inputs = tmp_path / "inputs"
-    ilume = _stage2_summary("ilume", "ILUME", 0.2)
-    mlp = _stage2_summary("mlp", "MLP", 0.4)
-    for name in ("stage2_partial_charge", "stage2_physics_full"):
-        mlp["reporting"]["capabilities"][name] = "unsupported"
-        mlp["reporting"]["benchmarks"][name]["status"] = "unsupported"
-    _write_run(inputs / "ilume", ilume)
-    _write_run(inputs / "mlp", mlp)
-
-    publish_summary(inputs, tmp_path / "summary", tmp_path)
-
-    radar = (tmp_path / "summary" / "radar.svg").read_text(encoding="utf-8")
-    assert radar.startswith("<?xml")
-    assert set(path.name for path in (tmp_path / "summary").iterdir()) == set(SUMMARY_FILES)
-    match = re.search(
-        r'<polygon class="series" data-panel="stage2_test" '
-        r'data-run="mlp@inputs/mlp" data-scores="([^"]+)"',
-        radar,
-    )
-    assert match is not None
-    assert float(match.group(1).split(",")[-1]) == 0.0
-    match = re.search(
-        r'<polygon class="series" data-panel="stage2_test" '
-        r'data-run="ilume@inputs/ilume" data-scores="([^"]+)"',
-        radar,
-    )
-    assert match is not None
-    assert float(match.group(1).split(",")[-1]) == 1.0
-
 
 def test_summary_labels_capacity_v1_stage3_scales(tmp_path: Path) -> None:
     inputs = tmp_path / "outputs"
@@ -1247,19 +1238,19 @@ def test_summary_labels_capacity_v1_stage3_scales(tmp_path: Path) -> None:
 
 # --- D-MPNN runtime smoke ---
 
-def _task(component_count: int, *, atom: bool = False) -> BenchmarkTask:
+def _task(component_count: int) -> BenchmarkTask:
     return BenchmarkTask(
-        benchmark="stage2_physics",
-        task_id="simulation/partial_atomic_charge" if atom else "simulation/tiny",
+        benchmark="stage3",
+        task_id="experiment/tiny",
         slots=tuple(f"component_{index}" for index in range(component_count)),
-        condition_columns=() if atom else ("temperature_K", "pressure_kPa"),
-        target_columns=("partial_charge",) if atom else ("value",),
+        condition_columns=("temperature_K", "pressure_kPa"),
+        target_columns=("value",),
         audit_columns=(),
         train_paths=(Path("train.csv"),),
         valid_paths=(Path("valid.csv"),),
         test_path=Path("test.csv"),
-        fold=None,
-        meta_group=None,
+        fold=1,
+        meta_group="tiny",
         registry_payload={"test": True},
     )
 
@@ -1310,10 +1301,19 @@ def test_one_epoch_scalar_and_multicomponent_save_reload_smoke(
             **config.training,
             "batch_size": 2,
             "max_epochs": 1,
-            "early_stopping_patience": 1,
             "warmup_epochs": 0,
         },
     )
+    for count in (2, 3):
+        candidate = build_dmpnn_model(config, _scalar_bundle(count))
+        message_passing = candidate.message_passing
+        assert message_passing.shared is True
+        assert len(message_passing.blocks) == count
+        assert all(block is message_passing.blocks[0] for block in message_passing.blocks)
+        assert {id(parameter) for parameter in message_passing.parameters()} == {
+            id(parameter) for parameter in message_passing.blocks[0].parameters()
+        }
+        assert message_passing.output_dim == count * config.model["message_hidden_dim"]
     output = tmp_path / f"components-{component_count}"
     summary = train_dmpnn_bundle(config, _scalar_bundle(component_count), output)
     assert summary["epochs_ran"] == 1
@@ -1326,14 +1326,16 @@ def test_one_epoch_scalar_and_multicomponent_save_reload_smoke(
     )
     dataset = _scalar_bundle(component_count).valid_dataset
     np.testing.assert_allclose(
-        _predict(first, dataset, atom=False),
-        _predict(second, dataset, atom=False),
+        _predict(first, dataset),
+        _predict(second, dataset),
         rtol=0,
         atol=0,
     )
     checkpoint = json.loads((output / "checkpoint.json").read_text(encoding="utf-8"))
-    assert checkpoint["best_valid_raw_mae"] == pytest.approx(
-        checkpoint["best_valid_normalized_mae"]
+    assert checkpoint["format_version"] == 2
+    assert checkpoint["final_epoch"] == 1
+    assert checkpoint["final_valid_raw_mae"] == pytest.approx(
+        checkpoint["final_valid_normalized_mae"]
         * checkpoint["target_statistics"]["scale"][0]
     )
 
@@ -1342,10 +1344,13 @@ def test_one_epoch_scalar_and_multicomponent_save_reload_smoke(
 
 from benchmarks.spmm.adapter import (
     ConditionStats as SPMMConditionStats,
+    SPMM_TRAINING_ORDER_CONTRACT,
     SharedSPMMRegressor,
+    SortishBatchSampler as SPMMSortishBatchSampler,
     _collate as spmm_collate,
     _load_pretrained_encoder,
     _prepare_split as prepare_spmm_split,
+    _row_token_lengths as spmm_row_token_lengths,
     _scheduled_learning_rate,
 )
 from benchmarks.common.environment import spmm_asset_snapshot
@@ -1401,20 +1406,26 @@ def _spmm_raw() -> RawDataset:
     )
 
 
-def test_formal_spmm_config_resolves_108_jobs_and_is_strict() -> None:
+def test_formal_spmm_config_resolves_105_jobs_and_is_strict() -> None:
     config = load_benchmark_config("configs/benchmarks/spmm.yaml")
     stage3 = configured_tasks(config, "stage3")
-    stage2 = configured_tasks(config, "stage2_physics")
     assert len(stage3) == 21
-    assert stage2 == (
-        "simulation/heat_of_vaporization",
-        "simulation/homo",
-        "simulation/lumo",
-    )
-    assert len(stage3) * len(config.stage3.folds) + len(stage2) == 108
-    assert config.training["batch_size"] == 8
+    assert len(stage3) * len(config.stage3.folds) == 105
+    assert config.training["batch_size"] == 128
+    assert config.training["cuda_matmul_tf32"] is True
+    assert config.training["length_bucketing"] == SPMM_TRAINING_ORDER_CONTRACT
+    assert config.training["bucket_window_batches"] == 20
+    assert config.model["wordpiece_max_input_chars_per_word"] == 350
     changed = config.to_dict()
-    changed["training"]["batch_size"] = 16
+    changed["model"]["wordpiece_max_input_chars_per_word"] = 351
+    with pytest.raises(ValueError, match="registered upstream recipe"):
+        benchmark_config_from_dict(changed)
+    changed = config.to_dict()
+    changed["training"]["batch_size"] = 8
+    with pytest.raises(ValueError, match="registered fine-tuning recipe"):
+        benchmark_config_from_dict(changed)
+    changed = config.to_dict()
+    changed["training"]["cuda_matmul_tf32"] = False
     with pytest.raises(ValueError, match="registered fine-tuning recipe"):
         benchmark_config_from_dict(changed)
     runtime_variant = replace(config, runtime={**config.runtime, "num_workers": 8})
@@ -1487,7 +1498,8 @@ def test_spmm_asset_snapshot_rejects_hash_mismatch(tmp_path: Path, monkeypatch) 
         mask_token_id = 1
 
     monkeypatch.setattr(
-        "benchmarks.common.environment._spmm_tokenizer", lambda path: Tokenizer()
+        "benchmarks.common.environment._spmm_tokenizer",
+        lambda path, max_input_chars: Tokenizer(),
     )
     assert spmm_asset_snapshot(config)["revision"] == config.model["revision"]
     expected["xbert.py"] = "wrong"
@@ -1515,6 +1527,7 @@ def test_spmm_official_token_path_cache_truncation_collision_and_conditions() ->
     assert prepared.audit["truncated_rows"] == ["tiny.csv:4"]
     assert max(len(values) for values, _ in cache.values()) == 99
     assert all(int(values[0]) == 2 for values, _ in cache.values())
+    assert spmm_row_token_lengths(prepared, cache)[2] == 99
     call_count = len(tokenizer.calls)
     prepare_spmm_split(
         raw,
@@ -1533,6 +1546,26 @@ def test_spmm_official_token_path_cache_truncation_collision_and_conditions() ->
     assert input_ids.shape == attention_mask.shape == (6, 99)
     assert conditions[:, 0].tolist() == pytest.approx([-1.2247449, 0.0, 1.2247449])
     assert targets.shape == (3, 1)
+
+
+def test_spmm_sortish_sampler_is_deterministic_and_covers_each_epoch() -> None:
+    lengths = tuple(range(37))
+    sampler = SPMMSortishBatchSampler(
+        lengths, batch_size=4, window_batches=2, seed=42
+    )
+    epoch0 = list(sampler)
+    assert epoch0 == list(sampler)
+    assert len(epoch0) == 10
+    assert sorted(index for batch in epoch0 for index in batch) == list(range(37))
+    assert all(
+        [lengths[index] for index in batch]
+        == sorted(lengths[index] for index in batch)
+        for batch in epoch0
+    )
+    sampler.set_epoch(1)
+    epoch1 = list(sampler)
+    assert epoch1 != epoch0
+    assert sorted(index for batch in epoch1 for index in batch) == list(range(37))
 
 
 class FakeSPMMBert(torch.nn.Module):
@@ -1647,3 +1680,426 @@ def test_spmm_scheduler_has_exact_warmup_peak_and_cosine_floor() -> None:
     assert values[-1] == pytest.approx(3.0e-6)
     assert all(left <= right for left, right in zip(values[:9], values[1:10]))
     assert all(left >= right for left, right in zip(values[10:-1], values[11:]))
+
+
+# --- LlaSMol baseline contracts ---
+
+from benchmarks.llasmol.adapter import (
+    ConditionStats as LlaSMolConditionStats,
+    LLASMOL_TRAINING_ORDER_CONTRACT,
+    SharedLlaSMolRegressor,
+    SortishBatchSampler as LlaSMolSortishBatchSampler,
+    _collate as llasmol_collate,
+    _official_adapter_state,
+    _prepare_split as prepare_llasmol_split,
+    _scheduled_factor as llasmol_scheduled_factor,
+    llasmol_model_views,
+    llasmol_task_prefix,
+)
+
+
+def _llasmol_task(*, slots=("cation", "anion")) -> BenchmarkTask:
+    return BenchmarkTask(
+        benchmark="stage3",
+        task_id="experiment/llasmol_tiny",
+        slots=slots,
+        condition_columns=("temperature_K",),
+        target_columns=("value",),
+        audit_columns=(),
+        train_paths=(),
+        valid_paths=(),
+        test_path=Path("test.csv"),
+        fold=1,
+        meta_group="tiny",
+        registry_payload={"task_id": "experiment/llasmol_tiny"},
+    )
+
+
+class FakeLlaSMolTokenizer:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, bool]] = []
+
+    def __call__(self, sequence: str, **kwargs):
+        truncated = bool(kwargs.get("truncation"))
+        self.calls.append((sequence, truncated))
+        length = 520 if "LONG" in sequence else 2 + len(sequence) % 9
+        values = [1, *([5] * (length - 1))]
+        if truncated:
+            values = values[: int(kwargs["max_length"])]
+        return {"input_ids": values, "attention_mask": [1] * len(values)}
+
+
+def test_formal_llasmol_config_resolves_105_jobs_and_is_strict() -> None:
+    config = load_benchmark_config("configs/benchmarks/llasmol.yaml")
+    stage3 = configured_tasks(config, "stage3")
+    assert len(stage3) == 21
+    assert len(stage3) * len(config.stage3.folds) == 105
+    assert config.training["max_epochs"] == 10
+    assert config.training["batch_size"] == 16
+    assert config.training["gradient_accumulation_steps"] == 2
+    assert (
+        config.training["batch_size"]
+        * config.training["gradient_accumulation_steps"]
+        == 32
+    )
+    assert config.training["length_bucketing"] == LLASMOL_TRAINING_ORDER_CONTRACT
+    changed = config.to_dict()
+    changed["training"]["batch_size"] = 8
+    with pytest.raises(ValueError, match="registered QLoRA recipe"):
+        benchmark_config_from_dict(changed)
+    runtime_variant = replace(config, runtime={**config.runtime, "num_workers": 8})
+    assert sweep_module._scientific_config(runtime_variant) == sweep_module._scientific_config(config)
+
+
+def test_llasmol_environment_dispatches_to_dedicated_environment() -> None:
+    config = load_benchmark_config("configs/benchmarks/llasmol.yaml")
+    command = environment_command(
+        config,
+        ("scripts/benchmarks/train.py", "--config", "configs/benchmarks/llasmol.yaml"),
+        conda="/conda",
+    )
+    assert command[:6] == [
+        "/conda", "run", "--no-capture-output", "-n", "ilume-llasmol", "python"
+    ]
+
+
+def test_llasmol_missing_assets_fail_before_model_loading(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from benchmarks.common.environment import llasmol_asset_snapshot
+
+    config = load_benchmark_config("configs/benchmarks/llasmol.yaml")
+    monkeypatch.setattr(
+        "benchmarks.common.environment.repository_path", lambda path: tmp_path / str(path)
+    )
+    with pytest.raises(FileNotFoundError, match="local assets are incomplete"):
+        llasmol_asset_snapshot(config)
+
+
+def test_llasmol_whole_il_multiview_token_cache_truncation_and_conditions() -> None:
+    task = _llasmol_task(slots=("cation", "anion", "solute"))
+    raw = RawDataset(
+        components=(("[C+]", "[Cl-]", "CCO"), ("[N+]", "[Br-]", "LONG")),
+        component_count=3,
+        conditions=np.asarray([[290.0], [310.0]]),
+        targets=np.asarray([[1.0], [3.0]]),
+        source_rows=("tiny.csv:2", "tiny.csv:3"),
+        audit_rows=({}, {}),
+    )
+    assert llasmol_task_prefix(task.task_id) == "<LLASMOL_TINY>"
+    views, names = llasmol_model_views(task, raw.components[0])
+    assert views == ("[C+].[Cl-]", "CCO")
+    assert names == ("ionic_liquid", "solute")
+    tokenizer = FakeLlaSMolTokenizer()
+    cache = {}
+    stats = LlaSMolConditionStats.fit(raw.conditions)
+    prepared = prepare_llasmol_split(
+        raw, task, "train", tokenizer, cache, stats, max_length=512
+    )
+    assert prepared.model_views[0] == (
+        "<LLASMOL_TINY>\n[C+].[Cl-]",
+        "<LLASMOL_TINY>\nCCO",
+    )
+    assert prepared.audit["truncated_rows"] == ["tiny.csv:3"]
+    assert len(tokenizer.calls) == 8
+    prior_calls = len(tokenizer.calls)
+    prepare_llasmol_split(
+        raw, task, "valid", tokenizer, cache, stats, max_length=512
+    )
+    assert len(tokenizer.calls) == prior_calls
+    collate = llasmol_collate(
+        prepared, cache, TargetStats.fit(raw.targets), pad_token_id=0
+    )
+    input_ids, attention_mask, conditions, targets = collate([0, 1])
+    assert input_ids.shape == attention_mask.shape == (4, 512)
+    assert conditions[:, 0].tolist() == pytest.approx([-1.0, 1.0])
+    assert targets.shape == (2, 1)
+    assert torch.all(input_ids[attention_mask == 0] == 0)
+
+
+class FakeLlaSMolBackbone(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    def forward(self, input_ids, attention_mask, use_cache, return_dict):
+        self.calls += 1
+        states = input_ids.float().unsqueeze(-1).repeat(1, 1, 4)
+        return SimpleNamespace(last_hidden_state=states)
+
+
+class FakeLlaSMolPEFT(torch.nn.Module):
+    def __init__(self, backbone):
+        super().__init__()
+        self.backbone = backbone
+        self.base_model = SimpleNamespace(
+            model=SimpleNamespace(model=self.backbone)
+        )
+
+
+def test_llasmol_multiview_uses_one_backbone_forward_and_masked_mean() -> None:
+    backbone = FakeLlaSMolBackbone()
+    predictor = torch.nn.Linear(9, 1, bias=False)
+    predictor.weight.data.fill_(1.0)
+    model = SharedLlaSMolRegressor(
+        FakeLlaSMolPEFT(backbone),
+        predictor,
+        view_count=2,
+        condition_dim=1,
+        hidden_dim=4,
+        load_audit={"loaded": True},
+    )
+    input_ids = torch.asarray(
+        [[0, 1, 3], [1, 3, 5], [0, 2, 4], [2, 4, 6]], dtype=torch.long
+    )
+    attention_mask = torch.asarray(
+        [[0, 1, 1], [1, 1, 1], [0, 1, 1], [1, 1, 1]], dtype=torch.long
+    )
+    output = model(input_ids, attention_mask, torch.asarray([[10.0], [20.0]]))
+    assert output[:, 0].tolist() == pytest.approx([30.0, 48.0])
+    assert backbone.calls == 1
+
+
+def test_llasmol_adapter_namespace_sampler_and_scheduler_contracts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = load_benchmark_config("configs/benchmarks/llasmol.yaml")
+    checkpoint = tmp_path / "adapter_model.bin"
+    checkpoint.write_bytes(b"x")
+    config = replace(
+        config,
+        model={
+            **config.model,
+            "adapter_snapshot": tmp_path.as_posix(),
+            "adapter_model_size": 1,
+            "adapter_model_sha256": "trusted",
+        },
+    )
+    state = {
+        f"base_model.model.model.layers.{layer}.{scope}.{module}.lora_{side}.weight":
+        torch.zeros(1, dtype=torch.bfloat16)
+        for layer in range(32)
+        for scope, modules in (
+            ("self_attn", ("q_proj", "k_proj", "v_proj", "o_proj")),
+            ("mlp", ("gate_proj", "up_proj", "down_proj")),
+        )
+        for module in modules
+        for side in ("A", "B")
+    }
+    monkeypatch.setattr(
+        "benchmarks.llasmol.adapter.repository_path", lambda path: tmp_path
+    )
+    monkeypatch.setattr("benchmarks.llasmol.adapter.sha256_file", lambda path: "trusted")
+    monkeypatch.setattr("benchmarks.llasmol.adapter.torch.load", lambda *args, **kwargs: state)
+    _, audit = _official_adapter_state(config)
+    assert audit["state_entries"] == 448
+    state.pop(next(iter(state)))
+    with pytest.raises(RuntimeError, match="entry count"):
+        _official_adapter_state(config)
+
+    sampler = LlaSMolSortishBatchSampler(
+        tuple(range(37)), batch_size=4, window_batches=2, seed=42
+    )
+    epoch0 = list(sampler)
+    assert epoch0 == list(sampler)
+    assert sorted(index for batch in epoch0 for index in batch) == list(range(37))
+    sampler.set_epoch(1)
+    assert list(sampler) != epoch0
+    factors = [
+        llasmol_scheduled_factor(step, total_steps=100, warmup_steps=5)
+        for step in range(100)
+    ]
+    assert factors[4] == pytest.approx(1.0)
+    assert factors[5] == pytest.approx(1.0)
+    assert factors[-1] == pytest.approx(0.0)
+
+
+# --- AIonopedia baseline contracts ---
+
+from benchmarks.aionopedia.adapter import (
+    SampleStats as AIonopediaSampleStats,
+    _prepare_split as prepare_aionopedia_split,
+    _scheduled_factor as aionopedia_scheduled_factor,
+)
+from benchmarks.aionopedia.graph import smiles_to_graph as aionopedia_graph
+from benchmarks.aionopedia.model import MultiModalRegressor as AIonopediaRegressor
+from torch_geometric.data import Batch, Data
+
+
+def test_formal_aionopedia_config_uses_pinned_generic_snapshot() -> None:
+    config = load_benchmark_config("configs/benchmarks/aionopedia.yaml")
+    tasks = configured_tasks(config, "stage3")
+    assert len(tasks) == 21
+    assert len(tasks) * len(config.stage3.folds) == 105
+    assert config.training["max_epochs"] == 10
+    assert config.training["validation_policy"] == "reporting_only_each_epoch"
+    assert config.model["pretrained_snapshot"].endswith(
+        "qwen0.6b-pretrain_simple2.8m(itg_loss)"
+    )
+    assert config.model["adapter_config_provenance"] == (
+        "local_generic_pretraining_export_peft_0.14"
+    )
+    assert set(config.model["pretrained_files"]) == {
+        "GNN_state_dict.pt", "adapter_config.json", "adapter_model.safetensors",
+        "decoder1_state_dict.pt", "decoder2_state_dict.pt",
+        "embedding_property_state_dict.pt", "fc_out_state_dict.pt",
+        "graph_merge_encoder_state_dict.pt", "projector_gnn_state_dict.pt",
+        "projector_llm_state_dict.pt", "projector_temp_state_dict.pt",
+        "segment_embeddings.pt",
+    }
+    command = environment_command(
+        config,
+        ("scripts/benchmarks/train.py", "--config", "configs/benchmarks/aionopedia.yaml"),
+        conda="/conda",
+    )
+    assert command[:6] == [
+        "/conda", "run", "--no-capture-output", "-n", "ilume-aionopedia", "python"
+    ]
+    changed = config.to_dict()
+    changed["model"]["pretrained_snapshot"] = "artifacts/property-specific/density"
+    with pytest.raises(ValueError, match="registered multimodal recipe"):
+        benchmark_config_from_dict(changed)
+
+
+def _aionopedia_task(
+    *, slots: tuple[str, ...], conditions: tuple[str, ...], target: str = "secret_target",
+) -> BenchmarkTask:
+    return BenchmarkTask(
+        benchmark="stage3",
+        task_id="experiment/aionopedia_tiny",
+        slots=slots,
+        condition_columns=conditions,
+        target_columns=(target,),
+        audit_columns=(),
+        train_paths=(),
+        valid_paths=(),
+        test_path=Path("test.csv"),
+        fold=1,
+        meta_group="tiny",
+        registry_payload={"task_id": "experiment/aionopedia_tiny"},
+    )
+
+
+def _aionopedia_raw(
+    components: tuple[str, ...], conditions: tuple[float, ...]
+) -> RawDataset:
+    return RawDataset(
+        components=(components,),
+        component_count=len(components),
+        conditions=np.asarray([conditions], dtype=np.float64).reshape(1, len(conditions)),
+        targets=np.asarray([[1.0]], dtype=np.float64),
+        source_rows=("tiny.csv:2",),
+        audit_rows=({},),
+    )
+
+
+@pytest.mark.parametrize(
+    ("slots", "conditions", "components", "values", "topology", "graph_roles"),
+    (
+        (("cation", "anion"), (), ("[Na+]", "[Cl-]"), (), 3, ("", "[Na+]", "[Cl-]")),
+        (("cation", "anion"), ("temperature_K",), ("[Na+]", "[Cl-]"), (300.0,), 2, ("", "[Na+]", "[Cl-]")),
+        (("cation", "anion", "solute"), ("temperature_K",), ("[Na+]", "[Cl-]", "O"), (300.0,), 1, ("O", "[Na+]", "[Cl-]")),
+        (("solute", "solvent"), ("temperature_K",), ("O", "CCO"), (300.0,), 0, ("O", "CCO", "")),
+    ),
+)
+def test_aionopedia_registry_topologies_and_prompts_do_not_leak_target(
+    slots, conditions, components, values, topology, graph_roles
+) -> None:
+    task = _aionopedia_task(slots=slots, conditions=conditions)
+    prepared = prepare_aionopedia_split(
+        task, _aionopedia_raw(components, values), None
+    )
+    assert prepared.topology == topology
+    assert prepared.graph_roles[0] == graph_roles
+    assert "secret_target" not in prepared.prompts[0]
+    assert "aionopedia_tiny" not in prepared.prompts[0]
+
+
+def test_aionopedia_condition_scales_and_prompt_units() -> None:
+    task = _aionopedia_task(
+        slots=("cation", "anion"),
+        conditions=("temperature_K", "pressure_kPa", "frequency_MHz"),
+    )
+    pressure = AIonopediaSampleStats.fit(np.asarray([100.0, 200.0]), allow_constant=True)
+    prepared = prepare_aionopedia_split(
+        task,
+        _aionopedia_raw(("[Na+]", "[Cl-]"), (300.0, 150.0, 18000.0)),
+        pressure,
+    )
+    assert prepared.temperature.tolist() == pytest.approx([0.3])
+    assert prepared.extra_conditions["pressure"].tolist() == pytest.approx([0.0])
+    assert prepared.extra_conditions["frequency"].tolist() == pytest.approx([18.0])
+    assert prepared.active_conditions == ("pressure", "frequency")
+    assert "temperature 300K" in prepared.prompts[0]
+    assert "pressure 150kPa" in prepared.prompts[0]
+    assert "frequency 18000MHz" in prepared.prompts[0]
+
+    wavelength_task = _aionopedia_task(
+        slots=("cation", "anion"), conditions=("temperature_K", "wavelength_nm")
+    )
+    wavelength = prepare_aionopedia_split(
+        wavelength_task,
+        _aionopedia_raw(("[Na+]", "[Cl-]"), (298.15, 589.0)),
+        None,
+    )
+    assert wavelength.extra_conditions["wavelength"].tolist() == pytest.approx([0.589])
+
+
+def test_aionopedia_graph_preprocessing_matches_official_golden_contract() -> None:
+    graph = aionopedia_graph("C")
+    assert graph.x.shape == (1, 35)
+    assert graph.edge_index.shape == (2, 0)
+    assert graph.edge_attr.shape == (0, 11)
+    assert hashlib.sha256(graph.x.numpy().tobytes()).hexdigest() == (
+        "926e24a9ca06fd679201bf03f106f826266e2b9aa21c5d28ec5a17e782107eea"
+    )
+
+
+def test_aionopedia_sample_std_scheduler_and_condition_tokens() -> None:
+    stats = AIonopediaSampleStats.fit(np.asarray([1.0, 3.0]), allow_constant=False)
+    assert stats.mean == 2.0
+    assert stats.scale == pytest.approx(2 ** 0.5)
+    constant = AIonopediaSampleStats.fit(np.asarray([5.0, 5.0]), allow_constant=True)
+    assert constant.constant and constant.scale == 1.0
+    factors = [
+        aionopedia_scheduled_factor(step, total_steps=100, warmup_steps=50)
+        for step in range(101)
+    ]
+    assert factors[0] == 0.0
+    assert factors[50] == 1.0
+    assert factors[-1] == 0.0
+
+    class FakeLLM(torch.nn.Module):
+        def forward(self, input_ids, attention_mask, output_hidden_states, use_cache):
+            hidden = torch.zeros((*input_ids.shape, 1024), dtype=torch.float32)
+            return SimpleNamespace(hidden_states=(hidden,))
+
+    model = AIonopediaRegressor(FakeLLM()).eval()
+    cation = Batch.from_data_list([aionopedia_graph("C")])
+    empty = Batch.from_data_list([
+        Data(
+            x=torch.empty((0, 35)),
+            edge_index=torch.empty((2, 0), dtype=torch.long),
+            edge_attr=torch.empty((0, 11)),
+        )
+    ])
+    common = {
+        "solute_graph": empty,
+        "cation_graph": cation,
+        "anion_graph": empty,
+        "temperature": torch.tensor([0.3]),
+        "topology": torch.tensor([2]),
+    }
+    without, _ = model.encode_graphs(
+        **common, extra_conditions={}, active_conditions=()
+    )
+    with_conditions, _ = model.encode_graphs(
+        **common,
+        extra_conditions={
+            "pressure": torch.tensor([0.0]),
+            "frequency": torch.tensor([1.0]),
+            "wavelength": torch.tensor([0.5]),
+        },
+        active_conditions=("pressure", "frequency", "wavelength"),
+    )
+    assert with_conditions.shape[1] == without.shape[1] + 3

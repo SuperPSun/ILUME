@@ -6,13 +6,6 @@ from pathlib import Path
 from typing import Any, Iterable, Literal, Sequence
 
 import numpy as np
-from rdkit import Chem
-
-from stage2.registry import (
-    load_stage2_registry,
-    orbital_audit_columns,
-    validate_orbital_audit_row,
-)
 from stage3.config import load_stage3_config
 from stage3.data import (
     canonicalize_smiles,
@@ -100,33 +93,10 @@ def resolve_task(
             meta_group=spec.meta_group,
             registry_payload=spec.to_dict(),
         )
-    if benchmark != "stage2_physics":
-        raise ValueError(f"Unknown benchmark domain: {benchmark}")
-    if fold is not None:
-        raise ValueError("Stage 2 physics benchmark does not accept --fold")
-    if not config.stage2_physics.enabled or task_id not in config.stage2_physics.tasks:
-        raise ValueError(f"Unknown or disabled Stage 2 physics task: {task_id}")
-    registry = load_stage2_registry(config.data.task_catalog)
-    spec = registry.by_id(task_id)
-    return BenchmarkTask(
-        benchmark=benchmark,
-        task_id=task_id,
-        slots=spec.entity_columns,
-        condition_columns=spec.condition_columns,
-        target_columns=spec.target_columns,
-        audit_columns=orbital_audit_columns(task_id),
-        train_paths=(spec.dataset.split_path(config.data.data_root, "train"),),
-        valid_paths=(spec.dataset.split_path(config.data.data_root, "valid"),),
-        test_path=spec.dataset.split_path(config.data.data_root, "test"),
-        fold=None,
-        meta_group=None,
-        registry_payload=spec.to_dict(),
-    )
+    raise ValueError(f"Unknown benchmark domain: {benchmark}")
 
 
 def configured_tasks(config: BenchmarkConfig, benchmark: BenchmarkName) -> tuple[str, ...]:
-    if benchmark == "stage2_physics":
-        return config.stage2_physics.tasks if config.stage2_physics.enabled else ()
     if not config.stage3.enabled:
         return ()
     authority = load_stage3_config(config.data.stage3_authority_config)
@@ -182,22 +152,6 @@ def _read_paths(task: BenchmarkTask, paths: Iterable[Path], *, allow_empty: bool
                 )
                 components.append(component)
                 audit = {name: row.get(name, "") for name in task.audit_columns}
-                if task.audit_columns:
-                    molecule = Chem.MolFromSmiles(component[0])
-                    if molecule is None:
-                        raise ValueError(f"Invalid orbital SMILES in {context}")
-                    charge = sum(
-                        atom.GetFormalCharge() for atom in molecule.GetAtoms()
-                    )
-                    inferred_role = (
-                        "cation" if charge > 0 else "anion" if charge < 0 else "neutral"
-                    )
-                    validate_orbital_audit_row(
-                        task.task_id,
-                        row,
-                        inferred_role=inferred_role,
-                        context=context,
-                    )
                 audit_rows.append(audit)
                 conditions.append([finite_float(row.get(name), f"{context}/{name}") for name in task.condition_columns])
                 targets.append([finite_float(row.get(name), f"{context}/{name}") for name in task.target_columns])

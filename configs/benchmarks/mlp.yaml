@@ -4,33 +4,26 @@ seed: 42
 data:
   data_root: data
   task_catalog: data/task_catalog.csv
-  stage3_authority_config: configs/v1/stage3/base.yaml
+  stage3_authority_config: configs/v2/stage3/splits/system.yaml
   feature_cache: outputs/benchmarks/cache/features.sqlite3
 features:
   kind: rdkit_2d
   radius: 2
   n_bits: 2048
 model:
-  hidden_dims: [256, 128]
-  dropout: 0.1
+  hidden_dims: [128, 64]
+  dropout: 0.2
 training:
   optimizer: adamw
   learning_rate: 1.0e-3
-  weight_decay: 1.0e-4
+  weight_decay: 1.0e-3
   batch_size: 128
-  max_epochs: 100
-  early_stopping_patience: 20
+  max_epochs: 50
   loss: normalized_mse
-  selection_metric: raw_target_macro_mae
+  model_selection: final_training_state
   device: cuda
   precision: fp32
 stage3:
   enabled: true
   tasks: all
   folds: [1, 2, 3, 4, 5]
-stage2_physics:
-  enabled: true
-  tasks:
-    - simulation/heat_of_vaporization
-    - simulation/homo
-    - simulation/lumo

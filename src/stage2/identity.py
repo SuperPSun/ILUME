@@ -174,7 +174,11 @@ def build_stage2_training_identity(
                 "name": "AdamW",
                 "implementation": optimizer_implementation,
             },
-            "scheduler": "joint-cosine-plus-taskwise-refinement-v1",
+            "scheduler": (
+                "joint-cosine-plus-taskwise-refinement-v1"
+                if config.training.refinement_epochs
+                else "joint-cosine-v1"
+            ),
             "math_contract": dict(math_contract),
             "seed": config.data.seed,
         },
@@ -218,7 +222,11 @@ def build_rdkit_stage2_training_identity(
                 "name": "AdamW",
                 "implementation": optimizer_implementation,
             },
-            "scheduler": "joint-cosine-plus-taskwise-refinement-v1",
+            "scheduler": (
+                "joint-cosine-plus-taskwise-refinement-v1"
+                if config.training.refinement_epochs
+                else "joint-cosine-v1"
+            ),
             "math_contract": dict(math_contract),
             "seed": config.data.seed,
         },

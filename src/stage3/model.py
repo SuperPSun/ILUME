@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
 import torch
 from torch import nn
 
-from .config import Stage3ModelConfig
+from .config import (
+    ResolvedStage3PrivateRecipe,
+    Stage3GroupConfig,
+    Stage3ModelConfig,
+    Stage3TaskConfig,
+)
 from .data import ResolvedTaskSpec, sanitize_task
 
 
@@ -154,10 +160,84 @@ def _mixture(
     return (weights.unsqueeze(-1) * outputs).sum(dim=1), weights
 
 
+def _expert_outputs(
+    experts: Iterable[nn.Module], values: torch.Tensor
+) -> torch.Tensor:
+    outputs = [expert(values) for expert in experts]
+    if outputs:
+        return torch.stack(outputs, dim=1)
+    return values.new_empty((values.shape[0], 0, values.shape[-1]))
+
+
 @dataclass(frozen=True)
 class Stage3ForwardOutput:
     predictions: torch.Tensor
     diagnostics: dict[str, torch.Tensor]
+
+
+def task_gate_observations(
+    diagnostics: Mapping[str, torch.Tensor],
+) -> torch.Tensor:
+    """Return per-sample GLOBAL/GROUP/PRIVATE mass and normalized entropy."""
+    task_gate = diagnostics["task_gate"].detach().float()
+    candidate_counts = tuple(
+        int(diagnostics[name].shape[1])
+        for name in (
+            "l2_global_candidates",
+            "l2_group_candidates",
+            "l2_private_candidates",
+        )
+    )
+    if task_gate.ndim != 2 or sum(candidate_counts) != task_gate.shape[1]:
+        raise ValueError("Stage 3 task-gate candidate partition mismatch")
+    masses = []
+    offset = 0
+    for count in candidate_counts:
+        masses.append(task_gate[:, offset : offset + count].sum(dim=1))
+        offset += count
+    if task_gate.shape[1] > 1:
+        entropy = torch.special.entr(task_gate).sum(dim=1) / math.log(
+            task_gate.shape[1]
+        )
+    else:
+        entropy = task_gate.new_zeros(task_gate.shape[0])
+    return torch.stack((*masses, entropy), dim=1)
+
+
+def summarize_task_gate_observations(
+    observations: torch.Tensor,
+) -> dict[str, float]:
+    """Summarize rows produced by :func:`task_gate_observations`."""
+    if observations.ndim != 2 or observations.shape[1] != 4:
+        raise ValueError("Stage 3 task-gate observations must have four columns")
+    values = observations.detach().double().cpu()
+    if not torch.isfinite(values).all():
+        raise RuntimeError("Non-finite Stage 3 task-gate diagnostics")
+    if values.shape[0] == 0:
+        return {
+            name: float("nan")
+            for name in (
+                "mean_global_gate_weight",
+                "mean_group_gate_weight",
+                "mean_private_gate_weight",
+                "task_gate_entropy",
+                "private_gate_weight_p10",
+                "private_gate_weight_p50",
+                "private_gate_weight_p90",
+            )
+        }
+    private_quantiles = torch.quantile(
+        values[:, 2], torch.tensor((0.1, 0.5, 0.9), dtype=torch.float64)
+    )
+    return {
+        "mean_global_gate_weight": float(values[:, 0].mean()),
+        "mean_group_gate_weight": float(values[:, 1].mean()),
+        "mean_private_gate_weight": float(values[:, 2].mean()),
+        "task_gate_entropy": float(values[:, 3].mean()),
+        "private_gate_weight_p10": float(private_quantiles[0]),
+        "private_gate_weight_p50": float(private_quantiles[1]),
+        "private_gate_weight_p90": float(private_quantiles[2]),
+    }
 
 
 class Stage3SparseModel(nn.Module):
@@ -167,16 +247,23 @@ class Stage3SparseModel(nn.Module):
         task_specs: Mapping[str, ResolvedTaskSpec],
         d_model: int,
         *,
+        group_configs: Mapping[str, Stage3GroupConfig] | None = None,
+        task_configs: Mapping[str, Stage3TaskConfig] | None = None,
+        task_private_recipes: Mapping[str, ResolvedStage3PrivateRecipe] | None = None,
         descriptor_input_dims: Mapping[str, int] | None = None,
     ) -> None:
         super().__init__()
         self.model_config = model_config
         self.task_specs = dict(task_specs)
+        self.group_configs = dict(group_configs or {})
+        self.task_configs = dict(task_configs or {})
+        self.task_private_recipes = dict(task_private_recipes or {})
         self.d_model = d_model
         self.groups = tuple(
             sorted({spec.meta_group for spec in self.task_specs.values() if spec.enabled})
         )
         self._ownership_by_parameter: dict[nn.Parameter, Ownership] = {}
+        self._modules_by_owner: dict[Ownership, list[nn.Module]] = {}
         self.descriptor_adapters = nn.ModuleDict()
         if descriptor_input_dims is not None:
             if d_model != 512 or set(descriptor_input_dims) != {"il", "molecule"}:
@@ -198,16 +285,21 @@ class Stage3SparseModel(nn.Module):
         self.l1_global_experts = nn.ModuleList(
             [Expert(d_model, **expert_kwargs) for _ in range(model_config.global_experts)]
         )
-        self.l1_global_gate = nn.Linear(d_model, model_config.global_experts)
+        self.l1_global_gate = (
+            nn.Linear(d_model, model_config.global_experts)
+            if model_config.global_experts
+            else None
+        )
         self.l2_global_experts = nn.ModuleList(
             [Expert(d_model, **expert_kwargs) for _ in range(model_config.global_experts)]
         )
-        self._own_modules(
-            GLOBAL,
+        global_modules: list[nn.Module] = [
             self.l1_global_experts,
-            self.l1_global_gate,
             self.l2_global_experts,
-        )
+        ]
+        if self.l1_global_gate is not None:
+            global_modules.append(self.l1_global_gate)
+        self._own_modules(GLOBAL, *global_modules)
 
         self.l1_group_experts = nn.ModuleDict()
         self.l1_group_gates = nn.ModuleDict()
@@ -220,13 +312,28 @@ class Stage3SparseModel(nn.Module):
             if spec.enabled and spec.partner_mode == "interaction"
         }
         for group in self.groups:
-            self.l1_group_experts[group] = nn.ModuleList(
-                [Expert(d_model, **expert_kwargs) for _ in range(model_config.group_experts)]
+            group_config = self.group_configs.get(group)
+            group_experts = (
+                model_config.group_experts
+                if group_config is None or group_config.experts is None
+                else group_config.experts
             )
-            self.l1_group_gates[group] = nn.Linear(d_model, model_config.group_experts)
+            group_hidden_ratio = (
+                model_config.expert_hidden_ratio
+                if group_config is None or group_config.expert_hidden_ratio is None
+                else group_config.expert_hidden_ratio
+            )
+            group_expert_kwargs = {
+                **expert_kwargs,
+                "hidden_ratio": group_hidden_ratio,
+            }
+            self.l1_group_experts[group] = nn.ModuleList(
+                [Expert(d_model, **group_expert_kwargs) for _ in range(group_experts)]
+            )
+            self.l1_group_gates[group] = nn.Linear(d_model, group_experts)
             self.l1_group_normalizations[group] = nn.LayerNorm(d_model)
             self.l2_group_experts[group] = nn.ModuleList(
-                [Expert(d_model, **expert_kwargs) for _ in range(model_config.group_experts)]
+                [Expert(d_model, **group_expert_kwargs) for _ in range(group_experts)]
             )
             modules: list[nn.Module] = [
                 self.l1_group_experts[group],
@@ -249,25 +356,63 @@ class Stage3SparseModel(nn.Module):
         self.condition_films = nn.ModuleDict()
         self.task_normalizations = nn.ModuleDict()
         self.towers = nn.ModuleDict()
-        candidate_count = (
-            model_config.global_experts
-            + model_config.group_experts
-            + model_config.private_experts
-        )
         for task_id, spec in self.task_specs.items():
             if not spec.enabled:
                 continue
             key = sanitize_task(task_id)
+            task_config = self.task_configs.get(task_id)
+            overrides = task_config.model_overrides if task_config is not None else {}
+            private_recipe = self.task_private_recipes.get(task_id)
+            private_experts = int(
+                overrides.get("private_experts", model_config.private_experts)
+            )
+            private_hidden_ratio = float(
+                private_recipe.private_hidden_ratio
+                if private_recipe is not None
+                else overrides.get("private_hidden_ratio", model_config.expert_hidden_ratio)
+            )
+            tower_hidden_ratio = float(
+                private_recipe.tower_hidden_ratio
+                if private_recipe is not None
+                else overrides.get("tower_hidden_ratio", model_config.tower_hidden_ratio)
+            )
+            film_hidden_ratio = float(
+                private_recipe.film_hidden_ratio
+                if private_recipe is not None
+                else overrides.get("film_hidden_ratio", model_config.film_hidden_ratio)
+            )
+            private_dropout = float(
+                private_recipe.private_dropout
+                if private_recipe is not None
+                else overrides.get("private_dropout", model_config.dropout)
+            )
+            group_config = self.group_configs.get(spec.meta_group)
+            group_experts = (
+                model_config.group_experts
+                if group_config is None or group_config.experts is None
+                else group_config.experts
+            )
+            candidate_count = (
+                model_config.global_experts + group_experts + private_experts
+            )
             self.private_experts[key] = nn.ModuleList(
-                [Expert(d_model, **expert_kwargs) for _ in range(model_config.private_experts)]
+                [
+                    Expert(
+                        d_model,
+                        hidden_ratio=private_hidden_ratio,
+                        dropout=private_dropout,
+                        activation=model_config.activation,
+                    )
+                    for _ in range(private_experts)
+                ]
             )
             self.task_gates[key] = nn.Linear(2 * d_model, candidate_count)
             if spec.condition_columns:
                 self.condition_films[key] = ConditionFiLM(
                     len(spec.condition_columns),
                     d_model,
-                    hidden_ratio=model_config.film_hidden_ratio,
-                    dropout=model_config.dropout,
+                    hidden_ratio=film_hidden_ratio,
+                    dropout=private_dropout,
                     activation=model_config.activation,
                 )
             self.task_normalizations[key] = (
@@ -275,8 +420,8 @@ class Stage3SparseModel(nn.Module):
             )
             self.towers[key] = TaskTower(
                 d_model,
-                hidden_ratio=model_config.tower_hidden_ratio,
-                dropout=model_config.dropout,
+                hidden_ratio=tower_hidden_ratio,
+                dropout=private_dropout,
                 activation=model_config.activation,
             )
             modules = [
@@ -290,8 +435,79 @@ class Stage3SparseModel(nn.Module):
             self._own_modules(private_owner(task_id), *modules)
         self._validate_ownership()
 
+    def resolved_capacity_recipe(self) -> dict[str, object]:
+        groups: dict[str, dict[str, int | float]] = {}
+        for group in self.groups:
+            config = self.group_configs.get(group)
+            experts = (
+                self.model_config.group_experts
+                if config is None or config.experts is None
+                else config.experts
+            )
+            ratio = (
+                self.model_config.expert_hidden_ratio
+                if config is None or config.expert_hidden_ratio is None
+                else config.expert_hidden_ratio
+            )
+            groups[group] = {
+                "experts": experts,
+                "expert_hidden_ratio": ratio,
+                "expert_hidden": _width(self.d_model, ratio),
+            }
+        tasks: dict[str, object] = {}
+        for task_id, spec in self.task_specs.items():
+            if not spec.enabled:
+                continue
+            config = self.task_configs.get(task_id)
+            overrides = config.model_overrides if config is not None else {}
+            private_recipe = self.task_private_recipes.get(task_id)
+            private_experts = int(
+                overrides.get("private_experts", self.model_config.private_experts)
+            )
+            private_ratio = float(
+                private_recipe.private_hidden_ratio
+                if private_recipe is not None
+                else overrides.get(
+                    "private_hidden_ratio", self.model_config.expert_hidden_ratio
+                )
+            )
+            tower_ratio = float(
+                private_recipe.tower_hidden_ratio
+                if private_recipe is not None
+                else overrides.get("tower_hidden_ratio", self.model_config.tower_hidden_ratio)
+            )
+            film_ratio = float(
+                private_recipe.film_hidden_ratio
+                if private_recipe is not None
+                else overrides.get("film_hidden_ratio", self.model_config.film_hidden_ratio)
+            )
+            private_dropout = float(
+                private_recipe.private_dropout
+                if private_recipe is not None
+                else overrides.get("private_dropout", self.model_config.dropout)
+            )
+            tasks[task_id] = {
+                "private_experts": private_experts,
+                "private_hidden_ratio": private_ratio,
+                "private_hidden": _width(self.d_model, private_ratio),
+                "tower_hidden_ratio": tower_ratio,
+                "tower_hidden": _width(self.d_model, tower_ratio),
+                "film_hidden_ratio": film_ratio,
+                "film_hidden": _width(self.d_model, film_ratio),
+                "private_dropout": private_dropout,
+                "candidate_count": (
+                    self.model_config.global_experts
+                    + int(groups[spec.meta_group]["experts"])
+                    + private_experts
+                ),
+            }
+        return {"groups": groups, "tasks": tasks}
+
     def _own_modules(self, owner: Ownership, *modules: nn.Module) -> None:
+        owned_modules = self._modules_by_owner.setdefault(owner, [])
         for module in modules:
+            if module not in owned_modules:
+                owned_modules.append(module)
             for parameter in module.parameters():
                 existing = self._ownership_by_parameter.get(parameter)
                 if existing is not None and existing != owner:
@@ -324,6 +540,21 @@ class Stage3SparseModel(nn.Module):
             for parameter, candidate in self._ownership_by_parameter.items()
             if candidate == owner
         )
+
+    def set_trainable_owners(self, owners: Iterable[Ownership]) -> None:
+        selected = set(owners)
+        unknown = selected - set(self._modules_by_owner)
+        if unknown:
+            raise KeyError(
+                "Unknown Stage 3 owners: "
+                + ", ".join(owner.label for owner in sorted(unknown))
+            )
+        for parameter, owner in self._ownership_by_parameter.items():
+            parameter.requires_grad_(owner in selected)
+        self.eval()
+        for owner in selected:
+            for module in self._modules_by_owner[owner]:
+                module.train()
 
     def private_modules_for_task(self, task_id: str) -> tuple[nn.Module, ...]:
         if task_id not in self.task_specs or not self.task_specs[task_id].enabled:
@@ -369,11 +600,17 @@ class Stage3SparseModel(nn.Module):
                     partner_embedding
                 )
         key = sanitize_task(task_id)
-        z_global, l1_global_weights = _mixture(
-            self.l1_global_experts,
-            primary_embedding,
-            self.l1_global_gate(primary_embedding),
-        )
+        if self.l1_global_gate is None:
+            z_global = primary_embedding
+            l1_global_weights = primary_embedding.new_empty(
+                (primary_embedding.shape[0], 0)
+            )
+        else:
+            z_global, l1_global_weights = _mixture(
+                self.l1_global_experts,
+                primary_embedding,
+                self.l1_global_gate(primary_embedding),
+            )
         z_group_delta, l1_group_weights = _mixture(
             self.l1_group_experts[spec.meta_group],
             primary_embedding,
@@ -395,15 +632,11 @@ class Stage3SparseModel(nn.Module):
         elif partner_embedding is not None:
             raise ValueError(f"Stage 3 task must not receive partner embedding: {task_id}")
 
-        global_outputs = torch.stack(
-            [expert(z_global) for expert in self.l2_global_experts], dim=1
+        global_outputs = _expert_outputs(self.l2_global_experts, z_global)
+        group_outputs = _expert_outputs(
+            self.l2_group_experts[spec.meta_group], local
         )
-        group_outputs = torch.stack(
-            [expert(local) for expert in self.l2_group_experts[spec.meta_group]], dim=1
-        )
-        private_outputs = torch.stack(
-            [expert(local) for expert in self.private_experts[key]], dim=1
-        )
+        private_outputs = _expert_outputs(self.private_experts[key], local)
         task_gate = torch.softmax(
             self.task_gates[key](torch.cat((z_global, local), dim=-1)), dim=-1
         )

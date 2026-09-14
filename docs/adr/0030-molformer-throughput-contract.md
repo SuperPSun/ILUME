@@ -3,6 +3,8 @@
 - 状态：Accepted
 - 日期：2026-08-30
 
+> Patience 与 validation-best checkpoint 由 [ADR-0045](0045-fixed-budget-baseline-training.md) 取代；吞吐、scheduler 和训练预算条款保持有效。
+
 ## 背景
 
 ADR-0029 的首版实现会在每个 epoch 的每个 batch 重复 tokenize，并按 component 串行调用共享 backbone。正式 sweep 尚未运行，因此在不迁移既有 checkpoint 的前提下，可以先消除这些重复工作并冻结新的训练预算。

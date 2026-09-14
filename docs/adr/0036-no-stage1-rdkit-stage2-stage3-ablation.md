@@ -3,6 +3,15 @@
 - 状态：Accepted
 - 日期：2026-09-01
 
+> 2026-09-07：Stage 3 sampling 与 joint clipping 已随现役 Base 由 [ADR-0046](0046-stage3-ownership-clipping-raw-sampling.md) 修订；本消融继续只替换 Stage 1 representation。
+>
+> 2026-09-07：Stage 3 四阶段训练与 final artifact 随现役 Base 由
+> [ADR-0047](0047-stage3-deterministic-four-phase-training.md) 修订；本消融仍不改变 Stage 3 优化合同。
+>
+> 2026-09-10：现役 Stage 3 优化合同进一步由
+> [ADR-0048](0048-stage3-owner-lifetime-three-phase-training.md) 取代为 owner-lifetime 三阶段训练；
+> 本消融继续继承 Base 的 Stage 3 数值合同。
+
 ## 背景
 
 现役 ILUME 依次使用 Stage1 multimodal pretrained backbone、Stage2 ObjectEncoder 和

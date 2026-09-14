@@ -26,6 +26,7 @@ from common.training import canonical_json_sha256
 from .config import DataConfig, PretrainConfig
 from .data import (
     CORPUS_FORMAT_VERSION,
+    GLOBAL_RDKIT_CORPUS_FORMAT_VERSION,
     CORPUS_KIND,
     CORPUS_SHARD_KIND,
     INDEX_DTYPE,
@@ -1077,7 +1078,7 @@ def _descriptor_matrix(
 
 
 def _stage1_shard_sample(sample: dict[str, Any]) -> dict[str, Any]:
-    return {
+    result = {
         "sample_id": sample["sample_id"],
         "role_id": sample["role_id"],
         "token_ids": sample["token_ids"],
@@ -1087,11 +1088,13 @@ def _stage1_shard_sample(sample: dict[str, Any]) -> dict[str, Any]:
         "bond_index": sample["bond_index"],
         "descriptors": sample["descriptors"],
         "descriptor_valid": sample["descriptor_valid"],
-        "fingerprints": {
+    }
+    if "fingerprints" in sample:
+        result["fingerprints"] = {
             name: value.to(torch.uint8)
             for name, value in sample["fingerprints"].items()
-        },
-    }
+        }
+    return result
 
 
 def _write_shards(
@@ -1105,6 +1108,11 @@ def _write_shards(
     signature: str,
     reporter: ProgressReporter,
 ) -> tuple[list[dict[str, Any]], int, dict[str, float | int | bool]]:
+    corpus_format_version = (
+        GLOBAL_RDKIT_CORPUS_FORMAT_VERSION
+        if config.is_global_rdkit
+        else CORPUS_FORMAT_VERSION
+    )
     started = time.perf_counter()
     shard_dir = output_dir / "shards"
     shard_dir.mkdir(parents=True, exist_ok=True)
@@ -1156,7 +1164,7 @@ def _write_shards(
                     existing = torch.load(path, map_location="cpu", weights_only=False)
                     if (
                         existing.get("kind") == CORPUS_SHARD_KIND
-                        and existing.get("format_version") == CORPUS_FORMAT_VERSION
+                        and existing.get("format_version") == corpus_format_version
                         and existing.get("preparation_signature") == signature
                         and [item["sample_id"] for item in existing.get("samples", [])]
                         == expected_ids
@@ -1182,7 +1190,7 @@ def _write_shards(
                     torch.save(
                         {
                             "kind": CORPUS_SHARD_KIND,
-                            "format_version": CORPUS_FORMAT_VERSION,
+                            "format_version": corpus_format_version,
                             "preparation_signature": signature,
                             "samples": samples,
                         },
@@ -1232,7 +1240,7 @@ def _write_shards(
         output_dir / "shard_manifest.json",
         {
             "kind": CORPUS_KIND,
-            "format_version": CORPUS_FORMAT_VERSION,
+            "format_version": corpus_format_version,
             "shards": shard_manifest,
         },
     )
@@ -1312,6 +1320,11 @@ def prepare_corpus(
         config = PretrainConfig(data=config)
     config.validate()
     data_config = config.data
+    corpus_format_version = (
+        GLOBAL_RDKIT_CORPUS_FORMAT_VERSION
+        if config.is_global_rdkit
+        else CORPUS_FORMAT_VERSION
+    )
     output_dir = data_config.artifacts_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     reporter = ProgressReporter()
@@ -1393,7 +1406,7 @@ def prepare_corpus(
             )
         if (
             existing.get("kind") == CORPUS_KIND
-            and existing.get("format_version") == CORPUS_FORMAT_VERSION
+            and existing.get("format_version") == corpus_format_version
             and existing.get("preparation_signature") == signature
         ):
             reused_started = time.perf_counter()
@@ -1494,7 +1507,7 @@ def prepare_corpus(
         output_dir / "augmentation_audit.json",
         {
             "kind": CORPUS_KIND,
-            "format_version": CORPUS_FORMAT_VERSION,
+            "format_version": corpus_format_version,
             "include_augmentation": data_config.include_augmentation,
             "roles": augmentation_audit,
         },
@@ -1614,7 +1627,7 @@ def prepare_corpus(
     metadata = {
         "identity_contract_version": IDENTITY_CONTRACT_VERSION,
         "kind": CORPUS_KIND,
-        "format_version": CORPUS_FORMAT_VERSION,
+        "format_version": corpus_format_version,
         "preparation_signature": signature,
         "rdkit_version": rdBase.rdkitVersion,
         "atom_in_smiles_version": importlib.metadata.version("atomInSmiles"),
@@ -1629,8 +1642,6 @@ def prepare_corpus(
         "tokenizer_actual_size": len(tokenizer.tokens),
         "max_smiles_tokens": data_config.max_smiles_tokens,
         "tokenizer_statistics": _tokenizer_statistics(connection, unk_count),
-        "fingerprint_kind": config.fingerprint.kind,
-        "fingerprint_contract": config.to_dict()["fingerprint"],
         "feature_generation_contract": feature_generation_contract(config),
         "role_source_files": ROLE_SOURCE_FILES,
         "ignored_stage1_files": [
@@ -1655,6 +1666,13 @@ def prepare_corpus(
             for filename in artifact_files
         },
     }
+    if not config.is_global_rdkit:
+        metadata.update(
+            {
+                "fingerprint_kind": config.fingerprint.kind,
+                "fingerprint_contract": config.to_dict()["fingerprint"],
+            }
+        )
     feature_identity = build_stage1_feature_identity(output_dir, metadata)
     all_integrity = {
         **{

@@ -22,7 +22,7 @@ from common.progress import ProgressReporter
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train one ILUME baseline task/fold.")
     parser.add_argument("--config", required=True)
-    parser.add_argument("--benchmark", required=True, choices=("stage3", "stage2_physics"))
+    parser.add_argument("--benchmark", required=True, choices=("stage3",))
     parser.add_argument("--task", required=True)
     parser.add_argument("--fold", type=int)
     parser.add_argument("--output", required=True)
@@ -41,7 +41,7 @@ def main() -> None:
         semantic_identity=bundle.training_identity,
         output=args.output,
         seed=config.seed,
-        data_metadata=["data/task_catalog.csv", "data/stage2/metadata.json"],
+        data_metadata="data/stage3/metadata.json",
         details={
             "benchmark": args.benchmark,
             "task": args.task,

@@ -17,7 +17,7 @@ from .data import (
 )
 
 
-STAGE3_PREPARED_IDENTITY_CONTRACT_VERSION = 1
+STAGE3_PREPARED_IDENTITY_CONTRACT_VERSION = 2
 STAGE3_TRAINING_IDENTITY_CONTRACT_VERSION = 1
 STAGE3_EVALUATION_IDENTITY_CONTRACT_VERSION = 1
 
@@ -81,7 +81,8 @@ def build_stage3_prepared_identity(
             "contract_version": STAGE3_PREPARED_IDENTITY_CONTRACT_VERSION,
             "source_content": _source_content(config, registry),
             "resolved_registry": {
-                task: spec.to_dict() for task, spec in sorted(registry.items())
+                task: spec.prepared_dict()
+                for task, spec in sorted(registry.items())
             },
             "split": {
                 "policy": config.data.split_policy,
@@ -151,6 +152,7 @@ def resolve_stage3_prepared_identity(
 
 
 def build_stage3_training_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
+    three_phase = plan.get("schedule_mode") == "three_phase"
     semantic_plan = {
         name: plan[name]
         for name in (
@@ -159,10 +161,7 @@ def build_stage3_training_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
             "resolved_registry",
             "groups",
             "data",
-            "model",
-            "optimizer",
-            "scheduler",
-            "refinement",
+            "model", "optimizer",
             "math",
             "prepared_identity",
             "normalization_hash",
@@ -172,6 +171,12 @@ def build_stage3_training_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
             "frozen_parameters",
         )
     }
+    if three_phase:
+        semantic_plan["schedule_mode"] = "three_phase"
+        semantic_plan["phases"] = plan["phases"]
+    else:
+        semantic_plan["scheduler"] = plan["scheduler"]
+        semantic_plan["refinement"] = plan["refinement"]
     if "representation" in plan:
         semantic_plan["representation"] = plan["representation"]
     else:
@@ -181,7 +186,9 @@ def build_stage3_training_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
     return semantic_identity(
         "stage3.training",
         {
-            "contract_version": STAGE3_TRAINING_IDENTITY_CONTRACT_VERSION,
+            "contract_version": (
+                5 if three_phase else STAGE3_TRAINING_IDENTITY_CONTRACT_VERSION
+            ),
             "plan": semantic_plan,
         },
     )

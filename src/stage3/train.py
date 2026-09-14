@@ -39,11 +39,22 @@ from .data import (
     Stage3TaskDataset,
     balanced_virtual_indices,
     composite_steps_per_epoch,
+    raw_task_steps,
     resolve_group_registry,
     resolve_batch_allocation,
+    resolve_raw_batch_allocation,
+    shuffled_epoch_indices,
     stable_seed,
 )
-from .model import GLOBAL, Ownership, Stage3SparseModel, group_owner, private_owner
+from .model import (
+    GLOBAL,
+    Ownership,
+    Stage3SparseModel,
+    group_owner,
+    private_owner,
+    summarize_task_gate_observations,
+    task_gate_observations,
+)
 from .pcgrad import GradientMap, HierarchicalPCGradResult, hierarchical_pcgrad
 from .prepare import load_prepared_stage3
 from .identity import (
@@ -98,6 +109,16 @@ def _resolved_widths(d_model: int, config: Stage3Config) -> dict[str, int]:
         ),
         "film_hidden": max(1, round(d_model * config.model.film_hidden_ratio)),
         "tower_hidden": max(1, round(d_model * config.model.tower_hidden_ratio)),
+    }
+
+
+def _resolved_private_recipes(config: Stage3Config) -> dict[str, Any]:
+    if config.training.schedule_mode != "three_phase":
+        return {}
+    return {
+        task: config.resolved_private_recipe(task)
+        for task, task_config in config.tasks.items()
+        if task_config.enabled
     }
 
 
@@ -311,20 +332,198 @@ def build_resolved_training_plan(
     normalizations: Mapping[str, Any],
 ) -> dict[str, Any]:
     counts = {task: len(datasets[task]) for task in active_tasks}
-    allocation = resolve_batch_allocation(
-        counts, config.training.composite_batch_size, config.training.virtual_min_size
-    )
-    steps = composite_steps_per_epoch(
-        counts, allocation, config.training.virtual_min_size
-    )
-    boundary_epoch, refinement_epochs = refinement_geometry(
-        config.training.epochs, config.training.refinement_ratio
-    )
-    total_steps = boundary_epoch * steps
-    warmup_steps = math.ceil(config.training.warmup_ratio * total_steps)
-    virtual = {task: max(counts[task], config.training.virtual_min_size) for task in active_tasks}
+    if config.training.sampling_mode == "raw":
+        allocation = resolve_raw_batch_allocation(
+            counts, config.training.composite_batch_size
+        )
+        task_steps = raw_task_steps(counts, allocation)
+        steps = max(task_steps.values())
+        data_plan = {
+            "sampling": "raw_without_replacement_v1",
+            "N_t": counts,
+            "B_t": allocation,
+            "task_steps": task_steps,
+            "K": steps,
+            "epoch_exposures": dict(counts),
+            "effective_composite_batch_size": sum(allocation.values()),
+        }
+    else:
+        allocation = resolve_batch_allocation(
+            counts,
+            config.training.composite_batch_size,
+            config.training.virtual_min_size,
+        )
+        steps = composite_steps_per_epoch(
+            counts, allocation, config.training.virtual_min_size
+        )
+        virtual = {
+            task: max(counts[task], config.training.virtual_min_size)
+            for task in active_tasks
+        }
+        data_plan = {
+            "N_t": counts,
+            "N_prime_t": virtual,
+            "B_t": allocation,
+            "K": steps,
+            "padded_sizes": {
+                task: steps * allocation[task] for task in active_tasks
+            },
+            "replication_ratios": {
+                task: steps * allocation[task] / counts[task]
+                for task in active_tasks
+            },
+        }
+    three_phase = config.training.schedule_mode == "three_phase"
+    if three_phase:
+        recipe = config.training.three_phase
+        assert recipe is not None
+        task_steps = data_plan["task_steps"]
+        active_groups = sorted(
+            {model.task_specs[task].meta_group for task in active_tasks}
+        )
+        group_steps = {
+            group: max(
+                int(task_steps[task])
+                for task in active_tasks
+                if model.task_specs[task].meta_group == group
+            )
+            for group in active_groups
+        }
+
+        def owner_recipe(
+            *, lr: float, nominal_epochs: int, effective_epochs: int,
+            updates_per_epoch: int, floor: float, warmup_updates: int = 0,
+            **extra: Any,
+        ) -> dict[str, Any]:
+            return {
+                "nominal_lr": lr,
+                "terminal_lr": lr * floor,
+                "nominal_epochs": nominal_epochs,
+                "effective_epochs": effective_epochs,
+                "freeze_epoch": effective_epochs,
+                "updates_per_epoch": updates_per_epoch,
+                "actual_update_budget": effective_epochs * updates_per_epoch,
+                "warmup_updates": warmup_updates,
+                **extra,
+            }
+
+        phase1_owners: dict[str, Any] = {
+            "GLOBAL": owner_recipe(
+                lr=recipe.global_scope.lr,
+                nominal_epochs=recipe.global_scope.epochs,
+                effective_epochs=recipe.global_scope.epochs,
+                updates_per_epoch=steps,
+                floor=recipe.global_scope.min_lr_ratio,
+                warmup_updates=math.ceil(
+                    recipe.global_scope.warmup_ratio
+                    * recipe.global_scope.epochs
+                    * steps
+                ),
+                capacity={
+                    "experts": config.model.global_experts,
+                    "expert_hidden_ratio": config.model.expert_hidden_ratio,
+                },
+            )
+        }
+        for group in active_groups:
+            budget = config.groups[group].phase1
+            assert budget is not None
+            phase1_owners[f"GROUP:{group}"] = owner_recipe(
+                lr=budget.lr, nominal_epochs=budget.epochs,
+                effective_epochs=budget.epochs,
+                updates_per_epoch=group_steps[group],
+                floor=recipe.phase1_min_lr_ratio,
+                capacity=model.resolved_capacity_recipe()["groups"][group],
+            )
+        for task in active_tasks:
+            task_config = config.tasks[task]
+            private_recipe = config.resolved_private_recipe(task)
+            phase1_owners[f"PRIVATE:{task}"] = owner_recipe(
+                lr=private_recipe.phase1_lr,
+                nominal_epochs=private_recipe.phase1_epochs,
+                effective_epochs=private_recipe.phase1_epochs,
+                updates_per_epoch=int(task_steps[task]),
+                floor=recipe.phase1_min_lr_ratio,
+                size_class=task_config.size_class,
+                unique_systems=task_config.unique_systems,
+                capacity=model.resolved_capacity_recipe()["tasks"][task],
+            )
+        phase2_branches: dict[str, Any] = {}
+        for group in active_groups:
+            group_budget = config.groups[group].phase2
+            assert group_budget is not None
+            owners = {
+                f"GROUP:{group}": owner_recipe(
+                    lr=group_budget.lr,
+                    nominal_epochs=group_budget.epochs,
+                    effective_epochs=group_budget.epochs,
+                    updates_per_epoch=group_steps[group],
+                    floor=recipe.phase2_min_lr_ratio,
+                    capacity=model.resolved_capacity_recipe()["groups"][group],
+                )
+            }
+            for task in active_tasks:
+                if model.task_specs[task].meta_group != group:
+                    continue
+                task_config = config.tasks[task]
+                private_recipe = config.resolved_private_recipe(task)
+                effective = min(private_recipe.phase2_epochs, group_budget.epochs)
+                owners[f"PRIVATE:{task}"] = owner_recipe(
+                    lr=private_recipe.phase2_lr,
+                    nominal_epochs=private_recipe.phase2_epochs,
+                    effective_epochs=effective,
+                    updates_per_epoch=int(task_steps[task]),
+                    floor=recipe.phase2_min_lr_ratio,
+                    size_class=task_config.size_class,
+                    unique_systems=task_config.unique_systems,
+                    capacity=model.resolved_capacity_recipe()["tasks"][task],
+                )
+            phase2_branches[group] = {
+                "epochs": group_budget.epochs,
+                "steps_per_epoch": group_steps[group],
+                "pcgrad": "group_only",
+                "owners": owners,
+            }
+        phase3_branches = {}
+        for task in active_tasks:
+            task_config = config.tasks[task]
+            private_recipe = config.resolved_private_recipe(task)
+            phase3_branches[task] = {
+                "epochs": private_recipe.phase3_epochs,
+                "steps_per_epoch": int(task_steps[task]),
+                "pcgrad": "off",
+                "carried_from_anchor": private_recipe.phase3_epochs == 0,
+                "owners": {
+                    f"PRIVATE:{task}": owner_recipe(
+                        lr=private_recipe.phase3_lr,
+                        nominal_epochs=private_recipe.phase3_epochs,
+                        effective_epochs=private_recipe.phase3_epochs,
+                        updates_per_epoch=int(task_steps[task]),
+                        floor=recipe.phase3_min_lr_ratio,
+                        size_class=task_config.size_class,
+                        unique_systems=task_config.unique_systems,
+                        capacity=model.resolved_capacity_recipe()["tasks"][task],
+                    )
+                },
+            }
+        phase_plan = {
+            "phase1": {
+                "epochs": recipe.global_scope.epochs,
+                "steps_per_epoch": steps,
+                "pcgrad": "hierarchical",
+                "owners": phase1_owners,
+            },
+            "phase2": {"branches": phase2_branches},
+            "phase3": {"branches": phase3_branches},
+        }
+    else:
+        boundary_epoch, refinement_epochs = refinement_geometry(
+            config.training.epochs, config.training.refinement_ratio
+        )
+        total_steps = boundary_epoch * steps
+        warmup_steps = math.ceil(config.training.warmup_ratio * total_steps)
     plan = {
-        "format_version": 1,
+        "format_version": 3 if three_phase else 1,
         "fold": fold,
         "active_tasks": list(active_tasks),
         "resolved_registry": {
@@ -334,33 +533,12 @@ def build_resolved_training_plan(
             group: spec.to_dict()
             for group, spec in resolve_group_registry(config).items()
         },
-        "data": {
-            "N_t": counts,
-            "N_prime_t": virtual,
-            "B_t": allocation,
-            "K": steps,
-            "padded_sizes": {task: steps * allocation[task] for task in active_tasks},
-            "replication_ratios": {
-                task: steps * allocation[task] / counts[task] for task in active_tasks
-            },
-        },
+        "data": data_plan,
         "model": {**asdict(config.model), "resolved_widths": _resolved_widths(model.d_model, config)},
         "optimizer": {
             "name": "AdamW", "implementation": config.training.optimizer_implementation,
-            "lr": config.training.learning_rate, "weight_decay": config.training.weight_decay,
+            "weight_decay": config.training.weight_decay,
             "betas": list(config.training.betas), "eps": config.training.eps,
-        },
-        "scheduler": {
-            "name": "linear_warmup_cosine", "warmup_steps": warmup_steps,
-            "total_steps": total_steps, "min_lr_ratio": config.training.min_lr_ratio,
-        },
-        "refinement": {
-            "boundary_epoch": boundary_epoch,
-            "epochs": refinement_epochs,
-            "lr_multiplier": config.training.refinement_lr_multiplier,
-            "scheduler": "task-local-no-warmup-cosine",
-            "min_lr_ratio": config.training.min_lr_ratio,
-            "selection": "task-validation-normalized-mae-min",
         },
         "math": {
             "precision": config.training.amp_dtype,
@@ -378,6 +556,14 @@ def build_resolved_training_plan(
         "trainable_parameters": sorted(
             name for name, parameter in model.named_parameters() if parameter.requires_grad
         ),
+        "parameter_counts": {
+            "total": sum(parameter.numel() for parameter in model.parameters()),
+            "trainable": sum(
+                parameter.numel()
+                for parameter in model.parameters()
+                if parameter.requires_grad
+            ),
+        },
         "frozen_parameters": sorted(
             name
             for name, parameter in model.named_parameters()
@@ -391,6 +577,35 @@ def build_resolved_training_plan(
             "debug_pcgrad_traces": config.training.debug_pcgrad_traces,
         },
     }
+    if three_phase:
+        plan["model"].pop("group_experts")
+        plan["schedule_mode"] = "three_phase"
+        plan["phases"] = phase_plan
+        plan["model"]["capacity_recipe"] = model.resolved_capacity_recipe()
+        plan["optimizer"]["parameter_groups"] = "ownership_decay_split"
+        plan["math"]["pcgrad"] = {
+            "phase1": "hierarchical_ownership_blocks_v1",
+            "phase2": "group_block_only_v1",
+            "phase3": "off",
+        }
+    else:
+        plan["optimizer"]["lr"] = config.training.learning_rate
+        plan["scheduler"] = {
+            "name": "linear_warmup_cosine", "warmup_steps": warmup_steps,
+            "total_steps": total_steps, "min_lr_ratio": config.training.min_lr_ratio,
+        }
+        plan["refinement"] = {
+            "boundary_epoch": boundary_epoch,
+            "epochs": refinement_epochs,
+            "lr_multiplier": config.training.refinement_lr_multiplier,
+            "scheduler": "task-local-no-warmup-cosine",
+            "min_lr_ratio": config.training.min_lr_ratio,
+            "selection": "task-validation-normalized-mae-min",
+        }
+    if config.training.joint_gradient_clip_mode != "global":
+        plan["math"]["joint_gradient_clip_mode"] = (
+            config.training.joint_gradient_clip_mode
+        )
     if prepared["metadata"].get("kind") == STAGE3_ARTIFACT_KIND:
         plan["stage2_encoder_identity"] = metadata_identity(
             prepared["metadata"],
@@ -441,6 +656,61 @@ def _optimizer(model: nn.Module, config: Stage3Config) -> torch.optim.AdamW:
         foreach=False,
         fused=False,
     )
+
+
+def _clip_joint_gradients(
+    model: Stage3SparseModel,
+    max_grad_norm: float,
+    mode: str,
+) -> tuple[float, float, dict[str, float], dict[str, float]]:
+    trainable = [
+        parameter
+        for parameter in model.parameters()
+        if parameter.requires_grad and parameter.grad is not None
+    ]
+    pre_norm = float(
+        torch.nn.utils.clip_grad_norm_(
+            trainable, float("inf"), error_if_nonfinite=True
+        )
+    )
+    owner_pre_norms: dict[str, float] = {}
+    owner_post_norms: dict[str, float] = {}
+    if mode == "global":
+        if max_grad_norm > 0:
+            torch.nn.utils.clip_grad_norm_(
+                trainable, max_grad_norm, error_if_nonfinite=True
+            )
+        post_norm = min(pre_norm, max_grad_norm) if max_grad_norm > 0 else pre_norm
+        return pre_norm, post_norm, owner_pre_norms, owner_post_norms
+    elif mode == "ownership":
+        owned: dict[Ownership, list[nn.Parameter]] = {}
+        for parameter, owner in model.parameter_ownership().items():
+            if parameter.requires_grad and parameter.grad is not None:
+                owned.setdefault(owner, []).append(parameter)
+        for owner in sorted(owned):
+            parameters = owned[owner]
+            owner_pre_norms[owner.label] = float(
+                torch.nn.utils.clip_grad_norm_(
+                    parameters, float("inf"), error_if_nonfinite=True
+                )
+            )
+            if max_grad_norm > 0:
+                torch.nn.utils.clip_grad_norm_(
+                    parameters, max_grad_norm, error_if_nonfinite=True
+                )
+            owner_post_norms[owner.label] = float(
+                torch.nn.utils.clip_grad_norm_(
+                    parameters, float("inf"), error_if_nonfinite=True
+                )
+            )
+    else:
+        raise ValueError(f"Unknown Stage 3 joint gradient clip mode: {mode}")
+    post_norm = float(
+        torch.nn.utils.clip_grad_norm_(
+            trainable, float("inf"), error_if_nonfinite=True
+        )
+    )
+    return pre_norm, post_norm, owner_pre_norms, owner_post_norms
 
 
 def _optimizer_for_parameters(
@@ -502,7 +772,7 @@ def _stage3_refinement_optimizers(
     model: Stage3SparseModel,
     active: Sequence[str],
     config: Stage3Config,
-    steps_per_epoch: int,
+    task_steps: Mapping[str, int],
     refinement_epochs: int,
 ) -> tuple[
     dict[str, torch.optim.AdamW],
@@ -511,8 +781,8 @@ def _stage3_refinement_optimizers(
     optimizers: dict[str, torch.optim.AdamW] = {}
     schedulers: dict[str, torch.optim.lr_scheduler.LambdaLR] = {}
     seen: set[int] = set()
-    total_updates = steps_per_epoch * refinement_epochs
     for task in active:
+        total_updates = task_steps[task] * refinement_epochs
         parameters = model.parameters_for_owner(private_owner(task))
         identities = {id(parameter) for parameter in parameters}
         if not parameters or seen & identities:
@@ -802,9 +1072,11 @@ def validate_tasks(
 ) -> dict[str, Any]:
     model.eval()
     per_task: dict[str, Any] = {}
+    gate_diagnostics: dict[str, dict[str, float]] = {}
     for task_id, dataset in datasets.items():
         predictions: list[torch.Tensor] = []
         targets: list[torch.Tensor] = []
+        gate_observations: list[torch.Tensor] = []
         for start in range(0, len(dataset), config.training.microbatch_size):
             indices = torch.arange(start, min(len(dataset), start + config.training.microbatch_size))
             primary, conditions, partner, target = _batch(
@@ -816,16 +1088,25 @@ def validate_tasks(
                 device,
             )
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=config.training.amp_dtype == "bf16"):
-                prediction = model(task_id, primary, conditions, partner_embedding=partner).predictions
+                output = model(task_id, primary, conditions, partner_embedding=partner)
+                prediction = output.predictions
             if not torch.isfinite(prediction).all():
                 raise RuntimeError(
                     f"Non-finite Stage 3 validation prediction: {task_id}"
                 )
             predictions.append(prediction.float().cpu())
             targets.append(target.float().cpu())
+            if config.training.schedule_mode == "three_phase":
+                gate_observations.append(
+                    task_gate_observations(output.diagnostics).cpu()
+                )
         per_task[task_id] = regression_metrics(
             torch.cat(predictions), torch.cat(targets), normalizations[task_id]
         )
+        if gate_observations:
+            gate_diagnostics[task_id] = summarize_task_gate_observations(
+                torch.cat(gate_observations)
+            )
     metrics = ("mae", "rmse", "r2", "pearson_r", "normalized_mae", "normalized_rmse")
     macro_task: dict[str, Any] = {}
     macro_group: dict[str, Any] = {}
@@ -853,12 +1134,15 @@ def validate_tasks(
             "valid_groups": len(group_values),
             "total_groups": len({model.task_specs[task].meta_group for task in per_task}),
         }
-    return {
+    result = {
         "tasks": per_task,
         "groups": per_group,
         "macro_task_equal": macro_task,
         "macro_group_equal": macro_group,
     }
+    if config.training.schedule_mode == "three_phase":
+        result["gate_diagnostics"] = gate_diagnostics
+    return result
 
 
 def _pair_matrix(names: Sequence[str], diagnostics: Mapping[tuple[str, str], Any]) -> dict[str, Any]:
@@ -963,6 +1247,9 @@ def run_stage3_training(
         config.model,
         registry,
         d_model,
+        group_configs=config.groups,
+        task_configs=config.tasks,
+        task_private_recipes=_resolved_private_recipes(config),
         descriptor_input_dims=representations.input_dims,
     ).to(device)
     representation_source_identity = (
@@ -999,6 +1286,24 @@ def run_stage3_training(
             training_identity,
             context="Stage 3 run-directory training identity",
         )
+    if config.training.schedule_mode == "three_phase":
+        from .three_phase import run_three_phase_training
+
+        return run_three_phase_training(
+            config=config,
+            fold=fold,
+            output_dir=output_dir,
+            resume_from=resume_from,
+            model=model,
+            registry=registry,
+            active=active,
+            train_data=train_data,
+            valid_data=valid_data,
+            representations=representations,
+            normalizations=normalizations,
+            plan=plan,
+            device=device,
+        )
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     if resume_from is None and (
@@ -1025,8 +1330,16 @@ def run_stage3_training(
     )
     boundary_epoch = int(plan["refinement"]["boundary_epoch"])
     refinement_epochs = int(plan["refinement"]["epochs"])
+    task_steps = (
+        {
+            task: int(plan["data"]["task_steps"][task])
+            for task in active
+        }
+        if config.training.sampling_mode == "raw"
+        else {task: int(plan["data"]["K"]) for task in active}
+    )
     refinement_optimizers, refinement_schedulers = _stage3_refinement_optimizers(
-        model, active, config, int(plan["data"]["K"]), refinement_epochs
+        model, active, config, task_steps, refinement_epochs
     )
     pcgrad_rng = random.Random(stable_seed(training_seed, fold, "pcgrad"))
     task_order_rng = random.Random(
@@ -1148,31 +1461,50 @@ def run_stage3_training(
             )
             if not in_refinement:
                 model.train()
-            sequences = {
-                task: balanced_virtual_indices(
-                    counts[task], steps_per_epoch * allocation[task],
-                    seed=training_seed, epoch=epoch, task_id=task,
-                )
-                for task in active
-            }
-            epoch_loss = {task: 0.0 for task in active}
+            if config.training.sampling_mode == "raw":
+                sequences = {
+                    task: shuffled_epoch_indices(
+                        counts[task],
+                        seed=training_seed,
+                        epoch=epoch,
+                        task_id=task,
+                    )
+                    for task in active
+                }
+            else:
+                sequences = {
+                    task: balanced_virtual_indices(
+                        counts[task], steps_per_epoch * allocation[task],
+                        seed=training_seed, epoch=epoch, task_id=task,
+                    )
+                    for task in active
+                }
+            epoch_loss_sums = {task: 0.0 for task in active}
+            epoch_sample_counts = {task: 0 for task in active}
             latest_pcgrad: HierarchicalPCGradResult | None = None
             pre_norm = post_norm = 0.0
+            owner_pre_norms: dict[str, float] = {}
+            owner_post_norms: dict[str, float] = {}
             refinement_norms = {task: 0.0 for task in active}
             for step in range(steps_per_epoch):
                 order = list(active)
                 task_order_rng.shuffle(order)
                 task_gradients: dict[str, GradientMap] = {}
+                processed_tasks: list[str] = []
                 for task in order:
-                    if in_refinement:
-                        _set_private_trainable(model, task)
                     begin = step * allocation[task]
                     indices = sequences[task][begin : begin + allocation[task]]
+                    if not len(indices):
+                        continue
+                    processed_tasks.append(task)
+                    if in_refinement:
+                        _set_private_trainable(model, task)
                     gradient, loss = compute_task_gradient(
                         model, task, train_data[task], indices, representations,
                         normalizations[task], config, device,
                     )
-                    epoch_loss[task] += loss
+                    epoch_loss_sums[task] += loss * len(indices)
+                    epoch_sample_counts[task] += len(indices)
                     if in_refinement:
                         active_optimizer = refinement_optimizers[task]
                         active_optimizer.zero_grad(set_to_none=True)
@@ -1213,34 +1545,49 @@ def run_stage3_training(
                     for parameter, gradient in latest_pcgrad.gradients.items():
                         if parameter.requires_grad:
                             parameter.grad = gradient.to(parameter.device, dtype=parameter.dtype)
-                    trainable = [parameter for parameter in model.parameters() if parameter.requires_grad]
-                    pre_norm = float(
-                        torch.nn.utils.clip_grad_norm_(
-                            trainable, float("inf"), error_if_nonfinite=True
-                        )
+                    (
+                        pre_norm,
+                        post_norm,
+                        owner_pre_norms,
+                        owner_post_norms,
+                    ) = _clip_joint_gradients(
+                        model,
+                        config.training.max_grad_norm,
+                        config.training.joint_gradient_clip_mode,
                     )
-                    if config.training.max_grad_norm > 0:
-                        torch.nn.utils.clip_grad_norm_(
-                            trainable,
-                            config.training.max_grad_norm,
-                            error_if_nonfinite=True,
-                        )
-                    post_norm = min(pre_norm, config.training.max_grad_norm) if config.training.max_grad_norm > 0 else pre_norm
                     optimizer.step()
                     scheduler.step()
                 global_step += 1
 
-                mean_train_loss = sum(epoch_loss.values()) / (
-                    len(active) * (step + 1)
+                observed_losses = [
+                    epoch_loss_sums[task] / epoch_sample_counts[task]
+                    for task in active
+                    if epoch_sample_counts[task]
+                ]
+                mean_train_loss = sum(observed_losses) / len(observed_losses)
+                current_lr = (
+                    refinement_optimizers[processed_tasks[-1]].param_groups[0]["lr"]
+                    if in_refinement
+                    else optimizer.param_groups[0]["lr"]
                 )
 
                 progress.set_postfix(
                     {
-                        "lr": f"{(refinement_optimizers[order[-1]].param_groups[0]['lr'] if in_refinement else optimizer.param_groups[0]['lr']):.2e}",
+                        "lr": f"{current_lr:.2e}",
                         "loss": f"{mean_train_loss:.4f}",
                     }
                 )
                 progress.update(1)
+            expected_epoch_samples = {
+                task: (
+                    counts[task]
+                    if config.training.sampling_mode == "raw"
+                    else steps_per_epoch * allocation[task]
+                )
+                for task in active
+            }
+            if epoch_sample_counts != expected_epoch_samples:
+                raise RuntimeError("Stage 3 epoch sample coverage is incomplete")
             validation = validate_tasks(
                 model,
                 valid_data,
@@ -1261,10 +1608,11 @@ def run_stage3_training(
 
             val_mae = validation["macro_task_equal"]["mae"]["value"]
 
-            mean_epoch_loss = sum(
-                epoch_loss[task] / steps_per_epoch
+            task_training_loss = {
+                task: epoch_loss_sums[task] / epoch_sample_counts[task]
                 for task in active
-            ) / len(active)
+            }
+            mean_epoch_loss = sum(task_training_loss.values()) / len(active)
 
             progress.set_postfix(
                 {
@@ -1281,7 +1629,7 @@ def run_stage3_training(
                     if in_refinement
                     else optimizer.param_groups[0]["lr"]
                 ),
-                "training_loss": {task: epoch_loss[task] / steps_per_epoch for task in active},
+                "training_loss": task_training_loss,
                 "validation": validation,
             }
             _append_jsonl(metrics_path, row)
@@ -1296,7 +1644,7 @@ def run_stage3_training(
                     "task_level_group": _pair_matrix(list(active), {}),
                     "group_level_global": _pair_matrix(groups, {}),
                     "task_loss": {
-                        task: epoch_loss[task] / steps_per_epoch for task in active
+                        task: task_training_loss[task] for task in active
                     },
                     "task_learning_rate": {
                         task: refinement_optimizers[task].param_groups[0]["lr"]
@@ -1322,6 +1670,13 @@ def run_stage3_training(
                     "assembled_owner_norms": latest_pcgrad.assembled_owner_norms,
                     "clip_pre_norm": pre_norm, "clip_post_norm": post_norm,
                 }
+                if config.training.joint_gradient_clip_mode == "ownership":
+                    diagnostics.update(
+                        {
+                            "clip_owner_pre_norms": owner_pre_norms,
+                            "clip_owner_post_norms": owner_post_norms,
+                        }
+                    )
             _append_jsonl(diagnostics_path, diagnostics)
             if epoch == boundary_epoch or epoch in checkpoint_epochs(
                 config.training.epochs, config.training.checkpoint_interval_epochs
@@ -1349,7 +1704,7 @@ def run_stage3_training(
     if refinement_state is None:
         raise RuntimeError("Stage 3 refinement boundary was not captured")
     expected_refinement_updates = {
-        task: steps_per_epoch * refinement_epochs for task in active
+        task: task_steps[task] * refinement_epochs for task in active
     }
     if refinement_state["task_updates"] != expected_refinement_updates:
         raise RuntimeError("Stage 3 refinement task update counts are incomplete")
@@ -1388,6 +1743,9 @@ def resolve_stage3_training_identity(
         config.model,
         prepared["registry"],
         representations.output_dim,
+        group_configs=config.groups,
+        task_configs=config.tasks,
+        task_private_recipes=_resolved_private_recipes(config),
         descriptor_input_dims=representations.input_dims,
     )
     encoder_identity = (

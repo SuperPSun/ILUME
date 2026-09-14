@@ -37,3 +37,15 @@ dist/
 *.log
 *.tmp
 metrics.jsonl
+summary/overview.md
+summary/radar.svg
+summary/stage3_test_leaderboard.csv
+summary/stage3_test_metrics.csv
+summary/stage3_test_task_mae.csv
+summary/stage3_test_task_rank.csv
+summary/stage3_validation_leaderboard.csv
+summary/stage3_validation_metrics.csv
+summary/stage3_validation_task_mae.csv
+summary/stage3_validation_task_rank.csv
+summary/summary.json
+summary/sweep_status.csv
