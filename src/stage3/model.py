@@ -209,20 +209,49 @@ def task_gate_observations(
         )
     else:
         entropy = task_gate.new_zeros(task_gate.shape[0])
-    return torch.stack((*masses, entropy), dim=1)
+    observations = [*masses, entropy]
+    if "global_local_gate" in diagnostics:
+        family_gate = diagnostics["global_local_gate"].detach().float()
+        global_internal = diagnostics["global_internal_gate"].detach().float()
+        local_internal = diagnostics["local_internal_gate"].detach().float()
+        if (
+            family_gate.shape != (task_gate.shape[0], 2)
+            or global_internal.shape != (task_gate.shape[0], candidate_counts[0])
+            or local_internal.shape
+            != (task_gate.shape[0], candidate_counts[1] + candidate_counts[2])
+        ):
+            raise ValueError("Stage 3 hierarchical gate diagnostics mismatch")
+
+        def normalized_entropy(weights: torch.Tensor) -> torch.Tensor:
+            if weights.shape[1] <= 1:
+                return weights.new_zeros(weights.shape[0])
+            return torch.special.entr(weights).sum(dim=1) / math.log(
+                weights.shape[1]
+            )
+
+        observations.extend(
+            (
+                family_gate[:, 0],
+                family_gate[:, 1],
+                normalized_entropy(family_gate),
+                normalized_entropy(global_internal),
+                normalized_entropy(local_internal),
+            )
+        )
+    return torch.stack(observations, dim=1)
 
 
 def summarize_task_gate_observations(
     observations: torch.Tensor,
 ) -> dict[str, float]:
     """Summarize rows produced by :func:`task_gate_observations`."""
-    if observations.ndim != 2 or observations.shape[1] != 4:
-        raise ValueError("Stage 3 task-gate observations must have four columns")
+    if observations.ndim != 2 or observations.shape[1] not in {4, 9}:
+        raise ValueError("Stage 3 task-gate observations have invalid columns")
     values = observations.detach().double().cpu()
     if not torch.isfinite(values).all():
         raise RuntimeError("Non-finite Stage 3 task-gate diagnostics")
     if values.shape[0] == 0:
-        return {
+        result = {
             name: float("nan")
             for name in (
                 "mean_global_gate_weight",
@@ -234,10 +263,29 @@ def summarize_task_gate_observations(
                 "private_gate_weight_p90",
             )
         }
+        if values.shape[1] == 9:
+            result.update(
+                {
+                    name: float("nan")
+                    for name in (
+                        "mean_global_family_weight",
+                        "mean_local_family_weight",
+                        "global_family_weight_p10",
+                        "global_family_weight_p50",
+                        "global_family_weight_p90",
+                        "mean_group_weight",
+                        "mean_private_weight",
+                        "routing_entropy_global_local",
+                        "routing_entropy_global_internal",
+                        "routing_entropy_local_internal",
+                    )
+                }
+            )
+        return result
     private_quantiles = torch.quantile(
         values[:, 2], torch.tensor((0.1, 0.5, 0.9), dtype=torch.float64)
     )
-    return {
+    result = {
         "mean_global_gate_weight": float(values[:, 0].mean()),
         "mean_group_gate_weight": float(values[:, 1].mean()),
         "mean_private_gate_weight": float(values[:, 2].mean()),
@@ -246,6 +294,25 @@ def summarize_task_gate_observations(
         "private_gate_weight_p50": float(private_quantiles[1]),
         "private_gate_weight_p90": float(private_quantiles[2]),
     }
+    if values.shape[1] == 9:
+        global_family_quantiles = torch.quantile(
+            values[:, 4], torch.tensor((0.1, 0.5, 0.9), dtype=torch.float64)
+        )
+        result.update(
+            {
+                "mean_global_family_weight": float(values[:, 4].mean()),
+                "mean_local_family_weight": float(values[:, 5].mean()),
+                "global_family_weight_p10": float(global_family_quantiles[0]),
+                "global_family_weight_p50": float(global_family_quantiles[1]),
+                "global_family_weight_p90": float(global_family_quantiles[2]),
+                "mean_group_weight": float(values[:, 1].mean()),
+                "mean_private_weight": float(values[:, 2].mean()),
+                "routing_entropy_global_local": float(values[:, 6].mean()),
+                "routing_entropy_global_internal": float(values[:, 7].mean()),
+                "routing_entropy_local_internal": float(values[:, 8].mean()),
+            }
+        )
+    return result
 
 
 def apply_routing_ablation(
@@ -450,6 +517,9 @@ class Stage3SparseModel(nn.Module):
 
         self.private_experts = nn.ModuleDict()
         self.task_gates = nn.ModuleDict()
+        self.global_local_gates = nn.ModuleDict()
+        self.global_internal_gates = nn.ModuleDict()
+        self.local_internal_gates = nn.ModuleDict()
         self.condition_films = nn.ModuleDict()
         self.task_normalizations = nn.ModuleDict()
         self.towers = nn.ModuleDict()
@@ -503,7 +573,22 @@ class Stage3SparseModel(nn.Module):
                     for _ in range(private_experts)
                 ]
             )
-            self.task_gates[key] = nn.Linear(2 * d_model, candidate_count)
+            if model_config.routing.type == "flat":
+                self.task_gates[key] = nn.Linear(2 * d_model, candidate_count)
+                routing_modules = [self.task_gates[key]]
+            else:
+                self.global_local_gates[key] = nn.Linear(2 * d_model, 2)
+                self.global_internal_gates[key] = nn.Linear(
+                    2 * d_model, model_config.global_experts
+                )
+                self.local_internal_gates[key] = nn.Linear(
+                    2 * d_model, group_experts + private_experts
+                )
+                routing_modules = [
+                    self.global_local_gates[key],
+                    self.global_internal_gates[key],
+                    self.local_internal_gates[key],
+                ]
             if spec.condition_columns:
                 self.condition_films[key] = ConditionFiLM(
                     len(spec.condition_columns),
@@ -523,7 +608,7 @@ class Stage3SparseModel(nn.Module):
             )
             modules = [
                 self.private_experts[key],
-                self.task_gates[key],
+                *routing_modules,
                 self.task_normalizations[key],
                 self.towers[key],
             ]
@@ -583,7 +668,7 @@ class Stage3SparseModel(nn.Module):
                 if private_recipe is not None
                 else overrides.get("private_dropout", self.model_config.dropout)
             )
-            tasks[task_id] = {
+            task_recipe: dict[str, object] = {
                 "private_experts": private_experts,
                 "private_hidden_ratio": private_ratio,
                 "private_hidden": _width(self.d_model, private_ratio),
@@ -598,6 +683,16 @@ class Stage3SparseModel(nn.Module):
                     + private_experts
                 ),
             }
+            if self.model_config.routing.type == "hierarchical":
+                task_recipe["routing"] = {
+                    "type": "hierarchical",
+                    "global_local_outputs": 2,
+                    "global_internal_outputs": self.model_config.global_experts,
+                    "local_internal_outputs": (
+                        int(groups[spec.meta_group]["experts"]) + private_experts
+                    ),
+                }
+            tasks[task_id] = task_recipe
         return {"groups": groups, "tasks": tasks}
 
     def _own_modules(self, owner: Ownership, *modules: nn.Module) -> None:
@@ -659,10 +754,19 @@ class Stage3SparseModel(nn.Module):
         key = sanitize_task(task_id)
         modules: list[nn.Module] = [
             self.private_experts[key],
-            self.task_gates[key],
             self.task_normalizations[key],
             self.towers[key],
         ]
+        if self.model_config.routing.type == "flat":
+            modules.append(self.task_gates[key])
+        else:
+            modules.extend(
+                (
+                    self.global_local_gates[key],
+                    self.global_internal_gates[key],
+                    self.local_internal_gates[key],
+                )
+            )
         if key in self.condition_films:
             modules.append(self.condition_films[key])
         return tuple(modules)
@@ -737,9 +841,34 @@ class Stage3SparseModel(nn.Module):
             self.l2_group_experts[spec.meta_group], local
         )
         private_outputs = _expert_outputs(self.private_experts[key], local)
-        learned_task_gate = torch.softmax(
-            self.task_gates[key](torch.cat((z_global, local), dim=-1)), dim=-1
-        )
+        routing_input = torch.cat((z_global, local), dim=-1)
+        hierarchical_diagnostics: dict[str, torch.Tensor] = {}
+        if self.model_config.routing.type == "flat":
+            learned_task_gate = torch.softmax(
+                self.task_gates[key](routing_input), dim=-1
+            )
+        else:
+            family_gate = torch.softmax(
+                self.global_local_gates[key](routing_input), dim=-1
+            )
+            global_internal_gate = torch.softmax(
+                self.global_internal_gates[key](routing_input), dim=-1
+            )
+            local_internal_gate = torch.softmax(
+                self.local_internal_gates[key](routing_input), dim=-1
+            )
+            learned_task_gate = torch.cat(
+                (
+                    family_gate[:, :1] * global_internal_gate,
+                    family_gate[:, 1:] * local_internal_gate,
+                ),
+                dim=-1,
+            )
+            hierarchical_diagnostics = {
+                "global_local_gate": family_gate,
+                "global_internal_gate": global_internal_gate,
+                "local_internal_gate": local_internal_gate,
+            }
         candidates = torch.cat((global_outputs, group_outputs, private_outputs), dim=1)
         learned_predictions = None
         if routing_mode == "learned_gate":
@@ -776,6 +905,7 @@ class Stage3SparseModel(nn.Module):
             "l2_global_candidates": global_outputs,
             "l2_group_candidates": group_outputs,
             "l2_private_candidates": private_outputs,
+            **hierarchical_diagnostics,
         }
         if learned_predictions is not None:
             diagnostics["learned_gate_predictions"] = learned_predictions

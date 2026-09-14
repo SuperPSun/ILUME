@@ -37,6 +37,7 @@ from stage3.config import (
     Stage3PreparationConfig,
     Stage3PrivateClassConfig,
     Stage3RepresentationConfig,
+    Stage3RoutingConfig,
     Stage3TaskConfig,
     Stage3ThreePhaseConfig,
     Stage3TrainingConfig,
@@ -382,6 +383,8 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
     assert effective_training_seed(config) == config.data.seed
     assert config.model.dropout == 0.10
     assert config.model.expert_hidden_ratio == 2.0
+    assert config.model.routing.type == "flat"
+    assert "routing" not in config.to_dict()["model"]
     assert config.representation is None
     assert "representation" not in config.to_dict()
     assert checkpoint_epochs(100, 10) == tuple(range(10, 101, 10))
@@ -424,6 +427,26 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
         assert active.groups == v2.groups
         assert active.tasks == v2.tasks
         assert active.training.three_phase == v2.training.three_phase
+
+    hierarchical = load_stage3_config(
+        "configs/ablations/stage3_hierarchical_routing.yaml"
+    )
+    assert hierarchical.model.routing.type == "hierarchical"
+    assert hierarchical.to_dict()["model"]["routing"] == {
+        "type": "hierarchical"
+    }
+    assert replace(hierarchical, model=v2.model).to_dict() == v2.to_dict()
+
+
+def test_stage3_routing_config_is_strict() -> None:
+    payload = load_stage3_config("configs/v2/stage3/base.yaml").to_dict()
+    payload["model"]["routing"] = {"type": "unknown"}
+    with pytest.raises(ValueError, match="must be flat or hierarchical"):
+        stage3_config_from_dict(payload)
+
+    payload["model"]["routing"] = "hierarchical"
+    with pytest.raises(ValueError, match="must be a mapping"):
+        stage3_config_from_dict(payload)
 
 
 def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
@@ -770,6 +793,205 @@ def test_task_gate_diagnostics_partition_entropy_and_pooled_quantiles() -> None:
     assert pooled["private_gate_weight_p90"] == pytest.approx(0.5)
 
 
+def test_hierarchical_task_gate_math_locality_ownership_and_diagnostics() -> None:
+    tasks = {
+        "experiment/a": Stage3TaskConfig(meta_group="g1"),
+        "experiment/b": Stage3TaskConfig(meta_group="g2"),
+    }
+    specs = {
+        task: ResolvedTaskSpec(
+            task_id=task,
+            target_column="value",
+            identity_columns=("cation", "anion"),
+            condition_columns=(),
+            system_type="il",
+            materialized_path=task,
+            split_strategy="il",
+            cv_repeat=1,
+            meta_group=config.meta_group,
+            partner_mode="none",
+            primary_slots=("cation", "anion"),
+            partner_slots=(),
+            enabled=True,
+            task_weight=1.0,
+            catalog_schema_version=1,
+            provenance={},
+        )
+        for task, config in tasks.items()
+    }
+    groups = {
+        "g1": Stage3GroupConfig(experts=3, expert_hidden_ratio=1.0),
+        "g2": Stage3GroupConfig(experts=1, expert_hidden_ratio=1.0),
+    }
+    model = Stage3SparseModel(
+        Stage3ModelConfig(
+            global_experts=2,
+            group_experts=9,
+            private_experts=1,
+            dropout=0.0,
+            expert_hidden_ratio=1.0,
+            interaction_hidden_ratio=1.0,
+            routing=Stage3RoutingConfig(type="hierarchical"),
+        ),
+        specs,
+        4,
+        group_configs=groups,
+        task_configs=tasks,
+    ).eval()
+    flat_model = Stage3SparseModel(
+        replace(model.model_config, routing=Stage3RoutingConfig(type="flat")),
+        specs,
+        4,
+        group_configs=groups,
+        task_configs=tasks,
+    )
+    for owner in (GLOBAL, group_owner("g1"), group_owner("g2")):
+        assert sum(
+            parameter.numel() for parameter in model.parameters_for_owner(owner)
+        ) == sum(
+            parameter.numel()
+            for parameter in flat_model.parameters_for_owner(owner)
+        )
+    assert sum(parameter.numel() for parameter in model.parameters()) - sum(
+        parameter.numel() for parameter in flat_model.parameters()
+    ) == len(tasks) * 2 * (2 * model.d_model + 1)
+    primary = torch.arange(8, dtype=torch.float32).reshape(2, 4) / 10
+    conditions = torch.empty((2, 0))
+
+    for task, group_count in (("experiment/a", 3), ("experiment/b", 1)):
+        output = model(task, primary, conditions)
+        diagnostics = output.diagnostics
+        family = diagnostics["global_local_gate"]
+        global_internal = diagnostics["global_internal_gate"]
+        local_internal = diagnostics["local_internal_gate"]
+        final = diagnostics["task_gate"]
+        torch.testing.assert_close(family.sum(dim=1), torch.ones(2))
+        torch.testing.assert_close(global_internal.sum(dim=1), torch.ones(2))
+        assert local_internal.shape[1] == group_count + 1
+        torch.testing.assert_close(local_internal.sum(dim=1), torch.ones(2))
+        torch.testing.assert_close(
+            final,
+            torch.cat(
+                (
+                    family[:, :1] * global_internal,
+                    family[:, 1:] * local_internal,
+                ),
+                dim=1,
+            ),
+        )
+        assert torch.isfinite(final).all()
+        assert bool((final >= 0).all())
+        torch.testing.assert_close(final.sum(dim=1), torch.ones(2))
+        assert diagnostics["l2_group_candidates"].shape[1] == group_count
+        assert diagnostics["l2_private_candidates"].shape[1] == 1
+
+        key = task.replace("/", "__")
+        ownership = model.ownership_manifest()
+        for module_name in (
+            "global_local_gates",
+            "global_internal_gates",
+            "local_internal_gates",
+        ):
+            assert {
+                owner
+                for name, owner in ownership.items()
+                if name.startswith(f"{module_name}.{key}.")
+            } == {f"PRIVATE:{task}"}
+        assert key not in model.task_gates
+
+        observations = task_gate_observations(diagnostics)
+        assert observations.shape == (2, 9)
+        summary = summarize_task_gate_observations(observations)
+        assert summary["mean_global_family_weight"] == pytest.approx(
+            float(family[:, 0].mean().detach())
+        )
+        assert summary["mean_local_family_weight"] == pytest.approx(
+            float(family[:, 1].mean().detach())
+        )
+        assert summary["mean_global_gate_weight"] == pytest.approx(
+            float(final[:, :2].sum(dim=1).mean().detach())
+        )
+        assert summary["mean_group_weight"] == pytest.approx(
+            summary["mean_group_gate_weight"]
+        )
+        assert summary["mean_private_weight"] == pytest.approx(
+            summary["mean_private_gate_weight"]
+        )
+
+    learned = model("experiment/a", primary, conditions)
+    forced = model(
+        "experiment/a", primary, conditions, routing_mode="no_private"
+    )
+    torch.testing.assert_close(
+        forced.diagnostics["task_gate"][:, -1], torch.zeros(2)
+    )
+    for name in (
+        "global_local_gate",
+        "global_internal_gate",
+        "local_internal_gate",
+    ):
+        assert torch.equal(forced.diagnostics[name], learned.diagnostics[name])
+
+
+def test_explicit_flat_routing_preserves_model_state_and_forward() -> None:
+    task = "experiment/a"
+    task_config = Stage3TaskConfig(meta_group="g1")
+    spec = ResolvedTaskSpec(
+        task_id=task,
+        target_column="value",
+        identity_columns=("cation", "anion"),
+        condition_columns=(),
+        system_type="il",
+        materialized_path=task,
+        split_strategy="il",
+        cv_repeat=1,
+        meta_group="g1",
+        partner_mode="none",
+        primary_slots=("cation", "anion"),
+        partner_slots=(),
+        enabled=True,
+        task_weight=1.0,
+        catalog_schema_version=1,
+        provenance={},
+    )
+    implicit_config = Stage3ModelConfig(
+        global_experts=2,
+        group_experts=2,
+        private_experts=1,
+        dropout=0.0,
+        expert_hidden_ratio=1.0,
+        interaction_hidden_ratio=1.0,
+    )
+    explicit_config = replace(
+        implicit_config, routing=Stage3RoutingConfig(type="flat")
+    )
+    torch.manual_seed(19)
+    implicit = Stage3SparseModel(
+        implicit_config, {task: spec}, 4, task_configs={task: task_config}
+    ).eval()
+    torch.manual_seed(19)
+    explicit = Stage3SparseModel(
+        explicit_config, {task: spec}, 4, task_configs={task: task_config}
+    ).eval()
+    assert implicit.state_dict().keys() == explicit.state_dict().keys()
+    assert all(
+        torch.equal(implicit.state_dict()[name], explicit.state_dict()[name])
+        for name in implicit.state_dict()
+    )
+    primary = torch.arange(8, dtype=torch.float32).reshape(2, 4) / 10
+    conditions = torch.empty((2, 0))
+    implicit_output = implicit(task, primary, conditions)
+    explicit_output = explicit(task, primary, conditions)
+    assert torch.equal(implicit_output.predictions, explicit_output.predictions)
+    assert implicit_output.diagnostics.keys() == explicit_output.diagnostics.keys()
+    assert all(
+        torch.equal(
+            implicit_output.diagnostics[name], explicit_output.diagnostics[name]
+        )
+        for name in implicit_output.diagnostics
+    )
+
+
 @pytest.mark.parametrize("group_count", (1, 3))
 def test_routing_ablation_weights_follow_owner_contract(group_count: int) -> None:
     task_gate = torch.tensor(
@@ -944,6 +1166,27 @@ def test_routing_mode_changes_only_non_default_evaluation_identity() -> None:
     assert forced["hash"] != learned["hash"]
 
 
+def test_hierarchical_routing_changes_only_training_model_identity(
+    tiny_prepared: Stage3Config,
+) -> None:
+    flat = _tiny_three_phase(tiny_prepared)
+    hierarchical = replace(
+        flat,
+        model=replace(
+            flat.model, routing=Stage3RoutingConfig(type="hierarchical")
+        ),
+    )
+    hierarchical.validate()
+    flat_identity = resolve_stage3_training_identity(flat, 1)
+    hierarchical_identity = resolve_stage3_training_identity(hierarchical, 1)
+    assert "routing" not in flat_identity["payload"]["plan"]["model"]
+    assert hierarchical_identity["payload"]["plan"]["model"]["routing"] == {
+        "type": "hierarchical"
+    }
+    assert hierarchical_identity["hash"] != flat_identity["hash"]
+    assert hierarchical.data.artifacts_dir == flat.data.artifacts_dir
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     (
@@ -974,12 +1217,16 @@ def test_three_phase_private_dropout_override_is_bounded(value: object) -> None:
         stage3_config_from_dict(payload)
 
 
+@pytest.mark.parametrize("routing_type", ("flat", "hierarchical"))
 def test_three_phase_training_publishes_fixed_final_state(
-    tiny_prepared: Stage3Config,
+    tiny_prepared: Stage3Config, routing_type: str,
 ) -> None:
     config = _tiny_three_phase(tiny_prepared)
     config = replace(
         config,
+        model=replace(
+            config.model, routing=Stage3RoutingConfig(type=routing_type)
+        ),
         tasks={
             **config.tasks,
             "experiment/a": replace(
@@ -1029,6 +1276,21 @@ def test_three_phase_training_publishes_fixed_final_state(
         "private_gate_weight_p50",
         "private_gate_weight_p90",
     }
+    if routing_type == "hierarchical":
+        gate_fields.update(
+            {
+                "mean_global_family_weight",
+                "mean_local_family_weight",
+                "global_family_weight_p10",
+                "global_family_weight_p50",
+                "global_family_weight_p90",
+                "mean_group_weight",
+                "mean_private_weight",
+                "routing_entropy_global_local",
+                "routing_entropy_global_internal",
+                "routing_entropy_local_internal",
+            }
+        )
     assert set(rows[-1]["validation"]["gate_diagnostics"]) == set(config.tasks)
     assert set(
         rows[-1]["validation"]["gate_diagnostics"]["experiment/a"]
@@ -1049,6 +1311,9 @@ def test_three_phase_training_publishes_fixed_final_state(
     assert "best_state" not in json.dumps(manifest)
     plan = json.loads((output / "resolved_training_plan.json").read_text())
     assert plan["format_version"] == 3
+    assert plan["model"].get("routing") == (
+        {"type": "hierarchical"} if routing_type == "hierarchical" else None
+    )
     assert artifact["training_identity"]["payload"]["contract_version"] == 5
     assert plan["phases"]["phase1"]["owners"]["PRIVATE:experiment/a"][
         "freeze_epoch"
@@ -1177,6 +1442,9 @@ def test_three_phase_training_publishes_fixed_final_state(
     assert evaluated["model_selector"] == "three_phase_final"
     assert evaluated["routing_mode"] == "learned_gate"
     assert "routing_mode" not in evaluated["reporting"]["protocol"]
+    assert evaluated["reporting"]["study_id"].endswith(
+        "-model-routing-hierarchical"
+    ) == (routing_type == "hierarchical")
     learned_comparison = evaluated["routing_comparison"]
     assert len(learned_comparison) == 1
     assert learned_comparison[0]["routing_mode"] == "learned_gate"

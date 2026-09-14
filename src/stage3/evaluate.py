@@ -378,7 +378,11 @@ def _predict(
         normalized,
         raw_predictions,
         normalized_targets,
-        torch.cat(gate_observations) if gate_observations else torch.empty((0, 4)),
+        torch.cat(gate_observations)
+        if gate_observations
+        else torch.empty(
+            (0, 9 if config.model.routing.type == "hierarchical" else 4)
+        ),
         learned_normalized,
         learned_raw_predictions,
     )
@@ -522,7 +526,10 @@ def _reporting_comparison(
 
 
 def _default_reporting_study_id(
-    metadata: Mapping[str, Any], selector: str, routing_mode: str = "learned_gate"
+    metadata: Mapping[str, Any],
+    selector: str,
+    routing_mode: str = "learned_gate",
+    model_routing_type: str = "flat",
 ) -> str:
     prefix = (
         "rdkit-2d-stage2-home-stage3-"
@@ -539,6 +546,8 @@ def _default_reporting_study_id(
         )["hash"]
         + f"-{selector}"
     )
+    if model_routing_type == "hierarchical":
+        study_id = f"{study_id}-model-routing-hierarchical"
     return (
         study_id
         if routing_mode == "learned_gate"
@@ -612,6 +621,7 @@ def resolve_stage3_reporting_study_id(
         if taskwise_refined
         else f"epoch{epoch}",
         routing_mode,
+        config.model.routing.type,
     )
 
 
@@ -958,6 +968,7 @@ def evaluate_checkpoints(
             prepared["metadata"],
             selector_label if final_artifact else f"epoch{epoch}",
             routing_mode,
+            config.model.routing.type,
         )
         model_id, model_display_name = _reporting_model(prepared["metadata"])
         protocol = {
@@ -1051,6 +1062,7 @@ def evaluate_checkpoints(
         prepared["metadata"],
         selector_label if final_artifact else f"epoch{epoch}",
         routing_mode,
+        config.model.routing.type,
     )
     model_id, model_display_name = _reporting_model(prepared["metadata"])
     protocol = {

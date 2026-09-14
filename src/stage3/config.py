@@ -148,6 +148,11 @@ class Stage3InitializationConfig:
 
 
 @dataclass(frozen=True)
+class Stage3RoutingConfig:
+    type: str = "flat"
+
+
+@dataclass(frozen=True)
 class Stage3ModelConfig:
     global_experts: int = 2
     group_experts: int = 2
@@ -159,6 +164,7 @@ class Stage3ModelConfig:
     film_hidden_ratio: float = 1.0
     tower_hidden_ratio: float = 1.0
     l2_residual: bool = True
+    routing: Stage3RoutingConfig = field(default_factory=Stage3RoutingConfig)
 
 
 @dataclass(frozen=True)
@@ -467,6 +473,10 @@ class Stage3Config:
             raise ValueError("model.dropout must be in [0, 1)")
         if model.activation not in {"silu", "gelu"}:
             raise ValueError("model.activation must be silu or gelu")
+        if model.routing.type not in {"flat", "hierarchical"}:
+            raise ValueError("model.routing.type must be flat or hierarchical")
+        if model.routing.type == "hierarchical" and model.global_experts <= 0:
+            raise ValueError("Hierarchical Stage 3 routing requires GLOBAL experts")
         for name in (
             "expert_hidden_ratio", "interaction_hidden_ratio",
             "film_hidden_ratio", "tower_hidden_ratio",
@@ -643,6 +653,8 @@ class Stage3Config:
             return value
 
         payload = convert(asdict(self))
+        if self.model.routing.type == "flat":
+            payload["model"].pop("routing")
         if self.representation is None:
             payload.pop("representation")
         plugin = payload["initialization"].get("plugin")
@@ -818,6 +830,14 @@ def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
         training_raw["betas"] = tuple(training_raw["betas"])
     if isinstance(training_raw.get("active_tasks"), list):
         training_raw["active_tasks"] = tuple(training_raw["active_tasks"])
+    model_raw = dict(raw.get("model") or {})
+    routing_raw = model_raw.get("routing")
+    if routing_raw is not None:
+        if not isinstance(routing_raw, dict):
+            raise ValueError("model.routing must be a mapping")
+        model_raw["routing"] = _construct_dataclass(
+            Stage3RoutingConfig, routing_raw
+        )
     config = Stage3Config(
         data=_construct_dataclass(Stage3DataConfig, data_raw),
         preparation=_construct_dataclass(Stage3PreparationConfig, preparation_raw),
@@ -831,7 +851,7 @@ def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
                 Stage3RepresentationConfig, raw.get("representation")
             )
         ),
-        model=_construct_dataclass(Stage3ModelConfig, raw.get("model")),
+        model=_construct_dataclass(Stage3ModelConfig, model_raw),
         groups=groups,
         tasks=tasks,
         training=_construct_dataclass(Stage3TrainingConfig, training_raw),
