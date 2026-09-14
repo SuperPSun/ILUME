@@ -17,6 +17,7 @@ from stage3.config import (
     load_stage3_config,
     validate_stage3_folds,
 )
+from stage3.model import ROUTING_MODES
 
 
 ResolveIdentity = Callable[..., dict[str, Any]]
@@ -49,6 +50,12 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--tasks", nargs="+")
+    parser.add_argument(
+        "--routing-mode",
+        choices=ROUTING_MODES,
+        default="learned_gate",
+        help="Apply an evaluation-only intervention to the Stage 3 task gate.",
+    )
     parser.add_argument("--study-id")
     parser.add_argument("--output", required=True)
     return parser
@@ -77,6 +84,7 @@ def _run_fold(
     fold: int,
     checkpoint_epoch: int | None,
     tasks: list[str] | None,
+    routing_mode: str,
     study_id: str,
     progress: ProgressReporter,
     resolve_identity: ResolveIdentity,
@@ -92,8 +100,22 @@ def _run_fold(
             checkpoint_epoch=checkpoint_epoch,
             task_subset=tasks,
             fold=fold,
+            routing_mode=routing_mode,
         )
     output = Path(output_root) / f"fold{fold}"
+    details = {
+        "reporting_schema_version": REPORTING_SCHEMA_VERSION,
+        "checkpoint_dir": repository_relative(checkpoint_dir),
+        "split": "valid",
+        "ensemble_folds": False,
+        "fold": fold,
+        "checkpoint_epoch": checkpoint_epoch,
+        "model_selector": model_selector,
+        "tasks": tasks,
+        "reporting_study_id": study_id,
+    }
+    if routing_mode != "learned_gate":
+        details["routing_mode"] = routing_mode
     run = open_run_directory(
         stage="stage3",
         operation="evaluate",
@@ -102,17 +124,7 @@ def _run_fold(
         output=output,
         seed=config.data.seed,
         semantic_identity=evaluation_identity,
-        details={
-            "reporting_schema_version": REPORTING_SCHEMA_VERSION,
-            "checkpoint_dir": repository_relative(checkpoint_dir),
-            "split": "valid",
-            "ensemble_folds": False,
-            "fold": fold,
-            "checkpoint_epoch": checkpoint_epoch,
-            "model_selector": model_selector,
-            "tasks": tasks,
-            "reporting_study_id": study_id,
-        },
+        details=details,
     )
     try:
         result = evaluate_checkpoints(
@@ -126,6 +138,7 @@ def _run_fold(
             predictions_dir=run.root / "predictions",
             reporting_study_id=study_id,
             expected_evaluation_identity=evaluation_identity,
+            routing_mode=routing_mode,
         )
         run.complete(result)
     except BaseException:
@@ -142,6 +155,7 @@ def _run_validation_schedule(
     folds: tuple[int, ...],
     checkpoint_epoch: int | None,
     tasks: list[str] | None,
+    routing_mode: str,
     study_id: str,
     progress: ProgressReporter,
     resolve_identity: ResolveIdentity,
@@ -159,6 +173,7 @@ def _run_validation_schedule(
                 fold=fold,
                 checkpoint_epoch=checkpoint_epoch,
                 tasks=tasks,
+                routing_mode=routing_mode,
                 study_id=study_id,
                 progress=progress,
                 resolve_identity=resolve_identity,
@@ -196,7 +211,21 @@ def _run_test(
             checkpoint_epoch=args.checkpoint_epoch,
             task_subset=args.tasks,
             fold=None,
+            routing_mode=args.routing_mode,
         )
+    details = {
+        "reporting_schema_version": REPORTING_SCHEMA_VERSION,
+        "checkpoint_dir": repository_relative(checkpoint_dir),
+        "split": "test",
+        "ensemble_folds": True,
+        "fold": None,
+        "checkpoint_epoch": args.checkpoint_epoch,
+        "model_selector": model_selector,
+        "tasks": args.tasks,
+        "reporting_study_id": args.study_id,
+    }
+    if args.routing_mode != "learned_gate":
+        details["routing_mode"] = args.routing_mode
     run = open_run_directory(
         stage="stage3",
         operation="evaluate",
@@ -205,17 +234,7 @@ def _run_test(
         output=args.output,
         seed=config.data.seed,
         semantic_identity=evaluation_identity,
-        details={
-            "reporting_schema_version": REPORTING_SCHEMA_VERSION,
-            "checkpoint_dir": repository_relative(checkpoint_dir),
-            "split": "test",
-            "ensemble_folds": True,
-            "fold": None,
-            "checkpoint_epoch": args.checkpoint_epoch,
-            "model_selector": model_selector,
-            "tasks": args.tasks,
-            "reporting_study_id": args.study_id,
-        },
+        details=details,
     )
     try:
         result = evaluate_checkpoints(
@@ -229,6 +248,7 @@ def _run_test(
             predictions_dir=run.root / "predictions",
             reporting_study_id=args.study_id,
             expected_evaluation_identity=evaluation_identity,
+            routing_mode=args.routing_mode,
         )
         run.complete(result)
     except BaseException:
@@ -272,6 +292,7 @@ def main() -> int:
         with progress.status("Resolving Stage 3 validation study identity"):
             study_id = resolve_stage3_reporting_study_id(
                 config, checkpoint_epoch=args.checkpoint_epoch,
+                routing_mode=args.routing_mode,
             )
     try:
         results = _run_validation_schedule(
@@ -282,6 +303,7 @@ def main() -> int:
             folds=folds,
             checkpoint_epoch=args.checkpoint_epoch,
             tasks=args.tasks,
+            routing_mode=args.routing_mode,
             study_id=study_id,
             progress=progress,
             resolve_identity=resolve_stage3_evaluation_identity,

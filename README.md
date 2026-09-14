@@ -94,6 +94,22 @@ Stage 3 evaluator 对现役 v2 默认加载每个 fold 的 `three_phase_final.pt
 Capacity v1 仍默认加载 `taskwise_refined.pt`，且只有 legacy 配置支持显式
 `--checkpoint-epoch N`。
 
+现役 three-phase checkpoint 可在不重训的情况下运行 inference-only task-gate routing
+诊断。`--routing-mode` 默认为 `learned_gate`；forced mode 必须使用独立输出目录：
+
+```bash
+python scripts/stage3/evaluate.py \
+  --config configs/v2/stage3/base.yaml \
+  --checkpoint-dir outputs/v2/stage3/base/train \
+  --split test --ensemble-folds \
+  --routing-mode no_private \
+  --output outputs/v2/stage3/base/routing_ablation/no_private/test
+```
+
+其余可选 mode 为 `global_only`、`global_floor_025` 和 `global_floor_050`。summary 会
+同时记录 intervention 后 gate diagnostics 及相对 `learned_gate` 的 NMAE 变化；该结果
+只用于诊断，不作为 test-driven 模型选择依据。
+
 ### 超参数搜索退役
 
 ILUME 的 v2 Stage 3 A/B/C 搜索与 Capacity v1 HPO 已于 2026-09-06 退役；仓库不再提供

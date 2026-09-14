@@ -31,6 +31,7 @@ from .data import (
     test_path,
 )
 from .model import (
+    ROUTING_MODES,
     Stage3SparseModel,
     summarize_task_gate_observations,
     task_gate_observations,
@@ -285,8 +286,17 @@ def _predict(
     progress_bar: Any | None = None,
     fold: int | None = None,
     fold_count: int | None = None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    routing_mode: str = "learned_gate",
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
     normalized_predictions: list[torch.Tensor] = []
+    learned_normalized_predictions: list[torch.Tensor] = []
     gate_observations: list[torch.Tensor] = []
     target_stats = normalization["target"]
 
@@ -326,11 +336,25 @@ def _predict(
             dtype=torch.bfloat16,
             enabled=config.training.amp_dtype == "bf16",
         ):
-            output = model(task_id, primary, conditions, partner_embedding=partner)
+            output = model(
+                task_id,
+                primary,
+                conditions,
+                partner_embedding=partner,
+                routing_mode=routing_mode,
+            )
             prediction = output.predictions
+            learned_prediction = output.diagnostics.get(
+                "learned_gate_predictions", prediction
+            )
         if not torch.isfinite(prediction).all():
             raise RuntimeError(f"Non-finite Stage 3 evaluation prediction: {task_id}")
+        if not torch.isfinite(learned_prediction).all():
+            raise RuntimeError(
+                f"Non-finite Stage 3 learned-gate reference prediction: {task_id}"
+            )
         normalized_predictions.append(prediction.float().cpu())
+        learned_normalized_predictions.append(learned_prediction.float().cpu())
         if config.training.schedule_mode == "three_phase":
             gate_observations.append(task_gate_observations(output.diagnostics).cpu())
     normalized = (
@@ -339,6 +363,14 @@ def _predict(
     raw_predictions = normalized * float(target_stats["scale"]) + float(
         target_stats["mean"]
     )
+    learned_normalized = (
+        torch.cat(learned_normalized_predictions)
+        if learned_normalized_predictions
+        else torch.empty(0)
+    )
+    learned_raw_predictions = learned_normalized * float(
+        target_stats["scale"]
+    ) + float(target_stats["mean"])
     normalized_targets = (
         dataset.raw_targets.float() - float(target_stats["mean"])
     ) / float(target_stats["scale"])
@@ -347,6 +379,8 @@ def _predict(
         raw_predictions,
         normalized_targets,
         torch.cat(gate_observations) if gate_observations else torch.empty((0, 4)),
+        learned_normalized,
+        learned_raw_predictions,
     )
 
 
@@ -382,6 +416,42 @@ def _raw_ensemble_metrics(
         "normalized_mae": float(delta.abs().mean()) / scale,
         "normalized_rmse": float(delta.square().mean().sqrt()) / scale,
     }
+
+
+def _routing_comparison(
+    metrics: Mapping[str, Mapping[str, Any]],
+    learned_metrics: Mapping[str, Mapping[str, Any]],
+    *,
+    split: str,
+    fold: int | str,
+    routing_mode: str,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for task, task_metrics in metrics.items():
+        reference = learned_metrics[task]
+        nmae = task_metrics.get("normalized_mae")
+        learned_nmae = reference.get("normalized_mae")
+        if nmae is None or learned_nmae is None:
+            delta = None
+            relative_delta = None
+        else:
+            delta = float(nmae) - float(learned_nmae)
+            relative_delta = (
+                None if float(learned_nmae) == 0.0 else delta / float(learned_nmae)
+            )
+        rows.append(
+            {
+                "task": task,
+                "split": split,
+                "fold": fold,
+                "routing_mode": routing_mode,
+                "mae": task_metrics.get("mae"),
+                "nmae": nmae,
+                "delta_nmae_vs_learned_gate": delta,
+                "relative_delta_vs_learned_gate": relative_delta,
+            }
+        )
+    return rows
 
 
 def _macro(
@@ -452,7 +522,7 @@ def _reporting_comparison(
 
 
 def _default_reporting_study_id(
-    metadata: Mapping[str, Any], selector: str
+    metadata: Mapping[str, Any], selector: str, routing_mode: str = "learned_gate"
 ) -> str:
     prefix = (
         "rdkit-2d-stage2-home-stage3-"
@@ -462,12 +532,17 @@ def _default_reporting_study_id(
         if metadata.get("kind") != STAGE3_ARTIFACT_KIND
         else "ilume-stage3-"
     )
-    return (
+    study_id = (
         prefix
         + metadata_identity(
             metadata, "prepared", context="Stage 3 prepared artifact"
         )["hash"]
         + f"-{selector}"
+    )
+    return (
+        study_id
+        if routing_mode == "learned_gate"
+        else f"{study_id}-routing-{routing_mode}"
     )
 
 
@@ -500,9 +575,19 @@ def _evaluation_tasks(
 
 
 def resolve_stage3_reporting_study_id(
-    config: Stage3Config, *, checkpoint_epoch: int | None = None,
+    config: Stage3Config,
+    *,
+    checkpoint_epoch: int | None = None,
+    routing_mode: str = "learned_gate",
 ) -> str:
     """Resolve the fold-independent default reporting study identifier."""
+    if routing_mode not in ROUTING_MODES:
+        raise ValueError(f"Unsupported Stage 3 routing mode: {routing_mode}")
+    if (
+        config.training.schedule_mode != "three_phase"
+        and routing_mode != "learned_gate"
+    ):
+        raise ValueError("Stage 3 routing ablations require three-phase training")
     if config.training.schedule_mode == "three_phase" and checkpoint_epoch is not None:
         raise ValueError(
             "--checkpoint-epoch is only supported by legacy Stage 3 training"
@@ -526,6 +611,7 @@ def resolve_stage3_reporting_study_id(
         else "taskwise-refined"
         if taskwise_refined
         else f"epoch{epoch}",
+        routing_mode,
     )
 
 
@@ -645,7 +731,15 @@ def evaluate_checkpoints(
     predictions_dir: str | Path | None = None,
     reporting_study_id: str | None = None,
     expected_evaluation_identity: Mapping[str, Any] | None = None,
+    routing_mode: str = "learned_gate",
 ) -> dict[str, Any]:
+    if routing_mode not in ROUTING_MODES:
+        raise ValueError(f"Unsupported Stage 3 routing mode: {routing_mode}")
+    if (
+        config.training.schedule_mode != "three_phase"
+        and routing_mode != "learned_gate"
+    ):
+        raise ValueError("Stage 3 routing ablations require three-phase training")
     if split not in {"valid", "test"}:
         raise ValueError("Stage 3 evaluation split must be valid or test")
     if split == "test" and not ensemble_folds:
@@ -700,6 +794,9 @@ def evaluate_checkpoints(
     )    
     fold_results: dict[str, Any] = {}
     ensemble_predictions: dict[str, list[torch.Tensor]] = {task: [] for task in tasks}
+    learned_ensemble_predictions: dict[str, list[torch.Tensor]] = {
+        task: [] for task in tasks
+    }
     raw_targets: dict[str, torch.Tensor] = {}
     normalizations: dict[str, list[dict[str, Any]]] = {task: [] for task in tasks}
     checkpoint_identities: list[Mapping[str, Any]] = []
@@ -740,6 +837,7 @@ def evaluate_checkpoints(
                     _validate_three_phase_manifest(path, checkpoint)
                 )
             per_task: dict[str, Any] = {}
+            learned_per_task: dict[str, Any] = {}
             raw_fold_predictions[current_fold] = {}
             fold_gate_observations[current_fold] = {}
             for task in tasks:
@@ -747,7 +845,14 @@ def evaluate_checkpoints(
                     config.data.artifacts_dir, current_fold, task, split
                 )
                 normalization = checkpoint["normalization"][task]
-                normalized, raw, normalized_targets, gate_observations = _predict(
+                (
+                    normalized,
+                    raw,
+                    normalized_targets,
+                    gate_observations,
+                    learned_normalized,
+                    learned_raw,
+                ) = _predict(
                     model,
                     task,
                     dataset,
@@ -758,11 +863,16 @@ def evaluate_checkpoints(
                     progress_bar=evaluation_progress,
                     fold=current_fold,
                     fold_count=len(folds),
+                    routing_mode=routing_mode,
                 )
                 per_task[task] = regression_metrics(
                     normalized, normalized_targets, normalization
                 )
+                learned_per_task[task] = regression_metrics(
+                    learned_normalized, normalized_targets, normalization
+                )
                 ensemble_predictions[task].append(raw)
+                learned_ensemble_predictions[task].append(learned_raw)
                 raw_fold_predictions[current_fold][task] = raw
                 if config.training.schedule_mode == "three_phase":
                     fold_gate_observations[current_fold][task] = gate_observations
@@ -787,6 +897,13 @@ def evaluate_checkpoints(
                         current_fold
                     ].items()
                 }
+                fold_result["routing_comparison"] = _routing_comparison(
+                    per_task,
+                    learned_per_task,
+                    split=split,
+                    fold=current_fold,
+                    routing_mode=routing_mode,
+                )
             fold_results[f"fold{current_fold}"] = fold_result
     finally:
         evaluation_progress.close()
@@ -803,6 +920,7 @@ def evaluate_checkpoints(
         model_selector=model_selector,
         tasks=tasks,
         ensemble_folds=ensemble_folds,
+        routing_mode=routing_mode,
     )
     if expected_evaluation_identity is not None:
         require_compatible_identity(
@@ -834,24 +952,30 @@ def evaluate_checkpoints(
             "model_selector": model_selector,
             **next(iter(fold_results.values())),
         }
+        if config.training.schedule_mode == "three_phase":
+            result["routing_mode"] = routing_mode
         default_study_id = _default_reporting_study_id(
             prepared["metadata"],
             selector_label if final_artifact else f"epoch{epoch}",
+            routing_mode,
         )
         model_id, model_display_name = _reporting_model(prepared["metadata"])
+        protocol = {
+            "split": "valid",
+            "fold": fold,
+            "folds": list(range(1, 6)),
+            "ensemble": False,
+            "expected_tasks": list(enabled),
+            "checkpoint_epoch": None if final_artifact else epoch,
+            "model_selector": model_selector,
+        }
+        if routing_mode != "learned_gate":
+            protocol["routing_mode"] = routing_mode
         result["reporting"] = reporting_block(
             model_id=model_id,
             model_display_name=model_display_name,
             benchmark="stage3_property",
-            protocol={
-                "split": "valid",
-                "fold": fold,
-                "folds": list(range(1, 6)),
-                "ensemble": False,
-                "expected_tasks": list(enabled),
-                "checkpoint_epoch": None if final_artifact else epoch,
-                "model_selector": model_selector,
-            },
+            protocol=protocol,
             comparison=comparison,
             study_id=reporting_study_id or default_study_id,
             predictions=prediction_manifests,
@@ -868,6 +992,18 @@ def evaluate_checkpoints(
             / len(normalizations[task]),
         )
         for task, predictions in ensemble_predictions.items()
+    }
+    learned_ensemble = {
+        task: _raw_ensemble_metrics(
+            torch.stack(predictions).mean(dim=0),
+            raw_targets[task],
+            sum(
+                float(item["target"]["scale"])
+                for item in normalizations[task]
+            )
+            / len(normalizations[task]),
+        )
+        for task, predictions in learned_ensemble_predictions.items()
     }
     prediction_manifests = (
         _write_predictions(
@@ -895,6 +1031,13 @@ def evaluate_checkpoints(
             task: summarize_task_gate_observations(torch.cat(observations))
             for task, observations in pooled_gate_observations.items()
         }
+        ensemble_result["routing_comparison"] = _routing_comparison(
+            ensemble,
+            learned_ensemble,
+            split="test",
+            fold="ensemble",
+            routing_mode=routing_mode,
+        )
     result = {
         "split": split,
         "checkpoint_epoch": None if final_artifact else epoch,
@@ -902,24 +1045,30 @@ def evaluate_checkpoints(
         "folds": fold_results,
         "ensemble": ensemble_result,
     }
+    if config.training.schedule_mode == "three_phase":
+        result["routing_mode"] = routing_mode
     default_study_id = _default_reporting_study_id(
         prepared["metadata"],
         selector_label if final_artifact else f"epoch{epoch}",
+        routing_mode,
     )
     model_id, model_display_name = _reporting_model(prepared["metadata"])
+    protocol = {
+        "split": "test",
+        "folds": list(range(1, 6)),
+        "ensemble": True,
+        "expected_tasks": list(expected_tasks),
+        "enabled_tasks": list(enabled),
+        "checkpoint_epoch": None if final_artifact else epoch,
+        "model_selector": model_selector,
+    }
+    if routing_mode != "learned_gate":
+        protocol["routing_mode"] = routing_mode
     result["reporting"] = reporting_block(
         model_id=model_id,
         model_display_name=model_display_name,
         benchmark="stage3_property",
-        protocol={
-            "split": "test",
-            "folds": list(range(1, 6)),
-            "ensemble": True,
-            "expected_tasks": list(expected_tasks),
-            "enabled_tasks": list(enabled),
-            "checkpoint_epoch": None if final_artifact else epoch,
-            "model_selector": model_selector,
-        },
+        protocol=protocol,
         comparison=comparison,
         study_id=reporting_study_id or default_study_id,
         predictions=prediction_manifests,
@@ -936,8 +1085,16 @@ def resolve_stage3_evaluation_identity(
     checkpoint_epoch: int | None = None,
     task_subset: Sequence[str] | None = None,
     fold: int | None = None,
+    routing_mode: str = "learned_gate",
 ) -> dict[str, Any]:
     """Resolve and validate the semantic identity of an evaluation request."""
+    if routing_mode not in ROUTING_MODES:
+        raise ValueError(f"Unsupported Stage 3 routing mode: {routing_mode}")
+    if (
+        config.training.schedule_mode != "three_phase"
+        and routing_mode != "learned_gate"
+    ):
+        raise ValueError("Stage 3 routing ablations require three-phase training")
     if split not in {"valid", "test"}:
         raise ValueError("Stage 3 evaluation split must be valid or test")
     if split == "test" and not ensemble_folds:
@@ -1015,6 +1172,7 @@ def resolve_stage3_evaluation_identity(
         model_selector=model_selector,
         tasks=tasks,
         ensemble_folds=ensemble_folds,
+        routing_mode=routing_mode,
     )
 
 

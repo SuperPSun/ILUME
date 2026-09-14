@@ -206,7 +206,18 @@ def build_stage3_evaluation_identity(
     model_selector: str = "epoch_checkpoint",
     tasks: Sequence[str],
     ensemble_folds: bool,
+    routing_mode: str = "learned_gate",
 ) -> dict[str, Any]:
+    selector = {
+        "split": split,
+        "fold": fold,
+        "checkpoint_epoch": checkpoint_epoch,
+        "model_selector": model_selector,
+        "tasks": list(tasks),
+        "ensemble_folds": ensemble_folds,
+    }
+    if routing_mode != "learned_gate":
+        selector["routing_mode"] = routing_mode
     return semantic_identity(
         "stage3.evaluation",
         {
@@ -217,14 +228,7 @@ def build_stage3_evaluation_identity(
             ],
             "model_state_hashes": list(model_state_hashes),
             "selection_manifest_sha256": list(selection_manifest_hashes),
-            "selector": {
-                "split": split,
-                "fold": fold,
-                "checkpoint_epoch": checkpoint_epoch,
-                "model_selector": model_selector,
-                "tasks": list(tasks),
-                "ensemble_folds": ensemble_folds,
-            },
+            "selector": selector,
         },
     )
 
