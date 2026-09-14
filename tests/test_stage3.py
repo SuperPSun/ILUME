@@ -494,7 +494,7 @@ def test_three_phase_config_and_task_specific_gate_contract() -> None:
         "thermal_conductivity": (93, "tiny", 2),
         "equilibrium_pressure": (95, "tiny", 2),
         "x_co2": (122, "small", 5), "speed_of_sound": (216, "small", 0),
-        "pec50": (305, "small", 5), "heat_capacity": (352, "small", 3),
+        "pec50": (305, "small", 3), "heat_capacity": (352, "small", 3),
         "electrical_conductivity": (703, "medium", 4),
         "refractive_index": (726, "medium", 3),
         "glass_transition_temperature": (793, "medium", 2),
@@ -702,7 +702,7 @@ def test_three_phase_private_capacity_ratios_follow_size_class() -> None:
     changed_recipes = {
         "experiment/isobaric_coefficient_of_volume_expansion": (0, 0, 0.25, 0.25, 0.25, 0.10),
         "experiment/thermal_conductivity": (3, 2, 0.50, 0.50, 0.50, 0.10),
-        "experiment/pec50": (4, 5, 0.75, 0.75, 0.75, 0.10),
+        "experiment/pec50": (4, 3, 0.75, 0.75, 0.75, 0.10),
         "experiment/x_co2": (4, 5, 0.75, 0.75, 0.75, 0.10),
         "experiment/refractive_index": (8, 3, 0.75, 0.75, 0.75, 0.15),
         "experiment/thermal_decomposition_temperature": (12, 6, 1.25, 1.25, 1.00, 0.10),

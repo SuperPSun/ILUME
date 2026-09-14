@@ -221,7 +221,7 @@ tasks:
     meta_group: biological
     unique_systems: 305
     size_class: small
-    phase3_private_epochs: 5
+    phase3_private_epochs: 3
     model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75}
     enabled: true
 training:

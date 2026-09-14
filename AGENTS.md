@@ -14,6 +14,8 @@ Capacity v1 是 ADR-0026/0027 和 `configs/experiments_v1/{stage1,stage2,stage3}
 
 ADR-0054 进一步定义现役 Stage 3 的弱任务 recipe 与只读 task-gate diagnostics：three-phase validation 和独立 evaluation 按 task 报告 GLOBAL/GROUP/PRIVATE gate mass、归一化 gate entropy 与 PRIVATE mass 分位数；test aggregate 合并五折的 fold-sample 观测。该诊断不得增加 forward、进入 loss/selection 或改变 prediction CSV，legacy v1/Capacity 不输出该字段。
 
+ADR-0055 将现役六套 Stage 3 配置中 pEC50 的 Phase 3 PRIVATE lifetime 从 5 epoch 单变量回调为 3 epoch；ADR-0054 的 gate diagnostics 与其余 task recipe 全部保持。
+
 ## 结构与入口
 
 - 现役 Stage 实现只位于 `src/common`、`src/stage1`、`src/stage2`、`src/stage3`；论文对比 baseline 位于顶层 `benchmarks/`，内部消融位于顶层 `ablations/`，二者均不得被 Stage 1/2/3 导入。

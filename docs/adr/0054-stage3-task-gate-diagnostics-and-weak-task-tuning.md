@@ -4,6 +4,10 @@
 - 日期：2026-09-14
 - 修订：ADR-0053 的四项 task recipe
 
+> 数值状态：本 ADR 的 task-gate diagnostics 合同继续有效；其中 pEC50 Phase 3
+> PRIVATE epoch 已由 [ADR-0055](0055-stage3-pec50-phase3-single-variable-rollback.md)
+> 从 5 修订为 3。
+
 ## 背景
 
 最新训练曲线表明，volume expansion 的 Phase 2 PRIVATE 更新持续恶化，而 pEC50 与 xCO2

@@ -71,7 +71,7 @@ tasks:
     primary_slots: [solute]
     partner_slots: [solvent]
   experiment/x_co2: {meta_group: solvation, unique_systems: 122, size_class: small, phase3_private_epochs: 5}
-  experiment/pec50: {meta_group: biological, unique_systems: 305, size_class: small, phase3_private_epochs: 5, model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75}}
+  experiment/pec50: {meta_group: biological, unique_systems: 305, size_class: small, phase3_private_epochs: 3, model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75}}
 training:
   composite_batch_size: 2048
   microbatch_size: 1024
