@@ -45,7 +45,7 @@ class Stage3BenchmarkConfig:
 class BenchmarkConfig:
     name: Literal[
         "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm", "llasmol",
-        "aionopedia", "iltransr",
+        "aionopedia", "iltransr", "aifc",
         "ilume_stage3_single_task_mlp",
     ]
     data: DataConfig
@@ -61,7 +61,7 @@ class BenchmarkConfig:
     def validate(self) -> None:
         if self.name not in {
             "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm", "llasmol",
-            "aionopedia", "iltransr",
+            "aionopedia", "iltransr", "aifc",
             "ilume_stage3_single_task_mlp",
         }:
             raise ValueError(f"Unknown benchmark model: {self.name}")
@@ -98,7 +98,7 @@ class BenchmarkConfig:
                     "training.model_selection=final_training_state"
                 )
         advanced = self.name in {
-            "dmpnn", "molformer", "ilbert", "spmm", "llasmol", "aionopedia", "iltransr",
+            "dmpnn", "molformer", "ilbert", "spmm", "llasmol", "aionopedia", "iltransr", "aifc",
             "ilume_stage3_single_task_mlp",
         }
         if not advanced and self.data.feature_cache is None:
@@ -119,7 +119,9 @@ class BenchmarkConfig:
             self._validate_aionopedia()
         if self.name == "iltransr":
             self._validate_iltransr()
-        elif self.name not in {"molformer", "ilbert", "spmm", "llasmol", "aionopedia"} and self.runtime:
+        if self.name == "aifc":
+            self._validate_aifc()
+        elif self.name not in {"molformer", "ilbert", "spmm", "llasmol", "aionopedia", "iltransr"} and self.runtime:
             raise ValueError("Only token baselines currently declare benchmark runtime settings")
         if not self.model or not self.training or self.seed < 0:
             raise ValueError("Benchmark model/training contract is incomplete")
@@ -683,6 +685,78 @@ class BenchmarkConfig:
             raise ValueError("ILTransR training must match the registered downstream recipes")
         if self.runtime != {"num_workers": 0}:
             raise ValueError("ILTransR runtime must use the registered single-process loader")
+
+    def _validate_aifc(self) -> None:
+        if self.features is not None:
+            raise ValueError("AIFC builds official fragment graphs and does not accept features")
+        if self.environment is None or self.environment.name != "ilume-aifc":
+            raise ValueError("AIFC requires the ilume-aifc environment")
+        fallback = {
+            "hidden_dim": 128,
+            "num_heads": 1,
+            "dropout": 0.0,
+            "depth": 3,
+            "layers": 3,
+            "residual": False,
+            "batch_norm": False,
+            "layer_norm": False,
+        }
+        expected_model = {
+            "repository": "2022kaikaili/ILs-AIFC",
+            "revision": "569bc338a1dbe8aad9770a5562e27e23f9ab3cdb",
+            "fragment_scheme": "benchmarks/aifc/assets/My_fragments.csv",
+            "fragment_commit": "23973da709212d1e13fd4b8e0968c8109f78fa75",
+            "fragment_blob": "90d8bafc2eb07835854e183df48a637d97b8c09b",
+            "fragment_sha256": "ccc5cfefe87ebf3e1d98762eb1c58170bc00c9f7cfd12b6c9ce23fa957ccdf95",
+            "graph_backend": "pytorch_equivalent_of_dgl_1.1.2",
+            "legacy_parity": "fixed_graph_fp32_dgl_cpu",
+            "legacy_reference": "benchmarks/aifc/assets/legacy_reference.json",
+            "legacy_reference_sha256": "eeb90aa5c3a5d2a19ea144d2203e5d4fd4368dc2cb3e31be69f637549c5f2691",
+            "shared_encoder": True,
+            "fusion": "registry_slot_ordered_concat",
+            "condition_fusion": "registry_ordered_scalar_concat",
+            "fallback_architecture": fallback,
+            "property_architectures": {
+                "experiment/viscosity": fallback,
+                "experiment/thermal_decomposition_temperature": {
+                    "hidden_dim": 208,
+                    "num_heads": 1,
+                    "dropout": 0.598,
+                    "depth": 3,
+                    "layers": 3,
+                    "residual": False,
+                    "batch_norm": False,
+                    "layer_norm": False,
+                },
+            },
+        }
+        if self.model != expected_model:
+            raise ValueError("AIFC model must match the registered fragment architecture")
+        expected_training = {
+            "optimizer": "adam",
+            "learning_rate": 1.0e-3,
+            "betas": [0.9, 0.999],
+            "eps": 1.0e-8,
+            "weight_decay": 0.0,
+            "scheduler": "constant",
+            "batch_size": 64,
+            "max_epochs": 20,
+            "loss": "train_population_zscore_mse",
+            "condition_transform": "train_only_population_zscore",
+            "model_selection": "final_training_state",
+            "validation_policy": "reporting_only_each_epoch",
+            "checkpoint_policy": "nonresumable_final_state_only",
+            "device": "cuda",
+            "precision": "fp32",
+            "tf32": False,
+            "ensemble_size": 1,
+        }
+        if self.training != expected_training:
+            raise ValueError("AIFC training must match the registered 20-epoch recipe")
+        if self.seed != 1000:
+            raise ValueError("AIFC seed must be 1000")
+        if self.runtime != {"num_workers": 0}:
+            raise ValueError("AIFC runtime must use the registered single-process loader")
 
     def to_dict(self) -> dict[str, Any]:
         def convert(value: Any) -> Any:

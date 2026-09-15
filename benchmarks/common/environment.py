@@ -43,7 +43,7 @@ def _locked_versions(path: Path) -> dict[str, str]:
 def environment_command(
     config: BenchmarkConfig, argv: Sequence[str], *, conda: str | None = None
 ) -> list[str]:
-    if config.name not in {"dmpnn", "molformer", "ilbert", "spmm", "llasmol", "aionopedia", "iltransr"} or config.environment is None:
+    if config.name not in {"dmpnn", "molformer", "ilbert", "spmm", "llasmol", "aionopedia", "iltransr", "aifc"} or config.environment is None:
         raise ValueError("Environment dispatch is only defined for advanced baselines")
     executable = conda or shutil.which("conda")
     if executable is None:
@@ -65,7 +65,7 @@ def environment_command(
 def ensure_benchmark_environment(
     config: BenchmarkConfig, argv: Sequence[str] | None = None
 ) -> dict[str, Any] | None:
-    if config.name not in {"dmpnn", "molformer", "ilbert", "spmm", "llasmol", "aionopedia", "iltransr"}:
+    if config.name not in {"dmpnn", "molformer", "ilbert", "spmm", "llasmol", "aionopedia", "iltransr", "aifc"}:
         return None
     if config.environment is None:
         raise ValueError(f"{config.display_name} environment contract is missing")
@@ -96,7 +96,9 @@ def ensure_benchmark_environment(
         return validate_llasmol_environment(config)
     if config.name == "aionopedia":
         return validate_aionopedia_environment(config)
-    return validate_iltransr_environment(config)
+    if config.name == "iltransr":
+        return validate_iltransr_environment(config)
+    return validate_aifc_environment(config)
 
 
 def _installed_versions() -> dict[str, str]:
@@ -1185,6 +1187,103 @@ def validate_iltransr_environment(config: BenchmarkConfig) -> dict[str, Any]:
     }
 
 
+def aifc_asset_snapshot(config: BenchmarkConfig) -> dict[str, Any]:
+    if config.name != "aifc":
+        raise ValueError("AIFC asset validation requires an AIFC config")
+    from benchmarks.aifc.preprocessing import (
+        FRAGMENT_BLOB,
+        FRAGMENT_COMMIT,
+        FRAGMENT_SHA256,
+        FragmentScheme,
+    )
+
+    path = repository_path(config.model["fragment_scheme"])
+    if not path.is_file():
+        raise FileNotFoundError(f"AIFC pinned fragment dictionary is missing: {path}")
+    scheme = FragmentScheme.load(path)
+    reference = repository_path(config.model["legacy_reference"])
+    if (
+        not reference.is_file()
+        or sha256_file(reference) != config.model["legacy_reference_sha256"]
+    ):
+        raise ValueError("AIFC legacy parity reference hash differs from the registered contract")
+    if (
+        config.model["fragment_commit"] != FRAGMENT_COMMIT
+        or config.model["fragment_blob"] != FRAGMENT_BLOB
+        or config.model["fragment_sha256"] != FRAGMENT_SHA256
+    ):
+        raise ValueError("AIFC fragment provenance differs from the registered contract")
+    return {
+        "repository": config.model["repository"],
+        "revision": config.model["revision"],
+        "fragment_scheme": {
+            "path": repository_relative(path),
+            "commit": FRAGMENT_COMMIT,
+            "blob": FRAGMENT_BLOB,
+            "sha256": scheme.sha256,
+            "size": path.stat().st_size,
+            "entries": len(scheme.names),
+            "order_sha256": scheme.order_sha256,
+        },
+        "graph_backend": config.model["graph_backend"],
+        "legacy_parity": config.model["legacy_parity"],
+        "legacy_reference": {
+            "path": repository_relative(reference),
+            "sha256": sha256_file(reference),
+            "size": reference.stat().st_size,
+        },
+    }
+
+
+def validate_aifc_environment(config: BenchmarkConfig) -> dict[str, Any]:
+    if config.name != "aifc" or config.environment is None:
+        raise ValueError("AIFC environment validation requires an AIFC config")
+    try:
+        import numpy
+        from rdkit import rdBase
+        import torch
+    except ImportError as error:
+        raise RuntimeError("AIFC environment cannot import its locked runtime") from error
+    direct = {
+        "python": platform.python_version(),
+        "pip": importlib.metadata.version("pip"),
+        "pytorch": torch.__version__,
+        "cuda": torch.version.cuda,
+        "numpy": numpy.__version__,
+        "rdkit": rdBase.rdkitVersion,
+    }
+    expected_direct = {
+        "python": "3.10.14",
+        "pip": "25.2",
+        "pytorch": "2.9.0+cu128",
+        "cuda": "12.8",
+        "numpy": "1.26.4",
+        "rdkit": "2023.09.6",
+    }
+    definition, lock, installed = _validate_lock(
+        config, expected_direct=expected_direct, direct=direct
+    )
+    if not torch.cuda.is_available():
+        raise RuntimeError("AIFC requires CUDA; no silent CPU fallback")
+    from benchmarks.aifc.parity import validate_legacy_parity
+
+    assets = aifc_asset_snapshot(config)
+    parity = validate_legacy_parity(
+        repository_path(config.model["legacy_reference"]),
+        repository_path(config.model["fragment_scheme"]),
+    )
+    return {
+        "environment_name": config.environment.name,
+        "environment_definition": repository_relative(definition),
+        "environment_lock": repository_relative(lock),
+        "environment_lock_sha256": sha256_file(lock),
+        "direct_versions": direct,
+        "resolved_packages": dict(sorted(installed.items())),
+        "gpu": _gpu_snapshot(torch),
+        "pretrained_snapshot": {**assets, "pytorch_legacy_dgl_parity": parity},
+    }
+
+
 def environment_run_details(snapshot: dict[str, Any] | None) -> dict[str, Any]:
     if snapshot is None:
         return {}
@@ -1218,6 +1317,9 @@ def environment_run_details(snapshot: dict[str, Any] | None) -> dict[str, Any]:
     if snapshot["environment_name"] == "ilume-iltransr":
         details["upstream_revision"] = snapshot["pretrained_snapshot"]["revision"]
         details["conversion_tensor_state_sha256"] = snapshot["pretrained_snapshot"]["structure"]["tensor_state_sha256"]
+    if snapshot["environment_name"] == "ilume-aifc":
+        details["upstream_revision"] = snapshot["pretrained_snapshot"]["revision"]
+        details["fragment_scheme_sha256"] = snapshot["pretrained_snapshot"]["fragment_scheme"]["sha256"]
     return details
 
 
@@ -1229,6 +1331,7 @@ __all__ = [
     "AIONOPEDIA_ASSET_MARKER",
     "ENVIRONMENT_MARKER",
     "LLASMOL_ASSET_MARKER",
+    "aifc_asset_snapshot",
     "aionopedia_asset_snapshot",
     "ensure_benchmark_environment",
     "environment_run_details",
@@ -1239,6 +1342,7 @@ __all__ = [
     "spmm_asset_snapshot",
     "validate_dmpnn_environment",
     "validate_aionopedia_environment",
+    "validate_aifc_environment",
     "validate_ilbert_environment",
     "validate_iltransr_environment",
     "validate_llasmol_environment",

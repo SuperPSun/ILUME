@@ -467,7 +467,7 @@ def test_native_split_benchmark_configs_follow_v2_authorities() -> None:
 def test_default_benchmark_configs_follow_v2_system_authority() -> None:
     for benchmark in (
         "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm",
-        "llasmol", "aionopedia", "iltransr",
+        "llasmol", "aionopedia", "iltransr", "aifc",
     ):
         config = load_benchmark_config(
             Path("configs/benchmarks") / f"{benchmark}.yaml"
@@ -2276,3 +2276,138 @@ def test_iltransr_two_bucket_sampler_is_deterministic_and_complete() -> None:
     assert first == list(sampler)
     sampler.set_epoch(1)
     assert first != list(sampler)
+
+
+# --- AIFC baseline contracts ---
+
+from benchmarks.aifc.adapter import (
+    ConditionStats as AIFCConditionStats,
+    aifc_model_views,
+    resolve_aifc_architecture,
+)
+from benchmarks.aifc.model import AIFCRegressor
+from benchmarks.aifc.parity import validate_legacy_parity
+from benchmarks.aifc.preprocessing import (
+    FRAGMENT_BLOB,
+    FRAGMENT_COMMIT,
+    FRAGMENT_SHA256,
+    FragmentScheme as AIFCFragmentScheme,
+    batch_aifc_graphs,
+    smiles_to_aifc_graph,
+)
+
+
+def _aifc_task(
+    tmp_path: Path,
+    *,
+    slots: tuple[str, ...] = ("cation", "anion"),
+    conditions: tuple[str, ...] = (),
+) -> BenchmarkTask:
+    return BenchmarkTask(
+        benchmark="stage3",
+        task_id="experiment/aifc_tiny",
+        slots=slots,
+        condition_columns=conditions,
+        target_columns=("secret_target",),
+        audit_columns=(),
+        train_paths=(tmp_path / "fold2.csv",),
+        valid_paths=(tmp_path / "fold1.csv",),
+        test_path=tmp_path / "test.csv",
+        fold=1,
+        meta_group="tiny",
+        registry_payload={"task_id": "experiment/aifc_tiny"},
+    )
+
+
+def test_formal_aifc_config_assets_recipes_and_final_state_contract() -> None:
+    config = load_benchmark_config("configs/benchmarks/aifc.yaml")
+    tasks = configured_tasks(config, "stage3")
+    assert len(tasks) == 21 and len(tasks) * len(config.stage3.folds) == 105
+    assert config.seed == 1000
+    assert config.training == {
+        "optimizer": "adam", "learning_rate": 1.0e-3,
+        "betas": [0.9, 0.999], "eps": 1.0e-8, "weight_decay": 0.0,
+        "scheduler": "constant", "batch_size": 64, "max_epochs": 20,
+        "loss": "train_population_zscore_mse",
+        "condition_transform": "train_only_population_zscore",
+        "model_selection": "final_training_state",
+        "validation_policy": "reporting_only_each_epoch",
+        "checkpoint_policy": "nonresumable_final_state_only",
+        "device": "cuda", "precision": "fp32", "tf32": False,
+        "ensemble_size": 1,
+    }
+    assert resolve_aifc_architecture(
+        config, "experiment/thermal_decomposition_temperature"
+    )["hidden_dim"] == 208
+    assert resolve_aifc_architecture(config, "experiment/density")["source"] == "fallback"
+    assert config.model["fragment_commit"] == FRAGMENT_COMMIT
+    assert config.model["fragment_blob"] == FRAGMENT_BLOB
+    assert config.model["fragment_sha256"] == FRAGMENT_SHA256
+
+
+def test_aifc_fragmentation_unknown_and_legacy_dgl_parity() -> None:
+    fragment_path = Path("benchmarks/aifc/assets/My_fragments.csv")
+    scheme = AIFCFragmentScheme.load(fragment_path)
+    assert len(scheme.names) == len(set(scheme.names)) == 100
+    assert set(scheme.priorities) == {1, 2, 3, 4, 5}
+    unknown = smiles_to_aifc_graph("[Na+]", scheme)
+    assert unknown.unknown_atoms == 1
+    assert unknown.fragment_names == ("unknown",)
+    assert not unknown.motif_nodes.any()
+    parity = validate_legacy_parity(
+        "benchmarks/aifc/assets/legacy_reference.json", fragment_path
+    )
+    assert max(parity["max_abs_errors"].values()) <= parity["threshold"]
+
+
+@pytest.mark.parametrize(
+    ("slots", "components", "roles"),
+    (
+        (("cation", "anion"), ("[Na+]", "[Cl-]"), ("ionic_liquid",)),
+        (("cation", "anion", "solute"), ("[Na+]", "[Cl-]", "CCO"), ("cation", "anion", "solute")),
+        (("solute", "solvent"), ("CCO", "O"), ("solute", "solvent")),
+    ),
+)
+def test_aifc_registry_views_use_shared_encoder_order(
+    tmp_path: Path, slots, components, roles,
+) -> None:
+    views, names = aifc_model_views(_aifc_task(tmp_path, slots=slots), components)
+    assert names == roles
+    assert len(views) == len(roles)
+    if slots == ("cation", "anion"):
+        assert "." in views[0]
+
+
+def test_aifc_train_only_conditions_and_shared_encoder_gradient() -> None:
+    stats = AIFCConditionStats.fit(
+        ("temperature_K", "pressure_kPa", "frequency_MHz"),
+        np.asarray([[280.0, 101.325, 10.0], [320.0, 101.325, 30.0]]),
+    )
+    assert stats.mean == pytest.approx((300.0, 101.325, 20.0))
+    assert stats.constant == (False, True, False)
+    assert stats.normalize(np.asarray([[300.0, 101.325, 20.0]])).tolist() == [[0.0, 0.0, 0.0]]
+
+    scheme = AIFCFragmentScheme.load("benchmarks/aifc/assets/My_fragments.csv")
+    graph = batch_aifc_graphs(
+        [smiles_to_aifc_graph(value, scheme) for value in ("CCO", "O", "CCN", "CO")]
+    )
+    model = AIFCRegressor(
+        fragment_dim=100, hidden_dim=16, num_heads=1, dropout=0,
+        depth=2, layers=2, view_count=2, condition_dim=3,
+    )
+    calls = []
+    predictor_inputs = []
+    hook = model.encoder.register_forward_hook(lambda *_: calls.append(1))
+    predictor_hook = model.predictor.register_forward_pre_hook(
+        lambda _module, inputs: predictor_inputs.append(inputs[0].detach())
+    )
+    prediction = model(graph, torch.tensor([[-1.0, 0.0, 1.0], [1.0, -1.0, 0.0]]))
+    torch.nn.functional.mse_loss(prediction, torch.tensor([0.0, 1.0])).backward()
+    hook.remove()
+    predictor_hook.remove()
+    assert calls == [1]
+    assert predictor_inputs[0][:, -3:].tolist() == [[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]]
+    assert model.encoder.fragment_node_embedding[0].weight.grad is not None
+    assert model.encoder.fragment_heads[0].atom.layers[0].node_embedding[0].weight.grad is not None
+    assert model.encoder.junction_heads[0].atom.layers[0].node_embedding[0].weight.grad is not None
+    assert model.predictor[1].weight.grad is not None

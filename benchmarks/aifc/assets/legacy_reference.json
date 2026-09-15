@@ -1,0 +1,38 @@
+{
+  "format_version": 1,
+  "upstream_repository": "2022kaikaili/ILs-AIFC",
+  "upstream_revision": "569bc338a1dbe8aad9770a5562e27e23f9ab3cdb",
+  "fragment_sha256": "ccc5cfefe87ebf3e1d98762eb1c58170bc00c9f7cfd12b6c9ce23fa957ccdf95",
+  "reference_environment": {
+    "python": "3.10.14",
+    "torch": "1.13.1+cpu",
+    "dgl": "1.1.2",
+    "rdkit": "2023.09.6",
+    "device": "cpu"
+  },
+  "model": {
+    "hidden_dim": 8,
+    "num_heads": 1,
+    "dropout": 0.0,
+    "depth": 2,
+    "layers": 2,
+    "view_count": 1,
+    "condition_dim": 0
+  },
+  "parameter_fill": "sha256_name_offset_arange_mod23_v1",
+  "smiles": "CC[n+]1ccccc1.[Cl-]",
+  "fragments": ["Py_pattern", "CH3_pattern", "CH2_pattern", "Cl_pattern"],
+  "prediction": -0.033569853752851486,
+  "representation": [
+    0.0270836278796196,
+    0.03165091946721077,
+    0.03919244557619095,
+    0.0438053235411644,
+    0.049461741000413895,
+    0.0559878945350647,
+    0.06060730293393135,
+    0.0
+  ],
+  "attention": [0.25, 0.25, 0.25, 0.2500000298023224],
+  "legacy_modern_max_abs_error": 0.0
+}

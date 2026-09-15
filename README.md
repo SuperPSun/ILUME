@@ -238,18 +238,18 @@ Stage2/Stage3 resume 分别在上述 train 命令追加 `--resume <checkpoint>` 
 
 ## Baselines and Ablations
 
-MLP、ECFP4-XGBoost、Chemprop D-MPNN、MoLFormer、ILBERT、SPMM、LlaSMol、AIonopedia 与 ILTransR 位于 `benchmarks/`；
+MLP、ECFP4-XGBoost、Chemprop D-MPNN、MoLFormer、ILBERT、SPMM、LlaSMol、AIonopedia、ILTransR 与 AIFC 位于 `benchmarks/`；
 Stage3 Single-task MLP 内部消融位于 `ablations/`。二者均与 Stage 代码隔离，并继续
-复用 benchmark 运行与 reporting 入口；旧七模型合同见 [ADR-0045](docs/adr/0045-fixed-budget-baseline-training.md) 及其引用，AIonopedia 合同见 [ADR-0049](docs/adr/0049-aionopedia-multimodal-baseline.md)，ILTransR 合同见 [ADR-0057](docs/adr/0057-iltransr-stage3-baseline.md)。
+复用 benchmark 运行与 reporting 入口；旧七模型合同见 [ADR-0045](docs/adr/0045-fixed-budget-baseline-training.md) 及其引用，AIonopedia 合同见 [ADR-0049](docs/adr/0049-aionopedia-multimodal-baseline.md)，ILTransR 合同见 [ADR-0057](docs/adr/0057-iltransr-stage3-baseline.md)，AIFC 合同见 [ADR-0060](docs/adr/0060-aifc-stage3-baseline.md)。
 
 七个论文 baseline 均固定跑满 YAML 预算并保存最终训练状态；每轮 validation 只写入 history，
 不参与 early stopping、checkpoint selection、scheduler 或其他训练决策。checkpoint format 为
 version 2，与旧 validation-selected artifact 不兼容。新正式结果统一写入
-旧七模型的 `outputs/benchmarks/fixed-budget-v1/<model>/`；AIonopedia 与 ILTransR 使用各自
+旧七模型的 `outputs/benchmarks/fixed-budget-v1/<model>/`；AIonopedia、ILTransR 与 AIFC 使用各自
 `outputs/benchmarks/model-native-v1/<model>/`。旧输出保持只读且不得混入同一汇总。
 各 baseline 分别冻结自己的预算：MLP、D-MPNN、MoLFormer、ILBERT 与 SPMM 保持
 50 epochs，LlaSMol 与 AIonopedia 训练 10 epochs，ECFP4-XGBoost 固定 1000 trees；
-ILTransR 按同性质官方 notebook 或登记 fallback 分 task 使用 150/160 epochs，不再假定神经
+ILTransR 按同性质官方 notebook 或登记 fallback 分 task 使用 150/160 epochs；AIFC 固定 20 epochs，不再假定神经
 baseline 共享统一 epoch 数。
 
 ```bash
@@ -306,7 +306,7 @@ python scripts/benchmarks/sweep.py \
   --max-workers 1
 ```
 
-`--max-workers 1` 保持串行行为。MLP、D-MPNN、MoLFormer、ILBERT、SPMM、LlaSMol、AIonopedia 与 ILTransR 多 GPU sweep 可通过 `--devices cuda:0,cuda:1,...` 分配逻辑 job；XGBoost 的 CPU 并行度由 YAML 中的 `training.n_jobs` 控制。每个 baseline 正式 sweep 均为 21 tasks × 5 folds，即 105 个单 seed 训练任务；上述命令不会 resume，失败任务由 sweep 在新 attempt 中完整重跑。
+`--max-workers 1` 保持串行行为。MLP、D-MPNN、MoLFormer、ILBERT、SPMM、LlaSMol、AIonopedia、ILTransR 与 AIFC 多 GPU sweep 可通过 `--devices cuda:0,cuda:1,...` 分配逻辑 job；XGBoost 的 CPU 并行度由 YAML 中的 `training.n_jobs` 控制。每个 baseline 正式 sweep 均为 21 tasks × 5 folds，即 105 个单 seed 训练任务；上述命令不会 resume，失败任务由 sweep 在新 attempt 中完整重跑。
 
 MoLFormer同样使用独立hash-lock环境。先显式安装环境并下载固定HF snapshot；正式launcher只使用本地cache，不会自动联网或切换revision。
 
@@ -645,6 +645,48 @@ population z-score，这是显式 transductive feature scaling；target 仍只�
 normalized L1 训练后恢复 raw units。七个有同性质官方 notebook 的 task 使用其 epochs/batch/dropout，
 其余任务使用登记的 150-epoch fallback；validation 只报告并始终发布 final epoch state。完整合同见
 [ADR-0057](docs/adr/0057-iltransr-stage3-baseline.md)。
+
+AIFC 使用作者公开的 fragment-level GNN、motif/junction graph 与 attention aggregation，fragment
+dictionary 已作为小型公开资产提交并固定到历史官方 blob，因此不需要下载模型权重。正式运行使用
+PyTorch `2.9.0+cu128` FP32；环境创建与 validator 命令如下：
+
+```bash
+conda env create -f benchmarks/aifc/environment.yml
+conda run --no-capture-output -n ilume-aifc \
+  python -m pip install --require-hashes \
+  -r benchmarks/aifc/requirements-linux-x86_64-cu128.lock
+
+PYTHONPATH=src:. ILUME_BENCHMARK_ENVIRONMENT=ilume-aifc \
+conda run --no-capture-output -n ilume-aifc \
+  python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_aifc_environment; print(validate_aifc_environment(load_benchmark_config("configs/benchmarks/aifc.yaml"))["pretrained_snapshot"])'
+```
+
+普通 IL 生成一个 canonical `cation.anion` graph；solvation/transfer 分别编码 cation、anion、solute，
+transfer_organic 分别编码 solute、solvent。所有 component 共用唯一 AIFC encoder，并按 registry slot
+order concat；conditions 随后按 authoritative 顺序 concat，并与 representation 一起经过作者原有
+ReLU。Target 和所有 conditions 都只用当前
+fold train rows 做 population z-score。训练固定 seed 1000、batch 64、Adam `1e-3`、MSE、constant
+LR 和 20 epochs，只发布 epoch 20 final state。
+
+单任务和正式 sweep 命令如下；每个 job 使用一张 GPU，不支持 resume：
+
+```bash
+python scripts/benchmarks/train.py \
+  --config configs/benchmarks/aifc.yaml \
+  --benchmark stage3 --task experiment/density --fold 1 \
+  --output outputs/benchmarks/model-native-v1/aifc/stage3/experiment__density/fold1/attempt-001
+
+python scripts/benchmarks/sweep.py \
+  --config configs/benchmarks/aifc.yaml \
+  --output outputs/benchmarks/model-native-v1/aifc \
+  --max-workers 4 \
+  --devices cuda:0,cuda:1,cuda:2,cuda:3
+```
+
+固定 DGL CPU golden reference 验证 prediction、representation 和 attention；当前 21-task 数据
+审计的 11,282 个唯一 view 全部 fragmentation 成功。251,297 个原子中 5,618 个进入作者定义的
+unknown motif（2.236%），不会删除样本。完整科学与审计边界见
+[ADR-0060](docs/adr/0060-aifc-stage3-baseline.md)。
 
 ## 输出与结果汇总
 

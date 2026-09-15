@@ -150,6 +150,10 @@ def prepare_training(
         from benchmarks.iltransr.adapter import prepare_iltransr_training
 
         return prepare_iltransr_training(config, benchmark, task_id, fold)  # type: ignore[return-value]
+    if config.name == "aifc":
+        from benchmarks.aifc.adapter import prepare_aifc_training
+
+        return prepare_aifc_training(config, benchmark, task_id, fold)  # type: ignore[return-value]
     task = resolve_task(config, benchmark, task_id, fold)
     train = load_split(task, "train")
     valid = load_split(task, "valid")
@@ -490,6 +494,12 @@ def train_bundle(
         return train_iltransr_bundle(  # type: ignore[arg-type]
             config, bundle, output_dir, reporter=reporter
         )
+    if config.name == "aifc":
+        from benchmarks.aifc.adapter import train_aifc_bundle
+
+        return train_aifc_bundle(  # type: ignore[arg-type]
+            config, bundle, output_dir, reporter=reporter
+        )
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
     if config.name == "mlp":
@@ -633,6 +643,12 @@ def evaluate_checkpoint(
         from benchmarks.iltransr.adapter import evaluate_iltransr_checkpoint
 
         return evaluate_iltransr_checkpoint(
+            config, benchmark, task_id, fold, checkpoint_dir, split
+        )
+    if config.name == "aifc":
+        from benchmarks.aifc.adapter import evaluate_aifc_checkpoint
+
+        return evaluate_aifc_checkpoint(
             config, benchmark, task_id, fold, checkpoint_dir, split
         )
     if split not in {"valid", "test"}:

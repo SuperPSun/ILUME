@@ -1,0 +1,69 @@
+name: aifc
+display_name: AIFC
+seed: 1000
+environment:
+  name: ilume-aifc
+  definition: benchmarks/aifc/environment.yml
+  lock: benchmarks/aifc/requirements-linux-x86_64-cu128.lock
+data:
+  data_root: data
+  task_catalog: data/task_catalog.csv
+  stage3_authority_config: configs/v2/stage3/splits/system.yaml
+model:
+  repository: 2022kaikaili/ILs-AIFC
+  revision: 569bc338a1dbe8aad9770a5562e27e23f9ab3cdb
+  fragment_scheme: benchmarks/aifc/assets/My_fragments.csv
+  fragment_commit: 23973da709212d1e13fd4b8e0968c8109f78fa75
+  fragment_blob: 90d8bafc2eb07835854e183df48a637d97b8c09b
+  fragment_sha256: ccc5cfefe87ebf3e1d98762eb1c58170bc00c9f7cfd12b6c9ce23fa957ccdf95
+  graph_backend: pytorch_equivalent_of_dgl_1.1.2
+  legacy_parity: fixed_graph_fp32_dgl_cpu
+  legacy_reference: benchmarks/aifc/assets/legacy_reference.json
+  legacy_reference_sha256: eeb90aa5c3a5d2a19ea144d2203e5d4fd4368dc2cb3e31be69f637549c5f2691
+  shared_encoder: true
+  fusion: registry_slot_ordered_concat
+  condition_fusion: registry_ordered_scalar_concat
+  fallback_architecture: &fallback
+    hidden_dim: 128
+    num_heads: 1
+    dropout: 0.0
+    depth: 3
+    layers: 3
+    residual: false
+    batch_norm: false
+    layer_norm: false
+  property_architectures:
+    experiment/viscosity: *fallback
+    experiment/thermal_decomposition_temperature:
+      hidden_dim: 208
+      num_heads: 1
+      dropout: 0.598
+      depth: 3
+      layers: 3
+      residual: false
+      batch_norm: false
+      layer_norm: false
+training:
+  optimizer: adam
+  learning_rate: 1.0e-3
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+  weight_decay: 0.0
+  scheduler: constant
+  batch_size: 64
+  max_epochs: 20
+  loss: train_population_zscore_mse
+  condition_transform: train_only_population_zscore
+  model_selection: final_training_state
+  validation_policy: reporting_only_each_epoch
+  checkpoint_policy: nonresumable_final_state_only
+  device: cuda
+  precision: fp32
+  tf32: false
+  ensemble_size: 1
+runtime:
+  num_workers: 0
+stage3:
+  enabled: true
+  tasks: all
+  folds: [1, 2, 3, 4, 5]
