@@ -355,10 +355,14 @@ def main() -> None:
         if [_checkpoint_fingerprint(path) for path in checkpoints] != checkpoint_fingerprints:
             raise ValueError("Benchmark checkpoint changed during evaluation")
         first = results[0]
-        if input_audit is not None and any(
+        # Fold-local scalers and preprocessing audits are expected to differ in
+        # ensemble evaluation: each checkpoint was trained with its own fold
+        # train rows. A single-fold evaluation can still enforce exact audit
+        # stability during the evaluation call.
+        if input_audit is not None and not args.ensemble_folds and any(
             result.input_audit != input_audit for result in results
         ):
-            raise ValueError("Token-baseline evaluation input audit changed during evaluation")
+            raise ValueError("Benchmark evaluation input audit changed during evaluation")
         if args.ensemble_folds:
             prediction, ensemble_metrics = ensemble_evaluation(results, tuple(first.metrics))
             summary: dict[str, Any] = {
