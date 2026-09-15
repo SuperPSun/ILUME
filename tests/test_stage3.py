@@ -28,6 +28,7 @@ from stage3.config import (
     Stage3Config,
     Stage3DataConfig,
     Stage3GlobalBudgetConfig,
+    Stage3GateCalibrationConfig,
     Stage3GroupConfig,
     Stage3InitializationConfig,
     Stage3ModelConfig,
@@ -56,6 +57,7 @@ from stage3.data import (
     resolve_batch_allocation,
     resolve_raw_batch_allocation,
     resolve_task_registry,
+    sanitize_task,
     shuffled_epoch_indices,
     source_path,
 )
@@ -101,6 +103,13 @@ from stage3.identity import (
     build_stage3_evaluation_identity,
     build_stage3_training_identity,
     metadata_identity,
+)
+from stage3.gate_calibration import (
+    GATE_CALIBRATED_KIND,
+    gate_kl_divergence,
+    gate_state_hash,
+    run_gate_calibration,
+    stitch_gate_deltas,
 )
 from stage3.three_phase import (
     _OwnerScheduler,
@@ -382,6 +391,8 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
     assert effective_training_seed(config) == config.data.seed
     assert config.model.dropout == 0.10
     assert config.model.expert_hidden_ratio == 2.0
+    assert config.gate_calibration == Stage3GateCalibrationConfig()
+    assert "gate_calibration" not in config.to_dict()
     assert config.representation is None
     assert "representation" not in config.to_dict()
     assert checkpoint_epochs(100, 10) == tuple(range(10, 101, 10))
@@ -421,9 +432,14 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
         "configs/ablations/no_stage1_rdkit_stage3.yaml",
     ):
         active = load_stage3_config(path)
+        assert active.gate_calibration == Stage3GateCalibrationConfig(
+            enabled=True, epochs=3, lr_scale=0.25
+        )
         assert active.groups == v2.groups
         assert active.tasks == v2.tasks
         assert active.training.three_phase == v2.training.three_phase
+
+    assert v2.gate_calibration.enabled is True
 
 
 def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
@@ -770,6 +786,10 @@ def test_task_gate_diagnostics_partition_entropy_and_pooled_quantiles() -> None:
     assert pooled["private_gate_weight_p50"] == pytest.approx(1 / 3)
     assert pooled["private_gate_weight_p90"] == pytest.approx(0.5)
 
+    assert gate_kl_divergence(task_gate, task_gate) == pytest.approx(0.0)
+    shifted = task_gate.roll(1, dims=1)
+    assert gate_kl_divergence(task_gate, shifted) > 0.0
+
 
 @pytest.mark.parametrize("group_count", (1, 3))
 def test_routing_ablation_weights_follow_owner_contract(group_count: int) -> None:
@@ -887,6 +907,17 @@ def test_model_routing_ablation_preserves_learned_prediction_and_candidates(
         default.predictions, model.towers["experiment__a"](old_mixture)
     )
 
+    ownership_before = model.ownership_manifest()
+    model.set_task_gate_calibration_mode("experiment/a")
+    trainable = {
+        name for name, parameter in model.named_parameters() if parameter.requires_grad
+    }
+    assert trainable == {
+        "task_gates.experiment__a.weight",
+        "task_gates.experiment__a.bias",
+    }
+    assert model.ownership_manifest() == ownership_before
+
     forced = model("experiment/a", primary, conditions, routing_mode="no_private")
     assert torch.equal(
         forced.diagnostics["learned_gate_predictions"], default.predictions
@@ -977,6 +1008,24 @@ def test_three_phase_private_dropout_override_is_bounded(value: object) -> None:
         "private_dropout": value
     }
     with pytest.raises(ValueError, match="private_dropout must be in"):
+        stage3_config_from_dict(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("enabled", "true", "enabled must be boolean"),
+        ("epochs", -1, "epochs must be a non-negative integer"),
+        ("epochs", True, "epochs must be a non-negative integer"),
+        ("lr_scale", 0.0, "lr_scale must be positive"),
+    ),
+)
+def test_gate_calibration_config_is_strict(
+    field: str, value: object, message: str
+) -> None:
+    payload = load_stage3_config("configs/v2/stage3/base.yaml").to_dict()
+    payload["gate_calibration"][field] = value
+    with pytest.raises(ValueError, match=message):
         stage3_config_from_dict(payload)
 
 
@@ -1195,6 +1244,134 @@ def test_three_phase_training_publishes_fixed_final_state(
         "mean_group_gate_weight"
     ] + gate["mean_private_gate_weight"] == pytest.approx(1.0)
     assert 0.0 <= gate["task_gate_entropy"] <= 1.0
+
+    calibrated_config = replace(
+        config,
+        gate_calibration=Stage3GateCalibrationConfig(
+            enabled=True, epochs=1, lr_scale=0.25
+        ),
+    )
+    assert resolve_stage3_training_identity(calibrated_config, 1) == (
+        resolve_stage3_training_identity(config, 1)
+    )
+    calibration_output = output.parent / "gate-calibration"
+    calibration_manifest = run_gate_calibration(
+        calibrated_config,
+        1,
+        checkpoint_dir=output,
+        output_dir=calibration_output,
+    )
+    calibrated_artifact = torch.load(
+        calibration_output / "gate_calibrated.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    assert calibrated_artifact["kind"] == GATE_CALIBRATED_KIND
+    assert calibrated_artifact["base_model_state_hash"] == artifact[
+        "model_state_hash"
+    ]
+    assert calibration_manifest["artifact_sha256"] == sha256_file(
+        calibration_output / "gate_calibrated.pt"
+    )
+    calibration_plan = json.loads(
+        (calibration_output / "resolved_calibration_plan.json").read_text()
+    )
+    task_plan = calibration_plan["tasks"]["experiment/a"]
+    assert task_plan["lr"] == pytest.approx(
+        task_plan["phase3_private_lr"] * 0.25
+    )
+    assert task_plan["actual_update_budget"] == task_plan["updates_per_epoch"]
+    task_checkpoint = torch.load(
+        calibration_output
+        / "tasks/experiment__a/checkpoint_epoch_00001.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    assert task_checkpoint["updates"] == task_plan["actual_update_budget"]
+    assert all(
+        group["lr"] == pytest.approx(task_plan["lr"])
+        for group in task_checkpoint["optimizer"]["param_groups"]
+    )
+    assert all(
+        torch.equal(value, calibrated_artifact["model"][name])
+        for name, value in artifact["model"].items()
+        if not name.startswith("task_gates.")
+    )
+    assert all(
+        (
+            calibration_output
+            / "tasks"
+            / sanitize_task(task)
+            / "checkpoint_epoch_00001.pt"
+        ).is_file()
+        for task in config.tasks
+    )
+    resumed_calibration = run_gate_calibration(
+        calibrated_config,
+        1,
+        checkpoint_dir=output,
+        output_dir=calibration_output,
+        resume=True,
+    )
+    assert resumed_calibration["artifact_sha256"] == calibration_manifest[
+        "artifact_sha256"
+    ]
+    assert resumed_calibration["model_state_hash"] == calibration_manifest[
+        "model_state_hash"
+    ]
+    paired = evaluate_checkpoints(
+        calibrated_config,
+        output,
+        split="valid",
+        ensemble_folds=False,
+        task_subset=("experiment/a",),
+        fold=1,
+        gate_calibration_dir=calibration_output,
+    )
+    assert paired["model_selector"] == "gate_calibrated"
+    comparison = paired["gate_calibration_comparison"]["experiment/a"]
+    assert comparison["task"] == "experiment/a"
+    assert comparison["split"] == "valid"
+    assert comparison["fold"] == 1
+    assert comparison["pre_post_gate_kl"] >= 0.0
+    assert comparison["gate_parameter_delta_norm"] >= 0.0
+    with pytest.raises(ValueError, match="forbids forced routing"):
+        evaluate_checkpoints(
+            calibrated_config,
+            output,
+            split="valid",
+            ensemble_folds=False,
+            task_subset=("experiment/a",),
+            fold=1,
+            routing_mode="no_private",
+            gate_calibration_dir=calibration_output,
+        )
+
+    zero_config = replace(
+        config,
+        gate_calibration=Stage3GateCalibrationConfig(
+            enabled=True, epochs=0, lr_scale=0.25
+        ),
+    )
+    zero_output = output.parent / "gate-calibration-zero"
+    run_gate_calibration(
+        zero_config,
+        1,
+        checkpoint_dir=output,
+        output_dir=zero_output,
+    )
+    zero_artifact = torch.load(
+        zero_output / "gate_calibrated.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    assert zero_artifact["model_state_hash"] == artifact["model_state_hash"]
+    assert all(
+        torch.equal(value, zero_artifact["model"][name])
+        for name, value in artifact["model"].items()
+    )
+    assert not (zero_output / "tasks").exists()
+
     forced = evaluate_checkpoints(
         config,
         output,
@@ -1346,6 +1523,47 @@ def test_three_phase_test_reports_fold_and_pooled_gate_diagnostics(
         forced_rows = list(csv.DictReader(handle))
     assert set(forced_rows[0]) == set(rows[0])
 
+    calibrated_config = replace(
+        config,
+        gate_calibration=Stage3GateCalibrationConfig(
+            enabled=True, epochs=1, lr_scale=0.25
+        ),
+    )
+    calibration_root = output / "gate-calibration"
+    for fold in range(1, 6):
+        run_gate_calibration(
+            calibrated_config,
+            fold,
+            checkpoint_dir=output,
+            output_dir=calibration_root / f"fold{fold}",
+        )
+    calibrated_predictions = output / "evaluation-predictions-calibrated"
+    calibrated = evaluate_checkpoints(
+        calibrated_config,
+        output,
+        split="test",
+        ensemble_folds=True,
+        task_subset=("experiment/a",),
+        predictions_dir=calibrated_predictions,
+        gate_calibration_dir=calibration_root,
+    )
+    assert calibrated["model_selector"] == "gate_calibrated"
+    assert calibrated["base_model_selector"] == "three_phase_final"
+    for fold_result in calibrated["folds"].values():
+        comparison = fold_result["gate_calibration_comparison"]["experiment/a"]
+        assert comparison["split"] == "test"
+        assert comparison["pre_post_gate_kl"] >= 0.0
+    aggregate_comparison = calibrated["ensemble"][
+        "gate_calibration_comparison"
+    ]["experiment/a"]
+    assert aggregate_comparison["fold"] == "ensemble"
+    assert aggregate_comparison["gate_parameter_delta_norm"] is None
+    with (calibrated_predictions / "experiment__a.csv").open(
+        newline="", encoding="utf-8"
+    ) as handle:
+        calibrated_rows = list(csv.DictReader(handle))
+    assert set(calibrated_rows[0]) == set(rows[0])
+
 
 def test_three_phase_optimizer_groups_follow_ownership(
     tiny_prepared: Stage3Config,
@@ -1458,6 +1676,54 @@ def test_three_phase_owner_delta_stitch_is_order_independent(
     )
     assert set(forward) == set(reverse)
     assert all(torch.equal(forward[name], reverse[name]) for name in forward)
+
+
+def test_gate_delta_stitch_is_order_independent_and_gate_only(
+    tiny_prepared: Stage3Config,
+) -> None:
+    config = _tiny_three_phase(tiny_prepared)
+    registry = resolve_task_registry(config)
+    first = Stage3SparseModel(
+        config.model, registry, 4,
+        group_configs=config.groups, task_configs=config.tasks,
+    )
+    second = Stage3SparseModel(
+        config.model, registry, 4,
+        group_configs=config.groups, task_configs=config.tasks,
+    )
+    second.load_state_dict(first.state_dict())
+    anchor = _three_phase_model_state(first)
+    deltas = {}
+    for index, task in enumerate(("experiment/a", "experiment/c"), start=1):
+        prefix = f"task_gates.{sanitize_task(task)}."
+        state = {
+            name: value + index / 100
+            for name, value in anchor.items()
+            if name.startswith(prefix)
+        }
+        deltas[task] = (state, gate_state_hash(state))
+
+    forward = stitch_gate_deltas(first, anchor, deltas)
+    reverse = stitch_gate_deltas(
+        second, anchor, dict(reversed(list(deltas.items())))
+    )
+    assert all(torch.equal(forward[name], reverse[name]) for name in anchor)
+    changed = {
+        name for name in anchor if not torch.equal(anchor[name], forward[name])
+    }
+    assert changed
+    assert all(name.startswith("task_gates.") for name in changed)
+    task, (state, _) = next(iter(deltas.items()))
+    with pytest.raises(ValueError, match="hash mismatch"):
+        stitch_gate_deltas(first, anchor, {task: (state, "corrupt")})
+    foreign_name = next(name for name in anchor if not name.startswith("task_gates."))
+    unauthorized = {**state, foreign_name: anchor[foreign_name]}
+    with pytest.raises(ValueError, match="wrong parameters"):
+        stitch_gate_deltas(
+            first,
+            anchor,
+            {task: (unauthorized, gate_state_hash(unauthorized))},
+        )
 
 
 def test_training_seed_changes_training_identity_not_prepared_artifact(

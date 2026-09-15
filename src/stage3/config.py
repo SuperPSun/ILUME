@@ -221,6 +221,13 @@ class Stage3ThreePhaseConfig:
 
 
 @dataclass(frozen=True)
+class Stage3GateCalibrationConfig:
+    enabled: bool = False
+    epochs: int = 3
+    lr_scale: float = 0.25
+
+
+@dataclass(frozen=True)
 class Stage3TrainingConfig:
     seed: int | None = None
     composite_batch_size: int = 2048
@@ -263,6 +270,9 @@ class Stage3Config:
     groups: dict[str, Stage3GroupConfig] = field(default_factory=_base_groups)
     tasks: dict[str, Stage3TaskConfig] = field(default_factory=_base_task_registry)
     training: Stage3TrainingConfig = field(default_factory=Stage3TrainingConfig)
+    gate_calibration: Stage3GateCalibrationConfig = field(
+        default_factory=Stage3GateCalibrationConfig
+    )
 
     def resolved_private_recipe(
         self, task_id: str
@@ -619,6 +629,23 @@ class Stage3Config:
                 )
         elif training.active_tasks not in {"auto", "auto_new"}:
             raise ValueError("training.active_tasks must be auto, auto_new, or a list")
+        calibration = self.gate_calibration
+        if not isinstance(calibration.enabled, bool):
+            raise ValueError("gate_calibration.enabled must be boolean")
+        if (
+            isinstance(calibration.epochs, bool)
+            or not isinstance(calibration.epochs, int)
+            or calibration.epochs < 0
+        ):
+            raise ValueError("gate_calibration.epochs must be a non-negative integer")
+        if (
+            isinstance(calibration.lr_scale, bool)
+            or not isinstance(calibration.lr_scale, (int, float))
+            or calibration.lr_scale <= 0
+        ):
+            raise ValueError("gate_calibration.lr_scale must be positive")
+        if calibration.enabled and training.schedule_mode != "three_phase":
+            raise ValueError("Gate calibration requires three-phase Stage 3 training")
         plugin = self.initialization.plugin
         if plugin is not None:
             if not plugin.load_scopes:
@@ -643,6 +670,8 @@ class Stage3Config:
             return value
 
         payload = convert(asdict(self))
+        if not self.gate_calibration.enabled:
+            payload.pop("gate_calibration")
         if self.representation is None:
             payload.pop("representation")
         plugin = payload["initialization"].get("plugin")
@@ -697,7 +726,7 @@ def _construct_dataclass(cls: type, raw: dict[str, Any] | None) -> Any:
 def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
     allowed = {
         "data", "preparation", "initialization", "representation", "model",
-        "groups", "tasks", "training"
+        "groups", "tasks", "training", "gate_calibration",
     }
     unknown = set(raw) - allowed
     if unknown:
@@ -835,6 +864,10 @@ def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
         groups=groups,
         tasks=tasks,
         training=_construct_dataclass(Stage3TrainingConfig, training_raw),
+        gate_calibration=_construct_dataclass(
+            Stage3GateCalibrationConfig,
+            raw.get("gate_calibration"),
+        ),
     )
     config.validate()
     return config

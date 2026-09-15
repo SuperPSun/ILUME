@@ -10,6 +10,7 @@ data:
 preparation:
   encoding_batch_size: 256
   cache_dir: outputs/ablations/stage1_stage2_rdkit_home/cache/rdkit_2d
+gate_calibration: {enabled: true, epochs: 3, lr_scale: 0.25}
 initialization:
   stage2_encoder: null
   plugin: null

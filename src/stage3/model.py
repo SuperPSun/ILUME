@@ -638,6 +638,20 @@ class Stage3SparseModel(nn.Module):
             if candidate == owner
         )
 
+    def task_gate_parameters(self, task_id: str) -> tuple[nn.Parameter, ...]:
+        if task_id not in self.task_specs or not self.task_specs[task_id].enabled:
+            raise KeyError(f"Unknown Stage 3 task gate: {task_id}")
+        return tuple(self.task_gates[sanitize_task(task_id)].parameters())
+
+    def set_task_gate_calibration_mode(self, task_id: str) -> None:
+        parameters = self.task_gate_parameters(task_id)
+        self.eval()
+        for parameter in self.parameters():
+            parameter.requires_grad_(False)
+        for parameter in parameters:
+            parameter.requires_grad_(True)
+        self.task_gates[sanitize_task(task_id)].train()
+
     def set_trainable_owners(self, owners: Iterable[Ownership]) -> None:
         selected = set(owners)
         unknown = selected - set(self._modules_by_owner)

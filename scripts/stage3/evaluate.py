@@ -24,7 +24,13 @@ ResolveIdentity = Callable[..., dict[str, Any]]
 EvaluateCheckpoints = Callable[..., dict[str, Any]]
 
 
-def _model_selector(config: Stage3Config, checkpoint_epoch: int | None) -> str:
+def _model_selector(
+    config: Stage3Config,
+    checkpoint_epoch: int | None,
+    gate_calibrated: bool = False,
+) -> str:
+    if gate_calibrated:
+        return "gate_calibrated"
     if checkpoint_epoch is not None:
         return "epoch_checkpoint"
     return (
@@ -38,6 +44,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Evaluate Stage 3 checkpoints.")
     parser.add_argument("--config", required=True)
     parser.add_argument("--checkpoint-dir", required=True)
+    parser.add_argument(
+        "--gate-calibration-dir",
+        help=(
+            "Load gate_calibrated.pt from this root while --checkpoint-dir "
+            "continues to identify the Flat three-phase anchor."
+        ),
+    )
     parser.add_argument("--split", required=True, choices=("valid", "test"))
     parser.add_argument("--ensemble-folds", action="store_true")
     parser.add_argument("--fold", type=int, nargs="+")
@@ -89,18 +102,26 @@ def _run_fold(
     progress: ProgressReporter,
     resolve_identity: ResolveIdentity,
     evaluate_checkpoints: EvaluateCheckpoints,
+    gate_calibration_dir: Path | None = None,
 ) -> None:
-    model_selector = _model_selector(config, checkpoint_epoch)
+    model_selector = _model_selector(
+        config, checkpoint_epoch, gate_calibration_dir is not None
+    )
     with progress.status(f"Resolving Stage 3 fold{fold} evaluation identity"):
-        evaluation_identity = resolve_identity(
-            config,
-            checkpoint_dir,
+        identity_kwargs = dict(
             split="valid",
             ensemble_folds=False,
             checkpoint_epoch=checkpoint_epoch,
             task_subset=tasks,
             fold=fold,
             routing_mode=routing_mode,
+        )
+        if gate_calibration_dir is not None:
+            identity_kwargs["gate_calibration_dir"] = gate_calibration_dir
+        evaluation_identity = resolve_identity(
+            config,
+            checkpoint_dir,
+            **identity_kwargs,
         )
     output = Path(output_root) / f"fold{fold}"
     details = {
@@ -116,6 +137,8 @@ def _run_fold(
     }
     if routing_mode != "learned_gate":
         details["routing_mode"] = routing_mode
+    if gate_calibration_dir is not None:
+        details["gate_calibration_dir"] = repository_relative(gate_calibration_dir)
     run = open_run_directory(
         stage="stage3",
         operation="evaluate",
@@ -127,9 +150,7 @@ def _run_fold(
         details=details,
     )
     try:
-        result = evaluate_checkpoints(
-            config,
-            checkpoint_dir,
+        evaluation_kwargs = dict(
             split="valid",
             ensemble_folds=False,
             checkpoint_epoch=checkpoint_epoch,
@@ -140,6 +161,9 @@ def _run_fold(
             expected_evaluation_identity=evaluation_identity,
             routing_mode=routing_mode,
         )
+        if gate_calibration_dir is not None:
+            evaluation_kwargs["gate_calibration_dir"] = gate_calibration_dir
+        result = evaluate_checkpoints(config, checkpoint_dir, **evaluation_kwargs)
         run.complete(result)
     except BaseException:
         run.fail()
@@ -160,6 +184,7 @@ def _run_validation_schedule(
     progress: ProgressReporter,
     resolve_identity: ResolveIdentity,
     evaluate_checkpoints: EvaluateCheckpoints,
+    gate_calibration_dir: Path | None = None,
 ) -> dict[int, str]:
     results: dict[int, str] = {}
     for fold in folds:
@@ -178,6 +203,7 @@ def _run_validation_schedule(
                 progress=progress,
                 resolve_identity=resolve_identity,
                 evaluate_checkpoints=evaluate_checkpoints,
+                gate_calibration_dir=gate_calibration_dir,
             )
         except Exception as error:
             results[fold] = "failed"
@@ -201,17 +227,30 @@ def _run_test(
     resolve_identity: ResolveIdentity,
     evaluate_checkpoints: EvaluateCheckpoints,
 ) -> None:
-    model_selector = _model_selector(config, args.checkpoint_epoch)
+    requested_calibration_dir = getattr(args, "gate_calibration_dir", None)
+    gate_calibration_dir = (
+        repository_path(requested_calibration_dir)
+        if requested_calibration_dir is not None
+        else None
+    )
+    model_selector = _model_selector(
+        config, args.checkpoint_epoch, gate_calibration_dir is not None
+    )
     with progress.status("Resolving Stage 3 evaluation identity"):
-        evaluation_identity = resolve_identity(
-            config,
-            checkpoint_dir,
+        identity_kwargs = dict(
             split="test",
             ensemble_folds=True,
             checkpoint_epoch=args.checkpoint_epoch,
             task_subset=args.tasks,
             fold=None,
             routing_mode=args.routing_mode,
+        )
+        if gate_calibration_dir is not None:
+            identity_kwargs["gate_calibration_dir"] = gate_calibration_dir
+        evaluation_identity = resolve_identity(
+            config,
+            checkpoint_dir,
+            **identity_kwargs,
         )
     details = {
         "reporting_schema_version": REPORTING_SCHEMA_VERSION,
@@ -226,6 +265,8 @@ def _run_test(
     }
     if args.routing_mode != "learned_gate":
         details["routing_mode"] = args.routing_mode
+    if gate_calibration_dir is not None:
+        details["gate_calibration_dir"] = repository_relative(gate_calibration_dir)
     run = open_run_directory(
         stage="stage3",
         operation="evaluate",
@@ -237,9 +278,7 @@ def _run_test(
         details=details,
     )
     try:
-        result = evaluate_checkpoints(
-            config,
-            checkpoint_dir,
+        evaluation_kwargs = dict(
             split="test",
             ensemble_folds=True,
             checkpoint_epoch=args.checkpoint_epoch,
@@ -250,6 +289,9 @@ def _run_test(
             expected_evaluation_identity=evaluation_identity,
             routing_mode=args.routing_mode,
         )
+        if gate_calibration_dir is not None:
+            evaluation_kwargs["gate_calibration_dir"] = gate_calibration_dir
+        result = evaluate_checkpoints(config, checkpoint_dir, **evaluation_kwargs)
         run.complete(result)
     except BaseException:
         run.fail()
@@ -265,6 +307,10 @@ def main() -> int:
         parser.error(str(error))
 
     config = load_stage3_config(args.config)
+    if args.gate_calibration_dir is not None and args.checkpoint_epoch is not None:
+        parser.error("--gate-calibration-dir forbids --checkpoint-epoch")
+    if args.gate_calibration_dir is not None and args.routing_mode != "learned_gate":
+        parser.error("--gate-calibration-dir forbids forced --routing-mode")
     configure_process_runtime(config)
     from stage3.evaluate import (
         evaluate_checkpoints,
@@ -293,6 +339,7 @@ def main() -> int:
             study_id = resolve_stage3_reporting_study_id(
                 config, checkpoint_epoch=args.checkpoint_epoch,
                 routing_mode=args.routing_mode,
+                gate_calibrated=args.gate_calibration_dir is not None,
             )
     try:
         results = _run_validation_schedule(
@@ -308,6 +355,11 @@ def main() -> int:
             progress=progress,
             resolve_identity=resolve_stage3_evaluation_identity,
             evaluate_checkpoints=evaluate_checkpoints,
+            gate_calibration_dir=(
+                repository_path(args.gate_calibration_dir)
+                if args.gate_calibration_dir is not None
+                else None
+            ),
         )
     except KeyboardInterrupt:
         print("Stage3 validation evaluation interrupted", file=sys.stderr)

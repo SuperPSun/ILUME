@@ -20,6 +20,7 @@ from .data import (
 STAGE3_PREPARED_IDENTITY_CONTRACT_VERSION = 2
 STAGE3_TRAINING_IDENTITY_CONTRACT_VERSION = 1
 STAGE3_EVALUATION_IDENTITY_CONTRACT_VERSION = 1
+STAGE3_GATE_CALIBRATION_IDENTITY_CONTRACT_VERSION = 1
 
 
 def metadata_identity(
@@ -194,6 +195,18 @@ def build_stage3_training_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
     )
 
 
+def build_stage3_gate_calibration_identity(
+    plan: Mapping[str, Any],
+) -> dict[str, Any]:
+    return semantic_identity(
+        "stage3.gate-calibration",
+        {
+            "contract_version": STAGE3_GATE_CALIBRATION_IDENTITY_CONTRACT_VERSION,
+            "plan": dict(plan),
+        },
+    )
+
+
 def build_stage3_evaluation_identity(
     *,
     prepared_identity: Mapping[str, Any],
@@ -235,6 +248,7 @@ def build_stage3_evaluation_identity(
 
 __all__ = [
     "build_stage3_evaluation_identity",
+    "build_stage3_gate_calibration_identity",
     "build_stage3_prepared_identity",
     "build_stage3_rdkit_prepared_identity",
     "build_stage3_training_identity",

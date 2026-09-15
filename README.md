@@ -94,6 +94,36 @@ Stage 3 evaluator 对现役 v2 默认加载每个 fold 的 `three_phase_final.pt
 Capacity v1 仍默认加载 `taskwise_refined.pt`，且只有 legacy 配置支持显式
 `--checkpoint-epoch N`。
 
+Gate-only post-training calibration从既有Flat final开始，不重跑three-phase训练，也不覆盖
+正式baseline：
+
+```bash
+python scripts/stage3/calibrate.py \
+  --config configs/v2/stage3/base.yaml \
+  --checkpoint-dir outputs/v2/stage3/base/train \
+  --fold 1 2 3 4 5 \
+  --output outputs/v2/stage3/base/gate_calibration \
+  --max-parallel 4 \
+  --devices cuda:0,cuda:1,cuda:2,cuda:3
+
+python scripts/stage3/evaluate.py \
+  --config configs/v2/stage3/base.yaml \
+  --checkpoint-dir outputs/v2/stage3/base/train \
+  --gate-calibration-dir outputs/v2/stage3/base/gate_calibration \
+  --split valid --fold 1 2 3 4 5 \
+  --output outputs/v2/stage3/base/gate_calibration_evaluate_valid
+
+python scripts/stage3/evaluate.py \
+  --config configs/v2/stage3/base.yaml \
+  --checkpoint-dir outputs/v2/stage3/base/train \
+  --gate-calibration-dir outputs/v2/stage3/base/gate_calibration \
+  --split test --ensemble-folds \
+  --output outputs/v2/stage3/base/gate_calibration_evaluate_test
+```
+
+paired evaluator同时报告Flat anchor与calibrated模型；prediction CSV只写calibrated预测。
+calibrated评估不能与forced `--routing-mode`叠加，validation/test均不参与参数选择。
+
 现役 three-phase checkpoint 可在不重训的情况下运行 inference-only task-gate routing
 诊断。`--routing-mode` 默认为 `learned_gate`；forced mode 必须使用独立输出目录：
 
