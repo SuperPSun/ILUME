@@ -28,14 +28,6 @@ class Ownership:
 
 GLOBAL = Ownership("GLOBAL")
 
-ROUTING_MODES = (
-    "learned_gate",
-    "no_private",
-    "global_only",
-    "global_floor_025",
-    "global_floor_050",
-)
-
 
 def group_owner(group_id: str) -> Ownership:
     return Ownership("GROUP", group_id)
@@ -246,95 +238,6 @@ def summarize_task_gate_observations(
         "private_gate_weight_p50": float(private_quantiles[1]),
         "private_gate_weight_p90": float(private_quantiles[2]),
     }
-
-
-def apply_routing_ablation(
-    task_gate: torch.Tensor,
-    global_count: int,
-    group_count: int,
-    private_count: int,
-    routing_mode: str,
-) -> torch.Tensor:
-    """Apply an evaluation-only intervention to L2 task-gate weights."""
-    if routing_mode not in ROUTING_MODES:
-        raise ValueError(f"Unsupported Stage 3 routing mode: {routing_mode}")
-    counts = (global_count, group_count, private_count)
-    if (
-        task_gate.ndim != 2
-        or not task_gate.is_floating_point()
-        or any(count < 0 for count in counts)
-    ):
-        raise ValueError("Stage 3 routing candidate counts are invalid")
-    if sum(counts) != task_gate.shape[1] or global_count <= 0:
-        raise ValueError("Stage 3 routing candidate partition mismatch")
-    if not torch.isfinite(task_gate).all() or bool((task_gate < 0).any()):
-        raise ValueError("Stage 3 routing weights must be finite and non-negative")
-    if not torch.allclose(
-        task_gate.sum(dim=1),
-        torch.ones(task_gate.shape[0], device=task_gate.device, dtype=task_gate.dtype),
-        atol=1e-5,
-        rtol=1e-5,
-    ):
-        raise ValueError("Stage 3 routing weights must sum to one")
-    if routing_mode == "learned_gate":
-        return task_gate
-
-    local_count = group_count + private_count
-    if routing_mode == "no_private":
-        kept_count = global_count + group_count
-        if kept_count <= 0:
-            raise ValueError("Stage 3 no_private routing has no candidates")
-        kept = task_gate[:, :kept_count]
-        mass = kept.sum(dim=1, keepdim=True)
-        normalized = kept / mass.clamp_min(torch.finfo(task_gate.dtype).tiny)
-        fallback = torch.full_like(kept, 1.0 / kept_count)
-        return torch.cat(
-            (
-                torch.where(mass > 0, normalized, fallback),
-                torch.zeros_like(task_gate[:, kept_count:]),
-            ),
-            dim=1,
-        )
-    if routing_mode == "global_only":
-        global_weights = task_gate[:, :global_count]
-        mass = global_weights.sum(dim=1, keepdim=True)
-        normalized = global_weights / mass.clamp_min(
-            torch.finfo(task_gate.dtype).tiny
-        )
-        fallback = torch.full_like(global_weights, 1.0 / global_count)
-        return torch.cat(
-            (
-                torch.where(mass > 0, normalized, fallback),
-                torch.zeros_like(task_gate[:, global_count:]),
-            ),
-            dim=1,
-        )
-
-    floor = 0.25 if routing_mode == "global_floor_025" else 0.50
-    if local_count == 0:
-        return task_gate
-    global_weights = task_gate[:, :global_count]
-    local_weights = task_gate[:, global_count:]
-    global_mass = global_weights.sum(dim=1, keepdim=True)
-    local_mass = local_weights.sum(dim=1, keepdim=True)
-    scaled_global = global_weights * (
-        floor / global_mass.clamp_min(torch.finfo(task_gate.dtype).tiny)
-    )
-    scaled_global = torch.where(
-        global_mass > 0,
-        scaled_global,
-        torch.full_like(global_weights, floor / global_count),
-    )
-    scaled_local = local_weights * (
-        (1.0 - floor) / local_mass.clamp_min(torch.finfo(task_gate.dtype).tiny)
-    )
-    scaled_local = torch.where(
-        local_mass > 0,
-        scaled_local,
-        torch.full_like(local_weights, (1.0 - floor) / local_count),
-    )
-    adjusted = torch.cat((scaled_global, scaled_local), dim=1)
-    return torch.where(global_mass < floor, adjusted, task_gate)
 
 
 class Stage3SparseModel(nn.Module):
@@ -638,20 +541,6 @@ class Stage3SparseModel(nn.Module):
             if candidate == owner
         )
 
-    def task_gate_parameters(self, task_id: str) -> tuple[nn.Parameter, ...]:
-        if task_id not in self.task_specs or not self.task_specs[task_id].enabled:
-            raise KeyError(f"Unknown Stage 3 task gate: {task_id}")
-        return tuple(self.task_gates[sanitize_task(task_id)].parameters())
-
-    def set_task_gate_calibration_mode(self, task_id: str) -> None:
-        parameters = self.task_gate_parameters(task_id)
-        self.eval()
-        for parameter in self.parameters():
-            parameter.requires_grad_(False)
-        for parameter in parameters:
-            parameter.requires_grad_(True)
-        self.task_gates[sanitize_task(task_id)].train()
-
     def set_trainable_owners(self, owners: Iterable[Ownership]) -> None:
         selected = set(owners)
         unknown = selected - set(self._modules_by_owner)
@@ -693,10 +582,7 @@ class Stage3SparseModel(nn.Module):
         conditions: torch.Tensor,
         *,
         partner_embedding: torch.Tensor | None = None,
-        routing_mode: str = "learned_gate",
     ) -> Stage3ForwardOutput:
-        if routing_mode != "learned_gate" and self.training:
-            raise ValueError("Stage 3 routing ablations are evaluation-only")
         spec = self.task_specs.get(task_id)
         if spec is None or not spec.enabled:
             raise ValueError(f"Inactive Stage 3 task: {task_id}")
@@ -751,49 +637,26 @@ class Stage3SparseModel(nn.Module):
             self.l2_group_experts[spec.meta_group], local
         )
         private_outputs = _expert_outputs(self.private_experts[key], local)
-        learned_task_gate = torch.softmax(
+        task_gate = torch.softmax(
             self.task_gates[key](torch.cat((z_global, local), dim=-1)), dim=-1
         )
         candidates = torch.cat((global_outputs, group_outputs, private_outputs), dim=1)
-        learned_predictions = None
-        if routing_mode == "learned_gate":
-            task_gate = learned_task_gate
-        else:
-            learned_mixed = (
-                learned_task_gate.unsqueeze(-1) * candidates
-            ).sum(dim=1)
-            learned_representation = (
-                self.task_normalizations[key](local + learned_mixed)
-                if self.model_config.l2_residual
-                else learned_mixed
-            )
-            learned_predictions = self.towers[key](learned_representation)
-            task_gate = apply_routing_ablation(
-                learned_task_gate,
-                global_outputs.shape[1],
-                group_outputs.shape[1],
-                private_outputs.shape[1],
-                routing_mode,
-            )
         mixed = (task_gate.unsqueeze(-1) * candidates).sum(dim=1)
         representation = (
             self.task_normalizations[key](local + mixed)
             if self.model_config.l2_residual
             else mixed
         )
-        diagnostics = {
-            "z_global": z_global,
-            "z_group": z_group_delta,
-            "l1_global_gate": l1_global_weights,
-            "l1_group_gate": l1_group_weights,
-            "task_gate": task_gate,
-            "l2_global_candidates": global_outputs,
-            "l2_group_candidates": group_outputs,
-            "l2_private_candidates": private_outputs,
-        }
-        if learned_predictions is not None:
-            diagnostics["learned_gate_predictions"] = learned_predictions
         return Stage3ForwardOutput(
             predictions=self.towers[key](representation),
-            diagnostics=diagnostics,
+            diagnostics={
+                "z_global": z_global,
+                "z_group": z_group_delta,
+                "l1_global_gate": l1_global_weights,
+                "l1_group_gate": l1_group_weights,
+                "task_gate": task_gate,
+                "l2_global_candidates": global_outputs,
+                "l2_group_candidates": group_outputs,
+                "l2_private_candidates": private_outputs,
+            },
         )

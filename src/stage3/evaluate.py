@@ -31,7 +31,6 @@ from .data import (
     test_path,
 )
 from .model import (
-    ROUTING_MODES,
     Stage3SparseModel,
     summarize_task_gate_observations,
     task_gate_observations,
@@ -79,11 +78,6 @@ def _three_phase_final_path(root: Path, fold: int) -> Path:
             "Four-phase Stage 3 artifacts are retired and incompatible with three-phase evaluation"
         )
     return direct
-
-
-def _gate_calibrated_path(root: Path, fold: int) -> Path:
-    nested = root / f"fold{fold}" / "gate_calibrated.pt"
-    return nested if nested.is_file() else root / "gate_calibrated.pt"
 
 
 def _validate_refinement_manifest(
@@ -154,61 +148,6 @@ def _validate_three_phase_manifest(
     return sha256_file(manifest_path)
 
 
-def _validate_gate_calibrated_manifest(
-    artifact_path: Path, artifact: Mapping[str, Any]
-) -> str:
-    manifest_path = artifact_path.with_name("gate_calibrated.json")
-    if not manifest_path.is_file():
-        raise FileNotFoundError(
-            f"Missing Stage 3 gate-calibrated manifest: {manifest_path}"
-        )
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise ValueError("Stage 3 gate-calibrated manifest is unreadable") from error
-    if (
-        not isinstance(manifest, dict)
-        or manifest.get("kind") != artifact.get("kind")
-        or manifest.get("format_version") != artifact.get("format_version")
-        or manifest.get("artifact") != artifact_path.name
-        or manifest.get("artifact_sha256") != sha256_file(artifact_path)
-        or manifest.get("fold") != artifact.get("fold")
-        or manifest.get("model_state_hash") != artifact.get("model_state_hash")
-        or manifest.get("base_model_state_hash")
-        != artifact.get("base_model_state_hash")
-        or manifest.get("base_artifact_sha256")
-        != artifact.get("base_artifact_sha256")
-        or manifest.get("ownership_manifest")
-        != artifact.get("ownership_manifest")
-        or json.dumps(manifest.get("base_training_identity"), sort_keys=True)
-        != json.dumps(artifact.get("base_training_identity"), sort_keys=True)
-        or json.dumps(manifest.get("validation"), sort_keys=True)
-        != json.dumps(artifact.get("validation"), sort_keys=True)
-    ):
-        raise ValueError(
-            "Stage 3 gate-calibrated manifest/artifact integrity mismatch"
-        )
-    require_compatible_identity(
-        artifact.get("calibration_identity", {}),
-        manifest.get("calibration_identity", {}),
-        context="Stage 3 gate-calibrated manifest",
-    )
-    task_hashes = artifact.get("task_gate_state_hashes")
-    task_records = manifest.get("tasks")
-    if (
-        not isinstance(task_hashes, Mapping)
-        or not isinstance(task_records, Mapping)
-        or set(task_hashes) != set(task_records)
-        or not all(isinstance(record, Mapping) for record in task_records.values())
-        or any(
-            task_records[task].get("task_gate_state_hash") != state_hash
-            for task, state_hash in task_hashes.items()
-        )
-    ):
-        raise ValueError("Stage 3 gate-calibrated task manifest mismatch")
-    return sha256_file(manifest_path)
-
-
 def _load_model(
     config: Stage3Config,
     prepared: Mapping[str, Any],
@@ -219,24 +158,12 @@ def _load_model(
     *,
     taskwise_refined: bool = False,
     three_phase_final: bool = False,
-    gate_calibrated: bool = False,
 ) -> tuple[Stage3SparseModel, dict[str, Any], Stage3RepresentationStore]:
-    if sum((taskwise_refined, three_phase_final, gate_calibrated)) > 1:
-        raise ValueError("Stage 3 checkpoint cannot have multiple final selectors")
+    if taskwise_refined and three_phase_final:
+        raise ValueError("Stage 3 checkpoint cannot have two final selectors")
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     rdkit = prepared["metadata"].get("kind") != STAGE3_ARTIFACT_KIND
-    if gate_calibrated:
-        from .gate_calibration import (
-            GATE_CALIBRATED_FORMAT_VERSION,
-            GATE_CALIBRATED_KIND,
-            GATE_CALIBRATED_RDKIT_KIND,
-        )
-
-        expected_kind = (
-            GATE_CALIBRATED_RDKIT_KIND if rdkit else GATE_CALIBRATED_KIND
-        )
-        expected_format = GATE_CALIBRATED_FORMAT_VERSION
-    elif three_phase_final:
+    if three_phase_final:
         from .three_phase import (
             THREE_PHASE_FINAL_FORMAT_VERSION,
             THREE_PHASE_FINAL_KIND,
@@ -266,7 +193,7 @@ def _load_model(
             task_id: spec.to_dict() for task_id, spec in prepared["registry"].items()
         },
     }
-    if not taskwise_refined and not three_phase_final and not gate_calibrated:
+    if not taskwise_refined and not three_phase_final:
         expected.update({
             "identity_contract_version": IDENTITY_CONTRACT_VERSION,
             "stage": "stage3",
@@ -332,7 +259,7 @@ def _load_model(
         raise ValueError("Stage 3 checkpoint ownership mismatch")
     state_namespace = (
         "stage3.three-phase-model-state"
-        if gate_calibrated or three_phase_final
+        if three_phase_final
         else "stage3.taskwise-refined-state"
         if taskwise_refined
         else "stage3.model-state"
@@ -358,20 +285,9 @@ def _predict(
     progress_bar: Any | None = None,
     fold: int | None = None,
     fold_count: int | None = None,
-    routing_mode: str = "learned_gate",
-) -> tuple[
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     normalized_predictions: list[torch.Tensor] = []
-    learned_normalized_predictions: list[torch.Tensor] = []
     gate_observations: list[torch.Tensor] = []
-    gate_weights: list[torch.Tensor] = []
     target_stats = normalization["target"]
 
     microbatch_size = config.training.microbatch_size
@@ -410,42 +326,19 @@ def _predict(
             dtype=torch.bfloat16,
             enabled=config.training.amp_dtype == "bf16",
         ):
-            output = model(
-                task_id,
-                primary,
-                conditions,
-                partner_embedding=partner,
-                routing_mode=routing_mode,
-            )
+            output = model(task_id, primary, conditions, partner_embedding=partner)
             prediction = output.predictions
-            learned_prediction = output.diagnostics.get(
-                "learned_gate_predictions", prediction
-            )
         if not torch.isfinite(prediction).all():
             raise RuntimeError(f"Non-finite Stage 3 evaluation prediction: {task_id}")
-        if not torch.isfinite(learned_prediction).all():
-            raise RuntimeError(
-                f"Non-finite Stage 3 learned-gate reference prediction: {task_id}"
-            )
         normalized_predictions.append(prediction.float().cpu())
-        learned_normalized_predictions.append(learned_prediction.float().cpu())
         if config.training.schedule_mode == "three_phase":
             gate_observations.append(task_gate_observations(output.diagnostics).cpu())
-            gate_weights.append(output.diagnostics["task_gate"].detach().float().cpu())
     normalized = (
         torch.cat(normalized_predictions) if normalized_predictions else torch.empty(0)
     )
     raw_predictions = normalized * float(target_stats["scale"]) + float(
         target_stats["mean"]
     )
-    learned_normalized = (
-        torch.cat(learned_normalized_predictions)
-        if learned_normalized_predictions
-        else torch.empty(0)
-    )
-    learned_raw_predictions = learned_normalized * float(
-        target_stats["scale"]
-    ) + float(target_stats["mean"])
     normalized_targets = (
         dataset.raw_targets.float() - float(target_stats["mean"])
     ) / float(target_stats["scale"])
@@ -454,9 +347,6 @@ def _predict(
         raw_predictions,
         normalized_targets,
         torch.cat(gate_observations) if gate_observations else torch.empty((0, 4)),
-        torch.cat(gate_weights) if gate_weights else torch.empty((0, 0)),
-        learned_normalized,
-        learned_raw_predictions,
     )
 
 
@@ -492,99 +382,6 @@ def _raw_ensemble_metrics(
         "normalized_mae": float(delta.abs().mean()) / scale,
         "normalized_rmse": float(delta.square().mean().sqrt()) / scale,
     }
-
-
-def _routing_comparison(
-    metrics: Mapping[str, Mapping[str, Any]],
-    learned_metrics: Mapping[str, Mapping[str, Any]],
-    *,
-    split: str,
-    fold: int | str,
-    routing_mode: str,
-) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for task, task_metrics in metrics.items():
-        reference = learned_metrics[task]
-        nmae = task_metrics.get("normalized_mae")
-        learned_nmae = reference.get("normalized_mae")
-        if nmae is None or learned_nmae is None:
-            delta = None
-            relative_delta = None
-        else:
-            delta = float(nmae) - float(learned_nmae)
-            relative_delta = (
-                None if float(learned_nmae) == 0.0 else delta / float(learned_nmae)
-            )
-        rows.append(
-            {
-                "task": task,
-                "split": split,
-                "fold": fold,
-                "routing_mode": routing_mode,
-                "mae": task_metrics.get("mae"),
-                "nmae": nmae,
-                "delta_nmae_vs_learned_gate": delta,
-                "relative_delta_vs_learned_gate": relative_delta,
-            }
-        )
-    return rows
-
-
-def _gate_calibration_comparison(
-    calibrated_metrics: Mapping[str, Mapping[str, Any]],
-    base_metrics: Mapping[str, Mapping[str, Any]],
-    calibrated_gate_observations: Mapping[str, torch.Tensor],
-    base_gate_observations: Mapping[str, torch.Tensor],
-    calibrated_gate_weights: Mapping[str, torch.Tensor],
-    base_gate_weights: Mapping[str, torch.Tensor],
-    *,
-    split: str,
-    fold: int | str,
-    gate_parameter_delta_norms: Mapping[str, float] | None = None,
-) -> dict[str, dict[str, Any]]:
-    from .gate_calibration import gate_kl_divergence
-
-    result: dict[str, dict[str, Any]] = {}
-    for task, metrics in calibrated_metrics.items():
-        base = base_metrics[task]
-        delta_nmae = float(metrics["normalized_mae"]) - float(
-            base["normalized_mae"]
-        )
-        result[task] = {
-            "task": task,
-            "split": split,
-            "fold": fold,
-            "before": {
-                "mae": base["mae"],
-                "normalized_mae": base["normalized_mae"],
-                "gate_diagnostics": summarize_task_gate_observations(
-                    base_gate_observations[task]
-                ),
-            },
-            "after": {
-                "mae": metrics["mae"],
-                "normalized_mae": metrics["normalized_mae"],
-                "gate_diagnostics": summarize_task_gate_observations(
-                    calibrated_gate_observations[task]
-                ),
-            },
-            "delta_mae": float(metrics["mae"]) - float(base["mae"]),
-            "delta_normalized_mae": delta_nmae,
-            "relative_delta_normalized_mae": (
-                None
-                if float(base["normalized_mae"]) == 0.0
-                else delta_nmae / float(base["normalized_mae"])
-            ),
-            "pre_post_gate_kl": gate_kl_divergence(
-                base_gate_weights[task], calibrated_gate_weights[task]
-            ),
-            "gate_parameter_delta_norm": (
-                None
-                if gate_parameter_delta_norms is None
-                else gate_parameter_delta_norms[task]
-            ),
-        }
-    return result
 
 
 def _macro(
@@ -655,7 +452,7 @@ def _reporting_comparison(
 
 
 def _default_reporting_study_id(
-    metadata: Mapping[str, Any], selector: str, routing_mode: str = "learned_gate"
+    metadata: Mapping[str, Any], selector: str
 ) -> str:
     prefix = (
         "rdkit-2d-stage2-home-stage3-"
@@ -665,17 +462,12 @@ def _default_reporting_study_id(
         if metadata.get("kind") != STAGE3_ARTIFACT_KIND
         else "ilume-stage3-"
     )
-    study_id = (
+    return (
         prefix
         + metadata_identity(
             metadata, "prepared", context="Stage 3 prepared artifact"
         )["hash"]
         + f"-{selector}"
-    )
-    return (
-        study_id
-        if routing_mode == "learned_gate"
-        else f"{study_id}-routing-{routing_mode}"
     )
 
 
@@ -708,28 +500,13 @@ def _evaluation_tasks(
 
 
 def resolve_stage3_reporting_study_id(
-    config: Stage3Config,
-    *,
-    checkpoint_epoch: int | None = None,
-    routing_mode: str = "learned_gate",
-    gate_calibrated: bool = False,
+    config: Stage3Config, *, checkpoint_epoch: int | None = None,
 ) -> str:
     """Resolve the fold-independent default reporting study identifier."""
-    if routing_mode not in ROUTING_MODES:
-        raise ValueError(f"Unsupported Stage 3 routing mode: {routing_mode}")
-    if (
-        config.training.schedule_mode != "three_phase"
-        and routing_mode != "learned_gate"
-    ):
-        raise ValueError("Stage 3 routing ablations require three-phase training")
     if config.training.schedule_mode == "three_phase" and checkpoint_epoch is not None:
         raise ValueError(
             "--checkpoint-epoch is only supported by legacy Stage 3 training"
         )
-    if gate_calibrated and config.training.schedule_mode != "three_phase":
-        raise ValueError("Gate-calibrated reporting requires three-phase training")
-    if gate_calibrated and routing_mode != "learned_gate":
-        raise ValueError("Gate-calibrated reporting forbids forced routing modes")
     three_phase_final = (
         config.training.schedule_mode == "three_phase" and checkpoint_epoch is None
     )
@@ -744,14 +521,11 @@ def resolve_stage3_reporting_study_id(
         raise ValueError("Stage 3 prepared metadata must contain a JSON object")
     return _default_reporting_study_id(
         metadata,
-        "gate-calibrated"
-        if gate_calibrated
-        else "three-phase-final"
+        "three-phase-final"
         if three_phase_final
         else "taskwise-refined"
         if taskwise_refined
         else f"epoch{epoch}",
-        routing_mode,
     )
 
 
@@ -871,23 +645,7 @@ def evaluate_checkpoints(
     predictions_dir: str | Path | None = None,
     reporting_study_id: str | None = None,
     expected_evaluation_identity: Mapping[str, Any] | None = None,
-    routing_mode: str = "learned_gate",
-    gate_calibration_dir: str | Path | None = None,
 ) -> dict[str, Any]:
-    if routing_mode not in ROUTING_MODES:
-        raise ValueError(f"Unsupported Stage 3 routing mode: {routing_mode}")
-    if (
-        config.training.schedule_mode != "three_phase"
-        and routing_mode != "learned_gate"
-    ):
-        raise ValueError("Stage 3 routing ablations require three-phase training")
-    gate_calibrated = gate_calibration_dir is not None
-    if gate_calibrated and config.training.schedule_mode != "three_phase":
-        raise ValueError("Gate-calibrated evaluation requires three-phase training")
-    if gate_calibrated and not config.gate_calibration.enabled:
-        raise ValueError("Gate calibration is not enabled in the Stage 3 config")
-    if gate_calibrated and routing_mode != "learned_gate":
-        raise ValueError("Gate-calibrated evaluation forbids forced routing modes")
     if split not in {"valid", "test"}:
         raise ValueError("Stage 3 evaluation split must be valid or test")
     if split == "test" and not ensemble_folds:
@@ -916,18 +674,14 @@ def evaluate_checkpoints(
     taskwise_refined = checkpoint_epoch is None and not three_phase_final
     final_artifact = taskwise_refined or three_phase_final
     model_selector = (
-        "gate_calibrated"
-        if gate_calibrated
-        else "three_phase_final"
+        "three_phase_final"
         if three_phase_final
         else "taskwise_refined"
         if taskwise_refined
         else "epoch_checkpoint"
     )
     selector_label = (
-        "gate-calibrated"
-        if gate_calibrated
-        else "three-phase-final"
+        "three-phase-final"
         if three_phase_final
         else "taskwise-refined"
         if taskwise_refined
@@ -938,7 +692,6 @@ def evaluate_checkpoints(
         raise ValueError("Stage 3 checkpoint epoch must be positive")
     folds = range(1, 6) if split == "test" else (fold,)
     root = Path(checkpoint_dir)
-    calibration_root = Path(gate_calibration_dir) if gate_calibrated else None
     progress = ProgressReporter()
     evaluation_progress = progress.bar(
         total=len(folds) * len(tasks),
@@ -947,9 +700,6 @@ def evaluate_checkpoints(
     )    
     fold_results: dict[str, Any] = {}
     ensemble_predictions: dict[str, list[torch.Tensor]] = {task: [] for task in tasks}
-    learned_ensemble_predictions: dict[str, list[torch.Tensor]] = {
-        task: [] for task in tasks
-    }
     raw_targets: dict[str, torch.Tensor] = {}
     normalizations: dict[str, list[dict[str, Any]]] = {task: [] for task in tasks}
     checkpoint_identities: list[Mapping[str, Any]] = []
@@ -960,29 +710,11 @@ def evaluate_checkpoints(
     pooled_gate_observations: dict[str, list[torch.Tensor]] = {
         task: [] for task in tasks
     }
-    base_ensemble_predictions: dict[str, list[torch.Tensor]] = {
-        task: [] for task in tasks
-    }
-    base_fold_gate_weights: dict[int, dict[str, torch.Tensor]] = {}
-    base_fold_gate_observations: dict[int, dict[str, torch.Tensor]] = {}
-    calibrated_fold_gate_weights: dict[int, dict[str, torch.Tensor]] = {}
-    pooled_base_gate_weights: dict[str, list[torch.Tensor]] = {
-        task: [] for task in tasks
-    }
-    pooled_base_gate_observations: dict[str, list[torch.Tensor]] = {
-        task: [] for task in tasks
-    }
-    pooled_calibrated_gate_weights: dict[str, list[torch.Tensor]] = {
-        task: [] for task in tasks
-    }
     try:
         for current_fold in folds:
             assert current_fold is not None
-            base_path = _three_phase_final_path(root, current_fold)
             path = (
-                _gate_calibrated_path(calibration_root, current_fold)
-                if gate_calibrated and calibration_root is not None
-                else base_path
+                _three_phase_final_path(root, current_fold)
                 if three_phase_final
                 else _refined_path(root, current_fold)
                 if taskwise_refined
@@ -993,32 +725,8 @@ def evaluate_checkpoints(
             model, checkpoint, representations = _load_model(
                 config, prepared, path, current_fold, epoch, device,
                 taskwise_refined=taskwise_refined,
-                three_phase_final=three_phase_final and not gate_calibrated,
-                gate_calibrated=gate_calibrated,
+                three_phase_final=three_phase_final,
             )
-            base_model = None
-            if gate_calibrated:
-                base_model, base_checkpoint, _ = _load_model(
-                    config,
-                    prepared,
-                    base_path,
-                    current_fold,
-                    epoch,
-                    device,
-                    three_phase_final=True,
-                )
-                _validate_three_phase_manifest(base_path, base_checkpoint)
-                if (
-                    checkpoint.get("base_model_state_hash")
-                    != base_checkpoint.get("model_state_hash")
-                    or checkpoint.get("base_artifact_sha256")
-                    != sha256_file(base_path)
-                    or checkpoint.get("base_training_identity")
-                    != base_checkpoint.get("training_identity")
-                ):
-                    raise ValueError(
-                        "Gate-calibrated artifact does not match its Flat anchor"
-                    )
             checkpoint_identities.append(checkpoint["training_identity"])
             model_state_hashes.append(checkpoint["model_state_hash"])
             if taskwise_refined:
@@ -1027,36 +735,19 @@ def evaluate_checkpoints(
                         path, checkpoint, epoch, str(checkpoint["kind"])
                     )
                 )
-            elif gate_calibrated:
-                selection_manifest_hashes.append(
-                    _validate_gate_calibrated_manifest(path, checkpoint)
-                )
             elif three_phase_final:
                 selection_manifest_hashes.append(
                     _validate_three_phase_manifest(path, checkpoint)
                 )
             per_task: dict[str, Any] = {}
-            learned_per_task: dict[str, Any] = {}
-            base_per_task: dict[str, Any] = {}
             raw_fold_predictions[current_fold] = {}
             fold_gate_observations[current_fold] = {}
-            base_fold_gate_weights[current_fold] = {}
-            base_fold_gate_observations[current_fold] = {}
-            calibrated_fold_gate_weights[current_fold] = {}
             for task in tasks:
                 dataset = Stage3TaskDataset(
                     config.data.artifacts_dir, current_fold, task, split
                 )
                 normalization = checkpoint["normalization"][task]
-                (
-                    normalized,
-                    raw,
-                    normalized_targets,
-                    gate_observations,
-                    gate_weights,
-                    learned_normalized,
-                    learned_raw,
-                ) = _predict(
+                normalized, raw, normalized_targets, gate_observations = _predict(
                     model,
                     task,
                     dataset,
@@ -1067,55 +758,15 @@ def evaluate_checkpoints(
                     progress_bar=evaluation_progress,
                     fold=current_fold,
                     fold_count=len(folds),
-                    routing_mode=routing_mode,
                 )
                 per_task[task] = regression_metrics(
                     normalized, normalized_targets, normalization
                 )
-                learned_per_task[task] = regression_metrics(
-                    learned_normalized, normalized_targets, normalization
-                )
                 ensemble_predictions[task].append(raw)
-                learned_ensemble_predictions[task].append(learned_raw)
                 raw_fold_predictions[current_fold][task] = raw
                 if config.training.schedule_mode == "three_phase":
                     fold_gate_observations[current_fold][task] = gate_observations
                     pooled_gate_observations[task].append(gate_observations)
-                if gate_calibrated:
-                    assert base_model is not None
-                    (
-                        base_normalized,
-                        base_raw,
-                        base_targets,
-                        base_observations,
-                        base_weights,
-                        _,
-                        _,
-                    ) = _predict(
-                        base_model,
-                        task,
-                        dataset,
-                        representations,
-                        normalization,
-                        config,
-                        device,
-                        fold=current_fold,
-                        fold_count=len(folds),
-                    )
-                    if not torch.equal(base_targets, normalized_targets):
-                        raise ValueError("Calibrated/base evaluation target mismatch")
-                    base_per_task[task] = regression_metrics(
-                        base_normalized, base_targets, normalization
-                    )
-                    base_ensemble_predictions[task].append(base_raw)
-                    base_fold_gate_weights[current_fold][task] = base_weights
-                    base_fold_gate_observations[current_fold][task] = (
-                        base_observations
-                    )
-                    calibrated_fold_gate_weights[current_fold][task] = gate_weights
-                    pooled_base_gate_weights[task].append(base_weights)
-                    pooled_base_gate_observations[task].append(base_observations)
-                    pooled_calibrated_gate_weights[task].append(gate_weights)
                 normalizations[task].append(normalization)
                 if task in raw_targets and not torch.equal(
                     raw_targets[task], dataset.raw_targets
@@ -1136,34 +787,6 @@ def evaluate_checkpoints(
                         current_fold
                     ].items()
                 }
-                fold_result["routing_comparison"] = _routing_comparison(
-                    per_task,
-                    learned_per_task,
-                    split=split,
-                    fold=current_fold,
-                    routing_mode=routing_mode,
-                )
-            if gate_calibrated:
-                fold_result["gate_calibration_comparison"] = (
-                    _gate_calibration_comparison(
-                        per_task,
-                        base_per_task,
-                        fold_gate_observations[current_fold],
-                        base_fold_gate_observations[current_fold],
-                        calibrated_fold_gate_weights[current_fold],
-                        base_fold_gate_weights[current_fold],
-                        split=split,
-                        fold=current_fold,
-                        gate_parameter_delta_norms={
-                            task: float(
-                                checkpoint["task_comparisons"][task][
-                                    "gate_parameter_delta_norm"
-                                ]
-                            )
-                            for task in tasks
-                        },
-                    )
-                )
             fold_results[f"fold{current_fold}"] = fold_result
     finally:
         evaluation_progress.close()
@@ -1180,7 +803,6 @@ def evaluate_checkpoints(
         model_selector=model_selector,
         tasks=tasks,
         ensemble_folds=ensemble_folds,
-        routing_mode=routing_mode,
     )
     if expected_evaluation_identity is not None:
         require_compatible_identity(
@@ -1212,32 +834,24 @@ def evaluate_checkpoints(
             "model_selector": model_selector,
             **next(iter(fold_results.values())),
         }
-        if config.training.schedule_mode == "three_phase":
-            result["routing_mode"] = routing_mode
-        if gate_calibrated:
-            result["base_model_selector"] = "three_phase_final"
         default_study_id = _default_reporting_study_id(
             prepared["metadata"],
             selector_label if final_artifact else f"epoch{epoch}",
-            routing_mode,
         )
         model_id, model_display_name = _reporting_model(prepared["metadata"])
-        protocol = {
-            "split": "valid",
-            "fold": fold,
-            "folds": list(range(1, 6)),
-            "ensemble": False,
-            "expected_tasks": list(enabled),
-            "checkpoint_epoch": None if final_artifact else epoch,
-            "model_selector": model_selector,
-        }
-        if routing_mode != "learned_gate":
-            protocol["routing_mode"] = routing_mode
         result["reporting"] = reporting_block(
             model_id=model_id,
             model_display_name=model_display_name,
             benchmark="stage3_property",
-            protocol=protocol,
+            protocol={
+                "split": "valid",
+                "fold": fold,
+                "folds": list(range(1, 6)),
+                "ensemble": False,
+                "expected_tasks": list(enabled),
+                "checkpoint_epoch": None if final_artifact else epoch,
+                "model_selector": model_selector,
+            },
             comparison=comparison,
             study_id=reporting_study_id or default_study_id,
             predictions=prediction_manifests,
@@ -1254,31 +868,6 @@ def evaluate_checkpoints(
             / len(normalizations[task]),
         )
         for task, predictions in ensemble_predictions.items()
-    }
-    learned_ensemble = {
-        task: _raw_ensemble_metrics(
-            torch.stack(predictions).mean(dim=0),
-            raw_targets[task],
-            sum(
-                float(item["target"]["scale"])
-                for item in normalizations[task]
-            )
-            / len(normalizations[task]),
-        )
-        for task, predictions in learned_ensemble_predictions.items()
-    }
-    base_ensemble = {
-        task: _raw_ensemble_metrics(
-            torch.stack(predictions).mean(dim=0),
-            raw_targets[task],
-            sum(
-                float(item["target"]["scale"])
-                for item in normalizations[task]
-            )
-            / len(normalizations[task]),
-        )
-        for task, predictions in base_ensemble_predictions.items()
-        if predictions
     }
     prediction_manifests = (
         _write_predictions(
@@ -1306,39 +895,6 @@ def evaluate_checkpoints(
             task: summarize_task_gate_observations(torch.cat(observations))
             for task, observations in pooled_gate_observations.items()
         }
-        ensemble_result["routing_comparison"] = _routing_comparison(
-            ensemble,
-            learned_ensemble,
-            split="test",
-            fold="ensemble",
-            routing_mode=routing_mode,
-        )
-    if gate_calibrated:
-        ensemble_result["gate_calibration_comparison"] = (
-            _gate_calibration_comparison(
-                ensemble,
-                base_ensemble,
-                {
-                    task: torch.cat(values)
-                    for task, values in pooled_gate_observations.items()
-                },
-                {
-                    task: torch.cat(values)
-                    for task, values in pooled_base_gate_observations.items()
-                },
-                {
-                    task: torch.cat(values)
-                    for task, values in pooled_calibrated_gate_weights.items()
-                },
-                {
-                    task: torch.cat(values)
-                    for task, values in pooled_base_gate_weights.items()
-                },
-                split="test",
-                fold="ensemble",
-                gate_parameter_delta_norms=None,
-            )
-        )
     result = {
         "split": split,
         "checkpoint_epoch": None if final_artifact else epoch,
@@ -1346,32 +902,24 @@ def evaluate_checkpoints(
         "folds": fold_results,
         "ensemble": ensemble_result,
     }
-    if config.training.schedule_mode == "three_phase":
-        result["routing_mode"] = routing_mode
-    if gate_calibrated:
-        result["base_model_selector"] = "three_phase_final"
     default_study_id = _default_reporting_study_id(
         prepared["metadata"],
         selector_label if final_artifact else f"epoch{epoch}",
-        routing_mode,
     )
     model_id, model_display_name = _reporting_model(prepared["metadata"])
-    protocol = {
-        "split": "test",
-        "folds": list(range(1, 6)),
-        "ensemble": True,
-        "expected_tasks": list(expected_tasks),
-        "enabled_tasks": list(enabled),
-        "checkpoint_epoch": None if final_artifact else epoch,
-        "model_selector": model_selector,
-    }
-    if routing_mode != "learned_gate":
-        protocol["routing_mode"] = routing_mode
     result["reporting"] = reporting_block(
         model_id=model_id,
         model_display_name=model_display_name,
         benchmark="stage3_property",
-        protocol=protocol,
+        protocol={
+            "split": "test",
+            "folds": list(range(1, 6)),
+            "ensemble": True,
+            "expected_tasks": list(expected_tasks),
+            "enabled_tasks": list(enabled),
+            "checkpoint_epoch": None if final_artifact else epoch,
+            "model_selector": model_selector,
+        },
         comparison=comparison,
         study_id=reporting_study_id or default_study_id,
         predictions=prediction_manifests,
@@ -1388,24 +936,8 @@ def resolve_stage3_evaluation_identity(
     checkpoint_epoch: int | None = None,
     task_subset: Sequence[str] | None = None,
     fold: int | None = None,
-    routing_mode: str = "learned_gate",
-    gate_calibration_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Resolve and validate the semantic identity of an evaluation request."""
-    if routing_mode not in ROUTING_MODES:
-        raise ValueError(f"Unsupported Stage 3 routing mode: {routing_mode}")
-    if (
-        config.training.schedule_mode != "three_phase"
-        and routing_mode != "learned_gate"
-    ):
-        raise ValueError("Stage 3 routing ablations require three-phase training")
-    gate_calibrated = gate_calibration_dir is not None
-    if gate_calibrated and config.training.schedule_mode != "three_phase":
-        raise ValueError("Gate-calibrated evaluation requires three-phase training")
-    if gate_calibrated and not config.gate_calibration.enabled:
-        raise ValueError("Gate calibration is not enabled in the Stage 3 config")
-    if gate_calibrated and routing_mode != "learned_gate":
-        raise ValueError("Gate-calibrated evaluation forbids forced routing modes")
     if split not in {"valid", "test"}:
         raise ValueError("Stage 3 evaluation split must be valid or test")
     if split == "test" and not ensemble_folds:
@@ -1429,9 +961,7 @@ def resolve_stage3_evaluation_identity(
     taskwise_refined = checkpoint_epoch is None and not three_phase_final
     final_artifact = taskwise_refined or three_phase_final
     model_selector = (
-        "gate_calibrated"
-        if gate_calibrated
-        else "three_phase_final"
+        "three_phase_final"
         if three_phase_final
         else "taskwise_refined"
         if taskwise_refined
@@ -1441,17 +971,13 @@ def resolve_stage3_evaluation_identity(
     if epoch <= 0:
         raise ValueError("Stage 3 checkpoint epoch must be positive")
     folds = range(1, 6) if split == "test" else (fold,)
-    calibration_root = Path(gate_calibration_dir) if gate_calibrated else None
     identities: list[Mapping[str, Any]] = []
     state_hashes: list[str] = []
     selection_manifest_hashes: list[str] = []
     for current_fold in folds:
         assert current_fold is not None
-        base_path = _three_phase_final_path(Path(checkpoint_dir), current_fold)
         path = (
-            _gate_calibrated_path(calibration_root, current_fold)
-            if gate_calibrated and calibration_root is not None
-            else base_path
+            _three_phase_final_path(Path(checkpoint_dir), current_fold)
             if three_phase_final
             else _refined_path(Path(checkpoint_dir), current_fold)
             if taskwise_refined
@@ -1462,31 +988,8 @@ def resolve_stage3_evaluation_identity(
         _, checkpoint, _ = _load_model(
             config, prepared, path, current_fold, epoch, torch.device("cpu"),
             taskwise_refined=taskwise_refined,
-            three_phase_final=three_phase_final and not gate_calibrated,
-            gate_calibrated=gate_calibrated,
+            three_phase_final=three_phase_final,
         )
-        if gate_calibrated:
-            _, base_checkpoint, _ = _load_model(
-                config,
-                prepared,
-                base_path,
-                current_fold,
-                epoch,
-                torch.device("cpu"),
-                three_phase_final=True,
-            )
-            _validate_three_phase_manifest(base_path, base_checkpoint)
-            if (
-                checkpoint.get("base_model_state_hash")
-                != base_checkpoint.get("model_state_hash")
-                or checkpoint.get("base_artifact_sha256")
-                != sha256_file(base_path)
-                or checkpoint.get("base_training_identity")
-                != base_checkpoint.get("training_identity")
-            ):
-                raise ValueError(
-                    "Gate-calibrated artifact does not match its Flat anchor"
-                )
         identities.append(checkpoint["training_identity"])
         state_hashes.append(checkpoint["model_state_hash"])
         if taskwise_refined:
@@ -1494,10 +997,6 @@ def resolve_stage3_evaluation_identity(
                 _validate_refinement_manifest(
                     path, checkpoint, epoch, str(checkpoint["kind"])
                 )
-            )
-        elif gate_calibrated:
-            selection_manifest_hashes.append(
-                _validate_gate_calibrated_manifest(path, checkpoint)
             )
         elif three_phase_final:
             selection_manifest_hashes.append(
@@ -1516,7 +1015,6 @@ def resolve_stage3_evaluation_identity(
         model_selector=model_selector,
         tasks=tasks,
         ensemble_folds=ensemble_folds,
-        routing_mode=routing_mode,
     )
 
 

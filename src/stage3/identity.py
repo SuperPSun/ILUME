@@ -20,7 +20,6 @@ from .data import (
 STAGE3_PREPARED_IDENTITY_CONTRACT_VERSION = 2
 STAGE3_TRAINING_IDENTITY_CONTRACT_VERSION = 1
 STAGE3_EVALUATION_IDENTITY_CONTRACT_VERSION = 1
-STAGE3_GATE_CALIBRATION_IDENTITY_CONTRACT_VERSION = 1
 
 
 def metadata_identity(
@@ -195,18 +194,6 @@ def build_stage3_training_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
     )
 
 
-def build_stage3_gate_calibration_identity(
-    plan: Mapping[str, Any],
-) -> dict[str, Any]:
-    return semantic_identity(
-        "stage3.gate-calibration",
-        {
-            "contract_version": STAGE3_GATE_CALIBRATION_IDENTITY_CONTRACT_VERSION,
-            "plan": dict(plan),
-        },
-    )
-
-
 def build_stage3_evaluation_identity(
     *,
     prepared_identity: Mapping[str, Any],
@@ -219,18 +206,7 @@ def build_stage3_evaluation_identity(
     model_selector: str = "epoch_checkpoint",
     tasks: Sequence[str],
     ensemble_folds: bool,
-    routing_mode: str = "learned_gate",
 ) -> dict[str, Any]:
-    selector = {
-        "split": split,
-        "fold": fold,
-        "checkpoint_epoch": checkpoint_epoch,
-        "model_selector": model_selector,
-        "tasks": list(tasks),
-        "ensemble_folds": ensemble_folds,
-    }
-    if routing_mode != "learned_gate":
-        selector["routing_mode"] = routing_mode
     return semantic_identity(
         "stage3.evaluation",
         {
@@ -241,14 +217,20 @@ def build_stage3_evaluation_identity(
             ],
             "model_state_hashes": list(model_state_hashes),
             "selection_manifest_sha256": list(selection_manifest_hashes),
-            "selector": selector,
+            "selector": {
+                "split": split,
+                "fold": fold,
+                "checkpoint_epoch": checkpoint_epoch,
+                "model_selector": model_selector,
+                "tasks": list(tasks),
+                "ensemble_folds": ensemble_folds,
+            },
         },
     )
 
 
 __all__ = [
     "build_stage3_evaluation_identity",
-    "build_stage3_gate_calibration_identity",
     "build_stage3_prepared_identity",
     "build_stage3_rdkit_prepared_identity",
     "build_stage3_training_identity",

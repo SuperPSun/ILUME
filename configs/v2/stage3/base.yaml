@@ -10,7 +10,6 @@ data:
 preparation:
   encoding_batch_size: 256
   cache_dir: outputs/v2/stage3/base/prepare/object_cache
-gate_calibration: {enabled: true, epochs: 3, lr_scale: 0.25}
 initialization:
   stage2_encoder: outputs/v2/stage2/base/train/stage2_encoder.pt
   plugin: null

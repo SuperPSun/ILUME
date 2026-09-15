@@ -28,7 +28,6 @@ from stage3.config import (
     Stage3Config,
     Stage3DataConfig,
     Stage3GlobalBudgetConfig,
-    Stage3GateCalibrationConfig,
     Stage3GroupConfig,
     Stage3InitializationConfig,
     Stage3ModelConfig,
@@ -57,16 +56,13 @@ from stage3.data import (
     resolve_batch_allocation,
     resolve_raw_batch_allocation,
     resolve_task_registry,
-    sanitize_task,
     shuffled_epoch_indices,
     source_path,
 )
 
 from stage3.model import (
     GLOBAL,
-    ROUTING_MODES,
     Stage3SparseModel,
-    apply_routing_ablation,
     group_owner,
     private_owner,
     summarize_task_gate_observations,
@@ -81,10 +77,7 @@ from stage3.prepare import (
     prepare_stage3,
 )
 
-from stage3.evaluate import (
-    evaluate_checkpoints,
-    resolve_stage3_evaluation_identity,
-)
+from stage3.evaluate import evaluate_checkpoints
 
 from stage3.train import (
     STAGE3_CHECKPOINT_KIND,
@@ -99,18 +92,7 @@ from stage3.train import (
     run_stage3_training,
 )
 
-from stage3.identity import (
-    build_stage3_evaluation_identity,
-    build_stage3_training_identity,
-    metadata_identity,
-)
-from stage3.gate_calibration import (
-    GATE_CALIBRATED_KIND,
-    gate_kl_divergence,
-    gate_state_hash,
-    run_gate_calibration,
-    stitch_gate_deltas,
-)
+from stage3.identity import build_stage3_training_identity, metadata_identity
 from stage3.three_phase import (
     _OwnerScheduler,
     _lr_factor as _three_phase_lr_factor,
@@ -391,8 +373,6 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
     assert effective_training_seed(config) == config.data.seed
     assert config.model.dropout == 0.10
     assert config.model.expert_hidden_ratio == 2.0
-    assert config.gate_calibration == Stage3GateCalibrationConfig()
-    assert "gate_calibration" not in config.to_dict()
     assert config.representation is None
     assert "representation" not in config.to_dict()
     assert checkpoint_epochs(100, 10) == tuple(range(10, 101, 10))
@@ -432,14 +412,9 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
         "configs/ablations/no_stage1_rdkit_stage3.yaml",
     ):
         active = load_stage3_config(path)
-        assert active.gate_calibration == Stage3GateCalibrationConfig(
-            enabled=True, epochs=3, lr_scale=0.25
-        )
         assert active.groups == v2.groups
         assert active.tasks == v2.tasks
         assert active.training.three_phase == v2.training.three_phase
-
-    assert v2.gate_calibration.enabled is True
 
 
 def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
@@ -594,18 +569,40 @@ def test_three_phase_config_and_task_specific_gate_contract() -> None:
         )
         for task, spec in tiny.tasks.items()
     }
+    flat_model_config = replace(tiny.model, l2_residual=False)
     model = Stage3SparseModel(
-        tiny.model,
+        flat_model_config,
         specs,
         4,
         group_configs=tiny.groups,
         task_configs=tiny.tasks,
     )
-    assert set(model.task_gates) == {"experiment__a", "experiment__b"}
     assert model.task_gates["experiment__a"].out_features == 5
     assert model.task_gates["experiment__b"].out_features == 3
     assert len(model.l1_group_experts["g1"]) == 3
     assert len(model.l1_group_experts["g2"]) == 1
+    assert set(model.task_gates) == {"experiment__a", "experiment__b"}
+
+    model.eval()
+    primary = torch.randn(4, 4)
+    output = model("experiment/a", primary, torch.empty(4, 0))
+    weights = output.diagnostics["task_gate"]
+    candidates = torch.cat(
+        (
+            output.diagnostics["l2_global_candidates"],
+            output.diagnostics["l2_group_candidates"],
+            output.diagnostics["l2_private_candidates"],
+        ),
+        dim=1,
+    )
+    assert weights.shape == (4, 5)
+    assert output.diagnostics["l2_group_candidates"].shape[1] == 3
+    assert torch.isfinite(weights).all()
+    assert torch.all(weights >= 0)
+    assert torch.allclose(weights.sum(dim=1), torch.ones(4))
+    expected_mixed = (weights.unsqueeze(-1) * candidates).sum(dim=1)
+    expected_prediction = model.towers["experiment__a"](expected_mixed)
+    assert torch.equal(output.predictions, expected_prediction)
 
 
 def test_three_phase_private_capacity_ratios_follow_size_class() -> None:
@@ -786,200 +783,6 @@ def test_task_gate_diagnostics_partition_entropy_and_pooled_quantiles() -> None:
     assert pooled["private_gate_weight_p50"] == pytest.approx(1 / 3)
     assert pooled["private_gate_weight_p90"] == pytest.approx(0.5)
 
-    assert gate_kl_divergence(task_gate, task_gate) == pytest.approx(0.0)
-    shifted = task_gate.roll(1, dims=1)
-    assert gate_kl_divergence(task_gate, shifted) > 0.0
-
-
-@pytest.mark.parametrize("group_count", (1, 3))
-def test_routing_ablation_weights_follow_owner_contract(group_count: int) -> None:
-    task_gate = torch.tensor(
-        (
-            (0.04, 0.06, *([0.40 / group_count] * group_count), 0.50),
-            (0.15, 0.25, *([0.30 / group_count] * group_count), 0.30),
-            (0.25, 0.35, *([0.25 / group_count] * group_count), 0.15),
-        ),
-        dtype=torch.float64,
-    )
-    learned = apply_routing_ablation(
-        task_gate, 2, group_count, 1, "learned_gate"
-    )
-    assert learned is task_gate
-
-    no_private = apply_routing_ablation(
-        task_gate, 2, group_count, 1, "no_private"
-    )
-    assert no_private[:, -1] == pytest.approx(torch.zeros(3))
-
-    global_only = apply_routing_ablation(
-        task_gate, 2, group_count, 1, "global_only"
-    )
-    assert global_only[:, :2].sum(dim=1) == pytest.approx(torch.ones(3))
-    assert global_only[:, 2:] == pytest.approx(
-        torch.zeros((3, group_count + 1))
-    )
-
-    for mode, floor in (
-        ("global_floor_025", 0.25),
-        ("global_floor_050", 0.50),
-    ):
-        adjusted = apply_routing_ablation(task_gate, 2, group_count, 1, mode)
-        original_global = task_gate[:, :2].sum(dim=1)
-        adjusted_global = adjusted[:, :2].sum(dim=1)
-        assert adjusted_global == pytest.approx(
-            torch.maximum(
-                original_global, torch.full_like(original_global, floor)
-            )
-        )
-        changed = original_global < floor
-        assert adjusted[~changed] == pytest.approx(task_gate[~changed])
-        assert (
-            adjusted[changed, :2] / adjusted_global[changed, None]
-        ) == pytest.approx(
-            task_gate[changed, :2] / original_global[changed, None]
-        )
-        original_local = task_gate[changed, 2:]
-        adjusted_local = adjusted[changed, 2:]
-        assert adjusted_local / adjusted_local.sum(
-            dim=1, keepdim=True
-        ) == pytest.approx(
-            original_local / original_local.sum(dim=1, keepdim=True)
-        )
-
-    degenerate = torch.zeros((1, 3 + group_count), dtype=torch.float64)
-    degenerate[:, -1] = 1.0
-    assert apply_routing_ablation(
-        degenerate, 2, group_count, 1, "global_only"
-    )[0, :2] == pytest.approx(torch.tensor((0.5, 0.5)))
-    assert apply_routing_ablation(
-        degenerate, 2, group_count, 1, "global_floor_025"
-    )[0, :2] == pytest.approx(torch.tensor((0.125, 0.125)))
-    for mode in ROUTING_MODES:
-        weights = apply_routing_ablation(degenerate, 2, group_count, 1, mode)
-        assert torch.isfinite(weights).all()
-        assert bool((weights >= 0).all())
-        assert weights.sum(dim=1) == pytest.approx(torch.ones(1))
-
-    for mode in ROUTING_MODES:
-        weights = apply_routing_ablation(task_gate, 2, group_count, 1, mode)
-        assert torch.isfinite(weights).all()
-        assert bool((weights >= 0).all())
-        assert weights.sum(dim=1) == pytest.approx(torch.ones(3))
-
-
-def test_model_routing_ablation_preserves_learned_prediction_and_candidates(
-    tiny_prepared: Stage3Config,
-) -> None:
-    registry = resolve_task_registry(tiny_prepared)
-    model = Stage3SparseModel(
-        replace(tiny_prepared.model, l2_residual=False), registry, 4
-    ).eval()
-    primary = torch.arange(8, dtype=torch.float32).reshape(2, 4) / 10
-    conditions = torch.zeros((2, 0))
-
-    default = model("experiment/a", primary, conditions)
-    learned = model(
-        "experiment/a", primary, conditions, routing_mode="learned_gate"
-    )
-    assert torch.equal(default.predictions, learned.predictions)
-    assert set(default.diagnostics) == set(learned.diagnostics)
-    assert all(
-        torch.equal(default.diagnostics[name], learned.diagnostics[name])
-        for name in default.diagnostics
-    )
-    task_gate = default.diagnostics["task_gate"]
-    assert torch.isfinite(task_gate).all()
-    assert bool((task_gate >= 0).all())
-    torch.testing.assert_close(task_gate.sum(dim=1), torch.ones(2))
-    candidates = torch.cat(
-        (
-            default.diagnostics["l2_global_candidates"],
-            default.diagnostics["l2_group_candidates"],
-            default.diagnostics["l2_private_candidates"],
-        ),
-        dim=1,
-    )
-    assert candidates.shape[1] == model.task_gates["experiment__a"].out_features
-    old_mixture = (
-        default.diagnostics["task_gate"].unsqueeze(-1) * candidates
-    ).sum(dim=1)
-    assert torch.equal(
-        default.predictions, model.towers["experiment__a"](old_mixture)
-    )
-
-    ownership_before = model.ownership_manifest()
-    model.set_task_gate_calibration_mode("experiment/a")
-    trainable = {
-        name for name, parameter in model.named_parameters() if parameter.requires_grad
-    }
-    assert trainable == {
-        "task_gates.experiment__a.weight",
-        "task_gates.experiment__a.bias",
-    }
-    assert model.ownership_manifest() == ownership_before
-
-    forced = model("experiment/a", primary, conditions, routing_mode="no_private")
-    assert torch.equal(
-        forced.diagnostics["learned_gate_predictions"], default.predictions
-    )
-    for name in (
-        "l2_global_candidates",
-        "l2_group_candidates",
-        "l2_private_candidates",
-    ):
-        assert torch.equal(forced.diagnostics[name], default.diagnostics[name])
-    assert forced.diagnostics["task_gate"][:, -1].detach() == pytest.approx(
-        torch.zeros(2)
-    )
-
-    model.train()
-    with pytest.raises(ValueError, match="evaluation-only"):
-        model("experiment/a", primary, conditions, routing_mode="global_only")
-
-
-def test_routing_mode_changes_only_non_default_evaluation_identity() -> None:
-    kwargs = {
-        "prepared_identity": semantic_identity("prepared", {"a": 1}),
-        "checkpoint_identities": (semantic_identity("training", {"a": 1}),),
-        "model_state_hashes": ("state",),
-        "split": "valid",
-        "fold": 1,
-        "checkpoint_epoch": None,
-        "model_selector": "three_phase_final",
-        "tasks": ("experiment/a",),
-        "ensemble_folds": False,
-    }
-    implicit = build_stage3_evaluation_identity(**kwargs)
-    learned = build_stage3_evaluation_identity(
-        **kwargs, routing_mode="learned_gate"
-    )
-    forced = build_stage3_evaluation_identity(**kwargs, routing_mode="no_private")
-    expected_legacy_payload = semantic_identity(
-        "stage3.evaluation",
-        {
-            "contract_version": 1,
-            "prepared_identity": kwargs["prepared_identity"]["hash"],
-            "checkpoint_training_identities": [
-                kwargs["checkpoint_identities"][0]["hash"]
-            ],
-            "model_state_hashes": ["state"],
-            "selection_manifest_sha256": [],
-            "selector": {
-                "split": "valid",
-                "fold": 1,
-                "checkpoint_epoch": None,
-                "model_selector": "three_phase_final",
-                "tasks": ["experiment/a"],
-                "ensemble_folds": False,
-            },
-        },
-    )
-    assert implicit == expected_legacy_payload
-    assert implicit == learned
-    assert "routing_mode" not in learned["payload"]["selector"]
-    assert forced["payload"]["selector"]["routing_mode"] == "no_private"
-    assert forced["hash"] != learned["hash"]
-
 
 @pytest.mark.parametrize(
     ("field", "value", "message"),
@@ -1008,24 +811,6 @@ def test_three_phase_private_dropout_override_is_bounded(value: object) -> None:
         "private_dropout": value
     }
     with pytest.raises(ValueError, match="private_dropout must be in"):
-        stage3_config_from_dict(payload)
-
-
-@pytest.mark.parametrize(
-    ("field", "value", "message"),
-    (
-        ("enabled", "true", "enabled must be boolean"),
-        ("epochs", -1, "epochs must be a non-negative integer"),
-        ("epochs", True, "epochs must be a non-negative integer"),
-        ("lr_scale", 0.0, "lr_scale must be positive"),
-    ),
-)
-def test_gate_calibration_config_is_strict(
-    field: str, value: object, message: str
-) -> None:
-    payload = load_stage3_config("configs/v2/stage3/base.yaml").to_dict()
-    payload["gate_calibration"][field] = value
-    with pytest.raises(ValueError, match=message):
         stage3_config_from_dict(payload)
 
 
@@ -1230,13 +1015,6 @@ def test_three_phase_training_publishes_fixed_final_state(
         fold=1,
     )
     assert evaluated["model_selector"] == "three_phase_final"
-    assert evaluated["routing_mode"] == "learned_gate"
-    assert "routing_mode" not in evaluated["reporting"]["protocol"]
-    learned_comparison = evaluated["routing_comparison"]
-    assert len(learned_comparison) == 1
-    assert learned_comparison[0]["routing_mode"] == "learned_gate"
-    assert learned_comparison[0]["delta_nmae_vs_learned_gate"] == 0.0
-    assert learned_comparison[0]["relative_delta_vs_learned_gate"] == 0.0
     assert set(evaluated["gate_diagnostics"]) == {"experiment/a"}
     gate = evaluated["gate_diagnostics"]["experiment/a"]
     assert set(gate) == gate_fields
@@ -1244,163 +1022,6 @@ def test_three_phase_training_publishes_fixed_final_state(
         "mean_group_gate_weight"
     ] + gate["mean_private_gate_weight"] == pytest.approx(1.0)
     assert 0.0 <= gate["task_gate_entropy"] <= 1.0
-
-    calibrated_config = replace(
-        config,
-        gate_calibration=Stage3GateCalibrationConfig(
-            enabled=True, epochs=1, lr_scale=0.25
-        ),
-    )
-    assert resolve_stage3_training_identity(calibrated_config, 1) == (
-        resolve_stage3_training_identity(config, 1)
-    )
-    calibration_output = output.parent / "gate-calibration"
-    calibration_manifest = run_gate_calibration(
-        calibrated_config,
-        1,
-        checkpoint_dir=output,
-        output_dir=calibration_output,
-    )
-    calibrated_artifact = torch.load(
-        calibration_output / "gate_calibrated.pt",
-        map_location="cpu",
-        weights_only=False,
-    )
-    assert calibrated_artifact["kind"] == GATE_CALIBRATED_KIND
-    assert calibrated_artifact["base_model_state_hash"] == artifact[
-        "model_state_hash"
-    ]
-    assert calibration_manifest["artifact_sha256"] == sha256_file(
-        calibration_output / "gate_calibrated.pt"
-    )
-    calibration_plan = json.loads(
-        (calibration_output / "resolved_calibration_plan.json").read_text()
-    )
-    task_plan = calibration_plan["tasks"]["experiment/a"]
-    assert task_plan["lr"] == pytest.approx(
-        task_plan["phase3_private_lr"] * 0.25
-    )
-    assert task_plan["actual_update_budget"] == task_plan["updates_per_epoch"]
-    task_checkpoint = torch.load(
-        calibration_output
-        / "tasks/experiment__a/checkpoint_epoch_00001.pt",
-        map_location="cpu",
-        weights_only=False,
-    )
-    assert task_checkpoint["updates"] == task_plan["actual_update_budget"]
-    assert all(
-        group["lr"] == pytest.approx(task_plan["lr"])
-        for group in task_checkpoint["optimizer"]["param_groups"]
-    )
-    assert all(
-        torch.equal(value, calibrated_artifact["model"][name])
-        for name, value in artifact["model"].items()
-        if not name.startswith("task_gates.")
-    )
-    assert all(
-        (
-            calibration_output
-            / "tasks"
-            / sanitize_task(task)
-            / "checkpoint_epoch_00001.pt"
-        ).is_file()
-        for task in config.tasks
-    )
-    resumed_calibration = run_gate_calibration(
-        calibrated_config,
-        1,
-        checkpoint_dir=output,
-        output_dir=calibration_output,
-        resume=True,
-    )
-    assert resumed_calibration["artifact_sha256"] == calibration_manifest[
-        "artifact_sha256"
-    ]
-    assert resumed_calibration["model_state_hash"] == calibration_manifest[
-        "model_state_hash"
-    ]
-    paired = evaluate_checkpoints(
-        calibrated_config,
-        output,
-        split="valid",
-        ensemble_folds=False,
-        task_subset=("experiment/a",),
-        fold=1,
-        gate_calibration_dir=calibration_output,
-    )
-    assert paired["model_selector"] == "gate_calibrated"
-    comparison = paired["gate_calibration_comparison"]["experiment/a"]
-    assert comparison["task"] == "experiment/a"
-    assert comparison["split"] == "valid"
-    assert comparison["fold"] == 1
-    assert comparison["pre_post_gate_kl"] >= 0.0
-    assert comparison["gate_parameter_delta_norm"] >= 0.0
-    with pytest.raises(ValueError, match="forbids forced routing"):
-        evaluate_checkpoints(
-            calibrated_config,
-            output,
-            split="valid",
-            ensemble_folds=False,
-            task_subset=("experiment/a",),
-            fold=1,
-            routing_mode="no_private",
-            gate_calibration_dir=calibration_output,
-        )
-
-    zero_config = replace(
-        config,
-        gate_calibration=Stage3GateCalibrationConfig(
-            enabled=True, epochs=0, lr_scale=0.25
-        ),
-    )
-    zero_output = output.parent / "gate-calibration-zero"
-    run_gate_calibration(
-        zero_config,
-        1,
-        checkpoint_dir=output,
-        output_dir=zero_output,
-    )
-    zero_artifact = torch.load(
-        zero_output / "gate_calibrated.pt",
-        map_location="cpu",
-        weights_only=False,
-    )
-    assert zero_artifact["model_state_hash"] == artifact["model_state_hash"]
-    assert all(
-        torch.equal(value, zero_artifact["model"][name])
-        for name, value in artifact["model"].items()
-    )
-    assert not (zero_output / "tasks").exists()
-
-    forced = evaluate_checkpoints(
-        config,
-        output,
-        split="valid",
-        ensemble_folds=False,
-        task_subset=("experiment/a",),
-        fold=1,
-        routing_mode="no_private",
-    )
-    assert forced["routing_mode"] == "no_private"
-    assert forced["reporting"]["protocol"]["routing_mode"] == "no_private"
-    assert forced["reporting"]["study_id"].endswith("-routing-no_private")
-    assert forced["gate_diagnostics"]["experiment/a"][
-        "mean_private_gate_weight"
-    ] == pytest.approx(0.0)
-    comparison = forced["routing_comparison"][0]
-    assert comparison["task"] == "experiment/a"
-    assert comparison["split"] == "valid"
-    assert comparison["fold"] == 1
-    assert comparison["routing_mode"] == "no_private"
-    assert comparison["nmae"] == pytest.approx(
-        forced["tasks"]["experiment/a"]["normalized_mae"]
-    )
-    learned_nmae = comparison["nmae"] - comparison[
-        "delta_nmae_vs_learned_gate"
-    ]
-    assert comparison["relative_delta_vs_learned_gate"] == pytest.approx(
-        comparison["delta_nmae_vs_learned_gate"] / learned_nmae
-    )
     with pytest.raises(ValueError, match="only supported by legacy"):
         evaluate_checkpoints(
             config,
@@ -1439,68 +1060,14 @@ def test_three_phase_test_reports_fold_and_pooled_gate_diagnostics(
         "private_gate_weight_p90",
     }
     assert set(evaluated["folds"]) == {f"fold{fold}" for fold in range(1, 6)}
-    assert evaluated["routing_mode"] == "learned_gate"
     for fold_result in evaluated["folds"].values():
         assert set(fold_result["gate_diagnostics"]["experiment/a"]) == gate_fields
-        assert fold_result["routing_comparison"][0][
-            "delta_nmae_vs_learned_gate"
-        ] == 0.0
     aggregate = evaluated["ensemble"]["gate_diagnostics"]["experiment/a"]
     assert set(aggregate) == gate_fields
     assert aggregate["mean_global_gate_weight"] + aggregate[
         "mean_group_gate_weight"
     ] + aggregate["mean_private_gate_weight"] == pytest.approx(1.0)
     assert 0.0 <= aggregate["task_gate_entropy"] <= 1.0
-
-    explicit_predictions = output / "evaluation-predictions-explicit-learned"
-    explicit_learned = evaluate_checkpoints(
-        config,
-        output,
-        split="test",
-        ensemble_folds=True,
-        task_subset=("experiment/a",),
-        predictions_dir=explicit_predictions,
-        routing_mode="learned_gate",
-    )
-    assert explicit_learned["folds"] == evaluated["folds"]
-    assert explicit_learned["ensemble"] == evaluated["ensemble"]
-    assert (
-        explicit_predictions / "experiment__a.csv"
-    ).read_bytes() == (predictions / "experiment__a.csv").read_bytes()
-
-    forced_predictions = output / "evaluation-predictions-global-floor"
-    forced = evaluate_checkpoints(
-        config,
-        output,
-        split="test",
-        ensemble_folds=True,
-        task_subset=("experiment/a",),
-        predictions_dir=forced_predictions,
-        routing_mode="global_floor_050",
-    )
-    assert forced["routing_mode"] == "global_floor_050"
-    for fold_result in forced["folds"].values():
-        assert fold_result["gate_diagnostics"]["experiment/a"][
-            "mean_global_gate_weight"
-        ] == pytest.approx(0.5, abs=2e-7)
-        assert fold_result["routing_comparison"][0]["fold"] in range(1, 6)
-    ensemble_comparison = forced["ensemble"]["routing_comparison"][0]
-    assert ensemble_comparison["fold"] == "ensemble"
-    assert ensemble_comparison["split"] == "test"
-    assert ensemble_comparison["routing_mode"] == "global_floor_050"
-    assert ensemble_comparison["nmae"] == pytest.approx(
-        forced["ensemble"]["tasks"]["experiment/a"]["normalized_mae"]
-    )
-    learned_ensemble_nmae = evaluated["ensemble"]["tasks"]["experiment/a"][
-        "normalized_mae"
-    ]
-    expected_delta = ensemble_comparison["nmae"] - learned_ensemble_nmae
-    assert ensemble_comparison["delta_nmae_vs_learned_gate"] == pytest.approx(
-        expected_delta
-    )
-    assert ensemble_comparison[
-        "relative_delta_vs_learned_gate"
-    ] == pytest.approx(expected_delta / learned_ensemble_nmae)
 
     with (predictions / "experiment__a.csv").open(
         newline="", encoding="utf-8"
@@ -1517,52 +1084,6 @@ def test_three_phase_test_reports_fold_and_pooled_gate_diagnostics(
         "prediction_ensemble",
         "absolute_error_ensemble",
     }
-    with (forced_predictions / "experiment__a.csv").open(
-        newline="", encoding="utf-8"
-    ) as handle:
-        forced_rows = list(csv.DictReader(handle))
-    assert set(forced_rows[0]) == set(rows[0])
-
-    calibrated_config = replace(
-        config,
-        gate_calibration=Stage3GateCalibrationConfig(
-            enabled=True, epochs=1, lr_scale=0.25
-        ),
-    )
-    calibration_root = output / "gate-calibration"
-    for fold in range(1, 6):
-        run_gate_calibration(
-            calibrated_config,
-            fold,
-            checkpoint_dir=output,
-            output_dir=calibration_root / f"fold{fold}",
-        )
-    calibrated_predictions = output / "evaluation-predictions-calibrated"
-    calibrated = evaluate_checkpoints(
-        calibrated_config,
-        output,
-        split="test",
-        ensemble_folds=True,
-        task_subset=("experiment/a",),
-        predictions_dir=calibrated_predictions,
-        gate_calibration_dir=calibration_root,
-    )
-    assert calibrated["model_selector"] == "gate_calibrated"
-    assert calibrated["base_model_selector"] == "three_phase_final"
-    for fold_result in calibrated["folds"].values():
-        comparison = fold_result["gate_calibration_comparison"]["experiment/a"]
-        assert comparison["split"] == "test"
-        assert comparison["pre_post_gate_kl"] >= 0.0
-    aggregate_comparison = calibrated["ensemble"][
-        "gate_calibration_comparison"
-    ]["experiment/a"]
-    assert aggregate_comparison["fold"] == "ensemble"
-    assert aggregate_comparison["gate_parameter_delta_norm"] is None
-    with (calibrated_predictions / "experiment__a.csv").open(
-        newline="", encoding="utf-8"
-    ) as handle:
-        calibrated_rows = list(csv.DictReader(handle))
-    assert set(calibrated_rows[0]) == set(rows[0])
 
 
 def test_three_phase_optimizer_groups_follow_ownership(
@@ -1676,54 +1197,6 @@ def test_three_phase_owner_delta_stitch_is_order_independent(
     )
     assert set(forward) == set(reverse)
     assert all(torch.equal(forward[name], reverse[name]) for name in forward)
-
-
-def test_gate_delta_stitch_is_order_independent_and_gate_only(
-    tiny_prepared: Stage3Config,
-) -> None:
-    config = _tiny_three_phase(tiny_prepared)
-    registry = resolve_task_registry(config)
-    first = Stage3SparseModel(
-        config.model, registry, 4,
-        group_configs=config.groups, task_configs=config.tasks,
-    )
-    second = Stage3SparseModel(
-        config.model, registry, 4,
-        group_configs=config.groups, task_configs=config.tasks,
-    )
-    second.load_state_dict(first.state_dict())
-    anchor = _three_phase_model_state(first)
-    deltas = {}
-    for index, task in enumerate(("experiment/a", "experiment/c"), start=1):
-        prefix = f"task_gates.{sanitize_task(task)}."
-        state = {
-            name: value + index / 100
-            for name, value in anchor.items()
-            if name.startswith(prefix)
-        }
-        deltas[task] = (state, gate_state_hash(state))
-
-    forward = stitch_gate_deltas(first, anchor, deltas)
-    reverse = stitch_gate_deltas(
-        second, anchor, dict(reversed(list(deltas.items())))
-    )
-    assert all(torch.equal(forward[name], reverse[name]) for name in anchor)
-    changed = {
-        name for name in anchor if not torch.equal(anchor[name], forward[name])
-    }
-    assert changed
-    assert all(name.startswith("task_gates.") for name in changed)
-    task, (state, _) = next(iter(deltas.items()))
-    with pytest.raises(ValueError, match="hash mismatch"):
-        stitch_gate_deltas(first, anchor, {task: (state, "corrupt")})
-    foreign_name = next(name for name in anchor if not name.startswith("task_gates."))
-    unauthorized = {**state, foreign_name: anchor[foreign_name]}
-    with pytest.raises(ValueError, match="wrong parameters"):
-        stitch_gate_deltas(
-            first,
-            anchor,
-            {task: (unauthorized, gate_state_hash(unauthorized))},
-        )
 
 
 def test_training_seed_changes_training_identity_not_prepared_artifact(
@@ -2343,19 +1816,6 @@ def test_short_training_checkpoint_and_resume_are_exact(tiny_prepared: Stage3Con
     assert evaluation["checkpoint_epoch"] == 2
     assert set(evaluation["tasks"]) == {"experiment/a"}
     assert "gate_diagnostics" not in evaluation
-    assert "routing_mode" not in evaluation
-    assert "routing_comparison" not in evaluation
-    with pytest.raises(ValueError, match="require three-phase"):
-        evaluate_checkpoints(
-            tiny_prepared,
-            continuous,
-            split="valid",
-            ensemble_folds=False,
-            checkpoint_epoch=2,
-            task_subset=("experiment/a",),
-            fold=1,
-            routing_mode="no_private",
-        )
     prediction_path = prediction_dir / "experiment__a.csv"
     with prediction_path.open(newline="", encoding="utf-8") as handle:
         prediction_rows = list(csv.DictReader(handle))
@@ -2667,15 +2127,6 @@ def test_scheduler_binds_slots_for_successful_folds(
 
 EVALUATION_IDENTITY = semantic_identity("stage3.evaluation", {"contract_version": 1})
 
-
-def test_evaluation_cli_exposes_routing_modes_with_learned_default() -> None:
-    parser = evaluate_launcher._build_parser()
-    action = next(
-        action for action in parser._actions if action.dest == "routing_mode"
-    )
-    assert tuple(action.choices) == ROUTING_MODES
-    assert action.default == "learned_gate"
-
 class _Progress:
     class _Status:
         def __enter__(self) -> None:
@@ -2727,7 +2178,6 @@ def test_single_validation_fold_uses_fold_directory_and_run_lifecycle(
         fold=3,
         checkpoint_epoch=10,
         tasks=["task/a"],
-        routing_mode="learned_gate",
         study_id="study-a",
         progress=_Progress(),
         resolve_identity=lambda *args, **kwargs: EVALUATION_IDENTITY,
@@ -2735,9 +2185,7 @@ def test_single_validation_fold_uses_fold_directory_and_run_lifecycle(
     )
     assert open_calls[0]["output"] == Path("evaluate/fold3")
     assert open_calls[0]["details"]["reporting_study_id"] == "study-a"
-    assert "routing_mode" not in open_calls[0]["details"]
     assert evaluate_calls[0]["fold"] == 3
-    assert evaluate_calls[0]["routing_mode"] == "learned_gate"
     assert evaluate_calls[0]["predictions_dir"] == Path(
         "/repo/evaluate/fold3/predictions"
     )
@@ -2767,7 +2215,6 @@ def test_test_path_remains_one_root_ensemble_run(
         checkpoint_epoch=100,
         tasks=None,
         study_id=None,
-        routing_mode="learned_gate",
     )
     evaluate_launcher._run_test(
         args=args,
@@ -2788,7 +2235,6 @@ def test_test_path_remains_one_root_ensemble_run(
             "predictions_dir": Path("/repo/evaluate_test/predictions"),
             "reporting_study_id": None,
             "expected_evaluation_identity": EVALUATION_IDENTITY,
-            "routing_mode": "learned_gate",
         }
     ]
     assert run.completed == {"split": "test"}

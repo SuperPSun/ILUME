@@ -1,6 +1,6 @@
 # ADR-0056：Stage 3 inference-only task-gate routing ablation
 
-- 状态：Accepted
+- 状态：Retired
 - 日期：2026-09-14
 - 关联：ADR-0054 的 task-gate diagnostics
 
@@ -29,10 +29,11 @@
 
 ## 后果
 
-- 现有prepared artifact和Stage 3 checkpoint可直接复用，只需执行evaluation。
-- forced routing结果是诊断证据，不得按test表现直接选为正式模型。
-- 非默认mode多执行一次mixture、normalization和tower，但不重复representation或expert
-  计算，也不增加模型forward次数。
+- 实验已经完成。结果表明 local specialization 是必要的，统一 hard GLOBAL floor、
+  no-private 和 global-only 不进入正式方案。
+- evaluator 中的 forced routing、CLI、identity、summary 与模型 intervention 支持均已移除；
+  历史输出只读保留，当前代码不再加载或续跑。
+- 现役 Stage 3 仅保留 Flat learned task gate 与 ADR-0054 的只读 gate diagnostics。
 
 ## 关联
 

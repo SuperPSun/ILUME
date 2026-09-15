@@ -1,6 +1,6 @@
 # ADR-0059：Stage 3 gate-only post-training calibration
 
-- 状态：Accepted
+- 状态：Retired
 - 日期：2026-09-15
 - 关联：ADR-0048 的 three-phase final、ADR-0054 的 task-gate diagnostics
 
@@ -36,10 +36,11 @@
 
 ## 后果
 
-- Stage 1/2/3 prepared artifact 与既有 Flat final checkpoint均可复用；只需另行执行
-  calibration和paired evaluation。
-- calibration结果是独立诊断实验，不替代正式Flat baseline，也不改变主训练身份。
-- resume只接受同fold、同anchor、同recipe且history/checkpoint完全一致的branch。
+- 实验已经完成，结果不足以支持 gate-only post-training calibration 进入正式 Stage 3。
+- calibration CLI、配置、训练模块、artifact加载、resume与paired evaluator支持均已从现役
+  代码移除；历史 `gate_calibrated.pt` 与summary只读保留，当前代码不再加载或续跑。
+- 正式 Stage 3 继续以 Flat learned gate 的 `three_phase_final.pt` 为唯一现役three-phase
+  evaluation artifact。
 
 ## 关联
 
