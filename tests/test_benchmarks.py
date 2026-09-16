@@ -58,6 +58,7 @@ from common.identity import semantic_identity
 from common.reporting import (
     REPORTING_SCHEMA_VERSION,
     comparison_identity,
+    sanitize_task_id,
 )
 
 from stage3.config import load_stage3_config
@@ -944,6 +945,32 @@ def _write_run(
     root: Path, summary: dict[str, object], *, stage: str = "benchmark"
 ) -> None:
     root.mkdir(parents=True)
+    reporting = summary.get("reporting", {})
+    if stage == "stage3" and reporting.get("model_id") == "ilume":
+        protocol = reporting["protocol"]
+        prediction_field = (
+            "prediction_ensemble"
+            if protocol["split"] == "test"
+            else "prediction"
+        )
+        manifests = []
+        for task in protocol["expected_tasks"]:
+            path = root / "predictions" / f"{sanitize_task_id(task)}.csv"
+            manifest = write_prediction_csv(
+                path,
+                [
+                    {
+                        "source_row": protocol.get("fold", 0),
+                        "target": 1.0,
+                        prediction_field: 1.25,
+                    }
+                ],
+                ("source_row", "target", prediction_field),
+            )
+            manifest["path"] = f"predictions/{path.name}"
+            manifest["task"] = task
+            manifests.append(manifest)
+        reporting["predictions"] = manifests
     metadata = {
         "schema_version": 1,
         "stage": stage,
@@ -1082,6 +1109,10 @@ def test_stage3_summary_ignores_normalization_but_requires_shared_sources(
     payload = publish_summary(inputs, tmp_path / "summary", tmp_path)
     assert len(payload["leaderboards"]["stage3_test"]) == 2
     assert len(payload["leaderboards"]["stage3_validation"]) == 2
+    assert not any((tmp_path / "summary" / "ilume_scatter" / "test").iterdir())
+    assert not any(
+        (tmp_path / "summary" / "ilume_scatter" / "validation").iterdir()
+    )
     assert "stage2" not in json.dumps(payload).lower()
     assert all("stage2" not in name for name in SUMMARY_FILES)
     with (tmp_path / "summary" / "stage3_test_task_mae.csv").open(
@@ -1139,6 +1170,73 @@ def test_stage3_summary_separates_ilume_variants_by_output_directory(
     ]
     assert [row["macro_normalized_mae"] for row in rows] == [1.0, 2.0]
     assert all("duplicate_folds" not in row["issues"] for row in payload["health"])
+    scatter = (
+        tmp_path / "summary" / "ilume_scatter" / "validation"
+        / "experiment__example.svg"
+    )
+    svg = scatter.read_text(encoding="utf-8")
+    assert "ILUME (base) · validation · n=5" in svg
+    assert 'class="identity-line"' in svg
+    assert 'class="scatter-points"' in svg
+
+    original = svg
+    publish_summary(inputs, tmp_path / "summary", tmp_path)
+    assert scatter.read_text(encoding="utf-8") == original
+    prediction = (
+        inputs / "v2" / "stage3" / "base" / "validation" / "fold1"
+        / "predictions" / "experiment__example.csv"
+    )
+    prediction.write_text(
+        prediction.read_text(encoding="utf-8") + "2,1,2\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="SHA256 mismatch"):
+        publish_summary(inputs, tmp_path / "summary", tmp_path)
+    assert scatter.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        ("manifest", "lacks prediction manifests"),
+        ("rows", "row count mismatch"),
+        ("columns", "lacks.*prediction"),
+        ("nonfinite", "non-finite point"),
+    ),
+)
+def test_ilume_scatter_rejects_malformed_prediction_artifacts(
+    tmp_path: Path, mutation: str, message: str
+) -> None:
+    inputs = tmp_path / "outputs"
+    for fold in range(1, 6):
+        _write_run(
+            inputs / "v2" / "stage3" / "base" / "validation" / f"fold{fold}",
+            _stage3_validation_summary("shared-study", fold, mae=1.0),
+            stage="stage3",
+        )
+    run = inputs / "v2" / "stage3" / "base" / "validation" / "fold1"
+    summary_path = run / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    if mutation == "manifest":
+        summary["reporting"].pop("predictions")
+    elif mutation == "rows":
+        summary["reporting"]["predictions"][0]["rows"] = 2
+    else:
+        prediction = run / "predictions" / "experiment__example.csv"
+        if mutation == "columns":
+            prediction.write_text(
+                "source_row,target,wrong\n1,1,1.25\n", encoding="utf-8"
+            )
+        else:
+            prediction.write_text(
+                "source_row,target,prediction\n1,nan,1.25\n", encoding="utf-8"
+            )
+        manifest = summary["reporting"]["predictions"][0]
+        manifest["sha256"] = hashlib.sha256(prediction.read_bytes()).hexdigest()
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        publish_summary(inputs, tmp_path / "summary", tmp_path)
 
 
 def test_prediction_csv_is_atomic_and_records_integrity(tmp_path: Path) -> None:
@@ -1235,6 +1333,18 @@ def test_summary_labels_capacity_v1_stage3_scales(tmp_path: Path) -> None:
     for label in expected:
         assert label in overview
         assert label in radar
+    validation_scatter = (
+        tmp_path / "summary" / "ilume_scatter" / "validation"
+        / "experiment__example.svg"
+    ).read_text(encoding="utf-8")
+    test_scatter = (
+        tmp_path / "summary" / "ilume_scatter" / "test"
+        / "experiment__example.svg"
+    ).read_text(encoding="utf-8")
+    assert "validation · n=5" in validation_scatter
+    assert "test · n=1" in test_scatter
+    assert "ILUME Capacity v1 (Base)" in validation_scatter
+    assert "ILUME Capacity v1 (Base)" in test_scatter
 
 # --- D-MPNN runtime smoke ---
 

@@ -659,7 +659,7 @@ python scripts/benchmarks/summarize.py \
   --output summary
 ```
 
-只有 schema 完整且 comparison identity 兼容的 completed Stage 3 run 进入榜单；按 ADR-0031 允许 train-only normalization 不同，但 valid/test source 与其余协议必须一致。`stage3_{test,validation}_task_mae.csv` 以模型为行、registry task 为列，分别展示 test 原始 MAE 和 validation 五折 MAE 均值；对应的 `stage3_{test,validation}_task_rank.csv` 按每个任务的 MAE 从小到大给出模型排名。旧 candidate 的 Stage 2 section 被忽略。其他 run 进入 health。损坏的选中正式结果会使发布失败，已有 `summary/` 保持不变。详细 reporting 合同见 [ADR-0031/0043](docs/adr/README.md)。
+只有 schema 完整且 comparison identity 兼容的 completed Stage 3 run 进入榜单；按 ADR-0031 允许 train-only normalization 不同，但 valid/test source 与其余协议必须一致。`stage3_{test,validation}_task_mae.csv` 以模型为行、registry task 为列，分别展示 test 原始 MAE 和 validation 五折 MAE 均值；对应的 `stage3_{test,validation}_task_rank.csv` 按每个任务的 MAE 从小到大给出模型排名。`ilume_scatter/validation/` 合并 validation 榜首 ILUME 的五折 raw prediction，`ilume_scatter/test/` 使用 test 榜首 ILUME 的 ensemble prediction，并按有样本的 task 输出 observed-vs-predicted SVG。旧 candidate 的 Stage 2 section 被忽略。其他 run 进入 health。损坏的选中正式结果或 prediction artifact 会使发布失败，已有 `summary/` 保持不变。详细 reporting 合同见 [ADR-0031/0043/0061](docs/adr/README.md)。
 
 ## 验证
 

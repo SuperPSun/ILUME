@@ -13,14 +13,15 @@ from xml.sax.saxutils import escape
 
 from common.identity import validate_semantic_identity
 from common.identity import semantic_identity
-from common.io import atomic_json
-from common.reporting import REPORTING_SCHEMA_VERSION
+from common.io import atomic_json, sha256_file
+from common.reporting import REPORTING_SCHEMA_VERSION, sanitize_task_id
 
 
 SUMMARY_SCHEMA_VERSION = 1
 SUMMARY_FILES = (
     "overview.md",
     "radar.svg",
+    "ilume_scatter",
     "stage3_test_leaderboard.csv",
     "stage3_validation_leaderboard.csv",
     "stage3_test_metrics.csv",
@@ -41,6 +42,15 @@ class Candidate:
     summary: dict[str, Any] | None
     current: bool
     issues: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ScatterPlot:
+    split: str
+    task: str
+    run: str
+    model: str
+    points: tuple[tuple[float, float], ...]
 
 
 def _json(path: Path) -> dict[str, Any]:
@@ -288,6 +298,12 @@ def _validation_study_key(
         str(reporting["model_id"]),
         str(reporting["study_id"]),
         _ilume_stage3_variant(candidate, reporting) or "",
+    )
+
+
+def _validation_run_id(model_id: str, study_id: str, variant: str) -> str:
+    return f"{model_id}@study:{study_id}" + (
+        f":variant:{variant}" if variant else ""
     )
 
 
@@ -696,9 +712,7 @@ def _stage3_validation(
             for item in items[1:]
         ):
             continue
-        run = f"{model_id}@study:{study_id}" + (
-            f":variant:{variant}" if variant else ""
-        )
+        run = _validation_run_id(model_id, study_id, variant)
         display = _display_name(items[0], first_reporting)
         source = ";".join(item.source_run for item in items)
         checkpoints = {item.summary["checkpoint_epoch"] for item in items}
@@ -1149,15 +1163,250 @@ def _radar_svg(payload: Mapping[str, Any]) -> str:
     lines.append("</svg>")
     return "\n".join(lines) + "\n"
 
-def build_summary(
-    input_roots: Path | Sequence[Path],
-    repository_root: Path,
+
+def _prediction_manifest(
+    candidate: Candidate, task: str
+) -> Mapping[str, Any]:
+    assert candidate.summary is not None
+    manifests = candidate.summary["reporting"].get("predictions")
+    if not isinstance(manifests, list):
+        raise ValueError(
+            f"Selected ILUME run lacks prediction manifests: "
+            f"{candidate.source_run}"
+        )
+    matches = [
+        item for item in manifests
+        if isinstance(item, dict) and item.get("task") == task
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"Selected ILUME run must have exactly one prediction manifest "
+            f"for {task}: {candidate.source_run}"
+        )
+    return matches[0]
+
+
+def _prediction_points(
+    candidate: Candidate,
+    task: str,
     *,
-    include_roots: Path | Sequence[Path] = (),
-) -> dict[str, Any]:
-    candidates = discover_candidates(
-        input_roots, repository_root, include_roots=include_roots
+    prediction_field: str,
+) -> tuple[tuple[float, float], ...]:
+    manifest = _prediction_manifest(candidate, task)
+    relative = manifest.get("path")
+    if not isinstance(relative, str) or not relative:
+        raise ValueError(
+            f"Prediction manifest path is invalid for {task}: "
+            f"{candidate.source_run}"
+        )
+    path = (candidate.root / relative).resolve()
+    if not _is_within(path, candidate.root.resolve()) or not path.is_file():
+        raise ValueError(
+            f"Prediction artifact is missing or outside its run for {task}: "
+            f"{candidate.source_run}"
+        )
+    expected_sha = manifest.get("sha256")
+    if not isinstance(expected_sha, str) or sha256_file(path) != expected_sha:
+        raise ValueError(
+            f"Prediction artifact SHA256 mismatch for {task}: "
+            f"{candidate.source_run}"
+        )
+    expected_rows = manifest.get("rows")
+    if type(expected_rows) is not int or expected_rows < 0:
+        raise ValueError(
+            f"Prediction manifest row count is invalid for {task}: "
+            f"{candidate.source_run}"
+        )
+
+    points: list[tuple[float, float]] = []
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        fields = set(reader.fieldnames or ())
+        required = {"target", prediction_field}
+        if not required.issubset(fields):
+            raise ValueError(
+                f"Prediction artifact lacks {sorted(required)} for {task}: "
+                f"{candidate.source_run}"
+            )
+        for row_number, row in enumerate(reader, start=2):
+            try:
+                actual = float(row["target"])
+                predicted = float(row[prediction_field])
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"Prediction artifact has a non-numeric point at "
+                    f"{path}:{row_number}"
+                ) from error
+            if not math.isfinite(actual) or not math.isfinite(predicted):
+                raise ValueError(
+                    f"Prediction artifact has a non-finite point at "
+                    f"{path}:{row_number}"
+                )
+            points.append((actual, predicted))
+    if len(points) != expected_rows:
+        raise ValueError(
+            f"Prediction artifact row count mismatch for {task}: "
+            f"expected {expected_rows}, found {len(points)}"
+        )
+    return tuple(points)
+
+
+def _ilume_candidates_by_run(
+    candidates: Sequence[Candidate],
+) -> dict[str, tuple[Candidate, ...]]:
+    grouped: dict[str, list[Candidate]] = {}
+    for candidate in _current_completed(candidates):
+        if candidate.metadata.get("stage") != "stage3":
+            continue
+        assert candidate.summary is not None
+        reporting = candidate.summary["reporting"]
+        if reporting.get("model_id") != "ilume":
+            continue
+        if candidate.summary.get("split") == "test":
+            run = _run_id("ilume", candidate.source_run)
+        elif candidate.summary.get("split") == "valid":
+            model_id, study_id, variant = _validation_study_key(
+                candidate, reporting
+            )
+            run = _validation_run_id(model_id, study_id, variant)
+        else:
+            continue
+        grouped.setdefault(run, []).append(candidate)
+    return {
+        run: tuple(
+            sorted(
+                items,
+                key=lambda item: int(
+                    item.summary["reporting"]["protocol"].get("fold", 0)
+                ),
+            )
+        )
+        for run, items in grouped.items()
+    }
+
+
+def _ilume_scatter_plots(
+    candidates: Sequence[Candidate], payload: Mapping[str, Any]
+) -> tuple[ScatterPlot, ...]:
+    candidates_by_run = _ilume_candidates_by_run(candidates)
+    plots: list[ScatterPlot] = []
+    for summary_key, split, prediction_field in (
+        ("stage3_validation", "validation", "prediction"),
+        ("stage3_test", "test", "prediction_ensemble"),
+    ):
+        leader = next(
+            (
+                row
+                for row in payload["leaderboards"][summary_key]
+                if str(row["run"]) in candidates_by_run
+            ),
+            None,
+        )
+        if leader is None:
+            continue
+        run = str(leader["run"])
+        sources = candidates_by_run[run]
+        tasks = sorted(
+            str(row["task"])
+            for row in payload["metrics"][summary_key]
+            if row["run"] == run
+        )
+        for task in tasks:
+            points = tuple(
+                point
+                for candidate in sources
+                for point in _prediction_points(
+                    candidate,
+                    task,
+                    prediction_field=prediction_field,
+                )
+            )
+            if not points:
+                raise ValueError(
+                    f"Selected ILUME {split} task has no prediction rows: "
+                    f"{task}"
+                )
+            plots.append(
+                ScatterPlot(
+                    split=split,
+                    task=task,
+                    run=run,
+                    model=str(leader["model"]),
+                    points=points,
+                )
+            )
+    return tuple(plots)
+
+
+def _scatter_svg(plot: ScatterPlot) -> str:
+    values = [value for point in plot.points for value in point]
+    lower = min(values)
+    upper = max(values)
+    span = upper - lower
+    padding = span * 0.05 if span > 0.0 else max(abs(lower), 1.0) * 0.05
+    axis_min = lower - padding
+    axis_max = upper + padding
+    axis_span = axis_max - axis_min
+    left, top, width, height = 92.0, 104.0, 560.0, 520.0
+
+    def project_x(value: float) -> float:
+        return left + (value - axis_min) / axis_span * width
+
+    def project_y(value: float) -> float:
+        return top + height - (value - axis_min) / axis_span * height
+
+    ticks = tuple(axis_min + axis_span * index / 4.0 for index in range(5))
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<svg xmlns="http://www.w3.org/2000/svg" width="740" height="720" viewBox="0 0 740 720">',
+        '<rect width="740" height="720" fill="white"/>',
+        '<defs><clipPath id="plot-area"><rect x="92" y="104" width="560" height="520"/></clipPath></defs>',
+        f'<text x="370" y="34" text-anchor="middle" font-family="sans-serif" font-size="22" font-weight="bold">{_svg_text(plot.task)}</text>',
+        f'<text x="370" y="61" text-anchor="middle" font-family="sans-serif" font-size="13">{_svg_text(plot.model)} · {_svg_text(plot.split)} · n={len(plot.points)}</text>',
+        f'<text x="370" y="82" text-anchor="middle" font-family="sans-serif" font-size="10" fill="#666">{_svg_text(plot.run)}</text>',
+        '<rect x="92" y="104" width="560" height="520" fill="#fafafa" stroke="#333" stroke-width="1"/>',
+    ]
+    for tick in ticks:
+        x = project_x(tick)
+        y = project_y(tick)
+        label = format(tick, ".6g")
+        lines.extend(
+            (
+                f'<line x1="{x:.2f}" y1="104" x2="{x:.2f}" y2="624" stroke="#e0e0e0" stroke-width="1"/>',
+                f'<line x1="92" y1="{y:.2f}" x2="652" y2="{y:.2f}" stroke="#e0e0e0" stroke-width="1"/>',
+                f'<text x="{x:.2f}" y="645" text-anchor="middle" font-family="sans-serif" font-size="11">{_svg_text(label)}</text>',
+                f'<text x="82" y="{y + 4:.2f}" text-anchor="end" font-family="sans-serif" font-size="11">{_svg_text(label)}</text>',
+            )
+        )
+    lines.append(
+        f'<line class="identity-line" x1="{project_x(axis_min):.2f}" y1="{project_y(axis_min):.2f}" '
+        f'x2="{project_x(axis_max):.2f}" y2="{project_y(axis_max):.2f}" stroke="#d55e00" stroke-width="1.5" stroke-dasharray="6 4" clip-path="url(#plot-area)"/>'
     )
+    projected = [
+        (project_x(actual), project_y(predicted))
+        for actual, predicted in plot.points
+    ]
+    for start in range(0, len(projected), 5000):
+        path_data = "".join(
+            f"M{x:.2f},{y:.2f}h0.01"
+            for x, y in projected[start:start + 5000]
+        )
+        lines.append(
+            f'<path class="scatter-points" d="{path_data}" fill="none" stroke="#0072b2" '
+            'stroke-width="2" stroke-linecap="round" stroke-opacity="0.24" clip-path="url(#plot-area)"/>'
+        )
+    lines.extend(
+        (
+            '<text x="372" y="688" text-anchor="middle" font-family="sans-serif" font-size="15">Observed</text>',
+            '<text x="25" y="364" text-anchor="middle" font-family="sans-serif" font-size="15" transform="rotate(-90 25 364)">Predicted</text>',
+            '<line x1="522" y1="666" x2="548" y2="666" stroke="#d55e00" stroke-width="1.5" stroke-dasharray="6 4"/>',
+            '<text x="555" y="670" font-family="sans-serif" font-size="11">y = x</text>',
+            '</svg>',
+        )
+    )
+    return "\n".join(lines) + "\n"
+
+def _build_summary(candidates: Sequence[Candidate]) -> dict[str, Any]:
     health = _health(candidates)
     stage3_test, stage3_test_metrics, test_wins = _stage3_test(
         candidates
@@ -1190,6 +1439,18 @@ def build_summary(
         "wins": {"stage3_test": test_wins},
         "health": health,
     }
+
+
+def build_summary(
+    input_roots: Path | Sequence[Path],
+    repository_root: Path,
+    *,
+    include_roots: Path | Sequence[Path] = (),
+) -> dict[str, Any]:
+    candidates = discover_candidates(
+        input_roots, repository_root, include_roots=include_roots
+    )
+    return _build_summary(candidates)
 
 def _comparison_catalog(
     candidates: Sequence[Candidate],
@@ -1246,9 +1507,22 @@ def _comparison_catalog(
     }
 
 def write_summary_snapshot(
-    payload: Mapping[str, Any], destination: Path
+    payload: Mapping[str, Any],
+    destination: Path,
+    *,
+    scatter_plots: Sequence[ScatterPlot] = (),
 ) -> None:
     destination.mkdir(parents=True, exist_ok=False)
+    scatter_root = destination / "ilume_scatter"
+    for split in ("validation", "test"):
+        (scatter_root / split).mkdir(parents=True)
+    seen_scatter_paths: set[Path] = set()
+    for plot in scatter_plots:
+        path = scatter_root / plot.split / f"{sanitize_task_id(plot.task)}.svg"
+        if path in seen_scatter_paths:
+            raise ValueError(f"Duplicate ILUME scatter plot path: {path}")
+        seen_scatter_paths.add(path)
+        path.write_text(_scatter_svg(plot), encoding="utf-8")
     leaderboards = payload["leaderboards"]
     metrics = payload["metrics"]
     test_fields, test_mae, test_rank = _stage3_task_tables(
@@ -1394,15 +1668,19 @@ def publish_summary(
     *,
     include_roots: Path | Sequence[Path] = (),
 ) -> dict[str, Any]:
-    payload = build_summary(
+    candidates = discover_candidates(
         input_roots, repository_root, include_roots=include_roots
     )
+    payload = _build_summary(candidates)
+    scatter_plots = _ilume_scatter_plots(candidates, payload)
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{output.name}-staging-", dir=output.parent))
     shutil.rmtree(staging)
     backup: Path | None = None
     try:
-        write_summary_snapshot(payload, staging)
+        write_summary_snapshot(
+            payload, staging, scatter_plots=scatter_plots
+        )
         if output.exists():
             if not output.is_dir():
                 raise FileExistsError(f"Summary output is not a directory: {output}")
