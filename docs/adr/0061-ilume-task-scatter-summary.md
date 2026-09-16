@@ -17,7 +17,8 @@ observed-vs-predicted 分布。逐样本 prediction 已由 Stage 3 evaluation �
    leaderboard 中排名最高的 ILUME 使用 ensemble prediction 发布有 test 样本的 task。
 2. validation 使用 raw `target`/`prediction`，test 使用 raw
    `target`/`prediction_ensemble`。图的两个坐标轴共享范围并显示 `y=x`，不改变任何
-   metric、leaderboard、selection 或 `summary.json` schema。
+   metric、leaderboard、selection 或 `summary.json` schema。散点尺寸随该图样本数连续缩放，
+   并限制在 0.75～4.0 SVG user units，避免稠密任务遮挡或稀疏任务难以辨认。
 3. 绘图前严格校验 prediction manifest 的 task、相对路径、行数与 SHA256，以及 CSV
    必需列和有限数值。失败沿用 summarizer 的原子发布语义，不替换已有 `summary/`。
 4. SVG 由标准库确定性生成，不增加主环境依赖，也不复制 prediction CSV。

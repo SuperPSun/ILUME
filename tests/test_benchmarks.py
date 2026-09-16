@@ -1345,6 +1345,13 @@ def test_summary_labels_capacity_v1_stage3_scales(tmp_path: Path) -> None:
     assert "test · n=1" in test_scatter
     assert "ILUME Capacity v1 (Base)" in validation_scatter
     assert "ILUME Capacity v1 (Base)" in test_scatter
+    validation_size = float(
+        re.search(r'data-point-size="([0-9.]+)"', validation_scatter).group(1)
+    )
+    test_size = float(
+        re.search(r'data-point-size="([0-9.]+)"', test_scatter).group(1)
+    )
+    assert test_size > validation_size
 
 # --- D-MPNN runtime smoke ---
 

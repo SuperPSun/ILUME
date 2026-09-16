@@ -1347,6 +1347,9 @@ def _scatter_svg(plot: ScatterPlot) -> str:
     axis_min = lower - padding
     axis_max = upper + padding
     axis_span = axis_max - axis_min
+    point_size = max(
+        0.75, min(4.0, 5.0 / len(plot.points) ** 0.15)
+    )
     left, top, width, height = 92.0, 104.0, 560.0, 520.0
 
     def project_x(value: float) -> float:
@@ -1392,8 +1395,10 @@ def _scatter_svg(plot: ScatterPlot) -> str:
             for x, y in projected[start:start + 5000]
         )
         lines.append(
-            f'<path class="scatter-points" d="{path_data}" fill="none" stroke="#0072b2" '
-            'stroke-width="2" stroke-linecap="round" stroke-opacity="0.24" clip-path="url(#plot-area)"/>'
+            f'<path class="scatter-points" data-point-size="{point_size:.3f}" '
+            f'd="{path_data}" fill="none" stroke="#0072b2" '
+            f'stroke-width="{point_size:.3f}" stroke-linecap="round" '
+            'stroke-opacity="0.24" clip-path="url(#plot-area)"/>'
         )
     lines.extend(
         (
