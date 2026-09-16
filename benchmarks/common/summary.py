@@ -1348,7 +1348,7 @@ def _scatter_svg(plot: ScatterPlot) -> str:
     axis_max = upper + padding
     axis_span = axis_max - axis_min
     point_size = max(
-        0.75, min(4.0, 5.0 / len(plot.points) ** 0.15)
+        0.75, min(4.0, 5.0 / len(plot.points) ** 0.5)
     )
     left, top, width, height = 92.0, 104.0, 560.0, 520.0
 
