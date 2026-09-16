@@ -1352,6 +1352,8 @@ def test_summary_labels_capacity_v1_stage3_scales(tmp_path: Path) -> None:
         re.search(r'data-point-size="([0-9.]+)"', test_scatter).group(1)
     )
     assert test_size > validation_size
+    assert test_size == 6.0
+    assert validation_size > 4.0
 
 # --- D-MPNN runtime smoke ---
 
