@@ -1178,6 +1178,7 @@ def test_stage3_summary_separates_ilume_variants_by_output_directory(
     assert "ILUME (base) · validation · n=5" in svg
     assert 'class="identity-line"' in svg
     assert 'class="scatter-points"' in svg
+    assert 'stroke="#003f88"' in svg
 
     original = svg
     publish_summary(inputs, tmp_path / "summary", tmp_path)

@@ -1396,7 +1396,7 @@ def _scatter_svg(plot: ScatterPlot) -> str:
         )
         lines.append(
             f'<path class="scatter-points" data-point-size="{point_size:.3f}" '
-            f'd="{path_data}" fill="none" stroke="#0072b2" '
+            f'd="{path_data}" fill="none" stroke="#003f88" '
             f'stroke-width="{point_size:.3f}" stroke-linecap="round" '
             'stroke-opacity="0.24" clip-path="url(#plot-area)"/>'
         )
