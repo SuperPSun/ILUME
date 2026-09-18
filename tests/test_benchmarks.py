@@ -61,8 +61,8 @@ from benchmarks.common.environment import (
     ENVIRONMENT_MARKER,
     ensure_benchmark_environment,
     environment_command,
-    spmm_asset_snapshot,
 )
+from benchmarks.spmm.environment import spmm_asset_snapshot
 from benchmarks.common.features import (
     FeatureCache,
     FeaturePreprocessor,
@@ -1448,14 +1448,14 @@ def test_spmm_asset_snapshot_rejects_hash_mismatch(tmp_path: Path, monkeypatch) 
         "checkpoint_SPMM.ckpt": config.model["pretrained_sha256"],
     }
     monkeypatch.setattr(
-        "benchmarks.common.environment.repository_path",
+        "benchmarks.spmm.environment.repository_path",
         lambda value: checkpoint if str(value).endswith(".ckpt") else checkout,
     )
     monkeypatch.setattr(
-        "benchmarks.common.environment.sha256_file", lambda path: expected[path.name]
+        "benchmarks.spmm.environment.sha256_file", lambda path: expected[path.name]
     )
     monkeypatch.setattr(
-        "benchmarks.common.environment.subprocess.run",
+        "benchmarks.spmm.environment.subprocess.run",
         lambda *args, **kwargs: SimpleNamespace(
             returncode=0, stdout=f"{config.model['revision']}\n"
         ),
@@ -1470,7 +1470,7 @@ def test_spmm_asset_snapshot_rejects_hash_mismatch(tmp_path: Path, monkeypatch) 
         mask_token_id = 1
 
     monkeypatch.setattr(
-        "benchmarks.common.environment._spmm_tokenizer",
+        "benchmarks.spmm.environment._spmm_tokenizer",
         lambda path, max_input_chars: Tokenizer(),
     )
     assert spmm_asset_snapshot(config)["revision"] == config.model["revision"]
@@ -1691,11 +1691,11 @@ class FakeLlaSMolTokenizer:
 def test_llasmol_missing_assets_fail_before_model_loading(
     tmp_path: Path, monkeypatch
 ) -> None:
-    from benchmarks.common.environment import llasmol_asset_snapshot
+    from benchmarks.llasmol.environment import llasmol_asset_snapshot
 
     config = load_benchmark_config("configs/benchmarks/llasmol.yaml")
     monkeypatch.setattr(
-        "benchmarks.common.environment.repository_path", lambda path: tmp_path / str(path)
+        "benchmarks.llasmol.environment.repository_path", lambda path: tmp_path / str(path)
     )
     with pytest.raises(FileNotFoundError, match="local assets are incomplete"):
         llasmol_asset_snapshot(config)

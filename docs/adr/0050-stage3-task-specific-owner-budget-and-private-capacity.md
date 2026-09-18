@@ -4,9 +4,9 @@
 - 日期：2026-09-12
 - 修订：ADR-0048 的现役 owner LR、epoch、PRIVATE width 与 task 配置字段
 
-> 数值状态：本 ADR 记录上一轮 recipe；现役 task-specific capacity、dropout 与 epoch 修订见
-> [ADR-0051](0051-stage3-weak-task-private-regularization.md)。未被 ADR-0051 修订的 LR、
-> size-class 默认与三阶段语义继续有效。
+本文集中维护 owner recipe 的字段、默认值、零预算与 identity 合同（含原 ADR-0051 的有效机制）。
+现役 task 例外见 [ADR-0055](0055-stage3-pec50-phase3-single-variable-rollback.md) 与正式 YAML；
+数值试验过程见 [历史摘要](history.md#adr-0051)，无需串读回滚链。
 
 ## 背景
 
@@ -30,27 +30,26 @@ owner LR、训练寿命和 PRIVATE/Tower/FiLM width。
    `phase2_private_epochs`、`phase3_private_epochs`；capacity 继续只在 `model_overrides`
    覆盖 PRIVATE/Tower/FiLM ratio。未覆盖值回退到 size-class 默认。旧 `phase3_epochs`
    字段退役并拒绝加载。
-4. capacity 例外为：static permittivity 与 volume expansion `0.25/0.25/0.25`；thermal
-   conductivity 及 electrical conductivity、refractive index、surface tension、viscosity
-   `0.75/0.75/0.75`；pEC50 `1/1/1`；glass transition 与 thermal decomposition
-   `1.25/1.25/1.0`。
+4. `model_overrides.private_dropout` 限定在 `[0, 0.15]`，缺省回退 `model.dropout`；只作用于
+   PRIVATE-owned Expert、Tower 和 FiLM。GLOBAL/GROUP 不受 task dropout 覆盖影响。
 5. Phase 1 PRIVATE LR 例外为 electrical、refractive index、surface tension `8e-5`，
    viscosity `1e-4`，density `1.25e-4`。Phase 2/3 LR 仍由连续性公式推导，并继续满足
    Phase 1 的严格 `GLOBAL > GROUP > PRIVATE`。
-6. epoch 例外为：thermal conductivity Phase 2=`6`、Phase 3=`3`；Phase 3 的 electrical=`4`、
-   self diffusion=`6`、surface tension=`6`、viscosity=`6`、transfer=`10`、transfer organic=`15`；
-   static permittivity 与 volume expansion=`0`。零预算 task 不创建 Phase 3 optimizer、history
-   或 checkpoint，PRIVATE state 逐 bit 继承 Phase-2 anchor并在 final manifest 中审计。
-7. `resolved_training_plan.json` 展开最终 task-specific LR、capacity、nominal/effective epoch、
-   freeze epoch与 update budget。three-phase training identity 升级；prepared identity和 legacy
-   v1/Capacity identity不变。
+6. Phase 2 PRIVATE epoch 允许为 0：owner 从 branch 开始即冻结且不进入 optimizer，task
+   仍参与 raw sampling 并向 GROUP 提供梯度；该 owner 仍进入 delta 与 stitch 完整性校验，
+   state 逐 bit 继承 Phase-1 anchor。Phase 3 零预算 task 不创建 optimizer、history 或
+   checkpoint，PRIVATE state 逐 bit 继承 Phase-2 anchor，在 final manifest 中审计。
+7. `resolved_training_plan.json` format v3 展开最终 task-specific LR、capacity、dropout、
+   nominal/effective epoch、freeze epoch 与 update budget；完整 recipe 进入 training identity
+   contract v5。相同版本号不代表相同 identity，recipe 不同的 checkpoint 不得交叉 resume。
+   prepared identity 与 legacy v1/Capacity identity 不变。
 
-## 后果
+## 兼容边界
 
-- 六套现役 Stage 3 配置使用同一 recipe，必须在新目录重新完成五折 train、validation 与 test。
-- Stage 1、Stage 2 与既有 Stage 3 prepared artifact 可复用；旧 three-phase checkpoint不得续训。
-- raw sampling、loss weighting、PCGrad、optimizer、ownership clipping、专家数、固定最后 epoch及
-  validation reporting-only 合同均保持不变。
+六套现役 Stage 3 配置共享同一 recipe。改变 recipe 需要在新目录重新训练；仅整理代码或文档
+不产生新的 recipe，也不要求重跑。Stage 1/2 与身份一致的 Stage 3 prepared artifact 可复用。
+raw sampling、loss weighting、PCGrad、optimizer、ownership clipping、专家数、固定末轮与
+validation reporting-only 合同均不因 recipe 整理改变。
 
 ## 关联
 

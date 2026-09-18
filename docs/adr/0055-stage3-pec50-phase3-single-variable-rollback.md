@@ -1,34 +1,41 @@
-# ADR-0055：Stage 3 pEC50 Phase 3 单变量回调
+# ADR-0055：Stage 3 现役 task recipe（pEC50 单变量回调后）
 
 - 状态：Accepted
 - 日期：2026-09-14
-- 修订：ADR-0054 的 pEC50 Phase 3 PRIVATE lifetime
+- 修订：ADR-0054 的 pEC50 Phase 3 PRIVATE lifetime；汇集 ADR-0051～0054 延续的 task 例外
 
-## 背景
+以当时最佳 recipe 为基线，只将 pEC50 Phase 3 从 5 回调到 3，避免混入其他变量。
+本页是现役 task recipe 的阅读入口；完整参数以各正式 YAML 为准，主线见
+[Base YAML](../../configs/v2/stage3/base.yaml)。历史尝试见 [历史摘要](history.md#adr-0051)。
 
-下一轮以当前最佳 Stage 3 recipe 为基线，只回调 pEC50 的 PRIVATE-only calibration
-预算，避免同时引入其他超参数变化。
+## 现役例外
 
-## 决定
+下表只列 0051～0055 修订链涉及的最终设置；未列字段沿用 YAML 的显式值或
+[ADR-0050](0050-stage3-task-specific-owner-budget-and-private-capacity.md) 的 class 默认。
+ratio 顺序为 PRIVATE / Tower / FiLM；epoch 是 nominal lifetime，Phase 2 实际 lifetime 受 GROUP 预算上限约束。
 
-1. 六套现役 Stage 3 配置中，pEC50 的 `phase3_private_epochs` 从 5 改为 3。
-2. pEC50 的 PRIVATE/Tower/FiLM ratio 保持 `0.75/0.75/0.75`，Phase 1/2 LR 与
-   lifetime 保持不变。
-3. volume expansion 的 Phase 2/3 PRIVATE epoch 保持 `0/0`，xCO2 的 Phase 3
-   PRIVATE epoch 保持 5，viscosity 的 task-specific PRIVATE dropout 保持 0.15；
-   其他 task recipe 与全部训练合同不变。
-4. training identity contract v5 与 resolved-plan format v3 不升级。resolved recipe
-   的变化自然产生新 identity，旧 Stage 3 checkpoint 不可恢复到本合同。
+| Task | 最终设置 |
+|---|---|
+| static permittivity | ratio `0.25/0.25/0.25`；Phase 1/2/3 epoch `4/1/0` |
+| volume expansion | ratio `0.25/0.25/0.25`；Phase 2/3 epoch `0/0` |
+| thermal conductivity | ratio `0.5/0.5/0.5`；Phase 2/3 epoch `3/2` |
+| pEC50 | ratio `0.75/0.75/0.75`；Phase 3 epoch `3` |
+| speed of sound | Phase 3 epoch `0` |
+| glass transition | ratio `1.25/1.25/1.0`；Phase 3 epoch `2` |
+| thermal decomposition | ratio `1.25/1.25/1.0`；PRIVATE dropout `0.10`；Phase 3 epoch `6` |
+| electrical conductivity | ratio `0.75/0.75/0.75`；PRIVATE dropout `0.15`；Phase 3 epoch `4` |
+| viscosity | ratio `0.75/0.75/0.75`；PRIVATE dropout `0.15`；Phase 3 epoch `6` |
+| surface tension | ratio `0.75/0.75/0.75`；PRIVATE dropout `0.15`；Phase 3 epoch `5` |
+| refractive index | ratio `0.75/0.75/0.75`；PRIVATE dropout `0.15`；Phase 3 epoch `3` |
+| self diffusion / melting point / xCO2 | Phase 3 epoch 分别为 `4 / 5 / 5` |
 
-## 后果
+六套现役 Stage 3 配置使用同一 recipe；GLOBAL/GROUP、LR、optimizer、PCGrad、raw sampling、
+loss、ownership clipping 与固定末轮规则不变。task-gate diagnostics 单独遵循
+[ADR-0054](0054-stage3-task-gate-diagnostics-and-weak-task-tuning.md)。
 
-- 模型结构、参数量、GLOBAL/GROUP、LR、optimizer、PCGrad、raw sampling、loss、
-  ownership-aware clipping、task-gate diagnostics 和 evaluation schema 均不改变。
-- Stage 1、Stage 2 与 Stage 3 prepared artifact 可复用；六套现役 Stage 3 需在新目录
-  重新执行 train、validation 与 test。baseline 无需重跑，历史输出保持只读。
+## Identity 与历史结果
 
-## 关联
-
-- [ADR-0048：owner-lifetime 三阶段训练](0048-stage3-owner-lifetime-three-phase-training.md)
-- [ADR-0050：task-specific owner budget 与 PRIVATE capacity](0050-stage3-task-specific-owner-budget-and-private-capacity.md)
-- [ADR-0054：弱任务微调与 task-gate diagnostics](0054-stage3-task-gate-diagnostics-and-weak-task-tuning.md)
+training identity contract v5、resolved-plan format v3 不升级，完整 resolved recipe 已进入 identity。
+当年的数值修改使身份发生变化，旧 checkpoint 不可恢复到不同 recipe；这不表示文档整理本身
+要求重跑。当前 identity 一致的结果继续按原规则 summarize/evaluate/resume，无需改写产物。
+Stage 1/2 与 Stage 3 prepared artifact 可复用，baseline 不受此次 recipe 决策影响。

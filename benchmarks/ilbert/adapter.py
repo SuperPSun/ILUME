@@ -11,14 +11,15 @@ import numpy as np
 import torch
 
 from common.identity import require_compatible_identity, semantic_identity, tensor_state_hash
-from common.io import atomic_json, atomic_torch_save, sha256_file
+from common.io import atomic_json, sha256_file
+from benchmarks.common.checkpoint import write_model_artifacts
 from common.outputs import repository_path
 from common.progress import ProgressReporter
 
 from benchmarks.common.config import BenchmarkConfig, BenchmarkName
 from benchmarks.common.data import BenchmarkTask, RawDataset, load_split, resolve_task
 from benchmarks.common.engine import EvaluationResult, TargetStats, seed_benchmark
-from benchmarks.common.environment import ilbert_asset_snapshot
+from benchmarks.ilbert.environment import ilbert_asset_snapshot
 from benchmarks.common.metrics import target_metrics
 
 
@@ -603,12 +604,10 @@ def train_ilbert_bundle(
     }
     final_mae = float(history[-1]["valid_raw_mae"])
     state_hash = tensor_state_hash("benchmark.ilbert-state.v2", final_state)
-    model_path = root / "model.pt"
-    history_path = root / "history.json"
-    audit_path = root / "input_audit.json"
-    atomic_torch_save(model_path, {"state_dict": final_state, "state_hash": state_hash})
-    atomic_json(history_path, history)
-    atomic_json(audit_path, {"train": bundle.train.audit, "valid": bundle.valid.audit})
+    integrity = write_model_artifacts(
+        root, final_state, state_hash, history,
+        {"train": bundle.train.audit, "valid": bundle.valid.audit},
+    )
     manifest = {
         "format_version": 2,
         "kind": "ilume_baseline_model",
@@ -626,10 +625,7 @@ def train_ilbert_bundle(
         "token_cache_audit": _token_cache_audit(bundle.token_cache),
         "runtime": config.runtime,
         "input_audit": {"train": bundle.train.audit, "valid": bundle.valid.audit},
-        "integrity": {
-            path.name: {"sha256": sha256_file(path), "size": path.stat().st_size}
-            for path in (model_path, history_path, audit_path)
-        },
+        "integrity": integrity,
     }
     atomic_json(root / "checkpoint.json", manifest)
     return {

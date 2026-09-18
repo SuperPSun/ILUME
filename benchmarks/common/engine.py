@@ -26,6 +26,7 @@ from .features import (
     raw_feature_matrix,
 )
 from .metrics import target_metrics
+from .registry import ADAPTERS
 
 
 BENCHMARK_CHECKPOINT_VERSION = 2
@@ -114,46 +115,9 @@ def prepare_training(
     *,
     reporter: ProgressReporter | None = None,
 ) -> TrainingBundle:
-    if config.name == "ilume_stage3_single_task_mlp":
-        from ablations.stage3_single_task_mlp.adapter import (
-            prepare_stage3_single_task_mlp_training,
-        )
-
-        return prepare_stage3_single_task_mlp_training(  # type: ignore[return-value]
-            config, benchmark, task_id, fold
-        )
-    if config.name == "dmpnn":
-        from benchmarks.dmpnn.adapter import prepare_dmpnn_training
-
-        return prepare_dmpnn_training(config, benchmark, task_id, fold)  # type: ignore[return-value]
-    if config.name == "molformer":
-        from benchmarks.molformer.adapter import prepare_molformer_training
-
-        return prepare_molformer_training(config, benchmark, task_id, fold)  # type: ignore[return-value]
-    if config.name == "ilbert":
-        from benchmarks.ilbert.adapter import prepare_ilbert_training
-
-        return prepare_ilbert_training(config, benchmark, task_id, fold)  # type: ignore[return-value]
-    if config.name == "spmm":
-        from benchmarks.spmm.adapter import prepare_spmm_training
-
-        return prepare_spmm_training(config, benchmark, task_id, fold)  # type: ignore[return-value]
-    if config.name == "llasmol":
-        from benchmarks.llasmol.adapter import prepare_llasmol_training
-
-        return prepare_llasmol_training(config, benchmark, task_id, fold)  # type: ignore[return-value]
-    if config.name == "aionopedia":
-        from benchmarks.aionopedia.adapter import prepare_aionopedia_training
-
-        return prepare_aionopedia_training(config, benchmark, task_id, fold)  # type: ignore[return-value]
-    if config.name == "iltransr":
-        from benchmarks.iltransr.adapter import prepare_iltransr_training
-
-        return prepare_iltransr_training(config, benchmark, task_id, fold)  # type: ignore[return-value]
-    if config.name == "aifc":
-        from benchmarks.aifc.adapter import prepare_aifc_training
-
-        return prepare_aifc_training(config, benchmark, task_id, fold)  # type: ignore[return-value]
+    adapter = ADAPTERS.get(config.name)
+    if adapter is not None:
+        return adapter.load("prepare")(config, benchmark, task_id, fold)
     task = resolve_task(config, benchmark, task_id, fold)
     train = load_split(task, "train")
     valid = load_split(task, "valid")
@@ -446,60 +410,10 @@ def train_bundle(
     *,
     reporter: ProgressReporter | None = None,
 ) -> dict[str, Any]:
-    if config.name == "ilume_stage3_single_task_mlp":
-        from ablations.stage3_single_task_mlp.adapter import (
-            train_stage3_single_task_mlp_bundle,
-        )
-
-        return train_stage3_single_task_mlp_bundle(  # type: ignore[arg-type]
-            config, bundle, output_dir, reporter=reporter
-        )
-    if config.name == "dmpnn":
-        from benchmarks.dmpnn.adapter import train_dmpnn_bundle
-
-        return train_dmpnn_bundle(config, bundle, output_dir)  # type: ignore[arg-type]
-    if config.name == "molformer":
-        from benchmarks.molformer.adapter import train_molformer_bundle
-
-        return train_molformer_bundle(  # type: ignore[arg-type]
-            config, bundle, output_dir, reporter=reporter
-        )
-    if config.name == "ilbert":
-        from benchmarks.ilbert.adapter import train_ilbert_bundle
-
-        return train_ilbert_bundle(  # type: ignore[arg-type]
-            config, bundle, output_dir, reporter=reporter
-        )
-    if config.name == "spmm":
-        from benchmarks.spmm.adapter import train_spmm_bundle
-
-        return train_spmm_bundle(  # type: ignore[arg-type]
-            config, bundle, output_dir, reporter=reporter
-        )
-    if config.name == "llasmol":
-        from benchmarks.llasmol.adapter import train_llasmol_bundle
-
-        return train_llasmol_bundle(  # type: ignore[arg-type]
-            config, bundle, output_dir, reporter=reporter
-        )
-    if config.name == "aionopedia":
-        from benchmarks.aionopedia.adapter import train_aionopedia_bundle
-
-        return train_aionopedia_bundle(  # type: ignore[arg-type]
-            config, bundle, output_dir, reporter=reporter
-        )
-    if config.name == "iltransr":
-        from benchmarks.iltransr.adapter import train_iltransr_bundle
-
-        return train_iltransr_bundle(  # type: ignore[arg-type]
-            config, bundle, output_dir, reporter=reporter
-        )
-    if config.name == "aifc":
-        from benchmarks.aifc.adapter import train_aifc_bundle
-
-        return train_aifc_bundle(  # type: ignore[arg-type]
-            config, bundle, output_dir, reporter=reporter
-        )
+    adapter = ADAPTERS.get(config.name)
+    if adapter is not None:
+        kwargs = {"reporter": reporter} if adapter.reports_progress else {}
+        return adapter.load("train")(config, bundle, output_dir, **kwargs)
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
     if config.name == "mlp":
@@ -595,60 +509,9 @@ def evaluate_checkpoint(
     *,
     reporter: ProgressReporter | None = None,
 ) -> EvaluationResult:
-    if config.name == "ilume_stage3_single_task_mlp":
-        from ablations.stage3_single_task_mlp.adapter import (
-            evaluate_stage3_single_task_mlp_checkpoint,
-        )
-
-        return evaluate_stage3_single_task_mlp_checkpoint(
-            config, benchmark, task_id, fold, checkpoint_dir, split
-        )
-    if config.name == "dmpnn":
-        from benchmarks.dmpnn.adapter import evaluate_dmpnn_checkpoint
-
-        return evaluate_dmpnn_checkpoint(
-            config, benchmark, task_id, fold, checkpoint_dir, split
-        )
-    if config.name == "molformer":
-        from benchmarks.molformer.adapter import evaluate_molformer_checkpoint
-
-        return evaluate_molformer_checkpoint(
-            config, benchmark, task_id, fold, checkpoint_dir, split
-        )
-    if config.name == "ilbert":
-        from benchmarks.ilbert.adapter import evaluate_ilbert_checkpoint
-
-        return evaluate_ilbert_checkpoint(
-            config, benchmark, task_id, fold, checkpoint_dir, split
-        )
-    if config.name == "spmm":
-        from benchmarks.spmm.adapter import evaluate_spmm_checkpoint
-
-        return evaluate_spmm_checkpoint(
-            config, benchmark, task_id, fold, checkpoint_dir, split
-        )
-    if config.name == "llasmol":
-        from benchmarks.llasmol.adapter import evaluate_llasmol_checkpoint
-
-        return evaluate_llasmol_checkpoint(
-            config, benchmark, task_id, fold, checkpoint_dir, split
-        )
-    if config.name == "aionopedia":
-        from benchmarks.aionopedia.adapter import evaluate_aionopedia_checkpoint
-
-        return evaluate_aionopedia_checkpoint(
-            config, benchmark, task_id, fold, checkpoint_dir, split
-        )
-    if config.name == "iltransr":
-        from benchmarks.iltransr.adapter import evaluate_iltransr_checkpoint
-
-        return evaluate_iltransr_checkpoint(
-            config, benchmark, task_id, fold, checkpoint_dir, split
-        )
-    if config.name == "aifc":
-        from benchmarks.aifc.adapter import evaluate_aifc_checkpoint
-
-        return evaluate_aifc_checkpoint(
+    adapter = ADAPTERS.get(config.name)
+    if adapter is not None:
+        return adapter.load("evaluate")(
             config, benchmark, task_id, fold, checkpoint_dir, split
         )
     if split not in {"valid", "test"}:

@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from benchmarks.common.config import load_benchmark_config
+from benchmarks.common.registry import ADAPTERS
 from benchmarks.common.environment import (
     ensure_benchmark_environment,
     environment_run_details,
@@ -233,73 +234,10 @@ def main() -> None:
     )
     evaluation_source_hash = _source_hash(evaluation_source)
     input_audit = None
-    if config.name == "molformer":
-        from benchmarks.molformer.adapter import molformer_evaluation_audit
-
-        input_audit = molformer_evaluation_audit(
-            config,
-            args.benchmark,
-            args.task,
-            config.stage3.folds[0] if args.ensemble_folds else selector_fold,
-            args.split,
-        )
-    if config.name == "ilbert":
-        from benchmarks.ilbert.adapter import ilbert_evaluation_audit
-
-        input_audit = ilbert_evaluation_audit(
-            config,
-            args.benchmark,
-            args.task,
-            config.stage3.folds[0] if args.ensemble_folds else selector_fold,
-            args.split,
-        )
-    if config.name == "spmm":
-        from benchmarks.spmm.adapter import spmm_evaluation_audit
-
-        input_audit = spmm_evaluation_audit(
-            config,
-            args.benchmark,
-            args.task,
-            config.stage3.folds[0] if args.ensemble_folds else selector_fold,
-            args.split,
-        )
-    if config.name == "llasmol":
-        from benchmarks.llasmol.adapter import llasmol_evaluation_audit
-
-        input_audit = llasmol_evaluation_audit(
-            config,
-            args.benchmark,
-            args.task,
-            config.stage3.folds[0] if args.ensemble_folds else selector_fold,
-            args.split,
-        )
-    if config.name == "aionopedia":
-        from benchmarks.aionopedia.adapter import aionopedia_evaluation_audit
-
-        input_audit = aionopedia_evaluation_audit(
-            config,
-            args.benchmark,
-            args.task,
-            config.stage3.folds[0] if args.ensemble_folds else selector_fold,
-            args.split,
-        )
-    if config.name == "iltransr":
-        from benchmarks.iltransr.adapter import iltransr_evaluation_audit
-
-        input_audit = iltransr_evaluation_audit(
-            config,
-            args.benchmark,
-            args.task,
-            config.stage3.folds[0] if args.ensemble_folds else selector_fold,
-            args.split,
-        )
-    if config.name == "aifc":
-        from benchmarks.aifc.adapter import aifc_evaluation_audit
-
-        input_audit = aifc_evaluation_audit(
-            config,
-            args.benchmark,
-            args.task,
+    adapter = ADAPTERS.get(config.name)
+    if adapter is not None and adapter.evaluation_audit:
+        input_audit = adapter.load("audit")(
+            config, args.benchmark, args.task,
             config.stage3.folds[0] if args.ensemble_folds else selector_fold,
             args.split,
         )

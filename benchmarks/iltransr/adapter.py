@@ -22,7 +22,7 @@ from benchmarks.common.config import BenchmarkConfig, BenchmarkName
 from benchmarks.common.data import BenchmarkTask, RawDataset, load_split, resolve_task
 from benchmarks.common.engine import EvaluationResult, TargetStats, seed_benchmark
 from benchmarks.common.metrics import target_metrics
-from benchmarks.common.environment import iltransr_asset_snapshot
+from benchmarks.iltransr.environment import iltransr_asset_snapshot
 
 from .model import ILTransRRegressor, load_converted_transformer
 

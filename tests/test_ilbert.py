@@ -11,7 +11,8 @@ import torch
 from benchmarks.common.config import load_benchmark_config
 from benchmarks.common.data import BenchmarkTask, RawDataset
 from benchmarks.common.engine import TargetStats
-from benchmarks.common.environment import environment_run_details, ilbert_asset_snapshot
+from benchmarks.common.environment import environment_run_details
+from benchmarks.ilbert.environment import ilbert_asset_snapshot
 from benchmarks.ilbert.adapter import (
     EpochBatchSampler,
     SharedILBERTRegressor,
@@ -109,12 +110,12 @@ def test_ilbert_asset_snapshot_checks_revision_hashes_and_special_ids(
         "merged_vocab.txt": config.model["vocab_sha256"],
         "pretrained_model.pth": config.model["pretrained_sha256"],
     }
-    monkeypatch.setattr("benchmarks.common.environment.repository_path", repository_path)
+    monkeypatch.setattr("benchmarks.ilbert.environment.repository_path", repository_path)
     monkeypatch.setattr(
-        "benchmarks.common.environment.sha256_file", lambda path: hashes[path.name]
+        "benchmarks.ilbert.environment.sha256_file", lambda path: hashes[path.name]
     )
     monkeypatch.setattr(
-        "benchmarks.common.environment.subprocess.run",
+        "benchmarks.ilbert.environment.subprocess.run",
         lambda *args, **kwargs: SimpleNamespace(
             returncode=0, stdout=f"{config.model['revision']}\n"
         ),
@@ -132,7 +133,7 @@ def test_ilbert_asset_snapshot_checks_revision_hashes_and_special_ids(
             pass
 
     monkeypatch.setattr(
-        "benchmarks.common.environment._load_ilbert_tokenizer_class",
+        "benchmarks.ilbert.environment._load_ilbert_tokenizer_class",
         lambda path: Tokenizer,
     )
     snapshot = ilbert_asset_snapshot(config)

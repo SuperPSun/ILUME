@@ -256,7 +256,7 @@ def prepare_aionopedia_training(
     task_id: str,
     fold: int | None,
 ) -> AIonopediaTrainingBundle:
-    from benchmarks.common.environment import aionopedia_asset_snapshot
+    from benchmarks.aionopedia.environment import aionopedia_asset_snapshot
 
     task = resolve_task(config, benchmark, task_id, fold)
     train_raw, valid_raw = load_split(task, "train"), load_split(task, "valid")

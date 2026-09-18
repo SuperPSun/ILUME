@@ -16,7 +16,7 @@
 | Stage 2 | 九个 catalog task，共享 ObjectEncoder-1024（8 heads、2 layers、FFN 2048）；完整 1024D entity teacher MSE，Partial Charge 仅在 head 投影到 atom-512；HOMO/LUMO 独立 pooling scalar task 与 pooled train global scaler | 0019/0025/0039 |
 | Stage 2 训练 | QM mask、逐行覆盖；v2 physics/teacher 共同 task compensation，`lambda_teacher` 是 task 内相对权重；一个 batch 一个 optimizer step；10 joint epochs 后发布最终 checkpoint、encoder 和 joint validation。无 v2 refinement、Stage 2 test evaluation | 0043/0044 |
 | Stage 3 | 冻结 Object v3-1024，21 sparse task、6 group、Flat learned HoME、raw sampling、ownership-aware clipping；15 epoch Phase 1 → 六个同源 GROUP 分支 → 21 个同源 PRIVATE scope，固定末轮 stitch，validation 只记录 | 0020/0039/0046/0048 |
-| Stage 3 owner | Phase 1 hierarchical PCGrad；Phase 2 仅组内 GROUP PCGrad；Phase 3 无 PCGrad。owner LR/lifetime 与 size-class 默认、task override 的 width/dropout 进入 identity；提前结束用 `requires_grad=False`，不删除 task；零预算 PRIVATE 逐 bit 继承 anchor。Base train/valid microbatch 上限 1024 | 0050～0055 |
+| Stage 3 owner | Phase 1 hierarchical PCGrad；Phase 2 仅组内 GROUP PCGrad；Phase 3 无 PCGrad。owner LR/lifetime 与 size-class 默认、task override 的 width/dropout 进入 identity；提前结束用 `requires_grad=False`，不删除 task；零预算 PRIVATE 逐 bit 继承 anchor。Base train/valid microbatch 上限 1024 | 0050/0055；诊断 0054 |
 | Stage 3 diagnostics | 只读 gate mass、normalized entropy、PRIVATE mass 分位数；test aggregate 合并 fold-sample。不得新增 forward、进入 loss/selection 或改 prediction CSV；legacy 不输出。pEC50 Phase 3 为 3 epochs | 0054/0055 |
 
 禁止恢复：Stage 1 fingerprint/grouped descriptor/projection、45/45/10 sampler、augmentation multiplier、多容量正式配置、mid-epoch 恢复或旧格式兼容；Stage 2 双实体编码器、体系采样、渐进解冻、early stopping、best/last、step checkpoint、PCGrad 或 accumulation window；Stage 3 four-phase、routing intervention、gate calibration 或 HPO/Optuna。
