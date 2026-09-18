@@ -11,7 +11,7 @@
 > 2026-09-07：现役 v2 与对应 ADR-0034/0036 消融的 joint gradient clipping 和 sampling 已由 [ADR-0046](0046-stage3-ownership-clipping-raw-sampling.md) 修订；legacy v1 与 Capacity v1 保留本文合同。
 >
 > 2026-09-07：现役 v2 与上述两个消融的固定统一容量、单一 joint optimizer/scheduler、
-> refinement 和 final artifact 合同已由 [ADR-0047](0047-stage3-deterministic-four-phase-training.md)
+> refinement 和 final artifact 合同已由 [ADR-0047](history.md#adr-0047)
 > 修订；本文与 ADR-0027 的对应条款仅继续约束 legacy v1 与 Capacity v1。
 >
 > 2026-09-10：上述现役四阶段条款已由

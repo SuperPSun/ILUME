@@ -5,6 +5,8 @@
 
 > 2026-08-25：Core/Full 单元与 Stage 2 子合同版本由 [ADR-0025](0025-stage2-homo-lumo-scalar-tasks.md) 取代；Partial Charge 评价、同 run 约束与 baseline unsupported 合同保持不变。
 
+> 现役边界：Stage 2 evaluation/reporting 已由 [ADR-0043](0043-retire-stage2-evaluation-and-v2-refinement.md) 退役，下文 Stage 2 榜单与执行步骤仅作历史记录。Stage 3 与通用合同按 [ADR 索引](README.md) 的后续修订读取。
+
 ## 背景
 
 Stage 2 reporting v1 只覆盖 3 个 task、5 个 scalar target，未评估现役

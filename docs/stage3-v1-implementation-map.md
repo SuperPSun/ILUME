@@ -1,6 +1,6 @@
 # Stage 3 v1 implementation map
 
-本表记录重构前调用链与 v1 替代位置，用于审计旧逻辑是否完整退出；它不定义独立于 ADR-0020 的科研合同。
+本表只记录 legacy v1 的迁移历史，不是现役 v2 实现指南。现役合同见 [ADR 索引](adr/README.md)，早期设计理由见 [历史摘要](adr/history.md)。表中的 refinement、plugin 和 validation-best 不得套用到现役三阶段。
 
 | 旧调用链/能力 | v1 处理 | 实现位置 |
 |---|---|---|
@@ -17,4 +17,4 @@
 | 旧 valid/test best checkpoint loader | 替换为默认 taskwise-refined artifact；显式 `--checkpoint-epoch N` 才严格加载普通 checkpoint | `src/stage3/evaluate.py` |
 | phase/adaptation-style staged expansion | 替换为 load scopes 与 adaptation scopes 分离的 plugin 初始化 | `src/stage3/train.py` |
 
-现役 v1 与 ADR-0034 消融的训练、评估入口都保持为 `scripts/stage3/prepare.py`、`train.py`、`evaluate.py`。Capacity v1 的 `scripts/stage3/capacity.py` 只负责 probe、robustness 与 comparison 报告；超参数搜索和配置物化已退役。`train.py --fold` 为必填参数，可接收一个或多个 fold；`--output` 始终是共同 root，实际 run contract 位于 `foldN/`。布尔 `--resume` 只恢复 identity 一致且 checkpoint/metrics/diagnostics 尾部严格对齐的 fold。Object 与 RDKit artifact/checkpoint 不提供交叉兼容解析器。
+legacy v1 的训练、评估入口保持为 `scripts/stage3/prepare.py`、`train.py`、`evaluate.py`。Capacity v1 的 `scripts/stage3/capacity.py` 只负责 probe、robustness 与 comparison 报告；超参数搜索和配置物化已退役。`train.py --fold` 为必填参数，可接收一个或多个 fold；`--output` 始终是共同 root，实际 run contract 位于 `foldN/`。布尔 `--resume` 只恢复 identity 一致且 checkpoint/metrics/diagnostics 尾部严格对齐的 fold。Object 与 RDKit artifact/checkpoint 不提供交叉兼容解析器。

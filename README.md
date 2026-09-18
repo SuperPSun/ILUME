@@ -2,6 +2,19 @@
 
 ILUME 是按 Stage 组织的分子科研 pipeline：Global-RDKit v2 主线在 Stage 1 进行 SMILES、Graph、RDKit 三模态四目标掩码预训练，Stage 2 训练 catalog 驱动的九任务 physics representation，Stage 3 训练 21 个 sparse-label observation task。正式 YAML 与 [ADR 索引](docs/adr/README.md) 共同定义现役科研合同。
 
+## 按任务阅读
+
+| 目的 | 入口 |
+|---|---|
+| 跑现役主线 | [安装](#安装与数据) → [Stage 1](#stage-1) → [Stage 2](#stage-2) → [Stage 3](#stage-3) |
+| 跑对比模型 | [Baseline 通用运行](#baselines-and-ablations)，再展开对应模型的环境准备 |
+| 跑内部消融 | [RDKit-HoME](#rdkit-2d--home-representation-ablation)、[No-Stage1](#no-stage1rdkit-2d--stage2--stage3-home)；Single-task MLP 见 baseline 部分 |
+| 汇总结果 | [输出与结果汇总](#输出与结果汇总) |
+| 查科学约束/历史 | [ADR 索引](docs/adr/README.md) / [已取代设计摘要](docs/adr/history.md) |
+| 跑冻结的 legacy 研究 | [Capacity v1 手册](docs/capacity-v1-runbook.md) |
+
+命令均从仓库根目录运行。按依赖顺序准备数据与模型，使用尚不存在的新 train/evaluate 输出目录；以下正式命令不属于自动验收步骤。
+
 ## 安装与数据
 
 ```bash
@@ -110,7 +123,7 @@ Capacity v1 继续冻结在 legacy v1 五模态合同，并直接使用已提交
 
 [ADR-0034](docs/adr/0034-rdkit-2d-home-representation-ablation.md) 只用
 RDKit 2D descriptors 与两个可训练的 `Linear → LayerNorm` adapter 替换 frozen
-Stage2 Object representation；HoME、PCGrad、sampling、refinement 和 evaluation 保持
+Stage2 Object representation；HoME、PCGrad、sampling、三阶段训练和 evaluation 保持
 Stage3 Base 合同。该实验不读取 Stage1/2 checkpoint，也不单独 HPO。
 
 ```bash
@@ -136,7 +149,7 @@ python scripts/stage3/evaluate.py \
   --output outputs/ablations/stage1_stage2_rdkit_home/evaluate/test
 
 python scripts/benchmarks/summarize.py \
-  --input outputs/v1 outputs/benchmarks outputs/ablations \
+  --input outputs/v2 outputs/benchmarks outputs/ablations \
   --output summary
 ```
 
@@ -182,7 +195,7 @@ python scripts/stage3/evaluate.py \
   --output outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test
 
 python scripts/benchmarks/summarize.py \
-  --input outputs/v1 outputs/benchmarks outputs/ablations \
+  --input outputs/v2 outputs/benchmarks outputs/ablations \
   --output summary
 ```
 
@@ -196,15 +209,34 @@ MLP、ECFP4-XGBoost、Chemprop D-MPNN、MoLFormer、ILBERT、SPMM、LlaSMol、AI
 Stage3 Single-task MLP 内部消融位于 `ablations/`。二者均与 Stage 代码隔离，并继续
 复用 benchmark 运行与 reporting 入口；旧七模型合同见 [ADR-0045](docs/adr/0045-fixed-budget-baseline-training.md) 及其引用，AIonopedia 合同见 [ADR-0049](docs/adr/0049-aionopedia-multimodal-baseline.md)，ILTransR 合同见 [ADR-0057](docs/adr/0057-iltransr-stage3-baseline.md)，AIFC 合同见 [ADR-0060](docs/adr/0060-aifc-stage3-baseline.md)。
 
-七个论文 baseline 均固定跑满 YAML 预算并保存最终训练状态；每轮 validation 只写入 history，
-不参与 early stopping、checkpoint selection、scheduler 或其他训练决策。checkpoint format 为
-version 2，与旧 validation-selected artifact 不兼容。新正式结果统一写入
-旧七模型的 `outputs/benchmarks/fixed-budget-v1/<model>/`；AIonopedia、ILTransR 与 AIFC 使用各自
-`outputs/benchmarks/model-native-v1/<model>/`。旧输出保持只读且不得混入同一汇总。
-各 baseline 分别冻结自己的预算：MLP、D-MPNN、MoLFormer、ILBERT 与 SPMM 保持
-50 epochs，LlaSMol 与 AIonopedia 训练 10 epochs，ECFP4-XGBoost 固定 1000 trees；
-ILTransR 按同性质官方 notebook 或登记 fallback 分 task 使用 150/160 epochs；AIFC 固定 20 epochs，不再假定神经
-baseline 共享统一 epoch 数。
+所有模型发布固定预算的最终状态，validation 只用于 history/报告，不驱动训练决策；具体合同见对应 ADR。旧七模型 checkpoint format v2 不兼容旧 validation-selected artifact，旧结果不得混入同一汇总。
+
+| 模型名（配置 basename） | 预算 | 输出根 |
+|---|---|---|
+| `mlp`、`dmpnn`、`molformer`、`ilbert`、`spmm` | 50 epochs | `outputs/benchmarks/fixed-budget-v1/<model>` |
+| `ecfp_xgboost` | 1000 trees | 同上 |
+| `llasmol` | 10 epochs | `outputs/benchmarks/fixed-budget-v1/llasmol-10e-bs16-ga2` |
+| `aionopedia` | 10 epochs | `outputs/benchmarks/model-native-v1/aionopedia` |
+| `iltransr` | task-specific 150/160 epochs | `outputs/benchmarks/model-native-v1/iltransr` |
+| `aifc` | 20 epochs | `outputs/benchmarks/model-native-v1/aifc` |
+
+先完成下方对应模型的环境、资产与 validator 步骤，再使用通用命令。以 D-MPNN 为例，替换下列两个变量即可选择其他模型；LlaSMol 输出后缀保持上表约定。
+
+```bash
+model=dmpnn
+run_root=outputs/benchmarks/fixed-budget-v1/dmpnn
+python scripts/benchmarks/train.py \
+  --config "configs/benchmarks/${model}.yaml" \
+  --benchmark stage3 --task experiment/density --fold 1 \
+  --output "${run_root}/stage3/experiment__density/fold1/attempt-001"
+
+python scripts/benchmarks/sweep.py \
+  --config "configs/benchmarks/${model}.yaml" \
+  --output "${run_root}" \
+  --max-workers 1
+```
+
+MLP、XGBoost 和 Single-task MLP 的基础环境及 sweep：
 
 ```bash
 python -m pip install -e ".[benchmarks]"
@@ -231,6 +263,11 @@ Object embedding 和 normalized conditions 做有序 concat。21 个 task × 5 f
 汇总。它同时移除 HoME routing、跨任务共享、PCGrad 与 composite sampling，因此只能解释为
 整体架构消融，不能解释成某个单组件的贡献。
 
+`--max-workers 1` 保持串行行为。MLP、D-MPNN、MoLFormer、ILBERT、SPMM、LlaSMol、AIonopedia、ILTransR 与 AIFC 多 GPU sweep 可通过 `--devices cuda:0,cuda:1,...` 分配逻辑 job；XGBoost 的 CPU 并行度由 YAML 中的 `training.n_jobs` 控制。每个 baseline 正式 sweep 均为 21 tasks × 5 folds，即 105 个单 seed 训练任务；上述命令不会 resume，失败任务由 sweep 在新 attempt 中完整重跑。
+
+<details>
+<summary>D-MPNN：环境、资产与模型边界</summary>
+
 D-MPNN 使用独立 hash-lock 环境，不修改主环境。多组分标量任务按 registry slot 分别构图并有序拼接表示，但所有组分共享唯一 message-passing encoder；不同 task/fold 仍独立训练。环境只由以下显式命令创建和安装；普通运行会通过 `conda run` 自动进入已有环境，不要求 `conda activate`，也不会自动安装或更新依赖。
 
 ```bash
@@ -246,21 +283,10 @@ conda run --no-capture-output -n ilume-dmpnn \
   python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_dmpnn_environment; validate_dmpnn_environment(load_benchmark_config("configs/benchmarks/dmpnn.yaml"))'
 ```
 
-单任务与完整 sweep 仍复用公共入口：
+</details>
 
-```bash
-python scripts/benchmarks/train.py \
-  --config configs/benchmarks/dmpnn.yaml \
-  --benchmark stage3 --task experiment/density --fold 1 \
-  --output outputs/benchmarks/fixed-budget-v1/dmpnn/stage3/experiment__density/fold1/attempt-001
-
-python scripts/benchmarks/sweep.py \
-  --config configs/benchmarks/dmpnn.yaml \
-  --output outputs/benchmarks/fixed-budget-v1/dmpnn \
-  --max-workers 1
-```
-
-`--max-workers 1` 保持串行行为。MLP、D-MPNN、MoLFormer、ILBERT、SPMM、LlaSMol、AIonopedia、ILTransR 与 AIFC 多 GPU sweep 可通过 `--devices cuda:0,cuda:1,...` 分配逻辑 job；XGBoost 的 CPU 并行度由 YAML 中的 `training.n_jobs` 控制。每个 baseline 正式 sweep 均为 21 tasks × 5 folds，即 105 个单 seed 训练任务；上述命令不会 resume，失败任务由 sweep 在新 attempt 中完整重跑。
+<details>
+<summary>MoLFormer：环境、资产与模型边界</summary>
 
 MoLFormer同样使用独立hash-lock环境。先显式安装环境并下载固定HF snapshot；正式launcher只使用本地cache，不会自动联网或切换revision。
 
@@ -280,21 +306,12 @@ conda run --no-capture-output -n ilume-molformer \
   python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_molformer_environment; validate_molformer_environment(load_benchmark_config("configs/benchmarks/molformer.yaml"))'
 ```
 
-单任务与完整 105-job sweep：
-
-```bash
-python scripts/benchmarks/train.py \
-  --config configs/benchmarks/molformer.yaml \
-  --benchmark stage3 --task experiment/density --fold 1 \
-  --output outputs/benchmarks/fixed-budget-v1/molformer/stage3/experiment__density/fold1/attempt-001
-
-python scripts/benchmarks/sweep.py \
-  --config configs/benchmarks/molformer.yaml \
-  --output outputs/benchmarks/fixed-budget-v1/molformer \
-  --max-workers 1
-```
-
 MoLFormer的超长train row整行跳过且不进入scaler；valid/test显式截断到202 tokens并在结果中审计。训练前为unique SMILES建立run-local内存token cache，多组分合并为一次共享backbone forward；正式合同固定batch 128、encoder/head learning rate `5e-6/5e-5`、完整50 epochs、最终训练状态和TF32，OOM/NaN不自动缩批或回退。多GPU sweep可使用`--devices cuda:0,cuda:1,...`。
+
+</details>
+
+<details>
+<summary>ILBERT：环境、资产与模型边界</summary>
 
 ILBERT使用独立hash-lock环境和用户本地准备的固定上游资产。上游目前没有显式LICENSE，因此仓库不复制或再分发其源码与权重。
 
@@ -325,21 +342,12 @@ conda run --no-capture-output -n ilume-ilbert \
   python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_ilbert_environment; validate_ilbert_environment(load_benchmark_config("configs/benchmarks/ilbert.yaml"))'
 ```
 
-单任务与完整 105-job sweep：
-
-```bash
-python scripts/benchmarks/train.py \
-  --config configs/benchmarks/ilbert.yaml \
-  --benchmark stage3 --task experiment/density --fold 1 \
-  --output outputs/benchmarks/fixed-budget-v1/ilbert/stage3/experiment__density/fold1/attempt-001
-
-python scripts/benchmarks/sweep.py \
-  --config configs/benchmarks/ilbert.yaml \
-  --output outputs/benchmarks/fixed-budget-v1/ilbert \
-  --max-workers 1
-```
-
 ILBERT普通离子液体输入为单条`cation.anion` AIS sequence；solvation/transfer只增加共享backbone的有序双view。所有输入固定padding/truncation到100 tokens并公开审计，数值条件保持registry顺序和原始物理单位。训练使用恒定`1e-4` learning rate完成50 epochs，validation不调整学习率。
+
+</details>
+
+<details>
+<summary>SPMM：环境、资产与模型边界</summary>
 
 SPMM使用独立hash-lock环境和固定的官方Apache-2.0上游checkout。仓库不复制或提交约2.20 GiB的官方Lightning checkpoint；运行前会校验commit、源码、vocab、config、checkpoint SHA和字节数。
 该环境固定Python 3.10，因此不执行要求Python ≥3.11的ILUME editable install；四个benchmark脚本会从仓库根显式引导`src`和`benchmarks`导入。
@@ -367,22 +375,12 @@ conda run --no-capture-output -n ilume-spmm \
   python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_spmm_environment; validate_spmm_environment(load_benchmark_config("configs/benchmarks/spmm.yaml"))'
 ```
 
-单任务与完整 105-job sweep：
-
-```bash
-python scripts/benchmarks/train.py \
-  --config configs/benchmarks/spmm.yaml \
-  --benchmark stage3 --task experiment/density --fold 1 \
-  --output outputs/benchmarks/fixed-budget-v1/spmm/stage3/experiment__density/fold1/attempt-001
-
-python scripts/benchmarks/sweep.py \
-  --config configs/benchmarks/spmm.yaml \
-  --output outputs/benchmarks/fixed-budget-v1/spmm \
-  --max-workers 2 \
-  --devices cuda:0,cuda:1
-```
-
 SPMM只使用官方text-mode前6层和768维`[CLS]`表示；各分子component由同一encoder分别编码并合并为一次forward，随后只扩宽官方regression head第一层。模型输入去除立体信息，保留官方100-token tokenizer加首token切片路径，实际encoder上限为99；WordPiece单词字符上限固定为350，collision和truncation均公开审计。训练固定batch 128、完整50 epochs、最终训练状态、FP32+TF32及确定性sortish长度分桶；多GPU运行保持一张GPU一个job。旧SPMM输出不得与新合同混用。
+
+</details>
+
+<details>
+<summary>LlaSMol：环境、资产与模型边界</summary>
 
 LlaSMol使用固定Mistral-7B基座和官方LoRA adapter。仓库不复制或提交约13.5 GiB基座与84 MB adapter；必须先显式安装独立环境并将固定snapshot下载到已忽略目录。
 
@@ -411,22 +409,12 @@ conda run --no-capture-output -n ilume-llasmol \
   python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_llasmol_environment; validate_llasmol_environment(load_benchmark_config("configs/benchmarks/llasmol.yaml"))'
 ```
 
-单任务与完整 105-job sweep：
-
-```bash
-python scripts/benchmarks/train.py \
-  --config configs/benchmarks/llasmol.yaml \
-  --benchmark stage3 --task experiment/density --fold 1 \
-  --output outputs/benchmarks/fixed-budget-v1/llasmol-10e-bs16-ga2/stage3/experiment__density/fold1/attempt-001
-
-python scripts/benchmarks/sweep.py \
-  --config configs/benchmarks/llasmol.yaml \
-  --output outputs/benchmarks/fixed-budget-v1/llasmol-10e-bs16-ga2 \
-  --max-workers 4 \
-  --devices cuda:0,cuda:1,cuda:2,cuda:3
-```
-
 普通IL使用带task marker的单条`cation.anion`sequence；solvation/transfer只增加whole-IL与partner的共享backbone双view。基座以NF4 double-quant冻结加载，并继续训练官方attention与MLP LoRA及`4096/8192 + conditions → 256 → 1`回归head。输入上限512 tokens并公开截断审计；target和numeric conditions只从train rows拟合scaler。训练使用batch 16、gradient accumulation 2固定完成10 epochs并保存最终状态。建议每张GPU仅运行一个job；OOM/NaN不自动缩批或回退。
+
+</details>
+
+<details>
+<summary>AIonopedia：环境、资产与模型边界</summary>
 
 AIonopedia 使用锁定的 PyTorch `2.9.0+cu128` 环境、Qwen3-0.6B 与 generic ionic-liquid
 multimodal checkpoint，完整加载 released LoRA、GNN、projectors、graph merge、cross-modal
@@ -479,26 +467,16 @@ conda run --no-capture-output -n ilume-aionopedia \
   python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_aionopedia_environment; validate_aionopedia_environment(load_benchmark_config("configs/benchmarks/aionopedia.yaml"))'
 ```
 
-单任务验证通过后，再启动正式 Stage3-only 105-job sweep。每个 job 占一张 GPU，不支持 resume：
-
-```bash
-python scripts/benchmarks/train.py \
-  --config configs/benchmarks/aionopedia.yaml \
-  --benchmark stage3 --task experiment/density --fold 1 \
-  --output outputs/benchmarks/model-native-v1/aionopedia/stage3/experiment__density/fold1/attempt-001
-
-python scripts/benchmarks/sweep.py \
-  --config configs/benchmarks/aionopedia.yaml \
-  --output outputs/benchmarks/model-native-v1/aionopedia \
-  --max-workers 4 \
-  --devices cuda:0,cuda:1,cuda:2,cuda:3
-```
-
 AIonopedia prompt 只包含 composition 与原始单位 conditions，不包含 target 名；图路径保留官方
 35D atom/11D edge、无 explicit-H preprocessing。Temperature 使用 `K/1000`；pressure 使用
 fold train-only sample z-score；pressure、frequency 与 wavelength 均有独立随机初始化的 graph
 projector/segment token。Target 同样只用 fold train rows 标准化，评估反归一化到 raw units。
 训练固定 10 epochs，validation 每轮只报告，最终模型是 epoch 10 state。
+
+</details>
+
+<details>
+<summary>ILTransR：环境、资产与模型边界</summary>
 
 ILTransR 使用官方仓库 commit `ff5e55cfb8162b0706fc2d88ca5cd384705686b1` 的 generic
 `pretraining/valid_best.params`，不下载或读取任何 property dataset 和 supervised
@@ -543,7 +521,7 @@ sha256sum \
 ```bash
 rsync -av --progress \
   artifacts/benchmarks/iltransr/pretraining/ \
-  NEW_SERVER:/home/sunp/ILUME/artifacts/benchmarks/iltransr/pretraining/
+  NEW_SERVER:/path/to/ILUME/artifacts/benchmarks/iltransr/pretraining/
 ```
 
 原始三个文件就位后执行确定性转换；它只导出 source embedding/Transformer encoder，并把
@@ -578,27 +556,17 @@ conda run --no-capture-output -n ilume-iltransr \
   python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_iltransr_environment; print(validate_iltransr_environment(load_benchmark_config("configs/benchmarks/iltransr.yaml"))["pretrained_snapshot"]["structure"])'
 ```
 
-单任务与正式 105-job sweep 命令如下；每个 job 使用一张 GPU，不支持 resume：
-
-```bash
-python scripts/benchmarks/train.py \
-  --config configs/benchmarks/iltransr.yaml \
-  --benchmark stage3 --task experiment/density --fold 1 \
-  --output outputs/benchmarks/model-native-v1/iltransr/stage3/experiment__density/fold1/attempt-001
-
-python scripts/benchmarks/sweep.py \
-  --config configs/benchmarks/iltransr.yaml \
-  --output outputs/benchmarks/model-native-v1/iltransr \
-  --max-workers 4 \
-  --devices cuda:0,cuda:1,cuda:2,cuda:3
-```
-
 ILTransR 对 partner task 使用共享 backbone 的 ordered multi-view fusion；所有 pretrained
 embedding/Transformer 参数 full fine-tune。Condition 使用全五折加 test covariates 的 task-global
 population z-score，这是显式 transductive feature scaling；target 仍只从当前 fold train rows 拟合，
 normalized L1 训练后恢复 raw units。七个有同性质官方 notebook 的 task 使用其 epochs/batch/dropout，
 其余任务使用登记的 150-epoch fallback；validation 只报告并始终发布 final epoch state。完整合同见
 [ADR-0057](docs/adr/0057-iltransr-stage3-baseline.md)。
+
+</details>
+
+<details>
+<summary>AIFC：环境、资产与模型边界</summary>
 
 AIFC 使用作者公开的 fragment-level GNN、motif/junction graph 与 attention aggregation，fragment
 dictionary 已作为小型公开资产提交并固定到历史官方 blob，因此不需要下载模型权重。正式运行使用
@@ -622,25 +590,12 @@ ReLU。Target 和所有 conditions 都只用当前
 fold train rows 做 population z-score。训练固定 seed 1000、batch 64、Adam `1e-3`、MSE、constant
 LR 和 20 epochs，只发布 epoch 20 final state。
 
-单任务和正式 sweep 命令如下；每个 job 使用一张 GPU，不支持 resume：
-
-```bash
-python scripts/benchmarks/train.py \
-  --config configs/benchmarks/aifc.yaml \
-  --benchmark stage3 --task experiment/density --fold 1 \
-  --output outputs/benchmarks/model-native-v1/aifc/stage3/experiment__density/fold1/attempt-001
-
-python scripts/benchmarks/sweep.py \
-  --config configs/benchmarks/aifc.yaml \
-  --output outputs/benchmarks/model-native-v1/aifc \
-  --max-workers 4 \
-  --devices cuda:0,cuda:1,cuda:2,cuda:3
-```
-
 固定 DGL CPU golden reference 验证 prediction、representation 和 attention；当前 21-task 数据
 审计的 11,282 个唯一 view 全部 fragmentation 成功。251,297 个原子中 5,618 个进入作者定义的
 unknown motif（2.236%），不会删除样本。完整科学与审计边界见
 [ADR-0060](docs/adr/0060-aifc-stage3-baseline.md)。
+
+</details>
 
 ## 输出与结果汇总
 

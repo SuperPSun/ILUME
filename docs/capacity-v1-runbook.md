@@ -16,16 +16,12 @@ python scripts/stage1/prepare.py \
 
 prepare 完整成功后，先训练 Base：
 
-四份 Capacity Stage 1 YAML 已共同冻结为 global batch 512、LR `4e-4`。这是从原
-batch 128 约 20GB 显存占用线性估算得到的 84GB 单卡配置，目标峰值约 80GB；它不是
-自动调参，也不适用于 48GB 卡。正式运行前确认目标 GPU 空闲且为同类 84GB 硬件，并在
-训练日志中记录实际 peak VRAM、吞吐和稳定性。若出现 OOM/NaN/divergence，停止研究，
-不得改 batch、LR、gradient checkpointing 或 horizon 后续跑。
+Capacity Stage 1 的 batch、LR 和 horizon 以各自 YAML 为准；当前 Base 为 global batch
+128、LR `1e-4`、10 epochs。其他规模必须读取对应配置，不从显存大小推算或临时改写。
+OOM/NaN/divergence 时停止研究，不改 batch、LR、gradient checkpointing 或 horizon 后续跑。
 
-现有共享 corpus 仍可直接复用：它在此前的 prepare run 中记录了 batch 128/LR `1e-4`，
-但这两个训练字段不进入 corpus identity。不得仅因本次 batch/LR 变化重新 prepare；反之，
-任何不同 global batch 的 Stage 1 checkpoint 都不能 resume。本仓库当前没有 Capacity Stage 1
-checkpoint，因此 Base 训练从 epoch 0 开始。
+训练字段不进入 corpus identity，因此数据身份不变时可复用共享 corpus；checkpoint 恢复
+仍严格绑定训练配置。运行前检查目标输出；新训练不得覆盖已有目录。
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python scripts/stage1/train.py --config configs/experiments_v1/stage1/base.yaml --output outputs/experiments_v1/stage1/base/train
@@ -100,27 +96,27 @@ Stage 3 正式配方已经冻结在 `configs/experiments_v1/stage3/formal/{s,bas
 model、optimizer、seed、epoch 与数据身份。对每个 `<scale>` 先准备数据：
 
 ```bash
-python scripts/stage3/prepare.py \\
-  --config configs/experiments_v1/stage3/formal/<scale>.yaml \\
+python scripts/stage3/prepare.py \
+  --config configs/experiments_v1/stage3/formal/<scale>.yaml \
   --output outputs/experiments_v1/stage3/formal/<scale>/prepare
 ```
 
 然后运行五折训练：
 
 ```bash
-python scripts/stage3/train.py \\
-  --config configs/experiments_v1/stage3/formal/<scale>.yaml \\
-  --fold 1 2 3 4 5 \\
-  --output outputs/experiments_v1/stage3/formal/<scale>/train \\
-  --max-parallel 4 \\
+python scripts/stage3/train.py \
+  --config configs/experiments_v1/stage3/formal/<scale>.yaml \
+  --fold 1 2 3 4 5 \
+  --output outputs/experiments_v1/stage3/formal/<scale>/train \
+  --max-parallel 4 \
   --devices cuda:0,cuda:1,cuda:2,cuda:3
 ```
 
 四个 scale 全部完成后，使用提交到仓库的固定 manifest 汇总 validation：
 
 ```bash
-python scripts/stage3/capacity.py \\
-  --manifest configs/experiments_v1/stage3/formal-report.yaml \\
+python scripts/stage3/capacity.py \
+  --manifest configs/experiments_v1/stage3/formal-report.yaml \
   --output outputs/experiments_v1/reports/formal-validation
 ```
 
@@ -129,12 +125,12 @@ python scripts/stage3/capacity.py \\
 Pareto 理由和 formal report。然后才允许对四个 scale 各执行一次 test ensemble：
 
 ```bash
-python scripts/stage3/evaluate.py \\
-  --config configs/experiments_v1/stage3/formal/<scale>.yaml \\
-  --checkpoint-dir outputs/experiments_v1/stage3/formal/<scale>/train \\
-  --split test \\
-  --ensemble-folds \\
-  --study-id capacity-v1-<scale> \\
+python scripts/stage3/evaluate.py \
+  --config configs/experiments_v1/stage3/formal/<scale>.yaml \
+  --checkpoint-dir outputs/experiments_v1/stage3/formal/<scale>/train \
+  --split test \
+  --ensemble-folds \
+  --study-id capacity-v1-<scale> \
   --output outputs/experiments_v1/stage3/test/<scale>
 ```
 

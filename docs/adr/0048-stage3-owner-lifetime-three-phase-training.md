@@ -79,4 +79,4 @@ owner 尚未充分训练。需要在不改变 raw sampling、loss、weighting、
 - [ADR-0021：identity/audit contract](0021-identity-audit-contract-v1.md)
 - [ADR-0027：late taskwise refinement](0027-late-taskwise-refinement.md)
 - [ADR-0046：ownership clipping 与 raw sampling](0046-stage3-ownership-clipping-raw-sampling.md)
-- [ADR-0047：deterministic 四阶段训练（历史）](0047-stage3-deterministic-four-phase-training.md)
+- [ADR-0047：deterministic 四阶段训练（历史）](history.md#adr-0047)

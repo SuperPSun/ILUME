@@ -7,7 +7,7 @@
 > 2026-09-07：本文所称 Stage 3 sampling 不变已由 [ADR-0046](0046-stage3-ownership-clipping-raw-sampling.md) 修订为现役 v2 raw sampling；legacy v1 与 Capacity v1 不变。
 >
 > 2026-09-07：本文所称 Stage 3 expert topology 与 refinement 不变已由
-> [ADR-0047](0047-stage3-deterministic-four-phase-training.md) 修订为 per-group/task capacity
+> [ADR-0047](history.md#adr-0047) 修订为 per-group/task capacity
 > 与 deterministic 四阶段训练；prepared representation 合同不变。
 >
 > 2026-09-10：现役 Stage 3 schedule、PRIVATE width 与 final artifact 已由

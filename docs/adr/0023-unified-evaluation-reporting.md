@@ -9,6 +9,8 @@
 >
 > 2026-08-25：Stage 2 的 orbital、Core 与子合同版本由 [ADR-0025](0025-stage2-homo-lumo-scalar-tasks.md) 取代；通用 reporting schema v1 与 Stage 3 合同保持不变。
 
+> 现役边界：Stage 2 evaluation/reporting 已由 [ADR-0043](0043-retire-stage2-evaluation-and-v2-refinement.md) 退役，下文 Stage 2 榜单与执行步骤仅作历史记录。Stage 3 与通用合同按 [ADR 索引](README.md) 的后续修订读取。
+
 ## 背景
 
 完整科研运行产物分散在 `outputs/`，ILUME、MLP、ECFP+XGBoost 与后续 baseline 缺少统一、可审计且适合论文比较的结果入口。Stage 2 也缺少与 baseline test 合同对齐的独立 evaluator。

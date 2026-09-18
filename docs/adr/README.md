@@ -1,27 +1,47 @@
-# Architecture Decision Records
+# ADR 导航
 
-正式 YAML 定义运行参数，ADR 定义会影响数据谱系、实验可比性或模型接口的稳定合同。后写 ADR 在重叠范围内优先；历史正文保留当时理由，不作为现役入口。
+正式 YAML 定义运行参数，ADR 定义科研与兼容合同；后写 ADR 只在明确重叠范围内优先。先按主题查下表，不必顺序阅读全部文件。历史正文里的“现役”指决策当时，不能覆盖本索引的替代关系。
 
-## 现役权威
+## 主线与公共合同
 
-- v2 主线：[ADR-0039](0039-global-rdkit-v2-mainline.md) 定义三模态 Stage 1、1024 维 entity/Object/HoME 表示和 v1 隔离边界。
-- Stage 1 执行合同：[ADR-0013](0013-stage1-full-corpus-ddp.md)、[0014](0014-stage1-prepare-performance-and-corpus-v2.md)、[0015](0015-stage1-high-throughput-epoch-resume.md)、[0017](0017-stage1-base-runtime-profile.md)；与 ADR-0039 重叠的五模态决定只保留给 legacy v1/Capacity v1。
-- Stage 2：[ADR-0019](0019-stage2-catalog-object-v3.md) 定义 Object v3；[ADR-0025](0025-stage2-homo-lumo-scalar-tasks.md) 定义 HOMO/LUMO；表示宽度由 ADR-0039 修订；现役 v2 的 joint-only 训练和 Stage 2 evaluation 退役由 [ADR-0043](0043-retire-stage2-evaluation-and-v2-refinement.md) 定义；teacher loss 的 task-compensated weighting 由 [ADR-0044](0044-stage2-v2-task-compensated-teacher-loss.md) 定义。
-- Stage 3：[ADR-0020](0020-stage3-v1-sparse-home-pcgrad.md) 定义 sparse-label HoME 与 hierarchical PCGrad；现役 v2 与对应消融的 ownership-aware clipping 和严格 raw sampling 由 [ADR-0046](0046-stage3-ownership-clipping-raw-sampling.md) 定义，按 `unique_systems` 的 owner lifetime、三阶段同源分叉与 final-state stitching 由 [ADR-0048](0048-stage3-owner-lifetime-three-phase-training.md) 定义，task-specific LR/epoch 与 PRIVATE width 的基础由 [ADR-0050](0050-stage3-task-specific-owner-budget-and-private-capacity.md) 定义，弱任务定向正则化及回滚历史见 [ADR-0051](0051-stage3-weak-task-private-regularization.md)、[ADR-0052](0052-stage3-task-recipe-rollback-and-epoch-cleanup.md) 和 [ADR-0053](0053-stage3-clean-hybrid-task-recipe.md)，task-gate diagnostics 由 [ADR-0054](0054-stage3-task-gate-diagnostics-and-weak-task-tuning.md) 定义，现役 pEC50 Phase 3 recipe 由 [ADR-0055](0055-stage3-pec50-phase3-single-variable-rollback.md) 修订。ADR-0047 为被取代的四阶段历史，ADR-0027 的 refinement 仅继续约束 legacy v1/Capacity，ADR-0041 的旧三阶段搜索已经退役。
-- 跨 Stage identity/audit：[ADR-0021](0021-identity-audit-contract-v1.md)、[ADR-0027](0027-late-taskwise-refinement.md)。
-- Baseline、消融与 reporting：baseline 实现位于 `benchmarks/`，内部消融位于 `ablations/` 或使用隔离的 Stage backend；模型合同见 [ADR-0022](0022-mlp-ecfp-xgboost-baselines.md)、[0028](0028-chemprop-dmpnn-baseline.md)、[0029](0029-molformer-baseline.md)、[0030](0030-molformer-throughput-contract.md)、[0032](0032-ilbert-baseline.md)、[0033](0033-stage3-single-task-mlp-ablation.md)、[0034](0034-rdkit-2d-home-representation-ablation.md)、[0035](0035-spmm-baseline.md)、[0036](0036-no-stage1-rdkit-stage2-stage3-ablation.md)、[0037](0037-spmm-wordpiece-character-limit.md)、[0038](0038-spmm-throughput-contract.md)、[0040](0040-llasmol-mistral-7b-baseline.md)、[0042](0042-dmpnn-shared-component-encoder.md)；七个旧论文 baseline 的固定预算合同见 [ADR-0045](0045-fixed-budget-baseline-training.md)，AIonopedia 的 model-native 多模态合同见 [ADR-0049](0049-aionopedia-multimodal-baseline.md)，ILTransR 的 generic-pretraining 转换与 property-native recipe 见 [ADR-0057](0057-iltransr-stage3-baseline.md)，AIFC 的 fragment-GNN-attention 合同见 [ADR-0060](0060-aifc-stage3-baseline.md)；Stage 3 汇总兼容性见 [ADR-0031](0031-stage3-summary-normalization-relaxation.md)，Stage 2 reporting 退役见 [ADR-0043](0043-retire-stage2-evaluation-and-v2-refinement.md)，ILUME task scatter 输出见 [ADR-0061](0061-ilume-task-scatter-summary.md)。
+| 主题 | ADR（按修订顺序） | 阅读重点 |
+|---|---|---|
+| v2 表示与隔离 | [0039](0039-global-rdkit-v2-mainline.md) | 三模态 Stage 1、1024D entity/Object/HoME；v1 隔离 |
+| Stage 1 执行 | [0013](0013-stage1-full-corpus-ddp.md)、[0014](0014-stage1-prepare-performance-and-corpus-v2.md)、[0015](0015-stage1-high-throughput-epoch-resume.md)、[0017](0017-stage1-base-runtime-profile.md) | 全量 epoch、prepare/runtime、DDP 与完整 epoch 恢复 |
+| Stage 2 | [0019](0019-stage2-catalog-object-v3.md)、[0025](0025-stage2-homo-lumo-scalar-tasks.md)、[0043](0043-retire-stage2-evaluation-and-v2-refinement.md)、[0044](0044-stage2-v2-task-compensated-teacher-loss.md) | Object v3、HOMO/LUMO、v2 joint-only、task-compensated teacher |
+| Stage 3 训练 | [0020](0020-stage3-v1-sparse-home-pcgrad.md)、[0046](0046-stage3-ownership-clipping-raw-sampling.md)、[0048](0048-stage3-owner-lifetime-three-phase-training.md)、[0050](0050-stage3-task-specific-owner-budget-and-private-capacity.md) | sparse HoME、raw sampling/clipping、三阶段 owner lifetime/capacity |
+| Stage 3 recipe | [0051](0051-stage3-weak-task-private-regularization.md)、[0052](0052-stage3-task-recipe-rollback-and-epoch-cleanup.md)、[0053](0053-stage3-clean-hybrid-task-recipe.md)、[0054](0054-stage3-task-gate-diagnostics-and-weak-task-tuning.md)、[0055](0055-stage3-pec50-phase3-single-variable-rollback.md) | 定向正则化与回滚链；0054 诊断、0055 pEC50 修订，最终数值读 YAML |
+| 身份与 legacy refinement | [0021](0021-identity-audit-contract-v1.md)、[0027](0027-late-taskwise-refinement.md) | semantic identity/audit；0027 refinement 只约束 legacy/Capacity |
+| Reporting | [0023](0023-unified-evaluation-reporting.md)、[0031](0031-stage3-summary-normalization-relaxation.md)、[0043](0043-retire-stage2-evaluation-and-v2-refinement.md)、[0061](0061-ilume-task-scatter-summary.md) | Stage 3 schema、comparison、Stage 2 reporting 退役、task scatter |
 
-## 预注册实验
+## Baseline 与内部消融
 
-- [ADR-0026：Capacity v1](0026-capacity-v1-pipeline-study.md) 定义独立的端到端容量研究；HPO 部分已经退役，当前固定配置和报告步骤见 [操作手册](../capacity-v1-runbook.md)。
+共同预算与 final-state 原则见 [0045](0045-fixed-budget-baseline-training.md)；后加入的模型以自己的 ADR 为准。实现分别位于 `benchmarks/` 与 `ablations/`，操作步骤见 [README](../../README.md#baselines-and-ablations)。
 
-## 历史与基础记录
+| 模型/实验 | ADR |
+|---|---|
+| MLP / ECFP-XGBoost | [0022](0022-mlp-ecfp-xgboost-baselines.md) |
+| D-MPNN | [0028](0028-chemprop-dmpnn-baseline.md)、[0042](0042-dmpnn-shared-component-encoder.md) |
+| MoLFormer | [0029](0029-molformer-baseline.md)、[0030](0030-molformer-throughput-contract.md) |
+| ILBERT | [0032](0032-ilbert-baseline.md) |
+| SPMM | [0035](0035-spmm-baseline.md)、[0037](0037-spmm-wordpiece-character-limit.md)、[0038](0038-spmm-throughput-contract.md) |
+| LlaSMol | [0040](0040-llasmol-mistral-7b-baseline.md) |
+| AIonopedia | [0049](0049-aionopedia-multimodal-baseline.md) |
+| ILTransR | [0057](0057-iltransr-stage3-baseline.md) |
+| AIFC | [0060](0060-aifc-stage3-baseline.md) |
+| Single-task MLP | [0033](0033-stage3-single-task-mlp-ablation.md) |
+| RDKit-HoME | [0034](0034-rdkit-2d-home-representation-ablation.md) |
+| No-Stage1 | [0036](0036-no-stage1-rdkit-stage2-stage3-ablation.md) |
 
-- Stage 1 基础决定：[ADR-0001](0001-data-and-role-sampling.md)、[0002](0002-descriptor-schema-and-tokens.md)、[0003](0003-smiles-tokenizers.md)、[0004](0004-fourth-modality-and-training.md)、[0005](0005-exclude-invalid-pretraining-entities.md)。每篇顶部注明仍有效与已取代范围。
-- 已取代的早期训练设计：ADR-0006～0012；现役替代分别由上方 Stage 1/2/3 权威给出。
-- 已取代的 Stage 2 Object 设计：[ADR-0016](0016-stage2-universal-object-modeling.md)、[0018](0018-stage2-object-v2-throughput.md)。
-- 已取代的 Stage 2 evaluation/reporting 与现役 v2 refinement 部分：[ADR-0023](0023-unified-evaluation-reporting.md)、[0024](0024-stage2-partial-charge-benchmark-suite.md)、[0025](0025-stage2-homo-lumo-scalar-tasks.md)、[0027](0027-late-taskwise-refinement.md)；取代范围见 ADR-0043，未涉及的历史训练合同继续有效。
-- 已退役的超参数搜索：[ADR-0041](0041-stage3-v2-three-phase-hpo.md) 保留 v2 Stage 3 A/B/C 历史设计；ADR-0026/0027 中的 Capacity HPO 段落同样只作历史记录。
-- 已退役的 Stage 3 routing 实验：[ADR-0056](0056-stage3-inference-only-routing-ablation.md) 保留 inference-only forced routing 的负结果与机制诊断，[ADR-0059](0059-stage3-gate-only-post-training-calibration.md) 保留 gate-only 后训练校准实验；两者均不再提供现役代码入口。
+## 冻结合同与历史
 
-查现役行为先读本页对应权威和正式 YAML；只有追溯设计理由或迁移边界时再读历史 ADR。
+| 范围 | 入口与状态 |
+|---|---|
+| Capacity v1 | [0026](0026-capacity-v1-pipeline-study.md)、[0027](0027-late-taskwise-refinement.md)；legacy 端到端研究，HPO 已退役。固定运行见 [手册](../capacity-v1-runbook.md) |
+| Stage 1 基础 | [0001](0001-data-and-role-sampling.md)、[0002](0002-descriptor-schema-and-tokens.md)、[0003](0003-smiles-tokenizers.md)、[0004](0004-fourth-modality-and-training.md)、[0005](0005-exclude-invalid-pretraining-entities.md)；按各篇顶部区分有效数据/预处理规则与被 0039 取代的模态设计 |
+| 早期 Stage 1/2/3、Object v1/v2、四阶段训练 | [合并历史摘要](history.md)：0006～0012、0016、0018、0047，均已被取代；保留原编号、理由和 Git 原文定位 |
+| Stage 2 evaluation | [0023](0023-unified-evaluation-reporting.md)、[0024](0024-stage2-partial-charge-benchmark-suite.md)、[0025](0025-stage2-homo-lumo-scalar-tasks.md)、[0027](0027-late-taskwise-refinement.md) 的相关段落已由 [0043](0043-retire-stage2-evaluation-and-v2-refinement.md) 退役；未涉及的训练/通用 reporting 合同保留 |
+| v2 Stage 3 HPO | [0041](0041-stage3-v2-three-phase-hpo.md)：搜索入口退役；prepared identity 的数据/训练分离修订仍需按当前实现核对，不能据此恢复搜索 |
+| Routing / gate calibration | [0056](0056-stage3-inference-only-routing-ablation.md)、[0059](0059-stage3-gate-only-post-training-calibration.md)：Retired，保留问题、负结果与不恢复边界 |
+
+历史文件数不代表现役方案数。需要复现旧决定时查对应 Git 版本；日常运行只从正式 YAML 和上方现役合同进入。
