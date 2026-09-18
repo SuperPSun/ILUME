@@ -1,97 +1,82 @@
 from __future__ import annotations
 
-import csv
-
-import json
-
 import copy
-
+import csv
 from dataclasses import replace
-
+import json
 from pathlib import Path
-
 from unittest.mock import patch
 
+import numpy as np
 import pytest
-
 import torch
 
-from common.io import sha256_file
-
 from common.identity import IDENTITY_CONTRACT_VERSION
-
-from stage1.identity import metadata_identity
-
+from common.io import sha256_file
 from stage1.config import (
     ArchitectureConfig,
     GLOBAL_RDKIT_STAGE1_CHECKPOINT_VERSION,
-    STAGE1_CHECKPOINT_KIND, STAGE1_CHECKPOINT_VERSION, DataConfig,
-    DescriptorConfig, FingerprintConfig, ModelConfig, PretrainConfig,
+    STAGE1_CHECKPOINT_KIND,
+    STAGE1_CHECKPOINT_VERSION,
+    DataConfig,
+    DescriptorConfig,
+    FingerprintConfig,
+    ModelConfig,
+    PretrainConfig,
 )
-
 from stage1.data import PreparedCorpusDataset
-
 from stage1.descriptors import DescriptorSchema, rdkit_descriptor_names
-
-from stage1.masking import MultimodalPacker
-
-from stage1.model import EncodedEntityStates, MultimodalPretrainModel, load_stage1_model
-
+from stage1.identity import metadata_identity
+from stage1.model import MultimodalPretrainModel, load_stage1_model
 from stage1.prepare import prepare_corpus
-
 from stage1.tokenizer import SmilesTokenizer
-
-from stage2.config import (
-    DEFAULT_REFINEMENT_TASKS, STAGE2_CHECKPOINT_VERSION,
-    Stage2Config, Stage2DataConfig, Stage2InitializationConfig,
-    Stage2PreparationConfig, Stage2RepresentationConfig, Stage2TrainingConfig,
-    load_stage2_config, stage2_config_from_dict,
-)
-
-from stage2.data import (
-    STAGE2_PREPARATION_CONTRACT_VERSION, Stage2BatchDescriptor,
-    Stage2DeviceTaskData, Stage2EntityDataset,
-    Stage2TaskDataset, load_artifact_registry,
-    pack_stage2_batch,
-)
-
-from stage2.model import (
-    ObjectEncoder, RDKitDescriptorBackbone, RegressionHead, Stage2ObjectModel,
-    molecule_equal_smooth_l1_loss,
-)
-
-from stage2.identity import build_stage2_training_identity
-
-from stage2.prepare import (
-    prepare_stage2_data, prepare_teacher_cache,
-    stage1_encoder_identity, teacher_cache_identity,
-)
-
-from stage2.registry import load_stage2_registry
-
-from stage2.train import _batch_output, load_stage2_encoder_artifact, run_stage2_training
-from stage2.rdkit_train import (
-    STAGE2_RDKIT_CHECKPOINT_KIND, STAGE2_RDKIT_ENCODER_KIND,
-    STAGE2_RDKIT_REFINED_KIND, load_rdkit_stage2_encoder_artifact,
-)
-
 from stage2 import FrozenObjectSpec, load_frozen_object_encoder
-
-from stage2.atom_targets import (
-    map_partial_charges, parse_mol2,
+from stage2.atom_targets import map_partial_charges, parse_mol2
+from stage2.config import (
+    DEFAULT_REFINEMENT_TASKS,
+    STAGE2_CHECKPOINT_VERSION,
+    Stage2Config,
+    Stage2DataConfig,
+    Stage2InitializationConfig,
+    Stage2PreparationConfig,
+    Stage2RepresentationConfig,
+    Stage2TrainingConfig,
+    load_stage2_config,
+    stage2_config_from_dict,
 )
-
-import numpy as np
-
-from stage2.atom_targets import PARTIAL_CHARGE_MAPPING_CONTRACT
-
-from stage2.data import epoch_batch_schedule
-
+from stage2.data import (
+    STAGE2_PREPARATION_CONTRACT_VERSION,
+    Stage2TaskDataset,
+    load_artifact_registry,
+    epoch_batch_schedule,
+)
+from stage2.identity import build_stage2_training_identity
 from stage2.model import (
-    masked_target_macro_smooth_l1_loss, molecule_equal_smooth_l1_loss,
+    RDKitDescriptorBackbone,
+    Stage2ObjectModel,
+    molecule_equal_smooth_l1_loss,
+    masked_target_macro_smooth_l1_loss,
+)
+from stage2.prepare import (
+    prepare_stage2_data,
+    prepare_teacher_cache,
+    stage1_encoder_identity,
+    teacher_cache_identity,
+)
+from stage2.rdkit_train import (
+    STAGE2_RDKIT_CHECKPOINT_KIND,
+    STAGE2_RDKIT_ENCODER_KIND,
+    STAGE2_RDKIT_REFINED_KIND,
+    load_rdkit_stage2_encoder_artifact,
+)
+from stage2.registry import load_stage2_registry
+from stage2.train import (
+    load_stage2_encoder_artifact,
+    run_stage2_training,
+    joint_stage2_loss,
+    task_compensation_scale,
 )
 
-from stage2.train import joint_stage2_loss, task_compensation_scale
 
 # --- Configuration, preparation, training, and artifact contracts ---
 
@@ -262,6 +247,13 @@ def test_registry_is_catalog_driven_and_model_independent(tiny_stage2_setup):
     assert model.model_contract["regression_head_hidden_dims"] == [16, 8]
     assert model.model_contract["tasks"]["simulation/partial_atomic_charge"]["head_family"] == "atom"
 
+    values = torch.randn(2, 1, 16)
+    for role in range(3):
+        assert model.encode_object(values, torch.full((2, 1), role)).shape == (2, 16)
+    ions = torch.randn(2, 2, 16)
+    assert model.encode_object(ions, torch.tensor([[0, 1], [0, 1]])).shape == (2, 16)
+    assert model.object_heads["simulation/homo"] is not model.object_heads["simulation/lumo"]
+
 
 def test_global_rdkit_v2_stage2_width_contract(tiny_stage2_setup) -> None:
     registry = load_stage2_registry(tiny_stage2_setup.data.task_catalog_path)
@@ -408,6 +400,9 @@ def test_global_rdkit_v2_teacher_cache_uses_entity_embedding(
 
 def test_stage2_refinement_config_contract(tiny_stage2_setup):
     active = load_stage2_config(Path("configs/v2/stage2/base.yaml"))
+    assert active.model.object_layers == 2
+    assert active.model.object_ffn_dim == 2048
+    assert active.loss.lambda_teacher == 0.10
     assert active.training.epochs == 10
     assert active.training.refinement_epochs == 0
     assert active.training.refinement_tasks == ()
@@ -609,16 +604,6 @@ def test_prepare_worker_count_preserves_atom_semantics(tiny_stage2_setup):
         second_config.data.artifacts_dir / "partial_charge_mapping_audit.csv"
     ).read_text(encoding="utf-8")
 
-def test_object_encoder_roles_and_dynamic_heads(tiny_stage2_setup):
-    registry = load_stage2_registry(tiny_stage2_setup.data.task_catalog_path)
-    loaded = load_stage1_model(tiny_stage2_setup.initialization.checkpoint, tiny_stage2_setup.data.pretrain_artifacts_dir, backbone_dropout=0.0)
-    model = Stage2ObjectModel(loaded.model, registry, object_layers=1, object_ffn_dim=32, dropout=0.0)
-    values = torch.randn(2, 1, 16)
-    for role in range(3):
-        assert model.encode_object(values, torch.full((2, 1), role)).shape == (2, 16)
-    ions = torch.randn(2, 2, 16)
-    assert model.encode_object(ions, torch.tensor([[0, 1], [0, 1]])).shape == (2, 16)
-    assert model.object_heads["simulation/homo"] is not model.object_heads["simulation/lumo"]
 
 def test_prepare_train_checkpoint_and_encoder_export(tiny_stage2_setup, tmp_path):
     config = replace(

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,11 +8,10 @@ import numpy as np
 import pytest
 import torch
 
-from benchmarks.common.config import benchmark_config_from_dict, load_benchmark_config
-from benchmarks.common.data import BenchmarkTask, RawDataset, configured_tasks
+from benchmarks.common.config import load_benchmark_config
+from benchmarks.common.data import BenchmarkTask, RawDataset
 from benchmarks.common.engine import TargetStats
-from benchmarks.common.environment import environment_command, environment_run_details
-from benchmarks.common.environment import ilbert_asset_snapshot
+from benchmarks.common.environment import environment_run_details, ilbert_asset_snapshot
 from benchmarks.ilbert.adapter import (
     EpochBatchSampler,
     SharedILBERTRegressor,
@@ -22,7 +20,6 @@ from benchmarks.ilbert.adapter import (
     build_ilbert_model,
     ilbert_model_sequences,
 )
-from scripts.benchmarks.sweep import _scientific_config
 
 
 class FakeTokenizer:
@@ -71,31 +68,7 @@ def _raw() -> RawDataset:
     )
 
 
-def test_formal_ilbert_config_resolves_105_training_jobs() -> None:
-    config = load_benchmark_config("configs/benchmarks/ilbert.yaml")
-    stage3 = configured_tasks(config, "stage3")
-    assert len(stage3) == 21
-    assert len(stage3) * len(config.stage3.folds) == 105
-    assert config.training["batch_size"] == 16
-    assert config.training["condition_transform"] == "raw_physical_units"
-    old_recipe = copy.deepcopy(config.to_dict())
-    old_recipe["training"]["tf32"] = False
-    with pytest.raises(ValueError, match="registered fine-tuning recipe"):
-        benchmark_config_from_dict(old_recipe)
-    runtime_variant = replace(config, runtime={**config.runtime, "num_workers": 8})
-    assert _scientific_config(runtime_variant) == _scientific_config(config)
-
-
-def test_ilbert_environment_dispatch_and_public_details() -> None:
-    config = load_benchmark_config("configs/benchmarks/ilbert.yaml")
-    command = environment_command(
-        config,
-        ("scripts/benchmarks/train.py", "--config", "configs/benchmarks/ilbert.yaml"),
-        conda="/conda",
-    )
-    assert command[:6] == [
-        "/conda", "run", "--no-capture-output", "-n", "ilume-ilbert", "python"
-    ]
+def test_ilbert_environment_public_details() -> None:
     assert environment_run_details(
         {
             "environment_name": "ilume-ilbert",

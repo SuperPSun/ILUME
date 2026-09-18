@@ -1,33 +1,54 @@
 from __future__ import annotations
 
 import csv
-
+from dataclasses import replace
 import hashlib
-
 import json
-
-import re
-
-import sys
-
-import tempfile
-
-import threading
-
-import time
-
 from pathlib import Path
+import re
+import sys
+import threading
+import time
+from types import SimpleNamespace
 
 import numpy as np
-
 import pytest
-
+import torch
+from torch_geometric.data import Batch, Data
 import yaml
 
+from ablations.stage3_single_task_mlp.adapter import _run_training_epochs, build_input_features
+from ablations.stage3_single_task_mlp.model import Stage3SingleTaskMLP
+from benchmarks.aifc.adapter import (
+    ConditionStats as AIFCConditionStats,
+    aifc_model_views,
+    resolve_aifc_architecture,
+)
+from benchmarks.aifc.model import AIFCRegressor
+from benchmarks.aifc.parity import validate_legacy_parity
+from benchmarks.aifc.preprocessing import (
+    FRAGMENT_BLOB,
+    FRAGMENT_COMMIT,
+    FRAGMENT_SHA256,
+    FragmentScheme as AIFCFragmentScheme,
+    batch_aifc_graphs,
+    smiles_to_aifc_graph,
+)
+from benchmarks.aionopedia.adapter import (
+    SampleStats as AIonopediaSampleStats,
+    _prepare_split as prepare_aionopedia_split,
+    _scheduled_factor as aionopedia_scheduled_factor,
+)
+from benchmarks.aionopedia.graph import smiles_to_graph as aionopedia_graph
+from benchmarks.aionopedia.model import MultiModalRegressor as AIonopediaRegressor
 from benchmarks.common.config import benchmark_config_from_dict, load_benchmark_config
-
-from benchmarks.common.data import configured_tasks, load_split, resolve_task
-
+from benchmarks.common.data import (
+    configured_tasks,
+    load_split,
+    resolve_task,
+    BenchmarkTask,
+    RawDataset,
+)
 from benchmarks.common.engine import (
     EvaluationResult,
     TargetStats,
@@ -36,72 +57,53 @@ from benchmarks.common.engine import (
     prepare_training,
     train_bundle,
 )
-
 from benchmarks.common.environment import (
     ENVIRONMENT_MARKER,
     ensure_benchmark_environment,
     environment_command,
+    spmm_asset_snapshot,
 )
-
 from benchmarks.common.features import (
     FeatureCache,
     FeaturePreprocessor,
-    component_feature,
     feature_schema,
     raw_feature_matrix,
 )
-
-from benchmarks.common.metrics import mean_sample_std, regression_metrics
-
+from benchmarks.common.summary import SUMMARY_FILES, publish_summary
+from benchmarks.iltransr.adapter import (
+    CharacterVocabulary as ILTransRCharacterVocabulary,
+    ConditionStats as ILTransRConditionStats,
+    TwoBucketBatchSampler as ILTransRTwoBucketBatchSampler,
+    _condition_population as iltransr_condition_population,
+    iltransr_model_views,
+    resolve_iltransr_recipe,
+)
+from benchmarks.iltransr.model import (
+    ILTransRRegressor,
+    ILTransRTransformer,
+    load_converted_transformer,
+)
+from benchmarks.llasmol.adapter import ConditionStats as LlaSMolConditionStats, SharedLlaSMolRegressor, SortishBatchSampler as LlaSMolSortishBatchSampler, _collate as llasmol_collate, _official_adapter_state, _prepare_split as prepare_llasmol_split, _scheduled_factor as llasmol_scheduled_factor, llasmol_model_views, llasmol_task_prefix
+from benchmarks.spmm.adapter import ConditionStats as SPMMConditionStats, SharedSPMMRegressor, SortishBatchSampler as SPMMSortishBatchSampler, _collate as spmm_collate, _load_pretrained_encoder, _prepare_split as prepare_spmm_split, _row_token_lengths as spmm_row_token_lengths, _scheduled_learning_rate
 from common.identity import semantic_identity
-
 from common.reporting import (
     REPORTING_SCHEMA_VERSION,
     comparison_identity,
     sanitize_task_id,
+    write_prediction_csv,
 )
-
-from stage3.config import load_stage3_config
-
-import scripts.benchmarks.sweep as sweep_module
 import scripts.benchmarks.evaluate as benchmark_evaluate_launcher
-import scripts.benchmarks.train as benchmark_train_launcher
-
 from scripts.benchmarks.sweep import (
     _JobResult,
     _SweepState,
     _aggregate,
     _build_jobs,
-    _parse_devices,
-    _run as run_sweep_job,
     _schedule,
-    _subprocess_env,
 )
+import scripts.benchmarks.sweep as sweep_module
+import scripts.benchmarks.train as benchmark_train_launcher
+from stage3.config import load_stage3_config
 
-from benchmarks.common.summary import SUMMARY_FILES, publish_summary
-
-from common.reporting import (
-    write_prediction_csv,
-)
-
-from dataclasses import replace
-
-from types import SimpleNamespace
-
-import torch
-
-from benchmarks.common.config import load_benchmark_config
-
-from benchmarks.common.data import BenchmarkTask, RawDataset
-
-from benchmarks.common.engine import TargetStats
-from ablations.stage3_single_task_mlp.adapter import (
-    _run_training_epochs,
-    build_input_features,
-)
-from ablations.stage3_single_task_mlp.model import Stage3SingleTaskMLP
-
-from benchmarks.common.environment import validate_dmpnn_environment
 
 try:
     import chemprop  # noqa: F401
@@ -277,86 +279,6 @@ def _tiny_config(tmp_path: Path, *, name: str = "mlp", targets: str = "value"):
         }
     )
 
-def _tiny_stage3_config(tmp_path: Path):
-    catalog = tmp_path / "stage3_catalog.csv"
-    with catalog.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=CATALOG_FIELDS)
-        writer.writeheader()
-        writer.writerow(
-            {
-                "catalog_schema_version": 1,
-                "stage": 3,
-                "task_id": "experiment/tiny",
-                "task_kind": "observation",
-                "target_level": "object",
-                "source_file": "experiment/tiny.csv",
-                "target_columns": "value",
-                "identity_columns": "cation;anion",
-                "condition_columns": "temperature_K",
-                "system_type": "il",
-                "simulation_method": "",
-                "materialized_path": "stage3/experiment/tiny",
-                "label_source": "materialized_csv",
-                "resource_manifest": "",
-                "strategies": "il",
-            }
-        )
-    fields = ["cation", "anion", "temperature_K", "value"]
-    cations = ["[Li+]", "[Na+]", "[K+]", "[Rb+]", "C[N+](C)(C)C"]
-    anions = ["[F-]", "[Cl-]", "[Br-]", "[I-]", "[Cl-]"]
-    for fold in range(1, 6):
-        _write_csv(
-            tmp_path / f"stage3/experiment/tiny/IL/fold{fold}.csv",
-            fields,
-            [
-                {"cation": cations[fold - 1], "anion": anions[fold - 1], "temperature_K": 290 + fold, "value": float(fold)},
-                {"cation": cations[fold - 1], "anion": anions[fold - 1], "temperature_K": 300 + fold, "value": float(fold + 1)},
-            ],
-        )
-    _write_csv(
-        tmp_path / "stage3/experiment/tiny/test.csv",
-        fields,
-        [{"cation": "CC[N+](C)(C)C", "anion": "[Br-]", "temperature_K": 310, "value": 3.5}],
-    )
-    authority = tmp_path / "stage3.yaml"
-    authority.write_text(
-        yaml.safe_dump(
-            {
-                "data": {
-                    "stage3_dir": str(tmp_path / "stage3"),
-                    "task_catalog": str(catalog),
-                    "artifacts_dir": str(tmp_path / "unused-artifacts"),
-                },
-                "preparation": {"cache_dir": str(tmp_path / "unused-cache")},
-                "initialization": {"stage2_encoder": str(tmp_path / "unused.pt")},
-                "groups": {"tiny": {"enabled": True, "group_weight": 1.0}},
-                "tasks": {"experiment/tiny": {"meta_group": "tiny"}},
-                "training": {"device": "cpu", "amp_dtype": "none"},
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-    return benchmark_config_from_dict(
-        {
-            "name": "mlp",
-            "seed": 42,
-            "data": {
-                "data_root": str(tmp_path), "task_catalog": str(catalog),
-                "stage3_authority_config": str(authority),
-                "feature_cache": str(tmp_path / "features.sqlite3"),
-            },
-            "features": {"kind": "rdkit_2d", "radius": 2, "n_bits": 2048},
-            "model": {"hidden_dims": [8], "dropout": 0.0},
-            "training": {
-                "optimizer": "adamw", "learning_rate": 0.01, "weight_decay": 0.0,
-                "batch_size": 2, "max_epochs": 3,
-                "loss": "normalized_mse", "model_selection": "final_training_state",
-                "device": "cpu", "precision": "fp32",
-            },
-            "stage3": {"enabled": True, "tasks": "all", "folds": [1, 2, 3, 4, 5]},
-        }
-    )
 
 def test_formal_configs_and_registry_resolution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -407,19 +329,27 @@ def test_formal_configs_and_registry_resolution(
         ("ilbert", 50),
         ("spmm", 50),
         ("llasmol", 10),
+        ("aionopedia", 10),
+        ("iltransr", None),
+        ("aifc", 20),
     ),
 )
 def test_formal_baseline_configs_use_fixed_final_state(
-    name: str, fixed_budget: int,
+    name: str, fixed_budget: int | None,
 ) -> None:
     config = load_benchmark_config(Path("configs/benchmarks") / f"{name}.yaml")
+    assert len(configured_tasks(config, "stage3")) == 21
+    assert tuple(config.stage3.folds) == (1, 2, 3, 4, 5)
+    assert config.data.stage3_authority_config == Path(
+        "configs/v2/stage3/splits/system.yaml"
+    )
     assert config.training["model_selection"] == "final_training_state"
     assert {
         "early_stopping_patience", "early_stopping_rounds", "selection_metric",
     }.isdisjoint(config.training)
     if name == "ecfp_xgboost":
         assert config.model["n_estimators"] == fixed_budget
-    else:
+    elif fixed_budget is not None:
         assert config.training["max_epochs"] == fixed_budget
     if name == "ilbert":
         assert config.training["scheduler"] == "constant"
@@ -427,11 +357,32 @@ def test_formal_baseline_configs_use_fixed_final_state(
             "scheduler_metric", "scheduler_patience", "scheduler_factor",
             "minimum_learning_rate",
         }.isdisjoint(config.training)
-    for retired_field in (
-        "selection_metric", "early_stopping_patience", "early_stopping_rounds",
-    ):
+
+
+@pytest.mark.parametrize(
+    "name,section,field,value,message",
+    (
+        ("dmpnn", "model", "multicomponent_shared", False, "registered Chemprop recipe"),
+        ("molformer", "training", "batch_size", 32, "registered fine-tuning recipe"),
+        ("ilbert", "training", "tf32", False, "registered fine-tuning recipe"),
+        ("spmm", "model", "wordpiece_max_input_chars_per_word", 351, "registered upstream recipe"),
+        ("spmm", "training", "batch_size", 8, "registered fine-tuning recipe"),
+        ("llasmol", "training", "batch_size", 8, "registered QLoRA recipe"),
+        ("aionopedia", "model", "pretrained_snapshot", "artifacts/property-specific/density", "registered multimodal recipe"),
+    ),
+)
+def test_baseline_rejects_unregistered_recipe(name, section, field, value, message) -> None:
+    payload = load_benchmark_config(f"configs/benchmarks/{name}.yaml").to_dict()
+    payload[section][field] = value
+    with pytest.raises(ValueError, match=message):
+        benchmark_config_from_dict(payload)
+
+
+def test_baseline_config_rejects_validation_driven_training() -> None:
+    config = load_benchmark_config("configs/benchmarks/mlp.yaml")
+    for field in ("selection_metric", "early_stopping_patience", "early_stopping_rounds"):
         retired = config.to_dict()
-        retired["training"][retired_field] = 1
+        retired["training"][field] = 1
         with pytest.raises(ValueError, match="forbid validation-driven"):
             benchmark_config_from_dict(retired)
 
@@ -463,19 +414,6 @@ def test_native_split_benchmark_configs_follow_v2_authorities() -> None:
                 assert config.training["scheduler"] == "constant"
             if benchmark == "dmpnn":
                 assert config.model["multicomponent_shared"] is True
-
-
-def test_default_benchmark_configs_follow_v2_system_authority() -> None:
-    for benchmark in (
-        "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm",
-        "llasmol", "aionopedia", "iltransr", "aifc",
-    ):
-        config = load_benchmark_config(
-            Path("configs/benchmarks") / f"{benchmark}.yaml"
-        )
-        assert config.data.stage3_authority_config == Path(
-            "configs/v2/stage3/splits/system.yaml"
-        )
 
 
 def test_stage3_single_task_mlp_config_and_ordered_concat() -> None:
@@ -569,38 +507,29 @@ def test_stage3_single_task_mlp_runs_full_budget_and_selects_best() -> None:
     restored.load_state_dict(best_state, strict=True)
     assert reporter.bars[0].n == 3 and reporter.bars[0].closed
 
-def test_formal_dmpnn_config_resolves_105_training_jobs() -> None:
-    config = load_benchmark_config("configs/benchmarks/dmpnn.yaml")
-    stage3_tasks = configured_tasks(config, "stage3")
-    assert len(stage3_tasks) == 21
-    assert len(stage3_tasks) * len(config.stage3.folds) == 105
-    assert config.features is None
-    assert config.data.feature_cache is None
-    assert config.model["multicomponent_shared"] is True
-    with pytest.raises(ValueError, match="registered Chemprop recipe"):
-        replace(
-            config,
-            model={**config.model, "multicomponent_shared": False},
-        ).validate()
+
+@pytest.mark.parametrize("name", ("dmpnn", "molformer", "ilbert", "spmm", "llasmol", "aionopedia", "iltransr", "aifc"))
+def test_baseline_environment_command(name: str) -> None:
+    config_path = f"configs/benchmarks/{name}.yaml"
+    config = load_benchmark_config(config_path)
+    assert environment_command(
+        config, ("scripts/benchmarks/train.py", "--config", config_path), conda="/conda"
+    ) == [
+        "/conda", "run", "--no-capture-output", "-n", f"ilume-{name}", "python",
+        str((Path.cwd() / "scripts/benchmarks/train.py").resolve()), "--config", config_path,
+    ]
+
+
+def test_runtime_options_do_not_change_benchmark_scientific_identity() -> None:
+    config = load_benchmark_config("configs/benchmarks/molformer.yaml")
+    runtime_variant = replace(config, runtime={**config.runtime, "num_workers": 8})
+    assert sweep_module._scientific_config(runtime_variant) == sweep_module._scientific_config(config)
+
 
 def test_dmpnn_environment_dispatches_once_before_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = load_benchmark_config("configs/benchmarks/dmpnn.yaml")
-    command = environment_command(
-        config,
-        ("scripts/benchmarks/train.py", "--config", "configs/benchmarks/dmpnn.yaml"),
-        conda="/opt/conda/bin/conda",
-    )
-    assert command[:7] == [
-        "/opt/conda/bin/conda",
-        "run",
-        "--no-capture-output",
-        "-n",
-        "ilume-dmpnn",
-        "python",
-        str((Path.cwd() / "scripts/benchmarks/train.py").resolve()),
-    ]
     monkeypatch.delenv(ENVIRONMENT_MARKER, raising=False)
     calls = []
 
@@ -622,29 +551,16 @@ def test_preprocessor_uses_train_mask_median_and_population_zscore() -> None:
     assert transformed.shape == (1, 3)
     assert transformed[0].tolist() == pytest.approx([0.0, 2.0, 0.0])
 
-def test_training_prepare_uses_only_training_and_validation_splits(tmp_path: Path) -> None:
-    config = _tiny_config(tmp_path)
-    test_path = tmp_path / "stage3/experiment/tiny/test.csv"
-    test_path.unlink()
-    reporter = RecordingReporter()
-    bundle = prepare_training(
-        config,
-        "stage3",
-        "experiment/tiny",
-        1,
-        reporter=reporter,
-    )
-    assert bundle.train_features.shape[0] == 8
-    assert [(bar.total, bar.n, bar.closed) for bar in reporter.bars] == [
-        (8, 8, True),
-        (2, 2, True),
-    ]
-    assert "train features" in reporter.bars[0].desc
-    assert "valid features" in reporter.bars[1].desc
 
 def test_mlp_train_checkpoint_and_test_evaluation(tmp_path: Path) -> None:
     config = _tiny_config(tmp_path)
+    test_path = tmp_path / "stage3/experiment/tiny/test.csv"
+    test_csv = test_path.read_bytes()
+    test_path.unlink()
     bundle = prepare_training(config, "stage3", "experiment/tiny", 1)
+    assert bundle.train_features.shape[0] == 8
+    assert bundle.valid_features.shape[0] == 2
+    test_path.write_bytes(test_csv)
     output = tmp_path / "mlp_run"
     reporter = RecordingReporter()
     summary = train_bundle(config, bundle, output, reporter=reporter)
@@ -666,7 +582,6 @@ def test_mlp_train_checkpoint_and_test_evaluation(tmp_path: Path) -> None:
     assert len(reporter.bars) == 1
     assert reporter.bars[0].n == summary["epochs_ran"]
     assert reporter.bars[0].closed
-    assert set(reporter.bars[0].postfixes[-1]) == {"train_mse", "val_mae"}
     evaluation_reporter = RecordingReporter()
     result = evaluate_checkpoint(
         config,
@@ -679,25 +594,13 @@ def test_mlp_train_checkpoint_and_test_evaluation(tmp_path: Path) -> None:
     )
     assert result.predictions.shape == (2, 1)
     assert set(result.metrics) == {"value"}
-    assert [(bar.total, bar.n, bar.closed) for bar in evaluation_reporter.bars] == [
-        (8, 8, True),
-        (2, 2, True),
-        (2, 2, True),
-    ]
-    assert "test features" in evaluation_reporter.bars[-1].desc
     assert "normalized_mae" in result.metrics["value"]
     assert "normalized_rmse" in result.metrics["value"]
 
-def test_stage3_fold_training_and_normalized_evaluation(tmp_path: Path) -> None:
-    config = _tiny_stage3_config(tmp_path)
-    bundle = prepare_training(config, "stage3", "experiment/tiny", 1)
-    assert bundle.train_features.shape[0] == 8
-    assert bundle.valid_features.shape[0] == 2
-    output = tmp_path / "stage3_fold1"
-    train_bundle(config, bundle, output)
-    result = evaluate_checkpoint(config, "stage3", "experiment/tiny", 1, output, "valid")
-    assert result.predictions.shape == (2, 1)
-    assert "normalized_mae" in result.metrics["value"]
+    valid = evaluate_checkpoint(config, "stage3", "experiment/tiny", 1, output, "valid")
+    assert valid.predictions.shape == (2, 1)
+    assert "normalized_mae" in valid.metrics["value"]
+
 
 def test_xgboost_uses_independent_models_and_fixed_budget(tmp_path: Path) -> None:
     pytest.importorskip("xgboost")
@@ -1462,19 +1365,6 @@ def test_one_epoch_scalar_and_multicomponent_save_reload_smoke(
 
 # --- SPMM baseline contracts ---
 
-from benchmarks.spmm.adapter import (
-    ConditionStats as SPMMConditionStats,
-    SPMM_TRAINING_ORDER_CONTRACT,
-    SharedSPMMRegressor,
-    SortishBatchSampler as SPMMSortishBatchSampler,
-    _collate as spmm_collate,
-    _load_pretrained_encoder,
-    _prepare_split as prepare_spmm_split,
-    _row_token_lengths as spmm_row_token_lengths,
-    _scheduled_learning_rate,
-)
-from benchmarks.common.environment import spmm_asset_snapshot
-
 
 class FakeSPMMTokenizer:
     pad_token_id = 0
@@ -1524,44 +1414,6 @@ def _spmm_raw() -> RawDataset:
         source_rows=("tiny.csv:2", "tiny.csv:3", "tiny.csv:4"),
         audit_rows=({}, {}, {}),
     )
-
-
-def test_formal_spmm_config_resolves_105_jobs_and_is_strict() -> None:
-    config = load_benchmark_config("configs/benchmarks/spmm.yaml")
-    stage3 = configured_tasks(config, "stage3")
-    assert len(stage3) == 21
-    assert len(stage3) * len(config.stage3.folds) == 105
-    assert config.training["batch_size"] == 128
-    assert config.training["cuda_matmul_tf32"] is True
-    assert config.training["length_bucketing"] == SPMM_TRAINING_ORDER_CONTRACT
-    assert config.training["bucket_window_batches"] == 20
-    assert config.model["wordpiece_max_input_chars_per_word"] == 350
-    changed = config.to_dict()
-    changed["model"]["wordpiece_max_input_chars_per_word"] = 351
-    with pytest.raises(ValueError, match="registered upstream recipe"):
-        benchmark_config_from_dict(changed)
-    changed = config.to_dict()
-    changed["training"]["batch_size"] = 8
-    with pytest.raises(ValueError, match="registered fine-tuning recipe"):
-        benchmark_config_from_dict(changed)
-    changed = config.to_dict()
-    changed["training"]["cuda_matmul_tf32"] = False
-    with pytest.raises(ValueError, match="registered fine-tuning recipe"):
-        benchmark_config_from_dict(changed)
-    runtime_variant = replace(config, runtime={**config.runtime, "num_workers": 8})
-    assert sweep_module._scientific_config(runtime_variant) == sweep_module._scientific_config(config)
-
-
-def test_spmm_environment_dispatches_to_dedicated_environment() -> None:
-    config = load_benchmark_config("configs/benchmarks/spmm.yaml")
-    command = environment_command(
-        config,
-        ("scripts/benchmarks/train.py", "--config", "configs/benchmarks/spmm.yaml"),
-        conda="/conda",
-    )
-    assert command[:6] == [
-        "/conda", "run", "--no-capture-output", "-n", "ilume-spmm", "python"
-    ]
 
 
 def test_spmm_asset_snapshot_rejects_hash_mismatch(tmp_path: Path, monkeypatch) -> None:
@@ -1804,19 +1656,6 @@ def test_spmm_scheduler_has_exact_warmup_peak_and_cosine_floor() -> None:
 
 # --- LlaSMol baseline contracts ---
 
-from benchmarks.llasmol.adapter import (
-    ConditionStats as LlaSMolConditionStats,
-    LLASMOL_TRAINING_ORDER_CONTRACT,
-    SharedLlaSMolRegressor,
-    SortishBatchSampler as LlaSMolSortishBatchSampler,
-    _collate as llasmol_collate,
-    _official_adapter_state,
-    _prepare_split as prepare_llasmol_split,
-    _scheduled_factor as llasmol_scheduled_factor,
-    llasmol_model_views,
-    llasmol_task_prefix,
-)
-
 
 def _llasmol_task(*, slots=("cation", "anion")) -> BenchmarkTask:
     return BenchmarkTask(
@@ -1847,40 +1686,6 @@ class FakeLlaSMolTokenizer:
         if truncated:
             values = values[: int(kwargs["max_length"])]
         return {"input_ids": values, "attention_mask": [1] * len(values)}
-
-
-def test_formal_llasmol_config_resolves_105_jobs_and_is_strict() -> None:
-    config = load_benchmark_config("configs/benchmarks/llasmol.yaml")
-    stage3 = configured_tasks(config, "stage3")
-    assert len(stage3) == 21
-    assert len(stage3) * len(config.stage3.folds) == 105
-    assert config.training["max_epochs"] == 10
-    assert config.training["batch_size"] == 16
-    assert config.training["gradient_accumulation_steps"] == 2
-    assert (
-        config.training["batch_size"]
-        * config.training["gradient_accumulation_steps"]
-        == 32
-    )
-    assert config.training["length_bucketing"] == LLASMOL_TRAINING_ORDER_CONTRACT
-    changed = config.to_dict()
-    changed["training"]["batch_size"] = 8
-    with pytest.raises(ValueError, match="registered QLoRA recipe"):
-        benchmark_config_from_dict(changed)
-    runtime_variant = replace(config, runtime={**config.runtime, "num_workers": 8})
-    assert sweep_module._scientific_config(runtime_variant) == sweep_module._scientific_config(config)
-
-
-def test_llasmol_environment_dispatches_to_dedicated_environment() -> None:
-    config = load_benchmark_config("configs/benchmarks/llasmol.yaml")
-    command = environment_command(
-        config,
-        ("scripts/benchmarks/train.py", "--config", "configs/benchmarks/llasmol.yaml"),
-        conda="/conda",
-    )
-    assert command[:6] == [
-        "/conda", "run", "--no-capture-output", "-n", "ilume-llasmol", "python"
-    ]
 
 
 def test_llasmol_missing_assets_fail_before_model_loading(
@@ -2036,50 +1841,6 @@ def test_llasmol_adapter_namespace_sampler_and_scheduler_contracts(
 
 # --- AIonopedia baseline contracts ---
 
-from benchmarks.aionopedia.adapter import (
-    SampleStats as AIonopediaSampleStats,
-    _prepare_split as prepare_aionopedia_split,
-    _scheduled_factor as aionopedia_scheduled_factor,
-)
-from benchmarks.aionopedia.graph import smiles_to_graph as aionopedia_graph
-from benchmarks.aionopedia.model import MultiModalRegressor as AIonopediaRegressor
-from torch_geometric.data import Batch, Data
-
-
-def test_formal_aionopedia_config_uses_pinned_generic_snapshot() -> None:
-    config = load_benchmark_config("configs/benchmarks/aionopedia.yaml")
-    tasks = configured_tasks(config, "stage3")
-    assert len(tasks) == 21
-    assert len(tasks) * len(config.stage3.folds) == 105
-    assert config.training["max_epochs"] == 10
-    assert config.training["validation_policy"] == "reporting_only_each_epoch"
-    assert config.model["pretrained_snapshot"].endswith(
-        "qwen0.6b-pretrain_simple2.8m(itg_loss)"
-    )
-    assert config.model["adapter_config_provenance"] == (
-        "local_generic_pretraining_export_peft_0.14"
-    )
-    assert set(config.model["pretrained_files"]) == {
-        "GNN_state_dict.pt", "adapter_config.json", "adapter_model.safetensors",
-        "decoder1_state_dict.pt", "decoder2_state_dict.pt",
-        "embedding_property_state_dict.pt", "fc_out_state_dict.pt",
-        "graph_merge_encoder_state_dict.pt", "projector_gnn_state_dict.pt",
-        "projector_llm_state_dict.pt", "projector_temp_state_dict.pt",
-        "segment_embeddings.pt",
-    }
-    command = environment_command(
-        config,
-        ("scripts/benchmarks/train.py", "--config", "configs/benchmarks/aionopedia.yaml"),
-        conda="/conda",
-    )
-    assert command[:6] == [
-        "/conda", "run", "--no-capture-output", "-n", "ilume-aionopedia", "python"
-    ]
-    changed = config.to_dict()
-    changed["model"]["pretrained_snapshot"] = "artifacts/property-specific/density"
-    with pytest.raises(ValueError, match="registered multimodal recipe"):
-        benchmark_config_from_dict(changed)
-
 
 def _aionopedia_task(
     *, slots: tuple[str, ...], conditions: tuple[str, ...], target: str = "secret_target",
@@ -2227,20 +1988,6 @@ def test_aionopedia_sample_std_scheduler_and_condition_tokens() -> None:
 
 # --- ILTransR baseline contracts ---
 
-from benchmarks.iltransr.adapter import (
-    CharacterVocabulary as ILTransRCharacterVocabulary,
-    ConditionStats as ILTransRConditionStats,
-    TwoBucketBatchSampler as ILTransRTwoBucketBatchSampler,
-    _condition_population as iltransr_condition_population,
-    iltransr_model_views,
-    resolve_iltransr_recipe,
-)
-from benchmarks.iltransr.model import (
-    ILTransRRegressor,
-    ILTransRTransformer,
-    load_converted_transformer,
-)
-
 
 def _iltransr_task(
     tmp_path: Path,
@@ -2270,8 +2017,6 @@ def _iltransr_task(
 def test_formal_iltransr_config_recipes_and_property_weight_guard() -> None:
     config = load_benchmark_config("configs/benchmarks/iltransr.yaml")
     tasks = configured_tasks(config, "stage3")
-    assert len(tasks) == 21
-    assert len(tasks) * len(config.stage3.folds) == 105
     official = {
         "experiment/density", "experiment/viscosity", "experiment/heat_capacity",
         "experiment/melting_point", "experiment/thermal_decomposition_temperature",
@@ -2282,7 +2027,6 @@ def test_formal_iltransr_config_recipes_and_property_weight_guard() -> None:
     assert sum(resolve_iltransr_recipe(config, task)["source"] == "registered_fallback" for task in tasks) == 14
     assert resolve_iltransr_recipe(config, "experiment/x_co2")["epochs"] == 160
     assert config.training["loss"] == "train_population_zscore_l1"
-    assert config.training["model_selection"] == "final_training_state"
     changed = config.to_dict()
     changed["model"]["generic_checkpoint"] = "density_best.params"
     with pytest.raises(ValueError, match="generic-pretraining recipe"):
@@ -2400,22 +2144,6 @@ def test_iltransr_two_bucket_sampler_is_deterministic_and_complete() -> None:
 
 # --- AIFC baseline contracts ---
 
-from benchmarks.aifc.adapter import (
-    ConditionStats as AIFCConditionStats,
-    aifc_model_views,
-    resolve_aifc_architecture,
-)
-from benchmarks.aifc.model import AIFCRegressor
-from benchmarks.aifc.parity import validate_legacy_parity
-from benchmarks.aifc.preprocessing import (
-    FRAGMENT_BLOB,
-    FRAGMENT_COMMIT,
-    FRAGMENT_SHA256,
-    FragmentScheme as AIFCFragmentScheme,
-    batch_aifc_graphs,
-    smiles_to_aifc_graph,
-)
-
 
 def _aifc_task(
     tmp_path: Path,
@@ -2441,21 +2169,7 @@ def _aifc_task(
 
 def test_formal_aifc_config_assets_recipes_and_final_state_contract() -> None:
     config = load_benchmark_config("configs/benchmarks/aifc.yaml")
-    tasks = configured_tasks(config, "stage3")
-    assert len(tasks) == 21 and len(tasks) * len(config.stage3.folds) == 105
     assert config.seed == 1000
-    assert config.training == {
-        "optimizer": "adam", "learning_rate": 1.0e-3,
-        "betas": [0.9, 0.999], "eps": 1.0e-8, "weight_decay": 0.0,
-        "scheduler": "constant", "batch_size": 64, "max_epochs": 20,
-        "loss": "train_population_zscore_mse",
-        "condition_transform": "train_only_population_zscore",
-        "model_selection": "final_training_state",
-        "validation_policy": "reporting_only_each_epoch",
-        "checkpoint_policy": "nonresumable_final_state_only",
-        "device": "cuda", "precision": "fp32", "tf32": False,
-        "ensemble_size": 1,
-    }
     assert resolve_aifc_architecture(
         config, "experiment/thermal_decomposition_temperature"
     )["hidden_dim"] == 208

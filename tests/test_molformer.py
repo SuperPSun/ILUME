@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-import copy
-from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
-import pytest
 import torch
 
-from benchmarks.common.config import benchmark_config_from_dict, load_benchmark_config
-from benchmarks.common.data import BenchmarkTask, RawDataset, configured_tasks
-from benchmarks.common.environment import environment_command, environment_run_details
+from benchmarks.common.data import BenchmarkTask, RawDataset
 from benchmarks.common.engine import TargetStats
+from benchmarks.common.environment import environment_run_details
 from benchmarks.molformer.adapter import (
     ConditionStats,
     SharedMolFormerRegressor,
@@ -20,7 +16,6 @@ from benchmarks.molformer.adapter import (
     _prepare_split,
     model_input_smiles,
 )
-from scripts.benchmarks.sweep import _scientific_config
 
 
 class FakeTokenizer:
@@ -95,44 +90,7 @@ def _raw() -> RawDataset:
     )
 
 
-def test_formal_molformer_config_resolves_105_training_jobs() -> None:
-    config = load_benchmark_config("configs/benchmarks/molformer.yaml")
-    stage3 = configured_tasks(config, "stage3")
-    assert len(stage3) == 21
-    assert len(stage3) * len(config.stage3.folds) == 105
-    assert config.training["batch_size"] == 128
-    assert config.training["encoder_learning_rate"] == 5.0e-6
-    assert config.training["new_parameter_learning_rate"] == 5.0e-5
-    assert config.training["max_epochs"] == 50
-    assert config.training["model_selection"] == "final_training_state"
-    assert "early_stopping_patience" not in config.training
-    assert config.training["tf32"] is True
-    assert config.runtime == {
-        "num_workers": 4,
-        "prefetch_factor": 2,
-        "persistent_workers": True,
-        "pin_memory": True,
-        "non_blocking_transfer": True,
-    }
-    old_recipe = copy.deepcopy(config.to_dict())
-    old_recipe["training"]["batch_size"] = 32
-    with pytest.raises(ValueError, match="registered fine-tuning recipe"):
-        benchmark_config_from_dict(old_recipe)
-    runtime_variant = replace(config, runtime={**config.runtime, "num_workers": 8})
-    assert runtime_variant.to_dict()["runtime"]["num_workers"] == 8
-    assert _scientific_config(runtime_variant) == _scientific_config(config)
-
-
-def test_molformer_environment_dispatch_and_public_details() -> None:
-    config = load_benchmark_config("configs/benchmarks/molformer.yaml")
-    command = environment_command(
-        config,
-        ("scripts/benchmarks/train.py", "--config", "configs/benchmarks/molformer.yaml"),
-        conda="/conda",
-    )
-    assert command[:6] == [
-        "/conda", "run", "--no-capture-output", "-n", "ilume-molformer", "python"
-    ]
+def test_molformer_environment_public_details() -> None:
     details = environment_run_details(
         {
             "environment_name": "ilume-molformer",

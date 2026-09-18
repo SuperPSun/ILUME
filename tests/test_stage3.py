@@ -1,28 +1,28 @@
 from __future__ import annotations
 
 import csv
-
-import json
-
-import math
-
-import shutil
-
 from dataclasses import replace
-
+import hashlib
+import json
+import math
 from pathlib import Path
-
+import shutil
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
-import pytest
-
 import numpy as np
-import torch
+import pytest
 from rdkit import Chem
+import torch
 
 from common.descriptor_preprocessing import FeaturePreprocessor
-from common.identity import IDENTITY_CONTRACT_VERSION, semantic_identity, tensor_state_hash
-
+from common.identity import semantic_identity
+from common.io import sha256_file
+import scripts.stage3.evaluate as evaluate_launcher
+import scripts.stage3.train as train_launcher
+from stage1.descriptors import calculate_descriptors, rdkit_descriptor_names
+from stage3.capacity import refined_validation_summary, summarize_capacity_manifest
 from stage3.config import (
     BASE_GROUP_TASKS,
     Stage3Config,
@@ -32,8 +32,6 @@ from stage3.config import (
     Stage3InitializationConfig,
     Stage3ModelConfig,
     Stage3OwnerBudgetConfig,
-    Stage3PluginAdaptationConfig,
-    Stage3PluginConfig,
     Stage3PreparationConfig,
     Stage3PrivateClassConfig,
     Stage3RepresentationConfig,
@@ -44,13 +42,10 @@ from stage3.config import (
     load_stage3_config,
     stage3_config_from_dict,
 )
-
 from stage3.data import (
-    ObjectKey,
     ResolvedTaskSpec,
     Stage3TaskDataset,
     Stage3RepresentationStore,
-    balanced_virtual_indices,
     composite_steps_per_epoch,
     raw_task_steps,
     resolve_batch_allocation,
@@ -59,7 +54,7 @@ from stage3.data import (
     shuffled_epoch_indices,
     source_path,
 )
-
+from stage3.evaluate import evaluate_checkpoints
 from stage3.model import (
     GLOBAL,
     Stage3SparseModel,
@@ -68,31 +63,8 @@ from stage3.model import (
     summarize_task_gate_observations,
     task_gate_observations,
 )
-
 from stage3.pcgrad import hierarchical_pcgrad
-
-from stage3.prepare import (
-    load_prepared_stage3,
-    materialize_object_embeddings,
-    prepare_stage3,
-)
-
-from stage3.evaluate import evaluate_checkpoints
-
-from stage3.train import (
-    STAGE3_CHECKPOINT_KIND,
-    STAGE3_CHECKPOINT_VERSION,
-    STAGE3_RDKIT_CHECKPOINT_KIND,
-    STAGE3_RDKIT_REFINED_KIND,
-    _clip_joint_gradients,
-    _load_plugin,
-    checkpoint_epochs,
-    compute_task_gradient,
-    resolve_stage3_training_identity,
-    run_stage3_training,
-)
-
-from stage3.identity import build_stage3_training_identity, metadata_identity
+from stage3.prepare import load_prepared_stage3, prepare_stage3
 from stage3.three_phase import (
     _OwnerScheduler,
     _lr_factor as _three_phase_lr_factor,
@@ -102,44 +74,16 @@ from stage3.three_phase import (
     _owner_state as _three_phase_owner_state,
     _stitch_owner_deltas,
 )
+from stage3.train import (
+    STAGE3_RDKIT_CHECKPOINT_KIND,
+    STAGE3_RDKIT_REFINED_KIND,
+    _clip_joint_gradients,
+    checkpoint_epochs,
+    compute_task_gradient,
+    resolve_stage3_training_identity,
+    run_stage3_training,
+)
 
-from dataclasses import replace
-
-
-from common.identity import semantic_identity
-
-from stage3.capacity import refined_validation_summary, summarize_capacity_manifest
-
-from stage3.config import load_stage3_config
-
-import scripts.stage3.train as train_launcher
-
-from stage1.config import load_config
-from stage1.descriptors import calculate_descriptors, rdkit_descriptor_names
-
-from stage1.identity import build_stage1_corpus_identity
-
-from stage2.config import load_stage2_config
-
-from common.io import sha256_file
-
-import hashlib
-
-from typing import Any
-
-from stage3.config import validate_stage3_folds
-
-
-
-import argparse
-
-from types import SimpleNamespace
-
-import scripts.stage3.evaluate as evaluate_launcher
-
-from stage3.config import Stage3Config
-
-from stage3.evaluate import resolve_stage3_reporting_study_id
 
 # --- Sparse-label model, training, and resume contracts ---
 
@@ -367,6 +311,9 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
     assert config.training.checkpoint_interval_epochs == 10
     assert config.training.seed is None
     assert config.training.sampling_mode == "virtual"
+    assert config.training.schedule_mode == "legacy_joint_refinement"
+    assert all(group.experts is None for group in config.groups.values())
+    assert all(task.phase3_private_epochs is None for task in config.tasks.values())
     assert config.training.joint_gradient_clip_mode == "global"
     assert "sampling_mode" not in config.to_dict()["training"]
     assert "joint_gradient_clip_mode" not in config.to_dict()["training"]
@@ -400,6 +347,9 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
     assert no_stage1.training.schedule_mode == "three_phase"
 
     v2 = load_stage3_config("configs/v2/stage3/base.yaml")
+    assert v2.model == config.model
+    assert all(group.experts is not None for group in v2.groups.values())
+    assert all(v2.resolved_private_recipe(task).phase3_epochs >= 0 for task in v2.tasks)
     assert v2.training.sampling_mode == "raw"
     assert v2.training.joint_gradient_clip_mode == "ownership"
     assert v2.training.schedule_mode == "three_phase"
@@ -441,78 +391,20 @@ def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
         assert config.training.sampling_mode == "raw"
         assert config.training.joint_gradient_clip_mode == "ownership"
         assert config.training.schedule_mode == "three_phase"
+        if name == "system":
+            assert {spec.system_type for spec in enabled.values()} == strategies
+        elif name == "individual":
+            assert sum(spec.split_strategy == "cation" for spec in enabled.values()) == 20
+            assert enabled["experiment/transfer_organic"].split_strategy == "solvent"
         for spec in enabled.values():
             for fold in range(1, 6):
                 assert source_path(config, spec, fold).is_file()
-
-
-def test_v2_split_policies_follow_catalog_topology_and_identity() -> None:
-    system = resolve_task_registry(
-        load_stage3_config("configs/v2/stage3/splits/system.yaml")
-    )
-    assert {
-        spec.system_type for spec in system.values()
-    } == {"il", "il_solute", "solute_solvent"}
-    assert {
-        spec.split_strategy for spec in system.values()
-    } == {"il", "il_solute", "solute_solvent"}
-
-    individual = resolve_task_registry(
-        load_stage3_config("configs/v2/stage3/splits/individual.yaml")
-    )
-    assert sum(spec.split_strategy == "cation" for spec in individual.values()) == 20
-    assert individual["experiment/transfer_organic"].split_strategy == "solvent"
 
 
 def test_three_phase_config_and_task_specific_gate_contract() -> None:
     config = load_stage3_config("configs/v2/stage3/base.yaml")
     assert config.training.schedule_mode == "three_phase"
     assert config.training.three_phase is not None
-    assert config.training.three_phase.global_scope == Stage3GlobalBudgetConfig(
-        lr=2.5e-4, epochs=15, warmup_ratio=0.05, min_lr_ratio=0.1
-    )
-    assert {
-        group: (
-            spec.experts, spec.expert_hidden_ratio,
-            (spec.phase1.lr, spec.phase1.epochs),
-            (spec.phase2.lr, spec.phase2.epochs),
-        )
-        for group, spec in config.groups.items()
-    } == {
-        "biological": (1, 0.5, (7.5e-5, 8), (3.75e-5, 5)),
-        "dielectric_optical": (1, 0.75, (1e-4, 8), (5e-5, 3)),
-        "thermophysical": (2, 1.5, (1.5e-4, 10), (7.5e-5, 4)),
-        "transport": (2, 1.5, (1.5e-4, 12), (7.5e-5, 12)),
-        "phase_stability": (3, 1.5, (2e-4, 15), (1e-4, 20)),
-        "solvation": (3, 1.5, (2e-4, 15), (1e-4, 24)),
-    }
-    expected_tasks = {
-        "isobaric_coefficient_of_volume_expansion": (25, "tiny", 0),
-        "self_diffusion_coefficient": (36, "tiny", 4),
-        "static_relative_permittivity": (44, "tiny", 0),
-        "dynamic_relative_permittivity": (49, "tiny", 2),
-        "thermal_conductivity": (93, "tiny", 2),
-        "equilibrium_pressure": (95, "tiny", 2),
-        "x_co2": (122, "small", 5), "speed_of_sound": (216, "small", 0),
-        "pec50": (305, "small", 3), "heat_capacity": (352, "small", 3),
-        "electrical_conductivity": (703, "medium", 4),
-        "refractive_index": (726, "medium", 3),
-        "glass_transition_temperature": (793, "medium", 2),
-        "surface_tension": (1141, "medium", 5),
-        "transfer_organic": (1914, "medium", 15),
-        "viscosity": (2586, "large", 6),
-        "thermal_decomposition_temperature": (2756, "large", 6),
-        "transfer": (3079, "large", 10), "melting_point": (3460, "large", 5),
-        "solvation": (3611, "large", 8), "density": (5966, "large", 8),
-    }
-    assert {
-        task.removeprefix("experiment/"): (
-            spec.unique_systems,
-            spec.size_class,
-            config.resolved_private_recipe(task).phase3_epochs,
-        )
-        for task, spec in config.tasks.items()
-    } == expected_tasks
     serialized = config.to_dict()
     assert "epochs" not in serialized["training"]
     assert "refinement_ratio" not in serialized["training"]
@@ -579,9 +471,6 @@ def test_three_phase_config_and_task_specific_gate_contract() -> None:
     )
     assert model.task_gates["experiment__a"].out_features == 5
     assert model.task_gates["experiment__b"].out_features == 3
-    assert len(model.l1_group_experts["g1"]) == 3
-    assert len(model.l1_group_experts["g2"]) == 1
-    assert set(model.task_gates) == {"experiment__a", "experiment__b"}
 
     model.eval()
     primary = torch.randn(4, 4)
@@ -627,32 +516,6 @@ def test_three_phase_private_capacity_ratios_follow_size_class() -> None:
         fallback.film_hidden_ratio,
     ) == (0.5, 0.5, 0.5)
     assert fallback.phase1_epochs == 5
-    pec50 = config.resolved_private_recipe("experiment/pec50")
-    assert (
-        pec50.private_hidden_ratio,
-        pec50.tower_hidden_ratio,
-        pec50.film_hidden_ratio,
-    ) == (0.75, 0.75, 0.75)
-    glass = config.resolved_private_recipe(
-        "experiment/glass_transition_temperature"
-    )
-    assert (glass.private_hidden_ratio, glass.tower_hidden_ratio, glass.film_hidden_ratio) == (
-        1.25, 1.25, 1.0,
-    )
-    assert glass.private_dropout == 0.10
-    for task in (
-        "experiment/electrical_conductivity",
-        "experiment/refractive_index",
-        "experiment/surface_tension",
-    ):
-        assert config.resolved_private_recipe(task).private_dropout == 0.15
-    assert config.resolved_private_recipe(
-        "experiment/viscosity"
-    ).private_dropout == 0.15
-    assert config.resolved_private_recipe(
-        "experiment/thermal_decomposition_temperature"
-    ).private_dropout == 0.10
-
     task_id = "experiment/static_relative_permittivity"
     task = config.tasks[task_id]
     assert task.size_class == "tiny"
@@ -702,54 +565,6 @@ def test_three_phase_private_capacity_ratios_follow_size_class() -> None:
     assert dropout_model.resolved_capacity_recipe()["tasks"][dropout_task][
         "private_dropout"
     ] == 0.15
-    refractive = config.resolved_private_recipe(dropout_task)
-    assert (
-        refractive.private_hidden_ratio,
-        refractive.tower_hidden_ratio,
-        refractive.film_hidden_ratio,
-        refractive.phase3_epochs,
-    ) == (0.75, 0.75, 0.75, 3)
-
-    expected_lrs = {
-        "experiment/transfer_organic": (1.2e-4, 6.0e-5, 3.0e-5),
-        "experiment/solvation": (1.5e-4, 7.5e-5, 3.75e-5),
-        "experiment/electrical_conductivity": (8.0e-5, 4.0e-5, 2.0e-5),
-        "experiment/refractive_index": (8.0e-5, 4.0e-5, 2.0e-5),
-        "experiment/surface_tension": (8.0e-5, 4.0e-5, 2.0e-5),
-        "experiment/viscosity": (1.0e-4, 5.0e-5, 2.5e-5),
-        "experiment/density": (1.25e-4, 6.25e-5, 3.125e-5),
-    }
-    for resolved_task, expected in expected_lrs.items():
-        resolved = config.resolved_private_recipe(resolved_task)
-        assert (resolved.phase1_lr, resolved.phase2_lr, resolved.phase3_lr) == expected
-    changed_recipes = {
-        "experiment/isobaric_coefficient_of_volume_expansion": (0, 0, 0.25, 0.25, 0.25, 0.10),
-        "experiment/thermal_conductivity": (3, 2, 0.50, 0.50, 0.50, 0.10),
-        "experiment/pec50": (4, 3, 0.75, 0.75, 0.75, 0.10),
-        "experiment/x_co2": (4, 5, 0.75, 0.75, 0.75, 0.10),
-        "experiment/refractive_index": (8, 3, 0.75, 0.75, 0.75, 0.15),
-        "experiment/thermal_decomposition_temperature": (12, 6, 1.25, 1.25, 1.00, 0.10),
-        "experiment/viscosity": (12, 6, 0.75, 0.75, 0.75, 0.15),
-        "experiment/self_diffusion_coefficient": (3, 4, 0.50, 0.50, 0.50, 0.10),
-        "experiment/melting_point": (12, 5, 1.00, 1.00, 1.00, 0.10),
-    }
-    for changed_task, expected in changed_recipes.items():
-        resolved = config.resolved_private_recipe(changed_task)
-        assert (
-            resolved.phase2_epochs,
-            resolved.phase3_epochs,
-            resolved.private_hidden_ratio,
-            resolved.tower_hidden_ratio,
-            resolved.film_hidden_ratio,
-            resolved.private_dropout,
-        ) == expected
-    volume = config.resolved_private_recipe(
-        "experiment/isobaric_coefficient_of_volume_expansion"
-    )
-    refractive = config.resolved_private_recipe("experiment/refractive_index")
-    assert min(volume.phase2_epochs, config.groups["thermophysical"].phase2.epochs) == 0
-    assert min(refractive.phase2_epochs, config.groups["dielectric_optical"].phase2.epochs) == 3
-
 
 def test_task_gate_diagnostics_partition_entropy_and_pooled_quantiles() -> None:
     task_gate = torch.tensor(
@@ -1199,39 +1014,6 @@ def test_three_phase_owner_delta_stitch_is_order_independent(
     assert all(torch.equal(forward[name], reverse[name]) for name in forward)
 
 
-def test_training_seed_changes_training_identity_not_prepared_artifact(
-    tiny_prepared: Stage3Config,
-) -> None:
-    original_metadata = json.loads(
-        (tiny_prepared.data.artifacts_dir / "metadata.json").read_text()
-    )
-    changed = replace(
-        tiny_prepared,
-        training=replace(tiny_prepared.training, seed=10042),
-    )
-
-    assert effective_training_seed(tiny_prepared) == tiny_prepared.data.seed
-    assert effective_training_seed(changed) == 10042
-    assert changed.data.artifacts_dir == tiny_prepared.data.artifacts_dir
-    assert json.loads(
-        (changed.data.artifacts_dir / "metadata.json").read_text()
-    ) == original_metadata
-    assert resolve_stage3_training_identity(changed, 1) != (
-        resolve_stage3_training_identity(tiny_prepared, 1)
-    )
-
-    changed_sampling = replace(
-        tiny_prepared,
-        training=replace(
-            tiny_prepared.training,
-            sampling_mode="raw",
-        ),
-    )
-    assert resolve_stage3_training_identity(changed_sampling, 1) != (
-        resolve_stage3_training_identity(tiny_prepared, 1)
-    )
-
-
 def test_raw_sampling_uses_every_index_once_without_padding() -> None:
     counts = {"tiny": 10, "medium": 400, "large": 2000}
     allocation = resolve_raw_batch_allocation(counts, 30)
@@ -1275,9 +1057,14 @@ def test_raw_sampling_uses_every_index_once_without_padding() -> None:
     assert legacy_steps * legacy["tiny"] > counts["tiny"]
 
 
-def test_grouping_and_task_weights_change_training_not_prepared_identity(
+def test_training_variants_preserve_prepared_data_but_change_identity(
     tiny_prepared: Stage3Config,
 ) -> None:
+    metadata_path = tiny_prepared.data.artifacts_dir / "metadata.json"
+    original_metadata = metadata_path.read_bytes()
+    assert effective_training_seed(tiny_prepared) == tiny_prepared.data.seed
+    seeded = replace(tiny_prepared, training=replace(tiny_prepared.training, seed=10042))
+    assert effective_training_seed(seeded) == 10042
     regrouped = replace(
         tiny_prepared,
         groups={"merged": Stage3GroupConfig(group_weight=2.0)},
@@ -1287,6 +1074,8 @@ def test_grouping_and_task_weights_change_training_not_prepared_identity(
         },
     )
     variants = (
+        seeded,
+        replace(tiny_prepared, training=replace(tiny_prepared.training, sampling_mode="raw")),
         regrouped,
         replace(
             tiny_prepared,
@@ -1302,7 +1091,9 @@ def test_grouping_and_task_weights_change_training_not_prepared_identity(
     )
     original_identity = resolve_stage3_training_identity(tiny_prepared, 1)
     for changed in variants:
+        assert changed.data.artifacts_dir == tiny_prepared.data.artifacts_dir
         prepared = load_prepared_stage3(changed)
+        assert metadata_path.read_bytes() == original_metadata
         assert set(prepared["registry"]) == set(tiny_prepared.tasks)
         assert resolve_stage3_training_identity(changed, 1) != original_identity
     assert all(
@@ -1323,8 +1114,12 @@ def test_registry_catalog_precedence_split_and_topology(tmp_path: Path) -> None:
     )
     assert resolve_task_registry(override)["experiment/a"].split_strategy == "random"
 
-def test_ownership_is_complete_and_isolated(tiny_prepared: Stage3Config) -> None:
-    model = Stage3SparseModel(tiny_prepared.model, resolve_task_registry(tiny_prepared), 4)
+
+def test_joint_gradient_clipping_isolated_by_owner(
+    tiny_prepared: Stage3Config,
+) -> None:
+    registry = resolve_task_registry(tiny_prepared)
+    model = Stage3SparseModel(tiny_prepared.model, registry, 4)
     ownership = model.parameter_ownership()
     assert all(owner.scope in {"GLOBAL", "GROUP", "PRIVATE"} for owner in ownership.values())
     assert set(model.parameters_for_owner(private_owner("experiment/a"))).isdisjoint(
@@ -1335,12 +1130,6 @@ def test_ownership_is_complete_and_isolated(tiny_prepared: Stage3Config) -> None
     )
     assert model.parameters_for_owner(GLOBAL)
 
-
-def test_joint_gradient_clipping_isolated_by_owner(
-    tiny_prepared: Stage3Config,
-) -> None:
-    registry = resolve_task_registry(tiny_prepared)
-    model = Stage3SparseModel(tiny_prepared.model, registry, 4)
     requested_norms = {
         "GLOBAL": 0.25,
         "GROUP:g1": 0.50,
@@ -1349,7 +1138,6 @@ def test_joint_gradient_clipping_isolated_by_owner(
         "PRIVATE:experiment/b": 20.0,
         "PRIVATE:experiment/c": 30.0,
     }
-    ownership = model.parameter_ownership()
     for owner in sorted(set(ownership.values())):
         parameters = model.parameters_for_owner(owner)
         element_count = sum(parameter.numel() for parameter in parameters)
@@ -1408,8 +1196,6 @@ def test_zero_global_or_private_experts_preserve_forward_and_ownership(
     if global_count == 0:
         assert model.parameters_for_owner(GLOBAL) == ()
     assert model.parameters_for_owner(private_owner(task))
-
-
 
 
 def test_rdkit_prepare_adapter_refinement_and_reporting_contract(

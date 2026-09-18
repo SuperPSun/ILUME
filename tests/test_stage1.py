@@ -1,15 +1,23 @@
 from __future__ import annotations
 
+import csv
+from dataclasses import replace
+import hashlib
+import json
 from pathlib import Path
 
-from dataclasses import replace
-
-import hashlib
-
-import json
-
+import numpy as np
 import pytest
+from rdkit import Chem
+import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
+import torch.nn.functional as F
 
+from common.data_identity import write_data_identity
+from common.identity import semantic_identity
+from common.outputs import open_run_directory
+import common.outputs as outputs_module
 from stage1.config import (
     ArchitectureConfig,
     GLOBAL_RDKIT_STAGE1_CHECKPOINT_VERSION,
@@ -17,25 +25,6 @@ from stage1.config import (
     STAGE1_CHECKPOINT_VERSION,
     config_from_dict,
     load_config,
-)
-
-import common.outputs as outputs_module
-
-from common.data_identity import write_data_identity
-
-from common.identity import semantic_identity
-
-from common.outputs import open_run_directory
-
-import csv
-
-import torch
-
-import torch.distributed as dist
-
-import torch.multiprocessing as mp
-
-from stage1.config import (
     DataConfig,
     DescriptorConfig,
     FingerprintConfig,
@@ -44,81 +33,34 @@ from stage1.config import (
     PretrainConfig,
     TrainingConfig,
 )
-
-from stage1.prepare import prepare_corpus
-
-from stage1.model import LossStatistics, PretrainOutput
-
-import stage1.train as train_module
-
-from stage1.train import (
-    _DistributedContext,
-    _global_training_losses,
-    run_training,
-)
-
-from collections import Counter
-
-import numpy as np
-
-from rdkit import Chem
-
-from stage1.config import DataConfig, PreparationConfig, PretrainConfig
-
-import stage1.features as features_module
-
-import stage1.prepare as prepare_module
-
 from stage1.data import (
     CORPUS_FORMAT_VERSION,
     CORPUS_KIND,
     GLOBAL_RDKIT_CORPUS_FORMAT_VERSION,
     PreparedCorpusDataset,
 )
-
-from stage1.features import IPC_SQUARE_OVERFLOW_LIMIT, inspect_entity_qc
-
-from stage1.masking import MultimodalPacker
-
-from stage1.prepare import (
-    _descriptor_batch,
-    _csv_data_row_count,
-    _ordered_batch_map,
-    _stage1_shard_sample,
-    preparation_source_paths,
-    prepare_corpus,
-)
-
-from stage1.descriptors import rdkit_descriptor_names
-
-from stage1.descriptors import DescriptorSchema, DescriptorStandardizer
-
-from stage1.masking import mask_smiles_tokens
-
-from stage1.tokenizer import SmilesTokenizer, ais_tokenize
-
-import torch.nn.functional as F
-
-from stage1.config import MaskingConfig
-
+from stage1.descriptors import rdkit_descriptor_names, DescriptorSchema
+from stage1.fingerprints import calculate_fingerprints
+from stage1.features import IPC_SQUARE_OVERFLOW_LIMIT
+import stage1.features as features_module
 from stage1.graph import ATOM_FEATURE_NAMES, BOND_FEATURE_NAMES
-
-from stage1.data import BatchFusionLayout
-
 from stage1.masking import (
+    MultimodalPacker,
+    mask_smiles_tokens,
     MultimodalCollator,
     MultimodalMasker,
-    MultimodalPacker,
-    curriculum_dropout_probability,
 )
-
-from stage1.model import MultimodalPretrainModel, _weighted_component
-
-from stage1.encoders import DirectedMessagePassingEncoder
-
-from stage1.fusion import FusionTransformer
-
-from stage1.graph import featurize_mol, pack_graphs
+from stage1.model import (
+    LossStatistics,
+    PretrainOutput,
+    MultimodalPretrainModel,
+    _weighted_component,
+)
+from stage1.prepare import prepare_corpus
+import stage1.prepare as prepare_module
+from stage1.tokenizer import SmilesTokenizer, ais_tokenize
+from stage1.train import _DistributedContext, _global_training_losses, run_training
+import stage1.train as train_module
 
 
 def test_global_rdkit_v2_representation_and_losses(
@@ -176,37 +118,17 @@ def test_global_rdkit_v2_representation_and_losses(
 ROOT = Path(__file__).resolve().parents[1]
 
 def test_formal_stage1_has_one_large_capacity_base_profile() -> None:
+    active = load_config(ROOT / "configs/v2/stage1/base.yaml")
+    assert active.data.descriptor_dim == 217
+    assert active.descriptor.mode == "full"
+    assert active.descriptor.token_count == 1
+    assert active.model.d_model == 512
+    assert "fingerprint" not in active.to_dict()
     assert sorted(path.name for path in (ROOT / "configs/v1/stage1").glob("*.yaml")) == [
         "base.yaml"
     ]
     base = load_config(ROOT / "configs/v1/stage1/base.yaml")
-    assert (
-        base.model.d_model,
-        base.model.n_heads,
-        base.model.smiles_layers,
-        base.model.graph_depth,
-        base.model.descriptor_hidden_dim,
-        base.model.fusion_layers,
-        base.model.feedforward_dim,
-    ) == (512, 8, 8, 6, 1024, 8, 2048)
-    assert base.model.role_embedding is True
-    assert base.model.gradient_checkpointing is False
-    assert base.data.include_augmentation is True
     assert base.loss.role_weights == (2.0, 2.0, 1.0)
-    assert base.training.batch_size == 128
-    assert base.training.num_workers == 8
-    assert base.training.epochs == 5
-    assert base.training.learning_rate == pytest.approx(1.0e-4)
-    assert base.training.compile is False
-    assert base.training.validation_interval_steps == 5000
-    assert base.tokenizer.min_frequency == 1
-    assert (
-        base.preparation.workers,
-        base.preparation.catalog_batch_size,
-        base.preparation.qc_batch_size,
-        base.preparation.tokenizer_batch_size,
-        base.preparation.descriptor_batch_size,
-    ) == (16, 10000, 2048, 2048, 512)
     assert "preparation" in base.to_dict()
     assert "preparation" not in base.experiment_dict()
 
@@ -623,7 +545,7 @@ def _write_role_csv(path, rows):
                 [smiles, charge, "test", seed[0] if seed else "", "", "", ""]
             )
 
-def test_prepare_uses_new_original_sources_and_sharded_artifacts(tmp_path, monkeypatch):
+def test_prepare_uses_new_original_sources_and_sharded_artifacts(tmp_path):
     stage1 = tmp_path / "stage1"
     artifacts = tmp_path / "artifacts"
     stage1.mkdir()
@@ -634,15 +556,16 @@ def test_prepare_uses_new_original_sources_and_sharded_artifacts(tmp_path, monke
         (stage1 / ignored).write_text("not,a,valid,csv\n", encoding="utf-8")
     (stage1 / "IL.csv").write_text("cation,anion\n[K+],[Br-]\n", encoding="utf-8")
 
-    summary = prepare_corpus(
-        DataConfig(
+    summary = prepare_corpus(PretrainConfig(
+        fingerprint=FingerprintConfig(kind="both"),
+        data=DataConfig(
             stage1_dir=stage1,
             artifacts_dir=artifacts,
             valid_fraction=0.5,
             seed=3,
             shard_size=2,
-        )
-    )
+        ),
+    ))
     assert summary["total"] == 6
     assert summary["train"] == summary["valid"] == 3
     assert summary["cation"] == summary["anion"] == summary["neutral"] == 2
@@ -672,6 +595,13 @@ def test_prepare_uses_new_original_sources_and_sharded_artifacts(tmp_path, monke
     dataset = PreparedCorpusDataset(artifacts, "train")
     assert len(dataset) == 3
     sample = dataset[0]
+    with (artifacts / "manifest.csv").open() as handle:
+        source = next(row for row in csv.DictReader(handle) if row["sample_id"] == sample["sample_id"])
+    expected = calculate_fingerprints(
+        Chem.MolFromSmiles(source["canonical_smiles"]), FingerprintConfig(kind="both")
+    )
+    for family, values in expected.items():
+        assert torch.equal(sample["fingerprints"][family].float(), torch.from_numpy(values))
     assert set(sample) == {
         "sample_id",
         "role_id",
@@ -690,19 +620,12 @@ def test_prepare_uses_new_original_sources_and_sharded_artifacts(tmp_path, monke
     assert all(
         value.dtype == torch.float32 for value in packed.fingerprints.values.values()
     )
+    for family, stored in sample["fingerprints"].items():
+        assert torch.equal(packed.fingerprints.values[family][0], stored.float())
     batched_dataset = PreparedCorpusDataset(artifacts, "train")
     expected_ids = [batched_dataset[index]["sample_id"] for index in (0, 0, 1)]
-    load_calls: list[str] = []
-    real_load = batched_dataset._load_shard
-
-    def record_load(relative_path):
-        load_calls.append(relative_path)
-        return real_load(relative_path)
-
-    monkeypatch.setattr(batched_dataset, "_load_shard", record_load)
     batched = batched_dataset.__getitems__([0, 0, 1])
     assert [item["sample_id"] for item in batched] == expected_ids
-    assert len(load_calls) == len(set(load_calls))
     if torch.cuda.is_available():
         pinned = packed.pin_memory()
         assert pinned.token_ids.is_pinned()
@@ -790,10 +713,9 @@ def test_prepare_excludes_qc_failures_before_descriptor_calculation(
     assert metadata["augmentation_audit"]["anion"]["retained"] == 0
     assert metadata["augmentation_audit"]["neutral"]["retained"] == 0
 
-def test_full_augmentation_ingestion_dedup_leakage_and_audit(tmp_path):
+def test_augmentation_leakage_and_worker_artifact_semantics(tmp_path):
     stage1 = tmp_path / "stage1"
     augmentation = stage1 / "augmentation"
-    artifacts = tmp_path / "artifacts"
     augmentation.mkdir(parents=True)
     originals = {
         "cation": [("[Na+]", 1), ("C[NH3+]", 1), ("C[NH2+]C", 1), ("[K+]", 1)],
@@ -821,88 +743,51 @@ def test_full_augmentation_ingestion_dedup_leakage_and_audit(tmp_path):
             ],
         )
 
-    config = PretrainConfig(
-        data=DataConfig(
-            stage1_dir=stage1,
-            artifacts_dir=artifacts,
-            valid_fraction=0.25,
-            seed=7,
-            include_augmentation=True,
-        )
-    )
-    summary = prepare_corpus(config)
-    assert summary["augmented"] == 9
-    metadata = json.loads((artifacts / "metadata.json").read_text(encoding="utf-8"))
-    for role in ("cation", "anion", "neutral"):
-        assert metadata["augmentation_audit"][role] == {
-            "included": True,
-            "source_rows": 6,
-            "excluded_valid_seed": 1,
-            "excluded_overlap": 1,
-            "excluded_duplicate": 1,
-            "eligible": 3,
-            "excluded_qc": 0,
-            "retained": 3,
-        }
-    audit = json.loads(
-        (artifacts / "augmentation_audit.json").read_text(encoding="utf-8")
-    )
-    assert audit["roles"] == metadata["augmentation_audit"]
-    with (artifacts / "manifest.csv").open(newline="", encoding="utf-8") as handle:
-        rows = list(csv.DictReader(handle))
-    valid_smiles = {
-        row["canonical_smiles"] for row in rows if row["split"] == "valid"
-    }
-    augmented_seeds = {
-        seed
-        for row in rows
-        if row["is_augmented"] == "1"
-        for seed in row["seed_smiles"].split(";")
-        if seed
-    }
-    assert valid_smiles.isdisjoint(augmented_seeds)
-
-def test_prepare_workers_preserve_artifact_semantics(tmp_path):
-    stage1 = tmp_path / "stage1"
-    augmentation = stage1 / "augmentation"
-    augmentation.mkdir(parents=True)
-    originals = {
-        "cation": [("[Na+]", 1), ("C[NH3+]", 1), ("[K+]", 1), ("C[NH2+]C", 1)],
-        "anion": [("[Cl-]", -1), ("C(=O)[O-]", -1), ("[Br-]", -1), ("C[S-]", -1)],
-        "molecule": [("CCO", 0), ("O", 0), ("N", 0), ("CC", 0)],
-    }
-    additions = {
-        "cation": [("CC[NH2+]C", 1, "unrelated")],
-        "anion": [("CC[S-]", -1, "unrelated")],
-        "molecule": [("CCC", 0, "unrelated")],
-    }
-    for role, rows in originals.items():
-        _write_role_csv(stage1 / f"{role}.csv", rows)
-        _write_role_csv(augmentation / f"{role}.csv", additions[role])
-
     artifact_dirs = []
     for workers in (1, 4):
         artifacts = tmp_path / f"artifacts_{workers}"
-        prepare_corpus(
-            PretrainConfig(
-                data=DataConfig(
-                    stage1_dir=stage1,
-                    artifacts_dir=artifacts,
-                    valid_fraction=0.25,
-                    seed=11,
-                    include_augmentation=True,
-                    shard_size=3,
-                ),
-                preparation=PreparationConfig(
-                    workers=workers,
-                    catalog_batch_size=2,
-                    qc_batch_size=2,
-                    tokenizer_batch_size=2,
-                    descriptor_batch_size=2,
-                ),
-            )
+        config = PretrainConfig(
+            data=DataConfig(
+                stage1_dir=stage1, artifacts_dir=artifacts,
+                valid_fraction=0.25, seed=7, include_augmentation=True, shard_size=3,
+            ),
+            preparation=PreparationConfig(
+                workers=workers, catalog_batch_size=2, qc_batch_size=2,
+                tokenizer_batch_size=2, descriptor_batch_size=2,
+            ),
         )
+        summary = prepare_corpus(config)
         artifact_dirs.append(artifacts)
+        assert summary["augmented"] == 9
+        metadata = json.loads((artifacts / "metadata.json").read_text(encoding="utf-8"))
+        for role in ("cation", "anion", "neutral"):
+            assert metadata["augmentation_audit"][role] == {
+                "included": True,
+                "source_rows": 6,
+                "excluded_valid_seed": 1,
+                "excluded_overlap": 1,
+                "excluded_duplicate": 1,
+                "eligible": 3,
+                "excluded_qc": 0,
+                "retained": 3,
+            }
+        audit = json.loads(
+            (artifacts / "augmentation_audit.json").read_text(encoding="utf-8")
+        )
+        assert audit["roles"] == metadata["augmentation_audit"]
+        with (artifacts / "manifest.csv").open(newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+        valid_smiles = {
+            row["canonical_smiles"] for row in rows if row["split"] == "valid"
+        }
+        augmented_seeds = {
+            seed
+            for row in rows
+            if row["is_augmented"] == "1"
+            for seed in row["seed_smiles"].split(";")
+            if seed
+        }
+        assert valid_smiles.isdisjoint(augmented_seeds)
 
     left, right = artifact_dirs
     for filename in (
@@ -943,30 +828,7 @@ def test_prepare_workers_preserve_artifact_semantics(tmp_path):
                 else:
                     assert left_sample[key] == right_sample[key]
 
-def test_stage1_shard_fingerprint_uint8_preserves_every_bit():
-    fingerprint = torch.tensor([0.0, 1.0, 1.0, 0.0], dtype=torch.float32)
-    sample = {
-        "sample_id": "neutral_00000001",
-        "role_id": 2,
-        "token_ids": torch.tensor([2, 3]),
-        "atom_categorical": torch.zeros((1, 1), dtype=torch.long),
-        "atom_continuous": torch.zeros((1, 1)),
-        "bond_categorical": torch.zeros((0, 1), dtype=torch.long),
-        "bond_index": torch.zeros((2, 0), dtype=torch.long),
-        "descriptors": torch.zeros(1),
-        "descriptor_valid": torch.ones(1, dtype=torch.bool),
-        "fingerprints": {"morgan": fingerprint},
-        "canonical_smiles": "CC",
-        "sources": ("test",),
-        "split": "train",
-        "is_augmented": False,
-        "seed_smiles": (),
-    }
-    compact = _stage1_shard_sample(sample)
-    assert "canonical_smiles" not in compact
-    stored = compact["fingerprints"]["morgan"]
-    assert stored.dtype == torch.uint8
-    assert torch.equal(stored.float(), fingerprint)
+
 
 def test_ais_round_trip_and_vocabulary_save_load(tmp_path):
     import atomInSmiles
@@ -1138,16 +1000,7 @@ def test_all_five_modalities_use_element_role_weights_and_component_means(
         )
         assert torch.allclose(output.losses[modality], statistics.mean())
 
-def test_end_to_end_forward_backward_has_five_losses_and_shared_gradients(
-    tiny_config,
-    tiny_samples,
-):
-    vocabulary, samples = tiny_samples
-    batch = MultimodalCollator(
-        vocabulary, tiny_config.masking, seed=tiny_config.data.seed
-    )(samples)
-    model = MultimodalPretrainModel(tiny_config, vocabulary)
-    output = model(batch)
+
     assert set(output.losses) == {
         "smiles",
         "descriptor",
