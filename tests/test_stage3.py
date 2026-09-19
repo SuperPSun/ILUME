@@ -379,6 +379,107 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
         assert active.training.three_phase == v2.training.three_phase
 
 
+def test_knowledge_graph_grouping_config_is_yaml_driven() -> None:
+    base = load_stage3_config("configs/v2/stage3/base.yaml")
+    candidate = load_stage3_config("configs/v2/stage3/base1.yaml")
+    expected = {
+        "transport_dynamics": {
+            "experiment/electrical_conductivity",
+            "experiment/self_diffusion_coefficient",
+            "experiment/viscosity",
+        },
+        "thermophysical_interfacial_response": {
+            "experiment/density",
+            "experiment/heat_capacity",
+            "experiment/isobaric_coefficient_of_volume_expansion",
+            "experiment/speed_of_sound",
+            "experiment/surface_tension",
+            "experiment/thermal_conductivity",
+            "experiment/refractive_index",
+            "experiment/dynamic_relative_permittivity",
+            "experiment/x_co2",
+        },
+        "phase_stability": {
+            "experiment/equilibrium_pressure",
+            "experiment/glass_transition_temperature",
+            "experiment/melting_point",
+            "experiment/thermal_decomposition_temperature",
+        },
+        "solvation_transfer": {
+            "experiment/solvation",
+            "experiment/transfer",
+            "experiment/transfer_organic",
+        },
+        "biological": {"experiment/pec50"},
+        "static_dielectric": {"experiment/static_relative_permittivity"},
+    }
+    actual = {
+        group: {
+            task_id
+            for task_id, task in candidate.tasks.items()
+            if task.meta_group == group
+        }
+        for group in candidate.groups
+    }
+    assert actual == expected
+    assert set().union(*actual.values()) == set(base.tasks)
+    assert sum(map(len, actual.values())) == len(base.tasks) == 21
+
+    inherited_groups = {
+        "transport_dynamics": "transport",
+        "thermophysical_interfacial_response": "thermophysical",
+        "phase_stability": "phase_stability",
+        "solvation_transfer": "solvation",
+        "biological": "biological",
+        "static_dielectric": "dielectric_optical",
+    }
+    for group, source in inherited_groups.items():
+        assert candidate.groups[group] == base.groups[source]
+    assert candidate.model == base.model
+    assert candidate.training == base.training
+    assert candidate.data == base.data
+    assert candidate.preparation == base.preparation
+    assert candidate.initialization == base.initialization
+    for task_id, task in candidate.tasks.items():
+        assert replace(task, meta_group=base.tasks[task_id].meta_group) == base.tasks[task_id]
+
+    base_registry = resolve_task_registry(base)
+    candidate_registry = resolve_task_registry(candidate)
+    assert {
+        task_id: spec.prepared_dict() for task_id, spec in base_registry.items()
+    } == {
+        task_id: spec.prepared_dict()
+        for task_id, spec in candidate_registry.items()
+    }
+    assert candidate_registry != base_registry
+
+    model = Stage3SparseModel(
+        candidate.model,
+        candidate_registry,
+        8,
+        group_configs=candidate.groups,
+        task_configs=candidate.tasks,
+        task_private_recipes={
+            task_id: candidate.resolved_private_recipe(task_id)
+            for task_id in candidate.tasks
+        },
+    )
+    assert set(model.groups) == set(expected)
+    assert model.task_gates[
+        "experiment__dynamic_relative_permittivity"
+    ].out_features == 5
+    assert model.task_gates[
+        "experiment__static_relative_permittivity"
+    ].out_features == 4
+    assert model.task_gates["experiment__solvation"].out_features == 6
+    group_owners = {
+        owner
+        for owner in model.ownership_manifest().values()
+        if owner.startswith("GROUP:")
+    }
+    assert group_owners == {f"GROUP:{group}" for group in expected}
+
+
 def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
     expected = {
         "system": ({"il", "il_solute", "solute_solvent"}, 21),

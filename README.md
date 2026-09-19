@@ -107,6 +107,35 @@ Stage 3 evaluator 对现役 v2 默认加载每个 fold 的 `three_phase_final.pt
 Capacity v1 仍默认加载 `taskwise_refined.pt`，且只有 legacy 配置支持显式
 `--checkpoint-epoch N`。
 
+### 知识图谱性质分组候选
+
+`configs/v2/stage3/base1.yaml`仅改变六个GROUP的任务归属，并按
+[ADR-0063](docs/adr/0063-stage3-knowledge-graph-grouping-candidate.md)继承对应旧组的capacity与训练预算。
+它复用Base prepared artifact，但training identity和checkpoint不兼容；必须写入独立输出目录：
+
+```bash
+python scripts/stage3/train.py \
+  --config configs/v2/stage3/base1.yaml \
+  --fold 1 2 3 4 5 \
+  --output outputs/v2/stage3/base1/train \
+  --max-parallel 4 \
+  --devices cuda:0,cuda:1,cuda:2,cuda:3
+
+python scripts/stage3/evaluate.py \
+  --config configs/v2/stage3/base1.yaml \
+  --checkpoint-dir outputs/v2/stage3/base1/train \
+  --split valid --fold 1 2 3 4 5 \
+  --output outputs/v2/stage3/base1/evaluate_valid
+
+python scripts/stage3/evaluate.py \
+  --config configs/v2/stage3/base1.yaml \
+  --checkpoint-dir outputs/v2/stage3/base1/train \
+  --split test --ensemble-folds \
+  --output outputs/v2/stage3/base1/evaluate_test
+```
+
+该候选尚未取代现役Base；不要覆盖`outputs/v2/stage3/base`下的既有结果。
+
 ### 超参数搜索退役
 
 ILUME 的 v2 Stage 3 A/B/C 搜索与 Capacity v1 HPO 已于 2026-09-06 退役；仓库不再提供
