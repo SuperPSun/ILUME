@@ -20,6 +20,7 @@ from common.descriptor_preprocessing import FeaturePreprocessor
 from common.identity import semantic_identity
 from common.io import sha256_file
 import scripts.stage3.evaluate as evaluate_launcher
+import scripts.stage3.transfer as transfer_launcher
 import scripts.stage3.train as train_launcher
 from stage1.descriptors import calculate_descriptors, rdkit_descriptor_names
 from stage3.capacity import refined_validation_summary, summarize_capacity_manifest
@@ -2049,6 +2050,17 @@ def test_stage2_stage3_transfer_config_covers_full_matrix() -> None:
     assert config.stage3.metric == "validation_raw_mae"
     assert "signature" not in json.dumps(config.to_dict())
     assert transfer_config_from_dict(config.to_dict()) == config
+
+
+def test_stage3_transfer_parallel_slots_support_multiple_jobs_per_device() -> None:
+    assert transfer_launcher._parallel_slots(6, ("cuda:0",)) == 6
+    assert transfer_launcher._parallel_slots(
+        8, ("cuda:0", "cuda:1", "cuda:2", "cuda:3")
+    ) == 2
+    with pytest.raises(ValueError, match="positive multiple"):
+        transfer_launcher._parallel_slots(
+            6, ("cuda:0", "cuda:1", "cuda:2", "cuda:3")
+        )
 
 
 def _tiny_transfer_config() -> TransferExperimentConfig:

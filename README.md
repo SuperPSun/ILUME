@@ -295,8 +295,10 @@ python scripts/stage3/transfer.py summarize \
   --output "${root}/summary"
 ```
 
-多GPU只在两个训练命令增加例如
-`--max-parallel 4 --devices cuda:0,cuda:1,cuda:2,cuda:3`；调度参数不进入科研identity。
+两个训练命令都支持单卡多进程，例如
+`--max-parallel 4 --devices cuda:0`；多GPU例如
+`--max-parallel 8 --devices cuda:0,cuda:1,cuda:2,cuda:3`，即每张卡2个并发job。
+`max-parallel`必须能被设备数整除；调度参数不进入科研identity。
 `--source`、`--target`和`--fold`可用于分批执行，完整汇总仍严格要求全部1050个job。
 
 `--max-workers 1` 保持串行行为。MLP、D-MPNN、MoLFormer、ILBERT、SPMM、LlaSMol、AIonopedia、ILTransR 与 AIFC 多 GPU sweep 可通过 `--devices cuda:0,cuda:1,...` 分配逻辑 job；XGBoost 的 CPU 并行度由 YAML 中的 `training.n_jobs` 控制。每个 baseline 正式 sweep 均为 21 tasks × 5 folds，即 105 个单 seed 训练任务；上述命令不会 resume，失败任务由 sweep 在新 attempt 中完整重跑。

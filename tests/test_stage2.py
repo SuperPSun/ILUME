@@ -11,6 +11,8 @@ import numpy as np
 import pytest
 import torch
 
+import scripts.stage2.transfer as stage2_transfer_launcher
+
 from common.identity import IDENTITY_CONTRACT_VERSION
 from common.io import sha256_file
 from stage1.config import (
@@ -966,3 +968,14 @@ def test_transfer_optimizer_contains_only_the_active_source_head() -> None:
     assert id(model.heads["source/b"]) not in optimized
     assert model.heads["source/a"].requires_grad
     assert not model.heads["source/b"].requires_grad
+
+
+def test_stage2_transfer_parallel_slots_support_multiple_jobs_per_device() -> None:
+    assert stage2_transfer_launcher._parallel_slots(4, ("cuda:0",)) == 4
+    assert stage2_transfer_launcher._parallel_slots(
+        8, ("cuda:0", "cuda:1")
+    ) == 4
+    with pytest.raises(ValueError, match="positive multiple"):
+        stage2_transfer_launcher._parallel_slots(5, ("cuda:0", "cuda:1"))
+    with pytest.raises(ValueError, match="--devices is required"):
+        stage2_transfer_launcher._parallel_slots(2, ())

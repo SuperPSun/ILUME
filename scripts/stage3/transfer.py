@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+from contextlib import ExitStack
 import json
 import multiprocessing
 import re
@@ -31,6 +32,20 @@ def _devices(raw: str | None) -> tuple[str, ...]:
     if len(set(values)) != len(values):
         raise ValueError("--devices contains duplicates")
     return values
+
+
+def _parallel_slots(max_parallel: int, devices: tuple[str, ...]) -> int:
+    if max_parallel < 1:
+        raise ValueError("--max-parallel must be positive")
+    if not devices:
+        if max_parallel != 1:
+            raise ValueError("--devices is required when --max-parallel exceeds 1")
+        return 1
+    if max_parallel < len(devices) or max_parallel % len(devices) != 0:
+        raise ValueError(
+            "--max-parallel must be a positive multiple of the number of --devices"
+        )
+    return max_parallel // len(devices)
 
 
 def _variant_paths(stage2_root: Path, representation_root: Path, source: str | None) -> tuple[str, Path, Path, Path]:
@@ -111,8 +126,14 @@ def main() -> None:
     train.add_argument("--target", nargs="+")
     train.add_argument("--fold", nargs="+", type=int)
     train.add_argument("--resume", action="store_true")
-    train.add_argument("--max-parallel", type=int, default=1)
-    train.add_argument("--devices")
+    train.add_argument(
+        "--max-parallel", type=int, default=1,
+        help="total concurrent jobs; must be divisible by the number of devices",
+    )
+    train.add_argument(
+        "--devices",
+        help="comma-separated CUDA devices; each receives max-parallel/device-count jobs",
+    )
     summarize = commands.add_parser("summarize")
     _add_common(summarize)
     summarize.add_argument("--stage3-dir", required=True)
@@ -141,13 +162,11 @@ def main() -> None:
             config, stage3_root=args.stage3_dir, output_dir=args.output
         )
         return
-    if args.max_parallel < 1:
-        parser.error("--max-parallel must be positive")
-    devices = _devices(args.devices)
-    if args.max_parallel > 1 and not devices:
-        parser.error("--devices is required when --max-parallel exceeds 1")
-    if devices and args.max_parallel > len(devices):
-        parser.error("--max-parallel cannot exceed the number of devices")
+    try:
+        devices = _devices(args.devices)
+        slots_per_device = _parallel_slots(args.max_parallel, devices)
+    except ValueError as error:
+        parser.error(str(error))
     selected_sources = tuple(args.source or ("baseline", *config.stage2.sources))
     allowed_sources = {"baseline", *config.stage2.sources}
     if set(selected_sources) - allowed_sources or len(set(selected_sources)) != len(selected_sources):
@@ -181,10 +200,18 @@ def main() -> None:
             _train_worker(*job)
         return
     context = multiprocessing.get_context("spawn")
-    with concurrent.futures.ProcessPoolExecutor(
-        max_workers=args.max_parallel, mp_context=context
-    ) as pool:
-        futures = [pool.submit(_train_worker, *job) for job in jobs]
+    with ExitStack() as stack:
+        pools = {
+            device: stack.enter_context(
+                concurrent.futures.ProcessPoolExecutor(
+                    max_workers=slots_per_device, mp_context=context
+                )
+            )
+            for device in devices
+        }
+        futures = [
+            pools[str(job[-1])].submit(_train_worker, *job) for job in jobs
+        ]
         for future in futures:
             future.result()
 
