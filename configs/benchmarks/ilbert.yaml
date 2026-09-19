@@ -37,7 +37,7 @@ model:
   fusion: ordered_concat_native_predictor
 training:
   optimizer: adam
-  learning_rate: 1.0e-4
+  learning_rate: 3.0e-5
   weight_decay: 0.0
   scheduler: constant
   batch_size: 16

@@ -63,7 +63,7 @@ normalized target 上统一使用 L1，evaluation inverse-transform 到 raw unit
 
 同一 property 只在有公开 notebook 时采用官方 recipe：density、viscosity、heat capacity、
 melting point、thermal decomposition temperature、x_CO2 和 pEC50；准确 epochs、batch size 和
-dropout 由正式 YAML 冻结。其余 14 个任务统一使用 150 epochs、batch 64、dropout 0.1 的
+dropout 由正式 YAML 冻结。其余 14 个任务统一使用 80 epochs、batch 64、dropout 0.1 的
 fallback。所有任务使用 Adam (`lr=1e-3`、默认 betas/epsilon、无 weight decay)，每 10 epochs
 学习率乘 0.5，每 batch 一次更新，full fine-tuning，FP32 且不启用 TF32。无条件 topology 使用上游 two-bucket
 shuffled sampling；conditioned topology 保持 source order。

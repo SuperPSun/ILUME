@@ -331,7 +331,7 @@ def test_formal_configs_and_registry_resolution(
         ("llasmol", 10),
         ("aionopedia", 10),
         ("iltransr", None),
-        ("aifc", 20),
+        ("aifc", 30),
     ),
 )
 def test_formal_baseline_configs_use_fixed_final_state(
@@ -353,6 +353,7 @@ def test_formal_baseline_configs_use_fixed_final_state(
         assert config.training["max_epochs"] == fixed_budget
     if name == "ilbert":
         assert config.training["scheduler"] == "constant"
+        assert config.training["learning_rate"] == 3.0e-5
         assert {
             "scheduler_metric", "scheduler_patience", "scheduler_factor",
             "minimum_learning_rate",
@@ -2026,6 +2027,7 @@ def test_formal_iltransr_config_recipes_and_property_weight_guard() -> None:
     assert sum(resolve_iltransr_recipe(config, task)["source"] == "official_notebook" for task in tasks) == 7
     assert sum(resolve_iltransr_recipe(config, task)["source"] == "registered_fallback" for task in tasks) == 14
     assert resolve_iltransr_recipe(config, "experiment/x_co2")["epochs"] == 160
+    assert resolve_iltransr_recipe(config, "experiment/electrical_conductivity")["epochs"] == 80
     assert config.training["loss"] == "train_population_zscore_l1"
     changed = config.to_dict()
     changed["model"]["generic_checkpoint"] = "density_best.params"

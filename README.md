@@ -217,8 +217,8 @@ Stage3 Single-task MLP 内部消融位于 `ablations/`。二者均与 Stage 代�
 | `ecfp_xgboost` | 1000 trees | 同上 |
 | `llasmol` | 10 epochs | `outputs/benchmarks/fixed-budget-v1/llasmol-10e-bs16-ga2` |
 | `aionopedia` | 10 epochs | `outputs/benchmarks/model-native-v1/aionopedia` |
-| `iltransr` | task-specific 150/160 epochs | `outputs/benchmarks/model-native-v1/iltransr` |
-| `aifc` | 20 epochs | `outputs/benchmarks/model-native-v1/aifc` |
+| `iltransr` | official task-specific 150/160 epochs；fallback 80 epochs | `outputs/benchmarks/model-native-v1/iltransr` |
+| `aifc` | 30 epochs | `outputs/benchmarks/model-native-v1/aifc` |
 
 先完成下方对应模型的环境、资产与 validator 步骤，再使用通用命令。以 D-MPNN 为例，替换下列两个变量即可选择其他模型；LlaSMol 输出后缀保持上表约定。
 
@@ -598,7 +598,7 @@ ILTransR 对 partner task 使用共享 backbone 的 ordered multi-view fusion；
 embedding/Transformer 参数 full fine-tune。Condition 使用全五折加 test covariates 的 task-global
 population z-score，这是显式 transductive feature scaling；target 仍只从当前 fold train rows 拟合，
 normalized L1 训练后恢复 raw units。七个有同性质官方 notebook 的 task 使用其 epochs/batch/dropout，
-其余任务使用登记的 150-epoch fallback；validation 只报告并始终发布 final epoch state。完整合同见
+其余任务使用登记的 80-epoch fallback；validation 只报告并始终发布 final epoch state。完整合同见
 [ADR-0057](docs/adr/0057-iltransr-stage3-baseline.md)。
 
 </details>
@@ -626,7 +626,7 @@ transfer_organic 分别编码 solute、solvent。所有 component 共用唯一 A
 order concat；conditions 随后按 authoritative 顺序 concat，并与 representation 一起经过作者原有
 ReLU。Target 和所有 conditions 都只用当前
 fold train rows 做 population z-score。训练固定 seed 1000、batch 64、Adam `1e-3`、MSE、constant
-LR 和 20 epochs，只发布 epoch 20 final state。
+LR 和 30 epochs，只发布 epoch 30 final state。
 
 固定 DGL CPU golden reference 验证 prediction、representation 和 attention；当前 21-task 数据
 审计的 11,282 个唯一 view 全部 fragmentation 成功。251,297 个原子中 5,618 个进入作者定义的

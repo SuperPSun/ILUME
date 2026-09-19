@@ -322,7 +322,7 @@ class BenchmarkConfig:
             raise ValueError("ILBERT model must match the registered upstream recipe")
         expected_training = {
             "optimizer": "adam",
-            "learning_rate": 1.0e-4,
+            "learning_rate": 3.0e-5,
             "weight_decay": 0.0,
             "scheduler": "constant",
             "batch_size": 16,
@@ -678,7 +678,7 @@ class BenchmarkConfig:
             "device": "cuda",
             "precision": "fp32",
             "tf32": False,
-            "fallback_recipe": {"epochs": 150, "batch_size": 64, "dropout": 0.1},
+            "fallback_recipe": {"epochs": 80, "batch_size": 64, "dropout": 0.1},
             "official_recipes": expected_official,
         }
         if self.training != expected_training:
@@ -740,7 +740,7 @@ class BenchmarkConfig:
             "weight_decay": 0.0,
             "scheduler": "constant",
             "batch_size": 64,
-            "max_epochs": 20,
+            "max_epochs": 30,
             "loss": "train_population_zscore_mse",
             "condition_transform": "train_only_population_zscore",
             "model_selection": "final_training_state",

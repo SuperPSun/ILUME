@@ -3,6 +3,7 @@
 - 状态：Accepted
 - 日期：2026-09-15
 - 范围：AIFC baseline；独立于现役 Stage 1/2/3 数值合同
+- 修订：2026-09-19 将固定训练预算从 20 调整为 30 epochs
 
 ## 目标与上游边界
 
@@ -56,10 +57,10 @@ z-score（`ddof=0`）；valid/test 复用这些 statistics。恒定 condition �
 prediction 后调用现役 ILUME raw-unit metrics。
 
 所有 task/fold 固定使用一个 seed `1000` 的模型：Adam、learning rate `1e-3`、默认
-betas/epsilon、weight decay 0、constant scheduler、batch size 64、FP32、20 epochs。Forward
+betas/epsilon、weight decay 0、constant scheduler、batch size 64、FP32、30 epochs。Forward
 路径中的 fragment encoder、attention 与 regression head 参数均参与训练；作者定义但未在 forward
 调用的 `motif_attend` placeholder 原样保留，不宣称其得到更新。不 early stop；validation 每 epoch 只记录 raw-unit MAE，不驱动 optimizer、
-scheduler 或 checkpoint selection；test 在训练阶段完全不读取。正式模型只能是 epoch 20 final
+scheduler 或 checkpoint selection；test 在训练阶段完全不读取。正式模型只能是 epoch 30 final
 state，不保存或加载 validation-best state。Baseline 不支持 resume，失败由 sweep 在新 attempt
 中完整重跑，也不做 multi-seed selection 或 ensemble。正式输出根为
 `outputs/benchmarks/model-native-v1/aifc/`。
@@ -74,5 +75,5 @@ snapshot，不是冻结常量；每次正式 train/evaluate 仍按实际 source 
 evaluation metadata 中记录逐 role fragmentation audit。
 
 该 baseline 是对公开 alpha architecture 的审计化恢复，不宣称复现作者论文的 ensemble 或
-property dataset 结果。20-epoch final-state policy、partner ordered concat 和非 T/P conditions 是
+property dataset 结果。30-epoch final-state policy、partner ordered concat 和非 T/P conditions 是
 ILUME adaptation，必须与作者原生实验设置区分描述。

@@ -50,7 +50,7 @@ training:
   device: cuda
   precision: fp32
   tf32: false
-  fallback_recipe: {epochs: 150, batch_size: 64, dropout: 0.1}
+  fallback_recipe: {epochs: 80, batch_size: 64, dropout: 0.1}
   official_recipes:
     experiment/density: {epochs: 150, batch_size: 128, dropout: 0.05, notebook: Density_train.ipynb}
     experiment/viscosity: {epochs: 150, batch_size: 128, dropout: 0.05, notebook: viscosity_train.ipynb}

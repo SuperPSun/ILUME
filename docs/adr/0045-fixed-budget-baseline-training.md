@@ -4,6 +4,7 @@
 - 日期：2026-09-07
 - 修订：取代 ADR-0022/0028/0029/0030/0032/0035/0038/0040 中的 early stopping、validation-best checkpoint 与 ILBERT validation-driven scheduler 条款
 - 修订：2026-09-10 取消跨模型统一50-epoch预算，改由各模型合同冻结预算
+- 修订：2026-09-19 ILBERT 保持 50 epochs，但将 Adam 固定 learning rate 调整为 `3e-5`
 
 > 2026-09-10：统一 baseline policy 已重新开放。本文仍只约束下列七个 baseline；
 > AIonopedia 的 10-epoch model-native 合同由 ADR-0049 定义。
@@ -23,7 +24,7 @@ validation fold 决定停止时刻、学习率或最终 checkpoint，就会让�
 3. 各 baseline 分别冻结自己的训练预算，不再推断跨模型统一 epoch 数。MLP、D-MPNN、
    MoLFormer、ILBERT 与 SPMM 保持 50 epochs，LlaSMol 固定 10 epochs，XGBoost 固定
    1000 trees。
-4. ILBERT 删除 `ReduceLROnPlateau`，以既有 Adam、恒定 `1e-4` learning rate 完成 50
+4. ILBERT 删除 `ReduceLROnPlateau`，以既有 Adam、恒定 `3e-5` learning rate 完成 50
    epochs。其他 baseline 的 train-only 预设 scheduler 保持不变。
 5. 所有现役 baseline YAML 显式声明
    `training.model_selection: final_training_state`，并禁止 `early_stopping_patience`、

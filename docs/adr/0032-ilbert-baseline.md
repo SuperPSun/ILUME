@@ -3,7 +3,7 @@
 - 状态：Accepted
 - 日期：2026-08-31
 
-> Validation-driven scheduler、early stopping 与 validation-best checkpoint 由 [ADR-0045](0045-fixed-budget-baseline-training.md) 取代。
+> Validation-driven scheduler、early stopping、validation-best checkpoint，以及现役固定训练预算与 learning rate 由 [ADR-0045](0045-fixed-budget-baseline-training.md) 取代。
 
 ## 背景
 
