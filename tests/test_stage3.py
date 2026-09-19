@@ -83,6 +83,17 @@ from stage3.train import (
     resolve_stage3_training_identity,
     run_stage3_training,
 )
+from ablations.stage2_stage3_transfer.config import (
+    Stage2TransferConfig,
+    Stage3TransferConfig,
+    TransferExperimentConfig,
+    load_transfer_config,
+    transfer_config_from_dict,
+)
+from ablations.stage2_stage3_transfer.summary import (
+    summarize_transfer_matrix,
+    transfer_gain,
+)
 
 
 # --- Sparse-label model, training, and resume contracts ---
@@ -2024,3 +2035,149 @@ def test_test_path_remains_one_root_ensemble_run(
         }
     ]
     assert run.completed == {"split": "test"}
+
+
+def test_stage2_stage3_transfer_config_covers_full_matrix() -> None:
+    config = load_transfer_config("configs/ablations/stage2_stage3_transfer.yaml")
+    assert len(config.stage2.sources) == 9
+    assert len(config.stage3.targets) == 21
+    assert config.stage3.folds == (1, 2, 3, 4, 5)
+    assert config.stage2.physics_only is True
+    assert config.stage2.epochs == config.stage2.final_epoch == 10
+    assert config.stage3.epochs == 10
+    assert config.stage3.selection == "final"
+    assert config.stage3.metric == "validation_raw_mae"
+    assert "signature" not in json.dumps(config.to_dict())
+    assert transfer_config_from_dict(config.to_dict()) == config
+
+
+def _tiny_transfer_config() -> TransferExperimentConfig:
+    return TransferExperimentConfig(
+        name="tiny-transfer",
+        seed=42,
+        stage2=Stage2TransferConfig(
+            authority_config=Path("unused-stage2.yaml"),
+            stage1_checkpoint=Path("unused-stage1.pt"),
+            prepared_artifacts=Path("unused-stage2-data"),
+            sources=("source/a", "source/b"),
+            object_layers=2,
+            object_ffn_dim=2048,
+            dropout=0.1,
+            batch_size=256,
+            epochs=10,
+            backbone_frozen_epochs=1,
+            backbone_learning_rate=1e-5,
+            object_encoder_learning_rate=3e-5,
+            task_head_learning_rate=1e-4,
+            weight_decay=0.01,
+            warmup_fraction=0.05,
+            max_grad_norm=1.0,
+            amp_dtype="bf16",
+            optimizer="AdamW",
+            physics_only=True,
+            final_epoch=10,
+        ),
+        stage3=Stage3TransferConfig(
+            authority_config=Path("unused-stage3.yaml"),
+            prepared_artifacts=Path("unused-stage3-data"),
+            targets=("target/a", "target/b"),
+            folds=(1, 2),
+            hidden_dims=(512, 256),
+            dropout=0.1,
+            batch_size=128,
+            epochs=10,
+            learning_rate=3e-4,
+            weight_decay=0.01,
+            betas=(0.9, 0.999),
+            eps=1e-8,
+            smooth_l1_beta=1.0,
+            warmup_fraction=0.05,
+            min_lr_ratio=0.05,
+            max_grad_norm=1.0,
+            amp_dtype="none",
+            selection="final",
+            metric="validation_raw_mae",
+        ),
+    )
+
+
+def _write_transfer_job(
+    root: Path, *, variant: str, task: str, fold: int, mae: float,
+) -> None:
+    root.mkdir(parents=True)
+    artifact = root / "final.pt"
+    predictions = root / "validation_predictions.csv"
+    artifact.write_bytes(b"model")
+    predictions.write_text("source_row,target,prediction\n1,1,1\n", encoding="utf-8")
+    (root / "manifest.json").write_text(
+        json.dumps({
+            "variant": variant,
+            "task": task,
+            "fold": fold,
+            "artifact": artifact.name,
+            "artifact_sha256": sha256_file(artifact),
+            "predictions_sha256": sha256_file(predictions),
+            "final_epoch": 10,
+            "validation_raw_mae": mae,
+            "row_target_hash": f"rows-{task}-{fold}",
+            "initial_state_hash": f"init-{task}-{fold}",
+            "permutation_hashes": [f"perm-{task}-{fold}"],
+        }),
+        encoding="utf-8",
+    )
+
+
+def test_transfer_summary_uses_fold_gain_and_rejects_alignment_drift(
+    tmp_path: Path,
+) -> None:
+    config = _tiny_transfer_config()
+    stage3_root = tmp_path / "stage3"
+    baseline_mae = {1: 10.0, 2: 20.0}
+    for target in config.stage3.targets:
+        for fold in config.stage3.folds:
+            _write_transfer_job(
+                stage3_root / "baseline" / target.replace("/", "__") / f"fold{fold}",
+                variant="baseline", task=target, fold=fold,
+                mae=baseline_mae[fold],
+            )
+            for source in config.stage2.sources:
+                transfer_mae = (
+                    {1: 8.0, 2: 22.0}[fold]
+                    if source == "source/a" and target == "target/a"
+                    else baseline_mae[fold]
+                )
+                _write_transfer_job(
+                    stage3_root / "sources" / source.replace("/", "__") / target.replace("/", "__") / f"fold{fold}",
+                    variant=source, task=target, fold=fold, mae=transfer_mae,
+                )
+    output = tmp_path / "summary"
+    summary = summarize_transfer_matrix(
+        config, stage3_root=stage3_root, output_dir=output
+    )
+    assert summary["pair_count"] == 4
+    with (output / "transfer_gain_pairs.csv").open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    row = next(item for item in rows if item["source"] == "source/a" and item["target"] == "target/a")
+    assert float(row["TG_fold1"]) == pytest.approx(0.2)
+    assert float(row["TG_fold2"]) == pytest.approx(-0.1)
+    assert float(row["TG_mean"]) == pytest.approx(0.05)
+    assert float(row["TG_median"]) == pytest.approx(0.05)
+    assert int(row["positive_folds"]) == 1
+    with (output / "transfer_gain_matrix.csv").open(newline="", encoding="utf-8") as handle:
+        matrix = list(csv.DictReader(handle))
+    assert [item["source"] for item in matrix] == ["source/a", "source/b"]
+    assert float(matrix[0]["target/a"]) == pytest.approx(0.05)
+    assert "5.0%" in (output / "transfer_gain_heatmap.svg").read_text(encoding="utf-8")
+    assert transfer_gain(10.0, 8.0) == pytest.approx(0.2)
+    with pytest.raises(ValueError, match="finite and positive"):
+        transfer_gain(0.0, 0.0)
+    drift = (
+        stage3_root / "sources/source__a/target__a/fold1/manifest.json"
+    )
+    payload = json.loads(drift.read_text(encoding="utf-8"))
+    payload["row_target_hash"] = "wrong-order"
+    drift.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="row_target_hash mismatch"):
+        summarize_transfer_matrix(
+            config, stage3_root=stage3_root, output_dir=tmp_path / "bad-summary"
+        )

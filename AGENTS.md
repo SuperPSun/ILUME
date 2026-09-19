@@ -27,6 +27,7 @@
 - RDKit-HoME（ADR-0034）只以 RDKit 2D + 两个 GLOBAL Linear→LayerNorm adapter 替换 Object 表示，其余现役 Stage 3 合同不变；禁止 Stage 1/2 checkpoint、plugin、HPO 或跨 backend 恢复。
 - No-Stage1（ADR-0036）用共享 RDKit-217 MLP 替换 backbone，保留 ObjectEncoder/Stage3 Base；Stage 2 只训练八个 object/interaction task，保留其冻结 refinement 合同，禁止 Stage 1/teacher artifact 及主线交叉加载。
 - Single-task MLP（ADR-0033）同时移除 routing、跨 task 共享、PCGrad 和 composite sampling，只能解释为整体消融。
+- Stage2→Stage3 全迁移矩阵（ADR-0062）是隔离的 physics-only representation 消融：一个零 update baseline、九个单 source encoder与 10×21×5 个固定末轮 MLP；只使用 system-split validation raw MAE，不得读 test 或改变现役 Stage2/3。
 - Baseline 只复用 registry、split、canonical SMILES、condition/target 与评估口径，不改变 Stage 数值合同。按 ADR 索引读取各模型合同，不能把一个模型的预算推及其他模型。
 - ADR-0045：MLP/D-MPNN/MoLFormer/ILBERT/SPMM 为 50 epochs，LlaSMol 为 10，XGBoost 为 1000 trees；全部发布 final state。AIonopedia 10、AIFC 20 epochs；ILTransR 用 property-native/fallback recipe。除模型 ADR 明定外，validation 不驱动早停、选 checkpoint、scheduler 或训练决策。
 - AIonopedia（0049）只用 generic released multimodal checkpoint、完整官方 downstream topology 和独立 condition path，禁止 property-specific 资源或 pure-Qwen。ILTransR（0057）只用 parity-validated generic pretraining 转换与共享 full-fine-tuning encoder/TextCNN，禁止 supervised property checkpoint；condition 使用全量 Stage 3 covariates 的 transductive population z-score。
@@ -52,6 +53,6 @@
 
 ## 验证与清理
 
-- 修改后运行 `pytest -q`；按风险检查八个 Stage、四个 benchmark script 的 `--help`、`compileall`、`git diff --check`、Markdown 链接、ignore 与旧入口。只用临时小数据；未明确授权不执行正式 prepare、teacher cache、训练或五折 evaluation。
+- 修改后运行 `pytest -q`；按风险检查十个 Stage、四个 benchmark script 的 `--help`、`compileall`、`git diff --check`、Markdown 链接、ignore 与旧入口。只用临时小数据；未明确授权不执行正式 prepare、teacher cache、训练或五折 evaluation。
 - 优先复用/修改现有测试。只有此前未覆盖且会造成实质损失的科研、resume、artifact/identity、CLI/reporting 或高风险调度合同，才新增最小行为测试；不为 private helper、搬家、简单重构或 coverage 扩测试。`tests/` 按 Stage/benchmark/common/architecture 集中组织，`conftest.py` 只放跨文件复用的小 fixture。
 - `trash/` 不进 Git。移动旧 artifact/YAML/未消费数据或删除机器缓存前，报告精确文件数、大小、目标和冲突策略，等用户明确确认。不得覆盖、重排或删除既有 `trash/`。

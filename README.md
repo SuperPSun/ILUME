@@ -8,7 +8,7 @@ ILUME 是按 Stage 组织的分子科研 pipeline：Global-RDKit v2 主线在 St
 |---|---|
 | 跑现役主线 | [安装](#安装与数据) → [Stage 1](#stage-1) → [Stage 2](#stage-2) → [Stage 3](#stage-3) |
 | 跑对比模型 | [Baseline 通用运行](#baselines-and-ablations)，再展开对应模型的环境准备 |
-| 跑内部消融 | [RDKit-HoME](#rdkit-2d--home-representation-ablation)、[No-Stage1](#no-stage1rdkit-2d--stage2--stage3-home)；Single-task MLP 见 baseline 部分 |
+| 跑内部消融 | [RDKit-HoME](#rdkit-2d--home-representation-ablation)、[No-Stage1](#no-stage1rdkit-2d--stage2--stage3-home)；Single-task MLP 与 [Stage2→Stage3 transfer matrix](#stage2stage3-transfer-matrix) 见 baseline 部分 |
 | 汇总结果 | [输出与结果汇总](#输出与结果汇总) |
 | 查科学约束/历史 | [ADR 索引](docs/adr/README.md) / [已取代设计摘要](docs/adr/history.md) |
 | 跑冻结的 legacy 研究 | [Capacity v1 手册](docs/capacity-v1-runbook.md) |
@@ -262,6 +262,42 @@ Object embedding 和 normalized conditions 做有序 concat。21 个 task × 5 f
 完全独立的 `input -> 512 -> 256 -> 1` MLP，并由一个 Stage3-only sweep/reporting identity
 汇总。它同时移除 HoME routing、跨任务共享、PCGrad 与 composite sampling，因此只能解释为
 整体架构消融，不能解释成某个单组件的贡献。
+
+### Stage2→Stage3 transfer matrix
+
+该隔离消融从同一个 Stage1 初始化构造零 update baseline 与九个 physics-only Stage2
+single-source encoder，再对十份冻结的1024D表示运行21 tasks × 5 folds固定10轮MLP。
+正式矩阵只使用 system-split validation raw MAE，不运行test。完整合同见
+[ADR-0062](docs/adr/0062-stage2-stage3-full-transfer-matrix.md)。使用新的输出根依次运行：
+
+```bash
+root=outputs/ablations/stage2_stage3_transfer
+
+python scripts/stage2/transfer.py \
+  --config configs/ablations/stage2_stage3_transfer.yaml \
+  --output "${root}/stage2" \
+  --max-parallel 1
+
+python scripts/stage3/transfer.py prepare \
+  --config configs/ablations/stage2_stage3_transfer.yaml \
+  --stage2-dir "${root}/stage2" \
+  --output "${root}/representations"
+
+python scripts/stage3/transfer.py train \
+  --config configs/ablations/stage2_stage3_transfer.yaml \
+  --representations "${root}/representations" \
+  --output "${root}/stage3" \
+  --max-parallel 1
+
+python scripts/stage3/transfer.py summarize \
+  --config configs/ablations/stage2_stage3_transfer.yaml \
+  --stage3-dir "${root}/stage3" \
+  --output "${root}/summary"
+```
+
+多GPU只在两个训练命令增加例如
+`--max-parallel 4 --devices cuda:0,cuda:1,cuda:2,cuda:3`；调度参数不进入科研identity。
+`--source`、`--target`和`--fold`可用于分批执行，完整汇总仍严格要求全部1050个job。
 
 `--max-workers 1` 保持串行行为。MLP、D-MPNN、MoLFormer、ILBERT、SPMM、LlaSMol、AIonopedia、ILTransR 与 AIFC 多 GPU sweep 可通过 `--devices cuda:0,cuda:1,...` 分配逻辑 job；XGBoost 的 CPU 并行度由 YAML 中的 `training.n_jobs` 控制。每个 baseline 正式 sweep 均为 21 tasks × 5 folds，即 105 个单 seed 训练任务；上述命令不会 resume，失败任务由 sweep 在新 attempt 中完整重跑。
 

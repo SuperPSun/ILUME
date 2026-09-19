@@ -17,6 +17,7 @@ import torch.nn.functional as F
 from common.identity import (
     IDENTITY_CONTRACT_VERSION,
     require_compatible_identity,
+    semantic_identity,
     tensor_state_hash,
 )
 from common.io import atomic_json, atomic_torch_save, sha256_file
@@ -62,6 +63,8 @@ STAGE2_ENCODER_VERSION = 1
 STAGE2_ENCODER_KIND = "ilume_stage2_encoder"
 STAGE2_REFINED_VERSION = 2
 STAGE2_REFINED_KIND = "ilume_stage2_taskwise_refined"
+STAGE2_TRANSFER_CHECKPOINT_VERSION = 1
+STAGE2_TRANSFER_CHECKPOINT_KIND = "ilume_stage2_transfer_source"
 
 
 def _config_hash(config: Stage2Config) -> str:
@@ -166,6 +169,44 @@ def _scheduler_lambdas(config: Stage2Config, total_steps: int, unfreeze_step: in
     def modules(step: int) -> float:
         return cosine_warmup(step, total_steps, config.training.warmup_fraction)
     return backbone, modules, modules
+
+
+def stage2_training_optimizer_groups(
+    model: Stage2ObjectModel,
+    config: Stage2Config,
+    *,
+    active_task: str | None = None,
+) -> list[dict[str, Any]]:
+    if active_task is None:
+        return stage2_optimizer_groups(
+            model,
+            backbone_learning_rate=config.training.backbone_learning_rate,
+            object_encoder_learning_rate=config.training.object_encoder_learning_rate,
+            task_head_learning_rate=config.training.task_head_learning_rate,
+            weight_decay=config.training.weight_decay,
+        )
+    if active_task not in model.registry.task_ids:
+        raise ValueError(f"Unknown Stage 2 transfer source task: {active_task}")
+    for task in model.registry.task_ids:
+        for parameter in model.task_head_parameters_for(task):
+            parameter.requires_grad_(task == active_task)
+    return [
+        {
+            "params": list(model.backbone_parameters()),
+            "lr": config.training.backbone_learning_rate,
+            "weight_decay": config.training.weight_decay,
+        },
+        {
+            "params": list(model.object_encoder_parameters()),
+            "lr": config.training.object_encoder_learning_rate,
+            "weight_decay": config.training.weight_decay,
+        },
+        {
+            "params": list(model.task_head_parameters_for(active_task)),
+            "lr": config.training.task_head_learning_rate,
+            "weight_decay": config.training.weight_decay,
+        },
+    ]
 
 
 def _ordered_packed_batches(
@@ -610,11 +651,11 @@ def _publish_taskwise_refined(
     return manifest
 
 
-def _save_epoch_checkpoint(path: Path, *, model: Stage2ObjectModel, optimizer: torch.optim.Optimizer, scheduler: torch.optim.lr_scheduler.LRScheduler, scaler: torch.amp.GradScaler, completed_epoch: int, global_optimizer_step: int, config: Stage2Config, registry: Stage2Registry, normalized_task_weights: dict[str, float], training_identity: dict[str, Any], data_identity: dict[str, Any], teacher_embeddings_hash: str, teacher_cache_identity: dict[str, Any], task_rows: dict[str, int], task_batches: dict[str, int], scheduler_geometry: dict[str, int], validation: dict[str, Any], optimizer_implementation: str, math_contract: dict[str, Any], phase: str, refinement_state: Mapping[str, Any] | None = None, refinement_optimizers: Mapping[str, torch.optim.Optimizer] | None = None, refinement_schedulers: Mapping[str, torch.optim.lr_scheduler.LRScheduler] | None = None) -> None:
+def _save_epoch_checkpoint(path: Path, *, model: Stage2ObjectModel, optimizer: torch.optim.Optimizer, scheduler: torch.optim.lr_scheduler.LRScheduler, scaler: torch.amp.GradScaler, completed_epoch: int, global_optimizer_step: int, config: Stage2Config, registry: Stage2Registry, normalized_task_weights: dict[str, float], training_identity: dict[str, Any], data_identity: dict[str, Any], teacher_embeddings_hash: str, teacher_cache_identity: dict[str, Any], task_rows: dict[str, int], task_batches: dict[str, int], scheduler_geometry: dict[str, int], validation: dict[str, Any], optimizer_implementation: str, math_contract: dict[str, Any], phase: str, refinement_state: Mapping[str, Any] | None = None, refinement_optimizers: Mapping[str, torch.optim.Optimizer] | None = None, refinement_schedulers: Mapping[str, torch.optim.lr_scheduler.LRScheduler] | None = None, checkpoint_kind: str = STAGE2_CHECKPOINT_KIND, checkpoint_version: int = STAGE2_CHECKPOINT_VERSION, active_task: str | None = None) -> None:
     if path.exists():
         raise FileExistsError(f"Stage 2 checkpoint already exists: {path}")
     atomic_torch_save(path, {
-        "format_version": STAGE2_CHECKPOINT_VERSION, "kind": STAGE2_CHECKPOINT_KIND,
+        "format_version": checkpoint_version, "kind": checkpoint_kind,
         "identity_contract_version": IDENTITY_CONTRACT_VERSION,
         "model": model.state_dict(), "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(),
         "scaler": scaler.state_dict(), "completed_epoch": completed_epoch,
@@ -637,6 +678,7 @@ def _save_epoch_checkpoint(path: Path, *, model: Stage2ObjectModel, optimizer: t
         "loss_modes": {task: config.loss.task_loss_modes.get(task, "element_mean") for task in registry.task_ids},
         "optimizer_implementation": optimizer_implementation, "math_contract": math_contract,
         "validation": validation, "phase": phase,
+        **({"active_task": active_task} if active_task is not None else {}),
         "refinement": (
             {
                 **dict(refinement_state),
@@ -655,7 +697,7 @@ def _save_epoch_checkpoint(path: Path, *, model: Stage2ObjectModel, optimizer: t
     })
 
 
-def _export_encoder(path: Path, *, model: Stage2ObjectModel, config: Stage2Config, registry: Stage2Registry, checkpoint_path: Path, data_identity: dict[str, Any], refinement_state: Mapping[str, Any]) -> None:
+def _export_encoder(path: Path, *, model: Stage2ObjectModel, config: Stage2Config, registry: Stage2Registry, checkpoint_path: Path | None, data_identity: dict[str, Any], refinement_state: Mapping[str, Any], provenance_extra: Mapping[str, Any] | None = None) -> None:
     if path.exists():
         raise FileExistsError(f"Stage 2 encoder artifact already exists: {path}")
     stage1_state = {
@@ -743,15 +785,52 @@ def _export_encoder(path: Path, *, model: Stage2ObjectModel, config: Stage2Confi
         "state_hashes": {"stage1_backbone": stage1_state_hash, "object_encoder": object_state_hash},
         "provenance": {
             "stage1_checkpoint_hash": sha256_file(config.initialization.checkpoint),
-            "stage2_checkpoint_hash": sha256_file(checkpoint_path),
+            "stage2_checkpoint_hash": (
+                sha256_file(checkpoint_path) if checkpoint_path is not None else None
+            ),
             "stage2_data_identity": data_identity["hash"],
             "task_catalog_hash": registry.catalog_sha256,
             "registry_hash": registry.registry_hash,
             "config_hash": _config_hash(config),
             "refinement_boundary_epoch": refinement_state["boundary_epoch"],
             "refinement_shared_state_hash": refinement_state["shared_state_hash"],
+            **dict(provenance_extra or {}),
         },
     })
+
+
+def export_stage2_encoder_artifact(
+    path: str | Path,
+    *,
+    model: Stage2ObjectModel,
+    config: Stage2Config,
+    registry: Stage2Registry,
+    data_identity: dict[str, Any],
+    provenance: Mapping[str, Any],
+) -> None:
+    """Export an initialized encoder for an isolated zero-update experiment."""
+    shared_state = {
+        **{f"backbone.{name}": value for name, value in model.backbone.state_dict().items()},
+        **{
+            f"object_encoder.{name}": value
+            for name, value in model.object_encoder.state_dict().items()
+        },
+    }
+    _export_encoder(
+        Path(path),
+        model=model,
+        config=config,
+        registry=registry,
+        checkpoint_path=None,
+        data_identity=data_identity,
+        refinement_state={
+            "boundary_epoch": 0,
+            "shared_state_hash": tensor_state_hash(
+                "stage2.transfer-initial-shared-state.v1", shared_state
+            ),
+        },
+        provenance_extra=provenance,
+    )
 
 
 def load_stage2_encoder_artifact(path: str | Path) -> dict[str, Any]:
@@ -945,7 +1024,7 @@ def evaluate_stage2(
     return result
 
 
-def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_from: str | Path | None = None, expected_training_identity: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_from: str | Path | None = None, expected_training_identity: dict[str, Any] | None = None, active_task: str | None = None, expected_initial_shared_state_hash: str | None = None) -> list[dict[str, Any]]:
     if config.representation is not None:
         from .rdkit_train import run_rdkit_stage2_training
 
@@ -956,6 +1035,14 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
             expected_training_identity=expected_training_identity,
         )
     config.validate()
+    if active_task is not None and (
+        config.loss.lambda_teacher != 0.0
+        or config.training.refinement_epochs != 0
+        or config.training.refinement_tasks
+    ):
+        raise ValueError(
+            "Stage 2 transfer source requires physics-only loss and no refinement"
+        )
     seed_everything(config.data.seed)
     device = resolve_device(config.training.device)
     math_contract = configure_stage2_math(device)
@@ -963,6 +1050,26 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
     registry = load_artifact_registry(config.data.artifacts_dir)
     config.validate_registry(registry)
     model = Stage2ObjectModel(loaded.model, registry, object_layers=config.model.object_layers, object_ffn_dim=config.model.object_ffn_dim, dropout=config.model.dropout).to(device)
+    if active_task is not None and active_task not in registry.task_ids:
+        raise ValueError(f"Unknown Stage 2 transfer source task: {active_task}")
+    initial_shared_state = {
+        **{
+            f"backbone.{name}": value.detach().cpu()
+            for name, value in model.backbone.state_dict().items()
+        },
+        **{
+            f"object_encoder.{name}": value.detach().cpu()
+            for name, value in model.object_encoder.state_dict().items()
+        },
+    }
+    initial_shared_state_hash = tensor_state_hash(
+        "stage2.transfer-initial-shared-state.v1", initial_shared_state
+    )
+    if (
+        expected_initial_shared_state_hash is not None
+        and initial_shared_state_hash != expected_initial_shared_state_hash
+    ):
+        raise ValueError("Stage 2 transfer source initial shared state mismatch")
     entity_dataset = Stage2EntityDataset(config.data.artifacts_dir)
     metadata_path = config.data.artifacts_dir / "metadata.json"
     data_metadata = entity_dataset.metadata
@@ -979,11 +1086,14 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
     )
     teacher_embeddings = teacher_cpu.to(device)
     del teacher_cpu
-    train_datasets = {task: Stage2TaskDataset(config.data.artifacts_dir, task, "train") for task in registry.task_ids}
+    training_tasks = (active_task,) if active_task is not None else registry.task_ids
+    train_datasets = {task: Stage2TaskDataset(config.data.artifacts_dir, task, "train") for task in training_tasks}
     valid_datasets = {task: Stage2TaskDataset(config.data.artifacts_dir, task, "valid") for task in registry.task_ids}
-    for task in registry.task_ids:
+    for task in training_tasks:
         mode = config.loss.task_loss_modes.get(task, "element_mean")
         validate_runtime_task_contract(train_datasets[task], entity_dataset, loss_mode=mode)
+    for task in registry.task_ids:
+        mode = config.loss.task_loss_modes.get(task, "element_mean")
         validate_runtime_task_contract(valid_datasets[task], entity_dataset, loss_mode=mode)
     train_device = {task: Stage2DeviceTaskData.from_dataset(dataset, device) for task, dataset in train_datasets.items()}
     valid_device = {task: Stage2DeviceTaskData.from_dataset(dataset, device) for task, dataset in valid_datasets.items()}
@@ -1006,7 +1116,11 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
         "total_epochs": total_epochs,
     }
     total_epoch_batches = sum(task_batches.values())
-    normalized_weights = config.normalized_task_weights(registry)
+    normalized_weights = (
+        {active_task: 1.0}
+        if active_task is not None
+        else config.normalized_task_weights(registry)
+    )
     packer = MultimodalPacker(loaded.vocabulary)
     model.set_backbone_trainable(config.training.backbone_frozen_epochs == 0)
     optimizer_implementation = _optimizer_implementation(device)
@@ -1030,13 +1144,27 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
         math_contract=math_contract,
         optimizer_implementation=optimizer_implementation,
     )
+    if active_task is not None:
+        training_identity = semantic_identity(
+            "stage2.transfer-source-training",
+            {
+                "contract_version": 1,
+                "source_task": active_task,
+                "physics_only": True,
+                "initial_shared_state_hash": initial_shared_state_hash,
+                "base_training_identity": training_identity["hash"],
+            },
+        )
     if expected_training_identity is not None:
         require_compatible_identity(
             training_identity,
             expected_training_identity,
             context="Stage 2 script/trainer",
         )
-    optimizer = torch.optim.AdamW(stage2_optimizer_groups(model, backbone_learning_rate=config.training.backbone_learning_rate, object_encoder_learning_rate=config.training.object_encoder_learning_rate, task_head_learning_rate=config.training.task_head_learning_rate, weight_decay=config.training.weight_decay), fused=device.type == "cuda", foreach=False if device.type != "cuda" else None)
+    optimizer_groups = stage2_training_optimizer_groups(
+        model, config, active_task=active_task
+    )
+    optimizer = torch.optim.AdamW(optimizer_groups, fused=device.type == "cuda", foreach=False if device.type != "cuda" else None)
     clip_parameters = [
         parameter for group in optimizer.param_groups for parameter in group["params"]
     ]
@@ -1059,7 +1187,17 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
             raise FileExistsError(f"Stage 2 output already contains metrics: {metrics_path}")
     else:
         checkpoint = torch.load(Path(resume_from), map_location="cpu", weights_only=False)
-        if checkpoint.get("format_version") != STAGE2_CHECKPOINT_VERSION or checkpoint.get("kind") != STAGE2_CHECKPOINT_KIND:
+        expected_checkpoint_version = (
+            STAGE2_TRANSFER_CHECKPOINT_VERSION
+            if active_task is not None
+            else STAGE2_CHECKPOINT_VERSION
+        )
+        expected_checkpoint_kind = (
+            STAGE2_TRANSFER_CHECKPOINT_KIND
+            if active_task is not None
+            else STAGE2_CHECKPOINT_KIND
+        )
+        if checkpoint.get("format_version") != expected_checkpoint_version or checkpoint.get("kind") != expected_checkpoint_kind:
             raise ValueError(
                 "Unsupported Stage 2 checkpoint; older refinement contracts are not migrated"
             )
@@ -1077,6 +1215,8 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
             checkpoint_identity,
             context="Stage 2 resume",
         )
+        if active_task is not None and checkpoint.get("active_task") != active_task:
+            raise ValueError("Stage 2 transfer checkpoint source task mismatch")
         expected = {
             "registry_hash": registry.registry_hash,
             "model_contract": model.model_contract,
@@ -1284,10 +1424,19 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
         _append_metric(metrics_path, validation)
         reporter.emit_json(validation)
         checkpoint_path = output / f"checkpoint_epoch_{epoch:05d}.pt"
-        _save_epoch_checkpoint(checkpoint_path, model=model, optimizer=optimizer, scheduler=scheduler, scaler=scaler, completed_epoch=epoch, global_optimizer_step=global_step, config=config, registry=registry, normalized_task_weights=normalized_weights, training_identity=training_identity, data_identity=data_identity, teacher_embeddings_hash=teacher_metadata["embeddings_hash"], teacher_cache_identity=teacher_identity, task_rows=task_rows, task_batches=task_batches, scheduler_geometry=scheduler_geometry, validation=validation, optimizer_implementation=optimizer_implementation, math_contract=math_contract, phase=phase, refinement_state=refinement_state, refinement_optimizers=refinement_optimizers if in_refinement else None, refinement_schedulers=refinement_schedulers if in_refinement else None)
+        _save_epoch_checkpoint(checkpoint_path, model=model, optimizer=optimizer, scheduler=scheduler, scaler=scaler, completed_epoch=epoch, global_optimizer_step=global_step, config=config, registry=registry, normalized_task_weights=normalized_weights, training_identity=training_identity, data_identity=data_identity, teacher_embeddings_hash=teacher_metadata["embeddings_hash"], teacher_cache_identity=teacher_identity, task_rows=task_rows, task_batches=task_batches, scheduler_geometry=scheduler_geometry, validation=validation, optimizer_implementation=optimizer_implementation, math_contract=math_contract, phase=phase, refinement_state=refinement_state, refinement_optimizers=refinement_optimizers if in_refinement else None, refinement_schedulers=refinement_schedulers if in_refinement else None, checkpoint_kind=STAGE2_TRANSFER_CHECKPOINT_KIND if active_task is not None else STAGE2_CHECKPOINT_KIND, checkpoint_version=STAGE2_TRANSFER_CHECKPOINT_VERSION if active_task is not None else STAGE2_CHECKPOINT_VERSION, active_task=active_task)
         if epoch == boundary_epoch:
             assert refinement_state is not None
-            _export_encoder(output / "stage2_encoder.pt", model=model, config=config, registry=registry, checkpoint_path=checkpoint_path, data_identity=data_identity, refinement_state=refinement_state)
+            _export_encoder(output / "stage2_encoder.pt", model=model, config=config, registry=registry, checkpoint_path=checkpoint_path, data_identity=data_identity, refinement_state=refinement_state, provenance_extra=(
+                {
+                    "transfer_source_task": active_task,
+                    "physics_only": True,
+                    "initial_shared_state_hash": initial_shared_state_hash,
+                    "transfer_training_identity": training_identity["hash"],
+                }
+                if active_task is not None
+                else None
+            ))
         checkpoint_row = {"event": "stage2_checkpoint_complete", "epoch": epoch, "global_optimizer_step": global_step}
         _append_metric(metrics_path, checkpoint_row)
         results.extend((validation, checkpoint_row))
@@ -1315,6 +1464,16 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
             checkpoint_path=source_checkpoint_path,
             data_identity=data_identity,
             refinement_state=refinement_state,
+            provenance_extra=(
+                {
+                    "transfer_source_task": active_task,
+                    "physics_only": True,
+                    "initial_shared_state_hash": initial_shared_state_hash,
+                    "transfer_training_identity": training_identity["hash"],
+                }
+                if active_task is not None
+                else None
+            ),
         )
     if refinement_epochs == 0:
         final = {
@@ -1325,6 +1484,15 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
                 "artifact": encoder_path.name,
                 "artifact_sha256": sha256_file(encoder_path),
             },
+            **(
+                {
+                    "transfer_source_task": active_task,
+                    "initial_shared_state_hash": initial_shared_state_hash,
+                    "training_identity": training_identity,
+                }
+                if active_task is not None
+                else {}
+            ),
         }
         atomic_json(output / "final_metrics.json", final)
         return results
@@ -1361,7 +1529,10 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
 __all__ = [
     "STAGE2_CHECKPOINT_KIND", "STAGE2_CHECKPOINT_VERSION",
     "STAGE2_REFINED_KIND", "STAGE2_REFINED_VERSION", "evaluate_stage2",
+    "STAGE2_TRANSFER_CHECKPOINT_KIND", "STAGE2_TRANSFER_CHECKPOINT_VERSION",
+    "export_stage2_encoder_artifact",
     "joint_stage2_loss",
     "load_stage2_encoder_artifact", "resolve_stage2_training_identity",
-    "run_stage2_training", "task_compensation_scale",
+    "run_stage2_training", "stage2_training_optimizer_groups",
+    "task_compensation_scale",
 ]

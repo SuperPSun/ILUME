@@ -73,9 +73,11 @@ from stage2.registry import load_stage2_registry
 from stage2.train import (
     load_stage2_encoder_artifact,
     run_stage2_training,
+    stage2_training_optimizer_groups,
     joint_stage2_loss,
     task_compensation_scale,
 )
+from ablations.stage2_stage3_transfer.stage2 import physics_only_stage2_config
 
 
 # --- Configuration, preparation, training, and artifact contracts ---
@@ -920,3 +922,47 @@ def test_loss_reductions_and_teacher_weighting() -> None:
         lambda_teacher=0.1,
         teacher_weighting="uncompensated",
     ).item() == pytest.approx(4.3)
+
+
+def test_transfer_source_config_is_physics_only_without_mutating_authority() -> None:
+    authority = load_stage2_config("configs/v2/stage2/base.yaml")
+    scoped = physics_only_stage2_config(authority)
+    assert authority.loss.lambda_teacher == pytest.approx(0.1)
+    assert authority.training.epochs == 10
+    assert scoped.loss.lambda_teacher == 0.0
+    assert scoped.training.epochs == 10
+    assert scoped.training.backbone_frozen_epochs == 1
+    assert scoped.training.refinement_epochs == 0
+    assert scoped.training.refinement_tasks == ()
+
+
+def test_transfer_optimizer_contains_only_the_active_source_head() -> None:
+    class Model:
+        def __init__(self) -> None:
+            self.registry = type("Registry", (), {"task_ids": ("source/a", "source/b")})()
+            self.backbone = torch.nn.Parameter(torch.ones(1))
+            self.object_encoder = torch.nn.Parameter(torch.ones(1))
+            self.heads = {
+                "source/a": torch.nn.Parameter(torch.ones(1)),
+                "source/b": torch.nn.Parameter(torch.ones(1)),
+            }
+
+        def backbone_parameters(self):
+            return iter((self.backbone,))
+
+        def object_encoder_parameters(self):
+            return iter((self.object_encoder,))
+
+        def task_head_parameters_for(self, task: str):
+            return (self.heads[task],)
+
+    config = physics_only_stage2_config(load_stage2_config("configs/v2/stage2/base.yaml"))
+    model = Model()
+    groups = stage2_training_optimizer_groups(  # type: ignore[arg-type]
+        model, config, active_task="source/a"
+    )
+    optimized = {id(parameter) for group in groups for parameter in group["params"]}
+    assert id(model.heads["source/a"]) in optimized
+    assert id(model.heads["source/b"]) not in optimized
+    assert model.heads["source/a"].requires_grad
+    assert not model.heads["source/b"].requires_grad

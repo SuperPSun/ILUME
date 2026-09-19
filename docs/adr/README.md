@@ -33,6 +33,7 @@
 | Single-task MLP | [0033](0033-stage3-single-task-mlp-ablation.md) |
 | RDKit-HoME | [0034](0034-rdkit-2d-home-representation-ablation.md) |
 | No-Stage1 | [0036](0036-no-stage1-rdkit-stage2-stage3-ablation.md) |
+| Stage2→Stage3 全迁移矩阵 | [0062](0062-stage2-stage3-full-transfer-matrix.md) |
 
 ## 冻结合同与历史
 
