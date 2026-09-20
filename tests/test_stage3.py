@@ -19,6 +19,7 @@ import torch
 from common.descriptor_preprocessing import FeaturePreprocessor
 from common.identity import semantic_identity
 from common.io import sha256_file
+from common.training import seed_everything
 import scripts.stage3.evaluate as evaluate_launcher
 import scripts.stage3.transfer as transfer_launcher
 import scripts.stage3.train as train_launcher
@@ -95,6 +96,7 @@ from ablations.stage2_stage3_transfer.summary import (
     summarize_transfer_matrix,
     transfer_gain,
 )
+from ablations.stage2_stage3_transfer.stage3 import transfer_training_seed
 
 
 # --- Sparse-label model, training, and resume contracts ---
@@ -2151,6 +2153,17 @@ def test_stage2_stage3_transfer_config_covers_full_matrix() -> None:
     assert config.stage3.metric == "validation_raw_mae"
     assert "signature" not in json.dumps(config.to_dict())
     assert transfer_config_from_dict(config.to_dict()) == config
+
+
+def test_stage2_stage3_transfer_seed_is_numpy_compatible() -> None:
+    seed = transfer_training_seed(
+        42, "experiment/thermal_conductivity", 5
+    )
+    assert 0 <= seed < 2**32
+    assert seed == transfer_training_seed(
+        42, "experiment/thermal_conductivity", 5
+    )
+    seed_everything(seed)
 
 
 def test_stage3_transfer_parallel_slots_support_multiple_jobs_per_device() -> None:

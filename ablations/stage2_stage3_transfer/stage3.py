@@ -28,6 +28,13 @@ MODEL_KIND = "ilume_stage2_stage3_transfer_mlp"
 MODEL_VERSION = 1
 
 
+def transfer_training_seed(experiment_seed: int, task_id: str, fold: int) -> int:
+    """Derive the task/fold seed within NumPy's accepted seed range."""
+    return stable_seed(
+        experiment_seed, "stage2-stage3-transfer", task_id, fold
+    ) % (2**32)
+
+
 def _object_keys(objects: Mapping[str, Any]) -> tuple[ObjectKey, ...]:
     return tuple(
         ObjectKey(
@@ -231,7 +238,7 @@ def train_transfer_job(
         valid, bank["embeddings"], has_partner=bool(spec.partner_slots)
     )
     recipe = experiment.stage3
-    training_seed = stable_seed(experiment.seed, "stage2-stage3-transfer", task_id, fold)
+    training_seed = transfer_training_seed(experiment.seed, task_id, fold)
     seed_everything(training_seed)
     device = resolve_device(device_name or "auto")
     model = Stage3SingleTaskMLP(
@@ -378,5 +385,5 @@ def train_transfer_job(
 __all__ = [
     "MODEL_KIND", "REPRESENTATION_KIND", "build_transfer_features",
     "load_representation_bank", "prepare_representation_bank",
-    "train_transfer_job",
+    "train_transfer_job", "transfer_training_seed",
 ]
