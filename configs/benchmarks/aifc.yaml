@@ -51,7 +51,7 @@ training:
   weight_decay: 0.0
   scheduler: constant
   batch_size: 64
-  max_epochs: 30
+  max_epochs: 10
   loss: train_population_zscore_mse
   condition_transform: train_only_population_zscore
   model_selection: final_training_state

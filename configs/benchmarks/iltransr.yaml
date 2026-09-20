@@ -50,15 +50,15 @@ training:
   device: cuda
   precision: fp32
   tf32: false
-  fallback_recipe: {epochs: 80, batch_size: 64, dropout: 0.1}
+  fallback_recipe: {epochs: 10, batch_size: 64, dropout: 0.1}
   official_recipes:
-    experiment/density: {epochs: 150, batch_size: 128, dropout: 0.05, notebook: Density_train.ipynb}
-    experiment/viscosity: {epochs: 150, batch_size: 128, dropout: 0.05, notebook: viscosity_train.ipynb}
-    experiment/heat_capacity: {epochs: 150, batch_size: 256, dropout: 0.05, notebook: CP_train.ipynb}
-    experiment/melting_point: {epochs: 150, batch_size: 64, dropout: 0.1, notebook: "melting point_train.ipynb"}
-    experiment/thermal_decomposition_temperature: {epochs: 150, batch_size: 128, dropout: 0.05, notebook: TD_train.ipynb}
-    experiment/x_co2: {epochs: 160, batch_size: 64, dropout: 0.05, notebook: co2solubility_train.ipynb}
-    experiment/pec50: {epochs: 150, batch_size: 64, dropout: 0.1, notebook: tox_train.ipynb}
+    experiment/density: {epochs: 10, batch_size: 128, dropout: 0.05, notebook: Density_train.ipynb}
+    experiment/viscosity: {epochs: 10, batch_size: 128, dropout: 0.05, notebook: viscosity_train.ipynb}
+    experiment/heat_capacity: {epochs: 10, batch_size: 256, dropout: 0.05, notebook: CP_train.ipynb}
+    experiment/melting_point: {epochs: 10, batch_size: 64, dropout: 0.1, notebook: "melting point_train.ipynb"}
+    experiment/thermal_decomposition_temperature: {epochs: 10, batch_size: 128, dropout: 0.05, notebook: TD_train.ipynb}
+    experiment/x_co2: {epochs: 10, batch_size: 64, dropout: 0.05, notebook: co2solubility_train.ipynb}
+    experiment/pec50: {epochs: 10, batch_size: 64, dropout: 0.1, notebook: tox_train.ipynb}
 runtime:
   num_workers: 0
 stage3:

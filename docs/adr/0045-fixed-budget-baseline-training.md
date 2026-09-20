@@ -4,7 +4,7 @@
 - 日期：2026-09-07
 - 修订：取代 ADR-0022/0028/0029/0030/0032/0035/0038/0040 中的 early stopping、validation-best checkpoint 与 ILBERT validation-driven scheduler 条款
 - 修订：2026-09-10 取消跨模型统一50-epoch预算，改由各模型合同冻结预算
-- 修订：2026-09-19 ILBERT 保持 50 epochs，但将 Adam 固定 learning rate 调整为 `3e-5`
+- 修订：2026-09-19 所有按 epoch 训练的 baseline 统一为 10 epochs；ILBERT Adam 固定 learning rate 为 `3e-5`
 
 > 2026-09-10：统一 baseline policy 已重新开放。本文仍只约束下列七个 baseline；
 > AIonopedia 的 10-epoch model-native 合同由 ADR-0049 定义。
@@ -21,10 +21,9 @@ validation fold 决定停止时刻、学习率或最终 checkpoint，就会让�
    配置预算，并只发布最后一个 epoch 或最后一次 boosting iteration 的模型状态。
 2. Validation 可在每轮后计算并写入训练 history/progress，但只用于审计和报告；不得用于
    early stopping、checkpoint selection、学习率调整或其他训练决策。
-3. 各 baseline 分别冻结自己的训练预算，不再推断跨模型统一 epoch 数。MLP、D-MPNN、
-   MoLFormer、ILBERT 与 SPMM 保持 50 epochs，LlaSMol 固定 10 epochs，XGBoost 固定
-   1000 trees。
-4. ILBERT 删除 `ReduceLROnPlateau`，以既有 Adam、恒定 `3e-5` learning rate 完成 50
+3. MLP、D-MPNN、MoLFormer、ILBERT、SPMM 与 LlaSMol 统一固定为 10 epochs；XGBoost
+   保持 1000 trees，因为其训练预算没有 epoch 语义。
+4. ILBERT 删除 `ReduceLROnPlateau`，以既有 Adam、恒定 `3e-5` learning rate 完成 10
    epochs。其他 baseline 的 train-only 预设 scheduler 保持不变。
 5. 所有现役 baseline YAML 显式声明
    `training.model_selection: final_training_state`，并禁止 `early_stopping_patience`、
@@ -39,15 +38,14 @@ validation fold 决定停止时刻、学习率或最终 checkpoint，就会让�
 ## Identity、输出与重跑
 
 训练配置与 checkpoint 语义不同时，旧 baseline train/evaluate artifact 不得与新结果混合。
-旧输出保持只读；新主配置结果写入
-`outputs/benchmarks/fixed-budget-v1/<model>/`，split 配置写入
-`outputs/benchmarks/fixed-budget-v1/splits/<config-stem>/`。
+旧输出保持只读；10-epoch 主配置结果写入
+`outputs/benchmarks/fixed-budget-10e-v1/<model>/`，split 配置写入
+`outputs/benchmarks/fixed-budget-10e-v1/splits/<config-stem>/`。XGBoost 预算未变，继续使用其既有独立输出根。
 
-2026-09-10 的预算修订只改变 LlaSMol 训练身份；其他六个 baseline 的既有 version 2 artifact
-保持兼容。LlaSMol 新结果写入
-`outputs/benchmarks/fixed-budget-v1/llasmol-10e-bs16-ga2/`，需要重新执行105个fold training
-job及相应validation evaluation与汇总；若发布test指标，还必须用新checkpoint重跑五折test
-ensemble。固定pretrained assets与独立环境可以复用。实现验收不运行正式sweep。
+2026-09-19 的统一 10-epoch 修订改变所有神经 baseline 的训练身份；既有 version 2 artifact
+不得混合或 resume。每个受影响模型都需要重新执行105个fold training job及相应validation
+evaluation与汇总；若发布test指标，还必须用新checkpoint重跑五折test ensemble。固定pretrained
+assets与独立环境可以复用。实现验收不运行正式sweep。
 
 ## 后果
 

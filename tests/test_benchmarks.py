@@ -322,16 +322,16 @@ def test_formal_configs_and_registry_resolution(
 @pytest.mark.parametrize(
     ("name", "fixed_budget"),
     (
-        ("mlp", 50),
+        ("mlp", 10),
         ("ecfp_xgboost", 1000),
-        ("dmpnn", 50),
-        ("molformer", 50),
-        ("ilbert", 50),
-        ("spmm", 50),
+        ("dmpnn", 10),
+        ("molformer", 10),
+        ("ilbert", 10),
+        ("spmm", 10),
         ("llasmol", 10),
         ("aionopedia", 10),
         ("iltransr", None),
-        ("aifc", 30),
+        ("aifc", 10),
     ),
 )
 def test_formal_baseline_configs_use_fixed_final_state(
@@ -410,7 +410,7 @@ def test_native_split_benchmark_configs_follow_v2_authorities() -> None:
             if benchmark == "ecfp_xgboost":
                 assert config.model["n_estimators"] == 1000
             else:
-                assert config.training["max_epochs"] == 50
+                assert config.training["max_epochs"] == 10
             if benchmark == "ilbert":
                 assert config.training["scheduler"] == "constant"
             if benchmark == "dmpnn":
@@ -2026,8 +2026,8 @@ def test_formal_iltransr_config_recipes_and_property_weight_guard() -> None:
     assert set(config.training["official_recipes"]) == official
     assert sum(resolve_iltransr_recipe(config, task)["source"] == "official_notebook" for task in tasks) == 7
     assert sum(resolve_iltransr_recipe(config, task)["source"] == "registered_fallback" for task in tasks) == 14
-    assert resolve_iltransr_recipe(config, "experiment/x_co2")["epochs"] == 160
-    assert resolve_iltransr_recipe(config, "experiment/electrical_conductivity")["epochs"] == 80
+    assert resolve_iltransr_recipe(config, "experiment/x_co2")["epochs"] == 10
+    assert resolve_iltransr_recipe(config, "experiment/electrical_conductivity")["epochs"] == 10
     assert config.training["loss"] == "train_population_zscore_l1"
     changed = config.to_dict()
     changed["model"]["generic_checkpoint"] = "density_best.params"

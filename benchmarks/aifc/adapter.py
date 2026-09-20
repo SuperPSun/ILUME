@@ -446,7 +446,7 @@ def evaluate_aifc_checkpoint(
     if (
         manifest.get("model_kind") != "aifc"
         or manifest.get("model_selection") != "final_training_state"
-        or manifest.get("final_epoch") != 20
+        or manifest.get("final_epoch") != 10
         or manifest.get("effective_seed") != 1000
         or manifest.get("single_model") is not True
     ):

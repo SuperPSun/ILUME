@@ -242,12 +242,12 @@ Stage3 Single-task MLP 内部消融位于 `ablations/`。二者均与 Stage 代�
 
 | 模型名（配置 basename） | 预算 | 输出根 |
 |---|---|---|
-| `mlp`、`dmpnn`、`molformer`、`ilbert`、`spmm` | 50 epochs | `outputs/benchmarks/fixed-budget-v1/<model>` |
-| `ecfp_xgboost` | 1000 trees | 同上 |
+| `mlp`、`dmpnn`、`molformer`、`ilbert`、`spmm` | 10 epochs | `outputs/benchmarks/fixed-budget-10e-v1/<model>` |
+| `ecfp_xgboost` | 1000 trees | `outputs/benchmarks/fixed-budget-v1/ecfp_xgboost` |
 | `llasmol` | 10 epochs | `outputs/benchmarks/fixed-budget-v1/llasmol-10e-bs16-ga2` |
 | `aionopedia` | 10 epochs | `outputs/benchmarks/model-native-v1/aionopedia` |
-| `iltransr` | official task-specific 150/160 epochs；fallback 80 epochs | `outputs/benchmarks/model-native-v1/iltransr` |
-| `aifc` | 30 epochs | `outputs/benchmarks/model-native-v1/aifc` |
+| `iltransr` | 10 epochs | `outputs/benchmarks/model-native-10e-v1/iltransr` |
+| `aifc` | 10 epochs | `outputs/benchmarks/model-native-10e-v1/aifc` |
 
 先完成下方对应模型的环境、资产与 validator 步骤，再使用通用命令。以 D-MPNN 为例，替换下列两个变量即可选择其他模型；LlaSMol 输出后缀保持上表约定。
 
@@ -373,7 +373,7 @@ conda run --no-capture-output -n ilume-molformer \
   python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_molformer_environment; validate_molformer_environment(load_benchmark_config("configs/benchmarks/molformer.yaml"))'
 ```
 
-MoLFormer的超长train row整行跳过且不进入scaler；valid/test显式截断到202 tokens并在结果中审计。训练前为unique SMILES建立run-local内存token cache，多组分合并为一次共享backbone forward；正式合同固定batch 128、encoder/head learning rate `5e-6/5e-5`、完整50 epochs、最终训练状态和TF32，OOM/NaN不自动缩批或回退。多GPU sweep可使用`--devices cuda:0,cuda:1,...`。
+MoLFormer的超长train row整行跳过且不进入scaler；valid/test显式截断到202 tokens并在结果中审计。训练前为unique SMILES建立run-local内存token cache，多组分合并为一次共享backbone forward；正式合同固定batch 128、encoder/head learning rate `5e-6/5e-5`、完整10 epochs、最终训练状态和TF32，OOM/NaN不自动缩批或回退。多GPU sweep可使用`--devices cuda:0,cuda:1,...`。
 
 </details>
 
@@ -409,7 +409,7 @@ conda run --no-capture-output -n ilume-ilbert \
   python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_ilbert_environment; validate_ilbert_environment(load_benchmark_config("configs/benchmarks/ilbert.yaml"))'
 ```
 
-ILBERT普通离子液体输入为单条`cation.anion` AIS sequence；solvation/transfer只增加共享backbone的有序双view。所有输入固定padding/truncation到100 tokens并公开审计，数值条件保持registry顺序和原始物理单位。训练使用恒定`1e-4` learning rate完成50 epochs，validation不调整学习率。
+ILBERT普通离子液体输入为单条`cation.anion` AIS sequence；solvation/transfer只增加共享backbone的有序双view。所有输入固定padding/truncation到100 tokens并公开审计，数值条件保持registry顺序和原始物理单位。训练使用恒定`3e-5` learning rate完成10 epochs，validation不调整学习率。
 
 </details>
 
@@ -442,7 +442,7 @@ conda run --no-capture-output -n ilume-spmm \
   python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_spmm_environment; validate_spmm_environment(load_benchmark_config("configs/benchmarks/spmm.yaml"))'
 ```
 
-SPMM只使用官方text-mode前6层和768维`[CLS]`表示；各分子component由同一encoder分别编码并合并为一次forward，随后只扩宽官方regression head第一层。模型输入去除立体信息，保留官方100-token tokenizer加首token切片路径，实际encoder上限为99；WordPiece单词字符上限固定为350，collision和truncation均公开审计。训练固定batch 128、完整50 epochs、最终训练状态、FP32+TF32及确定性sortish长度分桶；多GPU运行保持一张GPU一个job。旧SPMM输出不得与新合同混用。
+SPMM只使用官方text-mode前6层和768维`[CLS]`表示；各分子component由同一encoder分别编码并合并为一次forward，随后只扩宽官方regression head第一层。模型输入去除立体信息，保留官方100-token tokenizer加首token切片路径，实际encoder上限为99；WordPiece单词字符上限固定为350，collision和truncation均公开审计。训练固定batch 128、完整10 epochs、最终训练状态、FP32+TF32及确定性sortish长度分桶；多GPU运行保持一张GPU一个job。旧SPMM输出不得与新合同混用。
 
 </details>
 
@@ -655,7 +655,7 @@ transfer_organic 分别编码 solute、solvent。所有 component 共用唯一 A
 order concat；conditions 随后按 authoritative 顺序 concat，并与 representation 一起经过作者原有
 ReLU。Target 和所有 conditions 都只用当前
 fold train rows 做 population z-score。训练固定 seed 1000、batch 64、Adam `1e-3`、MSE、constant
-LR 和 30 epochs，只发布 epoch 30 final state。
+LR 和 10 epochs，只发布 epoch 10 final state。
 
 固定 DGL CPU golden reference 验证 prediction、representation 和 attention；当前 21-task 数据
 审计的 11,282 个唯一 view 全部 fragmentation 成功。251,297 个原子中 5,618 个进入作者定义的

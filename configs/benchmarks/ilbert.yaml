@@ -42,7 +42,7 @@ training:
   scheduler: constant
   batch_size: 16
   gradient_accumulation_steps: 1
-  max_epochs: 50
+  max_epochs: 10
   tf32: true
   loss: mse
   model_selection: final_training_state

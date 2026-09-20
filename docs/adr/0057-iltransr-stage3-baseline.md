@@ -3,6 +3,7 @@
 - 状态：Accepted
 - 日期：2026-09-14
 - 范围：ILTransR baseline；独立于 ADR-0045 的七个旧 fixed-budget baseline
+- 修订：2026-09-19 所有 task recipe 统一为 10 epochs
 
 ## 目标与资产边界
 
@@ -62,22 +63,21 @@ normalized target 上统一使用 L1，evaluation inverse-transform 到 raw unit
 这也明确覆盖上游 temperature-only 源码中的 L2 不一致。
 
 同一 property 只在有公开 notebook 时采用官方 recipe：density、viscosity、heat capacity、
-melting point、thermal decomposition temperature、x_CO2 和 pEC50；准确 epochs、batch size 和
-dropout 由正式 YAML 冻结。其余 14 个任务统一使用 80 epochs、batch 64、dropout 0.1 的
-fallback。所有任务使用 Adam (`lr=1e-3`、默认 betas/epsilon、无 weight decay)，每 10 epochs
+melting point、thermal decomposition temperature、x_CO2 和 pEC50；其 batch size 和 dropout 由
+正式 YAML 冻结，但所有 task 统一训练 10 epochs。所有任务使用 Adam (`lr=1e-3`、默认 betas/epsilon、无 weight decay)，每 10 epochs
 学习率乘 0.5，每 batch 一次更新，full fine-tuning，FP32 且不启用 TF32。无条件 topology 使用上游 two-bucket
 shuffled sampling；conditioned topology 保持 source order。
 
 Seed 为 `42 + fold - 1`。每个任务跑满预算，validation 每轮只记录，不进入 scheduler、停止或
 选择；发布 final epoch state，不 early stop、不按最低 train loss 或 validation 选择。Baseline
-不支持 resume，失败由 sweep 在新 attempt 目录完整重跑。正式结果根为
-`outputs/benchmarks/model-native-v1/iltransr/`，不得复用其他 baseline 的结果。
+不支持 resume，失败由 sweep 在新 attempt 目录完整重跑。10-epoch 正式结果根为
+`outputs/benchmarks/model-native-10e-v1/iltransr/`，不得复用旧预算或其他 baseline 的结果。
 
 ## 后果
 
 - 公开 checkpoint 的模型语义由固定转换和跨框架 parity 保证，不要求在新 GPU 上运行 MXNet。
 - Condition scaling 是主动登记的 transductive covariate 使用，不能描述成 train-only scaling。
-- 不同 property 的训练预算不同，优先保留 model-native recipe，不能解释成统一算力比较。
+- 全部 task 使用同一 10-epoch 预算；上游 notebook 仅保留 batch size 与 dropout provenance。
 - 超过 100 tokens 的样本不会被删除，但其尾部和可能的 EOS 会被截断，必须在输入审计中报告。
 
 实施时使用 RDKit 2022.03.2 对当前 system-split Stage 3 的 21 个 task 做只读审计：245,614 条

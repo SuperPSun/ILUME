@@ -3,7 +3,7 @@
 - 状态：Accepted
 - 日期：2026-09-01
 
-> Early stopping 与 validation-best checkpoint 由 [ADR-0045](0045-fixed-budget-baseline-training.md) 取代。
+> 训练预算、early stopping 与 validation-best checkpoint 已由 [ADR-0045](0045-fixed-budget-baseline-training.md) 取代；现役 SPMM 使用固定 10-epoch final-state 合同。
 
 ## 背景
 

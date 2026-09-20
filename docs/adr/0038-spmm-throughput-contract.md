@@ -4,7 +4,7 @@
 - 日期：2026-09-02
 - 覆盖：ADR-0035 的batch、CUDA matmul精度和训练row顺序条款
 
-> Early-stopping patience 与 validation-best checkpoint 由 [ADR-0045](0045-fixed-budget-baseline-training.md) 取代；吞吐和固定训练预算条款保持有效。
+> Early-stopping patience、validation-best checkpoint 与固定训练预算由 [ADR-0045](0045-fixed-budget-baseline-training.md) 取代；吞吐条款保持有效。
 
 ## 背景
 
@@ -12,7 +12,7 @@ ADR-0035固定batch 8、FP32且关闭CUDA matmul TF32。真实Stage 3任务因�
 
 ## 决定
 
-1. SPMM训练与evaluation batch固定为128，末批保留；LR仍为`5e-5`，max epochs仍为50，early-stopping patience仍为10。warmup保持一个完整epoch，cosine总steps按`50 × ceil(train_rows/128)`重新计算。
+1. SPMM训练与evaluation batch固定为128，末批保留；LR仍为`5e-5`，max epochs为10。warmup保持一个完整epoch，cosine总steps按`10 × ceil(train_rows/128)`重新计算。
 2. 训练采用`sortish_length_bucketing_v1`：每轮以`seed+epoch`生成row permutation，每`20×128`行形成窗口，按row内最大component缓存token长度排序成batch，再确定性打乱batch顺序。每轮完整覆盖全部row且不drop last。
 3. FP32参数、target、loss和checkpoint不变；PyTorch 2.9的CUDA matmul与cuDNN TF32均开启，不启用AMP。OOM、NaN或CUDA错误仍硬失败。
 4. batch、TF32、bucketing类型、窗口和training-order contract进入scientific identity；DataLoader runtime和GPU调度仍不进入。旧SPMM checkpoint不迁移或resume。

@@ -28,7 +28,7 @@ training:
   max_learning_rate: 0.001
   final_learning_rate: 0.0001
   batch_size: 64
-  max_epochs: 50
+  max_epochs: 10
   loss: mse
   model_selection: final_training_state
   device: cuda

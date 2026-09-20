@@ -4,7 +4,7 @@
 - 日期：2026-08-26
 - 后续修订：ADR-0042 将多组分 message-passing 改为跨组分槽共享权重；其余决定保持有效。
 
-> Early stopping 与 validation-best checkpoint 由 [ADR-0045](0045-fixed-budget-baseline-training.md) 取代。
+> 训练预算、early stopping 与 validation-best checkpoint 已由 [ADR-0045](0045-fixed-budget-baseline-training.md) 取代；现役 D-MPNN 使用固定 10-epoch final-state 合同。
 
 ## 背景
 

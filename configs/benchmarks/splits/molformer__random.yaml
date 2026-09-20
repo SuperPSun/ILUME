@@ -33,7 +33,7 @@ training:
   warmup_fraction: 0.05
   batch_size: 128
   gradient_accumulation_steps: 1
-  max_epochs: 50
+  max_epochs: 10
   tf32: true
   length_bucketing: sortish_length_bucketing_v1
   bucket_window_batches: 20
