@@ -329,6 +329,9 @@ python scripts/stage3/transfer.py summarize \
 `--max-parallel 8 --devices cuda:0,cuda:1,cuda:2,cuda:3`，即每张卡2个并发job。
 `max-parallel`必须能被设备数整除；调度参数不进入科研identity。
 `--source`、`--target`和`--fold`可用于分批执行，完整汇总仍严格要求全部1050个job。
+交互终端会显示Stage2 encoder variant、representation variant和Stage3 MLP job总进度；
+串行Stage3训练还会显示当前job的epoch与train/validation指标。并行时只保留主进程总进度，
+避免多个worker进度条互相覆盖；非TTY日志保持安静，也可用`ILUME_DISABLE_PROGRESS=1`显式关闭。
 
 `--max-workers 1` 保持串行行为。MLP、D-MPNN、MoLFormer、ILBERT、SPMM、LlaSMol、AIonopedia、ILTransR 与 AIFC 多 GPU sweep 可通过 `--devices cuda:0,cuda:1,...` 分配逻辑 job；XGBoost 的 CPU 并行度由 YAML 中的 `training.n_jobs` 控制。每个 baseline 正式 sweep 均为 21 tasks × 5 folds，即 105 个单 seed 训练任务；上述命令不会 resume，失败任务由 sweep 在新 attempt 中完整重跑。
 

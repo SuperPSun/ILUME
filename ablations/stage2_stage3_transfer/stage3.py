@@ -13,6 +13,7 @@ import torch.nn.functional as F
 from ablations.stage3_single_task_mlp.model import Stage3SingleTaskMLP
 from common.identity import semantic_identity, tensor_state_hash
 from common.io import atomic_json, atomic_torch_save, sha256_file
+from common.progress import ProgressReporter
 from common.training import canonical_json_sha256, resolve_device, seed_everything
 from stage3.config import load_stage3_config
 from stage3.data import ObjectKey, Stage3TaskDataset, stable_seed
@@ -214,6 +215,7 @@ def train_transfer_job(
     fold: int,
     output_dir: str | Path,
     device_name: str | None = None,
+    reporter: ProgressReporter | None = None,
 ) -> dict[str, Any]:
     if task_id not in experiment.stage3.targets or fold not in experiment.stage3.folds:
         raise ValueError("Transfer MLP task/fold is outside the configured matrix")
@@ -269,43 +271,63 @@ def train_transfer_job(
     generator = torch.Generator().manual_seed(training_seed)
     permutation_hashes: list[str] = []
     history: list[dict[str, Any]] = []
-    for epoch in range(1, recipe.epochs + 1):
-        model.train()
-        order = torch.randperm(len(train), generator=generator)
-        permutation_hashes.append(
-            tensor_state_hash("stage2-stage3-transfer-permutation.v1", {"order": order})
-        )
-        loss_sum = 0.0
-        for start in range(0, len(order), recipe.batch_size):
-            indices = order[start : start + recipe.batch_size]
-            inputs = train_features[indices].to(device)
-            targets = train.targets[indices].float().to(device)
-            optimizer.zero_grad(set_to_none=True)
-            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp):
-                prediction = model(inputs).squeeze(-1)
-                loss = F.smooth_l1_loss(
-                    prediction, targets, beta=recipe.smooth_l1_beta
+    progress = (reporter or ProgressReporter()).bar(
+        total=recipe.epochs,
+        desc=f"Transfer {variant}/{task_id}/fold{fold}",
+        unit="epoch",
+    )
+    try:
+        for epoch in range(1, recipe.epochs + 1):
+            model.train()
+            order = torch.randperm(len(train), generator=generator)
+            permutation_hashes.append(
+                tensor_state_hash(
+                    "stage2-stage3-transfer-permutation.v1", {"order": order}
                 )
-            if not torch.isfinite(loss):
-                raise RuntimeError("Transfer MLP produced a non-finite loss")
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(
-                model.parameters(), recipe.max_grad_norm, error_if_nonfinite=True
             )
-            optimizer.step()
-            scheduler.step()
-            loss_sum += float(loss.detach().cpu()) * len(indices)
-        valid_prediction = _predict(
-            model, valid_features, batch_size=recipe.batch_size,
-            device=device, amp=amp,
-        )
-        valid_nmae = float((valid_prediction - valid.targets.float()).abs().mean())
-        history.append({
-            "epoch": epoch,
-            "train_normalized_smooth_l1": loss_sum / len(train),
-            "valid_normalized_mae": valid_nmae,
-            "learning_rate": float(optimizer.param_groups[0]["lr"]),
-        })
+            loss_sum = 0.0
+            for start in range(0, len(order), recipe.batch_size):
+                indices = order[start : start + recipe.batch_size]
+                inputs = train_features[indices].to(device)
+                targets = train.targets[indices].float().to(device)
+                optimizer.zero_grad(set_to_none=True)
+                with torch.autocast(
+                    device_type=device.type, dtype=torch.bfloat16, enabled=amp
+                ):
+                    prediction = model(inputs).squeeze(-1)
+                    loss = F.smooth_l1_loss(
+                        prediction, targets, beta=recipe.smooth_l1_beta
+                    )
+                if not torch.isfinite(loss):
+                    raise RuntimeError("Transfer MLP produced a non-finite loss")
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), recipe.max_grad_norm,
+                    error_if_nonfinite=True,
+                )
+                optimizer.step()
+                scheduler.step()
+                loss_sum += float(loss.detach().cpu()) * len(indices)
+            valid_prediction = _predict(
+                model, valid_features, batch_size=recipe.batch_size,
+                device=device, amp=amp,
+            )
+            valid_nmae = float(
+                (valid_prediction - valid.targets.float()).abs().mean()
+            )
+            train_loss = loss_sum / len(train)
+            history.append({
+                "epoch": epoch,
+                "train_normalized_smooth_l1": train_loss,
+                "valid_normalized_mae": valid_nmae,
+                "learning_rate": float(optimizer.param_groups[0]["lr"]),
+            })
+            progress.set_postfix(
+                train=f"{train_loss:.4f}", valid=f"{valid_nmae:.4f}"
+            )
+            progress.update(1)
+    finally:
+        progress.close()
     final_prediction = _predict(
         model, valid_features, batch_size=recipe.batch_size, device=device, amp=amp
     )

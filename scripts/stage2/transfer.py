@@ -4,6 +4,7 @@ import argparse
 import concurrent.futures
 from contextlib import ExitStack
 import multiprocessing
+import os
 import re
 import sys
 from pathlib import Path
@@ -18,6 +19,7 @@ from ablations.stage2_stage3_transfer.stage2 import (
     train_source_encoder,
 )
 from common.io import sha256_file
+from common.progress import ProgressReporter
 from stage3.data import sanitize_task
 
 
@@ -66,8 +68,10 @@ def _complete(root: Path) -> bool:
 
 def _worker(
     config_path: str, source: str, output: str, initial_hash: str,
-    resume: bool, device: str | None,
+    resume: bool, show_detail_progress: bool, device: str | None,
 ) -> None:
+    if not show_detail_progress:
+        os.environ["ILUME_DISABLE_PROGRESS"] = "1"
     root = Path(output)
     if root.exists():
         if resume and _complete(root):
@@ -112,39 +116,53 @@ def main() -> None:
         parser.error(f"invalid or duplicate sources: {sorted(unknown)}")
     root = Path(args.output)
     baseline_root = root / "baseline"
-    if baseline_root.exists():
-        if not args.resume or not _complete(baseline_root):
-            raise FileExistsError(f"Transfer baseline output exists: {baseline_root}")
-        import json
-        baseline = json.loads((baseline_root / "manifest.json").read_text(encoding="utf-8"))
-    else:
-        baseline = create_baseline_encoder(config, baseline_root)
-    initial_hash = str(baseline["initial_shared_state_hash"])
-    jobs = [
-        (
-            str(args.config), source,
-            str(root / "sources" / sanitize_task(source)), initial_hash,
-            bool(args.resume), devices[index % len(devices)] if devices else None,
-        )
-        for index, source in enumerate(sources)
-    ]
-    if args.max_parallel == 1:
-        for job in jobs:
-            _worker(*job)
-        return
-    context = multiprocessing.get_context("spawn")
-    with ExitStack() as stack:
-        pools = {
-            device: stack.enter_context(
-                concurrent.futures.ProcessPoolExecutor(
-                    max_workers=slots_per_device, mp_context=context
+    progress = ProgressReporter().bar(
+        total=1 + len(sources), desc="Stage2 transfer encoders", unit="variant"
+    )
+    try:
+        if baseline_root.exists():
+            if not args.resume or not _complete(baseline_root):
+                raise FileExistsError(
+                    f"Transfer baseline output exists: {baseline_root}"
                 )
+            import json
+            baseline = json.loads(
+                (baseline_root / "manifest.json").read_text(encoding="utf-8")
             )
-            for device in devices
-        }
-        futures = [pools[str(job[-1])].submit(_worker, *job) for job in jobs]
-        for future in futures:
-            future.result()
+        else:
+            baseline = create_baseline_encoder(config, baseline_root)
+        progress.update(1)
+        initial_hash = str(baseline["initial_shared_state_hash"])
+        jobs = [
+            (
+                str(args.config), source,
+                str(root / "sources" / sanitize_task(source)), initial_hash,
+                bool(args.resume), args.max_parallel == 1,
+                devices[index % len(devices)] if devices else None,
+            )
+            for index, source in enumerate(sources)
+        ]
+        if args.max_parallel == 1:
+            for job in jobs:
+                _worker(*job)
+                progress.update(1)
+            return
+        context = multiprocessing.get_context("spawn")
+        with ExitStack() as stack:
+            pools = {
+                device: stack.enter_context(
+                    concurrent.futures.ProcessPoolExecutor(
+                        max_workers=slots_per_device, mp_context=context
+                    )
+                )
+                for device in devices
+            }
+            futures = [pools[str(job[-1])].submit(_worker, *job) for job in jobs]
+            for future in concurrent.futures.as_completed(futures):
+                future.result()
+                progress.update(1)
+    finally:
+        progress.close()
 
 
 if __name__ == "__main__":

@@ -2177,6 +2177,56 @@ def test_stage3_transfer_parallel_slots_support_multiple_jobs_per_device() -> No
         )
 
 
+def test_stage3_transfer_reports_completed_training_jobs(tmp_path: Path) -> None:
+    updates: list[int] = []
+    closed: list[bool] = []
+    dispatched: list[tuple[Any, ...]] = []
+
+    class Bar:
+        def update(self, value: int) -> None:
+            updates.append(value)
+
+        def close(self) -> None:
+            closed.append(True)
+
+    class Reporter:
+        def bar(self, **kwargs):
+            assert kwargs == {
+                "total": 4,
+                "desc": "Stage3 transfer matrix",
+                "unit": "train-job",
+            }
+            return Bar()
+
+    config = SimpleNamespace(
+        stage2=SimpleNamespace(sources=("source/a",)),
+        stage3=SimpleNamespace(targets=("experiment/a",), folds=(1, 2)),
+    )
+    with (
+        patch.object(transfer_launcher, "load_transfer_config", return_value=config),
+        patch.object(
+            transfer_launcher,
+            "_train_worker",
+            side_effect=lambda *args: dispatched.append(args),
+        ),
+        patch.object(transfer_launcher, "ProgressReporter", return_value=Reporter()),
+        patch(
+            "sys.argv",
+            [
+                "transfer.py", "train", "--config", "unused.yaml",
+                "--representations", str(tmp_path / "representations"),
+                "--output", str(tmp_path / "stage3"),
+                "--max-parallel", "1",
+            ],
+        ),
+    ):
+        transfer_launcher.main()
+    assert len(dispatched) == 4
+    assert all(job[-2] is True for job in dispatched)
+    assert updates == [1, 1, 1, 1]
+    assert closed == [True]
+
+
 def _tiny_transfer_config() -> TransferExperimentConfig:
     return TransferExperimentConfig(
         name="tiny-transfer",

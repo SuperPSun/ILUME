@@ -20,6 +20,7 @@ from ablations.stage2_stage3_transfer.stage3 import (
 )
 from ablations.stage2_stage3_transfer.summary import summarize_transfer_matrix
 from common.io import sha256_file
+from common.progress import ProgressReporter
 from stage3.data import sanitize_task
 
 
@@ -89,7 +90,8 @@ def _complete(root: Path) -> bool:
 
 def _train_worker(
     config_path: str, variant: str, representation: str, task: str,
-    fold: int, output: str, resume: bool, device: str | None,
+    fold: int, output: str, resume: bool, show_detail_progress: bool,
+    device: str | None,
 ) -> None:
     root = Path(output)
     if root.exists():
@@ -102,6 +104,11 @@ def _train_worker(
         load_transfer_config(config_path), variant=variant,
         representation_path=representation, task_id=task, fold=fold,
         output_dir=root, device_name=device,
+        reporter=(
+            None
+            if show_detail_progress
+            else ProgressReporter(interactive=False)
+        ),
     )
 
 
@@ -147,20 +154,30 @@ def main() -> None:
             (stage2_root / "baseline/manifest.json").read_text(encoding="utf-8")
         )
         initial_hash = str(baseline_manifest["initial_shared_state_hash"])
-        for source in (None, *config.stage2.sources):
-            variant, encoder, manifest, destination = _variant_paths(
-                stage2_root, representation_root, source
-            )
-            prepare_representation_bank(
-                config, variant=variant, encoder_path=encoder,
-                encoder_manifest_path=manifest, destination=destination,
-                expected_initial_shared_state_hash=initial_hash,
-            )
+        variants = (None, *config.stage2.sources)
+        progress = ProgressReporter().bar(
+            total=len(variants), desc="Transfer representations", unit="variant"
+        )
+        try:
+            for source in variants:
+                variant, encoder, manifest, destination = _variant_paths(
+                    stage2_root, representation_root, source
+                )
+                prepare_representation_bank(
+                    config, variant=variant, encoder_path=encoder,
+                    encoder_manifest_path=manifest, destination=destination,
+                    expected_initial_shared_state_hash=initial_hash,
+                )
+                progress.update(1)
+        finally:
+            progress.close()
         return
     if args.command == "summarize":
-        summarize_transfer_matrix(
-            config, stage3_root=args.stage3_dir, output_dir=args.output
-        )
+        reporter = ProgressReporter()
+        with reporter.status("Summarizing transfer matrix"):
+            summarize_transfer_matrix(
+                config, stage3_root=args.stage3_dir, output_dir=args.output
+            )
         return
     try:
         devices = _devices(args.devices)
@@ -192,28 +209,37 @@ def main() -> None:
                 jobs.append((
                     str(args.config), variant, str(representation), task, fold,
                     str(_job_output(output, variant, task, fold)), bool(args.resume),
+                    args.max_parallel == 1,
                     devices[index % len(devices)] if devices else None,
                 ))
                 index += 1
-    if args.max_parallel == 1:
-        for job in jobs:
-            _train_worker(*job)
-        return
-    context = multiprocessing.get_context("spawn")
-    with ExitStack() as stack:
-        pools = {
-            device: stack.enter_context(
-                concurrent.futures.ProcessPoolExecutor(
-                    max_workers=slots_per_device, mp_context=context
+    progress = ProgressReporter().bar(
+        total=len(jobs), desc="Stage3 transfer matrix", unit="train-job"
+    )
+    try:
+        if args.max_parallel == 1:
+            for job in jobs:
+                _train_worker(*job)
+                progress.update(1)
+            return
+        context = multiprocessing.get_context("spawn")
+        with ExitStack() as stack:
+            pools = {
+                device: stack.enter_context(
+                    concurrent.futures.ProcessPoolExecutor(
+                        max_workers=slots_per_device, mp_context=context
+                    )
                 )
-            )
-            for device in devices
-        }
-        futures = [
-            pools[str(job[-1])].submit(_train_worker, *job) for job in jobs
-        ]
-        for future in futures:
-            future.result()
+                for device in devices
+            }
+            futures = [
+                pools[str(job[-1])].submit(_train_worker, *job) for job in jobs
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                future.result()
+                progress.update(1)
+    finally:
+        progress.close()
 
 
 if __name__ == "__main__":

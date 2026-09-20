@@ -979,3 +979,51 @@ def test_stage2_transfer_parallel_slots_support_multiple_jobs_per_device() -> No
         stage2_transfer_launcher._parallel_slots(5, ("cuda:0", "cuda:1"))
     with pytest.raises(ValueError, match="--devices is required"):
         stage2_transfer_launcher._parallel_slots(2, ())
+
+
+def test_stage2_transfer_reports_completed_variants(tmp_path: Path) -> None:
+    updates: list[int] = []
+    closed: list[bool] = []
+
+    class Bar:
+        def update(self, value: int) -> None:
+            updates.append(value)
+
+        def close(self) -> None:
+            closed.append(True)
+
+    class Reporter:
+        def bar(self, **kwargs):
+            assert kwargs == {
+                "total": 3,
+                "desc": "Stage2 transfer encoders",
+                "unit": "variant",
+            }
+            return Bar()
+
+    config = type(
+        "Config", (),
+        {"stage2": type("Stage2", (), {"sources": ("source/a", "source/b")})()},
+    )()
+    with (
+        patch.object(stage2_transfer_launcher, "load_transfer_config", return_value=config),
+        patch.object(
+            stage2_transfer_launcher,
+            "create_baseline_encoder",
+            return_value={"initial_shared_state_hash": "initial"},
+        ),
+        patch.object(stage2_transfer_launcher, "_worker"),
+        patch.object(
+            stage2_transfer_launcher, "ProgressReporter", return_value=Reporter()
+        ),
+        patch(
+            "sys.argv",
+            [
+                "transfer.py", "--config", "unused.yaml", "--output",
+                str(tmp_path / "stage2"), "--max-parallel", "1",
+            ],
+        ),
+    ):
+        stage2_transfer_launcher.main()
+    assert updates == [1, 1, 1]
+    assert closed == [True]
