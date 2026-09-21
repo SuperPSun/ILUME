@@ -11,20 +11,42 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 from rdkit import Chem, DataStructs
-from rdkit.Chem import rdFingerprintGenerator
+from rdkit.Chem import Descriptors, rdFingerprintGenerator, rdMolDescriptors
 from rdkit import rdBase
 
 from common.training import canonical_json_sha256
 from common.progress import ProgressReporter
 from common.descriptor_preprocessing import FeaturePreprocessor
-from stage1.descriptors import calculate_descriptors, rdkit_descriptor_names
-
 from .config import FeatureConfig
 from .data import RawDataset
 
 
 FEATURE_CACHE_SCHEMA_VERSION = 1
-RDKIT_DESCRIPTOR_NAMES = rdkit_descriptor_names()
+BASIC_FEATURE_SCHEMA_VERSION = "basic-molecular-statistics-v1"
+BASIC_FEATURE_NAMES = (
+    "molecular_weight",
+    "heavy_atom_count",
+    "total_atom_count_with_implicit_hydrogens",
+    "C_count",
+    "N_count",
+    "O_count",
+    "F_count",
+    "P_count",
+    "S_count",
+    "Cl_count",
+    "Br_count",
+    "I_count",
+    "formal_charge",
+    "bond_count",
+    "ring_count",
+    "aromatic_atom_count",
+    "aromatic_ring_count",
+    "rotatable_bond_count",
+    "h_bond_donor_count",
+    "h_bond_acceptor_count",
+    "fraction_c_sp3",
+)
+_ELEMENT_ATOMIC_NUMBERS = (6, 7, 8, 9, 15, 16, 17, 35, 53)
 SQLITE_BUSY_TIMEOUT_MS = 60_000
 SQLITE_BUSY_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8, 1.0)
 
@@ -48,31 +70,75 @@ class FeatureSchema:
     component_width: int
     radius: int | None
     n_bits: int | None
-    descriptor_names: tuple[str, ...]
+    feature_names: tuple[str, ...]
+    schema_version: str | None
     rdkit_version: str
 
     def to_dict(self) -> dict[str, Any]:
+        if self.kind == "ecfp4":
+            return {
+                "kind": self.kind,
+                "component_width": self.component_width,
+                "radius": self.radius,
+                "n_bits": self.n_bits,
+                "descriptor_names": (),
+                "rdkit_version": self.rdkit_version,
+            }
         return asdict(self)
 
 
 def feature_schema(config: FeatureConfig) -> FeatureSchema:
-    if config.kind == "rdkit_2d":
+    if config.kind == "basic_molecular_statistics":
         return FeatureSchema(
             kind=config.kind,
-            component_width=len(RDKIT_DESCRIPTOR_NAMES),
+            component_width=len(BASIC_FEATURE_NAMES),
             radius=None,
             n_bits=None,
-            descriptor_names=RDKIT_DESCRIPTOR_NAMES,
+            feature_names=BASIC_FEATURE_NAMES,
+            schema_version=BASIC_FEATURE_SCHEMA_VERSION,
             rdkit_version=rdBase.rdkitVersion,
         )
+    if config.radius is None or config.n_bits is None:
+        raise ValueError("ECFP4 feature schema requires radius and n_bits")
     return FeatureSchema(
         kind=config.kind,
         component_width=config.n_bits,
         radius=config.radius,
         n_bits=config.n_bits,
-        descriptor_names=(),
+        feature_names=(),
+        schema_version=None,
         rdkit_version=rdBase.rdkitVersion,
     )
+
+
+def basic_molecular_statistics(molecule: Chem.Mol) -> np.ndarray:
+    element_counts = {atomic_number: 0 for atomic_number in _ELEMENT_ATOMIC_NUMBERS}
+    formal_charge = 0
+    aromatic_atom_count = 0
+    for atom in molecule.GetAtoms():
+        atomic_number = atom.GetAtomicNum()
+        if atomic_number in element_counts:
+            element_counts[atomic_number] += 1
+        formal_charge += atom.GetFormalCharge()
+        aromatic_atom_count += int(atom.GetIsAromatic())
+    values = (
+        Descriptors.MolWt(molecule),
+        molecule.GetNumHeavyAtoms(),
+        Chem.AddHs(molecule).GetNumAtoms(),
+        *(element_counts[value] for value in _ELEMENT_ATOMIC_NUMBERS),
+        formal_charge,
+        molecule.GetNumBonds(),
+        rdMolDescriptors.CalcNumRings(molecule),
+        aromatic_atom_count,
+        rdMolDescriptors.CalcNumAromaticRings(molecule),
+        rdMolDescriptors.CalcNumRotatableBonds(
+            molecule, rdMolDescriptors.NumRotatableBondsOptions.Strict
+        ),
+        rdMolDescriptors.CalcNumHBD(molecule),
+        rdMolDescriptors.CalcNumHBA(molecule),
+        rdMolDescriptors.CalcFractionCSP3(molecule),
+    )
+    return np.asarray(values, dtype=np.float64)
 
 
 class FeatureCache:
@@ -149,8 +215,8 @@ def _calculate(smiles: str, schema: FeatureSchema) -> np.ndarray:
     molecule = Chem.MolFromSmiles(smiles)
     if molecule is None:
         raise ValueError(f"Invalid canonical SMILES in feature generation: {smiles}")
-    if schema.kind == "rdkit_2d":
-        return calculate_descriptors(molecule, schema.descriptor_names)
+    if schema.kind == "basic_molecular_statistics":
+        return basic_molecular_statistics(molecule)
     assert schema.radius is not None and schema.n_bits is not None
     generator = rdFingerprintGenerator.GetMorganGenerator(radius=schema.radius, fpSize=schema.n_bits)
     fingerprint = generator.GetFingerprint(molecule)
@@ -208,9 +274,12 @@ def ensure_finite_raw_features(values: np.ndarray) -> np.ndarray:
 
 
 __all__ = [
+    "BASIC_FEATURE_NAMES",
+    "BASIC_FEATURE_SCHEMA_VERSION",
     "FeatureCache",
     "FeaturePreprocessor",
     "FeatureSchema",
+    "basic_molecular_statistics",
     "ensure_finite_raw_features",
     "feature_schema",
     "raw_feature_matrix",

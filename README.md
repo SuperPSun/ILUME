@@ -280,9 +280,14 @@ Stage3 Single-task MLP 内部消融位于 `ablations/`。二者均与 Stage 代�
 
 所有模型发布固定预算的最终状态，validation 只用于 history/报告，不驱动训练决策；具体合同见对应 ADR。旧七模型 checkpoint format v2 不兼容旧 validation-selected artifact，旧结果不得混入同一汇总。
 
+其中 `MLP` 固定表示每个 registry component 的 21 项 basic molecular statistics，按
+`identity_columns` 顺序拼接后追加 authoritative conditions，再输入 `128 → 64 → 1`
+浅层网络；它不再使用完整 RDKit 2D descriptor representation。
+
 | 模型名（配置 basename） | 预算 | 输出根 |
 |---|---|---|
-| `mlp`、`dmpnn`、`molformer`、`ilbert`、`spmm` | 10 epochs | `outputs/benchmarks/fixed-budget-10e-v1/<model>` |
+| `mlp` | 10 epochs | `outputs/benchmarks/v3/mlp` |
+| `dmpnn`、`molformer`、`ilbert`、`spmm` | 10 epochs | `outputs/benchmarks/fixed-budget-10e-v1/<model>` |
 | `ecfp_xgboost` | 1000 trees | `outputs/benchmarks/fixed-budget-v1/ecfp_xgboost` |
 | `llasmol` | 10 epochs | `outputs/benchmarks/fixed-budget-v1/llasmol-10e-bs16-ga2` |
 | `aionopedia` | 10 epochs | `outputs/benchmarks/model-native-v1/aionopedia` |
@@ -312,7 +317,7 @@ python -m pip install -e ".[benchmarks]"
 
 python scripts/benchmarks/sweep.py \
   --config configs/benchmarks/mlp.yaml \
-  --output outputs/benchmarks/fixed-budget-v1/mlp \
+  --output outputs/benchmarks/v3/mlp \
   --max-workers 1
 
 python scripts/benchmarks/sweep.py \
@@ -748,7 +753,7 @@ python scripts/benchmarks/summarize.py \
   --input outputs/v2 outputs/benchmarks \
   --include \
     outputs/v2/stage3/base \
-    outputs/benchmarks/fixed-budget-v1/mlp \
+    outputs/benchmarks/v3/mlp \
     outputs/benchmarks/fixed-budget-v1/ecfp_xgboost \
     outputs/benchmarks/v1/ilume_stage3_single_task_mlp \
   --output summary

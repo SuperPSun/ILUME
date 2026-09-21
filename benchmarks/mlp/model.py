@@ -4,7 +4,7 @@ import torch
 from torch import nn
 
 
-class DescriptorMLP(nn.Module):
+class BasicMLP(nn.Module):
     def __init__(
         self,
         input_dim: int,
@@ -29,4 +29,4 @@ class DescriptorMLP(nn.Module):
         return self.network(features)
 
 
-__all__ = ["DescriptorMLP"]
+__all__ = ["BasicMLP"]

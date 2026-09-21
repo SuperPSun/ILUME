@@ -22,9 +22,9 @@ class DataConfig:
 
 @dataclass(frozen=True)
 class FeatureConfig:
-    kind: Literal["rdkit_2d", "ecfp4"]
-    radius: int = 2
-    n_bits: int = 2048
+    kind: Literal["basic_molecular_statistics", "ecfp4"]
+    radius: int | None = None
+    n_bits: int | None = None
 
 
 @dataclass(frozen=True)
@@ -68,15 +68,19 @@ class BenchmarkConfig:
         if not self.display_name:
             raise ValueError("Benchmark display_name must be non-empty")
         if self.name == "mlp" and (
-            self.features is None or self.features.kind != "rdkit_2d"
+            self.features is None
+            or self.features.kind != "basic_molecular_statistics"
         ):
-            raise ValueError("MLP benchmark requires RDKit 2D descriptors")
+            raise ValueError("MLP benchmark requires basic molecular statistics")
         if self.name == "ecfp_xgboost" and (
             self.features is None or self.features.kind != "ecfp4"
         ):
             raise ValueError("XGBoost benchmark requires ECFP4 features")
-        if self.features is not None and (
-            self.features.radius <= 0 or self.features.n_bits <= 0
+        if self.features is not None and self.features.kind == "ecfp4" and (
+            self.features.radius is None
+            or self.features.radius <= 0
+            or self.features.n_bits is None
+            or self.features.n_bits <= 0
         ):
             raise ValueError("Fingerprint radius and n_bits must be positive")
         if self.name == "ilume_stage3_single_task_mlp":
@@ -105,6 +109,8 @@ class BenchmarkConfig:
             raise ValueError("Feature baselines require data.feature_cache")
         if not advanced and self.environment is not None:
             raise ValueError("Only advanced baselines use a dedicated environment")
+        if self.name == "mlp":
+            self._validate_mlp()
         if self.name == "dmpnn":
             self._validate_dmpnn()
         if self.name == "molformer":
@@ -131,6 +137,27 @@ class BenchmarkConfig:
             raise ValueError("Benchmark Stage 3 folds must be unique")
         if self.stage3.enabled and self.stage3.tasks != "all" and not self.stage3.tasks:
             raise ValueError("Enabled Stage 3 benchmark has no tasks")
+
+    def _validate_mlp(self) -> None:
+        if self.features != FeatureConfig(kind="basic_molecular_statistics"):
+            raise ValueError("MLP features must match the registered Basic schema")
+        if self.model != {"hidden_dims": [128, 64], "dropout": 0.2}:
+            raise ValueError("MLP model must match the registered Basic-MLP recipe")
+        expected_training = {
+            "optimizer": "adamw",
+            "learning_rate": 1.0e-3,
+            "weight_decay": 1.0e-3,
+            "batch_size": 128,
+            "max_epochs": 10,
+            "loss": "normalized_mse",
+            "model_selection": "final_training_state",
+            "device": "cuda",
+            "precision": "fp32",
+        }
+        if self.training != expected_training:
+            raise ValueError("MLP training must match the registered Basic-MLP recipe")
+        if self.runtime:
+            raise ValueError("MLP does not declare benchmark runtime settings")
 
     def _validate_ilume_stage3_single_task_mlp(self) -> None:
         if self.features is not None or self.environment is not None:
@@ -847,8 +874,12 @@ def benchmark_config_from_dict(raw: dict[str, Any]) -> BenchmarkConfig:
             if features is None
             else FeatureConfig(
                 kind=str(features["kind"]),  # type: ignore[arg-type]
-                radius=int(features.get("radius", 2)),
-                n_bits=int(features.get("n_bits", 2048)),
+                radius=(
+                    None if features.get("radius") is None else int(features["radius"])
+                ),
+                n_bits=(
+                    None if features.get("n_bits") is None else int(features["n_bits"])
+                ),
             )
         ),
         environment=(

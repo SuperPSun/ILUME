@@ -82,7 +82,7 @@ task-wise refinement。为了隔离 Stage1+2 预训练 representation 的贡献�
 ## 参考
 
 - [ADR-0020：Stage3 sparse HoME/PCGrad](0020-stage3-v1-sparse-home-pcgrad.md)
-- [ADR-0022：RDKit MLP baseline](0022-mlp-ecfp-xgboost-baselines.md)
+- [ADR-0022：MLP 与 ECFP-XGBoost baseline](0022-mlp-ecfp-xgboost-baselines.md)
 - [ADR-0023：统一 reporting](0023-unified-evaluation-reporting.md)
 - [ADR-0027：late task-wise refinement](0027-late-taskwise-refinement.md)
 - [ADR-0031：Stage3 summary normalization](0031-stage3-summary-normalization-relaxation.md)

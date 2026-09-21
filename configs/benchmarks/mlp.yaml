@@ -7,9 +7,7 @@ data:
   stage3_authority_config: configs/v2/stage3/splits/system.yaml
   feature_cache: outputs/benchmarks/cache/features.sqlite3
 features:
-  kind: rdkit_2d
-  radius: 2
-  n_bits: 2048
+  kind: basic_molecular_statistics
 model:
   hidden_dims: [128, 64]
   dropout: 0.2

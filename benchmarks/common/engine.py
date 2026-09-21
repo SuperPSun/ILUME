@@ -190,7 +190,7 @@ def train_mlp(
     *,
     reporter: ProgressReporter | None = None,
 ) -> dict[str, Any]:
-    from benchmarks.mlp.model import DescriptorMLP
+    from benchmarks.mlp.model import BasicMLP
 
     seed_benchmark(config.seed)
     device = torch.device(str(config.training["device"]))
@@ -198,7 +198,7 @@ def train_mlp(
         raise RuntimeError("MLP benchmark requires CUDA; no silent CPU fallback")
     if str(config.training.get("precision", "fp32")) != "fp32":
         raise ValueError("MLP benchmark v1 supports FP32 only")
-    model = DescriptorMLP(
+    model = BasicMLP(
         bundle.train_features.shape[1],
         len(bundle.task.target_columns),
         tuple(int(value) for value in config.model["hidden_dims"]),
@@ -267,7 +267,7 @@ def train_mlp(
         for name, value in model.state_dict().items()
     }
     final_score = float(history[-1]["valid_raw_macro_mae"])
-    state_hash = tensor_state_hash("benchmark.mlp-state.v2", final_state)
+    state_hash = tensor_state_hash("benchmark.basic-mlp-state.v1", final_state)
     model_path = output_dir / "model.pt"
     atomic_torch_save(model_path, {"state_dict": final_state, "state_hash": state_hash})
     atomic_json(output_dir / "training_history.json", history)
@@ -437,17 +437,17 @@ def _load_manifest(root: Path) -> dict[str, Any]:
 
 def _predict(config: BenchmarkConfig, manifest: Mapping[str, Any], root: Path, features: np.ndarray) -> np.ndarray:
     if manifest["model_kind"] == "mlp":
-        from benchmarks.mlp.model import DescriptorMLP
+        from benchmarks.mlp.model import BasicMLP
 
         device = torch.device(str(config.training["device"]))
         if device.type == "cuda" and not torch.cuda.is_available():
             raise RuntimeError("MLP benchmark evaluation requires CUDA")
-        model = DescriptorMLP(
+        model = BasicMLP(
             int(manifest["input_dim"]), len(manifest["target_columns"]),
             tuple(int(value) for value in manifest["hidden_dims"]), float(manifest["dropout"]),
         )
         payload = torch.load(root / "model.pt", map_location="cpu", weights_only=True)
-        if tensor_state_hash("benchmark.mlp-state.v2", payload["state_dict"]) != manifest["model_state_hash"]:
+        if tensor_state_hash("benchmark.basic-mlp-state.v1", payload["state_dict"]) != manifest["model_state_hash"]:
             raise ValueError("MLP checkpoint state hash mismatch")
         model.load_state_dict(payload["state_dict"], strict=True)
         model.to(device).eval()

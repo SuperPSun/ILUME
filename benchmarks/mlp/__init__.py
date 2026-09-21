@@ -1,2 +1,1 @@
-"""RDKit descriptor MLP baseline."""
-
+"""Basic molecular-statistics MLP baseline."""

@@ -10,8 +10,8 @@ sampling 和末期 task-wise refinement 共同组成。为了回答完整 Stage3
 的 frozen Stage2 representation + single-task predictor 是否带来价值，需要一个覆盖全部
 21 个 observation task、但不声称进行单组件归因的整体架构消融。
 
-已有 `benchmarks/mlp` 使用 RDKit 2D descriptors，不能代表本实验的 Stage2 Object
-representation 输入。因此本实验使用独立 model/reporting identity，同时复用 benchmark
+已有 `benchmarks/mlp` 使用基础分子统计特征，不能代表本实验的 Stage2 Object representation
+输入。因此本实验使用独立 model/reporting identity，同时复用 benchmark
 调度、evaluation 和 summary 合同。
 
 ## 决定

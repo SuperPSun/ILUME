@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
+from rdkit import Chem
 from torch_geometric.data import Batch, Data
 import yaml
 
@@ -64,8 +65,11 @@ from benchmarks.common.environment import (
 )
 from benchmarks.spmm.environment import spmm_asset_snapshot
 from benchmarks.common.features import (
+    BASIC_FEATURE_NAMES,
+    BASIC_FEATURE_SCHEMA_VERSION,
     FeatureCache,
     FeaturePreprocessor,
+    basic_molecular_statistics,
     feature_schema,
     raw_feature_matrix,
 )
@@ -85,7 +89,7 @@ from benchmarks.iltransr.model import (
 )
 from benchmarks.llasmol.adapter import ConditionStats as LlaSMolConditionStats, SharedLlaSMolRegressor, SortishBatchSampler as LlaSMolSortishBatchSampler, _collate as llasmol_collate, _official_adapter_state, _prepare_split as prepare_llasmol_split, _scheduled_factor as llasmol_scheduled_factor, llasmol_model_views, llasmol_task_prefix
 from benchmarks.spmm.adapter import ConditionStats as SPMMConditionStats, SharedSPMMRegressor, SortishBatchSampler as SPMMSortishBatchSampler, _collate as spmm_collate, _load_pretrained_encoder, _prepare_split as prepare_spmm_split, _row_token_lengths as spmm_row_token_lengths, _scheduled_learning_rate
-from common.identity import semantic_identity
+from common.identity import require_compatible_identity, semantic_identity
 from common.reporting import (
     REPORTING_SCHEMA_VERSION,
     comparison_identity,
@@ -242,14 +246,22 @@ def _tiny_config(tmp_path: Path, *, name: str = "mlp", targets: str = "value"):
         encoding="utf-8",
     )
     if name == "mlp":
-        features = {"kind": "rdkit_2d", "radius": 2, "n_bits": 2048}
-        model = {"hidden_dims": [8], "dropout": 0.0}
-        training = {
-            "optimizer": "adamw", "learning_rate": 0.01, "weight_decay": 0.0,
-            "batch_size": 2, "max_epochs": 4,
-            "loss": "normalized_mse", "model_selection": "final_training_state",
-            "device": "cpu", "precision": "fp32",
-        }
+        formal = load_benchmark_config("configs/benchmarks/mlp.yaml")
+        return replace(
+            formal,
+            data=replace(
+                formal.data,
+                data_root=tmp_path,
+                task_catalog=catalog,
+                stage3_authority_config=authority,
+                feature_cache=tmp_path / "features.sqlite3",
+            ),
+            training={
+                **formal.training,
+                "batch_size": 2,
+                "device": "cpu",
+            },
+        )
     else:
         features = {"kind": "ecfp4", "radius": 2, "n_bits": 64}
         model = {
@@ -315,8 +327,112 @@ def test_formal_configs_and_registry_resolution(
         matrix = raw_feature_matrix(
             empty, feature_schema(config.features), cache, reporter=reporter
         )
-    assert matrix.shape == (0, 2 * 217 + 2)
+    assert matrix.shape == (0, 2 * 21 + 2)
     assert reporter.bars == []
+
+
+def test_basic_molecular_statistics_schema_and_golden_values() -> None:
+    assert BASIC_FEATURE_NAMES == (
+        "molecular_weight",
+        "heavy_atom_count",
+        "total_atom_count_with_implicit_hydrogens",
+        "C_count", "N_count", "O_count", "F_count", "P_count", "S_count",
+        "Cl_count", "Br_count", "I_count",
+        "formal_charge", "bond_count", "ring_count", "aromatic_atom_count",
+        "aromatic_ring_count", "rotatable_bond_count", "h_bond_donor_count",
+        "h_bond_acceptor_count", "fraction_c_sp3",
+    )
+    aromatic = basic_molecular_statistics(Chem.MolFromSmiles("c1ccccc1Cl"))
+    assert aromatic.tolist() == pytest.approx([
+        112.559, 7, 12, 6, 0, 0, 0, 0, 0, 1, 0, 0,
+        0, 7, 1, 6, 1, 0, 0, 0, 0,
+    ])
+    halogens = basic_molecular_statistics(Chem.MolFromSmiles("FC(Cl)(Br)I"))
+    assert halogens[3:12].tolist() == [1, 0, 0, 1, 0, 0, 1, 1, 1]
+    charged = basic_molecular_statistics(Chem.MolFromSmiles("[NH4+]"))
+    assert charged[1:3].tolist() == [1, 5]
+    assert charged[12] == 1
+    butane = basic_molecular_statistics(Chem.MolFromSmiles("CCCC"))
+    assert butane[17] == 1
+    ethanol = basic_molecular_statistics(Chem.MolFromSmiles("CCO"))
+    assert ethanol[18:20].tolist() == [1, 1]
+
+
+@pytest.mark.parametrize(
+    "components",
+    (
+        ("[Na+]", "[Cl-]"),
+        ("C[N+](C)(C)C", "[Cl-]", "O"),
+        ("CCO", "O"),
+    ),
+)
+def test_basic_features_follow_component_order_then_conditions(
+    tmp_path: Path, components: tuple[str, ...],
+) -> None:
+    conditions = np.asarray([[300.0, 101.325]], dtype=np.float64)
+    dataset = RawDataset(
+        components=(components,),
+        component_count=len(components),
+        conditions=conditions,
+        targets=np.asarray([[1.0]], dtype=np.float64),
+        source_rows=("synthetic:2",),
+        audit_rows=({},),
+    )
+    schema = feature_schema(load_benchmark_config("configs/benchmarks/mlp.yaml").features)
+    with FeatureCache(tmp_path / "features.sqlite3") as cache:
+        matrix = raw_feature_matrix(dataset, schema, cache)
+    expected = np.concatenate([
+        *(basic_molecular_statistics(Chem.MolFromSmiles(value)) for value in components),
+        conditions[0],
+    ])
+    assert matrix.shape == (1, len(components) * 21 + 2)
+    assert matrix[0].tolist() == pytest.approx(expected.tolist())
+
+
+def test_basic_mlp_schema_versions_cache_and_training_identity() -> None:
+    config = load_benchmark_config("configs/benchmarks/mlp.yaml")
+    schema = feature_schema(config.features)
+    payload = schema.to_dict()
+    assert payload["schema_version"] == BASIC_FEATURE_SCHEMA_VERSION
+    assert payload["feature_names"] == BASIC_FEATURE_NAMES
+    assert payload["component_width"] == 21
+    current = semantic_identity("benchmark.training.v1", {"feature": payload})
+    legacy = semantic_identity(
+        "benchmark.training.v1",
+        {"feature": {"kind": "rdkit_2d", "component_width": 217}},
+    )
+    with pytest.raises(ValueError, match="semantic identity mismatch"):
+        require_compatible_identity(
+            current, legacy, context="Basic-MLP legacy checkpoint"
+        )
+
+
+def test_mlp_configs_lock_basic_feature_model_and_training_contract() -> None:
+    paths = [
+        Path("configs/benchmarks/mlp.yaml"),
+        *(Path("configs/benchmarks/splits") / f"mlp__{split}.yaml"
+          for split in ("random", "system", "individual")),
+    ]
+    for path in paths:
+        config = load_benchmark_config(path)
+        assert config.features.kind == "basic_molecular_statistics"
+        assert config.features.radius is None and config.features.n_bits is None
+        assert config.model == {"hidden_dims": [128, 64], "dropout": 0.2}
+        assert config.training == {
+            "optimizer": "adamw",
+            "learning_rate": 1.0e-3,
+            "weight_decay": 1.0e-3,
+            "batch_size": 128,
+            "max_epochs": 10,
+            "loss": "normalized_mse",
+            "model_selection": "final_training_state",
+            "device": "cuda",
+            "precision": "fp32",
+        }
+    legacy = load_benchmark_config("configs/benchmarks/mlp.yaml").to_dict()
+    legacy["features"] = {"kind": "rdkit_2d"}
+    with pytest.raises(ValueError, match="requires basic molecular statistics"):
+        benchmark_config_from_dict(legacy)
 
 
 @pytest.mark.parametrize(
@@ -573,12 +689,14 @@ def test_mlp_train_checkpoint_and_test_evaluation(tmp_path: Path) -> None:
     ] == json.loads(
         (reference_output / "checkpoint.json").read_text(encoding="utf-8")
     )["model_state_hash"]
-    assert summary["final_epoch"] == 4
-    assert summary["epochs_ran"] == 4
+    assert summary["final_epoch"] == 10
+    assert summary["epochs_ran"] == 10
     assert "best_epoch" not in summary
     checkpoint = json.loads((output / "checkpoint.json").read_text(encoding="utf-8"))
     assert checkpoint["format_version"] == 2
-    assert checkpoint["final_epoch"] == 4
+    assert checkpoint["final_epoch"] == 10
+    assert checkpoint["feature_schema"]["schema_version"] == BASIC_FEATURE_SCHEMA_VERSION
+    assert checkpoint["feature_schema"]["feature_names"] == list(BASIC_FEATURE_NAMES)
     assert "best_valid_raw_macro_mae" not in checkpoint
     assert len(reporter.bars) == 1
     assert reporter.bars[0].n == summary["epochs_ran"]
