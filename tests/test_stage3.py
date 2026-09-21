@@ -585,6 +585,140 @@ def test_knowledge_graph_budget_candidates_preserve_experiment_boundaries() -> N
     assert len(identities) == 6
 
 
+def test_knowledge_graph_targeted_candidates_match_base1_5_contract() -> None:
+    anchor = load_stage3_config("configs/v2/stage3/base1_5.yaml")
+    group = "thermophysical_interfacial_response"
+    static_group = "static_dielectric"
+    speed = "experiment/speed_of_sound"
+    diffusion = "experiment/self_diffusion_coefficient"
+    registry = resolve_task_registry(anchor)
+    anchor_model = Stage3SparseModel(
+        anchor.model, registry, 8, group_configs=anchor.groups,
+        task_configs=anchor.tasks,
+        task_private_recipes={
+            task: anchor.resolved_private_recipe(task) for task in registry
+        },
+    )
+    anchor_shapes = {
+        name: tuple(tensor.shape)
+        for name, tensor in anchor_model.state_dict().items()
+    }
+    anchor_count = sum(parameter.numel() for parameter in anchor_model.parameters())
+    with patch("stage3.identity._source_content", return_value={}):
+        anchor_prepared = build_stage3_prepared_identity(
+            anchor, registry, [], {}, {"hash": "fixed-stage2-encoder"}
+        )
+    training_identities = set()
+
+    for index in range(1, 6):
+        config = load_stage3_config(f"configs/v2/stage3/base2_{index}.yaml")
+        expected = anchor.to_dict()
+        if index in (1, 5):
+            expected["groups"][static_group]["expert_hidden_ratio"] = 0.25
+        if index in (2, 5):
+            expected["tasks"][speed]["phase3_private_epochs"] = 2
+        if index in (3, 5):
+            expected["tasks"][diffusion]["phase3_private_epochs"] = 2
+        if index in (4, 5):
+            expected["groups"][group]["experts"] = 2
+        assert config.to_dict() == expected
+        assert stage3_config_from_dict(config.to_dict()).to_dict() == expected
+        candidate_registry = resolve_task_registry(config)
+        assert candidate_registry == registry
+        with patch("stage3.identity._source_content", return_value={}):
+            prepared_identity = build_stage3_prepared_identity(
+                config, candidate_registry, [], {},
+                {"hash": "fixed-stage2-encoder"},
+            )
+        assert prepared_identity["hash"] == anchor_prepared["hash"]
+
+        model = Stage3SparseModel(
+            config.model, candidate_registry, 8, group_configs=config.groups,
+            task_configs=config.tasks,
+            task_private_recipes={
+                task: config.resolved_private_recipe(task)
+                for task in candidate_registry
+            },
+        )
+        shapes = {
+            name: tuple(tensor.shape)
+            for name, tensor in model.state_dict().items()
+        }
+        changed = {
+            name for name in shapes.keys() | anchor_shapes.keys()
+            if shapes.get(name) != anchor_shapes.get(name)
+        }
+        if index in (2, 3):
+            assert not changed
+            assert sum(p.numel() for p in model.parameters()) == anchor_count
+        if index in (1, 5):
+            static_changes = {
+                name for name in changed
+                if name.startswith((
+                    f"l1_group_experts.{static_group}.",
+                    f"l2_group_experts.{static_group}.",
+                ))
+            }
+            assert len(static_changes) == 6
+            if index == 1:
+                assert changed == static_changes
+            assert sum(p.numel() for p in model.parameters()) < anchor_count
+        if index in (4, 5):
+            large_group_changes = changed - {
+                name for name in changed
+                if name.startswith((
+                    f"l1_group_experts.{static_group}.",
+                    f"l2_group_experts.{static_group}.",
+                ))
+            }
+            assert large_group_changes
+            assert all(
+                name.startswith((
+                    f"l1_group_experts.{group}.2.",
+                    f"l2_group_experts.{group}.2.",
+                    f"l1_group_gates.{group}.",
+                    "task_gates.experiment__",
+                ))
+                for name in large_group_changes
+            )
+            for task, spec in candidate_registry.items():
+                if spec.meta_group == group:
+                    assert model.task_gates[task.replace("/", "__")].out_features == 5
+            assert sum(p.numel() for p in model.parameters()) < anchor_count
+        if index == 1:
+            static_task = "experiment/static_relative_permittivity"
+            assert (
+                model.task_gates[static_task.replace("/", "__")].out_features
+                == anchor_model.task_gates[static_task.replace("/", "__")].out_features
+            )
+
+        prepared = {"metadata": {
+            "kind": "ilume_stage3_sparse_data",
+            "semantic": {"identities": {
+                "prepared": prepared_identity,
+                "stage2_encoder": {"hash": "fixed-stage2-encoder"},
+            }},
+        }}
+        plan = build_resolved_training_plan(
+            config, 1, model,
+            {task: range(10) for task in candidate_registry},
+            tuple(candidate_registry), prepared, {}, {},
+        )
+        training_identities.add(build_stage3_training_identity(plan)["hash"])
+        assert config.groups[group].phase1.epochs == 15
+        assert config.groups[group].phase1.lr == 2e-4
+        assert config.groups[group].phase2.epochs == 4
+        assert config.groups[group].phase2.lr == 1e-4
+        phases = config.training.three_phase
+        assert phases is not None
+        for task, task_config in config.tasks.items():
+            budget = config.groups[task_config.meta_group]
+            private = config.resolved_private_recipe(task)
+            assert phases.global_scope.lr > budget.phase1.lr > private.phase1_lr
+            assert budget.phase2.lr == budget.phase1.lr * phases.phase1_min_lr_ratio
+    assert len(training_identities) == 5
+
+
 def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
     expected = {
         "system": ({"il", "il_solute", "solute_solvent"}, 21),

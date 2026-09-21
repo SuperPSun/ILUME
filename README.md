@@ -176,6 +176,43 @@ python scripts/stage3/evaluate.py \
   --output outputs/v2/stage3/base1_1/evaluate_test
 ```
 
+以 `base1_5` 为共同锚点的五个定向小实验见
+[ADR-0066](docs/adr/0066-stage3-knowledge-graph-targeted-small-experiments.md)：
+
+| 配置名 | 相对base1_5的改动 |
+|---|---|
+| base2_1 | static GROUP expert hidden ratio 0.75→0.25 |
+| base2_2 | speed of sound Phase 3 PRIVATE epochs 0→2 |
+| base2_3 | self diffusion Phase 3 PRIVATE epochs 4→2 |
+| base2_4 | thermophysical/interfacial GROUP experts 3→2 |
+| base2_5 | 合并以上四项 |
+
+下面以base2_1为例；运行其他候选时，将命令中的所有`base2_1`一致替换为
+`base2_2`、`base2_3`、`base2_4`或`base2_5`：
+
+```bash
+python scripts/stage3/train.py \
+  --config configs/v2/stage3/base2_1.yaml \
+  --fold 1 2 3 4 5 \
+  --output outputs/v2/stage3/base2_1/train \
+  --max-parallel 4 --devices cuda:0,cuda:1,cuda:2,cuda:3
+
+python scripts/stage3/evaluate.py \
+  --config configs/v2/stage3/base2_1.yaml \
+  --checkpoint-dir outputs/v2/stage3/base2_1/train \
+  --split valid --fold 1 2 3 4 5 \
+  --output outputs/v2/stage3/base2_1/evaluate_valid
+
+python scripts/stage3/evaluate.py \
+  --config configs/v2/stage3/base2_1.yaml \
+  --checkpoint-dir outputs/v2/stage3/base2_1/train \
+  --split test --ensemble-folds \
+  --output outputs/v2/stage3/base2_1/evaluate_test
+```
+
+五个候选都可以运行test ensemble，但test只作探索性报告；候选选择仍以完整五折validation
+的task-equal macro NMAE为准。prepared artifact可复用，Base/base1系列checkpoint不可交叉加载。
+
 ### 超参数搜索退役
 
 ILUME 的 v2 Stage 3 A/B/C 搜索与 Capacity v1 HPO 已于 2026-09-06 退役；仓库不再提供
