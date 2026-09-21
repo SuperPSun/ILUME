@@ -1,0 +1,103 @@
+data:
+  stage3_dir: data/stage3
+  task_catalog: data/task_catalog.csv
+  artifacts_dir: outputs/v2/stage3/base/prepare/artifacts
+  split_policy: system
+  split_strategies: {}
+  cv_repeat: 1
+  cv_repeats: {}
+  seed: 42
+preparation:
+  encoding_batch_size: 256
+  cache_dir: outputs/v2/stage3/base/prepare/object_cache
+initialization:
+  stage2_encoder: outputs/v2/stage2/base/train/stage2_encoder.pt
+  plugin: null
+model:
+  global_experts: 2
+  private_experts: 1
+  dropout: 0.10
+  activation: silu
+  expert_hidden_ratio: 2.0
+  interaction_hidden_ratio: 2.0
+  film_hidden_ratio: 1.0
+  tower_hidden_ratio: 1.0
+  l2_residual: true
+groups:
+  transport_dynamics: {enabled: true, group_weight: 1.0, experts: 2, expert_hidden_ratio: 1.5, phase1: {lr: 1.5e-4, epochs: 12}, phase2: {lr: 7.5e-5, epochs: 12}}
+  thermophysical_interfacial_response: {enabled: true, group_weight: 1.0, experts: 2, expert_hidden_ratio: 1.5, phase1: {lr: 1.5e-4, epochs: 15}, phase2: {lr: 7.5e-5, epochs: 4}}
+  phase_stability: {enabled: true, group_weight: 1.0, experts: 3, expert_hidden_ratio: 1.5, phase1: {lr: 2.0e-4, epochs: 15}, phase2: {lr: 1.0e-4, epochs: 20}}
+  solvation_transfer: {enabled: true, group_weight: 1.0, experts: 3, expert_hidden_ratio: 1.5, phase1: {lr: 2.0e-4, epochs: 15}, phase2: {lr: 1.0e-4, epochs: 24}}
+  biological: {enabled: true, group_weight: 1.0, experts: 1, expert_hidden_ratio: 0.5, phase1: {lr: 7.5e-5, epochs: 8}, phase2: {lr: 3.75e-5, epochs: 5}}
+  static_dielectric: {enabled: true, group_weight: 1.0, experts: 1, expert_hidden_ratio: 0.75, phase1: {lr: 1.0e-4, epochs: 8}, phase2: {lr: 5.0e-5, epochs: 3}}
+tasks:
+  experiment/electrical_conductivity: {meta_group: transport_dynamics, unique_systems: 703, size_class: medium, phase1_private_lr: 8.0e-5, phase3_private_epochs: 4, model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75, private_dropout: 0.15}}
+  experiment/self_diffusion_coefficient: {meta_group: transport_dynamics, unique_systems: 36, size_class: tiny, phase3_private_epochs: 4}
+  experiment/viscosity: {meta_group: transport_dynamics, unique_systems: 2586, size_class: large, phase1_private_lr: 1.0e-4, phase3_private_epochs: 6, model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75, private_dropout: 0.15}}
+  experiment/thermal_conductivity: {meta_group: thermophysical_interfacial_response, unique_systems: 93, size_class: tiny, phase2_private_epochs: 3, phase3_private_epochs: 2, model_overrides: {private_hidden_ratio: 0.5, tower_hidden_ratio: 0.5, film_hidden_ratio: 0.5}}
+  experiment/density: {meta_group: thermophysical_interfacial_response, unique_systems: 5966, size_class: large, phase1_private_lr: 1.25e-4}
+  experiment/heat_capacity: {meta_group: thermophysical_interfacial_response, unique_systems: 352, size_class: small}
+  experiment/isobaric_coefficient_of_volume_expansion: {meta_group: thermophysical_interfacial_response, unique_systems: 25, size_class: tiny, phase2_private_epochs: 0, phase3_private_epochs: 0, model_overrides: {private_hidden_ratio: 0.25, tower_hidden_ratio: 0.25, film_hidden_ratio: 0.25}}
+  experiment/speed_of_sound: {meta_group: thermophysical_interfacial_response, unique_systems: 216, size_class: small, phase3_private_epochs: 0}
+  experiment/surface_tension: {meta_group: thermophysical_interfacial_response, unique_systems: 1141, size_class: medium, phase1_private_lr: 8.0e-5, phase3_private_epochs: 5, model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75, private_dropout: 0.15}}
+  experiment/equilibrium_pressure: {meta_group: phase_stability, unique_systems: 95, size_class: tiny}
+  experiment/glass_transition_temperature: {meta_group: phase_stability, unique_systems: 793, size_class: medium, phase3_private_epochs: 2, model_overrides: {private_hidden_ratio: 1.25, tower_hidden_ratio: 1.25}}
+  experiment/melting_point: {meta_group: phase_stability, unique_systems: 3460, size_class: large, phase3_private_epochs: 5}
+  experiment/thermal_decomposition_temperature: {meta_group: phase_stability, unique_systems: 2756, size_class: large, phase3_private_epochs: 6, model_overrides: {private_hidden_ratio: 1.25, tower_hidden_ratio: 1.25, film_hidden_ratio: 1.0, private_dropout: 0.10}}
+  experiment/dynamic_relative_permittivity: {meta_group: thermophysical_interfacial_response, unique_systems: 49, size_class: tiny}
+  experiment/static_relative_permittivity: {meta_group: static_dielectric, unique_systems: 44, size_class: tiny, phase1_private_epochs: 4, phase2_private_epochs: 1, phase3_private_epochs: 0, model_overrides: {private_hidden_ratio: 0.25, tower_hidden_ratio: 0.25, film_hidden_ratio: 0.25}}
+  experiment/refractive_index: {meta_group: thermophysical_interfacial_response, unique_systems: 726, size_class: medium, phase1_private_lr: 8.0e-5, phase3_private_epochs: 3, model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75, private_dropout: 0.15}}
+  experiment/solvation:
+    meta_group: solvation_transfer
+    unique_systems: 3611
+    size_class: large
+    partner_mode: interaction
+    primary_slots: [cation, anion]
+    partner_slots: [solute]
+  experiment/transfer:
+    meta_group: solvation_transfer
+    unique_systems: 3079
+    size_class: large
+    phase3_private_epochs: 10
+    partner_mode: interaction
+    primary_slots: [cation, anion]
+    partner_slots: [solute]
+  experiment/transfer_organic:
+    meta_group: solvation_transfer
+    unique_systems: 1914
+    size_class: medium
+    phase3_private_epochs: 15
+    partner_mode: interaction
+    primary_slots: [solute]
+    partner_slots: [solvent]
+  experiment/x_co2: {meta_group: thermophysical_interfacial_response, unique_systems: 122, size_class: small, phase3_private_epochs: 5}
+  experiment/pec50: {meta_group: biological, unique_systems: 305, size_class: small, phase3_private_epochs: 3, model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75}}
+training:
+  composite_batch_size: 2048
+  microbatch_size: 1024
+  sampling_mode: raw
+  schedule_mode: three_phase
+  three_phase:
+    global: {lr: 2.5e-4, epochs: 15, warmup_ratio: 0.05, min_lr_ratio: 0.1}
+    phase1_min_lr_ratio: 0.5
+    phase2_min_lr_ratio: 0.5
+    phase3_min_lr_ratio: 0.2
+    private_classes:
+      tiny: {width_ratio: 0.5, phase1: {lr: 4.0e-5, epochs: 6}, phase2_epochs: 3, phase3_epochs: 2}
+      small: {width_ratio: 0.75, phase1: {lr: 6.0e-5, epochs: 8}, phase2_epochs: 4, phase3_epochs: 3}
+      medium: {width_ratio: 1.0, phase1: {lr: 1.2e-4, epochs: 12}, phase2_epochs: 8, phase3_epochs: 5}
+      large: {width_ratio: 1.0, phase1: {lr: 1.5e-4, epochs: 15}, phase2_epochs: 12, phase3_epochs: 8}
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+  max_grad_norm: 1.0
+  joint_gradient_clip_mode: ownership
+  smooth_l1_beta: 1.0
+  amp_dtype: bf16
+  optimizer_implementation: single_tensor
+  active_tasks: auto
+  checkpoint_interval_epochs: 10
+  device: cuda
+  cpu_threads: 1
+  cpu_interop_threads: 1
+  debug_pcgrad_traces: false

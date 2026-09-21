@@ -57,6 +57,7 @@ from stage3.data import (
     source_path,
 )
 from stage3.evaluate import evaluate_checkpoints
+from stage3.identity import build_stage3_prepared_identity, build_stage3_training_identity
 from stage3.model import (
     GLOBAL,
     Stage3SparseModel,
@@ -80,6 +81,7 @@ from stage3.train import (
     STAGE3_RDKIT_CHECKPOINT_KIND,
     STAGE3_RDKIT_REFINED_KIND,
     _clip_joint_gradients,
+    build_resolved_training_plan,
     checkpoint_epochs,
     compute_task_gradient,
     resolve_stage3_training_identity,
@@ -480,6 +482,107 @@ def test_knowledge_graph_grouping_config_is_yaml_driven() -> None:
         if owner.startswith("GROUP:")
     }
     assert group_owners == {f"GROUP:{group}" for group in expected}
+
+
+def test_knowledge_graph_budget_candidates_preserve_experiment_boundaries() -> None:
+    base = load_stage3_config("configs/v2/stage3/base1.yaml")
+    group = "thermophysical_interfacial_response"
+    static = "experiment/static_relative_permittivity"
+    base_registry = resolve_task_registry(base)
+    identities = set()
+    baseline_shapes = None
+    baseline_count = None
+    prepared_hash = None
+    for index in range(6):
+        config = load_stage3_config(
+            f"configs/v2/stage3/base1{'_' + str(index) if index else ''}.yaml"
+        )
+        expected = base.to_dict()
+        if index in (1, 5):
+            expected["groups"][group]["experts"] = 3
+        if index in (2, 5):
+            expected["groups"][group]["phase1"]["epochs"] = 15
+        if index in (3, 5):
+            expected["groups"][group]["phase1"]["lr"] = 2e-4
+            expected["groups"][group]["phase2"]["lr"] = 1e-4
+        if index in (4, 5):
+            expected["groups"]["static_dielectric"]["phase1"]["lr"] = 5e-5
+            expected["groups"]["static_dielectric"]["phase2"] = {
+                "lr": 2.5e-5, "epochs": 1,
+            }
+            expected["tasks"][static]["phase1_private_lr"] = 2e-5
+        assert config.to_dict() == expected
+        assert stage3_config_from_dict(config.to_dict()).to_dict() == expected
+        registry = resolve_task_registry(config)
+        assert registry == base_registry
+        # Hold source contents, embeddings and normalization fixed; exercise the
+        # actual prepared identity builder without production artifact I/O.
+        with patch("stage3.identity._source_content", return_value={}):
+            prepared_identity = build_stage3_prepared_identity(
+                config, registry, [], {}, {"hash": "fixed-stage2-encoder"}
+            )
+        if index == 0:
+            prepared_hash = prepared_identity["hash"]
+        assert prepared_identity["hash"] == prepared_hash
+        model = Stage3SparseModel(
+            config.model, registry, 8, group_configs=config.groups,
+            task_configs=config.tasks,
+            task_private_recipes={
+                task: config.resolved_private_recipe(task) for task in registry
+            },
+        )
+        shapes = {name: tuple(t.shape) for name, t in model.state_dict().items()}
+        count = sum(p.numel() for p in model.parameters())
+        if index == 0:
+            baseline_shapes, baseline_count = shapes, count
+        if index in (1, 5):
+            assert count > baseline_count
+            changed = {
+                name for name in shapes.keys() | baseline_shapes.keys()
+                if shapes.get(name) != baseline_shapes.get(name)
+            }
+            allowed = {
+                name for name in shapes
+                if name.startswith((f"l1_group_experts.{group}.2.",
+                                    f"l2_group_experts.{group}.2.",
+                                    f"l1_group_gates.{group}."))
+            }
+            for task, spec in registry.items():
+                if spec.meta_group == group:
+                    key = task.replace("/", "__")
+                    allowed.update({f"task_gates.{key}.weight", f"task_gates.{key}.bias"})
+                    assert model.task_gates[key].out_features == 6
+            assert changed == allowed
+        else:
+            assert shapes == baseline_shapes
+            assert count == baseline_count
+        phases = config.training.three_phase
+        assert phases is not None
+        for task, spec in config.tasks.items():
+            budget = config.groups[spec.meta_group]
+            private = config.resolved_private_recipe(task)
+            assert phases.global_scope.lr > budget.phase1.lr > private.phase1_lr
+            assert budget.phase2.lr == budget.phase1.lr * phases.phase1_min_lr_ratio
+        prepared = {"metadata": {
+            "kind": "ilume_stage3_sparse_data",
+            "semantic": {"identities": {
+                "prepared": prepared_identity,
+                "stage2_encoder": {"hash": "fixed-stage2-encoder"},
+            }},
+        }}
+        plan = build_resolved_training_plan(
+            config, 1, model, {task: range(10) for task in registry},
+            tuple(registry), prepared, {}, {},
+        )
+        identities.add(build_stage3_training_identity(plan)["hash"])
+        assert plan["phases"]["phase2"]["branches"][group]["epochs"] == 4
+        if index in (4, 5):
+            recipe = config.resolved_private_recipe(static)
+            assert (recipe.phase1_lr, recipe.phase2_lr, recipe.phase3_lr) == (
+                2e-5, 1e-5, 5e-6,
+            )
+            assert (recipe.phase1_epochs, recipe.phase2_epochs, recipe.phase3_epochs) == (4, 1, 0)
+    assert len(identities) == 6
 
 
 def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
@@ -2303,10 +2406,14 @@ def _write_transfer_job(
     )
 
 
+@pytest.mark.parametrize("sampling_mode", ["full", "balanced_rows"])
 def test_transfer_summary_uses_fold_gain_and_rejects_alignment_drift(
-    tmp_path: Path,
+    tmp_path: Path, sampling_mode: str,
 ) -> None:
+    from ablations.stage2_stage3_transfer.sampling import experiment_contract
+
     config = _tiny_transfer_config()
+    config = replace(config, stage2=replace(config.stage2, sampling_mode=sampling_mode))
     stage3_root = tmp_path / "stage3"
     baseline_mae = {1: 10.0, 2: 20.0}
     for target in config.stage3.targets:
@@ -2326,11 +2433,16 @@ def test_transfer_summary_uses_fold_gain_and_rejects_alignment_drift(
                     stage3_root / "sources" / source.replace("/", "__") / target.replace("/", "__") / f"fold{fold}",
                     variant=source, task=target, fold=fold, mae=transfer_mae,
                 )
+    for path in stage3_root.rglob("manifest.json"):
+        payload = json.loads(path.read_text())
+        payload.update(experiment_contract(config))
+        path.write_text(json.dumps(payload))
     output = tmp_path / "summary"
     summary = summarize_transfer_matrix(
         config, stage3_root=stage3_root, output_dir=output
     )
     assert summary["pair_count"] == 4
+    assert summary.get("sampling_mode", "full") == sampling_mode
     with (output / "transfer_gain_pairs.csv").open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     row = next(item for item in rows if item["source"] == "source/a" and item["target"] == "target/a")
@@ -2347,6 +2459,13 @@ def test_transfer_summary_uses_fold_gain_and_rejects_alignment_drift(
     assert transfer_gain(10.0, 8.0) == pytest.approx(0.2)
     with pytest.raises(ValueError, match="finite and positive"):
         transfer_gain(0.0, 0.0)
+    other = replace(config, stage2=replace(
+        config.stage2, sampling_mode="balanced_rows" if sampling_mode == "full" else "full"
+    ))
+    with pytest.raises(ValueError, match="identity mismatch"):
+        summarize_transfer_matrix(
+            other, stage3_root=stage3_root, output_dir=tmp_path / "mixed-summary"
+        )
     drift = (
         stage3_root / "sources/source__a/target__a/fold1/manifest.json"
     )
