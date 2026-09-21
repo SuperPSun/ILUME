@@ -190,6 +190,34 @@ class Stage2TaskDataset:
     def __len__(self) -> int:
         return int(self.entity_indices.shape[0])
 
+    def select_train_rows(self, indices: torch.Tensor) -> None:
+        """Select prepared training rows, preserving ragged atom supervision."""
+        if self.split != "train":
+            raise ValueError("Row selection is restricted to training data")
+        if (indices.dtype != torch.long or indices.ndim != 1 or not len(indices)
+                or indices.min() < 0 or indices.max() >= len(self)
+                or len(indices.unique()) != len(indices)):
+            raise ValueError("Training row selection must be nonempty, unique and in bounds")
+        for name in ("entity_indices", "conditions", "source_rows", "targets",
+                     "target_mask", "raw_targets"):
+            value = getattr(self, name)
+            if value is not None:
+                setattr(self, name, value[indices])
+        if self.atom_target_offsets is not None:
+            offsets = self.atom_target_offsets
+            lengths = offsets[indices + 1] - offsets[indices]
+            atom_indices = torch.cat([
+                torch.arange(int(offsets[i]), int(offsets[i + 1]))
+                for i in indices.tolist()
+            ])
+            for name in ("atom_target_values", "atom_target_mask", "raw_atom_target_values"):
+                value = getattr(self, name)
+                if value is not None:
+                    setattr(self, name, value[atom_indices])
+            self.atom_target_offsets = torch.cat([torch.zeros(1, dtype=torch.long), lengths.cumsum(0)])
+        if self.mol_ids:
+            self.mol_ids = tuple(self.mol_ids[i] for i in indices.tolist())
+
 
 @dataclass(frozen=True)
 class Stage2DeviceTaskData:

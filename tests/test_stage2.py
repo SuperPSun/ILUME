@@ -938,6 +938,107 @@ def test_transfer_source_config_is_physics_only_without_mutating_authority() -> 
     assert scoped.training.refinement_tasks == ()
 
 
+def test_balanced_transfer_rows_preserve_atom_alignment_and_equal_budgets() -> None:
+    from ablations.stage2_stage3_transfer.config import load_transfer_config, transfer_config_from_dict
+    from ablations.stage2_stage3_transfer.sampling import (
+        experiment_contract, require_experiment_contract, resolve_balanced_rows,
+    )
+    from stage2.data import Stage2TaskDataset, task_batch_counts, epoch_batch_schedule
+
+    full = load_transfer_config("configs/ablations/stage2_stage3_transfer.yaml")
+    balanced = load_transfer_config("configs/ablations/stage2_stage3_transfer_balanced.yaml")
+    assert transfer_config_from_dict(balanced.to_dict()) == balanced
+    assert "sampling_mode" not in full.to_dict()["stage2"]
+    assert replace(balanced, name=full.name, stage2=replace(balanced.stage2, sampling_mode="full")) == full
+    assert experiment_contract(full) == {}
+    with pytest.raises(ValueError, match="identity mismatch"):
+        require_experiment_contract(balanced, {})
+    with pytest.raises(ValueError, match="identity mismatch"):
+        require_experiment_contract(full, experiment_contract(balanced))
+    invalid = balanced.to_dict()
+    invalid["stage2"]["sampling_mode"] = "oversample"
+    with pytest.raises(ValueError, match="sampling_mode"):
+        transfer_config_from_dict(invalid)
+
+    def dataset(_root, task, split):
+        value = Stage2TaskDataset.__new__(Stage2TaskDataset)
+        n = 3 + balanced.stage2.sources.index(task)
+        value.split, value.task = split, task
+        value.entity_indices = torch.arange(n).reshape(-1, 1)
+        value.conditions = torch.arange(n).reshape(-1, 1).float()
+        value.source_rows = torch.arange(n) + 100
+        value.targets = value.target_mask = value.raw_targets = None
+        lengths = torch.arange(1, n + 1)
+        value.atom_target_offsets = torch.cat([torch.zeros(1, dtype=torch.long), lengths.cumsum(0)])
+        value.atom_target_values = torch.repeat_interleave(torch.arange(n).float(), lengths)
+        value.atom_target_mask = torch.ones_like(value.atom_target_values, dtype=torch.bool)
+        value.raw_atom_target_values = value.atom_target_values + 100
+        value.mol_ids = tuple(f"mol{i}" for i in range(n))
+        return value
+
+    with patch("ablations.stage2_stage3_transfer.sampling.Stage2TaskDataset", side_effect=dataset):
+        selections, plan = resolve_balanced_rows(balanced)
+        again, plan_again = resolve_balanced_rows(balanced)
+        assert plan == plan_again
+        _, reversed_plan = resolve_balanced_rows(replace(
+            balanced, stage2=replace(balanced.stage2, sources=tuple(reversed(balanced.stage2.sources)))
+        ))
+        assert plan["sources"] == reversed_plan["sources"]
+    assert plan["rows_per_source"] == 3
+    assert plan["optimizer_updates"] == 10
+    assert plan["backbone_frozen_updates"] == 1
+    selected = {}
+    for task, indices in selections.items():
+        assert torch.equal(indices, again[task])
+        assert len(indices.unique()) == 3
+        value = dataset(None, task, "train")
+        value.select_train_rows(indices)
+        selected[task] = value
+        assert value.source_rows.tolist() == (indices + 100).tolist()
+        for row, original in enumerate(indices.tolist()):
+            start, end = value.atom_target_offsets[row:row + 2].tolist()
+            assert end - start == original + 1
+            assert bool((value.atom_target_values[start:end] == original).all())
+            assert bool((value.raw_atom_target_values[start:end] == original + 100).all())
+            assert value.mol_ids[row] == f"mol{original}"
+        value.split = "valid"
+        with pytest.raises(ValueError, match="training data"):
+            value.select_train_rows(torch.tensor([0]))
+        value.split = "train"
+    assert set(task_batch_counts(selected, balanced.stage2.batch_size).values()) == {1}
+    for epoch in range(1, 11):
+        schedule = epoch_batch_schedule(selected, batch_size=2, seed=42, epoch=epoch)
+        for task in selected:
+            rows = [i for batch in schedule if batch.task == task for i in batch.indices.tolist()]
+            assert sorted(rows) == [0, 1, 2]
+    dense = dataset(None, balanced.stage2.sources[0], "train")
+    dense.targets = torch.tensor([[1., 2.], [3., 4.], [5., 6.]])
+    dense.target_mask = torch.tensor([[True, False], [False, True], [True, True]])
+    dense.atom_target_offsets = None
+    dense.select_train_rows(torch.tensor([2, 0]))
+    assert dense.targets.tolist() == [[5., 6.], [1., 2.]]
+    assert dense.target_mask.tolist() == [[True, True], [True, False]]
+
+
+def test_balanced_source_resume_rejects_full_data_manifest(tmp_path: Path) -> None:
+    from ablations.stage2_stage3_transfer.config import load_transfer_config
+
+    config = load_transfer_config("configs/ablations/stage2_stage3_transfer_balanced.yaml")
+    (tmp_path / "manifest.json").write_text(json.dumps({
+        "source_task": config.stage2.sources[0], "initial_shared_state_hash": "anchor",
+    }))
+    with (
+        patch.object(stage2_transfer_launcher, "load_transfer_config", return_value=config),
+        patch.object(stage2_transfer_launcher, "_complete", return_value=True),
+        patch.object(stage2_transfer_launcher, "train_source_encoder") as train,
+        pytest.raises(ValueError, match="identity mismatch"),
+    ):
+        stage2_transfer_launcher._worker(
+            "unused.yaml", config.stage2.sources[0], str(tmp_path), "anchor", True, True, None
+        )
+    train.assert_not_called()
+
+
 def test_transfer_optimizer_contains_only_the_active_source_head() -> None:
     class Model:
         def __init__(self) -> None:
@@ -1003,7 +1104,7 @@ def test_stage2_transfer_reports_completed_variants(tmp_path: Path) -> None:
 
     config = type(
         "Config", (),
-        {"stage2": type("Stage2", (), {"sources": ("source/a", "source/b")})()},
+        {"stage2": type("Stage2", (), {"sources": ("source/a", "source/b"), "sampling_mode": "full"})()},
     )()
     with (
         patch.object(stage2_transfer_launcher, "load_transfer_config", return_value=config),

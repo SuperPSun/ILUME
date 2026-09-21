@@ -12,6 +12,7 @@ from common.io import atomic_json, sha256_file
 from stage3.data import sanitize_task
 
 from .config import TransferExperimentConfig
+from .sampling import experiment_contract, require_experiment_contract
 
 
 def transfer_gain(baseline_mae: float, transfer_mae: float) -> float:
@@ -51,6 +52,7 @@ def collect_transfer_pairs(
             )
             if item.get("variant") != "baseline" or item.get("task") != target or item.get("fold") != fold:
                 raise ValueError("Transfer baseline job identity mismatch")
+            require_experiment_contract(experiment, item)
             baseline[target, fold] = item
     rows: list[dict[str, Any]] = []
     for source in sources:
@@ -66,6 +68,7 @@ def collect_transfer_pairs(
                 )
                 if transfer.get("variant") != source or transfer.get("task") != target or transfer.get("fold") != fold:
                     raise ValueError("Transfer source job identity mismatch")
+                require_experiment_contract(experiment, transfer)
                 for key in ("row_target_hash", "initial_state_hash", "permutation_hashes"):
                     if transfer.get(key) != base.get(key):
                         raise ValueError(
@@ -177,6 +180,7 @@ def summarize_transfer_matrix(
         "targets": list(targets),
         "folds": list(folds),
         "pair_count": len(rows),
+        **experiment_contract(experiment),
         "artifacts": {
             path.name: sha256_file(path)
             for path in (pairs_path, matrix_path, heatmap_path)

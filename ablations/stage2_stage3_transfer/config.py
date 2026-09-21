@@ -32,6 +32,7 @@ class Stage2TransferConfig:
     optimizer: str
     physics_only: bool
     final_epoch: int
+    sampling_mode: str = "full"
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,8 @@ class TransferExperimentConfig:
     stage3: Stage3TransferConfig
 
     def validate(self) -> None:
+        if self.stage2.sampling_mode not in {"full", "balanced_rows"}:
+            raise ValueError("Transfer sampling_mode must be full or balanced_rows")
         stage2 = load_stage2_config(self.stage2.authority_config)
         stage3 = load_stage3_config(self.stage3.authority_config)
         if self.seed != stage2.data.seed or self.seed != stage3.data.seed:
@@ -139,7 +142,10 @@ class TransferExperimentConfig:
                 return {key: convert(item) for key, item in value.items()}
             return value
 
-        return convert(asdict(self))
+        result = convert(asdict(self))
+        if self.stage2.sampling_mode == "full":
+            result["stage2"].pop("sampling_mode")
+        return result
 
 
 def _strict(raw: dict[str, Any], allowed: set[str], context: str) -> None:
@@ -157,7 +163,7 @@ def transfer_config_from_dict(raw: dict[str, Any]) -> TransferExperimentConfig:
         "backbone_frozen_epochs", "backbone_learning_rate",
         "object_encoder_learning_rate", "task_head_learning_rate", "weight_decay",
         "warmup_fraction", "max_grad_norm", "amp_dtype", "optimizer",
-        "physics_only", "final_epoch",
+        "physics_only", "final_epoch", "sampling_mode",
     }, "transfer stage2")
     stage3_raw = dict(raw.get("stage3") or {})
     _strict(stage3_raw, {
@@ -190,6 +196,7 @@ def transfer_config_from_dict(raw: dict[str, Any]) -> TransferExperimentConfig:
             optimizer=str(stage2_raw["optimizer"]),
             physics_only=bool(stage2_raw["physics_only"]),
             final_epoch=int(stage2_raw["final_epoch"]),
+            sampling_mode=str(stage2_raw.get("sampling_mode", "full")),
         ),
         stage3=Stage3TransferConfig(
             authority_config=Path(stage3_raw["authority_config"]),

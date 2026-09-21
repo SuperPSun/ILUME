@@ -14,11 +14,14 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
 from ablations.stage2_stage3_transfer.config import load_transfer_config
+from ablations.stage2_stage3_transfer.sampling import (
+    require_experiment_contract, resolve_balanced_rows,
+)
 from ablations.stage2_stage3_transfer.stage2 import (
     create_baseline_encoder,
     train_source_encoder,
 )
-from common.io import sha256_file
+from common.io import atomic_json, sha256_file
 from common.progress import ProgressReporter
 from stage3.data import sanitize_task
 
@@ -73,14 +76,24 @@ def _worker(
     if not show_detail_progress:
         os.environ["ILUME_DISABLE_PROGRESS"] = "1"
     root = Path(output)
+    config = load_transfer_config(config_path)
     if root.exists():
         if resume and _complete(root):
+            import json
+            manifest = json.loads((root / "manifest.json").read_text())
+            require_experiment_contract(config, manifest)
+            if manifest.get("source_task") != source or manifest.get("initial_shared_state_hash") != initial_hash:
+                raise ValueError("Transfer resumed source/anchor mismatch")
+            if config.stage2.sampling_mode == "balanced_rows":
+                _, plan = resolve_balanced_rows(config)
+                if manifest.get("sampling_plan") != plan:
+                    raise ValueError("Balanced transfer resumed selection mismatch")
             return
         if not resume:
             raise FileExistsError(f"Transfer source output exists: {root}")
     checkpoint = _latest_checkpoint(root) if resume else None
     train_source_encoder(
-        load_transfer_config(config_path), source, root,
+        config, source, root,
         initial_shared_state_hash=initial_hash,
         resume_from=checkpoint,
         device=device,
@@ -115,6 +128,18 @@ def main() -> None:
     if unknown or len(set(sources)) != len(sources):
         parser.error(f"invalid or duplicate sources: {sorted(unknown)}")
     root = Path(args.output)
+    if config.stage2.sampling_mode == "balanced_rows":
+        import json
+        _, sampling_plan = resolve_balanced_rows(config)
+        plan_path = root / "resolved_sampling_plan.json"
+        if plan_path.exists():
+            if not args.resume or json.loads(plan_path.read_text()) != sampling_plan:
+                raise ValueError("Balanced transfer sampling plan already exists or differs")
+        else:
+            if root.exists() and any(root.iterdir()):
+                raise ValueError("Balanced transfer requires a new output root")
+            root.mkdir(parents=True, exist_ok=True)
+            atomic_json(plan_path, sampling_plan)
     baseline_root = root / "baseline"
     progress = ProgressReporter().bar(
         total=1 + len(sources), desc="Stage2 transfer encoders", unit="variant"
@@ -129,6 +154,7 @@ def main() -> None:
             baseline = json.loads(
                 (baseline_root / "manifest.json").read_text(encoding="utf-8")
             )
+            require_experiment_contract(config, baseline)
         else:
             baseline = create_baseline_encoder(config, baseline_root)
         progress.update(1)

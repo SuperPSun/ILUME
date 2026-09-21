@@ -21,6 +21,7 @@ from stage3.identity import metadata_identity
 from stage3.prepare import load_prepared_stage3, materialize_object_embeddings
 
 from .config import TransferExperimentConfig
+from .sampling import experiment_contract, require_experiment_contract
 
 
 REPRESENTATION_KIND = "ilume_stage2_stage3_transfer_representation"
@@ -61,6 +62,7 @@ def prepare_representation_bank(
     encoder_path = Path(encoder_path)
     encoder_manifest_path = Path(encoder_manifest_path)
     encoder_manifest = json.loads(encoder_manifest_path.read_text(encoding="utf-8"))
+    require_experiment_contract(experiment, encoder_manifest)
     if encoder_manifest.get("encoder_sha256") != sha256_file(encoder_path):
         raise ValueError("Transfer encoder manifest does not match its artifact")
     if encoder_manifest.get("initial_shared_state_hash") != expected_initial_shared_state_hash:
@@ -106,6 +108,7 @@ def prepare_representation_bank(
             "object_list_hash": object_list_hash,
             "embedding_hash": embedding_hash,
             "shape": list(embeddings.shape),
+            **experiment_contract(experiment),
         },
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -122,6 +125,7 @@ def prepare_representation_bank(
             "object_list_hash": object_list_hash,
             "embedding_hash": embedding_hash,
             "embeddings": embeddings.float().contiguous(),
+            **experiment_contract(experiment),
         },
     )
     manifest = {
@@ -137,6 +141,7 @@ def prepare_representation_bank(
         "embedding_hash": embedding_hash,
         "shape": list(embeddings.shape),
         "cache": cache,
+        **experiment_contract(experiment),
     }
     atomic_json(destination.with_suffix(".json"), manifest)
     return manifest
@@ -228,6 +233,9 @@ def train_transfer_job(
     bank = load_representation_bank(
         representation_path, expected_prepared_identity=prepared_identity
     )
+    require_experiment_contract(experiment, bank)
+    if bank.get("variant") != variant:
+        raise ValueError("Transfer representation variant mismatch")
     if bank["objects"] != prepared["objects"]["objects"]:
         raise ValueError("Transfer representation object order mismatch")
     spec = prepared["registry"][task_id]
@@ -399,6 +407,7 @@ def train_transfer_job(
         "artifact": artifact.name,
         "artifact_sha256": sha256_file(artifact),
         "predictions_sha256": sha256_file(root / "validation_predictions.csv"),
+        **experiment_contract(experiment),
     }
     atomic_json(root / "manifest.json", manifest)
     return manifest

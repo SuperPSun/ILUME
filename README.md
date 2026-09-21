@@ -136,6 +136,46 @@ python scripts/stage3/evaluate.py \
 
 该候选尚未取代现役Base；不要覆盖`outputs/v2/stage3/base`下的既有结果。
 
+在相同知识图谱分组下，新增五个独立容量/预算候选，详见
+[ADR-0064](docs/adr/0064-stage3-knowledge-graph-budget-candidates.md)：
+
+| 配置名 | 相对base1的改动 |
+|---|---|
+| base1_1 | thermophysical/interfacial GROUP experts 2→3 |
+| base1_2 | 该GROUP Phase 1 epochs 10→15 |
+| base1_3 | 该GROUP Phase 1/2 LR改为2e-4/1e-4 |
+| base1_4 | static GROUP Phase 1/2 LR改为5e-5/2.5e-5、Phase 2 epochs=1；static PRIVATE Phase 1 LR=2e-5 |
+| base1_5 | 合并以上四项 |
+
+所有候选的大组Phase 2仍为4 epochs，GLOBAL与PRIVATE capacity不变。
+每个候选从头训练，下面以base1_1为例；运行其他候选时，将命令中的所有`base1_1`
+一致替换为`base1_2`、`base1_3`、`base1_4`或`base1_5`，prepared artifact无需重建：
+
+```bash
+python scripts/stage3/train.py \
+  --config configs/v2/stage3/base1_1.yaml \
+  --fold 1 2 3 4 5 \
+  --output outputs/v2/stage3/base1_1/train \
+  --max-parallel 4 --devices cuda:0,cuda:1,cuda:2,cuda:3
+
+python scripts/stage3/evaluate.py \
+  --config configs/v2/stage3/base1_1.yaml \
+  --checkpoint-dir outputs/v2/stage3/base1_1/train \
+  --split valid --fold 1 2 3 4 5 \
+  --output outputs/v2/stage3/base1_1/evaluate_valid
+```
+
+先完成全部候选的五折validation比较，再确定一个候选运行test；test不得用于候选间调参。
+例如仅当base1_1被选定时执行：
+
+```bash
+python scripts/stage3/evaluate.py \
+  --config configs/v2/stage3/base1_1.yaml \
+  --checkpoint-dir outputs/v2/stage3/base1_1/train \
+  --split test --ensemble-folds \
+  --output outputs/v2/stage3/base1_1/evaluate_test
+```
+
 ### 超参数搜索退役
 
 ILUME 的 v2 Stage 3 A/B/C 搜索与 Capacity v1 HPO 已于 2026-09-06 退役；仓库不再提供
@@ -324,7 +364,37 @@ python scripts/stage3/transfer.py summarize \
   --output "${root}/summary"
 ```
 
-两个训练命令都支持单卡多进程，例如
+等行数对照使用 [balanced 配置](configs/ablations/stage2_stage3_transfer_balanced.yaml) 和
+[ADR-0065](docs/adr/0065-stage2-stage3-balanced-transfer-matrix.md)：从九个 prepared train
+数据集中各无放回抽取 N 行（N 为最小数据集行数），固定子集运行 10 epochs。
+Stage2 根目录发布 `resolved_sampling_plan.json`，记录行索引/hash、体系覆盖和共同更新预算。
+该实验保留 prepared normalization；控制行数/updates，不控制体系数或原子标签数。
+依次运行（使用独立输出目录）：
+
+```bash
+python scripts/stage2/transfer.py \
+  --config configs/ablations/stage2_stage3_transfer_balanced.yaml \
+  --output outputs/ablations/stage2_stage3_transfer_balanced/stage2 \
+  --max-parallel 1
+
+python scripts/stage3/transfer.py prepare \
+  --config configs/ablations/stage2_stage3_transfer_balanced.yaml \
+  --stage2-dir outputs/ablations/stage2_stage3_transfer_balanced/stage2 \
+  --output outputs/ablations/stage2_stage3_transfer_balanced/representations
+
+python scripts/stage3/transfer.py train \
+  --config configs/ablations/stage2_stage3_transfer_balanced.yaml \
+  --representations outputs/ablations/stage2_stage3_transfer_balanced/representations \
+  --output outputs/ablations/stage2_stage3_transfer_balanced/stage3 \
+  --max-parallel 1
+
+python scripts/stage3/transfer.py summarize \
+  --config configs/ablations/stage2_stage3_transfer_balanced.yaml \
+  --stage3-dir outputs/ablations/stage2_stage3_transfer_balanced/stage3 \
+  --output outputs/ablations/stage2_stage3_transfer_balanced/summary
+```
+
+两套配置的两个训练命令都支持单卡多进程，例如
 `--max-parallel 4 --devices cuda:0`；多GPU例如
 `--max-parallel 8 --devices cuda:0,cuda:1,cuda:2,cuda:3`，即每张卡2个并发job。
 `max-parallel`必须能被设备数整除；调度参数不进入科研identity。

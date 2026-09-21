@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
 from ablations.stage2_stage3_transfer.config import load_transfer_config
+from ablations.stage2_stage3_transfer.sampling import require_experiment_contract
 from ablations.stage2_stage3_transfer.stage3 import (
     prepare_representation_bank,
     train_transfer_job,
@@ -94,14 +95,23 @@ def _train_worker(
     device: str | None,
 ) -> None:
     root = Path(output)
+    config = load_transfer_config(config_path)
     if root.exists():
         if resume and _complete(root):
+            manifest = json.loads((root / "manifest.json").read_text())
+            require_experiment_contract(config, manifest)
+            if (manifest.get("variant"), manifest.get("task"), manifest.get("fold")) != (variant, task, fold):
+                raise ValueError("Transfer resumed job identity mismatch")
+            bank = json.loads(Path(representation).with_suffix(".json").read_text())
+            require_experiment_contract(config, bank)
+            if bank.get("identity") != manifest.get("representation_identity"):
+                raise ValueError("Transfer resumed representation identity mismatch")
             return
         raise FileExistsError(
             f"Incomplete/existing transfer job must use a new output root: {root}"
         )
     train_transfer_job(
-        load_transfer_config(config_path), variant=variant,
+        config, variant=variant,
         representation_path=representation, task_id=task, fold=fold,
         output_dir=root, device_name=device,
         reporter=(
