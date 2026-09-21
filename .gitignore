@@ -18,6 +18,7 @@ dist/
 # Historical and local research payloads
 /artifacts/
 /trash/
+/tmp/
 
 # Heavy or transient payloads anywhere else
 *.pt
