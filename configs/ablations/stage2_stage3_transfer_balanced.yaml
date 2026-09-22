@@ -41,7 +41,6 @@ stage3:
     - experiment/equilibrium_pressure
     - experiment/glass_transition_temperature
     - experiment/heat_capacity
-    - experiment/isobaric_coefficient_of_volume_expansion
     - experiment/melting_point
     - experiment/pec50
     - experiment/refractive_index

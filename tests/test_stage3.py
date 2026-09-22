@@ -344,7 +344,7 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
     ablation = load_stage3_config(
         "configs/ablations/stage1_stage2_rdkit_home.yaml"
     )
-    assert len(ablation.enabled_task_ids) == 21
+    assert len(ablation.enabled_task_ids) == 20
     assert ablation.representation == Stage3RepresentationConfig(
         kind="rdkit_2d_adapter",
         descriptor_family="rdkit_2d",
@@ -395,7 +395,6 @@ def test_knowledge_graph_grouping_config_is_yaml_driven() -> None:
         "thermophysical_interfacial_response": {
             "experiment/density",
             "experiment/heat_capacity",
-            "experiment/isobaric_coefficient_of_volume_expansion",
             "experiment/speed_of_sound",
             "experiment/surface_tension",
             "experiment/thermal_conductivity",
@@ -427,7 +426,7 @@ def test_knowledge_graph_grouping_config_is_yaml_driven() -> None:
     }
     assert actual == expected
     assert set().union(*actual.values()) == set(base.tasks)
-    assert sum(map(len, actual.values())) == len(base.tasks) == 21
+    assert sum(map(len, actual.values())) == len(base.tasks) == 20
 
     inherited_groups = {
         "transport_dynamics": "transport",
@@ -721,9 +720,9 @@ def test_knowledge_graph_targeted_candidates_match_base1_5_contract() -> None:
 
 def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
     expected = {
-        "system": ({"il", "il_solute", "solute_solvent"}, 21),
-        "random": ({"random"}, 21),
-        "individual": ({"cation", "solvent"}, 21),
+        "system": ({"il", "il_solute", "solute_solvent"}, 20),
+        "random": ({"random"}, 20),
+        "individual": ({"cation", "solvent"}, 20),
     }
     root = Path("configs/v2/stage3/splits")
     for name, (strategies, task_count) in expected.items():
@@ -746,7 +745,7 @@ def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
         if name == "system":
             assert {spec.system_type for spec in enabled.values()} == strategies
         elif name == "individual":
-            assert sum(spec.split_strategy == "cation" for spec in enabled.values()) == 20
+            assert sum(spec.split_strategy == "cation" for spec in enabled.values()) == 19
             assert enabled["experiment/transfer_organic"].split_strategy == "solvent"
         for spec in enabled.values():
             for fold in range(1, 6):
@@ -2381,7 +2380,7 @@ def test_test_path_remains_one_root_ensemble_run(
 def test_stage2_stage3_transfer_config_covers_full_matrix() -> None:
     config = load_transfer_config("configs/ablations/stage2_stage3_transfer.yaml")
     assert len(config.stage2.sources) == 9
-    assert len(config.stage3.targets) == 21
+    assert len(config.stage3.targets) == 20
     assert config.stage3.folds == (1, 2, 3, 4, 5)
     assert config.stage2.physics_only is True
     assert config.stage2.epochs == config.stage2.final_epoch == 10

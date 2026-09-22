@@ -102,13 +102,6 @@ tasks:
     meta_group: thermophysical
     unique_systems: 352
     size_class: small
-  experiment/isobaric_coefficient_of_volume_expansion:
-    meta_group: thermophysical
-    unique_systems: 25
-    size_class: tiny
-    phase2_private_epochs: 0
-    phase3_private_epochs: 0
-    model_overrides: {private_hidden_ratio: 0.25, tower_hidden_ratio: 0.25, film_hidden_ratio: 0.25}
   experiment/speed_of_sound:
     meta_group: thermophysical
     unique_systems: 216

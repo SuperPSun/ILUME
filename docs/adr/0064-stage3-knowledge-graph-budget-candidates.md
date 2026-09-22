@@ -6,7 +6,8 @@
 
 ## 背景
 
-沿用 [ADR-0063](0063-stage3-knowledge-graph-grouping-candidate.md) 的六组和21个任务归属。
+沿用 [ADR-0063](0063-stage3-knowledge-graph-grouping-candidate.md) 的六组和20个任务归属；
+任务集合由 [ADR-0067](0067-stage3-twenty-task-catalog.md) 修订。
 已有 base1 五折日志中，thermophysical/interfacial 的 Phase 2 task-equal NMAE
 在 epoch 3 约为0.20855、epoch 4约为0.20993；static singleton 的对应三轮均值
 约为0.52327、0.53504、0.54172。这些现象用于提出固定预算假设，不证明容量不足或过拟合的因果。
@@ -29,7 +30,7 @@
 2. `base1_4/5`唯一的PRIVATE LR例外为static，其Phase 2/3 LR由既有规则自动变为
    `1e-5/5e-6`；PRIVATE epochs仍为`4/1/0`、三种ratio仍为0.25。
    static GROUP Phase 1仍为8 epochs，expert数和hidden ratio不变。
-3. `base1_1/5`增加目标组各一个L1/L2 expert，九个task gate宽度由5变6，L1 group
+3. `base1_1/5`增加目标组各一个L1/L2 expert，八个task gate宽度由5变6，L1 group
    gate宽度由2变3。其余expert、FiLM、normalization和tower容量不变。
    改变模块形状可能改变后续随机初始化的取样位置；相同seed不保证未改形状模块的初值逐bit相同。
 4. Phase 1严格维持GLOBAL > GROUP > PRIVATE nominal LR，GROUP Phase 2起始LR
@@ -45,7 +46,7 @@
 历史Base/base1产物只读，不覆盖。实现验收只使用小型测试，不执行正式训练或evaluation。
 
 先比较五个候选的system-split五折task-equal macro NMAE、逐fold/逐task结果与五折方差，
-重点审计static和thermophysical/interfacial九任务、gate mass变化。每个run固定使用末轮，
+重点审计static和thermophysical/interfacial八任务、gate mass变化。每个run固定使用末轮，
 不early stop或validation-best。候选比较属于开发集调参，不能将选中候选的5CV当作未选择的
 无偏估计。根据5CV确定一个候选后才运行test ensemble，不以test在五个候选之间选择。
 

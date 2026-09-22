@@ -296,7 +296,7 @@ def test_formal_configs_and_registry_resolution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = load_benchmark_config("configs/benchmarks/mlp.yaml")
-    assert len(configured_tasks(config, "stage3")) == 21
+    assert len(configured_tasks(config, "stage3")) == 20
     retired = config.to_dict()
     retired["stage2_physics"] = {"enabled": True, "tasks": ["simulation/homo"]}
     with pytest.raises(ValueError, match="Unknown benchmark config fields: stage2_physics"):
@@ -454,7 +454,7 @@ def test_formal_baseline_configs_use_fixed_final_state(
     name: str, fixed_budget: int | None,
 ) -> None:
     config = load_benchmark_config(Path("configs/benchmarks") / f"{name}.yaml")
-    assert len(configured_tasks(config, "stage3")) == 21
+    assert len(configured_tasks(config, "stage3")) == 20
     assert tuple(config.stage3.folds) == (1, 2, 3, 4, 5)
     assert config.data.stage3_authority_config == Path(
         "configs/v2/stage3/splits/system.yaml"
@@ -557,7 +557,9 @@ def test_stage3_single_task_mlp_config_and_ordered_concat() -> None:
         "configs/ablations/ilume_stage3_single_task_mlp.yaml"
     )
     assert config.display_name == "ILUME Stage3 Single-task MLP"
-    assert len(configured_tasks(config, "stage3")) == 21
+    assert config.data.stage3_authority_config == Path("configs/v1/stage3/base.yaml")
+    with pytest.raises(ValueError, match="isobaric_coefficient_of_volume_expansion"):
+        configured_tasks(config, "stage3")
     assert config.data.feature_cache is None and config.features is None
     with pytest.raises(ValueError, match="registered recipe"):
         replace(config, model={**config.model, "dropout": 0.2}).validate()
@@ -2162,7 +2164,7 @@ def test_formal_iltransr_config_recipes_and_property_weight_guard() -> None:
     }
     assert set(config.training["official_recipes"]) == official
     assert sum(resolve_iltransr_recipe(config, task)["source"] == "official_notebook" for task in tasks) == 7
-    assert sum(resolve_iltransr_recipe(config, task)["source"] == "registered_fallback" for task in tasks) == 14
+    assert sum(resolve_iltransr_recipe(config, task)["source"] == "registered_fallback" for task in tasks) == 13
     assert resolve_iltransr_recipe(config, "experiment/x_co2")["epochs"] == 10
     assert resolve_iltransr_recipe(config, "experiment/electrical_conductivity")["epochs"] == 10
     assert config.training["loss"] == "train_population_zscore_l1"

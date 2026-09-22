@@ -3,6 +3,10 @@
 - 状态：Accepted
 - 日期：2026-08-31
 
+> 2026-09-22：本消融冻结为旧 v1 512D、21-task 历史合同。现役 Stage 3 task 集合已由
+> [ADR-0067](0067-stage3-twenty-task-catalog.md) 修订为20个；不得仅过滤一个task后把该
+> artifact解释为现役20-task消融，也不得与v2 1024D prepared representation混用。
+
 ## 背景
 
 现役 Stage3 由 sparse-label HoME、跨任务共享、hierarchical PCGrad、composite

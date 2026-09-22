@@ -104,8 +104,8 @@ class TransferExperimentConfig:
             raise ValueError("Transfer Stage 2 optimizer must be AdamW")
         if stage2.training.backbone_frozen_epochs != 1:
             raise ValueError("Transfer Stage 2 requires the v2 first-epoch freeze")
-        if len(self.stage3.targets) != 21 or len(set(self.stage3.targets)) != 21:
-            raise ValueError("Transfer experiment requires exactly 21 unique Stage 3 targets")
+        if not self.stage3.targets or len(set(self.stage3.targets)) != len(self.stage3.targets):
+            raise ValueError("Transfer experiment requires non-empty unique Stage 3 targets")
         if tuple(sorted(self.stage3.targets)) != tuple(sorted(stage3.enabled_task_ids)):
             raise ValueError("Transfer targets must exactly match enabled Stage 3 tasks")
         if self.stage3.prepared_artifacts != stage3.data.artifacts_dir:

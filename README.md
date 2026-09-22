@@ -1,6 +1,6 @@
 # ILUME
 
-ILUME 是按 Stage 组织的分子科研 pipeline：Global-RDKit v2 主线在 Stage 1 进行 SMILES、Graph、RDKit 三模态四目标掩码预训练，Stage 2 训练 catalog 驱动的九任务 physics representation，Stage 3 训练 21 个 sparse-label observation task。正式 YAML 与 [ADR 索引](docs/adr/README.md) 共同定义现役科研合同。
+ILUME 是按 Stage 组织的分子科研 pipeline：Global-RDKit v2 主线在 Stage 1 进行 SMILES、Graph、RDKit 三模态四目标掩码预训练，Stage 2 训练 catalog 驱动的九任务 physics representation，Stage 3 训练 20 个 sparse-label observation task。正式 YAML 与 [ADR 索引](docs/adr/README.md) 共同定义现役科研合同。
 
 ## 按任务阅读
 
@@ -72,7 +72,7 @@ Stage 2 只从完整 Object v3 joint epoch 恢复，旧 Object v2、旧式 v2 re
 
 ## Stage 3
 
-Stage 3 使用冻结的 Stage 2 Object v3 表示、动态 HoME、raw sampling 与 ownership-aware clipping。现役 v2 按 owner-specific LR、固定训练寿命和 task-specific PRIVATE capacity/dropout 执行三阶段训练：15 个全任务 epoch、六个同源 GROUP 分支，以及从同一 anchor 独立解析的 21 个 PRIVATE task scope；零预算 scope 直接继承 anchor，其余 scope 固定训练并 stitch。owner 提前冻结不删除 task，validation 只记录，最终发布固定预算状态拼接的 `three_phase_final.pt`。three-phase validation 与独立 evaluation 额外按 task 报告 GLOBAL/GROUP/PRIVATE gate mass、归一化 gate entropy 和 PRIVATE mass 分位数，不改变预测或 prediction CSV。数据、模型、五折调度和恢复合同见 [ADR 索引](docs/adr/README.md)。
+Stage 3 使用冻结的 Stage 2 Object v3 表示、动态 HoME、raw sampling 与 ownership-aware clipping。现役 v2 按 owner-specific LR、固定训练寿命和 task-specific PRIVATE capacity/dropout 执行三阶段训练：15 个全任务 epoch、六个同源 GROUP 分支，以及从同一 anchor 独立解析的 20 个 PRIVATE task scope；零预算 scope 直接继承 anchor，其余 scope 固定训练并 stitch。owner 提前冻结不删除 task，validation 只记录，最终发布固定预算状态拼接的 `three_phase_final.pt`。three-phase validation 与独立 evaluation 额外按 task 报告 GLOBAL/GROUP/PRIVATE gate mass、归一化 gate entropy 和 PRIVATE mass 分位数，不改变预测或 prediction CSV。数据、模型、五折调度和恢复合同见 [ADR 索引](docs/adr/README.md)。
 
 ```bash
 python scripts/stage3/prepare.py \
@@ -347,7 +347,7 @@ python scripts/benchmarks/sweep.py \
   --max-workers 1
 ```
 
-MLP、XGBoost 和 Single-task MLP 的基础环境及 sweep：
+MLP 和 XGBoost 的基础环境及 sweep：
 
 ```bash
 python -m pip install -e ".[benchmarks]"
@@ -361,15 +361,11 @@ python scripts/benchmarks/sweep.py \
   --config configs/benchmarks/ecfp_xgboost.yaml \
   --output outputs/benchmarks/fixed-budget-v1/ecfp_xgboost \
   --max-workers 1
-
-python scripts/benchmarks/sweep.py \
-  --config configs/ablations/ilume_stage3_single_task_mlp.yaml \
-  --output outputs/benchmarks/v1/ilume_stage3_single_task_mlp \
-  --max-workers 1
 ```
 
-Stage3 Single-task MLP 直接读取现役 Base prepared artifact，以冻结的 primary/partner
-Object embedding 和 normalized conditions 做有序 concat。21 个 task × 5 folds 各自训练
+Stage3 Single-task MLP 是绑定旧 v1 512D prepared artifact 的冻结 21-task 历史消融，当前
+20-task catalog 不再提供直接运行入口；旧输出保持只读。其 primary/partner Object embedding
+和 normalized conditions 做有序 concat，21 个 task × 5 folds 各自训练
 完全独立的 `input -> 512 -> 256 -> 1` MLP，并由一个 Stage3-only sweep/reporting identity
 汇总。它同时移除 HoME routing、跨任务共享、PCGrad 与 composite sampling，因此只能解释为
 整体架构消融，不能解释成某个单组件的贡献。
@@ -377,7 +373,7 @@ Object embedding 和 normalized conditions 做有序 concat。21 个 task × 5 f
 ### Stage2→Stage3 transfer matrix
 
 该隔离消融从同一个 Stage1 初始化构造零 update baseline 与九个 physics-only Stage2
-single-source encoder，再对十份冻结的1024D表示运行21 tasks × 5 folds固定10轮MLP。
+single-source encoder，再对十份冻结的1024D表示运行20 tasks × 5 folds固定10轮MLP。
 正式矩阵只使用 system-split validation raw MAE，不运行test。完整合同见
 [ADR-0062](docs/adr/0062-stage2-stage3-full-transfer-matrix.md)。使用新的输出根依次运行：
 
@@ -440,12 +436,12 @@ python scripts/stage3/transfer.py summarize \
 `--max-parallel 4 --devices cuda:0`；多GPU例如
 `--max-parallel 8 --devices cuda:0,cuda:1,cuda:2,cuda:3`，即每张卡2个并发job。
 `max-parallel`必须能被设备数整除；调度参数不进入科研identity。
-`--source`、`--target`和`--fold`可用于分批执行，完整汇总仍严格要求全部1050个job。
+`--source`、`--target`和`--fold`可用于分批执行，完整汇总仍严格要求全部1000个job。
 交互终端会显示Stage2 encoder variant、representation variant和Stage3 MLP job总进度；
 串行Stage3训练还会显示当前job的epoch与train/validation指标。并行时只保留主进程总进度，
 避免多个worker进度条互相覆盖；非TTY日志保持安静，也可用`ILUME_DISABLE_PROGRESS=1`显式关闭。
 
-`--max-workers 1` 保持串行行为。MLP、D-MPNN、MoLFormer、ILBERT、SPMM、LlaSMol、AIonopedia、ILTransR 与 AIFC 多 GPU sweep 可通过 `--devices cuda:0,cuda:1,...` 分配逻辑 job；XGBoost 的 CPU 并行度由 YAML 中的 `training.n_jobs` 控制。每个 baseline 正式 sweep 均为 21 tasks × 5 folds，即 105 个单 seed 训练任务；上述命令不会 resume，失败任务由 sweep 在新 attempt 中完整重跑。
+`--max-workers 1` 保持串行行为。MLP、D-MPNN、MoLFormer、ILBERT、SPMM、LlaSMol、AIonopedia、ILTransR 与 AIFC 多 GPU sweep 可通过 `--devices cuda:0,cuda:1,...` 分配逻辑 job；XGBoost 的 CPU 并行度由 YAML 中的 `training.n_jobs` 控制。每个 baseline 正式 sweep 均为 20 tasks × 5 folds，即 100 个单 seed 训练任务；上述命令不会 resume，失败任务由 sweep 在新 attempt 中完整重跑。
 
 <details>
 <summary>D-MPNN：环境、资产与模型边界</summary>
@@ -786,7 +782,7 @@ ReLU。Target 和所有 conditions 都只用当前
 fold train rows 做 population z-score。训练固定 seed 1000、batch 64、Adam `1e-3`、MSE、constant
 LR 和 10 epochs，只发布 epoch 10 final state。
 
-固定 DGL CPU golden reference 验证 prediction、representation 和 attention；当前 21-task 数据
+固定 DGL CPU golden reference 验证 prediction、representation 和 attention；当前 20-task 数据
 审计的 11,282 个唯一 view 全部 fragmentation 成功。251,297 个原子中 5,618 个进入作者定义的
 unknown motif（2.236%），不会删除样本。完整科学与审计边界见
 [ADR-0060](docs/adr/0060-aifc-stage3-baseline.md)。

@@ -16,7 +16,8 @@
 所有 source 的 batch=256、epochs=10、scheduler 总步数 `10*ceil(N/256)` 相同。
 第一个 epoch 冻结 backbone，因此冻结/解冻更新预算也相同。仍使用全部九任务初始化、
 physics-only supervision、相同 Stage1 anchor、最终 epoch encoder 和不变的 Stage3 MLP。
-零 update baseline、21 targets、五折 validation、TG 定义和输出 CSV/SVG 结构不变。
+零 update baseline、20 targets、五折 validation、TG 定义和输出 CSV/SVG 结构不变；
+任务集合由 [ADR-0067](0067-stage3-twenty-task-catalog.md) 修订。
 
 ## 抽样与身份
 

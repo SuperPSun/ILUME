@@ -33,8 +33,8 @@ static GROUP hidden width、两个 task 的 Phase 3 lifetime，以及大组第�
    `1.5e-5`；`base2_3/5` 中 self diffusion 的 Phase 3 LR 仍为 `1e-5`。
    只改变固定训练寿命，不改变 optimizer、scheduler 或选择规则。
 3. `base2_1/5` 只缩小 static GROUP expert 的 hidden width，candidate count不变。
-   `base2_4/5` 删除大组第三个L1/L2 expert，并使该组九个task gate宽度由6恢复为5。
-4. 六个知识图谱GROUP及21个task归属、Flat routing、three-phase、GLOBAL、其他
+   `base2_4/5` 删除大组第三个L1/L2 expert，并使该组八个task gate宽度由6恢复为5。
+4. 六个知识图谱GROUP及20个task归属、Flat routing、three-phase、GLOBAL、其他
    GROUP/PRIVATE、dropout、raw sampling、PCGrad、ownership clipping、AdamW、loss、
    validation reporting-only和fixed-final-state协议均保持 `base1_5`。
 
@@ -45,8 +45,8 @@ static GROUP hidden width、两个 task 的 Phase 3 lifetime，以及大组第�
 `outputs/v2/stage3/base2_N`，不得加载或resume Base/base1系列checkpoint。
 
 主选择指标为system-split五折task-equal macro NMAE。定向审计static、speed of sound、
-self diffusion、thermophysical/interfacial九任务，以及 `base2_5` 是否保留 `base1_5` 在
-refractive index、thermal conductivity和volume expansion上的表现。五个候选都可以生成
+self diffusion、thermophysical/interfacial八任务，以及 `base2_5` 是否保留 `base1_5` 在
+refractive index和thermal conductivity上的表现。五个候选都可以生成
 test ensemble，但test只作探索性报告，不得用于反向选配置或继续调参。实现验收不执行正式训练
 或evaluation。
 

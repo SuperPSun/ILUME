@@ -15,8 +15,8 @@ YAML 训练侧配置，而不是写死在模型或训练器中的分类表。
 1. 新增独立候选 `base1.yaml`，现役 `base.yaml` 及其 split、RDKit-HoME、No-Stage1 配置均不变。
 2. 六组定义为：
    - `transport_dynamics`：electrical conductivity、viscosity、self diffusion；
-   - `thermophysical_interfacial_response`：density、heat capacity、volume expansion、speed of
-     sound、surface tension、thermal conductivity、refractive index、dynamic permittivity、xCO2；
+   - `thermophysical_interfacial_response`：density、heat capacity、speed of
+   sound、surface tension、thermal conductivity、refractive index、dynamic permittivity、xCO2；
    - `phase_stability`：glass transition、melting point、equilibrium pressure、thermal decomposition；
    - `solvation_transfer`：solvation、transfer、transfer organic；
    - `biological`：pEC50；
