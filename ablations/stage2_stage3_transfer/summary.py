@@ -13,6 +13,7 @@ from stage3.data import sanitize_task
 
 from .config import TransferExperimentConfig
 from .sampling import experiment_contract, require_experiment_contract
+from .stage3 import MODEL_KIND, MODEL_VERSION
 
 
 def transfer_gain(baseline_mae: float, transfer_mae: float) -> float:
@@ -27,6 +28,12 @@ def _manifest(path: Path) -> dict[str, Any]:
     if not path.is_file():
         raise FileNotFoundError(f"Missing transfer job manifest: {path}")
     payload = json.loads(path.read_text(encoding="utf-8"))
+    if (
+        payload.get("kind") != MODEL_KIND
+        or payload.get("format_version") != MODEL_VERSION
+        or payload.get("downstream_training") != "joint_object_encoder_mlp"
+    ):
+        raise ValueError(f"Unsupported transfer downstream artifact: {path.parent}")
     artifact = path.parent / str(payload.get("artifact"))
     predictions = path.parent / "validation_predictions.csv"
     if payload.get("artifact_sha256") != sha256_file(artifact):

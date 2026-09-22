@@ -17,13 +17,15 @@ from rdkit import Chem
 import torch
 
 from common.descriptor_preprocessing import FeaturePreprocessor
-from common.identity import semantic_identity
+from common.identity import semantic_identity, tensor_state_hash
 from common.io import sha256_file
 from common.training import seed_everything
 import scripts.stage3.evaluate as evaluate_launcher
 import scripts.stage3.transfer as transfer_launcher
 import scripts.stage3.train as train_launcher
 from stage1.descriptors import calculate_descriptors, rdkit_descriptor_names
+from stage1.features import ROLE_TO_ID
+from stage2.model import ObjectEncoder
 from stage3.capacity import refined_validation_summary, summarize_capacity_manifest
 from stage3.config import (
     BASE_GROUP_TASKS,
@@ -98,7 +100,13 @@ from ablations.stage2_stage3_transfer.summary import (
     summarize_transfer_matrix,
     transfer_gain,
 )
-from ablations.stage2_stage3_transfer.stage3 import transfer_training_seed
+from ablations.stage2_stage3_transfer.stage3 import (
+    MODEL_KIND as TRANSFER_MODEL_KIND,
+    MODEL_VERSION as TRANSFER_MODEL_VERSION,
+    encode_transfer_objects,
+    train_transfer_job,
+    transfer_training_seed,
+)
 
 
 # --- Sparse-label model, training, and resume contracts ---
@@ -2402,6 +2410,159 @@ def test_stage2_stage3_transfer_seed_is_numpy_compatible() -> None:
     seed_everything(seed)
 
 
+def test_stage3_transfer_joint_object_encoder_is_trainable_for_mixed_topologies() -> None:
+    torch.manual_seed(7)
+    encoder = ObjectEncoder(
+        8, 2, num_layers=1, feedforward_dim=16, dropout=0.0
+    )
+    bank = {
+        "entity_slots": torch.randn(3, 2, 8),
+        "entity_roles": torch.tensor(
+            [
+                [ROLE_TO_ID["neutral"], 0],
+                [ROLE_TO_ID["cation"], ROLE_TO_ID["anion"]],
+                [ROLE_TO_ID["neutral"], 0],
+            ]
+        ),
+        "slot_counts": torch.tensor([1, 2, 1]),
+    }
+    object_ids = torch.tensor([1, 0, 1, 2])
+    before = {
+        name: value.detach().clone() for name, value in encoder.state_dict().items()
+    }
+    values = encode_transfer_objects(
+        encoder, bank, object_ids, device=torch.device("cpu")
+    )
+    assert values.shape == (4, 8)
+    assert torch.equal(values[0], values[2])
+    loss = values.square().mean()
+    optimizer = torch.optim.AdamW(encoder.parameters(), lr=1e-2)
+    optimizer.zero_grad(set_to_none=True)
+    loss.backward()
+    assert any(parameter.grad is not None for parameter in encoder.parameters())
+    optimizer.step()
+    assert any(
+        not torch.equal(before[name], value)
+        for name, value in encoder.state_dict().items()
+    )
+
+
+def test_stage3_transfer_job_updates_object_encoder_and_mlp_together(
+    tmp_path: Path,
+) -> None:
+    from ablations.stage2_stage3_transfer.sampling import experiment_contract
+
+    class Dataset:
+        def __init__(self, split: str) -> None:
+            self.primary_object_ids = torch.tensor([0, 1, 0, 1])
+            self.partner_object_ids = torch.full((4,), -1, dtype=torch.long)
+            self.conditions = torch.tensor([[0.0], [0.5], [1.0], [1.5]])
+            self.targets = torch.tensor([0.2, -0.1, 0.4, -0.3])
+            self.raw_targets = self.targets.clone()
+            self.source_rows = torch.arange(4) + (100 if split == "valid" else 0)
+
+        def __len__(self) -> int:
+            return len(self.targets)
+
+    config = _tiny_transfer_config()
+    config = replace(
+        config,
+        stage3=replace(
+            config.stage3,
+            batch_size=2,
+            epochs=1,
+            warmup_fraction=0.0,
+            amp_dtype="none",
+        ),
+    )
+    initial_encoder = ObjectEncoder(
+        8, 2, num_layers=1, feedforward_dim=16, dropout=0.0
+    )
+    initial_encoder_state = {
+        name: value.detach().clone()
+        for name, value in initial_encoder.state_dict().items()
+    }
+    bank = {
+        "identity": {"hash": "representation"},
+        "variant": "baseline",
+        "objects": [{"topology": "molecule", "slots": [["neutral", "C"]]}] * 2,
+        "entity_slots": torch.randn(2, 2, 8),
+        "entity_roles": torch.tensor(
+            [[ROLE_TO_ID["neutral"], 0], [ROLE_TO_ID["neutral"], 0]]
+        ),
+        "slot_counts": torch.ones(2, dtype=torch.long),
+        "object_encoder_contract": {
+            "d_model": 8,
+            "n_heads": 2,
+            "layers": 1,
+            "ffn_dim": 16,
+            "dropout": 0.0,
+        },
+        "object_encoder_state": initial_encoder_state,
+        "object_encoder_state_hash": tensor_state_hash(
+            "stage2-stage3-transfer-object-encoder-initial.v2",
+            initial_encoder_state,
+        ),
+        **experiment_contract(config),
+    }
+    prepared = {
+        "metadata": {},
+        "objects": {"objects": bank["objects"]},
+        "registry": {"target/a": SimpleNamespace(partner_slots=())},
+        "normalization": {
+            "fold1": {"target/a": {"target": {"mean": 0.0, "scale": 1.0}}}
+        },
+    }
+    authority = SimpleNamespace(data=SimpleNamespace(artifacts_dir=tmp_path))
+    with (
+        patch(
+            "ablations.stage2_stage3_transfer.stage3.load_stage3_config",
+            return_value=authority,
+        ),
+        patch(
+            "ablations.stage2_stage3_transfer.stage3.load_prepared_stage3",
+            return_value=prepared,
+        ),
+        patch(
+            "ablations.stage2_stage3_transfer.stage3.metadata_identity",
+            return_value={"hash": "prepared"},
+        ),
+        patch(
+            "ablations.stage2_stage3_transfer.stage3.load_representation_bank",
+            return_value=bank,
+        ),
+        patch(
+            "ablations.stage2_stage3_transfer.stage3.Stage3TaskDataset",
+            side_effect=lambda _root, _fold, _task, split: Dataset(split),
+        ),
+    ):
+        manifest = train_transfer_job(
+            config,
+            variant="baseline",
+            representation_path=tmp_path / "representation.pt",
+            task_id="target/a",
+            fold=1,
+            output_dir=tmp_path / "job",
+            device_name="cpu",
+            reporter=SimpleNamespace(
+                bar=lambda **_kwargs: SimpleNamespace(
+                    set_postfix=lambda **_values: None,
+                    update=lambda _value: None,
+                    close=lambda: None,
+                )
+            ),
+        )
+    artifact = torch.load(tmp_path / "job/final.pt", weights_only=False)
+    assert manifest["downstream_training"] == "joint_object_encoder_mlp"
+    assert any(
+        not torch.equal(initial_encoder_state[name], value)
+        for name, value in artifact["object_encoder"].items()
+    )
+    assert artifact["initial_state_hash"] != tensor_state_hash(
+        "stage2-stage3-transfer-mlp-initial.v2", artifact["model"]
+    )
+
+
 def test_stage3_transfer_parallel_slots_support_multiple_jobs_per_device() -> None:
     assert transfer_launcher._parallel_slots(6, ("cuda:0",)) == 6
     assert transfer_launcher._parallel_slots(
@@ -2523,6 +2684,9 @@ def _write_transfer_job(
     predictions.write_text("source_row,target,prediction\n1,1,1\n", encoding="utf-8")
     (root / "manifest.json").write_text(
         json.dumps({
+            "kind": TRANSFER_MODEL_KIND,
+            "format_version": TRANSFER_MODEL_VERSION,
+            "downstream_training": "joint_object_encoder_mlp",
             "variant": variant,
             "task": task,
             "fold": fold,

@@ -4,6 +4,10 @@
 - 日期：2026-09-19
 - 隔离范围：`configs/ablations/stage2_stage3_transfer.yaml`
 
+> 2026-09-22：本文的冻结1024D representation与仅训练MLP的下游合同已由
+> [ADR-0068](0068-stage2-stage3-joint-downstream-adaptation.md) 修订为冻结Stage1 slots、
+> 同步更新ObjectEncoder与MLP；Stage2 source生成、矩阵和TG定义不变。
+
 ## 背景
 
 基于 signature overlap 的任务配对无法回答任意一个 Stage 2 physics task 是否改善任意

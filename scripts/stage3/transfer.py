@@ -16,6 +16,8 @@ sys.path.insert(0, str(ROOT))
 from ablations.stage2_stage3_transfer.config import load_transfer_config
 from ablations.stage2_stage3_transfer.sampling import require_experiment_contract
 from ablations.stage2_stage3_transfer.stage3 import (
+    MODEL_KIND,
+    MODEL_VERSION,
     prepare_representation_bank,
     train_transfer_job,
 )
@@ -83,6 +85,9 @@ def _complete(root: Path) -> bool:
     return (
         artifact.is_file()
         and predictions.is_file()
+        and payload.get("kind") == MODEL_KIND
+        and payload.get("format_version") == MODEL_VERSION
+        and payload.get("downstream_training") == "joint_object_encoder_mlp"
         and payload.get("artifact_sha256") == sha256_file(artifact)
         and payload.get("predictions_sha256") == sha256_file(predictions)
         and payload.get("final_epoch") == 10

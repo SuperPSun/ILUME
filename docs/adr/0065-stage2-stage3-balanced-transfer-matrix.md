@@ -5,6 +5,10 @@
 - 范围：`configs/ablations/stage2_stage3_transfer_balanced.yaml`
 - 关联：[ADR-0062](0062-stage2-stage3-full-transfer-matrix.md)
 
+> 2026-09-22：下游训练按
+> [ADR-0068](0068-stage2-stage3-joint-downstream-adaptation.md) 同步更新ObjectEncoder与MLP；
+> 本文的等行数抽样与Stage2更新预算合同不变。
+
 ## 决定
 
 保留 ADR-0062 的 full-data matrix，新增独立 balanced matrix。九个 source 的训练子集

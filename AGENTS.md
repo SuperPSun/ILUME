@@ -27,7 +27,7 @@
 - RDKit-HoME（ADR-0034）只以 RDKit 2D + 两个 GLOBAL Linear→LayerNorm adapter 替换 Object 表示，其余现役 Stage 3 合同不变；禁止 Stage 1/2 checkpoint、plugin、HPO 或跨 backend 恢复。
 - No-Stage1（ADR-0036）用共享 RDKit-217 MLP 替换 backbone，保留 ObjectEncoder/Stage3 Base；Stage 2 只训练八个 object/interaction task，保留其冻结 refinement 合同，禁止 Stage 1/teacher artifact 及主线交叉加载。
 - Single-task MLP（ADR-0033）同时移除 routing、跨 task 共享、PCGrad 和 composite sampling，只能解释为整体消融。
-- Stage2→Stage3 全迁移矩阵（ADR-0062/0067）是隔离的 physics-only representation 消融：一个零 update baseline、九个单 source encoder与 10×20×5 个固定末轮 MLP；只使用 system-split validation raw MAE，不得读 test 或改变现役 Stage2/3。
+- Stage2→Stage3 全迁移矩阵（ADR-0062/0067/0068）是隔离的 physics-only 初始化消融：一个零 update baseline、九个单 source encoder与 10×20×5 个固定末轮下游job；下游冻结Stage1 slots并同步更新ObjectEncoder与MLP，只使用system-split validation raw MAE，不得读test或改变现役Stage2/3。
 - 等行数迁移矩阵（ADR-0065）使用全部九个 source 最小 train-row 数的固定无放回子集，batch/10 epochs/update budget 相同；保留 prepared normalization，单独输出 balanced identity 与抽样审计，禁止和 full-data matrix 交叉 resume/汇总。
 - Baseline 只复用 registry、split、canonical SMILES、condition/target 与评估口径，不改变 Stage 数值合同。按 ADR 索引读取各模型合同，不能把一个模型的预算推及其他模型。
 - ADR-0045：MLP/D-MPNN/MoLFormer/ILBERT/SPMM/LlaSMol 均为 10 epochs，XGBoost 为 1000 trees；全部发布 final state。AIonopedia、ILTransR 与 AIFC 也使用各自现役的 10-epoch recipe。除模型 ADR 明定外，validation 不驱动早停、选 checkpoint、scheduler 或训练决策。

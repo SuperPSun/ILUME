@@ -99,9 +99,14 @@ class FrozenStage2ObjectEncoder:
         )
 
     @torch.inference_mode()
-    def encode(self, objects: Sequence[FrozenObjectSpec]) -> torch.Tensor:
+    def _encode_slots_device(
+        self, objects: Sequence[FrozenObjectSpec]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if not objects:
-            return torch.empty((0, self.embedding_dim), dtype=torch.float32)
+            return (
+                torch.empty((0, 0, self.embedding_dim), dtype=torch.float32),
+                torch.empty((0, 0), dtype=torch.long),
+            )
         slot_counts = {len(item.slots) for item in objects}
         if len(slot_counts) != 1:
             raise ValueError("Frozen Stage 2 object batch must share topology")
@@ -128,7 +133,23 @@ class FrozenStage2ObjectEncoder:
             dtype=torch.long,
             device=self.device,
         ).reshape(len(objects), slot_count)
-        values = self.object_encoder(entity_cls, roles).float().cpu()
+        if not torch.isfinite(entity_cls).all():
+            raise RuntimeError("Frozen Stage 2 produced non-finite entity slots")
+        return entity_cls, roles
+
+    @torch.inference_mode()
+    def encode_slots(
+        self, objects: Sequence[FrozenObjectSpec]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        slots, roles = self._encode_slots_device(objects)
+        return slots.float().cpu(), roles.cpu()
+
+    @torch.inference_mode()
+    def encode(self, objects: Sequence[FrozenObjectSpec]) -> torch.Tensor:
+        slots, roles = self._encode_slots_device(objects)
+        if not objects:
+            return torch.empty((0, self.embedding_dim), dtype=torch.float32)
+        values = self.object_encoder(slots, roles).float().cpu()
         if not torch.isfinite(values).all():
             raise RuntimeError("Frozen Stage 2 produced non-finite object embeddings")
         return values
@@ -148,9 +169,14 @@ class FrozenRDKitStage2ObjectEncoder:
         return 512
 
     @torch.inference_mode()
-    def encode(self, objects: Sequence[FrozenObjectSpec]) -> torch.Tensor:
+    def _encode_slots_device(
+        self, objects: Sequence[FrozenObjectSpec]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if not objects:
-            return torch.empty((0, self.embedding_dim), dtype=torch.float32)
+            return (
+                torch.empty((0, 0, self.embedding_dim), dtype=torch.float32),
+                torch.empty((0, 0), dtype=torch.long),
+            )
         slot_counts = {len(item.slots) for item in objects}
         if len(slot_counts) != 1:
             raise ValueError("Frozen RDKit Stage 2 batch must share topology")
@@ -179,6 +205,22 @@ class FrozenRDKitStage2ObjectEncoder:
         roles = torch.tensor(
             role_values, dtype=torch.long, device=self.device
         ).reshape(len(objects), slot_count)
+        if not torch.isfinite(slots).all():
+            raise RuntimeError("Frozen RDKit Stage 2 produced non-finite entity slots")
+        return slots, roles
+
+    @torch.inference_mode()
+    def encode_slots(
+        self, objects: Sequence[FrozenObjectSpec]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        slots, roles = self._encode_slots_device(objects)
+        return slots.float().cpu(), roles.cpu()
+
+    @torch.inference_mode()
+    def encode(self, objects: Sequence[FrozenObjectSpec]) -> torch.Tensor:
+        slots, roles = self._encode_slots_device(objects)
+        if not objects:
+            return torch.empty((0, self.embedding_dim), dtype=torch.float32)
         values = self.object_encoder(slots, roles).float().cpu()
         if not torch.isfinite(values).all():
             raise RuntimeError("Frozen RDKit Stage 2 produced non-finite embeddings")

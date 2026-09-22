@@ -373,9 +373,12 @@ Stage3 Single-task MLP 是绑定旧 v1 512D prepared artifact 的冻结 21-task 
 ### Stage2→Stage3 transfer matrix
 
 该隔离消融从同一个 Stage1 初始化构造零 update baseline 与九个 physics-only Stage2
-single-source encoder，再对十份冻结的1024D表示运行20 tasks × 5 folds固定10轮MLP。
+single-source encoder。下游冻结Stage1 slots，并对每个variant/task/fold同步训练其ObjectEncoder
+与MLP，运行20 tasks × 5 folds固定10轮。
 正式矩阵只使用 system-split validation raw MAE，不运行test。完整合同见
-[ADR-0062](docs/adr/0062-stage2-stage3-full-transfer-matrix.md)。使用新的输出根依次运行：
+[ADR-0062](docs/adr/0062-stage2-stage3-full-transfer-matrix.md)与
+[ADR-0068](docs/adr/0068-stage2-stage3-joint-downstream-adaptation.md)。既有Stage2 encoder可复用；
+representation、下游job与summary必须使用新目录重新生成：
 
 ```bash
 root=outputs/ablations/stage2_stage3_transfer
@@ -388,18 +391,18 @@ python scripts/stage2/transfer.py \
 python scripts/stage3/transfer.py prepare \
   --config configs/ablations/stage2_stage3_transfer.yaml \
   --stage2-dir "${root}/stage2" \
-  --output "${root}/representations"
+  --output "${root}/representations_joint"
 
 python scripts/stage3/transfer.py train \
   --config configs/ablations/stage2_stage3_transfer.yaml \
-  --representations "${root}/representations" \
-  --output "${root}/stage3" \
+  --representations "${root}/representations_joint" \
+  --output "${root}/stage3_joint" \
   --max-parallel 1
 
 python scripts/stage3/transfer.py summarize \
   --config configs/ablations/stage2_stage3_transfer.yaml \
-  --stage3-dir "${root}/stage3" \
-  --output "${root}/summary"
+  --stage3-dir "${root}/stage3_joint" \
+  --output "${root}/summary_joint"
 ```
 
 等行数对照使用 [balanced 配置](configs/ablations/stage2_stage3_transfer_balanced.yaml) 和
@@ -418,18 +421,18 @@ python scripts/stage2/transfer.py \
 python scripts/stage3/transfer.py prepare \
   --config configs/ablations/stage2_stage3_transfer_balanced.yaml \
   --stage2-dir outputs/ablations/stage2_stage3_transfer_balanced/stage2 \
-  --output outputs/ablations/stage2_stage3_transfer_balanced/representations
+  --output outputs/ablations/stage2_stage3_transfer_balanced/representations_joint
 
 python scripts/stage3/transfer.py train \
   --config configs/ablations/stage2_stage3_transfer_balanced.yaml \
-  --representations outputs/ablations/stage2_stage3_transfer_balanced/representations \
-  --output outputs/ablations/stage2_stage3_transfer_balanced/stage3 \
+  --representations outputs/ablations/stage2_stage3_transfer_balanced/representations_joint \
+  --output outputs/ablations/stage2_stage3_transfer_balanced/stage3_joint \
   --max-parallel 1
 
 python scripts/stage3/transfer.py summarize \
   --config configs/ablations/stage2_stage3_transfer_balanced.yaml \
-  --stage3-dir outputs/ablations/stage2_stage3_transfer_balanced/stage3 \
-  --output outputs/ablations/stage2_stage3_transfer_balanced/summary
+  --stage3-dir outputs/ablations/stage2_stage3_transfer_balanced/stage3_joint \
+  --output outputs/ablations/stage2_stage3_transfer_balanced/summary_joint
 ```
 
 两套配置的两个训练命令都支持单卡多进程，例如
@@ -437,7 +440,7 @@ python scripts/stage3/transfer.py summarize \
 `--max-parallel 8 --devices cuda:0,cuda:1,cuda:2,cuda:3`，即每张卡2个并发job。
 `max-parallel`必须能被设备数整除；调度参数不进入科研identity。
 `--source`、`--target`和`--fold`可用于分批执行，完整汇总仍严格要求全部1000个job。
-交互终端会显示Stage2 encoder variant、representation variant和Stage3 MLP job总进度；
+交互终端会显示Stage2 encoder variant、representation variant和Stage3联合下游job总进度；
 串行Stage3训练还会显示当前job的epoch与train/validation指标。并行时只保留主进程总进度，
 避免多个worker进度条互相覆盖；非TTY日志保持安静，也可用`ILUME_DISABLE_PROGRESS=1`显式关闭。
 
