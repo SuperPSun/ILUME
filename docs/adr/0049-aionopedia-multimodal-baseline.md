@@ -2,7 +2,8 @@
 
 - 状态：Accepted
 - 日期：2026-09-10
-- 范围：AIonopedia baseline；在重叠范围内取代 ADR-0045 的统一 50-epoch 规则
+- 范围：AIonopedia baseline；使用独立的 10-epoch model-native 合同
+- 修订：2026-09-19 固定训练预算为 10 epochs
 
 ## 目标与来源边界
 

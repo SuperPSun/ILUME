@@ -30,7 +30,7 @@
 - Stage2→Stage3 全迁移矩阵（ADR-0062）是隔离的 physics-only representation 消融：一个零 update baseline、九个单 source encoder与 10×21×5 个固定末轮 MLP；只使用 system-split validation raw MAE，不得读 test 或改变现役 Stage2/3。
 - 等行数迁移矩阵（ADR-0065）使用全部九个 source 最小 train-row 数的固定无放回子集，batch/10 epochs/update budget 相同；保留 prepared normalization，单独输出 balanced identity 与抽样审计，禁止和 full-data matrix 交叉 resume/汇总。
 - Baseline 只复用 registry、split、canonical SMILES、condition/target 与评估口径，不改变 Stage 数值合同。按 ADR 索引读取各模型合同，不能把一个模型的预算推及其他模型。
-- ADR-0045：MLP/D-MPNN/MoLFormer/ILBERT/SPMM 为 50 epochs，LlaSMol 为 10，XGBoost 为 1000 trees；全部发布 final state。AIonopedia 10、AIFC 20 epochs；ILTransR 用 property-native/fallback recipe。除模型 ADR 明定外，validation 不驱动早停、选 checkpoint、scheduler 或训练决策。
+- ADR-0045：MLP/D-MPNN/MoLFormer/ILBERT/SPMM/LlaSMol 均为 10 epochs，XGBoost 为 1000 trees；全部发布 final state。AIonopedia、ILTransR 与 AIFC 也使用各自现役的 10-epoch recipe。除模型 ADR 明定外，validation 不驱动早停、选 checkpoint、scheduler 或训练决策。
 - AIonopedia（0049）只用 generic released multimodal checkpoint、完整官方 downstream topology 和独立 condition path，禁止 property-specific 资源或 pure-Qwen。ILTransR（0057）只用 parity-validated generic pretraining 转换与共享 full-fine-tuning encoder/TextCNN，禁止 supervised property checkpoint；condition 使用全量 Stage 3 covariates 的 transductive population z-score。
 - D-MPNN（0042）所有 registry slot 共用唯一 message-passing encoder，不跨 task/fold 共享。高级 baseline 环境独立 hash-lock，不改主环境、不自动安装、不静默回退。Baseline 不支持 resume，失败在新 attempt 完整重跑。
 

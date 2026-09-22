@@ -335,7 +335,7 @@ Stage3 Single-task MLP 内部消融位于 `ablations/`。二者均与 Stage 代�
 
 ```bash
 model=dmpnn
-run_root=outputs/benchmarks/fixed-budget-v1/dmpnn
+run_root=outputs/benchmarks/fixed-budget-10e-v1/dmpnn
 python scripts/benchmarks/train.py \
   --config "configs/benchmarks/${model}.yaml" \
   --benchmark stage3 --task experiment/density --fold 1 \
@@ -462,7 +462,7 @@ conda run --no-capture-output -n ilume-dmpnn \
 
 ILUME_BENCHMARK_ENVIRONMENT=ilume-dmpnn \
 conda run --no-capture-output -n ilume-dmpnn \
-  python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_dmpnn_environment; validate_dmpnn_environment(load_benchmark_config("configs/benchmarks/dmpnn.yaml"))'
+  python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.dmpnn.environment import validate_dmpnn_environment; validate_dmpnn_environment(load_benchmark_config("configs/benchmarks/dmpnn.yaml"))'
 ```
 
 </details>
@@ -485,7 +485,7 @@ conda run --no-capture-output -n ilume-molformer \
 
 ILUME_BENCHMARK_ENVIRONMENT=ilume-molformer \
 conda run --no-capture-output -n ilume-molformer \
-  python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_molformer_environment; validate_molformer_environment(load_benchmark_config("configs/benchmarks/molformer.yaml"))'
+  python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.molformer.environment import validate_molformer_environment; validate_molformer_environment(load_benchmark_config("configs/benchmarks/molformer.yaml"))'
 ```
 
 MoLFormer的超长train row整行跳过且不进入scaler；valid/test显式截断到202 tokens并在结果中审计。训练前为unique SMILES建立run-local内存token cache，多组分合并为一次共享backbone forward；正式合同固定batch 128、encoder/head learning rate `5e-6/5e-5`、完整10 epochs、最终训练状态和TF32，OOM/NaN不自动缩批或回退。多GPU sweep可使用`--devices cuda:0,cuda:1,...`。
@@ -521,7 +521,14 @@ sha256sum \
 
 PYTHONPATH=src:. ILUME_BENCHMARK_ENVIRONMENT=ilume-ilbert \
 conda run --no-capture-output -n ilume-ilbert \
-  python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_ilbert_environment; validate_ilbert_environment(load_benchmark_config("configs/benchmarks/ilbert.yaml"))'
+  python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.ilbert.environment import validate_ilbert_environment; validate_ilbert_environment(load_benchmark_config("configs/benchmarks/ilbert.yaml"))'
+```
+
+若迁移已有且已核对来源的 checkout 后 Git 报 `dubious ownership`，只信任该精确目录：
+
+```bash
+git config --global --add safe.directory \
+  "$PWD/artifacts/benchmarks/ilbert/upstream"
 ```
 
 ILBERT普通离子液体输入为单条`cation.anion` AIS sequence；solvation/transfer只增加共享backbone的有序双view。所有输入固定padding/truncation到100 tokens并公开审计，数值条件保持registry顺序和原始物理单位。训练使用恒定`3e-5` learning rate完成10 epochs，validation不调整学习率。
@@ -554,7 +561,14 @@ stat --format='%s bytes' artifacts/benchmarks/spmm/checkpoint_SPMM.ckpt
 
 PYTHONPATH=src:. ILUME_BENCHMARK_ENVIRONMENT=ilume-spmm \
 conda run --no-capture-output -n ilume-spmm \
-  python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_spmm_environment; validate_spmm_environment(load_benchmark_config("configs/benchmarks/spmm.yaml"))'
+  python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.spmm.environment import validate_spmm_environment; validate_spmm_environment(load_benchmark_config("configs/benchmarks/spmm.yaml"))'
+```
+
+若迁移已有且已核对来源的 checkout 后 Git 报 `dubious ownership`，只信任该精确目录：
+
+```bash
+git config --global --add safe.directory \
+  "$PWD/artifacts/benchmarks/spmm/upstream"
 ```
 
 SPMM只使用官方text-mode前6层和768维`[CLS]`表示；各分子component由同一encoder分别编码并合并为一次forward，随后只扩宽官方regression head第一层。模型输入去除立体信息，保留官方100-token tokenizer加首token切片路径，实际encoder上限为99；WordPiece单词字符上限固定为350，collision和truncation均公开审计。训练固定batch 128、完整10 epochs、最终训练状态、FP32+TF32及确定性sortish长度分桶；多GPU运行保持一张GPU一个job。旧SPMM输出不得与新合同混用。
@@ -588,7 +602,7 @@ conda run --no-capture-output -n ilume-llasmol \
 
 PYTHONPATH=src:. ILUME_BENCHMARK_ENVIRONMENT=ilume-llasmol \
 conda run --no-capture-output -n ilume-llasmol \
-  python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_llasmol_environment; validate_llasmol_environment(load_benchmark_config("configs/benchmarks/llasmol.yaml"))'
+  python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.llasmol.environment import validate_llasmol_environment; validate_llasmol_environment(load_benchmark_config("configs/benchmarks/llasmol.yaml"))'
 ```
 
 普通IL使用带task marker的单条`cation.anion`sequence；solvation/transfer只增加whole-IL与partner的共享backbone双view。基座以NF4 double-quant冻结加载，并继续训练官方attention与MLP LoRA及`4096/8192 + conditions → 256 → 1`回归head。输入上限512 tokens并公开截断审计；target和numeric conditions只从train rows拟合scaler。训练使用batch 16、gradient accumulation 2固定完成10 epochs并保存最终状态。建议每张GPU仅运行一个job；OOM/NaN不自动缩批或回退。
@@ -646,7 +660,7 @@ Qwen config、LoRA tensor、全部官方模块和 71-output pretraining head 的
 ```bash
 PYTHONPATH=src:. ILUME_BENCHMARK_ENVIRONMENT=ilume-aionopedia \
 conda run --no-capture-output -n ilume-aionopedia \
-  python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_aionopedia_environment; validate_aionopedia_environment(load_benchmark_config("configs/benchmarks/aionopedia.yaml"))'
+  python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.aionopedia.environment import validate_aionopedia_environment; validate_aionopedia_environment(load_benchmark_config("configs/benchmarks/aionopedia.yaml"))'
 ```
 
 AIonopedia prompt 只包含 composition 与原始单位 conditions，不包含 target 名；图路径保留官方
@@ -735,14 +749,14 @@ sha256sum \
 ```bash
 PYTHONPATH=src:. ILUME_BENCHMARK_ENVIRONMENT=ilume-iltransr \
 conda run --no-capture-output -n ilume-iltransr \
-  python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_iltransr_environment; print(validate_iltransr_environment(load_benchmark_config("configs/benchmarks/iltransr.yaml"))["pretrained_snapshot"]["structure"])'
+  python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.iltransr.environment import validate_iltransr_environment; print(validate_iltransr_environment(load_benchmark_config("configs/benchmarks/iltransr.yaml"))["pretrained_snapshot"]["structure"])'
 ```
 
 ILTransR 对 partner task 使用共享 backbone 的 ordered multi-view fusion；所有 pretrained
 embedding/Transformer 参数 full fine-tune。Condition 使用全五折加 test covariates 的 task-global
 population z-score，这是显式 transductive feature scaling；target 仍只从当前 fold train rows 拟合，
 normalized L1 训练后恢复 raw units。七个有同性质官方 notebook 的 task 使用其 epochs/batch/dropout，
-其余任务使用登记的 80-epoch fallback；validation 只报告并始终发布 final epoch state。完整合同见
+其余任务使用登记的 10-epoch fallback；validation 只报告并始终发布 final epoch state。完整合同见
 [ADR-0057](docs/adr/0057-iltransr-stage3-baseline.md)。
 
 </details>
@@ -762,7 +776,7 @@ conda run --no-capture-output -n ilume-aifc \
 
 PYTHONPATH=src:. ILUME_BENCHMARK_ENVIRONMENT=ilume-aifc \
 conda run --no-capture-output -n ilume-aifc \
-  python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.common.environment import validate_aifc_environment; print(validate_aifc_environment(load_benchmark_config("configs/benchmarks/aifc.yaml"))["pretrained_snapshot"])'
+  python -c 'from benchmarks.common.config import load_benchmark_config; from benchmarks.aifc.environment import validate_aifc_environment; print(validate_aifc_environment(load_benchmark_config("configs/benchmarks/aifc.yaml"))["pretrained_snapshot"])'
 ```
 
 普通 IL 生成一个 canonical `cation.anion` graph；solvation/transfer 分别编码 cation、anion、solute，

@@ -477,6 +477,25 @@ def test_formal_baseline_configs_use_fixed_final_state(
 
 
 @pytest.mark.parametrize(
+    "name",
+    (
+        "dmpnn", "molformer", "ilbert", "spmm", "llasmol", "aionopedia",
+        "iltransr", "aifc",
+    ),
+)
+def test_readme_validator_examples_import_model_specific_modules(name: str) -> None:
+    readme = Path("README.md").read_text(encoding="utf-8")
+    assert (
+        f"from benchmarks.{name}.environment import validate_{name}_environment"
+        in readme
+    )
+    assert (
+        f"from benchmarks.common.environment import validate_{name}_environment"
+        not in readme
+    )
+
+
+@pytest.mark.parametrize(
     "name,section,field,value,message",
     (
         ("dmpnn", "model", "multicomponent_shared", False, "registered Chemprop recipe"),
