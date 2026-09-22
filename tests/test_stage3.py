@@ -988,12 +988,15 @@ def test_three_phase_private_dropout_override_is_bounded(value: object) -> None:
         stage3_config_from_dict(payload)
 
 
+@pytest.mark.parametrize("pcgrad_mode", ("hierarchical", "off"))
 def test_three_phase_training_publishes_fixed_final_state(
     tiny_prepared: Stage3Config,
+    pcgrad_mode: str,
 ) -> None:
     config = _tiny_three_phase(tiny_prepared)
     config = replace(
         config,
+        training=replace(config.training, pcgrad_mode=pcgrad_mode),
         tasks={
             **config.tasks,
             "experiment/a": replace(
@@ -1062,6 +1065,18 @@ def test_three_phase_training_publishes_fixed_final_state(
     assert "selected_epoch" not in json.dumps(manifest)
     assert "best_state" not in json.dumps(manifest)
     plan = json.loads((output / "resolved_training_plan.json").read_text())
+    assert plan["phases"]["phase1"]["pcgrad"] == pcgrad_mode
+    for branch in plan["phases"]["phase2"]["branches"].values():
+        assert branch["pcgrad"] == ("group_only" if pcgrad_mode == "hierarchical" else "off")
+    assert plan["math"]["pcgrad"] == (
+        {"phase1": "hierarchical_ownership_blocks_v1", "phase2": "group_block_only_v1", "phase3": "off"}
+        if pcgrad_mode == "hierarchical" else dict.fromkeys(("phase1", "phase2", "phase3"), "off")
+    )
+    for scope in ("phase_1", "phase_2/g1", "phase_2/g2"):
+        diagnostics = [json.loads(line) for line in (output / scope / "diagnostics.jsonl").read_text().splitlines()]
+        assert all(row["pcgrad_applied"] == (pcgrad_mode == "hierarchical") for row in diagnostics)
+        if pcgrad_mode == "off":
+            assert all(row["pcgrad_scope"] == "off" for row in diagnostics)
     assert plan["format_version"] == 3
     assert artifact["training_identity"]["payload"]["contract_version"] == 5
     assert plan["phases"]["phase1"]["owners"]["PRIVATE:experiment/a"][
@@ -1180,6 +1195,14 @@ def test_three_phase_training_publishes_fixed_final_state(
         config, 1, output_dir=output, resume_from=output
     )
     assert resumed[-1]["phase"] == "three_phase_final"
+    other = replace(
+        config,
+        training=replace(config.training, pcgrad_mode="off" if pcgrad_mode == "hierarchical" else "hierarchical"),
+    )
+    with pytest.raises(ValueError, match="identity"):
+        run_stage3_training(other, 1, output_dir=output, resume_from=output)
+    with pytest.raises(ValueError, match="identity"):
+        evaluate_checkpoints(other, output, split="valid", ensemble_folds=False, fold=1)
     evaluated = evaluate_checkpoints(
         config,
         output,
@@ -1774,6 +1797,131 @@ def test_microbatch_accumulation_matches_full_task_batch(tiny_prepared: Stage3Co
         assert (left is None) == (right is None)
         if left is not None:
             assert torch.allclose(left, right, atol=1e-6, rtol=1e-5)
+
+def test_no_pcgrad_config_and_identity(tiny_prepared: Stage3Config) -> None:
+    base = load_stage3_config("configs/v2/stage3/base.yaml")
+    ablation = load_stage3_config("configs/ablations/stage3_no_pcgrad.yaml")
+    payload = ablation.to_dict()
+    assert payload["training"].pop("pcgrad_mode") == "off"
+    assert payload == base.to_dict()
+    assert base.training.pcgrad_mode == "hierarchical"
+    assert stage3_config_from_dict(ablation.to_dict()) == ablation
+    for invalid in ("disabled", False):
+        payload = ablation.to_dict()
+        payload["training"]["pcgrad_mode"] = invalid
+        with pytest.raises(ValueError, match="pcgrad_mode"):
+            stage3_config_from_dict(payload)
+    with pytest.raises(ValueError, match="legacy.*PCGrad"):
+        replace(tiny_prepared, training=replace(tiny_prepared.training, pcgrad_mode="off")).validate()
+
+    config = _tiny_three_phase(tiny_prepared)
+    off = replace(config, training=replace(config.training, pcgrad_mode="off"))
+    baseline_identity = resolve_stage3_training_identity(config, 1)
+    ablation_identity = resolve_stage3_training_identity(off, 1)
+    assert baseline_identity["hash"] != ablation_identity["hash"]
+    baseline_plan = baseline_identity["payload"]["plan"]
+    ablation_plan = ablation_identity["payload"]["plan"]
+    assert baseline_plan["prepared_identity"] == ablation_plan["prepared_identity"]
+    ablation_plan["math"]["pcgrad"] = baseline_plan["math"]["pcgrad"]
+    ablation_plan["phases"]["phase1"]["pcgrad"] = "hierarchical"
+    for branch in ablation_plan["phases"]["phase2"]["branches"].values():
+        branch["pcgrad"] = "group_only"
+    assert ablation_plan == baseline_plan
+
+
+@pytest.mark.parametrize("tasks, frozen_global", (
+    (("experiment/a", "experiment/b", "experiment/c"), False),
+    (("experiment/a", "experiment/c"), False),
+    (("experiment/b",), False),
+    (("experiment/a", "experiment/b"), True),
+))
+def test_no_pcgrad_preserves_raw_weighted_owner_gradients(
+    tiny_prepared: Stage3Config, monkeypatch: pytest.MonkeyPatch,
+    tasks: tuple[str, ...], frozen_global: bool,
+) -> None:
+    import random
+    import stage3.pcgrad as module
+
+    registry = resolve_task_registry(tiny_prepared)
+    weights = {"experiment/a": 1.0, "experiment/b": 3.0, "experiment/c": 2.0}
+    registry = {task: replace(spec, task_weight=weights[task]) for task, spec in registry.items()}
+    model = Stage3SparseModel(tiny_prepared.model, registry, 4)
+    raw_values = {"experiment/a": 2.0, "experiment/b": -1.0, "experiment/c": 4.0}
+    group_weights = {"g1": 2.0, "g2": 5.0}
+    gradients = {}
+    for task in tasks:
+        owners = (group_owner(registry[task].meta_group), private_owner(task))
+        if not frozen_global:
+            owners = (GLOBAL, *owners)
+        gradients[task] = {
+            parameter: torch.full_like(parameter, raw_values[task])
+            for owner in owners for parameter in model.parameters_for_owner(owner)
+        }
+    projected = hierarchical_pcgrad(model, gradients, registry, group_weights, random.Random(3))
+
+    def forbid_projection(*args, **kwargs):
+        pytest.fail("no-PCGrad must not call the projection routine")
+
+    monkeypatch.setattr(module, "pcgrad_block", forbid_projection)
+    rng = random.Random(3)
+    rng_before = rng.getstate()
+    result = hierarchical_pcgrad(model, gradients, registry, group_weights, rng, project_conflicts=False)
+    assert rng.getstate() == rng_before
+    assert not result.task_global and not result.task_group and not result.group_global
+    groups = {registry[task].meta_group for task in tasks}
+    means = {}
+    for group in groups:
+        members = [task for task in tasks if registry[task].meta_group == group]
+        weight_sum = sum(weights[task] for task in members)
+        means[group] = sum(weights[task] * raw_values[task] for task in members) / weight_sum
+        for parameter in model.parameters_for_owner(group_owner(group)):
+            torch.testing.assert_close(result.gradients[parameter], torch.full_like(parameter, means[group]))
+        for task in members:
+            expected = raw_values[task] * len(members) * weights[task] / weight_sum
+            for parameter in model.parameters_for_owner(private_owner(task)):
+                torch.testing.assert_close(result.gradients[parameter], torch.full_like(parameter, expected))
+    expected_global = sum(means[group] * group_weights[group] for group in groups) / sum(group_weights[group] for group in groups)
+    for parameter in model.parameters_for_owner(GLOBAL):
+        if frozen_global:
+            assert parameter not in result.gradients
+        else:
+            torch.testing.assert_close(result.gradients[parameter], torch.full_like(parameter, expected_global))
+    assert set(result.gradients) == {parameter for raw in gradients.values() for parameter in raw}
+    for task, raw in gradients.items():
+        assert all(torch.equal(value, torch.full_like(value, raw_values[task])) for value in raw.values())
+    if "experiment/a" in tasks and "experiment/b" in tasks:
+        parameter = model.parameters_for_owner(group_owner("g1"))[0]
+        assert not torch.equal(projected.gradients[parameter], result.gradients[parameter])
+
+
+@pytest.mark.parametrize("scope", ("phase_1", "phase_2/g1"))
+def test_no_pcgrad_partial_resume_is_exact(tiny_prepared: Stage3Config, scope: str) -> None:
+    config = _tiny_three_phase(tiny_prepared)
+    config = replace(
+        config,
+        model=replace(config.model, dropout=0.1),
+        training=replace(config.training, pcgrad_mode="off"),
+    )
+    continuous = config.data.artifacts_dir.parent / "continuous-no-pcgrad"
+    resumed = config.data.artifacts_dir.parent / "resumed-no-pcgrad"
+    run_stage3_training(config, 1, output_dir=continuous)
+    (resumed / scope).mkdir(parents=True)
+    shutil.copy(continuous / "resolved_training_plan.json", resumed)
+    if scope.startswith("phase_2"):
+        shutil.copytree(continuous / "phase_1", resumed / "phase_1")
+    shutil.copy(continuous / scope / "checkpoint_epoch_00001.pt", resumed / scope)
+    for filename in ("metrics.jsonl", "diagnostics.jsonl"):
+        first = (continuous / scope / filename).read_text().splitlines()[0]
+        (resumed / scope / filename).write_text(first + "\n")
+    run_stage3_training(config, 1, output_dir=resumed, resume_from=resumed)
+    expected = torch.load(continuous / "three_phase_final.pt", map_location="cpu", weights_only=False)
+    actual = torch.load(resumed / "three_phase_final.pt", map_location="cpu", weights_only=False)
+    assert expected["training_identity"] == actual["training_identity"]
+    assert expected["model"].keys() == actual["model"].keys()
+    assert all(torch.equal(value, actual["model"][name]) for name, value in expected["model"].items())
+    for filename in ("metrics.jsonl", "diagnostics.jsonl"):
+        assert (continuous / scope / filename).read_text() == (resumed / scope / filename).read_text()
+
 
 def test_pcgrad_keeps_global_and_group_as_separate_blocks(
     tiny_prepared: Stage3Config, monkeypatch: pytest.MonkeyPatch

@@ -161,7 +161,10 @@ def hierarchical_pcgrad(
     task_specs: Mapping[str, ResolvedTaskSpec],
     group_weights: Mapping[str, float],
     rng: random.Random,
+    *,
+    project_conflicts: bool = True,
 ) -> HierarchicalPCGradResult:
+    """Assemble owner gradients with optional conflict projection, preserving weights."""
     if set(task_gradients) - set(task_specs):
         raise ValueError("PCGrad received unknown Stage 3 tasks")
     global_parameters = model.parameters_for_owner(GLOBAL)
@@ -181,18 +184,24 @@ def hierarchical_pcgrad(
         )
         group_parameters = model.parameters_for_owner(group_owner(group))
         raw_for_group = {task: task_gradients[task] for task in tasks}
-        projected_global, global_diag = pcgrad_block(
-            raw_for_group,
-            global_parameters,
-            random.Random(rng.getrandbits(64)),
-        )
-        projected_group, group_diag = pcgrad_block(
-            raw_for_group,
-            group_parameters,
-            random.Random(rng.getrandbits(64)),
-        )
-        task_global_diagnostics.update(global_diag)
-        task_group_diagnostics.update(group_diag)
+        if project_conflicts:
+            projected_global, global_diag = pcgrad_block(
+                raw_for_group,
+                global_parameters,
+                random.Random(rng.getrandbits(64)),
+            )
+            projected_group, group_diag = pcgrad_block(
+                raw_for_group,
+                group_parameters,
+                random.Random(rng.getrandbits(64)),
+            )
+            task_global_diagnostics.update(global_diag)
+            task_group_diagnostics.update(group_diag)
+        else:
+            projected_global = projected_group = {
+                task: {parameter: value.detach().float() for parameter, value in raw.items()}
+                for task, raw in raw_for_group.items()
+            }
         weight_sum = sum(task_specs[task].task_weight for task in tasks)
         normalized = {
             task: len(tasks) * task_specs[task].task_weight / weight_sum
@@ -227,11 +236,14 @@ def hierarchical_pcgrad(
         group_global_norms[group] = gradient_norm(
             group_global_raw[group], global_parameters
         )
-    projected_groups, group_global_diagnostics = pcgrad_block(
-        group_global_raw,
-        global_parameters,
-        random.Random(rng.getrandbits(64)),
-    )
+    if project_conflicts:
+        projected_groups, group_global_diagnostics = pcgrad_block(
+            group_global_raw,
+            global_parameters,
+            random.Random(rng.getrandbits(64)),
+        )
+    else:
+        projected_groups, group_global_diagnostics = group_global_raw, {}
     group_weight_sum = sum(group_weights[group] for group in groups)
     for parameter in global_parameters:
         values = [

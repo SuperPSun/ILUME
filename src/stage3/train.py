@@ -481,7 +481,7 @@ def build_resolved_training_plan(
             phase2_branches[group] = {
                 "epochs": group_budget.epochs,
                 "steps_per_epoch": group_steps[group],
-                "pcgrad": "group_only",
+                "pcgrad": "group_only" if config.training.pcgrad_mode == "hierarchical" else "off",
                 "owners": owners,
             }
         phase3_branches = {}
@@ -510,7 +510,7 @@ def build_resolved_training_plan(
             "phase1": {
                 "epochs": recipe.global_scope.epochs,
                 "steps_per_epoch": steps,
-                "pcgrad": "hierarchical",
+                "pcgrad": config.training.pcgrad_mode,
                 "owners": phase1_owners,
             },
             "phase2": {"branches": phase2_branches},
@@ -588,6 +588,10 @@ def build_resolved_training_plan(
             "phase2": "group_block_only_v1",
             "phase3": "off",
         }
+        if config.training.pcgrad_mode == "off":
+            plan["math"]["pcgrad"] = {
+                "phase1": "off", "phase2": "off", "phase3": "off",
+            }
     else:
         plan["optimizer"]["lr"] = config.training.learning_rate
         plan["scheduler"] = {

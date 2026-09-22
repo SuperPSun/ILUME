@@ -248,6 +248,7 @@ class Stage3TrainingConfig:
     refinement_ratio: float = 0.20
     refinement_lr_multiplier: float = 0.10
     schedule_mode: str = "legacy_joint_refinement"
+    pcgrad_mode: str = "hierarchical"
     three_phase: Stage3ThreePhaseConfig | None = None
 
 
@@ -489,7 +490,11 @@ class Stage3Config:
             raise ValueError(
                 "training.schedule_mode must be legacy_joint_refinement or three_phase"
             )
+        if training.pcgrad_mode not in {"hierarchical", "off"}:
+            raise ValueError("training.pcgrad_mode must be hierarchical or off")
         if training.schedule_mode == "legacy_joint_refinement":
+            if training.pcgrad_mode != "hierarchical":
+                raise ValueError("legacy Stage 3 training requires hierarchical PCGrad")
             if training.three_phase is not None:
                 raise ValueError("legacy Stage 3 training forbids training.three_phase")
             from common.refinement import refinement_geometry
@@ -650,6 +655,8 @@ class Stage3Config:
             adaptation = plugin["adaptation"]
             adaptation["global"] = adaptation.pop("global_scope")
         training = payload["training"]
+        if training["pcgrad_mode"] == "hierarchical":
+            training.pop("pcgrad_mode")
         if training["schedule_mode"] == "legacy_joint_refinement":
             training.pop("schedule_mode")
             training.pop("three_phase")

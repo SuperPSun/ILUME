@@ -521,7 +521,8 @@ def _joint_epoch(
         if not gradients:
             raise RuntimeError("Stage 3 three-phase joint step has no tasks")
         latest = hierarchical_pcgrad(
-            model, gradients, registry, group_weights, pcgrad_rng
+            model, gradients, registry, group_weights, pcgrad_rng,
+            project_conflicts=config.training.pcgrad_mode == "hierarchical",
         )
         optimizer.zero_grad(set_to_none=True)
         _assign_gradients(model, latest.gradients)
@@ -534,9 +535,11 @@ def _joint_epoch(
     return (
         {task: loss_sums[task] / counts[task] for task in tasks},
         {
-            "pcgrad_applied": True,
+            "pcgrad_applied": config.training.pcgrad_mode == "hierarchical",
             "pcgrad_scope": (
-                "group" if len({registry[t].meta_group for t in tasks}) == 1 else "hierarchical"
+                "off" if config.training.pcgrad_mode == "off" else (
+                    "group" if len({registry[t].meta_group for t in tasks}) == 1 else "hierarchical"
+                )
             ),
             "task_gradient_norms": latest.task_norms,
             "assembled_owner_norms": latest.assembled_owner_norms,

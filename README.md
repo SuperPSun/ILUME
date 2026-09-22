@@ -8,7 +8,7 @@ ILUME 是按 Stage 组织的分子科研 pipeline：Global-RDKit v2 主线在 St
 |---|---|
 | 跑现役主线 | [安装](#安装与数据) → [Stage 1](#stage-1) → [Stage 2](#stage-2) → [Stage 3](#stage-3) |
 | 跑对比模型 | [Baseline 通用运行](#baselines-and-ablations)，再展开对应模型的环境准备 |
-| 跑内部消融 | [RDKit-HoME](#rdkit-2d--home-representation-ablation)、[No-Stage1](#no-stage1rdkit-2d--stage2--stage3-home)；Single-task MLP 与 [Stage2→Stage3 transfer matrix](#stage2stage3-transfer-matrix) 见 baseline 部分 |
+| 跑内部消融 | [no-PCGrad](#stage-3-no-pcgrad-消融)、[RDKit-HoME](#rdkit-2d--home-representation-ablation)、[No-Stage1](#no-stage1rdkit-2d--stage2--stage3-home)；Single-task MLP 与 [Stage2→Stage3 transfer matrix](#stage2stage3-transfer-matrix) 见 baseline 部分 |
 | 汇总结果 | [输出与结果汇总](#输出与结果汇总) |
 | 查科学约束/历史 | [ADR 索引](docs/adr/README.md) / [已取代设计摘要](docs/adr/history.md) |
 | 跑冻结的 legacy 研究 | [Capacity v1 手册](docs/capacity-v1-runbook.md) |
@@ -224,6 +224,85 @@ Capacity v1 继续冻结在 legacy v1 五模态合同，并直接使用已提交
 `configs/experiments_v1/stage3/formal/*.yaml`。只读 probe/robustness/comparison 报告仍由
 `scripts/stage3/capacity.py --manifest ... --output ...` 生成；当前命令见
 [Capacity v1 操作手册](docs/capacity-v1-runbook.md)。
+
+### Stage 3 no-PCGrad 消融
+
+[ADR-0069](docs/adr/0069-stage3-no-pcgrad-ablation.md) 以现役 Base 为对照，使用
+`configs/ablations/stage3_no_pcgrad.yaml` 的 `training.pcgrad_mode: "off"` 关闭
+Phase 1/2 的冲突投影，保留原始 task/group 加权聚合和其余训练合同。
+省略该字段仍使用原来的 PCGrad；`"off"` 在 YAML 中必须带引号。
+
+前置条件是完整的 Base 20-task prepared artifact、对应 Stage 2 encoder、Base 五折
+final checkpoint/manifest 和 validation/test 报告。仅有 JSON 元数据不够；先在运行服务器
+用下面的只读检查核对 prepared、Base final state 与已有 evaluation 的身份（不执行 forward）：
+
+```bash
+PYTHONPATH=src python - <<'PY'
+import json
+from pathlib import Path
+from common.identity import require_compatible_identity
+from stage3.config import load_stage3_config
+from stage3.prepare import load_prepared_stage3
+from stage3.evaluate import resolve_stage3_evaluation_identity
+
+base = load_stage3_config("configs/v2/stage3/base.yaml")
+ablation = load_stage3_config("configs/ablations/stage3_no_pcgrad.yaml")
+load_prepared_stage3(ablation)
+root = Path("outputs/v2/stage3/base")
+for split, folds in (("valid", range(1, 6)), ("test", (None,))):
+    for fold in folds:
+        expected = resolve_stage3_evaluation_identity(
+            base, root / "train", split=split,
+            ensemble_folds=split == "test", fold=fold,
+        )
+        run = root / (f"evaluate_valid/fold{fold}" if split == "valid" else "evaluate_test")
+        metadata = json.loads((run / "metadata.json").read_text())
+        assert metadata["status"] == "completed"
+        require_compatible_identity(expected, metadata["semantic_identity"], context=str(run))
+print("Base prepared/checkpoint/evaluation identities verified")
+PY
+```
+
+缺失或哈希不匹配时先补齐同一身份的产物，不覆盖旧目录、不放宽校验。
+检查通过后依次执行；以下五折训练默认使用一张支持 BF16 的 GPU 串行运行：
+
+```bash
+python scripts/stage3/train.py \
+  --config configs/ablations/stage3_no_pcgrad.yaml \
+  --fold 1 2 3 4 5 \
+  --output outputs/ablations/stage3_no_pcgrad/train
+
+python scripts/stage3/evaluate.py \
+  --config configs/ablations/stage3_no_pcgrad.yaml \
+  --checkpoint-dir outputs/ablations/stage3_no_pcgrad/train \
+  --split valid --fold 1 2 3 4 5 \
+  --study-id stage3_no_pcgrad \
+  --output outputs/ablations/stage3_no_pcgrad/evaluate_valid
+
+python scripts/stage3/evaluate.py \
+  --config configs/ablations/stage3_no_pcgrad.yaml \
+  --checkpoint-dir outputs/ablations/stage3_no_pcgrad/train \
+  --split test --ensemble-folds \
+  --study-id stage3_no_pcgrad \
+  --output outputs/ablations/stage3_no_pcgrad/evaluate_test
+
+python scripts/benchmarks/summarize.py \
+  --input outputs/v2/stage3/base/evaluate_valid \
+          outputs/v2/stage3/base/evaluate_test \
+          outputs/ablations/stage3_no_pcgrad/evaluate_valid \
+          outputs/ablations/stage3_no_pcgrad/evaluate_test \
+  --output outputs/ablations/stage3_no_pcgrad/comparison
+```
+
+有四张可用 GPU 时可在 train 命令增加
+`--max-parallel 4 --devices cuda:0,cuda:1,cuda:2,cuda:3`；各 fold 独立占用模型和优化器内存。
+训练恢复只在同一 no-PCGrad 输出根显式添加 `--resume`；新 train/evaluate 目录必须未被使用。
+
+比较 `comparison/stage3_validation_leaderboard.csv` 的 `macro_normalized_mae`，以及
+`stage3_validation_metrics.csv` 中逐 task 的 `normalized_mae_mean`、`mae_mean`。
+逐 task 配对差值定义为 `no-PCGrad - Base`，负值表示消融误差更低；五折等权后再对
+20 个 task 等权，不按样本量加权。汇总中的 run/source_run 区分两个实验。
+test 使用现有 evaluator 的 eligible task 集合和五折 ensemble，独立报告，不据此调参。
 
 ### RDKit 2D → HoME representation ablation
 
