@@ -18,7 +18,6 @@ from stage2.model import Stage2ObjectModel
 from stage2.train import export_stage2_encoder_artifact, run_stage2_training
 
 from .config import TransferExperimentConfig
-from .sampling import experiment_contract, resolve_balanced_rows
 
 
 TRANSFER_ENCODER_MANIFEST_KIND = "ilume_stage2_transfer_encoder"
@@ -134,7 +133,6 @@ def create_baseline_encoder(
         variant="baseline", source_task=None, initial_hash=initial_hash,
         encoder_path=encoder_path, updates=0, training_identity=identity,
     )
-    manifest.update(experiment_contract(experiment))
     atomic_json(root / "manifest.json", manifest)
     return manifest
 
@@ -155,18 +153,12 @@ def train_source_encoder(
     )
     if device is not None:
         config = replace(config, training=replace(config.training, device=device))
-    selection = {}
-    plan = None
-    if experiment.stage2.sampling_mode == "balanced_rows":
-        selections, plan = resolve_balanced_rows(experiment)
-        selection = {"source_row_indices": selections[source_task]}
     run_stage2_training(
         config,
         output_dir=output_dir,
         resume_from=resume_from,
         active_task=source_task,
         expected_initial_shared_state_hash=initial_shared_state_hash,
-        **selection,
     )
     root = Path(output_dir)
     final = json.loads((root / "final_metrics.json").read_text(encoding="utf-8"))
@@ -179,14 +171,6 @@ def train_source_encoder(
         updates=int(final["final_validation"]["global_optimizer_step"]),
         training_identity=final.get("training_identity"),
     )
-    if plan is not None:
-        if manifest["optimizer_updates"] != plan["optimizer_updates"]:
-            raise ValueError("Balanced transfer optimizer budget mismatch")
-        payload = (manifest.get("training_identity") or {}).get("payload", {})
-        if payload.get("selection_hash") != plan["sources"][source_task]["selection_hash"]:
-            raise ValueError("Balanced transfer trained row selection mismatch")
-        manifest["sampling_plan"] = plan
-    manifest.update(experiment_contract(experiment))
     atomic_json(root / "manifest.json", manifest)
     return manifest
 

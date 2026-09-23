@@ -408,37 +408,7 @@ python scripts/stage3/transfer.py summarize \
   --output "${root}/summary_joint"
 ```
 
-等行数对照使用 [balanced 配置](configs/ablations/stage2_stage3_transfer_balanced.yaml) 和
-[ADR-0065](docs/adr/0065-stage2-stage3-balanced-transfer-matrix.md)：从九个 prepared train
-数据集中各无放回抽取 N 行（N 为最小数据集行数），固定子集运行 10 epochs。
-Stage2 根目录发布 `resolved_sampling_plan.json`，记录行索引/hash、体系覆盖和共同更新预算。
-该实验保留 prepared normalization；控制行数/updates，不控制体系数或原子标签数。
-依次运行（使用独立输出目录）：
-
-```bash
-python scripts/stage2/transfer.py \
-  --config configs/ablations/stage2_stage3_transfer_balanced.yaml \
-  --output outputs/ablations/stage2_stage3_transfer_balanced/stage2 \
-  --max-parallel 1
-
-python scripts/stage3/transfer.py prepare \
-  --config configs/ablations/stage2_stage3_transfer_balanced.yaml \
-  --stage2-dir outputs/ablations/stage2_stage3_transfer_balanced/stage2 \
-  --output outputs/ablations/stage2_stage3_transfer_balanced/representations_joint
-
-python scripts/stage3/transfer.py train \
-  --config configs/ablations/stage2_stage3_transfer_balanced.yaml \
-  --representations outputs/ablations/stage2_stage3_transfer_balanced/representations_joint \
-  --output outputs/ablations/stage2_stage3_transfer_balanced/stage3_joint \
-  --max-parallel 1
-
-python scripts/stage3/transfer.py summarize \
-  --config configs/ablations/stage2_stage3_transfer_balanced.yaml \
-  --stage3-dir outputs/ablations/stage2_stage3_transfer_balanced/stage3_joint \
-  --output outputs/ablations/stage2_stage3_transfer_balanced/summary_joint
-```
-
-两套配置的两个训练命令都支持单卡多进程，例如
+Stage2 和 Stage3 的训练命令都支持单卡多进程，例如
 `--max-parallel 4 --devices cuda:0`；多GPU例如
 `--max-parallel 8 --devices cuda:0,cuda:1,cuda:2,cuda:3`，即每张卡2个并发job。
 `max-parallel`必须能被设备数整除；调度参数不进入科研identity。

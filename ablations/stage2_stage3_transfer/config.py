@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import yaml
 
@@ -32,7 +32,6 @@ class Stage2TransferConfig:
     optimizer: str
     physics_only: bool
     final_epoch: int
-    sampling_mode: str = "full"
 
 
 @dataclass(frozen=True)
@@ -66,8 +65,6 @@ class TransferExperimentConfig:
     stage3: Stage3TransferConfig
 
     def validate(self) -> None:
-        if self.stage2.sampling_mode not in {"full", "balanced_rows"}:
-            raise ValueError("Transfer sampling_mode must be full or balanced_rows")
         stage2 = load_stage2_config(self.stage2.authority_config)
         stage3 = load_stage3_config(self.stage3.authority_config)
         if self.seed != stage2.data.seed or self.seed != stage3.data.seed:
@@ -143,9 +140,12 @@ class TransferExperimentConfig:
             return value
 
         result = convert(asdict(self))
-        if self.stage2.sampling_mode == "full":
-            result["stage2"].pop("sampling_mode")
         return result
+
+
+def require_full_transfer_artifact(payload: Mapping[str, Any]) -> None:
+    if {"sampling_mode", "balanced_experiment_identity", "sampling_plan"} & payload.keys():
+        raise ValueError("Balanced transfer artifacts are retired and cannot be loaded")
 
 
 def _strict(raw: dict[str, Any], allowed: set[str], context: str) -> None:
@@ -157,13 +157,15 @@ def _strict(raw: dict[str, Any], allowed: set[str], context: str) -> None:
 def transfer_config_from_dict(raw: dict[str, Any]) -> TransferExperimentConfig:
     _strict(raw, {"name", "seed", "stage2", "stage3"}, "transfer config")
     stage2_raw = dict(raw.get("stage2") or {})
+    if "sampling_mode" in stage2_raw:
+        raise ValueError("Balanced transfer is retired; stage2.sampling_mode is unsupported")
     _strict(stage2_raw, {
         "authority_config", "stage1_checkpoint", "prepared_artifacts", "sources",
         "object_layers", "object_ffn_dim", "dropout", "batch_size", "epochs",
         "backbone_frozen_epochs", "backbone_learning_rate",
         "object_encoder_learning_rate", "task_head_learning_rate", "weight_decay",
         "warmup_fraction", "max_grad_norm", "amp_dtype", "optimizer",
-        "physics_only", "final_epoch", "sampling_mode",
+        "physics_only", "final_epoch",
     }, "transfer stage2")
     stage3_raw = dict(raw.get("stage3") or {})
     _strict(stage3_raw, {
@@ -196,7 +198,6 @@ def transfer_config_from_dict(raw: dict[str, Any]) -> TransferExperimentConfig:
             optimizer=str(stage2_raw["optimizer"]),
             physics_only=bool(stage2_raw["physics_only"]),
             final_epoch=int(stage2_raw["final_epoch"]),
-            sampling_mode=str(stage2_raw.get("sampling_mode", "full")),
         ),
         stage3=Stage3TransferConfig(
             authority_config=Path(stage3_raw["authority_config"]),
@@ -234,5 +235,5 @@ def load_transfer_config(path: str | Path) -> TransferExperimentConfig:
 
 __all__ = [
     "Stage2TransferConfig", "Stage3TransferConfig", "TransferExperimentConfig",
-    "load_transfer_config", "transfer_config_from_dict",
+    "load_transfer_config", "require_full_transfer_artifact", "transfer_config_from_dict",
 ]

@@ -13,8 +13,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
-from ablations.stage2_stage3_transfer.config import load_transfer_config
-from ablations.stage2_stage3_transfer.sampling import require_experiment_contract
+from ablations.stage2_stage3_transfer.config import (
+    load_transfer_config, require_full_transfer_artifact,
+)
 from ablations.stage2_stage3_transfer.stage3 import (
     MODEL_KIND,
     MODEL_VERSION,
@@ -104,11 +105,11 @@ def _train_worker(
     if root.exists():
         if resume and _complete(root):
             manifest = json.loads((root / "manifest.json").read_text())
-            require_experiment_contract(config, manifest)
+            require_full_transfer_artifact(manifest)
             if (manifest.get("variant"), manifest.get("task"), manifest.get("fold")) != (variant, task, fold):
                 raise ValueError("Transfer resumed job identity mismatch")
             bank = json.loads(Path(representation).with_suffix(".json").read_text())
-            require_experiment_contract(config, bank)
+            require_full_transfer_artifact(bank)
             if bank.get("identity") != manifest.get("representation_identity"):
                 raise ValueError("Transfer resumed representation identity mismatch")
             return
@@ -168,6 +169,7 @@ def main() -> None:
         baseline_manifest = json.loads(
             (stage2_root / "baseline/manifest.json").read_text(encoding="utf-8")
         )
+        require_full_transfer_artifact(baseline_manifest)
         initial_hash = str(baseline_manifest["initial_shared_state_hash"])
         variants = (None, *config.stage2.sources)
         progress = ProgressReporter().bar(

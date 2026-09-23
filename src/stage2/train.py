@@ -1024,9 +1024,7 @@ def evaluate_stage2(
     return result
 
 
-def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_from: str | Path | None = None, expected_training_identity: dict[str, Any] | None = None, active_task: str | None = None, expected_initial_shared_state_hash: str | None = None, source_row_indices: torch.Tensor | None = None) -> list[dict[str, Any]]:
-    if source_row_indices is not None and (active_task is None or config.representation is not None):
-        raise ValueError("Source row selection requires an Object transfer source")
+def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_from: str | Path | None = None, expected_training_identity: dict[str, Any] | None = None, active_task: str | None = None, expected_initial_shared_state_hash: str | None = None) -> list[dict[str, Any]]:
     if config.representation is not None:
         from .rdkit_train import run_rdkit_stage2_training
 
@@ -1090,17 +1088,6 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
     del teacher_cpu
     training_tasks = (active_task,) if active_task is not None else registry.task_ids
     train_datasets = {task: Stage2TaskDataset(config.data.artifacts_dir, task, "train") for task in training_tasks}
-    selection_identity = {}
-    if source_row_indices is not None:
-        dataset = train_datasets[active_task]
-        dataset.select_train_rows(source_row_indices)
-        selection_identity = {
-            "sampling_mode": "balanced_rows",
-            "selected_rows": len(dataset),
-            "selection_hash": tensor_state_hash("stage2.transfer-selected-rows.v1", {
-                "indices": source_row_indices, "source_rows": dataset.source_rows,
-            }),
-        }
     valid_datasets = {task: Stage2TaskDataset(config.data.artifacts_dir, task, "valid") for task in registry.task_ids}
     for task in training_tasks:
         mode = config.loss.task_loss_modes.get(task, "element_mean")
@@ -1166,7 +1153,6 @@ def run_stage2_training(config: Stage2Config, *, output_dir: str | Path, resume_
                 "physics_only": True,
                 "initial_shared_state_hash": initial_shared_state_hash,
                 "base_training_identity": training_identity["hash"],
-                **selection_identity,
             },
         )
     if expected_training_identity is not None:

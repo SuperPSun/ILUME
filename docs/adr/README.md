@@ -39,7 +39,6 @@
 | No-Stage1 | [0036](0036-no-stage1-rdkit-stage2-stage3-ablation.md) |
 | Stage 3 no-PCGrad（历史对照） | [0069](0069-stage3-no-pcgrad-ablation.md) |
 | Stage2→Stage3 全迁移矩阵 | [0062](0062-stage2-stage3-full-transfer-matrix.md) |
-| Stage2→Stage3 等行数迁移矩阵 | [0065](0065-stage2-stage3-balanced-transfer-matrix.md) |
 | Stage2→Stage3 下游联合适配 | [0068](0068-stage2-stage3-joint-downstream-adaptation.md) |
 
 ## 冻结合同与历史
@@ -53,5 +52,6 @@
 | PRIVATE recipe 试验 | [0051～0053 历史摘要](history.md#adr-0051)；有效机制见 0050，最终 task 设置见 0055 |
 | v2 Stage 3 HPO | [0041](0041-stage3-v2-three-phase-hpo.md)：搜索入口退役；prepared identity 的数据/训练分离修订仍需按当前实现核对，不能据此恢复搜索 |
 | Routing / gate calibration | [0056](0056-stage3-inference-only-routing-ablation.md)、[0059](0059-stage3-gate-only-post-training-calibration.md)：Retired，保留问题、负结果与不恢复边界 |
+| Stage2→Stage3 等行数迁移矩阵 | [0065](0065-stage2-stage3-balanced-transfer-matrix.md)、[0071](0071-retire-balanced-stage2-stage3-transfer.md)：Retired；full-data 仍按 0062/0068 运行，旧 balanced 输出只读 |
 
 历史文件数不代表现役方案数。需要复现旧决定时查对应 Git 版本；日常运行只从正式 YAML 和上方现役合同进入。

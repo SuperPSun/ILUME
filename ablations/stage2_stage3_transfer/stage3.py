@@ -21,8 +21,7 @@ from stage3.data import ObjectKey, Stage3TaskDataset, stable_seed
 from stage3.identity import metadata_identity
 from stage3.prepare import load_prepared_stage3
 
-from .config import TransferExperimentConfig
-from .sampling import experiment_contract, require_experiment_contract
+from .config import TransferExperimentConfig, require_full_transfer_artifact
 
 
 REPRESENTATION_KIND = "ilume_stage2_stage3_transfer_trainable_object_encoder"
@@ -97,13 +96,13 @@ def prepare_representation_bank(
     destination: str | Path,
     expected_initial_shared_state_hash: str,
 ) -> dict[str, Any]:
-    authority = load_stage3_config(experiment.stage3.authority_config)
-    prepared = load_prepared_stage3(authority)
-    keys = _object_keys(prepared["objects"])
     encoder_path = Path(encoder_path)
     encoder_manifest_path = Path(encoder_manifest_path)
     encoder_manifest = json.loads(encoder_manifest_path.read_text(encoding="utf-8"))
-    require_experiment_contract(experiment, encoder_manifest)
+    require_full_transfer_artifact(encoder_manifest)
+    authority = load_stage3_config(experiment.stage3.authority_config)
+    prepared = load_prepared_stage3(authority)
+    keys = _object_keys(prepared["objects"])
     if encoder_manifest.get("encoder_sha256") != sha256_file(encoder_path):
         raise ValueError("Transfer encoder manifest does not match its artifact")
     if encoder_manifest.get("initial_shared_state_hash") != expected_initial_shared_state_hash:
@@ -160,7 +159,6 @@ def prepare_representation_bank(
             "object_encoder_state_hash": object_encoder_state_hash,
             "object_encoder_contract": object_encoder_contract,
             "shape": list(entity_slots.shape),
-            **experiment_contract(experiment),
         },
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -182,7 +180,6 @@ def prepare_representation_bank(
             "object_encoder_contract": object_encoder_contract,
             "object_encoder_state": object_encoder_state,
             "object_encoder_state_hash": object_encoder_state_hash,
-            **experiment_contract(experiment),
         },
     )
     manifest = {
@@ -199,7 +196,6 @@ def prepare_representation_bank(
         "object_encoder_state_hash": object_encoder_state_hash,
         "object_encoder_contract": object_encoder_contract,
         "shape": list(entity_slots.shape),
-        **experiment_contract(experiment),
     }
     atomic_json(destination.with_suffix(".json"), manifest)
     return manifest
@@ -210,9 +206,11 @@ def load_representation_bank(
 ) -> dict[str, Any]:
     path = Path(path)
     manifest = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+    require_full_transfer_artifact(manifest)
     if manifest.get("artifact_sha256") != sha256_file(path):
         raise ValueError("Transfer representation artifact hash mismatch")
     payload = torch.load(path, map_location="cpu", weights_only=False)
+    require_full_transfer_artifact(payload)
     if payload.get("kind") != REPRESENTATION_KIND or payload.get("format_version") != REPRESENTATION_VERSION:
         raise ValueError("Unsupported transfer representation artifact; rerun transfer prepare")
     if payload.get("stage3_prepared_identity") != dict(expected_prepared_identity):
@@ -422,7 +420,7 @@ def train_transfer_job(
     bank = load_representation_bank(
         representation_path, expected_prepared_identity=prepared_identity
     )
-    require_experiment_contract(experiment, bank)
+    require_full_transfer_artifact(bank)
     if bank.get("variant") != variant:
         raise ValueError("Transfer representation variant mismatch")
     if bank["objects"] != prepared["objects"]["objects"]:
@@ -684,7 +682,6 @@ def train_transfer_job(
         "artifact": artifact.name,
         "artifact_sha256": sha256_file(artifact),
         "predictions_sha256": sha256_file(root / "validation_predictions.csv"),
-        **experiment_contract(experiment),
     }
     atomic_json(root / "manifest.json", manifest)
     return manifest

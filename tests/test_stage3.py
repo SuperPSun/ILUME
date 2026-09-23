@@ -19,7 +19,7 @@ import torch
 from common.descriptor_preprocessing import FeaturePreprocessor
 from common.identity import semantic_identity, tensor_state_hash
 from common.io import sha256_file
-from common.training import seed_everything
+from common.training import canonical_json_sha256, seed_everything
 import scripts.stage3.evaluate as evaluate_launcher
 import scripts.stage3.transfer as transfer_launcher
 import scripts.stage3.train as train_launcher
@@ -102,6 +102,8 @@ from ablations.stage2_stage3_transfer.stage3 import (
     MODEL_KIND as TRANSFER_MODEL_KIND,
     MODEL_VERSION as TRANSFER_MODEL_VERSION,
     encode_transfer_objects,
+    load_representation_bank,
+    prepare_representation_bank,
     train_transfer_job,
     transfer_training_seed,
 )
@@ -2299,6 +2301,13 @@ def test_stage2_stage3_transfer_config_covers_full_matrix() -> None:
     assert config.stage3.metric == "validation_raw_mae"
     assert "signature" not in json.dumps(config.to_dict())
     assert transfer_config_from_dict(config.to_dict()) == config
+    assert canonical_json_sha256(config.to_dict()) == (
+        "b9d7905885d1329c315aab50b1a1826a0f73d892b86cfec3d610fcfdcd2857c8"
+    )
+    retired = config.to_dict()
+    retired["stage2"]["sampling_mode"] = "balanced_rows"
+    with pytest.raises(ValueError, match="Balanced transfer is retired"):
+        transfer_config_from_dict(retired)
 
 
 def test_stage2_stage3_transfer_seed_is_numpy_compatible() -> None:
@@ -2310,6 +2319,21 @@ def test_stage2_stage3_transfer_seed_is_numpy_compatible() -> None:
         42, "experiment/thermal_conductivity", 5
     )
     seed_everything(seed)
+
+
+def test_transfer_representation_rejects_retired_balanced_artifact(tmp_path: Path) -> None:
+    path = tmp_path / "balanced.pt"
+    path.with_suffix(".json").write_text(
+        json.dumps({"balanced_experiment_identity": "retired"}), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="Balanced transfer artifacts are retired"):
+        load_representation_bank(path, expected_prepared_identity={})
+    with pytest.raises(ValueError, match="Balanced transfer artifacts are retired"):
+        prepare_representation_bank(
+            _tiny_transfer_config(), variant="baseline", encoder_path=tmp_path / "encoder.pt",
+            encoder_manifest_path=path.with_suffix(".json"), destination=tmp_path / "output.pt",
+            expected_initial_shared_state_hash="initial",
+        )
 
 
 def test_stage3_transfer_joint_object_encoder_is_trainable_for_mixed_topologies() -> None:
@@ -2352,8 +2376,6 @@ def test_stage3_transfer_joint_object_encoder_is_trainable_for_mixed_topologies(
 def test_stage3_transfer_job_updates_object_encoder_and_mlp_together(
     tmp_path: Path,
 ) -> None:
-    from ablations.stage2_stage3_transfer.sampling import experiment_contract
-
     class Dataset:
         def __init__(self, split: str) -> None:
             self.primary_object_ids = torch.tensor([0, 1, 0, 1])
@@ -2405,7 +2427,6 @@ def test_stage3_transfer_job_updates_object_encoder_and_mlp_together(
             "stage2-stage3-transfer-object-encoder-initial.v2",
             initial_encoder_state,
         ),
-        **experiment_contract(config),
     }
     prepared = {
         "metadata": {},
@@ -2605,14 +2626,10 @@ def _write_transfer_job(
     )
 
 
-@pytest.mark.parametrize("sampling_mode", ["full", "balanced_rows"])
 def test_transfer_summary_uses_fold_gain_and_rejects_alignment_drift(
-    tmp_path: Path, sampling_mode: str,
+    tmp_path: Path,
 ) -> None:
-    from ablations.stage2_stage3_transfer.sampling import experiment_contract
-
     config = _tiny_transfer_config()
-    config = replace(config, stage2=replace(config.stage2, sampling_mode=sampling_mode))
     stage3_root = tmp_path / "stage3"
     baseline_mae = {1: 10.0, 2: 20.0}
     for target in config.stage3.targets:
@@ -2632,16 +2649,12 @@ def test_transfer_summary_uses_fold_gain_and_rejects_alignment_drift(
                     stage3_root / "sources" / source.replace("/", "__") / target.replace("/", "__") / f"fold{fold}",
                     variant=source, task=target, fold=fold, mae=transfer_mae,
                 )
-    for path in stage3_root.rglob("manifest.json"):
-        payload = json.loads(path.read_text())
-        payload.update(experiment_contract(config))
-        path.write_text(json.dumps(payload))
     output = tmp_path / "summary"
     summary = summarize_transfer_matrix(
         config, stage3_root=stage3_root, output_dir=output
     )
     assert summary["pair_count"] == 4
-    assert summary.get("sampling_mode", "full") == sampling_mode
+    assert "sampling_mode" not in summary
     with (output / "transfer_gain_pairs.csv").open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     row = next(item for item in rows if item["source"] == "source/a" and item["target"] == "target/a")
@@ -2658,19 +2671,17 @@ def test_transfer_summary_uses_fold_gain_and_rejects_alignment_drift(
     assert transfer_gain(10.0, 8.0) == pytest.approx(0.2)
     with pytest.raises(ValueError, match="finite and positive"):
         transfer_gain(0.0, 0.0)
-    other = replace(config, stage2=replace(
-        config.stage2, sampling_mode="balanced_rows" if sampling_mode == "full" else "full"
-    ))
-    with pytest.raises(ValueError, match="identity mismatch"):
+    contaminated = stage3_root / "sources/source__a/target__a/fold1/manifest.json"
+    payload = json.loads(contaminated.read_text(encoding="utf-8"))
+    payload["balanced_experiment_identity"] = "retired"
+    contaminated.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="Balanced transfer artifacts are retired"):
         summarize_transfer_matrix(
-            other, stage3_root=stage3_root, output_dir=tmp_path / "mixed-summary"
+            config, stage3_root=stage3_root, output_dir=tmp_path / "mixed-summary"
         )
-    drift = (
-        stage3_root / "sources/source__a/target__a/fold1/manifest.json"
-    )
-    payload = json.loads(drift.read_text(encoding="utf-8"))
+    payload.pop("balanced_experiment_identity")
     payload["row_target_hash"] = "wrong-order"
-    drift.write_text(json.dumps(payload), encoding="utf-8")
+    contaminated.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ValueError, match="row_target_hash mismatch"):
         summarize_transfer_matrix(
             config, stage3_root=stage3_root, output_dir=tmp_path / "bad-summary"

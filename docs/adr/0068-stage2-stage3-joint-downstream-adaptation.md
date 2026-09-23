@@ -5,6 +5,9 @@
 - 修订：[ADR-0062](0062-stage2-stage3-full-transfer-matrix.md) 与
   [ADR-0065](0065-stage2-stage3-balanced-transfer-matrix.md) 的 Stage 3 下游训练
 
+> 2026-09-23：balanced 变体已由 [ADR-0071](0071-retire-balanced-stage2-stage3-transfer.md)
+> 退役；下述联合适配合同现仅用于 full-data transfer。
+
 ## 背景
 
 原 transfer matrix 将十个 Stage2 variant 的 ObjectEncoder 输出固化为 1024D
@@ -14,8 +17,8 @@ ObjectEncoder，而九个 source 使用经过 physics supervision 更新的 Obje
 
 ## 决定
 
-1. Stage2 variant 的生成合同保持不变：baseline 仍为零 Stage2 update，九个 source 仍按 full 或
-   balanced 合同训练。已有 Stage2 encoder artifact 可以直接复用。
+1. Stage2 variant 的生成合同保持不变：baseline 仍为零 Stage2 update，九个 source
+   使用 full-data 合同训练。balanced 合同仅见 ADR-0065 的历史记录。
 2. representation prepare 不再固化 ObjectEncoder 输出，而是按同一 ObjectKey 顺序保存 Stage1
    entity slots、role、slot count，以及该 variant 的 ObjectEncoder 初始 state/结构。Stage1 backbone
    在下游始终冻结；不同 source 的 slots 可因其 Stage2 source 训练期间的 Stage1 backbone 更新而不同。
@@ -30,8 +33,8 @@ ObjectEncoder，而九个 source 使用经过 physics supervision 更新的 Obje
 
 ## 后果
 
-- full与balanced实验均需重新执行representation prepare、1000个下游job和summary；十个Stage2
-  encoder无需重训。
+- full-data 实验按需执行 representation prepare、1000 个下游 job 和 summary；
+  已有效的 full-data Stage2 encoder 无需重训。balanced 旧产物保持只读。
 - 新矩阵衡量的是“不同Stage2初始化在相同下游联合适配预算后的收益”，不再是冻结表示的线性/MLP
   probing结果。它仍不能单独分离Stage1 backbone更新与ObjectEncoder更新的贡献。
 - 现役Stage2、Stage3 HoME、Single-task MLP和benchmark合同不变。

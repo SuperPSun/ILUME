@@ -1,6 +1,6 @@
 # ADR-0065：Stage2→Stage3 等行数迁移矩阵
 
-- 状态：Accepted
+- 状态：Retired（由 [ADR-0071](0071-retire-balanced-stage2-stage3-transfer.md) 退役）
 - 日期：2026-09-21
 - 范围：`configs/ablations/stage2_stage3_transfer_balanced.yaml`
 - 关联：[ADR-0062](0062-stage2-stage3-full-transfer-matrix.md)
@@ -8,6 +8,9 @@
 > 2026-09-22：下游训练按
 > [ADR-0068](0068-stage2-stage3-joint-downstream-adaptation.md) 同步更新ObjectEncoder与MLP；
 > 本文的等行数抽样与Stage2更新预算合同不变。
+
+> 2026-09-23：等行数实验的配置与执行能力已按 ADR-0071 移除。以下为历史合同，
+> 旧输出只读，不可用当前代码 resume、prepare、train 或 summarize。
 
 ## 决定
 
