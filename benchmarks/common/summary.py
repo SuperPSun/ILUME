@@ -18,6 +18,38 @@ from common.reporting import REPORTING_SCHEMA_VERSION, sanitize_task_id
 
 
 SUMMARY_SCHEMA_VERSION = 1
+RADAR_TASK_GROUPS = (
+    (
+        "experiment/electrical_conductivity",
+        "experiment/self_diffusion_coefficient",
+        "experiment/viscosity",
+        "experiment/thermal_conductivity",
+    ),
+    (
+        "experiment/density",
+        "experiment/heat_capacity",
+        "experiment/speed_of_sound",
+        "experiment/surface_tension",
+    ),
+    (
+        "experiment/equilibrium_pressure",
+        "experiment/glass_transition_temperature",
+        "experiment/melting_point",
+        "experiment/thermal_decomposition_temperature",
+    ),
+    (
+        "experiment/dynamic_relative_permittivity",
+        "experiment/static_relative_permittivity",
+        "experiment/refractive_index",
+    ),
+    (
+        "experiment/solvation",
+        "experiment/transfer",
+        "experiment/transfer_organic",
+        "experiment/x_co2",
+    ),
+    ("experiment/pec50",),
+)
 SUMMARY_FILES = (
     "overview.md",
     "radar.svg",
@@ -954,6 +986,18 @@ def _radar_score(value: float, best: float) -> float:
     return best / value
 
 
+def _ordered_radar_tasks(tasks: Sequence[str]) -> tuple[str, ...]:
+    available = set(tasks)
+    grouped = tuple(
+        task
+        for group in RADAR_TASK_GROUPS
+        for task in group
+        if task in available
+    )
+    grouped_set = set(grouped)
+    return grouped + tuple(sorted(available - grouped_set))
+
+
 def _radar_panel_data(
     rows: Sequence[Mapping[str, Any]],
     leaders: Sequence[Mapping[str, Any]],
@@ -969,9 +1013,13 @@ def _radar_panel_data(
         if row.get("run") not in model_by_run or not _finite(row.get(metric_key)):
             continue
         values[str(row["run"]), str(row[task_key])] = float(row[metric_key])
-    axes = tuple(tasks) if tasks is not None else tuple(sorted({
-        task for run, task in values if run in model_by_run
-    }))
+    axes = (
+        tuple(tasks)
+        if tasks is not None
+        else _ordered_radar_tasks(
+            tuple(task for run, task in values if run in model_by_run)
+        )
+    )
     series: list[dict[str, Any]] = []
     for run in ordered_runs:
         scores: list[float] = []

@@ -73,7 +73,11 @@ from benchmarks.common.features import (
     feature_schema,
     raw_feature_matrix,
 )
-from benchmarks.common.summary import SUMMARY_FILES, publish_summary
+from benchmarks.common.summary import (
+    SUMMARY_FILES,
+    _ordered_radar_tasks,
+    publish_summary,
+)
 from benchmarks.iltransr.adapter import (
     CharacterVocabulary as ILTransRCharacterVocabulary,
     ConditionStats as ILTransRConditionStats,
@@ -1398,6 +1402,27 @@ def test_summary_labels_capacity_v1_stage3_scales(tmp_path: Path) -> None:
     assert test_size > validation_size
     assert test_size == 6.0
     assert validation_size > 4.0
+
+
+def test_radar_task_order_groups_related_properties_and_sorts_unknowns():
+    tasks = (
+        "experiment/z_unknown",
+        "experiment/static_relative_permittivity",
+        "experiment/dynamic_relative_permittivity",
+        "experiment/a_unknown",
+        "experiment/density",
+        "experiment/electrical_conductivity",
+    )
+
+    assert _ordered_radar_tasks(tasks) == (
+        "experiment/electrical_conductivity",
+        "experiment/density",
+        "experiment/dynamic_relative_permittivity",
+        "experiment/static_relative_permittivity",
+        "experiment/a_unknown",
+        "experiment/z_unknown",
+    )
+
 
 # --- D-MPNN runtime smoke ---
 
