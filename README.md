@@ -8,7 +8,7 @@ ILUME 是按 Stage 组织的分子科研 pipeline：Global-RDKit v2 主线在 St
 |---|---|
 | 跑现役主线 | [安装](#安装与数据) → [Stage 1](#stage-1) → [Stage 2](#stage-2) → [Stage 3](#stage-3) |
 | 跑对比模型 | [Baseline 通用运行](#baselines-and-ablations)，再展开对应模型的环境准备 |
-| 跑内部消融 | [no-PCGrad](#stage-3-no-pcgrad-消融)、[RDKit-HoME](#rdkit-2d--home-representation-ablation)、[No-Stage1](#no-stage1rdkit-2d--stage2--stage3-home)；Single-task MLP 与 [Stage2→Stage3 transfer matrix](#stage2stage3-transfer-matrix) 见 baseline 部分 |
+| 跑内部消融 | [历史 no-PCGrad 对照](#历史-stage-3-no-pcgrad-消融)、[RDKit-HoME](#rdkit-2d--home-representation-ablation)、[No-Stage1](#no-stage1rdkit-2d--stage2--stage3-home)；Single-task MLP 与 [Stage2→Stage3 transfer matrix](#stage2stage3-transfer-matrix) 见 baseline 部分 |
 | 汇总结果 | [输出与结果汇总](#输出与结果汇总) |
 | 查科学约束/历史 | [ADR 索引](docs/adr/README.md) / [已取代设计摘要](docs/adr/history.md) |
 | 跑冻结的 legacy 研究 | [Capacity v1 手册](docs/capacity-v1-runbook.md) |
@@ -72,17 +72,15 @@ Stage 2 只从完整 Object v3 joint epoch 恢复，旧 Object v2、旧式 v2 re
 
 ## Stage 3
 
-Stage 3 使用冻结的 Stage 2 Object v3 表示、动态 HoME、raw sampling 与 ownership-aware clipping。现役 v2 按 owner-specific LR、固定训练寿命和 task-specific PRIVATE capacity/dropout 执行三阶段训练：15 个全任务 epoch、六个同源 GROUP 分支，以及从同一 anchor 独立解析的 20 个 PRIVATE task scope；零预算 scope 直接继承 anchor，其余 scope 固定训练并 stitch。owner 提前冻结不删除 task，validation 只记录，最终发布固定预算状态拼接的 `three_phase_final.pt`。three-phase validation 与独立 evaluation 额外按 task 报告 GLOBAL/GROUP/PRIVATE gate mass、归一化 gate entropy 和 PRIVATE mass 分位数，不改变预测或 prediction CSV。数据、模型、五折调度和恢复合同见 [ADR 索引](docs/adr/README.md)。
+Stage 3 使用冻结的 Stage 2 Object v3 表示、动态 HoME、raw sampling、ownership-aware clipping 与原始梯度 owner 加权聚合。现役 v2 按 owner-specific LR、固定训练寿命和 task-specific PRIVATE capacity/dropout 执行三阶段训练：15 个全任务 epoch、六个同源 GROUP 分支，以及从同一 anchor 独立解析的 20 个 PRIVATE task scope；零预算 scope 直接继承 anchor，其余 scope 固定训练并 stitch。owner 提前冻结不删除 task，validation 只记录，最终发布固定预算状态拼接的 `three_phase_final.pt`。three-phase validation 与独立 evaluation 额外按 task 报告 GLOBAL/GROUP/PRIVATE gate mass、归一化 gate entropy 和 PRIVATE mass 分位数，不改变预测或 prediction CSV。数据、模型、五折调度和恢复合同见 [ADR 索引](docs/adr/README.md)。
+
+Base 继续只读复用 `outputs/v2/stage3/base/prepare/artifacts`；运行前须确认该目录完整且哈希校验通过。若本机缺失 prepared 文件，先恢复同一身份的完整产物。以下命令不会重建或覆盖旧 prepared、checkpoint 与 prediction。
 
 ```bash
-python scripts/stage3/prepare.py \
-  --config configs/v2/stage3/base.yaml \
-  --output outputs/v2/stage3/base/prepare
-
 python scripts/stage3/train.py \
   --config configs/v2/stage3/base.yaml \
   --fold 1 2 3 4 5 \
-  --output outputs/v2/stage3/base/train \
+  --output outputs/v2/stage3/base_no_pcgrad/train \
   --max-parallel 4 \
   --devices cuda:0,cuda:1,cuda:2,cuda:3
 ```
@@ -92,20 +90,18 @@ python scripts/stage3/train.py \
 ```bash
 python scripts/stage3/evaluate.py \
   --config configs/v2/stage3/base.yaml \
-  --checkpoint-dir outputs/v2/stage3/base/train \
+  --checkpoint-dir outputs/v2/stage3/base_no_pcgrad/train \
   --split valid --fold 1 2 3 4 5 \
-  --output outputs/v2/stage3/base/evaluate_valid
+  --output outputs/v2/stage3/base_no_pcgrad/evaluate_valid
 
 python scripts/stage3/evaluate.py \
   --config configs/v2/stage3/base.yaml \
-  --checkpoint-dir outputs/v2/stage3/base/train \
+  --checkpoint-dir outputs/v2/stage3/base_no_pcgrad/train \
   --split test --ensemble-folds \
-  --output outputs/v2/stage3/base/evaluate_test
+  --output outputs/v2/stage3/base_no_pcgrad/evaluate_test
 ```
 
-Stage 3 evaluator 对现役 v2 默认加载每个 fold 的 `three_phase_final.pt`；legacy v1 与
-Capacity v1 仍默认加载 `taskwise_refined.pt`，且只有 legacy 配置支持显式
-`--checkpoint-epoch N`。
+Stage 3 evaluator 对现役 v2 默认加载每个 fold 的 `three_phase_final.pt`。旧三阶段 PCGrad 产物不兼容新评估身份；legacy v1 与 Capacity v1 的历史 `taskwise_refined.pt` 仍可只读评估，但其训练和恢复入口已退役。
 
 ### 知识图谱性质分组候选
 
@@ -117,24 +113,24 @@ Capacity v1 仍默认加载 `taskwise_refined.pt`，且只有 legacy 配置支�
 python scripts/stage3/train.py \
   --config configs/v2/stage3/base1.yaml \
   --fold 1 2 3 4 5 \
-  --output outputs/v2/stage3/base1/train \
+  --output outputs/v2/stage3/base1_no_pcgrad/train \
   --max-parallel 4 \
   --devices cuda:0,cuda:1,cuda:2,cuda:3
 
 python scripts/stage3/evaluate.py \
   --config configs/v2/stage3/base1.yaml \
-  --checkpoint-dir outputs/v2/stage3/base1/train \
+  --checkpoint-dir outputs/v2/stage3/base1_no_pcgrad/train \
   --split valid --fold 1 2 3 4 5 \
-  --output outputs/v2/stage3/base1/evaluate_valid
+  --output outputs/v2/stage3/base1_no_pcgrad/evaluate_valid
 
 python scripts/stage3/evaluate.py \
   --config configs/v2/stage3/base1.yaml \
-  --checkpoint-dir outputs/v2/stage3/base1/train \
+  --checkpoint-dir outputs/v2/stage3/base1_no_pcgrad/train \
   --split test --ensemble-folds \
-  --output outputs/v2/stage3/base1/evaluate_test
+  --output outputs/v2/stage3/base1_no_pcgrad/evaluate_test
 ```
 
-该候选尚未取代现役Base；不要覆盖`outputs/v2/stage3/base`下的既有结果。
+该候选尚未取代现役Base；不要覆盖`outputs/v2/stage3/base`下的既有结果；新训练写入带 `_no_pcgrad` 后缀的根。
 
 在相同知识图谱分组下，新增五个独立容量/预算候选，详见
 [ADR-0064](docs/adr/0064-stage3-knowledge-graph-budget-candidates.md)：
@@ -155,14 +151,14 @@ python scripts/stage3/evaluate.py \
 python scripts/stage3/train.py \
   --config configs/v2/stage3/base1_1.yaml \
   --fold 1 2 3 4 5 \
-  --output outputs/v2/stage3/base1_1/train \
+  --output outputs/v2/stage3/base1_1_no_pcgrad/train \
   --max-parallel 4 --devices cuda:0,cuda:1,cuda:2,cuda:3
 
 python scripts/stage3/evaluate.py \
   --config configs/v2/stage3/base1_1.yaml \
-  --checkpoint-dir outputs/v2/stage3/base1_1/train \
+  --checkpoint-dir outputs/v2/stage3/base1_1_no_pcgrad/train \
   --split valid --fold 1 2 3 4 5 \
-  --output outputs/v2/stage3/base1_1/evaluate_valid
+  --output outputs/v2/stage3/base1_1_no_pcgrad/evaluate_valid
 ```
 
 先完成全部候选的五折validation比较，再确定一个候选运行test；test不得用于候选间调参。
@@ -171,9 +167,9 @@ python scripts/stage3/evaluate.py \
 ```bash
 python scripts/stage3/evaluate.py \
   --config configs/v2/stage3/base1_1.yaml \
-  --checkpoint-dir outputs/v2/stage3/base1_1/train \
+  --checkpoint-dir outputs/v2/stage3/base1_1_no_pcgrad/train \
   --split test --ensemble-folds \
-  --output outputs/v2/stage3/base1_1/evaluate_test
+  --output outputs/v2/stage3/base1_1_no_pcgrad/evaluate_test
 ```
 
 以 `base1_5` 为共同锚点的五个定向小实验见
@@ -194,20 +190,20 @@ python scripts/stage3/evaluate.py \
 python scripts/stage3/train.py \
   --config configs/v2/stage3/base2_1.yaml \
   --fold 1 2 3 4 5 \
-  --output outputs/v2/stage3/base2_1/train \
+  --output outputs/v2/stage3/base2_1_no_pcgrad/train \
   --max-parallel 4 --devices cuda:0,cuda:1,cuda:2,cuda:3
 
 python scripts/stage3/evaluate.py \
   --config configs/v2/stage3/base2_1.yaml \
-  --checkpoint-dir outputs/v2/stage3/base2_1/train \
+  --checkpoint-dir outputs/v2/stage3/base2_1_no_pcgrad/train \
   --split valid --fold 1 2 3 4 5 \
-  --output outputs/v2/stage3/base2_1/evaluate_valid
+  --output outputs/v2/stage3/base2_1_no_pcgrad/evaluate_valid
 
 python scripts/stage3/evaluate.py \
   --config configs/v2/stage3/base2_1.yaml \
-  --checkpoint-dir outputs/v2/stage3/base2_1/train \
+  --checkpoint-dir outputs/v2/stage3/base2_1_no_pcgrad/train \
   --split test --ensemble-folds \
-  --output outputs/v2/stage3/base2_1/evaluate_test
+  --output outputs/v2/stage3/base2_1_no_pcgrad/evaluate_test
 ```
 
 五个候选都可以运行test ensemble，但test只作探索性报告；候选选择仍以完整五折validation
@@ -225,90 +221,18 @@ Capacity v1 继续冻结在 legacy v1 五模态合同，并直接使用已提交
 `scripts/stage3/capacity.py --manifest ... --output ...` 生成；当前命令见
 [Capacity v1 操作手册](docs/capacity-v1-runbook.md)。
 
-### Stage 3 no-PCGrad 消融
+### 历史 Stage 3 no-PCGrad 消融
 
-[ADR-0069](docs/adr/0069-stage3-no-pcgrad-ablation.md) 以现役 Base 为对照，使用
-`configs/ablations/stage3_no_pcgrad.yaml` 的 `training.pcgrad_mode: "off"` 关闭
-Phase 1/2 的冲突投影，保留原始 task/group 加权聚合和其余训练合同。
-省略该字段仍使用原来的 PCGrad；`"off"` 在 YAML 中必须带引号。
-
-前置条件是完整的 Base 20-task prepared artifact、对应 Stage 2 encoder、Base 五折
-final checkpoint/manifest 和 validation/test 报告。仅有 JSON 元数据不够；先在运行服务器
-用下面的只读检查核对 prepared、Base final state 与已有 evaluation 的身份（不执行 forward）：
-
-```bash
-PYTHONPATH=src python - <<'PY'
-import json
-from pathlib import Path
-from common.identity import require_compatible_identity
-from stage3.config import load_stage3_config
-from stage3.prepare import load_prepared_stage3
-from stage3.evaluate import resolve_stage3_evaluation_identity
-
-base = load_stage3_config("configs/v2/stage3/base.yaml")
-ablation = load_stage3_config("configs/ablations/stage3_no_pcgrad.yaml")
-load_prepared_stage3(ablation)
-root = Path("outputs/v2/stage3/base")
-for split, folds in (("valid", range(1, 6)), ("test", (None,))):
-    for fold in folds:
-        expected = resolve_stage3_evaluation_identity(
-            base, root / "train", split=split,
-            ensemble_folds=split == "test", fold=fold,
-        )
-        run = root / (f"evaluate_valid/fold{fold}" if split == "valid" else "evaluate_test")
-        metadata = json.loads((run / "metadata.json").read_text())
-        assert metadata["status"] == "completed"
-        require_compatible_identity(expected, metadata["semantic_identity"], context=str(run))
-print("Base prepared/checkpoint/evaluation identities verified")
-PY
-```
-
-缺失或哈希不匹配时先补齐同一身份的产物，不覆盖旧目录、不放宽校验。
-检查通过后依次执行；以下五折训练默认使用一张支持 BF16 的 GPU 串行运行：
-
-```bash
-python scripts/stage3/train.py \
-  --config configs/ablations/stage3_no_pcgrad.yaml \
-  --fold 1 2 3 4 5 \
-  --output outputs/ablations/stage3_no_pcgrad/train
-
-python scripts/stage3/evaluate.py \
-  --config configs/ablations/stage3_no_pcgrad.yaml \
-  --checkpoint-dir outputs/ablations/stage3_no_pcgrad/train \
-  --split valid --fold 1 2 3 4 5 \
-  --study-id stage3_no_pcgrad \
-  --output outputs/ablations/stage3_no_pcgrad/evaluate_valid
-
-python scripts/stage3/evaluate.py \
-  --config configs/ablations/stage3_no_pcgrad.yaml \
-  --checkpoint-dir outputs/ablations/stage3_no_pcgrad/train \
-  --split test --ensemble-folds \
-  --study-id stage3_no_pcgrad \
-  --output outputs/ablations/stage3_no_pcgrad/evaluate_test
-
-python scripts/benchmarks/summarize.py \
-  --input outputs/v2/stage3/base/evaluate_valid \
-          outputs/v2/stage3/base/evaluate_test \
-          outputs/ablations/stage3_no_pcgrad/evaluate_valid \
-          outputs/ablations/stage3_no_pcgrad/evaluate_test \
-  --output outputs/ablations/stage3_no_pcgrad/comparison
-```
-
-有四张可用 GPU 时可在 train 命令增加
-`--max-parallel 4 --devices cuda:0,cuda:1,cuda:2,cuda:3`；各 fold 独立占用模型和优化器内存。
-训练恢复只在同一 no-PCGrad 输出根显式添加 `--resume`；新 train/evaluate 目录必须未被使用。
-
-比较 `comparison/stage3_validation_leaderboard.csv` 的 `macro_normalized_mae`，以及
-`stage3_validation_metrics.csv` 中逐 task 的 `normalized_mae_mean`、`mae_mean`。
-逐 task 配对差值定义为 `no-PCGrad - Base`，负值表示消融误差更低；五折等权后再对
-20 个 task 等权，不按样本量加权。汇总中的 run/source_run 区分两个实验。
-test 使用现有 evaluator 的 eligible task 集合和五折 ensemble，独立报告，不据此调参。
+[ADR-0069](docs/adr/0069-stage3-no-pcgrad-ablation.md) 与
+`outputs/ablations/stage3_no_pcgrad/` 是主线切换前的历史对照记录。
+独立消融 YAML 已退役；新训练使用 [ADR-0070](docs/adr/0070-stage3-retire-pcgrad.md)
+定义的 `weighted_owner_raw_v1` 身份，必须从新目录训练，不能将旧结果改名复用。
 
 ### RDKit 2D → HoME representation ablation
 
 [ADR-0034](docs/adr/0034-rdkit-2d-home-representation-ablation.md) 只用
 RDKit 2D descriptors 与两个可训练的 `Linear → LayerNorm` adapter 替换 frozen
-Stage2 Object representation；HoME、PCGrad、sampling、三阶段训练和 evaluation 保持
+Stage2 Object representation；HoME、原始梯度 owner 加权聚合、sampling、三阶段训练和 evaluation 保持
 Stage3 Base 合同。该实验不读取 Stage1/2 checkpoint，也不单独 HPO。
 
 ```bash
@@ -319,19 +243,19 @@ python scripts/stage3/prepare.py \
 python scripts/stage3/train.py \
   --config configs/ablations/stage1_stage2_rdkit_home.yaml \
   --fold 1 2 3 4 5 \
-  --output outputs/ablations/stage1_stage2_rdkit_home/train
+  --output outputs/ablations/stage1_stage2_rdkit_home_no_pcgrad/train
 
 python scripts/stage3/evaluate.py \
   --config configs/ablations/stage1_stage2_rdkit_home.yaml \
-  --checkpoint-dir outputs/ablations/stage1_stage2_rdkit_home/train \
+  --checkpoint-dir outputs/ablations/stage1_stage2_rdkit_home_no_pcgrad/train \
   --split valid --fold 1 2 3 4 5 \
-  --output outputs/ablations/stage1_stage2_rdkit_home/evaluate/valid
+  --output outputs/ablations/stage1_stage2_rdkit_home_no_pcgrad/evaluate/valid
 
 python scripts/stage3/evaluate.py \
   --config configs/ablations/stage1_stage2_rdkit_home.yaml \
-  --checkpoint-dir outputs/ablations/stage1_stage2_rdkit_home/train \
+  --checkpoint-dir outputs/ablations/stage1_stage2_rdkit_home_no_pcgrad/train \
   --split test --ensemble-folds \
-  --output outputs/ablations/stage1_stage2_rdkit_home/evaluate/test
+  --output outputs/ablations/stage1_stage2_rdkit_home_no_pcgrad/evaluate/test
 
 python scripts/benchmarks/summarize.py \
   --input outputs/v2 outputs/benchmarks outputs/ablations \
@@ -365,19 +289,19 @@ python scripts/stage3/prepare.py \
 python scripts/stage3/train.py \
   --config configs/ablations/no_stage1_rdkit_stage3.yaml \
   --fold 1 2 3 4 5 \
-  --output outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/train
+  --output outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3_no_pcgrad/train
 
 python scripts/stage3/evaluate.py \
   --config configs/ablations/no_stage1_rdkit_stage3.yaml \
-  --checkpoint-dir outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/train \
+  --checkpoint-dir outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3_no_pcgrad/train \
   --split valid --fold 1 2 3 4 5 \
-  --output outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid
+  --output outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3_no_pcgrad/evaluate/valid
 
 python scripts/stage3/evaluate.py \
   --config configs/ablations/no_stage1_rdkit_stage3.yaml \
-  --checkpoint-dir outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/train \
+  --checkpoint-dir outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3_no_pcgrad/train \
   --split test --ensemble-folds \
-  --output outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test
+  --output outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3_no_pcgrad/evaluate/test
 
 python scripts/benchmarks/summarize.py \
   --input outputs/v2 outputs/benchmarks outputs/ablations \
@@ -446,7 +370,7 @@ Stage3 Single-task MLP 是绑定旧 v1 512D prepared artifact 的冻结 21-task 
 20-task catalog 不再提供直接运行入口；旧输出保持只读。其 primary/partner Object embedding
 和 normalized conditions 做有序 concat，21 个 task × 5 folds 各自训练
 完全独立的 `input -> 512 -> 256 -> 1` MLP，并由一个 Stage3-only sweep/reporting identity
-汇总。它同时移除 HoME routing、跨任务共享、PCGrad 与 composite sampling，因此只能解释为
+汇总。它同时移除 HoME routing、跨任务共享与 composite sampling，因此只能解释为
 整体架构消融，不能解释成某个单组件的贡献。
 
 ### Stage2→Stage3 transfer matrix

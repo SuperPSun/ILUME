@@ -1,5 +1,7 @@
 # ILUME Capacity v1 操作手册
 
+> 历史手册：根据 [ADR-0070](adr/0070-stage3-retire-pcgrad.md)，当前 Stage 3 v1/Capacity 训练与恢复入口已退役，以下 Stage 3 训练命令不可执行；已有最终产物仍可只读评估。
+
 本文只给出正式运行命令；实现验收不会执行这些 prepare/train/evaluate。所有命令从仓库
 根目录运行。开始前必须确认 Git clean、没有仍在写入的现役 Stage job，并保留全部
 `outputs/v1` 与 `summary/`。

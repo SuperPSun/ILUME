@@ -528,6 +528,8 @@ def main() -> int:
 
     from common.outputs import repository_path
     config = load_stage3_config(args.config)
+    if config.training.schedule_mode != "three_phase":
+        parser.error("Legacy Stage 3 training and resume are retired; historical final artifacts remain read-only")
     output = repository_path(args.output)
     try:
         folds = validate_stage3_folds(args.fold)

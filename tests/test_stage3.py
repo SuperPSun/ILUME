@@ -58,8 +58,8 @@ from stage3.data import (
     shuffled_epoch_indices,
     source_path,
 )
-from stage3.evaluate import evaluate_checkpoints
-from stage3.identity import build_stage3_prepared_identity, build_stage3_training_identity
+from stage3.evaluate import _load_model, evaluate_checkpoints
+from stage3.identity import build_stage3_prepared_identity, build_stage3_training_identity, metadata_identity
 from stage3.model import (
     GLOBAL,
     Stage3SparseModel,
@@ -68,7 +68,7 @@ from stage3.model import (
     summarize_task_gate_observations,
     task_gate_observations,
 )
-from stage3.pcgrad import hierarchical_pcgrad
+from stage3.gradient_assembly import assemble_owner_gradients
 from stage3.prepare import load_prepared_stage3, prepare_stage3
 from stage3.three_phase import (
     _OwnerScheduler,
@@ -80,8 +80,6 @@ from stage3.three_phase import (
     _stitch_owner_deltas,
 )
 from stage3.train import (
-    STAGE3_RDKIT_CHECKPOINT_KIND,
-    STAGE3_RDKIT_REFINED_KIND,
     _clip_joint_gradients,
     build_resolved_training_plan,
     checkpoint_epochs,
@@ -988,15 +986,12 @@ def test_three_phase_private_dropout_override_is_bounded(value: object) -> None:
         stage3_config_from_dict(payload)
 
 
-@pytest.mark.parametrize("pcgrad_mode", ("hierarchical", "off"))
 def test_three_phase_training_publishes_fixed_final_state(
     tiny_prepared: Stage3Config,
-    pcgrad_mode: str,
 ) -> None:
     config = _tiny_three_phase(tiny_prepared)
     config = replace(
         config,
-        training=replace(config.training, pcgrad_mode=pcgrad_mode),
         tasks={
             **config.tasks,
             "experiment/a": replace(
@@ -1023,6 +1018,31 @@ def test_three_phase_training_publishes_fixed_final_state(
     artifact = torch.load(
         output / "three_phase_final.pt", map_location="cpu", weights_only=False
     )
+    phase_checkpoint = torch.load(
+        output / "phase_1/checkpoint_epoch_00002.pt", map_location="cpu", weights_only=False
+    )
+    assert phase_checkpoint["format_version"] == 2
+    assert "pcgrad_rng" not in phase_checkpoint
+    historical = dict(artifact)
+    historical_plan = json.loads(json.dumps(artifact["resolved_training_plan"]))
+    historical_plan["format_version"] = 3
+    historical_plan["math"].pop("gradient_aggregation")
+    historical_plan["math"]["pcgrad"] = {
+        "phase1": "hierarchical_ownership_blocks_v1",
+        "phase2": "group_block_only_v1", "phase3": "off",
+    }
+    historical["resolved_training_plan"] = historical_plan
+    old_payload = json.loads(json.dumps(artifact["training_identity"]["payload"]))
+    old_payload["contract_version"] = 5
+    old_payload["plan"]["math"] = historical_plan["math"]
+    historical["training_identity"] = semantic_identity("stage3.training", old_payload)
+    historical_path = output / "historical-three-phase.pt"
+    torch.save(historical, historical_path)
+    with pytest.raises(ValueError, match="identity"):
+        _load_model(
+            config, load_prepared_stage3(config), historical_path, 1, 0,
+            torch.device("cpu"), three_phase_final=True,
+        )
     manifest = json.loads((output / "three_phase_final.json").read_text())
     assert artifact["kind"] == "ilume_stage3_three_phase_final"
     assert manifest["artifact_sha256"] == sha256_file(
@@ -1065,20 +1085,13 @@ def test_three_phase_training_publishes_fixed_final_state(
     assert "selected_epoch" not in json.dumps(manifest)
     assert "best_state" not in json.dumps(manifest)
     plan = json.loads((output / "resolved_training_plan.json").read_text())
-    assert plan["phases"]["phase1"]["pcgrad"] == pcgrad_mode
-    for branch in plan["phases"]["phase2"]["branches"].values():
-        assert branch["pcgrad"] == ("group_only" if pcgrad_mode == "hierarchical" else "off")
-    assert plan["math"]["pcgrad"] == (
-        {"phase1": "hierarchical_ownership_blocks_v1", "phase2": "group_block_only_v1", "phase3": "off"}
-        if pcgrad_mode == "hierarchical" else dict.fromkeys(("phase1", "phase2", "phase3"), "off")
-    )
+    assert plan["math"]["gradient_aggregation"] == "weighted_owner_raw_v1"
+    assert "pcgrad" not in json.dumps(plan).lower()
+    assert plan["format_version"] == 4
+    assert artifact["training_identity"]["payload"]["contract_version"] == 6
     for scope in ("phase_1", "phase_2/g1", "phase_2/g2"):
-        diagnostics = [json.loads(line) for line in (output / scope / "diagnostics.jsonl").read_text().splitlines()]
-        assert all(row["pcgrad_applied"] == (pcgrad_mode == "hierarchical") for row in diagnostics)
-        if pcgrad_mode == "off":
-            assert all(row["pcgrad_scope"] == "off" for row in diagnostics)
-    assert plan["format_version"] == 3
-    assert artifact["training_identity"]["payload"]["contract_version"] == 5
+        diagnostics = (output / scope / "diagnostics.jsonl").read_text()
+        assert "pcgrad" not in diagnostics.lower()
     assert plan["phases"]["phase1"]["owners"]["PRIVATE:experiment/a"][
         "freeze_epoch"
     ] == 1
@@ -1195,14 +1208,6 @@ def test_three_phase_training_publishes_fixed_final_state(
         config, 1, output_dir=output, resume_from=output
     )
     assert resumed[-1]["phase"] == "three_phase_final"
-    other = replace(
-        config,
-        training=replace(config.training, pcgrad_mode="off" if pcgrad_mode == "hierarchical" else "hierarchical"),
-    )
-    with pytest.raises(ValueError, match="identity"):
-        run_stage3_training(other, 1, output_dir=output, resume_from=output)
-    with pytest.raises(ValueError, match="identity"):
-        evaluate_checkpoints(other, output, split="valid", ensemble_folds=False, fold=1)
     evaluated = evaluate_checkpoints(
         config,
         output,
@@ -1442,46 +1447,22 @@ def test_raw_sampling_uses_every_index_once_without_padding() -> None:
 def test_training_variants_preserve_prepared_data_but_change_identity(
     tiny_prepared: Stage3Config,
 ) -> None:
-    metadata_path = tiny_prepared.data.artifacts_dir / "metadata.json"
+    config = _tiny_three_phase(tiny_prepared)
+    metadata_path = config.data.artifacts_dir / "metadata.json"
     original_metadata = metadata_path.read_bytes()
-    assert effective_training_seed(tiny_prepared) == tiny_prepared.data.seed
-    seeded = replace(tiny_prepared, training=replace(tiny_prepared.training, seed=10042))
-    assert effective_training_seed(seeded) == 10042
-    regrouped = replace(
-        tiny_prepared,
-        groups={"merged": Stage3GroupConfig(group_weight=2.0)},
-        tasks={
-            task: replace(spec, meta_group="merged", task_weight=2.0)
-            for task, spec in tiny_prepared.tasks.items()
-        },
-    )
+    original = resolve_stage3_training_identity(config, 1)
     variants = (
-        seeded,
-        replace(tiny_prepared, training=replace(tiny_prepared.training, sampling_mode="raw")),
-        regrouped,
-        replace(
-            tiny_prepared,
-            groups={
-                name: replace(spec, group_weight=2.0)
-                for name, spec in tiny_prepared.groups.items()
-            },
-        ),
-        replace(
-            tiny_prepared,
-            model=replace(tiny_prepared.model, group_experts=2),
-        ),
+        replace(config, training=replace(config.training, seed=10042)),
+        replace(config, groups={name: replace(spec, group_weight=2.0)
+                                for name, spec in config.groups.items()}),
+        replace(config, model=replace(config.model, global_experts=0)),
     )
-    original_identity = resolve_stage3_training_identity(tiny_prepared, 1)
     for changed in variants:
-        assert changed.data.artifacts_dir == tiny_prepared.data.artifacts_dir
-        prepared = load_prepared_stage3(changed)
+        assert changed.data.artifacts_dir == config.data.artifacts_dir
+        assert set(load_prepared_stage3(changed)["registry"]) == set(config.tasks)
         assert metadata_path.read_bytes() == original_metadata
-        assert set(prepared["registry"]) == set(tiny_prepared.tasks)
-        assert resolve_stage3_training_identity(changed, 1) != original_identity
-    assert all(
-        spec.meta_group == "merged"
-        for spec in load_prepared_stage3(regrouped)["registry"].values()
-    )
+        assert resolve_stage3_training_identity(changed, 1) != original
+
 
 def test_registry_catalog_precedence_split_and_topology(tmp_path: Path) -> None:
     config = _tiny_config(tmp_path)
@@ -1647,67 +1628,18 @@ def test_rdkit_prepare_adapter_refinement_and_reporting_contract(
             for parameter in adapter.parameters()
         )
 
-    output = tiny_rdkit_prepared.data.artifacts_dir.parent / "rdkit-train"
-    run_stage3_training(tiny_rdkit_prepared, 1, output_dir=output)
-    boundary = torch.load(
-        output / "checkpoint_epoch_00001.pt",
-        map_location="cpu",
-        weights_only=False,
-    )
-    final = torch.load(
-        output / "checkpoint_epoch_00002.pt",
-        map_location="cpu",
-        weights_only=False,
-    )
-    assert boundary["kind"] == STAGE3_RDKIT_CHECKPOINT_KIND
-    assert "stage2_encoder_identity" not in boundary
-    assert boundary["representation"]["kind"] == "rdkit_2d_adapter"
-    adapter_names = [
-        name for name in boundary["model"] if name.startswith("descriptor_adapters.")
-    ]
-    assert adapter_names
-    assert all(
-        torch.equal(boundary["model"][name], final["model"][name])
-        for name in adapter_names
-    )
-    refined = torch.load(
-        output / "taskwise_refined.pt", map_location="cpu", weights_only=False
-    )
-    assert refined["kind"] == STAGE3_RDKIT_REFINED_KIND
-    resumed = tiny_rdkit_prepared.data.artifacts_dir.parent / "rdkit-resumed"
-    resumed.mkdir()
-    shutil.copy(output / "resolved_training_plan.json", resumed)
-    (resumed / "metrics.jsonl").write_text(
-        (output / "metrics.jsonl").read_text().splitlines()[0] + "\n"
-    )
-    (resumed / "diagnostics.jsonl").write_text(
-        (output / "diagnostics.jsonl").read_text().splitlines()[0] + "\n"
-    )
-    run_stage3_training(
-        tiny_rdkit_prepared,
-        1,
-        output_dir=resumed,
-        resume_from=output / "checkpoint_epoch_00001.pt",
-    )
-    resumed_final = torch.load(
-        resumed / "checkpoint_epoch_00002.pt",
-        map_location="cpu",
-        weights_only=False,
-    )
-    assert all(
-        torch.equal(final["model"][name], resumed_final["model"][name])
-        for name in final["model"]
-    )
+    config = _tiny_three_phase(tiny_rdkit_prepared)
+    output = config.data.artifacts_dir.parent / "rdkit-train"
+    run_stage3_training(config, 1, output_dir=output)
+    final = torch.load(output / "three_phase_final.pt", map_location="cpu", weights_only=False)
+    assert final["kind"] == "ilume_stage3_rdkit_home_three_phase_final"
+    assert final["representation"]["kind"] == "rdkit_2d_adapter"
+    assert any(name.startswith("descriptor_adapters.") for name in final["model"])
     evaluation = evaluate_checkpoints(
-        tiny_rdkit_prepared,
-        output,
-        split="valid",
-        ensemble_folds=False,
-        task_subset=("experiment/a",),
-        fold=1,
+        config, output, split="valid", ensemble_folds=False,
+        task_subset=("experiment/a",), fold=1,
     )
     assert evaluation["reporting"]["model_id"] == "rdkit_2d_home"
-    assert evaluation["reporting"]["model_display_name"] == "RDKit 2D + HoME"
 
     object_config = replace(
         tiny_rdkit_prepared,
@@ -1750,6 +1682,7 @@ def test_no_stage1_stage2_encoder_keeps_object_home_reporting(
     assert metadata["kind"] == "ilume_stage3_sparse_data"
     assert metadata["provenance"]["representation"] == "rdkit_2d_stage2"
 
+    config = _tiny_three_phase(config)
     output = tmp_path / "no-stage1-stage3-train"
     run_stage3_training(config, 1, output_dir=output)
     evaluation = evaluate_checkpoints(
@@ -1798,35 +1731,22 @@ def test_microbatch_accumulation_matches_full_task_batch(tiny_prepared: Stage3Co
         if left is not None:
             assert torch.allclose(left, right, atol=1e-6, rtol=1e-5)
 
-def test_no_pcgrad_config_and_identity(tiny_prepared: Stage3Config) -> None:
+def test_raw_gradient_config_and_identity(tiny_prepared: Stage3Config) -> None:
     base = load_stage3_config("configs/v2/stage3/base.yaml")
-    ablation = load_stage3_config("configs/ablations/stage3_no_pcgrad.yaml")
-    payload = ablation.to_dict()
-    assert payload["training"].pop("pcgrad_mode") == "off"
-    assert payload == base.to_dict()
-    assert base.training.pcgrad_mode == "hierarchical"
-    assert stage3_config_from_dict(ablation.to_dict()) == ablation
-    for invalid in ("disabled", False):
-        payload = ablation.to_dict()
-        payload["training"]["pcgrad_mode"] = invalid
-        with pytest.raises(ValueError, match="pcgrad_mode"):
+    assert "pcgrad_mode" not in base.to_dict()["training"]
+    assert "debug_pcgrad_traces" not in base.to_dict()["training"]
+    assert stage3_config_from_dict(base.to_dict()) == base
+    for name in ("pcgrad_mode", "debug_pcgrad_traces"):
+        payload = base.to_dict()
+        payload["training"][name] = "off"
+        with pytest.raises(ValueError):
             stage3_config_from_dict(payload)
-    with pytest.raises(ValueError, match="legacy.*PCGrad"):
-        replace(tiny_prepared, training=replace(tiny_prepared.training, pcgrad_mode="off")).validate()
-
     config = _tiny_three_phase(tiny_prepared)
-    off = replace(config, training=replace(config.training, pcgrad_mode="off"))
-    baseline_identity = resolve_stage3_training_identity(config, 1)
-    ablation_identity = resolve_stage3_training_identity(off, 1)
-    assert baseline_identity["hash"] != ablation_identity["hash"]
-    baseline_plan = baseline_identity["payload"]["plan"]
-    ablation_plan = ablation_identity["payload"]["plan"]
-    assert baseline_plan["prepared_identity"] == ablation_plan["prepared_identity"]
-    ablation_plan["math"]["pcgrad"] = baseline_plan["math"]["pcgrad"]
-    ablation_plan["phases"]["phase1"]["pcgrad"] = "hierarchical"
-    for branch in ablation_plan["phases"]["phase2"]["branches"].values():
-        branch["pcgrad"] = "group_only"
-    assert ablation_plan == baseline_plan
+    identity = resolve_stage3_training_identity(config, 1)
+    plan = identity["payload"]["plan"]
+    assert plan["math"]["gradient_aggregation"] == "weighted_owner_raw_v1"
+    assert plan["prepared_identity"]
+    assert identity["payload"]["contract_version"] == 6
 
 
 @pytest.mark.parametrize("tasks, frozen_global", (
@@ -1839,9 +1759,6 @@ def test_no_pcgrad_preserves_raw_weighted_owner_gradients(
     tiny_prepared: Stage3Config, monkeypatch: pytest.MonkeyPatch,
     tasks: tuple[str, ...], frozen_global: bool,
 ) -> None:
-    import random
-    import stage3.pcgrad as module
-
     registry = resolve_task_registry(tiny_prepared)
     weights = {"experiment/a": 1.0, "experiment/b": 3.0, "experiment/c": 2.0}
     registry = {task: replace(spec, task_weight=weights[task]) for task, spec in registry.items()}
@@ -1857,17 +1774,7 @@ def test_no_pcgrad_preserves_raw_weighted_owner_gradients(
             parameter: torch.full_like(parameter, raw_values[task])
             for owner in owners for parameter in model.parameters_for_owner(owner)
         }
-    projected = hierarchical_pcgrad(model, gradients, registry, group_weights, random.Random(3))
-
-    def forbid_projection(*args, **kwargs):
-        pytest.fail("no-PCGrad must not call the projection routine")
-
-    monkeypatch.setattr(module, "pcgrad_block", forbid_projection)
-    rng = random.Random(3)
-    rng_before = rng.getstate()
-    result = hierarchical_pcgrad(model, gradients, registry, group_weights, rng, project_conflicts=False)
-    assert rng.getstate() == rng_before
-    assert not result.task_global and not result.task_group and not result.group_global
+    result = assemble_owner_gradients(model, gradients, registry, group_weights)
     groups = {registry[task].meta_group for task in tasks}
     means = {}
     for group in groups:
@@ -1889,9 +1796,6 @@ def test_no_pcgrad_preserves_raw_weighted_owner_gradients(
     assert set(result.gradients) == {parameter for raw in gradients.values() for parameter in raw}
     for task, raw in gradients.items():
         assert all(torch.equal(value, torch.full_like(value, raw_values[task])) for value in raw.values())
-    if "experiment/a" in tasks and "experiment/b" in tasks:
-        parameter = model.parameters_for_owner(group_owner("g1"))[0]
-        assert not torch.equal(projected.gradients[parameter], result.gradients[parameter])
 
 
 @pytest.mark.parametrize("scope", ("phase_1", "phase_2/g1"))
@@ -1900,7 +1804,6 @@ def test_no_pcgrad_partial_resume_is_exact(tiny_prepared: Stage3Config, scope: s
     config = replace(
         config,
         model=replace(config.model, dropout=0.1),
-        training=replace(config.training, pcgrad_mode="off"),
     )
     continuous = config.data.artifacts_dir.parent / "continuous-no-pcgrad"
     resumed = config.data.artifacts_dir.parent / "resumed-no-pcgrad"
@@ -1923,42 +1826,6 @@ def test_no_pcgrad_partial_resume_is_exact(tiny_prepared: Stage3Config, scope: s
         assert (continuous / scope / filename).read_text() == (resumed / scope / filename).read_text()
 
 
-def test_pcgrad_keeps_global_and_group_as_separate_blocks(
-    tiny_prepared: Stage3Config, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import stage3.pcgrad as module
-
-    registry = resolve_task_registry(tiny_prepared)
-    model = Stage3SparseModel(tiny_prepared.model, registry, 4)
-    gradients = {}
-    for task in ("experiment/a", "experiment/b", "experiment/c"):
-        owners = (GLOBAL, group_owner(registry[task].meta_group), private_owner(task))
-        gradients[task] = {
-            parameter: torch.ones_like(parameter, dtype=torch.float32)
-            for owner in owners
-            for parameter in model.parameters_for_owner(owner)
-        }
-    calls: list[set[torch.nn.Parameter]] = []
-    original = module.pcgrad_block
-
-    def wrapped(raw, parameters, rng):
-        calls.append(set(parameters))
-        return original(raw, parameters, rng)
-
-    monkeypatch.setattr(module, "pcgrad_block", wrapped)
-    result = hierarchical_pcgrad(
-        model, gradients, registry, {"g1": 1.0, "g2": 1.0},
-        __import__("random").Random(3),
-    )
-    global_parameters = set(model.parameters_for_owner(GLOBAL))
-    group_parameters = set(model.parameters_for_owner(group_owner("g1")))
-    assert global_parameters in calls
-    assert group_parameters in calls
-    assert global_parameters | group_parameters not in calls
-    private = model.parameters_for_owner(private_owner("experiment/a"))[0]
-    assert torch.equal(result.gradients[private], gradients["experiment/a"][private])
-
-
 def test_pcgrad_accepts_only_tasks_present_in_raw_step(
     tiny_prepared: Stage3Config,
 ) -> None:
@@ -1974,15 +1841,14 @@ def test_pcgrad_accepts_only_tasks_present_in_raw_step(
         }
     }
 
-    result = hierarchical_pcgrad(
+    result = assemble_owner_gradients(
         model,
         gradients,
         registry,
         {"g1": 1.0, "g2": 1.0},
-        __import__("random").Random(3),
     )
 
-    assert set(result.private_norms) == {task}
+    assert set(result.task_norms) == {task}
     absent_private = {
         parameter
         for absent in ("experiment/b", "experiment/c")
@@ -2010,170 +1876,58 @@ def test_pcgrad_accepts_empty_global_expert_block(
             for owner in owners
             for parameter in model.parameters_for_owner(owner)
         }
-    result = hierarchical_pcgrad(
+    result = assemble_owner_gradients(
         model,
         gradients,
         registry,
         {"g1": 1.0, "g2": 1.0},
-        __import__("random").Random(3),
     )
     assert result.assembled_owner_norms["GLOBAL"] == 0.0
     assert result.gradients
 
-def test_short_training_checkpoint_and_resume_are_exact(tiny_prepared: Stage3Config) -> None:
-    tiny_prepared = replace(
-        tiny_prepared,
-        training=replace(
-            tiny_prepared.training,
-            sampling_mode="raw",
-            joint_gradient_clip_mode="ownership",
-        ),
+def test_legacy_training_is_retired(tiny_prepared: Stage3Config) -> None:
+    with pytest.raises(ValueError, match="Legacy Stage 3 training and resume are retired"):
+        run_stage3_training(tiny_prepared, 1, output_dir=tiny_prepared.data.artifacts_dir.parent / "retired")
+    with pytest.raises(ValueError, match="Legacy Stage 3 training and resume are retired"):
+        resolve_stage3_training_identity(tiny_prepared, 1)
+
+
+def test_legacy_final_artifact_remains_readable(tiny_prepared: Stage3Config) -> None:
+    from stage3.train import _normalization_for_run
+
+    config = tiny_prepared
+    prepared = load_prepared_stage3(config)
+    representations = Stage3RepresentationStore(
+        config.data.artifacts_dir, 1, prepared["objects"], prepared["metadata"]["kind"]
     )
-    continuous = tiny_prepared.data.artifacts_dir.parent / "continuous"
-    rows = run_stage3_training(tiny_prepared, 1, output_dir=continuous)
-    assert [row["epoch"] for row in rows] == [1, 2]
-    assert sorted(path.name for path in continuous.glob("checkpoint_*.pt")) == [
-        "checkpoint_epoch_00001.pt", "checkpoint_epoch_00002.pt"
-    ]
-    assert (continuous / "taskwise_refined.pt").is_file()
-    assert (continuous / "taskwise_refinement.json").is_file()
-    plan = json.loads((continuous / "resolved_training_plan.json").read_text())
-    assert plan["data"]["sampling"] == "raw_without_replacement_v1"
-    assert plan["data"]["epoch_exposures"] == plan["data"]["N_t"]
-    assert not {
-        "N_prime_t", "padded_sizes", "replication_ratios"
-    } & plan["data"].keys()
-    assert plan["math"]["joint_gradient_clip_mode"] == "ownership"
-    joint_diagnostics = json.loads(
-        (continuous / "diagnostics.jsonl").read_text().splitlines()[0]
+    model = Stage3SparseModel(config.model, prepared["registry"], representations.output_dim)
+    tasks = tuple(prepared["registry"])
+    datasets = {task: Stage3TaskDataset(config.data.artifacts_dir, 1, task, "train") for task in tasks}
+    normalization = _normalization_for_run(prepared, 1, None)
+    plan = build_resolved_training_plan(
+        config, 1, model, datasets, tasks, prepared, {}, normalization
     )
-    assert joint_diagnostics["clip_owner_pre_norms"]
-    assert joint_diagnostics["clip_owner_post_norms"]
-    assert all(
-        norm <= tiny_prepared.training.max_grad_norm + 1e-5
-        for norm in joint_diagnostics["clip_owner_post_norms"].values()
-    )
-    boundary_checkpoint = torch.load(
-        continuous / "checkpoint_epoch_00001.pt", map_location="cpu", weights_only=False
-    )
-    assert boundary_checkpoint["optimizer"]["state"]
-    assert boundary_checkpoint["refinement"]["optimizers"] == {}
-    refined_payload = torch.load(
-        continuous / "taskwise_refined.pt", map_location="cpu", weights_only=False
-    )
-    assert set(refined_payload["private_state_hashes"]) == set(
-        refined_payload["selected_tasks"]
-    )
-    resumed = tiny_prepared.data.artifacts_dir.parent / "resumed"
-    resumed.mkdir()
-    shutil.copy(continuous / "resolved_training_plan.json", resumed)
-    first_metric = (continuous / "metrics.jsonl").read_text().splitlines()[0]
-    (resumed / "metrics.jsonl").write_text(first_metric + "\n")
-    first_diag = (continuous / "diagnostics.jsonl").read_text().splitlines()[0]
-    (resumed / "diagnostics.jsonl").write_text(first_diag + "\n")
-    resumed_rows = run_stage3_training(
-        tiny_prepared, 1, output_dir=resumed,
-        resume_from=continuous / "checkpoint_epoch_00001.pt",
-    )
-    assert [row["epoch"] for row in resumed_rows] == [2]
-    expected = torch.load(
-        continuous / "checkpoint_epoch_00002.pt", map_location="cpu", weights_only=False
-    )["model"]
-    actual = torch.load(
-        resumed / "checkpoint_epoch_00002.pt", map_location="cpu", weights_only=False
-    )["model"]
-    assert expected.keys() == actual.keys()
-    assert all(torch.equal(expected[name], actual[name]) for name in expected)
-    final_checkpoint = torch.load(
-        continuous / "checkpoint_epoch_00002.pt",
-        map_location="cpu",
-        weights_only=False,
-    )
-    assert final_checkpoint["refinement"]["task_updates"] == {
-        task: plan["data"]["task_steps"][task]
-        for task in plan["active_tasks"]
+    state = {name: value.detach().cpu().clone() for name, value in model.state_dict().items()}
+    artifact = {
+        "kind": "ilume_stage3_taskwise_refined", "format_version": 1, "fold": 1,
+        "resolved_registry": plan["resolved_registry"],
+        "resolved_training_plan": plan,
+        "training_identity": build_stage3_training_identity(plan),
+        "normalization": normalization,
+        "stage2_encoder_identity": metadata_identity(
+            prepared["metadata"], "stage2_encoder", context="test"
+        )["hash"],
+        "ownership_manifest": model.ownership_manifest(),
+        "model": state,
+        "model_state_hash": tensor_state_hash("stage3.taskwise-refined-state", state),
     }
-    assert (resumed / "taskwise_refined.pt").is_file()
+    path = config.data.artifacts_dir.parent / "historical-taskwise-refined.pt"
+    torch.save(artifact, path)
+    loaded, _, _ = _load_model(
+        config, prepared, path, 1, 0, torch.device("cpu"), taskwise_refined=True
+    )
+    assert set(loaded.state_dict()) == set(state)
 
-    prediction_dir = tiny_prepared.data.artifacts_dir.parent / "evaluation-predictions"
-    evaluation = evaluate_checkpoints(
-        tiny_prepared,
-        continuous,
-        split="valid",
-        ensemble_folds=False,
-        checkpoint_epoch=2,
-        task_subset=("experiment/a",),
-        fold=1,
-        predictions_dir=prediction_dir,
-    )
-    assert evaluation["checkpoint_epoch"] == 2
-    assert set(evaluation["tasks"]) == {"experiment/a"}
-    assert "gate_diagnostics" not in evaluation
-    prediction_path = prediction_dir / "experiment__a.csv"
-    with prediction_path.open(newline="", encoding="utf-8") as handle:
-        prediction_rows = list(csv.DictReader(handle))
-    assert prediction_rows
-    spec = resolve_task_registry(tiny_prepared)["experiment/a"]
-    assert set(prediction_rows[0]) == {
-        "source_row", "source_fold", *spec.identity_columns,
-        *spec.condition_columns, "target", "prediction", "absolute_error",
-    }
-    assert evaluation["reporting"]["predictions"][0]["rows"] == len(
-        prediction_rows
-    )
-    refined = evaluate_checkpoints(
-        tiny_prepared,
-        continuous,
-        split="valid",
-        ensemble_folds=False,
-        task_subset=("experiment/a",),
-        fold=1,
-    )
-    assert refined["checkpoint_epoch"] is None
-    assert refined["model_selector"] == "taskwise_refined"
-    (continuous / "taskwise_refined.pt").unlink()
-    (continuous / "taskwise_refinement.json").unlink()
-    with pytest.raises(FileNotFoundError, match="taskwise_refined"):
-        evaluate_checkpoints(
-            tiny_prepared,
-            continuous,
-            split="valid",
-            ensemble_folds=False,
-            task_subset=("experiment/a",),
-            fold=1,
-        )
-    epoch_only = evaluate_checkpoints(
-        tiny_prepared,
-        continuous,
-        split="valid",
-        ensemble_folds=False,
-        checkpoint_epoch=2,
-        task_subset=("experiment/a",),
-        fold=1,
-    )
-    assert epoch_only["model_selector"] == "epoch_checkpoint"
-
-
-def test_zero_global_private_experts_train_and_checkpoint(
-    tiny_prepared: Stage3Config,
-) -> None:
-    config = replace(
-        tiny_prepared,
-        model=replace(
-            tiny_prepared.model, global_experts=0, private_experts=0
-        ),
-    )
-    output = tiny_prepared.data.artifacts_dir.parent / "zero-expert-train"
-    rows = run_stage3_training(config, 1, output_dir=output)
-    assert [row["phase"] for row in rows] == ["joint", "refinement"]
-    checkpoint = torch.load(
-        output / "checkpoint_epoch_00002.pt",
-        map_location="cpu",
-        weights_only=False,
-    )
-    assert checkpoint["config"]["model"]["global_experts"] == 0
-    assert checkpoint["config"]["model"]["private_experts"] == 0
-    assert (output / "taskwise_refined.pt").is_file()
 
 # --- Capacity v1 selection contract ---
 

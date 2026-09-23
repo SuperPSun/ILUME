@@ -214,15 +214,12 @@ def _load_model(
         context="Stage 3 evaluation checkpoint training identity",
     )
     if three_phase_final:
-        expected_pcgrad = {
-            "phase1": "hierarchical_ownership_blocks_v1",
-            "phase2": "group_block_only_v1",
-            "phase3": "off",
-        } if config.training.pcgrad_mode == "hierarchical" else {
-            "phase1": "off", "phase2": "off", "phase3": "off",
-        }
-        if plan["math"].get("pcgrad") != expected_pcgrad:
-            raise ValueError("Stage 3 evaluation PCGrad mode identity mismatch")
+        if (
+            plan.get("format_version") != 4
+            or plan.get("math", {}).get("gradient_aggregation") != "weighted_owner_raw_v1"
+            or training_identity.get("payload", {}).get("contract_version") != 6
+        ):
+            raise ValueError("Stage 3 evaluation requires weighted_owner_raw_v1 artifacts")
     if plan.get("prepared_identity") != metadata_identity(
         prepared["metadata"], "prepared", context="Stage 3 prepared artifact"
     )["hash"]:

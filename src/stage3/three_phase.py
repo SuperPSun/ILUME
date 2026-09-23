@@ -22,10 +22,10 @@ from .data import (
 )
 from .identity import build_stage3_training_identity
 from .model import GLOBAL, Ownership, Stage3SparseModel, group_owner, private_owner
-from .pcgrad import HierarchicalPCGradResult, hierarchical_pcgrad
+from .gradient_assembly import OwnerGradientResult, assemble_owner_gradients
 
 
-THREE_PHASE_CHECKPOINT_VERSION = 1
+THREE_PHASE_CHECKPOINT_VERSION = 2
 THREE_PHASE_FINAL_FORMAT_VERSION = 1
 THREE_PHASE_FINAL_KIND = "ilume_stage3_three_phase_final"
 THREE_PHASE_RDKIT_FINAL_KIND = "ilume_stage3_rdkit_home_three_phase_final"
@@ -353,7 +353,6 @@ def _phase_checkpoint(
     model: Stage3SparseModel,
     optimizer: torch.optim.Optimizer,
     scheduler: _OwnerScheduler,
-    pcgrad_rng: random.Random,
     task_order_rng: random.Random,
     config: Stage3Config,
     fold: int,
@@ -390,7 +389,6 @@ def _phase_checkpoint(
             )
         ),
         "rng": capture_rng_state(),
-        "pcgrad_rng": pcgrad_rng.getstate(),
         "task_order_rng": task_order_rng.getstate(),
         "config": config.to_dict(),
         "training_identity": build_stage3_training_identity(plan),
@@ -413,7 +411,6 @@ def _delta_checkpoint(
     model: Stage3SparseModel,
     optimizer: torch.optim.Optimizer,
     scheduler: _OwnerScheduler,
-    pcgrad_rng: random.Random,
     task_order_rng: random.Random,
     fold: int,
     plan: Mapping[str, Any],
@@ -441,7 +438,6 @@ def _delta_checkpoint(
             if not any(parameter.requires_grad for parameter in model.parameters_for_owner(owner))
         ),
         "rng": capture_rng_state(),
-        "pcgrad_rng": pcgrad_rng.getstate(),
         "task_order_rng": task_order_rng.getstate(),
         "training_identity": build_stage3_training_identity(plan),
         "ownership_manifest": model.ownership_manifest(),
@@ -485,7 +481,6 @@ def _joint_epoch(
     scheduler: _OwnerScheduler,
     registry: Mapping[str, Any],
     group_weights: Mapping[str, float],
-    pcgrad_rng: random.Random,
     task_order_rng: random.Random,
 ) -> tuple[dict[str, float], dict[str, Any]]:
     from .train import compute_task_gradient
@@ -498,7 +493,7 @@ def _joint_epoch(
     }
     loss_sums = {task: 0.0 for task in tasks}
     sample_counts = {task: 0 for task in tasks}
-    latest: HierarchicalPCGradResult | None = None
+    latest: OwnerGradientResult | None = None
     clip_values: tuple[float, float, dict[str, float], dict[str, float]] = (
         0.0, 0.0, {}, {}
     )
@@ -520,10 +515,7 @@ def _joint_epoch(
             sample_counts[task] += len(indices)
         if not gradients:
             raise RuntimeError("Stage 3 three-phase joint step has no tasks")
-        latest = hierarchical_pcgrad(
-            model, gradients, registry, group_weights, pcgrad_rng,
-            project_conflicts=config.training.pcgrad_mode == "hierarchical",
-        )
+        latest = assemble_owner_gradients(model, gradients, registry, group_weights)
         optimizer.zero_grad(set_to_none=True)
         _assign_gradients(model, latest.gradients)
         clip_values = _clip(model, config)
@@ -535,12 +527,6 @@ def _joint_epoch(
     return (
         {task: loss_sums[task] / counts[task] for task in tasks},
         {
-            "pcgrad_applied": config.training.pcgrad_mode == "hierarchical",
-            "pcgrad_scope": (
-                "off" if config.training.pcgrad_mode == "off" else (
-                    "group" if len({registry[t].meta_group for t in tasks}) == 1 else "hierarchical"
-                )
-            ),
             "task_gradient_norms": latest.task_norms,
             "assembled_owner_norms": latest.assembled_owner_norms,
             "clip_pre_norm": pre,
@@ -604,7 +590,6 @@ def _task_epoch(
     if samples != count:
         raise RuntimeError("Stage 3 Phase 3 raw epoch coverage is incomplete")
     return loss_sum / count, {
-        "pcgrad_applied": False,
         "gradient_norm": pre_norm,
         "clip_post_norm": post_norm,
     }
@@ -654,7 +639,6 @@ def _run_phase1(
     phase = "phase_1"
     phase_seed = stable_seed(effective_training_seed(config), fold, phase)
     seed_everything(phase_seed % (2**32))
-    pcgrad_rng = random.Random(stable_seed(phase_seed, "pcgrad"))
     task_order_rng = random.Random(stable_seed(phase_seed, "task_order"))
     start, checkpoint_path = _resume_epoch(root, epochs, resume)
     updates = 0
@@ -707,7 +691,6 @@ def _run_phase1(
             ),
         )
         restore_rng_state(checkpoint["rng"])
-        pcgrad_rng.setstate(checkpoint["pcgrad_rng"])
         task_order_rng.setstate(checkpoint["task_order_rng"])
         updates = int(checkpoint["updates"])
         if start > epochs:
@@ -733,7 +716,7 @@ def _run_phase1(
             train_data=train_data, representations=representations,
             normalizations=normalizations, config=config, device=device,
             optimizer=optimizer, scheduler=scheduler, registry=registry,
-            group_weights=group_weights, pcgrad_rng=pcgrad_rng,
+            group_weights=group_weights,
             task_order_rng=task_order_rng,
         )
         updates += steps_per_epoch
@@ -780,7 +763,7 @@ def _run_phase1(
                     phase=phase, anchor_hash=anchor_hash, epoch=epoch,
                     updates=updates, model=model,
                     optimizer=optimizer, scheduler=scheduler,
-                    pcgrad_rng=pcgrad_rng, task_order_rng=task_order_rng,
+                    task_order_rng=task_order_rng,
                     config=config, fold=fold, plan=plan,
                     normalizations=normalizations,
                 ),
@@ -838,7 +821,6 @@ def _run_delta_branch(
     scheduler = _OwnerScheduler(optimizer, owner_recipes)
     phase_seed = stable_seed(effective_training_seed(config), fold, phase, scope)
     seed_everything(phase_seed % (2**32))
-    pcgrad_rng = random.Random(stable_seed(phase_seed, "pcgrad"))
     task_order_rng = random.Random(stable_seed(phase_seed, "task_order"))
     start, checkpoint_path = _resume_epoch(root, epochs, resume)
     updates = 0
@@ -893,7 +875,6 @@ def _run_delta_branch(
             ),
         )
         restore_rng_state(checkpoint["rng"])
-        pcgrad_rng.setstate(checkpoint["pcgrad_rng"])
         task_order_rng.setstate(checkpoint["task_order_rng"])
         updates = int(checkpoint["updates"])
         if start > epochs:
@@ -920,7 +901,7 @@ def _run_delta_branch(
                 train_data=train_data, representations=representations,
                 normalizations=normalizations, config=config, device=device,
                 optimizer=optimizer, scheduler=scheduler, registry=registry,
-                group_weights=group_weights, pcgrad_rng=pcgrad_rng,
+                group_weights=group_weights,
                 task_order_rng=task_order_rng,
             )
         else:
@@ -979,7 +960,7 @@ def _run_delta_branch(
                     phase=phase, scope=scope, epoch=epoch, updates=updates,
                     anchor_hash=anchor_hash, owners=owners, model=model,
                     optimizer=optimizer, scheduler=scheduler,
-                    pcgrad_rng=pcgrad_rng, task_order_rng=task_order_rng,
+                    task_order_rng=task_order_rng,
                     fold=fold, plan=plan,
                 ),
             )
