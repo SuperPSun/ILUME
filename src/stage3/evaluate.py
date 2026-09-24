@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import torch
 
@@ -688,6 +688,7 @@ def evaluate_checkpoints(
     predictions_dir: str | Path | None = None,
     reporting_study_id: str | None = None,
     expected_evaluation_identity: Mapping[str, Any] | None = None,
+    model_loader: Callable[..., tuple[Stage3SparseModel, dict[str, Any], Stage3RepresentationStore]] | None = None,
 ) -> dict[str, Any]:
     if split not in {"valid", "test"}:
         raise ValueError("Stage 3 evaluation split must be valid or test")
@@ -765,7 +766,7 @@ def evaluate_checkpoints(
             )
             if not path.is_file():
                 raise FileNotFoundError(f"Missing Stage 3 checkpoint: {path}")
-            model, checkpoint, representations = _load_model(
+            model, checkpoint, representations = (model_loader or _load_model)(
                 config, prepared, path, current_fold, epoch, device,
                 taskwise_refined=taskwise_refined,
                 three_phase_final=three_phase_final,

@@ -52,6 +52,14 @@ def assemble_owner_gradients(
     if set(task_gradients) - set(task_specs):
         raise ValueError("Gradient assembly received unknown Stage 3 tasks")
     global_parameters = model.parameters_for_owner(GLOBAL)
+    upstream_owners = tuple(getattr(model, "joint_upstream_owners", ()))
+    upstream_parameters = tuple(
+        parameter
+        for owner in upstream_owners
+        for parameter in model.parameters_for_owner(owner)
+        if parameter.requires_grad
+    )
+    shared_parameters = (*global_parameters, *upstream_parameters)
     final: GradientMap = {}
     group_global: dict[str, GradientMap] = {}
     task_norms: dict[str, float] = {}
@@ -64,7 +72,7 @@ def assemble_owner_gradients(
         normalized = {
             task: len(tasks) * task_specs[task].task_weight / weight_sum for task in tasks
         }
-        group_global[group] = _weighted_mean(raw, normalized, global_parameters)
+        group_global[group] = _weighted_mean(raw, normalized, shared_parameters)
         final.update(_weighted_mean(raw, normalized, group_parameters))
         for task in tasks:
             private_parameters = model.parameters_for_owner(private_owner(task))
@@ -72,15 +80,17 @@ def assemble_owner_gradients(
                 if parameter in task_gradients[task]:
                     final[parameter] = task_gradients[task][parameter].float() * normalized[task]
             task_norms[task] = _norm(
-                task_gradients[task], (*global_parameters, *group_parameters, *private_parameters)
+                task_gradients[task], (*shared_parameters, *group_parameters, *private_parameters)
             )
     group_weight_sum = sum(group_weights[group] for group in groups)
-    for parameter in global_parameters:
+    for parameter in shared_parameters:
         values = [group_global[group][parameter] * group_weights[group]
                   for group in groups if parameter in group_global[group]]
         if values:
             final[parameter] = torch.stack(values).sum(dim=0) / group_weight_sum
     owner_norms = {"GLOBAL": _norm(final, global_parameters)}
+    for owner in upstream_owners:
+        owner_norms[owner.label] = _norm(final, model.parameters_for_owner(owner))
     for group in groups:
         owner_norms[f"GROUP:{group}"] = _norm(final, model.parameters_for_owner(group_owner(group)))
     for task in task_gradients:

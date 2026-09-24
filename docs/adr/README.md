@@ -39,6 +39,7 @@
 | No-Stage1 | [0036](0036-no-stage1-rdkit-stage2-stage3-ablation.md) |
 | Stage 3 no-PCGrad（历史对照） | [0069](0069-stage3-no-pcgrad-ablation.md) |
 | Stage 3 三级 transfer knowledge | [0072](0072-stage3-transfer-knowledge-hierarchy-ablation.md) |
+| Stage 3 表示编码器全量微调 | [0073](0073-stage3-encoder-full-finetune-ablation.md) |
 | Stage2→Stage3 全迁移矩阵 | [0062](0062-stage2-stage3-full-transfer-matrix.md) |
 | Stage2→Stage3 下游联合适配 | [0068](0068-stage2-stage3-joint-downstream-adaptation.md) |
 

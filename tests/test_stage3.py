@@ -112,6 +112,17 @@ from ablations.stage2_stage3_transfer.stage3 import (
     train_transfer_job,
     transfer_training_seed,
 )
+from ablations.stage3_full_finetune.representation import (
+    FinetuneRecipe, FinetuneStage3Model, LiveRepresentationStore, STAGE1_OWNER, STAGE2_OWNER,
+    load_config as load_full_finetune_config, object_keys as finetune_object_keys,
+    prepare_features as prepare_finetune_features,
+    load_features as load_finetune_features,
+)
+from ablations.stage3_full_finetune.train import (
+    _encoder_owner_recipe, resolved_plan, validate_initial_representation,
+)
+from ablations.stage3_full_finetune.evaluate import compare_historical_base, evaluate_finetuned
+from stage3.three_phase import run_three_phase_training
 
 
 # --- Sparse-label model, training, and resume contracts ---
@@ -2884,3 +2895,337 @@ def test_transfer_summary_uses_fold_gain_and_rejects_alignment_drift(
         summarize_transfer_matrix(
             config, stage3_root=stage3_root, output_dir=tmp_path / "bad-summary"
         )
+
+
+def test_full_finetune_config_only_changes_base_microbatch() -> None:
+    config, recipe = load_full_finetune_config(
+        "configs/ablations/stage3_full_finetune.yaml"
+    )
+    base = load_stage3_config("configs/v2/stage3/base.yaml")
+    expected = base.to_dict()
+    expected["training"]["microbatch_size"] = 8
+    assert config.to_dict() == expected
+    assert recipe.stage1_lr == pytest.approx(5e-6)
+    assert recipe.stage2_lr == pytest.approx(1.5e-5)
+    assert recipe.epochs == 15
+    owner = _encoder_owner_recipe(5e-6, 15, 7, 0.05, 0.1)
+    assert owner["actual_update_budget"] == 105
+    assert owner["warmup_updates"] == 6
+    assert owner["terminal_lr"] == pytest.approx(5e-7)
+
+
+def test_full_finetune_features_bind_base_prepared_and_encoder(
+    tiny_prepared: Stage3Config, tmp_path: Path,
+) -> None:
+    config = _tiny_three_phase(tiny_prepared)
+    prepared = load_prepared_stage3(config)
+    encoder = SimpleNamespace(
+        encoder_identity=TEST_ENCODER_IDENTITY,
+        input_sample=lambda role, smiles: {
+            "token_ids": torch.tensor([len(role), len(smiles)])
+        },
+    )
+    root = tmp_path / "finetune-features"
+    with patch(
+        "ablations.stage3_full_finetune.representation.load_frozen_object_encoder",
+        return_value=encoder,
+    ):
+        manifest = prepare_finetune_features(config, root)
+    payload = load_finetune_features(config, root, prepared)
+    assert len(payload["samples"]) == manifest["sample_count"]
+    assert payload["object_keys_hash"] == canonical_json_sha256([
+        key.to_dict() for key in finetune_object_keys(prepared)
+    ])
+    (root / "features.json").write_text(
+        json.dumps({**manifest, "artifact_sha256": "wrong"}), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="integrity mismatch"):
+        load_finetune_features(config, root, prepared)
+
+
+def test_full_finetune_upstream_gradients_use_global_weighting(
+    tiny_prepared: Stage3Config,
+) -> None:
+    registry = resolve_task_registry(tiny_prepared)
+    weights = {"experiment/a": 1.0, "experiment/b": 3.0, "experiment/c": 2.0}
+    registry = {task: replace(spec, task_weight=weights[task]) for task, spec in registry.items()}
+    model = FinetuneStage3Model(
+        tiny_prepared.model, registry, 4,
+        backbone=torch.nn.Linear(4, 4),
+        object_encoder=torch.nn.Linear(4, 4),
+    )
+    values = {"experiment/a": 2.0, "experiment/b": -1.0, "experiment/c": 4.0}
+    gradients = {
+        task: {
+            parameter: torch.full_like(parameter, values[task])
+            for owner in (GLOBAL, STAGE1_OWNER, STAGE2_OWNER,
+                          group_owner(spec.meta_group), private_owner(task))
+            for parameter in model.parameters_for_owner(owner)
+        }
+        for task, spec in registry.items()
+    }
+    result = assemble_owner_gradients(model, gradients, registry, {"g1": 2.0, "g2": 5.0})
+    expected = ((2.0 - 3.0) / 4.0 * 2.0 + 4.0 * 5.0) / 7.0
+    for owner in (GLOBAL, STAGE1_OWNER, STAGE2_OWNER):
+        for parameter in model.parameters_for_owner(owner):
+            torch.testing.assert_close(
+                result.gradients[parameter], torch.full_like(parameter, expected)
+            )
+    assert result.assembled_owner_norms[STAGE1_OWNER.label] > 0
+    assert result.assembled_owner_norms[STAGE2_OWNER.label] > 0
+
+
+def test_full_finetune_live_gradients_and_phase1_freeze(
+    tiny_prepared: Stage3Config,
+) -> None:
+    config = _tiny_three_phase(tiny_prepared)
+    prepared = load_prepared_stage3(config)
+    keys = finetune_object_keys(prepared)
+
+    class Batch:
+        def __init__(self, values: torch.Tensor) -> None:
+            self.values = values
+
+        def to(self, device: torch.device) -> "Batch":
+            return Batch(self.values.to(device))
+
+    class Packer:
+        def __call__(self, samples: list[dict[str, torch.Tensor]]) -> Batch:
+            return Batch(torch.stack([sample["values"] for sample in samples]))
+
+    class Backbone(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.project = torch.nn.Linear(4, 4)
+
+        def encode_entity(self, batch: Batch) -> SimpleNamespace:
+            return SimpleNamespace(entity_embedding=self.project(batch.values))
+
+    samples = {
+        (role, smiles): {"values": torch.tensor(
+            [float(len(smiles)), float(ROLE_TO_ID[role]), 1.0, 0.5]
+        )}
+        for key in keys for role, smiles in key.slots
+    }
+    model = FinetuneStage3Model(
+        config.model, prepared["registry"], 4,
+        group_configs=config.groups, task_configs=config.tasks,
+        task_private_recipes={
+            task: config.resolved_private_recipe(task) for task in config.tasks
+        },
+        backbone=Backbone(),
+        object_encoder=ObjectEncoder(4, 2, num_layers=1, feedforward_dim=8, dropout=0.0),
+    )
+    store = LiveRepresentationStore(model, Packer(), keys, samples)
+    model.set_trainable_owners(tuple(set(model.parameter_ownership().values())))
+    task = "experiment/a"
+    dataset = Stage3TaskDataset(config.data.artifacts_dir, 1, task, "train")
+    stats = prepared["normalization"]["fold1"][task]
+    gradients, _ = compute_task_gradient(
+        model, task, dataset, torch.arange(len(dataset)), store,
+        stats, config, torch.device("cpu"),
+    )
+    assert any(parameter in gradients for parameter in model.parameters_for_owner(STAGE1_OWNER))
+    assert any(parameter in gradients for parameter in model.parameters_for_owner(STAGE2_OWNER))
+    shared = [*model.parameters_for_owner(STAGE1_OWNER), *model.parameters_for_owner(STAGE2_OWNER)]
+    before = [parameter.detach().clone() for parameter in shared]
+    optimizer = torch.optim.AdamW(shared, lr=1e-3)
+    for parameter in shared:
+        parameter.grad = gradients[parameter]
+    optimizer.step()
+    assert any(not torch.equal(old, parameter) for old, parameter in zip(before, shared))
+    model.set_trainable_owners((GLOBAL, group_owner("g1"), private_owner(task)))
+    frozen = [parameter.detach().clone() for parameter in shared]
+    gradients, _ = compute_task_gradient(
+        model, task, dataset, torch.arange(len(dataset)), store,
+        stats, config, torch.device("cpu"),
+    )
+    assert all(parameter not in gradients for parameter in shared)
+    assert all(torch.equal(old, parameter) for old, parameter in zip(frozen, shared))
+    store.freeze_after_phase1(model, "phase1-test-hash")
+    assert store._embeddings is not None
+    assert not store.values(torch.tensor([0]), keys[0].topology).requires_grad
+
+
+def test_full_finetune_three_phase_artifact_freezes_encoders(
+    tiny_prepared: Stage3Config, tmp_path: Path,
+) -> None:
+    config = _tiny_three_phase(tiny_prepared)
+    prepared = load_prepared_stage3(config)
+    keys = finetune_object_keys(prepared)
+
+    class Batch:
+        def __init__(self, values: torch.Tensor) -> None:
+            self.values = values
+
+        def to(self, device: torch.device) -> "Batch":
+            return Batch(self.values.to(device))
+
+    class Packer:
+        def __call__(self, samples: list[dict[str, torch.Tensor]]) -> Batch:
+            return Batch(torch.stack([sample["values"] for sample in samples]))
+
+    class Backbone(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.project = torch.nn.Linear(4, 4)
+
+        def encode_entity(self, batch: Batch) -> SimpleNamespace:
+            return SimpleNamespace(entity_embedding=self.project(batch.values))
+
+    seed_everything(11)
+    model = FinetuneStage3Model(
+        config.model, prepared["registry"], 4,
+        group_configs=config.groups, task_configs=config.tasks,
+        task_private_recipes={task: config.resolved_private_recipe(task) for task in config.tasks},
+        backbone=Backbone(),
+        object_encoder=ObjectEncoder(4, 2, num_layers=1, feedforward_dim=8, dropout=0.0),
+    )
+    model.set_trainable_owners(tuple(set(model.parameter_ownership().values())))
+    samples = {
+        (role, smiles): {"values": torch.tensor([
+            float(len(smiles)), float(ROLE_TO_ID[role]), 1.0, 0.5
+        ])}
+        for key in keys for role, smiles in key.slots
+    }
+    store = LiveRepresentationStore(model, Packer(), keys, samples)
+    model.eval()
+    with torch.no_grad():
+        reference = torch.stack([
+            store.values(torch.tensor([index]), key.topology)[0]
+            for index, key in enumerate(keys)
+        ])
+    matched = {**prepared, "objects": {**prepared["objects"], "embeddings": reference}}
+    assert validate_initial_representation(model, store, matched) <= 1e-5
+    mismatched = reference.clone()
+    mismatched[0] += 1
+    with pytest.raises(ValueError, match="differs from Base prepared"):
+        validate_initial_representation(
+            model, store,
+            {**prepared, "objects": {**prepared["objects"], "embeddings": mismatched}},
+        )
+    active = tuple(config.tasks)
+    train_data = {
+        task: Stage3TaskDataset(config.data.artifacts_dir, 1, task, "train")
+        for task in active
+    }
+    valid_data = {
+        task: Stage3TaskDataset(config.data.artifacts_dir, 1, task, "valid")
+        for task in active
+    }
+    features = {
+        "artifact_sha256": "feature-hash",
+        "stage2_encoder_sha256": "encoder-hash",
+        "stage2_encoder_identity": TEST_ENCODER_IDENTITY["hash"],
+    }
+    recipe = FinetuneRecipe(5e-6, 1.5e-5, 2, 0.05, 0.1)
+    plan = resolved_plan(config, recipe, 1, model, prepared, train_data, features)
+    output = tmp_path / "fine-tune-train"
+    result = run_three_phase_training(
+        config=config, fold=1, output_dir=output, resume_from=None,
+        model=model, registry=prepared["registry"], active=active,
+        train_data=train_data, valid_data=valid_data,
+        representations=store, normalizations=prepared["normalization"]["fold1"],
+        plan=plan, device=torch.device("cpu"),
+    )
+    assert result[0]["phase"] == "three_phase_final"
+    phase1 = torch.load(output / "phase_1/checkpoint_epoch_00002.pt", weights_only=False)
+    final = torch.load(output / "three_phase_final.pt", weights_only=False)
+    manifest = json.loads((output / "three_phase_final.json").read_text())
+    assert final["kind"] == "ilume_stage3_encoder_finetune_three_phase_final"
+    assert final["training_identity"]["payload"]["contract_version"] == 8
+    assert manifest["encoder_state_hashes"] == final["encoder_state_hashes"]
+    for name in phase1["model"]:
+        if name.startswith(("stage1_encoder.", "stage2_object_encoder.")):
+            assert torch.equal(phase1["model"][name], final["model"][name])
+    assert (output / "phase_2/stitched.pt").is_file()
+    assert (output / "phase_3/experiment__a/checkpoint_epoch_00001.pt").is_file()
+    with pytest.raises(ValueError, match="checkpoint mismatch"):
+        _load_model(
+            config, prepared, output / "three_phase_final.pt", 1, 2,
+            torch.device("cpu"), taskwise_refined=False, three_phase_final=True,
+        )
+
+    def rebuild(*_args: Any, **_kwargs: Any) -> tuple[FinetuneStage3Model, LiveRepresentationStore]:
+        fresh = FinetuneStage3Model(
+            config.model, prepared["registry"], 4,
+            group_configs=config.groups, task_configs=config.tasks,
+            task_private_recipes={task: config.resolved_private_recipe(task) for task in config.tasks},
+            backbone=Backbone(),
+            object_encoder=ObjectEncoder(4, 2, num_layers=1, feedforward_dim=8, dropout=0.0),
+        )
+        return fresh, LiveRepresentationStore(fresh, Packer(), keys, samples)
+
+    with patch(
+        "ablations.stage3_full_finetune.evaluate.load_features", return_value=features
+    ), patch(
+        "ablations.stage3_full_finetune.evaluate.build_model_and_store", side_effect=rebuild
+    ):
+        evaluated = evaluate_finetuned(
+            config, recipe, feature_dir=tmp_path, checkpoint_dir=output,
+            split="valid", fold=1, predictions_dir=tmp_path / "predictions",
+        )
+    assert set(evaluated["tasks"]) == set(active)
+    assert set(evaluated["gate_diagnostics"]) == set(active)
+    assert evaluated["ablation"] == "stage3_full_finetune"
+
+    historical = tmp_path / "historical-base"
+    (historical / "evaluate_valid/fold1").mkdir(parents=True)
+    (historical / "train/fold1").mkdir(parents=True)
+    (historical / "evaluate_valid/fold1/summary.json").write_text(
+        json.dumps(evaluated), encoding="utf-8"
+    )
+    (historical / "train/fold1/three_phase_final.json").write_text(
+        json.dumps({"training_identity": {"payload": {
+            "contract_version": 6,
+            "plan": {"math": {"gradient_aggregation": "weighted_owner_raw_v1"},
+                     "active_tasks": list(active),
+                     "prepared_identity": plan["prepared_identity"]},
+        }}}), encoding="utf-8"
+    )
+    comparison = compare_historical_base(
+        evaluated, historical, split="valid", fold=1, training_tasks=active,
+        prepared_identity=plan["prepared_identity"],
+    )
+    assert comparison["macro_normalized_mae"]["delta"] == 0.0
+    contaminated = json.loads((historical / "evaluate_valid/fold1/summary.json").read_text())
+    contaminated["reporting"]["comparison_identity"]["hash"] = "wrong-data"
+    (historical / "evaluate_valid/fold1/summary.json").write_text(
+        json.dumps(contaminated), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="evaluation data contract"):
+        compare_historical_base(
+            evaluated, historical, split="valid", fold=1, training_tasks=active,
+            prepared_identity=plan["prepared_identity"],
+        )
+
+    seed_everything(11)
+    resumed_model, resumed_store = rebuild()
+    resumed_model.set_trainable_owners(tuple(set(resumed_model.parameter_ownership().values())))
+    resumed = run_three_phase_training(
+        config=config, fold=1, output_dir=output, resume_from=output,
+        model=resumed_model, registry=prepared["registry"], active=active,
+        train_data=train_data, valid_data=valid_data,
+        representations=resumed_store,
+        normalizations=prepared["normalization"]["fold1"],
+        plan=plan, device=torch.device("cpu"),
+    )
+    assert resumed[0]["validation"] == result[0]["validation"]
+
+    partial = tmp_path / "fine-tune-phase1-resume"
+    partial.mkdir()
+    shutil.copy2(output / "resolved_training_plan.json", partial)
+    shutil.copytree(output / "phase_1", partial / "phase_1")
+    seed_everything(11)
+    partial_model, partial_store = rebuild()
+    partial_model.set_trainable_owners(tuple(set(partial_model.parameter_ownership().values())))
+    run_three_phase_training(
+        config=config, fold=1, output_dir=partial, resume_from=partial,
+        model=partial_model, registry=prepared["registry"], active=active,
+        train_data=train_data, valid_data=valid_data,
+        representations=partial_store,
+        normalizations=prepared["normalization"]["fold1"],
+        plan=plan, device=torch.device("cpu"),
+    )
+    partial_final = torch.load(partial / "three_phase_final.pt", weights_only=False)
+    assert partial_final["model_state_hash"] == final["model_state_hash"]

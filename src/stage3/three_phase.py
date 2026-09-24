@@ -33,10 +33,12 @@ THREE_PHASE_KNOWLEDGE_FINAL_KIND = "ilume_stage3_transfer_knowledge_three_phase_
 
 
 def _scope_kind(plan: Mapping[str, Any], suffix: str) -> str:
-    prefix = (
-        "ilume_stage3_transfer_knowledge_three_phase"
-        if "transfer_knowledge" in plan else "ilume_stage3_three_phase"
-    )
+    if "encoder_finetune" in plan:
+        prefix = "ilume_stage3_encoder_finetune_three_phase"
+    elif "transfer_knowledge" in plan:
+        prefix = "ilume_stage3_transfer_knowledge_three_phase"
+    else:
+        prefix = "ilume_stage3_three_phase"
     return f"{prefix}_{suffix}"
 
 
@@ -213,6 +215,8 @@ def _representation_fields(plan: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _final_kind(plan: Mapping[str, Any]) -> str:
+    if "encoder_finetune" in plan:
+        return "ilume_stage3_encoder_finetune_three_phase_final"
     if "transfer_knowledge" in plan:
         return THREE_PHASE_KNOWLEDGE_FINAL_KIND
     return (
@@ -220,6 +224,17 @@ def _final_kind(plan: Mapping[str, Any]) -> str:
         if "representation" in plan
         else THREE_PHASE_FINAL_KIND
     )
+
+
+def _encoder_hashes(model: Stage3SparseModel) -> dict[str, str]:
+    return {
+        "stage1": tensor_state_hash(
+            "stage3.full-finetune.stage1", model.stage1_encoder.state_dict()
+        ),
+        "stage2": tensor_state_hash(
+            "stage3.full-finetune.stage2", model.stage2_object_encoder.state_dict()
+        ),
+    }
 
 
 def _set_trainable(
@@ -395,17 +410,11 @@ def _phase_checkpoint(
         "scheduler": scheduler.state_dict(),
         "owner_updates": dict(scheduler.updates),
         "frozen_owners": sorted(
-            label
-            for label in scheduler.recipes
+            label for label in scheduler.recipes
             if not any(
                 parameter.requires_grad
-                for parameter in model.parameters_for_owner(
-                    GLOBAL
-                    if label == "GLOBAL"
-                    else group_owner(label.removeprefix("GROUP:"))
-                    if label.startswith("GROUP:")
-                    else private_owner(label.removeprefix("PRIVATE:"))
-                )
+                for parameter, owner in model.parameter_ownership().items()
+                if owner.label == label
             )
         ),
         "rng": capture_rng_state(),
@@ -642,13 +651,11 @@ def _run_phase1(
     model.load_state_dict(anchor_state, strict=True)
     owners = {
         owner.label: owner
-        for owner in (
-            GLOBAL,
-            *(group_owner(group) for group in sorted(config.groups)),
-            *(private_owner(task) for task in sorted(tasks)),
-        )
+        for owner in sorted(set(model.parameter_ownership().values()))
         if owner.label in owner_recipes
     }
+    if set(owners) != set(owner_recipes):
+        raise ValueError("Stage 3 Phase 1 owner recipe does not match model ownership")
     _set_trainable(model, tuple(owners.values()))
     optimizer = _optimizer(
         model,
@@ -1152,6 +1159,8 @@ def run_three_phase_training(
         normalizations=normalizations, registry=registry, device=device,
         resume=resume, anchor_state=initial_state,
     )
+    if "encoder_finetune" in plan:
+        representations.freeze_after_phase1(model, phase1_hash)
 
     phase2 = phases["phase2"]
     phase2_deltas: dict[str, tuple[Sequence[Ownership], Mapping[str, torch.Tensor], str]] = {}
@@ -1306,6 +1315,8 @@ def run_three_phase_training(
         "ownership_manifest": model.ownership_manifest(),
         **_representation_fields(plan),
     }
+    if "encoder_finetune" in plan:
+        artifact["encoder_state_hashes"] = _encoder_hashes(model)
     atomic_torch_save(artifact_path, artifact)
     manifest = {
         "kind": _final_kind(plan),
@@ -1335,6 +1346,8 @@ def run_three_phase_training(
         "capacity_recipe": capacity,
         "validation": final_validation,
     }
+    if "encoder_finetune" in plan:
+        manifest["encoder_state_hashes"] = artifact["encoder_state_hashes"]
     atomic_json(manifest_path, manifest)
     return [{"phase": "three_phase_final", "validation": final_validation}]
 

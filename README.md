@@ -103,6 +103,40 @@ python scripts/stage3/evaluate.py \
 
 Stage 3 evaluator 对现役 v2 默认加载每个 fold 的 `three_phase_final.pt`。旧三阶段 PCGrad 产物不兼容新评估身份；legacy v1 与 Capacity v1 的历史 `taskwise_refined.pt` 仍可只读评估，但其训练和恢复入口已退役。
 
+### Stage 3 表示编码器全量微调消融
+
+[ADR-0073](docs/adr/0073-stage3-encoder-full-finetune-ablation.md) 使用Base的20-task数据合同，只在Phase 1以低LR更新Stage 1表示编码器和Stage 2 ObjectEncoder；Phase 2/3冻结两级编码器。此实验不改变正式Base。运行前须先确认Base prepared artifact完整且哈希校验通过；`prepare`只生成消融专用的分子输入，不重建Stage 3 split。
+
+```bash
+python scripts/stage3/full_finetune.py prepare \
+  --config configs/ablations/stage3_full_finetune.yaml \
+  --output outputs/ablations/stage3_full_finetune/prepare
+
+python scripts/stage3/full_finetune.py train \
+  --config configs/ablations/stage3_full_finetune.yaml \
+  --feature-dir outputs/ablations/stage3_full_finetune/prepare \
+  --fold 1 2 3 4 5 \
+  --output outputs/ablations/stage3_full_finetune/train
+
+python scripts/stage3/full_finetune.py evaluate \
+  --config configs/ablations/stage3_full_finetune.yaml \
+  --feature-dir outputs/ablations/stage3_full_finetune/prepare \
+  --checkpoint-dir outputs/ablations/stage3_full_finetune/train \
+  --historical-base-root outputs/v2/stage3/base \
+  --split valid --fold 1 2 3 4 5 \
+  --output outputs/ablations/stage3_full_finetune/evaluate_valid
+
+python scripts/stage3/full_finetune.py evaluate \
+  --config configs/ablations/stage3_full_finetune.yaml \
+  --feature-dir outputs/ablations/stage3_full_finetune/prepare \
+  --checkpoint-dir outputs/ablations/stage3_full_finetune/train \
+  --historical-base-root outputs/v2/stage3/base \
+  --split test \
+  --output outputs/ablations/stage3_full_finetune/evaluate_test
+```
+
+训练默认串行；只在此前epoch状态完整且身份一致时附加`--resume`。历史Base不是在同一可微输入路径下重训的配对frozen control，因此分数差异不可全部归因于“解冻编码器”。
+
 ### 知识图谱性质分组候选
 
 `configs/v2/stage3/base1.yaml`仅改变六个GROUP的任务归属，并按

@@ -98,6 +98,10 @@ class FrozenStage2ObjectEncoder:
             self.pretrain_config,
         )
 
+    def input_sample(self, role: str, canonical_smiles: str) -> dict[str, Any]:
+        """Build the audited Stage 1 input for one Stage 3 entity slot."""
+        return self._sample(role, canonical_smiles)
+
     @torch.inference_mode()
     def _encode_slots_device(
         self, objects: Sequence[FrozenObjectSpec]
