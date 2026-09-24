@@ -411,6 +411,38 @@ python scripts/stage3/transfer.py summarize \
 Stage2 和 Stage3 的训练命令都支持单卡多进程，例如
 `--max-parallel 4 --devices cuda:0`；多GPU例如
 `--max-parallel 8 --devices cuda:0,cuda:1,cuda:2,cuda:3`，即每张卡2个并发job。
+
+### Stage 3 三级 transfer knowledge 消融
+
+该隔离实验按 [ADR-0072](docs/adr/0072-stage3-transfer-knowledge-hierarchy-ablation.md)
+复用 Base prepared artifact、joint Stage2 encoder 与 full-data transfer 的十份
+`representations_joint` 产物。先将十个冻结 ObjectEncoder 的最终输出物化为独立 bank，
+再用消融 YAML 在新目录训练和评估；不会修改 Base checkpoint：
+
+```bash
+python scripts/stage3/transfer_knowledge.py \
+  --config configs/ablations/stage3_transfer_knowledge.yaml \
+  --representations outputs/ablations/stage2_stage3_transfer/representations_joint \
+  --stage2-root outputs/ablations/stage2_stage3_transfer/stage2_joint \
+  --device cuda:0
+
+python scripts/stage3/train.py \
+  --config configs/ablations/stage3_transfer_knowledge.yaml \
+  --fold 1 2 3 4 5 \
+  --output outputs/ablations/stage3_transfer_knowledge/train
+
+python scripts/stage3/evaluate.py \
+  --config configs/ablations/stage3_transfer_knowledge.yaml \
+  --checkpoint-dir outputs/ablations/stage3_transfer_knowledge/train \
+  --split valid --fold 1 2 3 4 5 \
+  --output outputs/ablations/stage3_transfer_knowledge/evaluate_valid
+
+python scripts/stage3/evaluate.py \
+  --config configs/ablations/stage3_transfer_knowledge.yaml \
+  --checkpoint-dir outputs/ablations/stage3_transfer_knowledge/train \
+  --split test --ensemble-folds \
+  --output outputs/ablations/stage3_transfer_knowledge/evaluate_test
+```
 `max-parallel`必须能被设备数整除；调度参数不进入科研identity。
 `--source`、`--target`和`--fold`可用于分批执行，完整汇总仍严格要求全部1000个job。
 交互终端会显示Stage2 encoder variant、representation variant和Stage3联合下游job总进度；

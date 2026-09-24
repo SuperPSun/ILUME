@@ -12,6 +12,7 @@ from .config import (
     Stage3GroupConfig,
     Stage3ModelConfig,
     Stage3TaskConfig,
+    Stage3TransferKnowledgeConfig,
 )
 from .data import ResolvedTaskSpec, sanitize_task
 
@@ -150,6 +151,19 @@ class TaskTower(nn.Module):
         return self.layers(values).squeeze(-1)
 
 
+class KnowledgeMixer(nn.Module):
+    def __init__(self, sources: tuple[str, ...]) -> None:
+        super().__init__()
+        self.sources = sources
+        self.gamma = nn.Parameter(torch.zeros(()))
+        self.logits = nn.Parameter(torch.zeros(len(sources)))
+
+    def forward(self, anchor: torch.Tensor, deltas: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        weights = torch.softmax(self.logits, dim=0)
+        combined = sum(weights[index] * deltas[source] for index, source in enumerate(self.sources))
+        return anchor + self.gamma * combined
+
+
 def _mixture(
     experts: Iterable[nn.Module],
     values: torch.Tensor,
@@ -251,6 +265,7 @@ class Stage3SparseModel(nn.Module):
         task_configs: Mapping[str, Stage3TaskConfig] | None = None,
         task_private_recipes: Mapping[str, ResolvedStage3PrivateRecipe] | None = None,
         descriptor_input_dims: Mapping[str, int] | None = None,
+        transfer_knowledge: Stage3TransferKnowledgeConfig | None = None,
     ) -> None:
         super().__init__()
         self.model_config = model_config
@@ -259,6 +274,7 @@ class Stage3SparseModel(nn.Module):
         self.task_configs = dict(task_configs or {})
         self.task_private_recipes = dict(task_private_recipes or {})
         self.d_model = d_model
+        self.transfer_knowledge = transfer_knowledge
         self.groups = tuple(
             sorted({spec.meta_group for spec in self.task_specs.values() if spec.enabled})
         )
@@ -300,6 +316,9 @@ class Stage3SparseModel(nn.Module):
         if self.l1_global_gate is not None:
             global_modules.append(self.l1_global_gate)
         self._own_modules(GLOBAL, *global_modules)
+        if transfer_knowledge is not None:
+            self.global_knowledge_mixer = KnowledgeMixer(transfer_knowledge.global_sources)
+            self._own_modules(GLOBAL, self.global_knowledge_mixer)
 
         self.l1_group_experts = nn.ModuleDict()
         self.l1_group_gates = nn.ModuleDict()
@@ -351,11 +370,18 @@ class Stage3SparseModel(nn.Module):
                 modules.append(self.interactions[group])
             self._own_modules(group_owner(group), *modules)
 
+        self.group_knowledge_mixers = nn.ModuleDict()
+        if transfer_knowledge is not None:
+            for group, entry in transfer_knowledge.group_sources.items():
+                self.group_knowledge_mixers[group] = KnowledgeMixer(entry.sources)
+                self._own_modules(group_owner(group), self.group_knowledge_mixers[group])
+
         self.private_experts = nn.ModuleDict()
         self.task_gates = nn.ModuleDict()
         self.condition_films = nn.ModuleDict()
         self.task_normalizations = nn.ModuleDict()
         self.towers = nn.ModuleDict()
+        self.private_knowledge_mixers = nn.ModuleDict()
         for task_id, spec in self.task_specs.items():
             if not spec.enabled:
                 continue
@@ -433,6 +459,11 @@ class Stage3SparseModel(nn.Module):
             if key in self.condition_films:
                 modules.append(self.condition_films[key])
             self._own_modules(private_owner(task_id), *modules)
+            if transfer_knowledge is not None and task_id in transfer_knowledge.private_sources:
+                self.private_knowledge_mixers[key] = KnowledgeMixer(
+                    transfer_knowledge.private_sources[task_id]
+                )
+                self._own_modules(private_owner(task_id), self.private_knowledge_mixers[key])
         self._validate_ownership()
 
     def resolved_capacity_recipe(self) -> dict[str, object]:
@@ -575,6 +606,18 @@ class Stage3SparseModel(nn.Module):
         for module in self.private_modules_for_task(task_id):
             module.train()
 
+    def knowledge_sources(self, task_id: str) -> tuple[str, ...]:
+        config = self.transfer_knowledge
+        if config is None:
+            return ()
+        group = self.task_specs[task_id].meta_group
+        sources = list(config.global_sources)
+        entry = config.group_sources.get(group)
+        if entry is not None and task_id in entry.tasks:
+            sources.extend(entry.sources)
+        sources.extend(config.private_sources.get(task_id, ()))
+        return tuple(dict.fromkeys(sources))
+
     def forward(
         self,
         task_id: str,
@@ -582,6 +625,8 @@ class Stage3SparseModel(nn.Module):
         conditions: torch.Tensor,
         *,
         partner_embedding: torch.Tensor | None = None,
+        primary_knowledge: Mapping[str, torch.Tensor] | None = None,
+        partner_knowledge: Mapping[str, torch.Tensor] | None = None,
     ) -> Stage3ForwardOutput:
         spec = self.task_specs.get(task_id)
         if spec is None or not spec.enabled:
@@ -600,24 +645,58 @@ class Stage3SparseModel(nn.Module):
                     partner_embedding
                 )
         key = sanitize_task(task_id)
+        group = spec.meta_group
+        if self.transfer_knowledge is not None:
+            if primary_knowledge is None:
+                raise ValueError("Transfer knowledge primary deltas are required")
+            group_enabled = (
+                group in self.transfer_knowledge.group_sources
+                and task_id in self.transfer_knowledge.group_sources[group].tasks
+            )
+            global_primary = self.global_knowledge_mixer(primary_embedding, primary_knowledge)
+            group_primary = (
+                self.group_knowledge_mixers[group](global_primary, primary_knowledge)
+                if group_enabled else global_primary
+            )
+            private_primary = (
+                self.private_knowledge_mixers[key](group_primary, primary_knowledge)
+                if key in self.private_knowledge_mixers else group_primary
+            )
+            if partner_embedding is not None:
+                if partner_knowledge is None:
+                    raise ValueError("Transfer knowledge partner deltas are required")
+                global_partner = self.global_knowledge_mixer(partner_embedding, partner_knowledge)
+                group_partner = (
+                    self.group_knowledge_mixers[group](global_partner, partner_knowledge)
+                    if group_enabled else global_partner
+                )
+                private_partner = (
+                    self.private_knowledge_mixers[key](group_partner, partner_knowledge)
+                    if key in self.private_knowledge_mixers else group_partner
+                )
+            else:
+                group_partner = private_partner = None
+        else:
+            global_primary = group_primary = private_primary = primary_embedding
+            group_partner = private_partner = partner_embedding
         if self.l1_global_gate is None:
-            z_global = primary_embedding
+            z_global = global_primary
             l1_global_weights = primary_embedding.new_empty(
                 (primary_embedding.shape[0], 0)
             )
         else:
             z_global, l1_global_weights = _mixture(
                 self.l1_global_experts,
-                primary_embedding,
-                self.l1_global_gate(primary_embedding),
+                global_primary,
+                self.l1_global_gate(global_primary),
             )
         z_group_delta, l1_group_weights = _mixture(
             self.l1_group_experts[spec.meta_group],
-            primary_embedding,
-            self.l1_group_gates[spec.meta_group](primary_embedding),
+            group_primary,
+            self.l1_group_gates[spec.meta_group](group_primary),
         )
         local = self.l1_group_normalizations[spec.meta_group](
-            primary_embedding + z_group_delta
+            group_primary + z_group_delta
         )
         if spec.condition_columns:
             if conditions.shape[-1] != len(spec.condition_columns):
@@ -628,7 +707,7 @@ class Stage3SparseModel(nn.Module):
         if spec.partner_mode == "interaction":
             if partner_embedding is None:
                 raise ValueError(f"Stage 3 task requires partner embedding: {task_id}")
-            local = self.interactions[spec.meta_group](local, partner_embedding)
+            local = self.interactions[spec.meta_group](local, group_partner)
         elif partner_embedding is not None:
             raise ValueError(f"Stage 3 task must not receive partner embedding: {task_id}")
 
@@ -636,7 +715,18 @@ class Stage3SparseModel(nn.Module):
         group_outputs = _expert_outputs(
             self.l2_group_experts[spec.meta_group], local
         )
-        private_outputs = _expert_outputs(self.private_experts[key], local)
+        private_local = local
+        if self.transfer_knowledge is not None and key in self.private_knowledge_mixers:
+            private_delta, _ = _mixture(
+                self.l1_group_experts[group], private_primary,
+                self.l1_group_gates[group](private_primary),
+            )
+            private_local = self.l1_group_normalizations[group](private_primary + private_delta)
+            if spec.condition_columns:
+                private_local = self.condition_films[key](private_local, conditions)
+            if spec.partner_mode == "interaction":
+                private_local = self.interactions[group](private_local, private_partner)
+        private_outputs = _expert_outputs(self.private_experts[key], private_local)
         task_gate = torch.softmax(
             self.task_gates[key](torch.cat((z_global, local), dim=-1)), dim=-1
         )

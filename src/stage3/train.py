@@ -49,6 +49,7 @@ from .model import (
 )
 from .gradient_assembly import GradientMap
 from .prepare import load_prepared_stage3
+from .transfer_knowledge import TransferKnowledgeBank
 from .identity import (
     build_stage3_training_identity,
     metadata_identity,
@@ -491,7 +492,7 @@ def build_resolved_training_plan(
         total_steps = boundary_epoch * steps
         warmup_steps = math.ceil(config.training.warmup_ratio * total_steps)
     plan = {
-        "format_version": 4 if three_phase else 1,
+        "format_version": (5 if config.transfer_knowledge is not None else 4) if three_phase else 1,
         "fold": fold,
         "active_tasks": list(active_tasks),
         "resolved_registry": {
@@ -550,6 +551,23 @@ def build_resolved_training_plan(
         plan["model"]["capacity_recipe"] = model.resolved_capacity_recipe()
         plan["optimizer"]["parameter_groups"] = "ownership_decay_split"
         plan["math"]["gradient_aggregation"] = "weighted_owner_raw_v1"
+        if config.transfer_knowledge is not None:
+            bank = getattr(model, "_knowledge_bank", None)
+            if bank is None:
+                raise ValueError("Transfer knowledge bank must be validated before planning")
+            plan["transfer_knowledge"] = {
+                "bank_identity": bank.identity["hash"],
+                "bank_sha256": bank.manifest["artifact_sha256"],
+                "global_sources": list(config.transfer_knowledge.global_sources),
+                "group_sources": {
+                    group: {"sources": list(entry.sources), "tasks": list(entry.tasks)}
+                    for group, entry in config.transfer_knowledge.group_sources.items()
+                },
+                "private_sources": {
+                    task: list(sources) for task, sources in config.transfer_knowledge.private_sources.items()
+                },
+                "formula": "joint_plus_owner_gamma_softmax_source_delta_v1",
+            }
     else:
         plan["optimizer"]["lr"] = config.training.learning_rate
         plan["scheduler"] = {
@@ -698,6 +716,52 @@ def _batch(
     return primary, conditions, partner, targets
 
 
+def _load_knowledge_bank(
+    config: Stage3Config, prepared: Mapping[str, Any],
+    representations: Stage3RepresentationStore,
+) -> TransferKnowledgeBank | None:
+    if config.transfer_knowledge is None:
+        return None
+    bank = TransferKnowledgeBank(
+        config.transfer_knowledge.bank,
+        prepared_identity=metadata_identity(
+            prepared["metadata"], "prepared", context="Stage 3 transfer knowledge"
+        )["hash"],
+        objects=prepared["objects"], d_model=representations.output_dim,
+    )
+    all_sources = set(config.transfer_knowledge.global_sources)
+    for entry in config.transfer_knowledge.group_sources.values():
+        all_sources.update(entry.sources)
+    for sources in config.transfer_knowledge.private_sources.values():
+        all_sources.update(sources)
+    if not all_sources <= set(bank.embeddings) - {"baseline"}:
+        raise ValueError("Transfer knowledge config references absent sources")
+    representations.knowledge_bank = bank
+    return bank
+
+
+def knowledge_batch(
+    model: Stage3SparseModel, task_id: str, dataset: Stage3TaskDataset,
+    indices: torch.Tensor, representations: Stage3RepresentationStore | torch.Tensor,
+    device: torch.device,
+) -> tuple[dict[str, torch.Tensor] | None, dict[str, torch.Tensor] | None]:
+    if model.transfer_knowledge is None:
+        return None, None
+    if not isinstance(representations, Stage3RepresentationStore) or representations.knowledge_bank is None:
+        raise ValueError("Transfer knowledge bank was not loaded")
+    bank = representations.knowledge_bank
+    sources = model.knowledge_sources(task_id)
+    primary = {name: value.to(device) for name, value in bank.deltas(
+        dataset.primary_object_ids[indices.cpu()], sources
+    ).items()}
+    partner_ids = dataset.partner_object_ids[indices.cpu()]
+    partner = (
+        {name: value.to(device) for name, value in bank.deltas(partner_ids, sources).items()}
+        if len(partner_ids) and bool((partner_ids >= 0).all()) else None
+    )
+    return primary, partner
+
+
 def compute_task_gradient(
     model: Stage3SparseModel,
     task_id: str,
@@ -722,13 +786,17 @@ def compute_task_gradient(
             normalization,
             device,
         )
+        knowledge_primary, knowledge_partner = knowledge_batch(
+            model, task_id, dataset, micro, representations, device
+        )
         with torch.autocast(
             device_type=device.type,
             dtype=torch.bfloat16,
             enabled=config.training.amp_dtype == "bf16",
         ):
             predictions = model(
-                task_id, primary, conditions, partner_embedding=partner
+                task_id, primary, conditions, partner_embedding=partner,
+                primary_knowledge=knowledge_primary, partner_knowledge=knowledge_partner,
             ).predictions
             if not torch.isfinite(predictions).all():
                 raise RuntimeError(f"Non-finite Stage 3 prediction: {task_id}")
@@ -808,8 +876,14 @@ def validate_tasks(
                 normalizations[task_id],
                 device,
             )
+            knowledge_primary, knowledge_partner = knowledge_batch(
+                model, task_id, dataset, indices, representations, device
+            )
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=config.training.amp_dtype == "bf16"):
-                output = model(task_id, primary, conditions, partner_embedding=partner)
+                output = model(
+                    task_id, primary, conditions, partner_embedding=partner,
+                    primary_knowledge=knowledge_primary, partner_knowledge=knowledge_partner,
+                )
                 prediction = output.predictions
             if not torch.isfinite(prediction).all():
                 raise RuntimeError(
@@ -893,6 +967,7 @@ def run_stage3_training(
         prepared["objects"],
         str(prepared["metadata"]["kind"]),
     )
+    knowledge_bank = _load_knowledge_bank(config, prepared, representations)
     d_model = representations.output_dim
     registry = prepared["registry"]
     model = Stage3SparseModel(
@@ -903,7 +978,10 @@ def run_stage3_training(
         task_configs=config.tasks,
         task_private_recipes=_resolved_private_recipes(config),
         descriptor_input_dims=representations.input_dims,
+        transfer_knowledge=config.transfer_knowledge,
     ).to(device)
+    if knowledge_bank is not None:
+        model._knowledge_bank = knowledge_bank
     representation_source_identity = (
         metadata_identity(
             prepared["metadata"],
@@ -964,6 +1042,7 @@ def resolve_stage3_training_identity(
         prepared["objects"],
         str(prepared["metadata"]["kind"]),
     )
+    knowledge_bank = _load_knowledge_bank(config, prepared, representations)
     model = Stage3SparseModel(
         config.model,
         prepared["registry"],
@@ -972,7 +1051,10 @@ def resolve_stage3_training_identity(
         task_configs=config.tasks,
         task_private_recipes=_resolved_private_recipes(config),
         descriptor_input_dims=representations.input_dims,
+        transfer_knowledge=config.transfer_knowledge,
     )
+    if knowledge_bank is not None:
+        model._knowledge_bank = knowledge_bank
     encoder_identity = (
         metadata_identity(
             prepared["metadata"],

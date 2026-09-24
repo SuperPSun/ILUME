@@ -43,6 +43,8 @@ from .train import (
     STAGE3_RDKIT_REFINED_KIND,
     STAGE3_REFINED_KIND,
     regression_metrics,
+    knowledge_batch,
+    _load_knowledge_bank,
 )
 from .identity import (
     build_stage3_evaluation_identity,
@@ -168,10 +170,12 @@ def _load_model(
             THREE_PHASE_FINAL_FORMAT_VERSION,
             THREE_PHASE_FINAL_KIND,
             THREE_PHASE_RDKIT_FINAL_KIND,
+            THREE_PHASE_KNOWLEDGE_FINAL_KIND,
         )
 
         expected_kind = (
-            THREE_PHASE_RDKIT_FINAL_KIND if rdkit else THREE_PHASE_FINAL_KIND
+            THREE_PHASE_KNOWLEDGE_FINAL_KIND if config.transfer_knowledge is not None
+            else THREE_PHASE_RDKIT_FINAL_KIND if rdkit else THREE_PHASE_FINAL_KIND
         )
         expected_format = THREE_PHASE_FINAL_FORMAT_VERSION
     else:
@@ -215,9 +219,9 @@ def _load_model(
     )
     if three_phase_final:
         if (
-            plan.get("format_version") != 4
+            plan.get("format_version") != (5 if config.transfer_knowledge is not None else 4)
             or plan.get("math", {}).get("gradient_aggregation") != "weighted_owner_raw_v1"
-            or training_identity.get("payload", {}).get("contract_version") != 6
+            or training_identity.get("payload", {}).get("contract_version") != (7 if config.transfer_knowledge is not None else 6)
         ):
             raise ValueError("Stage 3 evaluation requires weighted_owner_raw_v1 artifacts")
     if plan.get("prepared_identity") != metadata_identity(
@@ -245,6 +249,21 @@ def _load_model(
         prepared["objects"],
         str(prepared["metadata"]["kind"]),
     )
+    knowledge_bank = _load_knowledge_bank(config, prepared, representations)
+    if config.transfer_knowledge is not None and (
+        not isinstance(plan.get("transfer_knowledge"), Mapping)
+        or plan["transfer_knowledge"].get("bank_identity") != knowledge_bank.identity["hash"]
+        or plan["transfer_knowledge"].get("bank_sha256") != knowledge_bank.manifest["artifact_sha256"]
+        or plan["transfer_knowledge"].get("global_sources") != list(config.transfer_knowledge.global_sources)
+        or plan["transfer_knowledge"].get("group_sources") != {
+            group: {"sources": list(entry.sources), "tasks": list(entry.tasks)}
+            for group, entry in config.transfer_knowledge.group_sources.items()
+        }
+        or plan["transfer_knowledge"].get("private_sources") != {
+            task: list(sources) for task, sources in config.transfer_knowledge.private_sources.items()
+        }
+    ):
+        raise ValueError("Stage 3 transfer knowledge checkpoint/bank mismatch")
     model = Stage3SparseModel(
         config.model,
         prepared["registry"],
@@ -261,11 +280,14 @@ def _load_model(
             else {}
         ),
         descriptor_input_dims=representations.input_dims,
+        transfer_knowledge=config.transfer_knowledge,
     )
     if checkpoint.get("ownership_manifest") != model.ownership_manifest():
         raise ValueError("Stage 3 checkpoint ownership mismatch")
     state_namespace = (
-        "stage3.three-phase-model-state"
+        "stage3.transfer-knowledge-model-state.v1"
+        if config.transfer_knowledge is not None and three_phase_final
+        else "stage3.three-phase-model-state"
         if three_phase_final
         else "stage3.taskwise-refined-state"
         if taskwise_refined
@@ -328,12 +350,18 @@ def _predict(
             else None
         )
         conditions = dataset.conditions[indices].to(device)
+        knowledge_primary, knowledge_partner = knowledge_batch(
+            model, task_id, dataset, indices, representations, device
+        )
         with torch.autocast(
             device_type=device.type,
             dtype=torch.bfloat16,
             enabled=config.training.amp_dtype == "bf16",
         ):
-            output = model(task_id, primary, conditions, partner_embedding=partner)
+            output = model(
+                task_id, primary, conditions, partner_embedding=partner,
+                primary_knowledge=knowledge_primary, partner_knowledge=knowledge_partner,
+            )
             prediction = output.predictions
         if not torch.isfinite(prediction).all():
             raise RuntimeError(f"Non-finite Stage 3 evaluation prediction: {task_id}")
@@ -478,6 +506,13 @@ def _default_reporting_study_id(
     )
 
 
+def _configured_study_id(
+    config: Stage3Config, metadata: Mapping[str, Any], selector: str
+) -> str:
+    study = _default_reporting_study_id(metadata, selector)
+    return study + "-transfer-knowledge" if config.transfer_knowledge is not None else study
+
+
 def _reporting_model(metadata: Mapping[str, Any]) -> tuple[str, str]:
     if metadata.get("provenance", {}).get("representation") == "rdkit_2d_stage2":
         return "rdkit_2d_stage2_home", "RDKit 2D MLP + Stage2 + HoME"
@@ -526,7 +561,8 @@ def resolve_stage3_reporting_study_id(
     )
     if not isinstance(metadata, dict):
         raise ValueError("Stage 3 prepared metadata must contain a JSON object")
-    return _default_reporting_study_id(
+    return _configured_study_id(
+        config,
         metadata,
         "three-phase-final"
         if three_phase_final
@@ -841,7 +877,8 @@ def evaluate_checkpoints(
             "model_selector": model_selector,
             **next(iter(fold_results.values())),
         }
-        default_study_id = _default_reporting_study_id(
+        default_study_id = _configured_study_id(
+            config,
             prepared["metadata"],
             selector_label if final_artifact else f"epoch{epoch}",
         )
@@ -909,7 +946,8 @@ def evaluate_checkpoints(
         "folds": fold_results,
         "ensemble": ensemble_result,
     }
-    default_study_id = _default_reporting_study_id(
+    default_study_id = _configured_study_id(
+        config,
         prepared["metadata"],
         selector_label if final_artifact else f"epoch{epoch}",
     )

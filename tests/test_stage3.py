@@ -42,6 +42,8 @@ from stage3.config import (
     Stage3TaskConfig,
     Stage3ThreePhaseConfig,
     Stage3TrainingConfig,
+    Stage3KnowledgeGroupConfig,
+    Stage3TransferKnowledgeConfig,
     effective_training_seed,
     load_stage3_config,
     stage3_config_from_dict,
@@ -67,6 +69,9 @@ from stage3.model import (
     private_owner,
     summarize_task_gate_observations,
     task_gate_observations,
+)
+from stage3.transfer_knowledge import (
+    KNOWLEDGE_KIND, KNOWLEDGE_VERSION, SOURCES, TransferKnowledgeBank,
 )
 from stage3.gradient_assembly import assemble_owner_gradients
 from stage3.prepare import load_prepared_stage3, prepare_stage3
@@ -851,6 +856,199 @@ def test_three_phase_config_and_task_specific_gate_contract() -> None:
     expected_mixed = (weights.unsqueeze(-1) * candidates).sum(dim=1)
     expected_prediction = model.towers["experiment__a"](expected_mixed)
     assert torch.equal(output.predictions, expected_prediction)
+
+
+def test_transfer_knowledge_config_model_and_zero_gamma_flat_parity() -> None:
+    base = load_stage3_config("configs/v2/stage3/base.yaml")
+    variant = load_stage3_config("configs/ablations/stage3_transfer_knowledge.yaml")
+    assert stage3_config_from_dict(variant.to_dict()) == variant
+    assert replace(variant, transfer_knowledge=None) == base
+    registry = resolve_task_registry(base)
+    torch.manual_seed(17)
+    flat = Stage3SparseModel(base.model, registry, 4, group_configs=base.groups,
+                             task_configs=base.tasks)
+    torch.manual_seed(17)
+    knowledge = Stage3SparseModel(
+        variant.model, registry, 4, group_configs=variant.groups,
+        task_configs=variant.tasks, transfer_knowledge=variant.transfer_knowledge,
+    )
+    assert set(knowledge.state_dict()) - set(flat.state_dict()) == {
+        name for name in knowledge.state_dict() if "knowledge_mixer" in name
+    }
+    assert all(torch.equal(value, knowledge.state_dict()[name])
+               for name, value in flat.state_dict().items())
+    ownership = knowledge.ownership_manifest()
+    assert ownership["global_knowledge_mixer.gamma"] == "GLOBAL"
+    assert ownership["group_knowledge_mixers.solvation.gamma"] == "GROUP:solvation"
+    assert ownership["private_knowledge_mixers.experiment__density.gamma"] == "PRIVATE:experiment/density"
+    knowledge.set_trainable_owners((GLOBAL,))
+    assert knowledge.global_knowledge_mixer.gamma.requires_grad
+    assert not knowledge.group_knowledge_mixers["solvation"].gamma.requires_grad
+    assert not knowledge.private_knowledge_mixers["experiment__density"].gamma.requires_grad
+    assert "simulation/transfer_organic" in knowledge.knowledge_sources("experiment/solvation")
+    assert knowledge.knowledge_sources("experiment/x_co2") == variant.transfer_knowledge.global_sources
+    flat.eval()
+    knowledge.eval()
+    primary = torch.randn(2, 4)
+    for task in (
+        "experiment/x_co2", "experiment/density",
+        "experiment/dynamic_relative_permittivity", "experiment/solvation",
+    ):
+        conditions = torch.zeros(2, len(registry[task].condition_columns))
+        deltas = {source: torch.randn_like(primary) for source in knowledge.knowledge_sources(task)}
+        partner = primary if registry[task].partner_mode == "interaction" else None
+        expected = flat(task, primary, conditions, partner_embedding=partner)
+        actual = knowledge(
+            task, primary, conditions, partner_embedding=partner,
+            primary_knowledge=deltas,
+            partner_knowledge=deltas if partner is not None else None,
+        )
+        assert torch.equal(expected.predictions, actual.predictions)
+        assert torch.equal(expected.diagnostics["task_gate"], actual.diagnostics["task_gate"])
+        assert task_gate_observations(expected.diagnostics).equal(task_gate_observations(actual.diagnostics))
+
+
+def test_transfer_knowledge_group_task_mask_and_mixer_math() -> None:
+    variant = load_stage3_config("configs/ablations/stage3_transfer_knowledge.yaml")
+    registry = resolve_task_registry(variant)
+    model = Stage3SparseModel(
+        variant.model, registry, 4, group_configs=variant.groups,
+        task_configs=variant.tasks, transfer_knowledge=variant.transfer_knowledge,
+    ).eval()
+    with torch.no_grad():
+        model.group_knowledge_mixers["solvation"].gamma.fill_(1)
+    anchor = torch.zeros(2, 4)
+    conditions = lambda task: torch.zeros(2, len(registry[task].condition_columns))
+    deltas = {source: torch.full_like(anchor, float(index + 1))
+              for index, source in enumerate(SOURCES)}
+    observed = []
+    partners = []
+    hook = model.l1_group_experts["solvation"][0].register_forward_pre_hook(
+        lambda _module, args: observed.append(args[0].detach().clone())
+    )
+    partner_hook = model.interactions["solvation"].register_forward_pre_hook(
+        lambda _module, args: partners.append(args[1].detach().clone())
+    )
+    model("experiment/x_co2", anchor, conditions("experiment/x_co2"),
+          primary_knowledge=deltas)
+    assert torch.equal(observed[-1], anchor)
+    model("experiment/solvation", anchor, conditions("experiment/solvation"),
+          partner_embedding=anchor, primary_knowledge=deltas, partner_knowledge=deltas)
+    expected = sum(deltas[source] for source in variant.transfer_knowledge.group_sources["solvation"].sources) / 3
+    assert torch.equal(observed[-1], expected)
+    assert torch.equal(partners[-1], expected)
+    hook.remove()
+    partner_hook.remove()
+    with torch.no_grad():
+        model.private_knowledge_mixers["experiment__density"].gamma.fill_(1)
+    density_inputs = []
+    density_hook = model.l1_group_experts["thermophysical"][0].register_forward_pre_hook(
+        lambda _module, args: density_inputs.append(args[0].detach().clone())
+    )
+    model("experiment/density", anchor, conditions("experiment/density"),
+          primary_knowledge=deltas)
+    assert len(density_inputs) == 2
+    assert torch.equal(density_inputs[0], anchor)
+    assert torch.equal(density_inputs[1], deltas["simulation/heat_of_vaporization"])
+    density_hook.remove()
+
+
+def test_transfer_knowledge_bank_rejects_wrong_order_and_corruption(tmp_path: Path) -> None:
+    objects = {"objects": [{"topology": "molecule", "slots": [["a"]]},
+                           {"topology": "molecule", "slots": [["b"]]}]}
+    embeddings = {name: torch.full((2, 4), float(index), dtype=torch.float32)
+                  for index, name in enumerate(("baseline", *SOURCES))}
+    source_artifacts = {name: {"sha256": name} for name in ("baseline", *SOURCES)}
+    object_hash = canonical_json_sha256(objects["objects"])
+    tensor_hash = tensor_state_hash("stage3.transfer-knowledge-embeddings.v1", embeddings)
+    identity = semantic_identity("stage3.transfer-knowledge", {
+        "contract_version": KNOWLEDGE_VERSION, "prepared_identity": "prepared-hash",
+        "object_list_hash": object_hash, "source_artifacts": source_artifacts,
+        "tensor_hash": tensor_hash, "shape": [2, 4],
+    })
+    payload = {
+        "kind": KNOWLEDGE_KIND, "format_version": KNOWLEDGE_VERSION,
+        "identity": identity,
+        "prepared_identity": "prepared-hash",
+        "object_list_hash": object_hash,
+        "tensor_hash": tensor_hash,
+        "source_artifacts": source_artifacts,
+        "embeddings": embeddings,
+    }
+    path = tmp_path / "knowledge_bank.pt"
+    torch.save(payload, path)
+    manifest = {name: value for name, value in payload.items() if name != "embeddings"}
+    manifest["artifact_sha256"] = sha256_file(path)
+    path.with_suffix(".json").write_text(json.dumps(manifest))
+    bank = TransferKnowledgeBank(path, prepared_identity="prepared-hash", objects=objects, d_model=4)
+    delta = bank.deltas(torch.tensor([1]), (SOURCES[0],))[SOURCES[0]]
+    assert torch.equal(delta, torch.ones((1, 4)))
+    with pytest.raises(ValueError, match="ObjectKey order"):
+        TransferKnowledgeBank(path, prepared_identity="prepared-hash",
+                              objects={"objects": list(reversed(objects["objects"]))}, d_model=4)
+    with pytest.raises(ValueError, match="prepared identity"):
+        TransferKnowledgeBank(path, prepared_identity="other", objects=objects, d_model=4)
+    payload["embeddings"][SOURCES[0]][0, 0] = float("nan")
+    torch.save(payload, path)
+    manifest["artifact_sha256"] = sha256_file(path)
+    path.with_suffix(".json").write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="malformed"):
+        TransferKnowledgeBank(path, prepared_identity="prepared-hash", objects=objects, d_model=4)
+
+
+def test_transfer_knowledge_train_evaluate_and_checkpoint_isolation(
+    tiny_prepared: Stage3Config,
+) -> None:
+    prepared = load_prepared_stage3(tiny_prepared)
+    objects = prepared["objects"]
+    prepared_hash = metadata_identity(prepared["metadata"], "prepared", context="test")["hash"]
+    path = tiny_prepared.data.artifacts_dir.parent / "knowledge.pt"
+    count = len(objects["objects"])
+    embeddings = {name: torch.full((count, 4), float(index) / 10)
+                  for index, name in enumerate(("baseline", *SOURCES))}
+    source_artifacts = {name: {"sha256": name} for name in embeddings}
+    object_hash = canonical_json_sha256(objects["objects"])
+    tensor_hash = tensor_state_hash("stage3.transfer-knowledge-embeddings.v1", embeddings)
+    identity = semantic_identity("stage3.transfer-knowledge", {
+        "contract_version": KNOWLEDGE_VERSION, "prepared_identity": prepared_hash,
+        "object_list_hash": object_hash, "source_artifacts": source_artifacts,
+        "tensor_hash": tensor_hash, "shape": [count, 4],
+    })
+    payload = {
+        "kind": KNOWLEDGE_KIND, "format_version": KNOWLEDGE_VERSION,
+        "identity": identity, "prepared_identity": prepared_hash,
+        "object_list_hash": object_hash, "source_artifacts": source_artifacts,
+        "tensor_hash": tensor_hash, "embeddings": embeddings,
+    }
+    torch.save(payload, path)
+    manifest = {name: value for name, value in payload.items() if name != "embeddings"}
+    manifest["artifact_sha256"] = sha256_file(path)
+    path.with_suffix(".json").write_text(json.dumps(manifest))
+    config = replace(
+        _tiny_three_phase(tiny_prepared),
+        transfer_knowledge=Stage3TransferKnowledgeConfig(
+            bank=path, global_sources=(SOURCES[0],),
+            group_sources={"g1": Stage3KnowledgeGroupConfig(
+                sources=(SOURCES[1],), tasks=("experiment/a",)
+            )},
+            private_sources={"experiment/c": (SOURCES[2],)},
+        ),
+    )
+    config.validate()
+    output = path.parent / "knowledge-train"
+    run_stage3_training(config, 1, output_dir=output)
+    checkpoint = torch.load(output / "phase_1/checkpoint_epoch_00002.pt",
+                            map_location="cpu", weights_only=False)
+    final = torch.load(output / "three_phase_final.pt", map_location="cpu", weights_only=False)
+    assert checkpoint["kind"] == "ilume_stage3_transfer_knowledge_three_phase_checkpoint"
+    assert final["kind"] == "ilume_stage3_transfer_knowledge_three_phase_final"
+    assert final["resolved_training_plan"]["transfer_knowledge"]["bank_identity"] == identity["hash"]
+    evaluated = evaluate_checkpoints(config, output, split="valid", ensemble_folds=False,
+                                     task_subset=("experiment/a",), fold=1)
+    assert "gate_diagnostics" in evaluated
+    with pytest.raises(ValueError, match="checkpoint mismatch: kind"):
+        evaluate_checkpoints(_tiny_three_phase(tiny_prepared), output, split="valid",
+                             ensemble_folds=False, task_subset=("experiment/a",), fold=1)
 
 
 def test_three_phase_private_capacity_ratios_follow_size_class() -> None:

@@ -38,6 +38,7 @@
 | RDKit-HoME | [0034](0034-rdkit-2d-home-representation-ablation.md) |
 | No-Stage1 | [0036](0036-no-stage1-rdkit-stage2-stage3-ablation.md) |
 | Stage 3 no-PCGrad（历史对照） | [0069](0069-stage3-no-pcgrad-ablation.md) |
+| Stage 3 三级 transfer knowledge | [0072](0072-stage3-transfer-knowledge-hierarchy-ablation.md) |
 | Stage2→Stage3 全迁移矩阵 | [0062](0062-stage2-stage3-full-transfer-matrix.md) |
 | Stage2→Stage3 下游联合适配 | [0068](0068-stage2-stage3-joint-downstream-adaptation.md) |
 

@@ -251,6 +251,20 @@ class Stage3TrainingConfig:
 
 
 @dataclass(frozen=True)
+class Stage3KnowledgeGroupConfig:
+    sources: tuple[str, ...]
+    tasks: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Stage3TransferKnowledgeConfig:
+    bank: Path
+    global_sources: tuple[str, ...]
+    group_sources: dict[str, Stage3KnowledgeGroupConfig]
+    private_sources: dict[str, tuple[str, ...]]
+
+
+@dataclass(frozen=True)
 class Stage3Config:
     data: Stage3DataConfig = field(default_factory=Stage3DataConfig)
     preparation: Stage3PreparationConfig = field(default_factory=Stage3PreparationConfig)
@@ -262,6 +276,7 @@ class Stage3Config:
     groups: dict[str, Stage3GroupConfig] = field(default_factory=_base_groups)
     tasks: dict[str, Stage3TaskConfig] = field(default_factory=_base_task_registry)
     training: Stage3TrainingConfig = field(default_factory=Stage3TrainingConfig)
+    transfer_knowledge: Stage3TransferKnowledgeConfig | None = None
 
     def resolved_private_recipe(
         self, task_id: str
@@ -626,6 +641,25 @@ class Stage3Config:
                 plugin.adaptation.private_tasks
             ) - set(self.tasks):
                 raise ValueError("Plugin adaptation references unknown scopes")
+        knowledge = self.transfer_knowledge
+        if knowledge is not None:
+            if self.representation is not None or training.schedule_mode != "three_phase":
+                raise ValueError("Transfer knowledge requires Object-backed three-phase Stage 3")
+            source_lists = [knowledge.global_sources]
+            for group, entry in knowledge.group_sources.items():
+                if group not in self.groups or not entry.tasks:
+                    raise ValueError(f"Invalid transfer knowledge group: {group}")
+                if any(task not in self.tasks or self.tasks[task].meta_group != group for task in entry.tasks):
+                    raise ValueError(f"Transfer knowledge group task mismatch: {group}")
+                if len(set(entry.tasks)) != len(entry.tasks):
+                    raise ValueError(f"Duplicate transfer knowledge group task: {group}")
+                source_lists.append(entry.sources)
+            for task, sources in knowledge.private_sources.items():
+                if task not in self.tasks or not self.tasks[task].enabled:
+                    raise ValueError(f"Invalid transfer knowledge PRIVATE task: {task}")
+                source_lists.append(sources)
+            if any(not sources or len(set(sources)) != len(sources) or any(not source.startswith("simulation/") for source in sources) for sources in source_lists):
+                raise ValueError("Transfer knowledge sources must be nonempty, unique simulation tasks")
 
     @property
     def enabled_task_ids(self) -> tuple[str, ...]:
@@ -642,6 +676,8 @@ class Stage3Config:
             return value
 
         payload = convert(asdict(self))
+        if self.transfer_knowledge is None:
+            payload.pop("transfer_knowledge")
         if self.representation is None:
             payload.pop("representation")
         plugin = payload["initialization"].get("plugin")
@@ -696,7 +732,7 @@ def _construct_dataclass(cls: type, raw: dict[str, Any] | None) -> Any:
 def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
     allowed = {
         "data", "preparation", "initialization", "representation", "model",
-        "groups", "tasks", "training"
+        "groups", "tasks", "training", "transfer_knowledge"
     }
     unknown = set(raw) - allowed
     if unknown:
@@ -817,6 +853,23 @@ def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
         training_raw["betas"] = tuple(training_raw["betas"])
     if isinstance(training_raw.get("active_tasks"), list):
         training_raw["active_tasks"] = tuple(training_raw["active_tasks"])
+    knowledge_raw = raw.get("transfer_knowledge")
+    knowledge = None
+    if knowledge_raw is not None:
+        values = dict(knowledge_raw)
+        values["bank"] = Path(values["bank"])
+        values["global_sources"] = tuple(values["global_sources"])
+        group_sources = {}
+        for group, entry in values["group_sources"].items():
+            group_values = dict(entry)
+            group_values["sources"] = tuple(group_values["sources"])
+            group_values["tasks"] = tuple(group_values["tasks"])
+            group_sources[group] = _construct_dataclass(Stage3KnowledgeGroupConfig, group_values)
+        values["group_sources"] = group_sources
+        values["private_sources"] = {
+            task: tuple(sources) for task, sources in values["private_sources"].items()
+        }
+        knowledge = _construct_dataclass(Stage3TransferKnowledgeConfig, values)
     config = Stage3Config(
         data=_construct_dataclass(Stage3DataConfig, data_raw),
         preparation=_construct_dataclass(Stage3PreparationConfig, preparation_raw),
@@ -834,6 +887,7 @@ def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
         groups=groups,
         tasks=tasks,
         training=_construct_dataclass(Stage3TrainingConfig, training_raw),
+        transfer_knowledge=knowledge,
     )
     config.validate()
     return config

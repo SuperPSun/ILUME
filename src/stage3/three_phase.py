@@ -29,6 +29,15 @@ THREE_PHASE_CHECKPOINT_VERSION = 2
 THREE_PHASE_FINAL_FORMAT_VERSION = 1
 THREE_PHASE_FINAL_KIND = "ilume_stage3_three_phase_final"
 THREE_PHASE_RDKIT_FINAL_KIND = "ilume_stage3_rdkit_home_three_phase_final"
+THREE_PHASE_KNOWLEDGE_FINAL_KIND = "ilume_stage3_transfer_knowledge_three_phase_final"
+
+
+def _scope_kind(plan: Mapping[str, Any], suffix: str) -> str:
+    prefix = (
+        "ilume_stage3_transfer_knowledge_three_phase"
+        if "transfer_knowledge" in plan else "ilume_stage3_three_phase"
+    )
+    return f"{prefix}_{suffix}"
 
 
 def _append_jsonl(path: Path, payload: Mapping[str, Any]) -> None:
@@ -92,8 +101,12 @@ def _model_state(model: nn.Module) -> dict[str, torch.Tensor]:
     return {name: value.detach().cpu().clone() for name, value in model.state_dict().items()}
 
 
-def _model_hash(state: Mapping[str, torch.Tensor]) -> str:
-    return tensor_state_hash("stage3.three-phase-model-state", state)
+def _model_hash(state: Mapping[str, torch.Tensor], knowledge: bool = False) -> str:
+    namespace = (
+        "stage3.transfer-knowledge-model-state.v1"
+        if knowledge else "stage3.three-phase-model-state"
+    )
+    return tensor_state_hash(namespace, state)
 
 
 def _owner_state(
@@ -108,8 +121,12 @@ def _owner_state(
     }
 
 
-def _owner_hash(state: Mapping[str, torch.Tensor]) -> str:
-    return tensor_state_hash("stage3.three-phase-owner-state", state)
+def _owner_hash(state: Mapping[str, torch.Tensor], knowledge: bool = False) -> str:
+    namespace = (
+        "stage3.transfer-knowledge-owner-state.v1"
+        if knowledge else "stage3.three-phase-owner-state"
+    )
+    return tensor_state_hash(namespace, state)
 
 
 def _per_owner_hashes(
@@ -124,7 +141,8 @@ def _per_owner_hashes(
     }
     return {
         owner.label: _owner_hash(
-            {name: value for name, value in state.items() if names[name] == owner}
+            {name: value for name, value in state.items() if names[name] == owner},
+            model.transfer_knowledge is not None,
         )
         for owner in owners
     }
@@ -181,7 +199,7 @@ def _stitch_owner_deltas(
         labels = {owner.label for owner in owners}
         if seen & labels:
             raise RuntimeError(f"Stage 3 stitched owners overlap at scope: {scope}")
-        if _owner_hash(state) != state_hash:
+        if _owner_hash(state, model.transfer_knowledge is not None) != state_hash:
             raise ValueError(f"Stage 3 owner delta hash mismatch: {scope}")
         seen.update(labels)
         _load_owner_state(model, state, owners)
@@ -195,6 +213,8 @@ def _representation_fields(plan: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _final_kind(plan: Mapping[str, Any]) -> str:
+    if "transfer_knowledge" in plan:
+        return THREE_PHASE_KNOWLEDGE_FINAL_KIND
     return (
         THREE_PHASE_RDKIT_FINAL_KIND
         if "representation" in plan
@@ -361,7 +381,7 @@ def _phase_checkpoint(
 ) -> dict[str, Any]:
     state = _model_state(model)
     return {
-        "kind": "ilume_stage3_three_phase_checkpoint",
+        "kind": _scope_kind(plan, "checkpoint"),
         "format_version": THREE_PHASE_CHECKPOINT_VERSION,
         "stage": "stage3",
         "fold": fold,
@@ -370,7 +390,7 @@ def _phase_checkpoint(
         "completed_epoch": epoch,
         "updates": updates,
         "model": state,
-        "model_state_hash": _model_hash(state),
+        "model_state_hash": _model_hash(state, model.transfer_knowledge is not None),
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict(),
         "owner_updates": dict(scheduler.updates),
@@ -417,7 +437,7 @@ def _delta_checkpoint(
 ) -> dict[str, Any]:
     state = _owner_state(model, owners)
     return {
-        "kind": "ilume_stage3_three_phase_owner_delta",
+        "kind": _scope_kind(plan, "owner_delta"),
         "format_version": THREE_PHASE_CHECKPOINT_VERSION,
         "stage": "stage3",
         "fold": fold,
@@ -428,7 +448,7 @@ def _delta_checkpoint(
         "anchor_model_state_hash": anchor_hash,
         "owners": [owner.label for owner in sorted(owners)],
         "owner_state": state,
-        "owner_state_hash": _owner_hash(state),
+        "owner_state_hash": _owner_hash(state, model.transfer_knowledge is not None),
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict(),
         "owner_updates": dict(scheduler.updates),
@@ -618,7 +638,7 @@ def _run_phase1(
     from .train import validate_tasks
 
     root.mkdir(parents=True, exist_ok=True)
-    anchor_hash = _model_hash(anchor_state)
+    anchor_hash = _model_hash(anchor_state, model.transfer_knowledge is not None)
     model.load_state_dict(anchor_state, strict=True)
     owners = {
         owner.label: owner
@@ -648,14 +668,14 @@ def _run_phase1(
         _validate_checkpoint_common(checkpoint, phase=phase, fold=fold, plan=plan)
         completed_epoch = start - 1
         expected_updates = completed_epoch * steps_per_epoch
-        if checkpoint.get("kind") != "ilume_stage3_three_phase_checkpoint":
+        if checkpoint.get("kind") != _scope_kind(plan, "checkpoint"):
             raise ValueError("Stage 3 three-phase full checkpoint kind mismatch")
         if (
             checkpoint.get("anchor_model_state_hash") != anchor_hash
             or checkpoint.get("completed_epoch") != completed_epoch
             or checkpoint.get("updates") != expected_updates
             or checkpoint.get("ownership_manifest") != model.ownership_manifest()
-            or checkpoint.get("model_state_hash") != _model_hash(checkpoint["model"])
+            or checkpoint.get("model_state_hash") != _model_hash(checkpoint["model"], model.transfer_knowledge is not None)
             or _history_last(root / "metrics.jsonl").get("updates")
             != expected_updates
         ):
@@ -771,7 +791,7 @@ def _run_phase1(
     if validation is None:
         raise RuntimeError(f"Stage 3 phase has no validation: {phase}")
     state = _model_state(model)
-    return state, validation, _model_hash(state)
+    return state, validation, _model_hash(state, model.transfer_knowledge is not None)
 
 
 def _run_delta_branch(
@@ -831,7 +851,7 @@ def _run_delta_branch(
         completed_epoch = start - 1
         expected_updates = completed_epoch * steps_per_epoch
         if (
-            checkpoint.get("kind") != "ilume_stage3_three_phase_owner_delta"
+            checkpoint.get("kind") != _scope_kind(plan, "owner_delta")
             or checkpoint.get("scope") != scope
             or checkpoint.get("anchor_model_state_hash") != anchor_hash
             or checkpoint.get("completed_epoch") != completed_epoch
@@ -839,7 +859,7 @@ def _run_delta_branch(
             or checkpoint.get("owners") != [owner.label for owner in sorted(owners)]
             or checkpoint.get("ownership_manifest") != model.ownership_manifest()
             or checkpoint.get("owner_state_hash")
-            != _owner_hash(checkpoint["owner_state"])
+            != _owner_hash(checkpoint["owner_state"], model.transfer_knowledge is not None)
             or _history_last(root / "metrics.jsonl").get("updates")
             != expected_updates
         ):
@@ -968,7 +988,7 @@ def _run_delta_branch(
         raise RuntimeError(f"Stage 3 branch has no validation: {phase}/{scope}")
     _require_anchor_outside_owners(model, anchor_state, owners)
     state = _owner_state(model, owners)
-    return state, validation, _owner_hash(state)
+    return state, validation, _owner_hash(state, model.transfer_knowledge is not None)
 
 
 def _load_or_publish_stitched(
@@ -1004,13 +1024,13 @@ def _load_or_publish_stitched(
         artifact = torch.load(artifact_path, map_location="cpu", weights_only=False)
         manifest = json.loads(manifest_path.read_text())
         expected_identity = build_stage3_training_identity(plan)
-        expected_stitched_hash = _model_hash(_model_state(model))
+        expected_stitched_hash = _model_hash(_model_state(model), model.transfer_knowledge is not None)
         if (
-            artifact.get("kind") != "ilume_stage3_three_phase_2_stitched"
+            artifact.get("kind") != _scope_kind(plan, "2_stitched")
             or artifact.get("format_version") != THREE_PHASE_FINAL_FORMAT_VERSION
             or artifact.get("fold") != fold
             or manifest.get("artifact_sha256") != sha256_file(artifact_path)
-            or artifact.get("model_state_hash") != _model_hash(artifact["model"])
+            or artifact.get("model_state_hash") != _model_hash(artifact["model"], model.transfer_knowledge is not None)
             or artifact.get("model_state_hash") != expected_stitched_hash
             or artifact.get("anchor_model_state_hash") != anchor_hash
             or artifact.get("ownership_manifest") != model.ownership_manifest()
@@ -1049,11 +1069,11 @@ def _load_or_publish_stitched(
             "per_owner_state_hashes": _per_owner_hashes(model, state, owners),
         }
     state = _model_state(model)
-    state_hash = _model_hash(state)
+    state_hash = _model_hash(state, model.transfer_knowledge is not None)
     atomic_torch_save(
         artifact_path,
         {
-            "kind": "ilume_stage3_three_phase_2_stitched",
+            "kind": _scope_kind(plan, "2_stitched"),
             "format_version": THREE_PHASE_FINAL_FORMAT_VERSION,
             "fold": fold,
             "anchor_model_state_hash": anchor_hash,
@@ -1070,7 +1090,7 @@ def _load_or_publish_stitched(
     atomic_json(
         manifest_path,
         {
-            "kind": "ilume_stage3_three_phase_2_stitched",
+            "kind": _scope_kind(plan, "2_stitched"),
             "format_version": THREE_PHASE_FINAL_FORMAT_VERSION,
             "fold": fold,
             "artifact": artifact_path.name,
@@ -1184,7 +1204,7 @@ def run_three_phase_training(
             model.load_state_dict(phase2_state, strict=True)
             _set_trainable(model, ())
             state = _owner_state(model, (owner,))
-            state_hash = _owner_hash(state)
+            state_hash = _owner_hash(state, model.transfer_knowledge is not None)
             validation = validate_tasks(
                 model,
                 {task: valid_data[task]},
@@ -1223,7 +1243,7 @@ def run_three_phase_training(
         model, valid_data, representations, normalizations, config, device
     )
     final_state = _model_state(model)
-    final_hash = _model_hash(final_state)
+    final_hash = _model_hash(final_state, model.transfer_knowledge is not None)
     artifact_path = output / "three_phase_final.pt"
     manifest_path = output / "three_phase_final.json"
     if artifact_path.exists() or manifest_path.exists():
@@ -1237,7 +1257,7 @@ def run_three_phase_training(
             or artifact.get("format_version") != THREE_PHASE_FINAL_FORMAT_VERSION
             or artifact.get("fold") != fold
             or manifest.get("artifact_sha256") != sha256_file(artifact_path)
-            or artifact.get("model_state_hash") != _model_hash(artifact["model"])
+            or artifact.get("model_state_hash") != _model_hash(artifact["model"], model.transfer_knowledge is not None)
             or artifact.get("model_state_hash") != final_hash
             or artifact.get("ownership_manifest") != model.ownership_manifest()
             or artifact.get("normalization_hash") != plan["normalization_hash"]

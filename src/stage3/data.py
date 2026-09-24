@@ -572,6 +572,7 @@ class Stage3RepresentationStore:
     ) -> None:
         self.fold = fold
         self.artifact_kind = artifact_kind
+        self.knowledge_bank = None
         if artifact_kind == STAGE3_ARTIFACT_KIND:
             embeddings = prepared_objects.get("embeddings")
             if not isinstance(embeddings, torch.Tensor) or embeddings.ndim != 2:

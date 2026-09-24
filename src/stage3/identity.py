@@ -183,11 +183,14 @@ def build_stage3_training_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
         semantic_plan["stage2_encoder_identity"] = plan["stage2_encoder_identity"]
     if "training_seed" in plan:
         semantic_plan["training_seed"] = plan["training_seed"]
+    if "transfer_knowledge" in plan:
+        semantic_plan["transfer_knowledge"] = plan["transfer_knowledge"]
     return semantic_identity(
         "stage3.training",
         {
             "contract_version": (
-                6 if three_phase else STAGE3_TRAINING_IDENTITY_CONTRACT_VERSION
+                (7 if "transfer_knowledge" in plan else 6)
+                if three_phase else STAGE3_TRAINING_IDENTITY_CONTRACT_VERSION
             ),
             "plan": semantic_plan,
         },

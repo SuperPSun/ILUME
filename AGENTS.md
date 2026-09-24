@@ -28,6 +28,7 @@
 - No-Stage1（ADR-0036）用共享 RDKit-217 MLP 替换 backbone，保留 ObjectEncoder/Stage3 Base；Stage 2 只训练八个 object/interaction task，保留其冻结 refinement 合同，禁止 Stage 1/teacher artifact 及主线交叉加载。
 - Single-task MLP（ADR-0033）同时移除 routing、跨 task 共享和 composite sampling，只能解释为整体消融；ADR 原文中的 PCGrad 是历史对照。
 - Stage2→Stage3 全迁移矩阵（ADR-0062/0067/0068）是隔离的 physics-only 初始化消融：一个零 update baseline、九个单 source encoder与 10×20×5 个固定末轮下游job；下游冻结Stage1 slots并同步更新ObjectEncoder与MLP，只使用system-split validation raw MAE，不得读test或改变现役Stage2/3。
+- Stage 3 三级 transfer knowledge（ADR-0072）是独立 HoME 消融：Base joint embedding 与 full-data transfer 的十个冻结 ObjectEncoder 输出组成只读 bank；GLOBAL/GROUP/PRIVATE owner 的零初始化残差按 YAML 映射生效。Base、prepared artifact 与正式训练身份不变，不跨合同加载 checkpoint。
 - 等行数迁移矩阵（ADR-0065/0071）已退役；旧输出只读，现役 transfer 只接受 full-data 配置与产物。
 - Baseline 只复用 registry、split、canonical SMILES、condition/target 与评估口径，不改变 Stage 数值合同。按 ADR 索引读取各模型合同，不能把一个模型的预算推及其他模型。
 - ADR-0045：MLP/D-MPNN/MoLFormer/ILBERT/SPMM/LlaSMol 均为 10 epochs，XGBoost 为 1000 trees；全部发布 final state。AIonopedia、ILTransR 与 AIFC 也使用各自现役的 10-epoch recipe。除模型 ADR 明定外，validation 不驱动早停、选 checkpoint、scheduler 或训练决策。
@@ -54,6 +55,6 @@
 
 ## 验证与清理
 
-- 修改后运行 `pytest -q`；按风险检查十个 Stage、四个 benchmark script 的 `--help`、`compileall`、`git diff --check`、Markdown 链接、ignore 与旧入口。只用临时小数据；未明确授权不执行正式 prepare、teacher cache、训练或五折 evaluation。
+- 修改后运行 `pytest -q`；按风险检查十一个 Stage、四个 benchmark script 的 `--help`、`compileall`、`git diff --check`、Markdown 链接、ignore 与旧入口。只用临时小数据；未明确授权不执行正式 prepare、teacher cache、训练或五折 evaluation。
 - 优先复用/修改现有测试。只有此前未覆盖且会造成实质损失的科研、resume、artifact/identity、CLI/reporting 或高风险调度合同，才新增最小行为测试；不为 private helper、搬家、简单重构或 coverage 扩测试。`tests/` 按 Stage/benchmark/common/architecture 集中组织，`conftest.py` 只放跨文件复用的小 fixture。
 - `trash/` 不进 Git。移动旧 artifact/YAML/未消费数据或删除机器缓存前，报告精确文件数、大小、目标和冲突策略，等用户明确确认。不得覆盖、重排或删除既有 `trash/`。
