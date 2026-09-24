@@ -129,7 +129,7 @@ def load_features(config: Stage3Config, root: str | Path, prepared: Mapping[str,
         raise ValueError("Fine-tuning features do not match prepared data or encoder")
     if manifest.get("sample_count") != len(payload.get("samples", {})):
         raise ValueError("Fine-tuning feature sample count mismatch")
-    return payload
+    return {**payload, "artifact_sha256": manifest["artifact_sha256"]}
 
 
 class FinetuneStage3Model(Stage3SparseModel):

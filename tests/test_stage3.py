@@ -2933,6 +2933,7 @@ def test_full_finetune_features_bind_base_prepared_and_encoder(
         manifest = prepare_finetune_features(config, root)
     payload = load_finetune_features(config, root, prepared)
     assert len(payload["samples"]) == manifest["sample_count"]
+    assert payload["artifact_sha256"] == manifest["artifact_sha256"]
     assert payload["object_keys_hash"] == canonical_json_sha256([
         key.to_dict() for key in finetune_object_keys(prepared)
     ])
