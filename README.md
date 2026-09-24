@@ -137,6 +137,10 @@ python scripts/stage3/full_finetune.py evaluate \
 
 训练默认串行；多卡时可在上述 `train` 命令末尾添加 `--max-parallel 2 --devices cuda:0,cuda:1`。并发槽按设备列表轮流绑定；若每卡显存允许，也可设置大于设备数的并发数。中断后在原命令上添加 `--resume`，已存在的 fold 严格恢复或校验完成状态，尚未启动的 fold 从头运行。历史Base不是在同一可微输入路径下重训的配对frozen control，因此分数差异不可全部归因于“解冻编码器”。
 
+### Stage 3 Base 容量候选
+
+`configs/v2/stage3/base3_1.yaml`～`base3_5.yaml` 是以现役 Base 为共同锚点的五个独立 GLOBAL/GROUP 扩容候选，见 [ADR-0074](docs/adr/0074-stage3-base-global-group-capacity-candidates.md)。它们复用 Base prepared artifact，训练和评估结果应分别写入 `outputs/v2/stage3/base3_1`～`base3_5`；各候选的 checkpoint 不能交叉恢复。
+
 ### 知识图谱性质分组候选
 
 `configs/v2/stage3/base1.yaml`仅改变六个GROUP的任务归属，并按

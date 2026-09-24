@@ -15,6 +15,7 @@
 | Stage 3 分组候选 | [0063](0063-stage3-knowledge-graph-grouping-candidate.md) | 知识图谱六组、YAML 驱动分组与 Base 隔离 |
 | Stage 3 分组预算候选 | [0064](0064-stage3-knowledge-graph-budget-candidates.md) | base1_1～base1_5：四个诊断与一个组合，固定分组与独立身份 |
 | Stage 3 分组定向小实验 | [0066](0066-stage3-knowledge-graph-targeted-small-experiments.md) | base2_1～base2_5：singleton、大组容量与 task lifetime |
+| Stage 3 Base 容量候选 | [0074](0074-stage3-base-global-group-capacity-candidates.md) | base3_1～base3_5：GLOBAL/GROUP experts 与 hidden width |
 | Stage 3 二十任务 catalog | [0067](0067-stage3-twenty-task-catalog.md) | 移除 volume expansion；现役 v2/消融/baseline/transfer target 同步与 artifact 边界 |
 | 身份与 legacy refinement | [0021](0021-identity-audit-contract-v1.md)、[0027](0027-late-taskwise-refinement.md) | semantic identity/audit；0027 refinement 只约束 legacy/Capacity |
 | Reporting | [0023](0023-unified-evaluation-reporting.md)、[0031](0031-stage3-summary-normalization-relaxation.md)、[0043](0043-retire-stage2-evaluation-and-v2-refinement.md)、[0061](0061-ilume-task-scatter-summary.md) | Stage 3 schema、comparison、Stage 2 reporting 退役、task scatter |
