@@ -14,6 +14,8 @@ Stage 1/ObjectEncoder 分别是两个独立的 Phase 1 owner，LR 为 `5e-6`/`1.
 
 周期 checkpoint、训练/评估身份和 final artifact kind与正式 Base隔离。Phase 1 full checkpoint含两级编码器、HoME、AdamW/scheduler/RNG/update/freeze状态；Phase 2/3仍使用 immutable-anchor owner delta。final完整保存编码器与HoME及各自hash。旧Base或其他消融checkpoint不可交叉resume/evaluate。
 
+多 fold 训练可由独立入口以 `spawn` 进程和显式 CUDA 设备槽并发执行。`--max-parallel`、`--devices` 仅改变执行调度，不进入训练身份；每个 fold 仍使用自己的完整模型和原有 epoch 边界恢复合同。
+
 ## 比较与限制
 
 正式比较使用相同20-task system-split五折validation task-equal macro NMAE和逐任务分数；test ensemble只在validation分析后报告，不反向选参。按本轮决定，只使用历史Base summary作参照，不重训新可微输入路径下的frozen control。因此差异代表整个消融方案，不可完全归因于解冻编码器。

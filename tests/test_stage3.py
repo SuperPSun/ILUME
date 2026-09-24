@@ -21,6 +21,7 @@ from common.identity import semantic_identity, tensor_state_hash
 from common.io import sha256_file
 from common.training import canonical_json_sha256, seed_everything
 import scripts.stage3.evaluate as evaluate_launcher
+import scripts.stage3.full_finetune as full_finetune_launcher
 import scripts.stage3.transfer as transfer_launcher
 import scripts.stage3.train as train_launcher
 from stage1.descriptors import calculate_descriptors, rdkit_descriptor_names
@@ -2380,6 +2381,52 @@ def test_scheduler_binds_slots_for_successful_folds(
         (2, "cuda:1", False),
         (3, "cuda:0", False),
     ]
+
+
+def test_full_finetune_scheduler_reuses_cuda_slots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeProcess.created = []
+    calls: list[tuple[int, str | None, bool]] = []
+
+    def worker(config, features, output, fold, resume, device, progress, result_queue):
+        del config, features, output, resume
+        calls.append((fold, device, progress))
+        result_queue.put(("failed" if fold == 2 else "completed", None, None))
+
+    monkeypatch.setattr(full_finetune_launcher.multiprocessing, "get_context", lambda mode: _FakeContext())
+    monkeypatch.setattr("multiprocessing.connection.wait", lambda sentinels: sentinels)
+    monkeypatch.setattr(full_finetune_launcher, "_worker_entry", worker)
+    results = full_finetune_launcher._run_schedule(
+        config_path="config.yaml", feature_dir="features", folds=(1, 2, 3, 4, 5),
+        output_root="outputs/test", resume=True, max_parallel=4,
+        devices=("cuda:0", "cuda:1"),
+    )
+    assert results == {1: "completed", 2: "failed", 3: "completed", 4: "completed", 5: "completed"}
+    assert calls == [
+        (1, "cuda:0", True), (2, "cuda:1", False),
+        (3, "cuda:0", False), (4, "cuda:1", False),
+        (5, "cuda:0", False),
+    ]
+
+
+def test_full_finetune_resume_starts_missing_fold(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    calls: list[tuple[int, bool]] = []
+    monkeypatch.setattr(
+        "ablations.stage3_full_finetune.representation.load_config",
+        lambda _: (object(), object()),
+    )
+    monkeypatch.setattr("stage3.config.configure_process_runtime", lambda _: None)
+    monkeypatch.setattr(
+        "ablations.stage3_full_finetune.train.run_finetuning",
+        lambda _config, _recipe, **kwargs: calls.append((kwargs["fold"], kwargs["resume"])),
+    )
+    assert full_finetune_launcher._run_fold(
+        "config.yaml", "features", str(tmp_path), 2, True, None, True
+    ) == "completed"
+    assert calls == [(2, False)]
 
 # --- Evaluation launcher contract ---
 
