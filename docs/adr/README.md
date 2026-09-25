@@ -9,7 +9,7 @@
 | v2 表示与隔离 | [0039](0039-global-rdkit-v2-mainline.md) | 三模态 Stage 1、1024D entity/Object/HoME；v1 隔离 |
 | Stage 1 执行 | [0013](0013-stage1-full-corpus-ddp.md)、[0014](0014-stage1-prepare-performance-and-corpus-v2.md)、[0015](0015-stage1-high-throughput-epoch-resume.md)、[0017](0017-stage1-base-runtime-profile.md) | 全量 epoch、prepare/runtime、DDP 与完整 epoch 恢复 |
 | Stage 2 | [0019](0019-stage2-catalog-object-v3.md)、[0025](0025-stage2-homo-lumo-scalar-tasks.md)、[0043](0043-retire-stage2-evaluation-and-v2-refinement.md)、[0044](0044-stage2-v2-task-compensated-teacher-loss.md) | Object v3、HOMO/LUMO、v2 joint-only、task-compensated teacher |
-| Stage 3 训练 | [0020](0020-stage3-v1-sparse-home-pcgrad.md)、[0046](0046-stage3-ownership-clipping-raw-sampling.md)、[0048](0048-stage3-owner-lifetime-three-phase-training.md)、[0050](0050-stage3-task-specific-owner-budget-and-private-capacity.md)、[0070](0070-stage3-retire-pcgrad.md) | sparse HoME、raw sampling/clipping、三阶段 owner lifetime/capacity |
+| Stage 3 训练 | [0020](0020-stage3-v1-sparse-home-pcgrad.md)、[0046](0046-stage3-ownership-clipping-raw-sampling.md)、[0048](0048-stage3-owner-lifetime-three-phase-training.md)、[0050](0050-stage3-task-specific-owner-budget-and-private-capacity.md)、[0070](0070-stage3-retire-pcgrad.md)、[0075](0075-stage2-zero-update-stage3-object-phase1.md) | sparse HoME、raw sampling/clipping、三阶段 owner lifetime/capacity、ObjectEncoder Phase 1 |
 | Stage 3 recipe | [0050](0050-stage3-task-specific-owner-budget-and-private-capacity.md)、[0055](0055-stage3-pec50-phase3-single-variable-rollback.md) | owner 默认/覆盖/零预算与现役 task 例外，完整数值读 YAML；0051～0053 已并入历史摘要 |
 | Stage 3 diagnostics | [0054](0054-stage3-task-gate-diagnostics-and-weak-task-tuning.md) | 只读 task gate 统计、fold-sample 聚合与输出边界 |
 | Stage 3 分组候选 | [0063](0063-stage3-knowledge-graph-grouping-candidate.md) | 知识图谱六组、YAML 驱动分组与 Base 隔离 |
@@ -41,6 +41,7 @@
 | Stage 3 no-PCGrad（历史对照） | [0069](0069-stage3-no-pcgrad-ablation.md) |
 | Stage 3 三级 transfer knowledge | [0072](0072-stage3-transfer-knowledge-hierarchy-ablation.md) |
 | Stage 3 表示编码器全量微调 | [0073](0073-stage3-encoder-full-finetune-ablation.md) |
+| Stage 2 零训练 + Stage 3 配对适配 | [0075](0075-stage2-zero-update-stage3-object-phase1.md) |
 | Stage2→Stage3 全迁移矩阵 | [0062](0062-stage2-stage3-full-transfer-matrix.md) |
 | Stage2→Stage3 下游联合适配 | [0068](0068-stage2-stage3-joint-downstream-adaptation.md) |
 

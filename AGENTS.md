@@ -15,7 +15,7 @@
 | Stage 1 | SMILES/Graph/whole-vector RDKit-217 三模态，四项 reconstruction lambda=1，role loss 权重 2/2/1；Fusion 512，entity 1024，global batch 128，默认 eager、单一 Base、单卡/DDP、format v3。跨 Stage 用 `encode_entity()`；`encode()` 仅返回 CLS-512 | 0039；执行 0013/0014/0015/0017 |
 | Stage 2 | 九个 catalog task，共享 ObjectEncoder-1024（8 heads、2 layers、FFN 2048）；完整 1024D entity teacher MSE，Partial Charge 仅在 head 投影到 atom-512；HOMO/LUMO 独立 pooling scalar task 与 pooled train global scaler | 0019/0025/0039 |
 | Stage 2 训练 | QM mask、逐行覆盖；v2 physics/teacher 共同 task compensation，`lambda_teacher` 是 task 内相对权重；一个 batch 一个 optimizer step；10 joint epochs 后发布最终 checkpoint、encoder 和 joint validation。无 v2 refinement、Stage 2 test evaluation | 0043/0044 |
-| Stage 3 | 冻结 Object v3-1024，20 sparse task、6 group、Flat learned HoME、raw sampling、ownership-aware clipping；15 epoch Phase 1 → 六个同源 GROUP 分支 → 20 个同源 PRIVATE scope，固定末轮 stitch，validation 只记录 | 0020/0039/0046/0048/0067 |
+| Stage 3 | 冻结 Stage 1 entity slots，Phase 1 联合更新 ObjectEncoder 与 20-task Flat HoME；Phase 2/3 冻结 ObjectEncoder、使用 final 表示。6 group、raw sampling、ownership-aware clipping；15 epoch Phase 1 → 六个同源 GROUP 分支 → 20 个同源 PRIVATE scope，固定末轮 stitch，validation 只记录 | 0020/0039/0046/0048/0067/0075 |
 | Stage 3 owner | Phase 1/2 使用原始梯度的 task/group 加权聚合，Phase 3 单任务更新；`weighted_owner_raw_v1` 进入训练身份。owner LR/lifetime 与 size-class 默认、task override 的 width/dropout 进入 identity；提前结束用 `requires_grad=False`，不删除 task；零预算 PRIVATE 逐 bit 继承 anchor。Base train/valid microbatch 上限 1024 | 0050/0055/0070；诊断 0054 |
 | Stage 3 diagnostics | 只读 gate mass、normalized entropy、PRIVATE mass 分位数；test aggregate 合并 fold-sample。不得新增 forward、进入 loss/selection 或改 prediction CSV；legacy 不输出。pEC50 Phase 3 为 3 epochs | 0054/0055 |
 
@@ -25,11 +25,12 @@
 
 - legacy/Capacity 保持五模态 format v2、Stage 2 仅补偿 physics 的 loss 与既有 refinement；Stage 3 保持整模 clipping、`max(N_t,1000)` virtual oversampling、80/20 refinement 和 `taskwise_refined`（ADR-0026/0027）。Capacity 是端到端预注册研究，不是正式多容量主线、strict scaling law 或 encoder-only effect；只用 Stage 1 Base prepare 一次，共享 `outputs/experiments_v1/stage1/prepare/artifacts`。Stage 3 正式输入只用 `formal/*.yaml`，选择只读 stitched validation，不读末轮均值或 test。
 - RDKit-HoME（ADR-0034）只以 RDKit 2D + 两个 GLOBAL Linear→LayerNorm adapter 替换 Object 表示，其余现役 Stage 3 合同不变；禁止 Stage 1/2 checkpoint、plugin、HPO 或跨 backend 恢复。
-- No-Stage1（ADR-0036）用共享 RDKit-217 MLP 替换 backbone，保留 ObjectEncoder/Stage3 Base；Stage 2 只训练八个 object/interaction task，保留其冻结 refinement 合同，禁止 Stage 1/teacher artifact 及主线交叉加载。
+- No-Stage1（ADR-0036/0075）用共享 RDKit-217 MLP 替换 backbone，保留 ObjectEncoder/Stage3 Base；Stage 2 只训练八个 object/interaction task，保留其冻结 refinement 合同；Stage 3 Phase 1适配其ObjectEncoder。禁止 Stage 1/teacher artifact 及主线交叉加载。
 - Single-task MLP（ADR-0033）同时移除 routing、跨 task 共享和 composite sampling，只能解释为整体消融；ADR 原文中的 PCGrad 是历史对照。
 - Stage2→Stage3 全迁移矩阵（ADR-0062/0067/0068）是隔离的 physics-only 初始化消融：一个零 update baseline、九个单 source encoder与 10×20×5 个固定末轮下游job；下游冻结Stage1 slots并同步更新ObjectEncoder与MLP，只使用system-split validation raw MAE，不得读test或改变现役Stage2/3。
 - Stage 3 三级 transfer knowledge（ADR-0072）是独立 HoME 消融：Base joint embedding 与 full-data transfer 的十个冻结 ObjectEncoder 输出组成只读 bank；GLOBAL/GROUP/PRIVATE owner 的零初始化残差按 YAML 映射生效。Base、prepared artifact 与正式训练身份不变，不跨合同加载 checkpoint。
 - Stage 3 编码器微调（ADR-0073）是隔离消融：只在Phase 1更新Stage 1表示编码器和Stage 2 ObjectEncoder，Phase 2/3冻结；独立特征输入、训练身份和final kind，不修改Base prepared artifact或正式Flat路径。历史Base只作非严格配对对照。
+- Stage 2 零训练对照（ADR-0075）从相同Stage 1 checkpoint和Stage 2 seed导出零更新ObjectEncoder；新正式Base和No-Stage2在Stage 3 Phase 1都适配ObjectEncoder。旧冻结Base不是配对control；transfer-knowledge固定bank保留历史例外。
 - 等行数迁移矩阵（ADR-0065/0071）已退役；旧输出只读，现役 transfer 只接受 full-data 配置与产物。
 - Baseline 只复用 registry、split、canonical SMILES、condition/target 与评估口径，不改变 Stage 数值合同。按 ADR 索引读取各模型合同，不能把一个模型的预算推及其他模型。
 - ADR-0045：MLP/D-MPNN/MoLFormer/ILBERT/SPMM/LlaSMol 均为 10 epochs，XGBoost 为 1000 trees；全部发布 final state。AIonopedia、ILTransR 与 AIFC 也使用各自现役的 10-epoch recipe。除模型 ADR 明定外，validation 不驱动早停、选 checkpoint、scheduler 或训练决策。
@@ -56,6 +57,6 @@
 
 ## 验证与清理
 
-- 修改后运行 `pytest -q`；按风险检查十二个 Stage、四个 benchmark script 的 `--help`、`compileall`、`git diff --check`、Markdown 链接、ignore 与旧入口。只用临时小数据；未明确授权不执行正式 prepare、teacher cache、训练或五折 evaluation。
+- 修改后运行 `pytest -q`；按风险检查十三个 Stage、四个 benchmark script 的 `--help`、`compileall`、`git diff --check`、Markdown 链接、ignore 与旧入口。只用临时小数据；未明确授权不执行正式 prepare、teacher cache、训练或五折 evaluation。
 - 优先复用/修改现有测试。只有此前未覆盖且会造成实质损失的科研、resume、artifact/identity、CLI/reporting 或高风险调度合同，才新增最小行为测试；不为 private helper、搬家、简单重构或 coverage 扩测试。`tests/` 按 Stage/benchmark/common/architecture 集中组织，`conftest.py` 只放跨文件复用的小 fixture。
 - `trash/` 不进 Git。移动旧 artifact/YAML/未消费数据或删除机器缓存前，报告精确文件数、大小、目标和冲突策略，等用户明确确认。不得覆盖、重排或删除既有 `trash/`。

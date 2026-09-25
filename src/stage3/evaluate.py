@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -142,6 +143,14 @@ def _validate_three_phase_manifest(
         raise ValueError(
             "Stage 3 three-phase final manifest/artifact integrity mismatch"
         )
+    if artifact.get("kind") == "ilume_stage3_object_phase1_three_phase_final":
+        plan = artifact.get("resolved_training_plan", {})
+        if (
+            manifest.get("object_encoder_phase1") != plan.get("object_encoder_phase1")
+            or manifest.get("object_encoder_state_hash") != artifact.get("object_encoder_state_hash")
+            or manifest.get("final_embedding_hash") != artifact.get("final_embedding_hash")
+        ):
+            raise ValueError("Stage 3 ObjectEncoder Phase 1 final manifest mismatch")
     require_compatible_identity(
         artifact["training_identity"],
         manifest.get("training_identity", {}),
@@ -174,7 +183,8 @@ def _load_model(
         )
 
         expected_kind = (
-            THREE_PHASE_KNOWLEDGE_FINAL_KIND if config.transfer_knowledge is not None
+            "ilume_stage3_object_phase1_three_phase_final" if config.training.object_encoder_phase1 is not None
+            else THREE_PHASE_KNOWLEDGE_FINAL_KIND if config.transfer_knowledge is not None
             else THREE_PHASE_RDKIT_FINAL_KIND if rdkit else THREE_PHASE_FINAL_KIND
         )
         expected_format = THREE_PHASE_FINAL_FORMAT_VERSION
@@ -219,9 +229,9 @@ def _load_model(
     )
     if three_phase_final:
         if (
-            plan.get("format_version") != (5 if config.transfer_knowledge is not None else 4)
+            plan.get("format_version") != (7 if config.training.object_encoder_phase1 is not None else 5 if config.transfer_knowledge is not None else 4)
             or plan.get("math", {}).get("gradient_aggregation") != "weighted_owner_raw_v1"
-            or training_identity.get("payload", {}).get("contract_version") != (7 if config.transfer_knowledge is not None else 6)
+            or training_identity.get("payload", {}).get("contract_version") != (9 if config.training.object_encoder_phase1 is not None else 7 if config.transfer_knowledge is not None else 6)
         ):
             raise ValueError("Stage 3 evaluation requires weighted_owner_raw_v1 artifacts")
     if plan.get("prepared_identity") != metadata_identity(
@@ -243,12 +253,35 @@ def _load_model(
         )["hash"]
         if checkpoint.get("stage2_encoder_identity") != expected_encoder:
             raise ValueError("Stage 3 evaluation checkpoint mismatch: stage2_encoder_identity")
-    representations = Stage3RepresentationStore(
-        config.data.artifacts_dir,
-        fold,
-        prepared["objects"],
-        str(prepared["metadata"]["kind"]),
-    )
+    if config.training.object_encoder_phase1 is not None:
+        from .object_phase1 import build_object_phase1_model
+
+        source_plan = dict(plan.get("object_encoder_phase1") or {})
+        initial_home = source_plan.pop("initial_home_state_hash", None)
+        if source_plan != {
+            "recipe": asdict(config.training.object_encoder_phase1),
+            "source_encoder_sha256": sha256_file(config.initialization.stage2_encoder),
+            "source_encoder_state_hashes": prepared["metadata"]["source_encoder_state_hashes"],
+            "source_stage1_checkpoint_sha256": prepared["metadata"]["source_stage1_checkpoint_sha256"],
+            "slots_sha256": prepared["metadata"]["object_slots_sha256"],
+            "encoding": "frozen_stage1_slots_live_object_encoder_v1",
+        }:
+            raise ValueError("Stage 3 ObjectEncoder Phase 1 source or recipe mismatch")
+        model, representations = build_object_phase1_model(config, prepared, fold=fold, device=device)
+        initial_home_hash = tensor_state_hash(
+            "stage3.object-phase1.initial-home.v1",
+            {name: value for name, value in model.state_dict().items()
+             if not name.startswith("stage2_object_encoder.")},
+        )
+        if initial_home != initial_home_hash:
+            raise ValueError("Stage 3 ObjectEncoder Phase 1 initial HoME hash mismatch")
+    else:
+        representations = Stage3RepresentationStore(
+            config.data.artifacts_dir,
+            fold,
+            prepared["objects"],
+            str(prepared["metadata"]["kind"]),
+        )
     knowledge_bank = _load_knowledge_bank(config, prepared, representations)
     if config.transfer_knowledge is not None and (
         not isinstance(plan.get("transfer_knowledge"), Mapping)
@@ -264,28 +297,31 @@ def _load_model(
         }
     ):
         raise ValueError("Stage 3 transfer knowledge checkpoint/bank mismatch")
-    model = Stage3SparseModel(
-        config.model,
-        prepared["registry"],
-        representations.output_dim,
-        group_configs=config.groups,
-        task_configs=config.tasks,
-        task_private_recipes=(
-            {
-                task: config.resolved_private_recipe(task)
-                for task, task_config in config.tasks.items()
-                if task_config.enabled
-            }
-            if config.training.schedule_mode == "three_phase"
-            else {}
-        ),
-        descriptor_input_dims=representations.input_dims,
-        transfer_knowledge=config.transfer_knowledge,
-    )
+    if config.training.object_encoder_phase1 is None:
+        model = Stage3SparseModel(
+            config.model,
+            prepared["registry"],
+            representations.output_dim,
+            group_configs=config.groups,
+            task_configs=config.tasks,
+            task_private_recipes=(
+                {
+                    task: config.resolved_private_recipe(task)
+                    for task, task_config in config.tasks.items()
+                    if task_config.enabled
+                }
+                if config.training.schedule_mode == "three_phase"
+                else {}
+            ),
+            descriptor_input_dims=representations.input_dims,
+            transfer_knowledge=config.transfer_knowledge,
+        )
     if checkpoint.get("ownership_manifest") != model.ownership_manifest():
         raise ValueError("Stage 3 checkpoint ownership mismatch")
     state_namespace = (
-        "stage3.transfer-knowledge-model-state.v1"
+        "stage3.object-phase1-model-state.v1"
+        if config.training.object_encoder_phase1 is not None and three_phase_final
+        else "stage3.transfer-knowledge-model-state.v1"
         if config.transfer_knowledge is not None and three_phase_final
         else "stage3.three-phase-model-state"
         if three_phase_final
@@ -298,6 +334,16 @@ def _load_model(
     ):
         raise ValueError("Stage 3 evaluation checkpoint model state hash mismatch")
     model.load_state_dict(checkpoint["model"], strict=True)
+    if config.training.object_encoder_phase1 is not None:
+        observed = tensor_state_hash(
+            "stage3.object-phase1.final-encoder.v1",
+            model.stage2_object_encoder.state_dict(),
+        )
+        if checkpoint.get("object_encoder_state_hash") != observed:
+            raise ValueError("Stage 3 final ObjectEncoder hash mismatch")
+        representations.freeze_after_phase1(model, checkpoint["phase1_model_state_hash"])
+        if checkpoint.get("final_embedding_hash") != representations.final_embedding_hash:
+            raise ValueError("Stage 3 final representation hash mismatch")
     return model.to(device).eval(), checkpoint, representations
 
 

@@ -1,7 +1,7 @@
 data:
   stage3_dir: data/stage3
   task_catalog: data/task_catalog.csv
-  artifacts_dir: outputs/v2/stage3/base/prepare/artifacts
+  artifacts_dir: outputs/v2/stage3/base/object_phase1_prepare/artifacts
   split_policy: system
   split_strategies: {}
   cv_repeat: 1
@@ -9,7 +9,7 @@ data:
   seed: 42
 preparation:
   encoding_batch_size: 256
-  cache_dir: outputs/v2/stage3/base/prepare/object_cache
+  cache_dir: outputs/v2/stage3/base/object_phase1_prepare/object_cache
 initialization:
   stage2_encoder: outputs/v2/stage2/base/train/stage2_encoder.pt
   plugin: null
@@ -76,6 +76,7 @@ training:
   microbatch_size: 1024
   sampling_mode: raw
   schedule_mode: three_phase
+  object_encoder_phase1: {lr: 1.5e-5, epochs: 15, warmup_ratio: 0.05, min_lr_ratio: 0.1}
   three_phase:
     global: {lr: 2.5e-4, epochs: 15, warmup_ratio: 0.05, min_lr_ratio: 0.1}
     phase1_min_lr_ratio: 0.5

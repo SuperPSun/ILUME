@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
@@ -221,6 +222,16 @@ class Stage3ThreePhaseConfig:
 
 
 @dataclass(frozen=True)
+class Stage3ObjectEncoderPhase1Config:
+    lr: float
+    epochs: int
+    warmup_ratio: float
+    min_lr_ratio: float
+    source_variant: str = "trained"
+    paired_trained_encoder: str | None = None
+
+
+@dataclass(frozen=True)
 class Stage3TrainingConfig:
     seed: int | None = None
     composite_batch_size: int = 2048
@@ -248,6 +259,7 @@ class Stage3TrainingConfig:
     refinement_lr_multiplier: float = 0.10
     schedule_mode: str = "legacy_joint_refinement"
     three_phase: Stage3ThreePhaseConfig | None = None
+    object_encoder_phase1: Stage3ObjectEncoderPhase1Config | None = None
 
 
 @dataclass(frozen=True)
@@ -488,6 +500,40 @@ class Stage3Config:
             if getattr(model, name) <= 0:
                 raise ValueError(f"model.{name} must be positive")
         training = self.training
+        encoder_phase1 = training.object_encoder_phase1
+        if encoder_phase1 is not None:
+            if (
+                training.schedule_mode != "three_phase"
+                or training.three_phase is None
+                or self.representation is not None
+                or self.transfer_knowledge is not None
+                or self.initialization.plugin is not None
+            ):
+                raise ValueError("ObjectEncoder Phase 1 requires ordinary Object-backed three-phase Stage 3")
+            if (
+                isinstance(encoder_phase1.lr, bool)
+                or not isinstance(encoder_phase1.lr, (int, float))
+                or not math.isfinite(encoder_phase1.lr)
+                or encoder_phase1.lr <= 0
+                or isinstance(encoder_phase1.epochs, bool)
+                or not isinstance(encoder_phase1.epochs, int)
+                or encoder_phase1.epochs != training.three_phase.global_scope.epochs
+                or isinstance(encoder_phase1.warmup_ratio, bool)
+                or not isinstance(encoder_phase1.warmup_ratio, (int, float))
+                or not math.isfinite(encoder_phase1.warmup_ratio)
+                or not 0 <= encoder_phase1.warmup_ratio < 1
+                or isinstance(encoder_phase1.min_lr_ratio, bool)
+                or not isinstance(encoder_phase1.min_lr_ratio, (int, float))
+                or not math.isfinite(encoder_phase1.min_lr_ratio)
+                or not 0 < encoder_phase1.min_lr_ratio <= 1
+                or encoder_phase1.source_variant not in {"trained", "zero_update"}
+                or (encoder_phase1.source_variant == "zero_update") != (encoder_phase1.paired_trained_encoder is not None)
+                or (encoder_phase1.paired_trained_encoder is not None and (
+                    not isinstance(encoder_phase1.paired_trained_encoder, str)
+                    or not encoder_phase1.paired_trained_encoder
+                ))
+            ):
+                raise ValueError("Invalid ObjectEncoder Phase 1 recipe")
         if training.seed is not None and training.seed < 0:
             raise ValueError("training.seed must be non-negative or null")
         for name in (
@@ -685,6 +731,10 @@ class Stage3Config:
             adaptation = plugin["adaptation"]
             adaptation["global"] = adaptation.pop("global_scope")
         training = payload["training"]
+        if training["object_encoder_phase1"] is None:
+            training.pop("object_encoder_phase1")
+        elif training["object_encoder_phase1"]["paired_trained_encoder"] is None:
+            training["object_encoder_phase1"].pop("paired_trained_encoder")
         if training["schedule_mode"] == "legacy_joint_refinement":
             training.pop("schedule_mode")
             training.pop("three_phase")
@@ -824,6 +874,10 @@ def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
                 + ", ".join(sorted(forbidden))
             )
     three_phase_raw = training_raw.get("three_phase")
+    if training_raw.get("object_encoder_phase1") is not None:
+        training_raw["object_encoder_phase1"] = _construct_dataclass(
+            Stage3ObjectEncoderPhase1Config, training_raw["object_encoder_phase1"]
+        )
     if three_phase_raw is not None:
         if not isinstance(three_phase_raw, dict):
             raise ValueError("training.three_phase must be a mapping")

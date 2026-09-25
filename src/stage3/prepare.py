@@ -169,6 +169,39 @@ def materialize_object_embeddings(
     }
 
 
+def materialize_object_slots(
+    config: Stage3Config, object_keys: Sequence[ObjectKey]
+) -> dict[str, Any]:
+    """Freeze Stage 1 entity outputs, not the trainable ObjectEncoder output."""
+    encoder_path = config.initialization.stage2_encoder
+    assert encoder_path is not None
+    encoder = load_frozen_object_encoder(encoder_path, device=resolve_device(config.training.device))
+    slots = torch.zeros((len(object_keys), 2, encoder.embedding_dim), dtype=torch.float32)
+    roles = torch.zeros((len(object_keys), 2), dtype=torch.long)
+    counts = torch.zeros(len(object_keys), dtype=torch.long)
+    for topology in ("il", "molecule"):
+        indices = [i for i, key in enumerate(object_keys) if key.topology == topology]
+        for start in range(0, len(indices), config.preparation.encoding_batch_size):
+            selected = indices[start:start + config.preparation.encoding_batch_size]
+            specs = [FrozenObjectSpec(object_keys[i].topology, object_keys[i].slots) for i in selected]
+            batch_slots, batch_roles = encoder.encode_slots(specs)
+            width = batch_slots.shape[1]
+            slots[selected, :width] = batch_slots
+            roles[selected, :width] = batch_roles
+            counts[selected] = width
+    if not torch.isfinite(slots).all() or not torch.all((counts == 1) | (counts == 2)):
+        raise ValueError("Incomplete Stage 3 frozen entity slots")
+    return {
+        "kind": "ilume_stage3_frozen_entity_slots",
+        "format_version": 1,
+        "objects": [key.to_dict() for key in object_keys],
+        "stage2_encoder_identity": encoder.encoder_identity,
+        "slots": slots,
+        "roles": roles,
+        "counts": counts,
+    }
+
+
 def _stage_artifacts(
     staging: Path,
     config: Stage3Config,
@@ -177,6 +210,8 @@ def _stage_artifacts(
     embeddings: torch.Tensor,
     stage2_encoder_identity: Mapping[str, Any],
     source_digests: Mapping[str, str],
+    slot_payload: Mapping[str, Any] | None = None,
+    source_artifact: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     object_ids = {key: index for index, key in enumerate(objects)}
     atomic_torch_save(
@@ -190,6 +225,10 @@ def _stage_artifacts(
             "embeddings": embeddings,
         },
     )
+    if slot_payload is not None:
+        atomic_torch_save(staging / "object_slots.pt", dict(slot_payload))
+        if source_artifact is None:
+            raise ValueError("Stage 3 ObjectEncoder Phase 1 source manifest is missing")
     registry_payload = {
         task_id: spec.prepared_dict() for task_id, spec in registry.items()
     }
@@ -229,11 +268,16 @@ def _stage_artifacts(
     )
     metadata = {
         "identity_contract_version": IDENTITY_CONTRACT_VERSION,
-        "prepared_contract_version": STAGE3_PREPARED_CONTRACT_VERSION,
+        "prepared_contract_version": 3 if slot_payload is not None else STAGE3_PREPARED_CONTRACT_VERSION,
         "format_version": STAGE3_ARTIFACT_VERSION,
         "kind": STAGE3_ARTIFACT_KIND,
         "encoding_contract_version": OBJECT_ENCODING_CONTRACT_VERSION,
         "stage2_encoder_identity": stage2_encoder_identity,
+        **({"stage2_encoder_sha256": sha256_file(config.initialization.stage2_encoder)} if slot_payload is not None else {}),
+        **({
+            "source_encoder_state_hashes": source_artifact["state_hashes"],
+            "source_stage1_checkpoint_sha256": source_artifact["provenance"].get("stage1_checkpoint_hash"),
+        } if slot_payload is not None else {}),
         "registry_hash": canonical_json_sha256(registry_payload),
         "catalog_sha256": source_digests[str(config.data.task_catalog)],
         "source_hashes": dict(source_digests),
@@ -241,6 +285,7 @@ def _stage_artifacts(
         "embedding_dim": int(embeddings.shape[1]),
         "counts": counts,
         "artifact_hashes": artifact_hashes,
+        **({"object_slots_sha256": artifact_hashes["object_slots.pt"]} if slot_payload is not None else {}),
         "locator": {"files": {name: name for name in artifact_hashes}},
         "semantic": {
             "identities": {
@@ -298,15 +343,24 @@ def prepare_stage3(
     for fold in range(1, 6):
         fit_normalization(config, registry, fold)
     objects = collect_object_keys(config, registry)
+    source_artifact = None
+    if config.training.object_encoder_phase1 is not None:
+        from .object_phase1 import validate_encoder_source
+
+        source_artifact = validate_encoder_source(config)
     embeddings, stage2_encoder_identity, cache = materialize_object_embeddings(
         config, objects, reporter=reporter
+    )
+    slot_payload = (
+        materialize_object_slots(config, objects)
+        if config.training.object_encoder_phase1 is not None else None
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix="stage3-artifacts-", dir=destination.parent))
     try:
         metadata = _stage_artifacts(
             staging, config, registry, objects, embeddings,
-            stage2_encoder_identity, source_digests
+            stage2_encoder_identity, source_digests, slot_payload, source_artifact
         )
         staging.replace(destination)
     except BaseException:
@@ -345,7 +399,8 @@ def load_prepared_stage3(config: Stage3Config) -> dict[str, Any]:
         raise ValueError(
             "Stage 3 artifact predates identity contract v1; regenerate it"
         )
-    if metadata.get("prepared_contract_version") != STAGE3_PREPARED_CONTRACT_VERSION:
+    expected_contract = 3 if config.training.object_encoder_phase1 is not None else STAGE3_PREPARED_CONTRACT_VERSION
+    if metadata.get("prepared_contract_version") != expected_contract:
         raise ValueError(
             "Stage 3 artifact predates prepared contract v2; regenerate it"
         )
@@ -368,6 +423,8 @@ def load_prepared_stage3(config: Stage3Config) -> dict[str, Any]:
         stored_stage2_identity,
         context="Stage 3 artifact Stage 2 encoder",
     )
+    if expected_contract == 3 and metadata.get("stage2_encoder_sha256") != sha256_file(encoder_path):
+        raise ValueError("Stage 3 ObjectEncoder Phase 1 source artifact SHA mismatch")
     for relative, digest in metadata.get("artifact_hashes", {}).items():
         path = root / relative
         if not path.is_file() or sha256_file(path) != digest:
@@ -401,11 +458,25 @@ def load_prepared_stage3(config: Stage3Config) -> dict[str, Any]:
         metadata_identity(metadata, "prepared", context="Stage 3 artifact"),
         context="Stage 3 prepared artifact",
     )
+    slots = None
+    if expected_contract == 3:
+        slots = torch.load(root / "object_slots.pt", map_location="cpu", weights_only=True)
+        if (
+            slots.get("kind") != "ilume_stage3_frozen_entity_slots"
+            or slots.get("objects") != objects["objects"]
+            or slots.get("stage2_encoder_identity") != expected_stage2_identity
+            or slots["slots"].shape != (len(objects["objects"]), 2, metadata["embedding_dim"])
+            or slots["roles"].shape != (len(objects["objects"]), 2)
+            or slots["counts"].shape != (len(objects["objects"]),)
+            or not torch.isfinite(slots["slots"]).all()
+        ):
+            raise ValueError("Stage 3 frozen entity slots mismatch")
     return {
         "metadata": metadata,
         "registry": registry,
         "normalization": normalization,
         "objects": objects,
+        "slots": slots,
     }
 
 

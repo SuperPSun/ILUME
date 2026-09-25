@@ -548,6 +548,33 @@ def build_resolved_training_plan(
         plan["model"].pop("group_experts")
         plan["schedule_mode"] = "three_phase"
         plan["phases"] = phase_plan
+        encoder_recipe = config.training.object_encoder_phase1
+        if encoder_recipe is not None:
+            phase1_owners["ENCODER_STAGE2"] = owner_recipe(
+                lr=encoder_recipe.lr,
+                nominal_epochs=encoder_recipe.epochs,
+                effective_epochs=encoder_recipe.epochs,
+                updates_per_epoch=steps,
+                floor=encoder_recipe.min_lr_ratio,
+                warmup_updates=math.ceil(
+                    encoder_recipe.warmup_ratio * encoder_recipe.epochs * steps
+                ),
+                capacity={"kind": "stage2_object_encoder"},
+            )
+            plan["object_encoder_phase1"] = {
+                "recipe": asdict(encoder_recipe),
+                "source_encoder_sha256": prepared["metadata"]["stage2_encoder_sha256"],
+                "source_encoder_state_hashes": prepared["metadata"]["source_encoder_state_hashes"],
+                "source_stage1_checkpoint_sha256": prepared["metadata"]["source_stage1_checkpoint_sha256"],
+                "slots_sha256": prepared["metadata"]["object_slots_sha256"],
+                "encoding": "frozen_stage1_slots_live_object_encoder_v1",
+                "initial_home_state_hash": tensor_state_hash(
+                    "stage3.object-phase1.initial-home.v1",
+                    {name: value for name, value in model.state_dict().items()
+                     if not name.startswith("stage2_object_encoder.")},
+                ),
+            }
+            plan["format_version"] = 7
         plan["model"]["capacity_recipe"] = model.resolved_capacity_recipe()
         plan["optimizer"]["parameter_groups"] = "ownership_decay_split"
         plan["math"]["gradient_aggregation"] = "weighted_owner_raw_v1"
@@ -961,25 +988,34 @@ def run_stage3_training(
     training_seed = effective_training_seed(config)
     seed_everything(training_seed + fold)
     prepared = load_prepared_stage3(config)
-    representations = Stage3RepresentationStore(
-        config.data.artifacts_dir,
-        fold,
-        prepared["objects"],
-        str(prepared["metadata"]["kind"]),
-    )
+    if config.training.object_encoder_phase1 is not None:
+        from .object_phase1 import build_object_phase1_model, validate_initial_object_embeddings
+
+        model, representations = build_object_phase1_model(
+            config, prepared, fold=fold, device=device
+        )
+        validate_initial_object_embeddings(model, representations, prepared)
+    else:
+        representations = Stage3RepresentationStore(
+            config.data.artifacts_dir,
+            fold,
+            prepared["objects"],
+            str(prepared["metadata"]["kind"]),
+        )
     knowledge_bank = _load_knowledge_bank(config, prepared, representations)
     d_model = representations.output_dim
     registry = prepared["registry"]
-    model = Stage3SparseModel(
-        config.model,
-        registry,
-        d_model,
-        group_configs=config.groups,
-        task_configs=config.tasks,
-        task_private_recipes=_resolved_private_recipes(config),
-        descriptor_input_dims=representations.input_dims,
-        transfer_knowledge=config.transfer_knowledge,
-    ).to(device)
+    if config.training.object_encoder_phase1 is None:
+        model = Stage3SparseModel(
+            config.model,
+            registry,
+            d_model,
+            group_configs=config.groups,
+            task_configs=config.tasks,
+            task_private_recipes=_resolved_private_recipes(config),
+            descriptor_input_dims=representations.input_dims,
+            transfer_knowledge=config.transfer_knowledge,
+        ).to(device)
     if knowledge_bank is not None:
         model._knowledge_bank = knowledge_bank
     representation_source_identity = (
@@ -1036,23 +1072,31 @@ def resolve_stage3_training_identity(
     if fold not in range(1, 6):
         raise ValueError("Stage 3 fold must be in 1..5")
     prepared = load_prepared_stage3(config)
-    representations = Stage3RepresentationStore(
-        config.data.artifacts_dir,
-        fold,
-        prepared["objects"],
-        str(prepared["metadata"]["kind"]),
-    )
+    if config.training.object_encoder_phase1 is not None:
+        from .object_phase1 import build_object_phase1_model
+
+        model, representations = build_object_phase1_model(
+            config, prepared, fold=fold, device=torch.device("cpu")
+        )
+    else:
+        representations = Stage3RepresentationStore(
+            config.data.artifacts_dir,
+            fold,
+            prepared["objects"],
+            str(prepared["metadata"]["kind"]),
+        )
     knowledge_bank = _load_knowledge_bank(config, prepared, representations)
-    model = Stage3SparseModel(
-        config.model,
-        prepared["registry"],
-        representations.output_dim,
-        group_configs=config.groups,
-        task_configs=config.tasks,
-        task_private_recipes=_resolved_private_recipes(config),
-        descriptor_input_dims=representations.input_dims,
-        transfer_knowledge=config.transfer_knowledge,
-    )
+    if config.training.object_encoder_phase1 is None:
+        model = Stage3SparseModel(
+            config.model,
+            prepared["registry"],
+            representations.output_dim,
+            group_configs=config.groups,
+            task_configs=config.tasks,
+            task_private_recipes=_resolved_private_recipes(config),
+            descriptor_input_dims=representations.input_dims,
+            transfer_knowledge=config.transfer_knowledge,
+        )
     if knowledge_bank is not None:
         model._knowledge_bank = knowledge_bank
     encoder_identity = (

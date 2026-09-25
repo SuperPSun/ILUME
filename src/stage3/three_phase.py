@@ -33,7 +33,9 @@ THREE_PHASE_KNOWLEDGE_FINAL_KIND = "ilume_stage3_transfer_knowledge_three_phase_
 
 
 def _scope_kind(plan: Mapping[str, Any], suffix: str) -> str:
-    if "encoder_finetune" in plan:
+    if "object_encoder_phase1" in plan:
+        prefix = "ilume_stage3_object_phase1_three_phase"
+    elif "encoder_finetune" in plan:
         prefix = "ilume_stage3_encoder_finetune_three_phase"
     elif "transfer_knowledge" in plan:
         prefix = "ilume_stage3_transfer_knowledge_three_phase"
@@ -103,10 +105,11 @@ def _model_state(model: nn.Module) -> dict[str, torch.Tensor]:
     return {name: value.detach().cpu().clone() for name, value in model.state_dict().items()}
 
 
-def _model_hash(state: Mapping[str, torch.Tensor], knowledge: bool = False) -> str:
+def _model_hash(state: Mapping[str, torch.Tensor], knowledge: bool = False, object_phase1: bool = False) -> str:
     namespace = (
-        "stage3.transfer-knowledge-model-state.v1"
-        if knowledge else "stage3.three-phase-model-state"
+        "stage3.object-phase1-model-state.v1" if object_phase1 else
+        "stage3.transfer-knowledge-model-state.v1" if knowledge else
+        "stage3.three-phase-model-state"
     )
     return tensor_state_hash(namespace, state)
 
@@ -123,10 +126,11 @@ def _owner_state(
     }
 
 
-def _owner_hash(state: Mapping[str, torch.Tensor], knowledge: bool = False) -> str:
+def _owner_hash(state: Mapping[str, torch.Tensor], knowledge: bool = False, object_phase1: bool = False) -> str:
     namespace = (
-        "stage3.transfer-knowledge-owner-state.v1"
-        if knowledge else "stage3.three-phase-owner-state"
+        "stage3.object-phase1-owner-state.v1" if object_phase1 else
+        "stage3.transfer-knowledge-owner-state.v1" if knowledge else
+        "stage3.three-phase-owner-state"
     )
     return tensor_state_hash(namespace, state)
 
@@ -145,6 +149,7 @@ def _per_owner_hashes(
         owner.label: _owner_hash(
             {name: value for name, value in state.items() if names[name] == owner},
             model.transfer_knowledge is not None,
+            getattr(model, "object_phase1", False),
         )
         for owner in owners
     }
@@ -201,7 +206,7 @@ def _stitch_owner_deltas(
         labels = {owner.label for owner in owners}
         if seen & labels:
             raise RuntimeError(f"Stage 3 stitched owners overlap at scope: {scope}")
-        if _owner_hash(state, model.transfer_knowledge is not None) != state_hash:
+        if _owner_hash(state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False)) != state_hash:
             raise ValueError(f"Stage 3 owner delta hash mismatch: {scope}")
         seen.update(labels)
         _load_owner_state(model, state, owners)
@@ -215,6 +220,8 @@ def _representation_fields(plan: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _final_kind(plan: Mapping[str, Any]) -> str:
+    if "object_encoder_phase1" in plan:
+        return "ilume_stage3_object_phase1_three_phase_final"
     if "encoder_finetune" in plan:
         return "ilume_stage3_encoder_finetune_three_phase_final"
     if "transfer_knowledge" in plan:
@@ -405,7 +412,7 @@ def _phase_checkpoint(
         "completed_epoch": epoch,
         "updates": updates,
         "model": state,
-        "model_state_hash": _model_hash(state, model.transfer_knowledge is not None),
+        "model_state_hash": _model_hash(state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False)),
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict(),
         "owner_updates": dict(scheduler.updates),
@@ -457,7 +464,7 @@ def _delta_checkpoint(
         "anchor_model_state_hash": anchor_hash,
         "owners": [owner.label for owner in sorted(owners)],
         "owner_state": state,
-        "owner_state_hash": _owner_hash(state, model.transfer_knowledge is not None),
+        "owner_state_hash": _owner_hash(state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False)),
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict(),
         "owner_updates": dict(scheduler.updates),
@@ -647,7 +654,7 @@ def _run_phase1(
     from .train import validate_tasks
 
     root.mkdir(parents=True, exist_ok=True)
-    anchor_hash = _model_hash(anchor_state, model.transfer_knowledge is not None)
+    anchor_hash = _model_hash(anchor_state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
     model.load_state_dict(anchor_state, strict=True)
     owners = {
         owner.label: owner
@@ -682,7 +689,7 @@ def _run_phase1(
             or checkpoint.get("completed_epoch") != completed_epoch
             or checkpoint.get("updates") != expected_updates
             or checkpoint.get("ownership_manifest") != model.ownership_manifest()
-            or checkpoint.get("model_state_hash") != _model_hash(checkpoint["model"], model.transfer_knowledge is not None)
+            or checkpoint.get("model_state_hash") != _model_hash(checkpoint["model"], model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
             or _history_last(root / "metrics.jsonl").get("updates")
             != expected_updates
         ):
@@ -798,7 +805,7 @@ def _run_phase1(
     if validation is None:
         raise RuntimeError(f"Stage 3 phase has no validation: {phase}")
     state = _model_state(model)
-    return state, validation, _model_hash(state, model.transfer_knowledge is not None)
+    return state, validation, _model_hash(state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
 
 
 def _run_delta_branch(
@@ -866,7 +873,7 @@ def _run_delta_branch(
             or checkpoint.get("owners") != [owner.label for owner in sorted(owners)]
             or checkpoint.get("ownership_manifest") != model.ownership_manifest()
             or checkpoint.get("owner_state_hash")
-            != _owner_hash(checkpoint["owner_state"], model.transfer_knowledge is not None)
+            != _owner_hash(checkpoint["owner_state"], model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
             or _history_last(root / "metrics.jsonl").get("updates")
             != expected_updates
         ):
@@ -995,7 +1002,7 @@ def _run_delta_branch(
         raise RuntimeError(f"Stage 3 branch has no validation: {phase}/{scope}")
     _require_anchor_outside_owners(model, anchor_state, owners)
     state = _owner_state(model, owners)
-    return state, validation, _owner_hash(state, model.transfer_knowledge is not None)
+    return state, validation, _owner_hash(state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
 
 
 def _load_or_publish_stitched(
@@ -1031,13 +1038,13 @@ def _load_or_publish_stitched(
         artifact = torch.load(artifact_path, map_location="cpu", weights_only=False)
         manifest = json.loads(manifest_path.read_text())
         expected_identity = build_stage3_training_identity(plan)
-        expected_stitched_hash = _model_hash(_model_state(model), model.transfer_knowledge is not None)
+        expected_stitched_hash = _model_hash(_model_state(model), model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
         if (
             artifact.get("kind") != _scope_kind(plan, "2_stitched")
             or artifact.get("format_version") != THREE_PHASE_FINAL_FORMAT_VERSION
             or artifact.get("fold") != fold
             or manifest.get("artifact_sha256") != sha256_file(artifact_path)
-            or artifact.get("model_state_hash") != _model_hash(artifact["model"], model.transfer_knowledge is not None)
+            or artifact.get("model_state_hash") != _model_hash(artifact["model"], model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
             or artifact.get("model_state_hash") != expected_stitched_hash
             or artifact.get("anchor_model_state_hash") != anchor_hash
             or artifact.get("ownership_manifest") != model.ownership_manifest()
@@ -1076,7 +1083,7 @@ def _load_or_publish_stitched(
             "per_owner_state_hashes": _per_owner_hashes(model, state, owners),
         }
     state = _model_state(model)
-    state_hash = _model_hash(state, model.transfer_knowledge is not None)
+    state_hash = _model_hash(state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
     atomic_torch_save(
         artifact_path,
         {
@@ -1159,7 +1166,7 @@ def run_three_phase_training(
         normalizations=normalizations, registry=registry, device=device,
         resume=resume, anchor_state=initial_state,
     )
-    if "encoder_finetune" in plan:
+    if "encoder_finetune" in plan or "object_encoder_phase1" in plan:
         representations.freeze_after_phase1(model, phase1_hash)
 
     phase2 = phases["phase2"]
@@ -1213,7 +1220,7 @@ def run_three_phase_training(
             model.load_state_dict(phase2_state, strict=True)
             _set_trainable(model, ())
             state = _owner_state(model, (owner,))
-            state_hash = _owner_hash(state, model.transfer_knowledge is not None)
+            state_hash = _owner_hash(state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
             validation = validate_tasks(
                 model,
                 {task: valid_data[task]},
@@ -1252,7 +1259,7 @@ def run_three_phase_training(
         model, valid_data, representations, normalizations, config, device
     )
     final_state = _model_state(model)
-    final_hash = _model_hash(final_state, model.transfer_knowledge is not None)
+    final_hash = _model_hash(final_state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
     artifact_path = output / "three_phase_final.pt"
     manifest_path = output / "three_phase_final.json"
     if artifact_path.exists() or manifest_path.exists():
@@ -1266,10 +1273,20 @@ def run_three_phase_training(
             or artifact.get("format_version") != THREE_PHASE_FINAL_FORMAT_VERSION
             or artifact.get("fold") != fold
             or manifest.get("artifact_sha256") != sha256_file(artifact_path)
-            or artifact.get("model_state_hash") != _model_hash(artifact["model"], model.transfer_knowledge is not None)
+            or artifact.get("model_state_hash") != _model_hash(artifact["model"], model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
             or artifact.get("model_state_hash") != final_hash
             or artifact.get("ownership_manifest") != model.ownership_manifest()
             or artifact.get("normalization_hash") != plan["normalization_hash"]
+            or (
+                "object_encoder_phase1" in plan
+                and (
+                    artifact.get("final_embedding_hash") != representations.final_embedding_hash
+                    or artifact.get("object_encoder_state_hash") != tensor_state_hash(
+                        "stage3.object-phase1.final-encoder.v1",
+                        model.stage2_object_encoder.state_dict(),
+                    )
+                )
+            )
         ):
             raise ValueError("Stage 3 three-phase final artifact is corrupt")
         require_compatible_identity(
@@ -1282,6 +1299,14 @@ def run_three_phase_training(
             or manifest.get("format_version") != artifact["format_version"]
             or manifest.get("fold") != fold
             or manifest.get("model_state_hash") != artifact["model_state_hash"]
+            or (
+                "object_encoder_phase1" in plan
+                and (
+                    manifest.get("object_encoder_phase1") != plan["object_encoder_phase1"]
+                    or manifest.get("object_encoder_state_hash") != artifact.get("object_encoder_state_hash")
+                    or manifest.get("final_embedding_hash") != artifact.get("final_embedding_hash")
+                )
+            )
         ):
             raise ValueError("Stage 3 three-phase final manifest is corrupt")
         require_compatible_identity(
@@ -1317,6 +1342,12 @@ def run_three_phase_training(
     }
     if "encoder_finetune" in plan:
         artifact["encoder_state_hashes"] = _encoder_hashes(model)
+    if "object_encoder_phase1" in plan:
+        artifact["object_encoder_state_hash"] = tensor_state_hash(
+            "stage3.object-phase1.final-encoder.v1",
+            model.stage2_object_encoder.state_dict(),
+        )
+        artifact["final_embedding_hash"] = representations.final_embedding_hash
     atomic_torch_save(artifact_path, artifact)
     manifest = {
         "kind": _final_kind(plan),
@@ -1348,6 +1379,10 @@ def run_three_phase_training(
     }
     if "encoder_finetune" in plan:
         manifest["encoder_state_hashes"] = artifact["encoder_state_hashes"]
+    if "object_encoder_phase1" in plan:
+        manifest["object_encoder_phase1"] = dict(plan["object_encoder_phase1"])
+        manifest["object_encoder_state_hash"] = artifact["object_encoder_state_hash"]
+        manifest["final_embedding_hash"] = artifact["final_embedding_hash"]
     atomic_json(manifest_path, manifest)
     return [{"phase": "three_phase_final", "validation": final_validation}]
 

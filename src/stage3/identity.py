@@ -78,7 +78,7 @@ def build_stage3_prepared_identity(
     return semantic_identity(
         "stage3.prepared-data",
         {
-            "contract_version": STAGE3_PREPARED_IDENTITY_CONTRACT_VERSION,
+            "contract_version": 3 if config.training.object_encoder_phase1 is not None else STAGE3_PREPARED_IDENTITY_CONTRACT_VERSION,
             "source_content": _source_content(config, registry),
             "resolved_registry": {
                 task: spec.prepared_dict()
@@ -95,6 +95,7 @@ def build_stage3_prepared_identity(
             "objects": [key.to_dict() for key in objects],
             "object_encoding_contract_version": OBJECT_ENCODING_CONTRACT_VERSION,
             "stage2_encoder_identity": stage2_encoder_identity["hash"],
+            **({"object_slots": "frozen_stage1_entity_slots_v1"} if config.training.object_encoder_phase1 is not None else {}),
         },
     )
 
@@ -187,10 +188,13 @@ def build_stage3_training_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
         semantic_plan["transfer_knowledge"] = plan["transfer_knowledge"]
     if "encoder_finetune" in plan:
         semantic_plan["encoder_finetune"] = plan["encoder_finetune"]
+    if "object_encoder_phase1" in plan:
+        semantic_plan["object_encoder_phase1"] = plan["object_encoder_phase1"]
     contract_version = STAGE3_TRAINING_IDENTITY_CONTRACT_VERSION
     if three_phase:
         contract_version = (
-            8 if "encoder_finetune" in plan
+            9 if "object_encoder_phase1" in plan
+            else 8 if "encoder_finetune" in plan
             else 7 if "transfer_knowledge" in plan else 6
         )
     return semantic_identity(

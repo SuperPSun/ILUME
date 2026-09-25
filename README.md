@@ -72,15 +72,19 @@ Stage 2 只从完整 Object v3 joint epoch 恢复，旧 Object v2、旧式 v2 re
 
 ## Stage 3
 
-Stage 3 使用冻结的 Stage 2 Object v3 表示、动态 HoME、raw sampling、ownership-aware clipping 与原始梯度 owner 加权聚合。现役 v2 按 owner-specific LR、固定训练寿命和 task-specific PRIVATE capacity/dropout 执行三阶段训练：15 个全任务 epoch、六个同源 GROUP 分支，以及从同一 anchor 独立解析的 20 个 PRIVATE task scope；零预算 scope 直接继承 anchor，其余 scope 固定训练并 stitch。owner 提前冻结不删除 task，validation 只记录，最终发布固定预算状态拼接的 `three_phase_final.pt`。three-phase validation 与独立 evaluation 额外按 task 报告 GLOBAL/GROUP/PRIVATE gate mass、归一化 gate entropy 和 PRIVATE mass 分位数，不改变预测或 prediction CSV。数据、模型、五折调度和恢复合同见 [ADR 索引](docs/adr/README.md)。
+现役 Object-backed Stage 3 使用冻结的 Stage 1 entity slots，在 Phase 1 的 15 个 epoch 联合训练 ObjectEncoder 与动态 Flat HoME；Phase 2/3 冻结 ObjectEncoder并复用其 final object 表示。其余 raw sampling、ownership-aware clipping、原始梯度 owner 加权聚合、六个同源 GROUP 分支、20 个 PRIVATE scope、固定末轮 stitch 和只读 gate diagnostics 保持三阶段合同。新合同必须重新 prepare；历史冻结 ObjectEncoder Base 的 prepared/checkpoint 不兼容。详见 [ADR-0075](docs/adr/0075-stage2-zero-update-stage3-object-phase1.md)。
 
-Base 继续只读复用 `outputs/v2/stage3/base/prepare/artifacts`；运行前须确认该目录完整且哈希校验通过。若本机缺失 prepared 文件，先恢复同一身份的完整产物。以下命令不会重建或覆盖旧 prepared、checkpoint 与 prediction。
+以下示例把新配对 control 写入独立目录，不覆盖历史 Base：
 
 ```bash
+python scripts/stage3/prepare.py \
+  --config configs/v2/stage3/base.yaml \
+  --output outputs/v2/stage3/base/object_phase1_prepare
+
 python scripts/stage3/train.py \
   --config configs/v2/stage3/base.yaml \
   --fold 1 2 3 4 5 \
-  --output outputs/v2/stage3/base_no_pcgrad/train \
+  --output outputs/v2/stage3/base/object_phase1_train \
   --max-parallel 4 \
   --devices cuda:0,cuda:1,cuda:2,cuda:3
 ```
@@ -90,22 +94,55 @@ python scripts/stage3/train.py \
 ```bash
 python scripts/stage3/evaluate.py \
   --config configs/v2/stage3/base.yaml \
-  --checkpoint-dir outputs/v2/stage3/base_no_pcgrad/train \
+  --checkpoint-dir outputs/v2/stage3/base/object_phase1_train \
   --split valid --fold 1 2 3 4 5 \
-  --output outputs/v2/stage3/base_no_pcgrad/evaluate_valid
+  --output outputs/v2/stage3/base/object_phase1_evaluate_valid
 
 python scripts/stage3/evaluate.py \
   --config configs/v2/stage3/base.yaml \
-  --checkpoint-dir outputs/v2/stage3/base_no_pcgrad/train \
+  --checkpoint-dir outputs/v2/stage3/base/object_phase1_train \
   --split test --ensemble-folds \
-  --output outputs/v2/stage3/base_no_pcgrad/evaluate_test
+  --output outputs/v2/stage3/base/object_phase1_evaluate_test
 ```
 
-Stage 3 evaluator 对现役 v2 默认加载每个 fold 的 `three_phase_final.pt`。旧三阶段 PCGrad 产物不兼容新评估身份；legacy v1 与 Capacity v1 的历史 `taskwise_refined.pt` 仍可只读评估，但其训练和恢复入口已退役。
+Stage 3 evaluator 对现役 v2 默认加载每个 fold 的 `three_phase_final.pt`。旧冻结 ObjectEncoder/PCGrad 产物不兼容新评估身份；legacy v1 与 Capacity v1 的历史 `taskwise_refined.pt` 仍可只读评估，但其训练和恢复入口已退役。
+
+### No-Stage2 零更新配对对照
+
+使用相同 Stage 1 checkpoint 和 Stage 2 初始化 seed 导出零更新 encoder，然后单独 prepare、train、evaluate。零更新只是不运行 Stage 2 optimizer；Stage 3 Phase 1仍会适配 ObjectEncoder。比较时必须使用上方**新** Base control，不可使用历史冻结 Base；先分析五折 validation，之后才报告 test。
+
+```bash
+python scripts/stage2/zero_update.py \
+  --config configs/v2/stage2/base.yaml \
+  --trained-encoder outputs/v2/stage2/base/train/stage2_encoder.pt \
+  --output outputs/ablations/no_stage2/stage2_zero_update
+
+python scripts/stage3/prepare.py \
+  --config configs/ablations/no_stage2_stage3.yaml \
+  --output outputs/ablations/no_stage2/object_phase1_prepare
+
+python scripts/stage3/train.py \
+  --config configs/ablations/no_stage2_stage3.yaml \
+  --fold 1 2 3 4 5 \
+  --output outputs/ablations/no_stage2/train \
+  --max-parallel 4 --devices cuda:0,cuda:1,cuda:2,cuda:3
+
+python scripts/stage3/evaluate.py \
+  --config configs/ablations/no_stage2_stage3.yaml \
+  --checkpoint-dir outputs/ablations/no_stage2/train \
+  --split valid --fold 1 2 3 4 5 \
+  --output outputs/ablations/no_stage2/evaluate_valid
+
+python scripts/stage3/evaluate.py \
+  --config configs/ablations/no_stage2_stage3.yaml \
+  --checkpoint-dir outputs/ablations/no_stage2/train \
+  --split test --ensemble-folds \
+  --output outputs/ablations/no_stage2/evaluate_test
+```
 
 ### Stage 3 表示编码器全量微调消融
 
-[ADR-0073](docs/adr/0073-stage3-encoder-full-finetune-ablation.md) 使用Base的20-task数据合同，只在Phase 1以低LR更新Stage 1表示编码器和Stage 2 ObjectEncoder；Phase 2/3冻结两级编码器。此实验不改变正式Base。运行前须先确认Base prepared artifact完整且哈希校验通过；`prepare`只生成消融专用的分子输入，不重建Stage 3 split。
+[ADR-0073](docs/adr/0073-stage3-encoder-full-finetune-ablation.md) 保留其独立的历史冻结Base prepared合同：Phase 1以低LR更新Stage 1表示编码器和Stage 2 ObjectEncoder，Phase 2/3冻结。它不复用新的ObjectEncoder Phase 1 prepared artifact；运行前须确认其原prepared完整且哈希校验通过。
 
 ```bash
 python scripts/stage3/full_finetune.py prepare \

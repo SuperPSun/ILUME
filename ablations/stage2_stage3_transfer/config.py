@@ -105,7 +105,12 @@ class TransferExperimentConfig:
             raise ValueError("Transfer experiment requires non-empty unique Stage 3 targets")
         if tuple(sorted(self.stage3.targets)) != tuple(sorted(stage3.enabled_task_ids)):
             raise ValueError("Transfer targets must exactly match enabled Stage 3 tasks")
-        if self.stage3.prepared_artifacts != stage3.data.artifacts_dir:
+        historical_stage3_artifacts = Path(
+            str(stage3.data.artifacts_dir).replace("/object_phase1_prepare/", "/prepare/")
+        )
+        if self.stage3.prepared_artifacts not in {
+            stage3.data.artifacts_dir, historical_stage3_artifacts
+        }:
             raise ValueError("Transfer Stage 3 prepared artifact differs from its authority")
         if self.stage3.folds != (1, 2, 3, 4, 5):
             raise ValueError("Transfer experiment requires folds 1 through 5")

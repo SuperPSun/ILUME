@@ -37,6 +37,7 @@ from stage3.config import (
     Stage3InitializationConfig,
     Stage3ModelConfig,
     Stage3OwnerBudgetConfig,
+    Stage3ObjectEncoderPhase1Config,
     Stage3PreparationConfig,
     Stage3PrivateClassConfig,
     Stage3RepresentationConfig,
@@ -53,6 +54,7 @@ from stage3.data import (
     ResolvedTaskSpec,
     Stage3TaskDataset,
     Stage3RepresentationStore,
+    collect_object_keys,
     composite_steps_per_epoch,
     raw_task_steps,
     resolve_batch_allocation,
@@ -62,7 +64,7 @@ from stage3.data import (
     source_path,
 )
 from stage3.evaluate import _load_model, evaluate_checkpoints
-from stage3.identity import build_stage3_prepared_identity, build_stage3_training_identity, metadata_identity
+from stage3.identity import build_stage3_prepared_identity, build_stage3_training_identity, metadata_identity, resolve_stage3_prepared_identity
 from stage3.model import (
     GLOBAL,
     Stage3SparseModel,
@@ -71,11 +73,15 @@ from stage3.model import (
     summarize_task_gate_observations,
     task_gate_observations,
 )
+from stage3.object_phase1 import (
+    OBJECT_ENCODER_OWNER, ObjectPhase1Model, ObjectPhase1Representations,
+    validate_encoder_source, validate_initial_object_embeddings,
+)
 from stage3.transfer_knowledge import (
     KNOWLEDGE_KIND, KNOWLEDGE_VERSION, SOURCES, TransferKnowledgeBank,
 )
 from stage3.gradient_assembly import assemble_owner_gradients
-from stage3.prepare import load_prepared_stage3, prepare_stage3
+from stage3.prepare import load_prepared_stage3, materialize_object_slots, prepare_stage3
 from stage3.three_phase import (
     _OwnerScheduler,
     _lr_factor as _three_phase_lr_factor,
@@ -589,6 +595,10 @@ def test_knowledge_graph_budget_candidates_preserve_experiment_boundaries() -> N
             assert budget.phase2.lr == budget.phase1.lr * phases.phase1_min_lr_ratio
         prepared = {"metadata": {
             "kind": "ilume_stage3_sparse_data",
+            "object_slots_sha256": "fixed-slots",
+            "stage2_encoder_sha256": "fixed-source",
+            "source_encoder_state_hashes": {"stage1_backbone": "stage1", "object_encoder": "object"},
+            "source_stage1_checkpoint_sha256": "stage1-checkpoint",
             "semantic": {"identities": {
                 "prepared": prepared_identity,
                 "stage2_encoder": {"hash": "fixed-stage2-encoder"},
@@ -718,6 +728,10 @@ def test_knowledge_graph_targeted_candidates_match_base1_5_contract() -> None:
 
         prepared = {"metadata": {
             "kind": "ilume_stage3_sparse_data",
+            "object_slots_sha256": "fixed-slots",
+            "stage2_encoder_sha256": "fixed-source",
+            "source_encoder_state_hashes": {"stage1_backbone": "stage1", "object_encoder": "object"},
+            "source_stage1_checkpoint_sha256": "stage1-checkpoint",
             "semantic": {"identities": {
                 "prepared": prepared_identity,
                 "stage2_encoder": {"hash": "fixed-stage2-encoder"},
@@ -759,10 +773,10 @@ def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
         assert len(enabled) == task_count
         assert {spec.split_strategy for spec in enabled.values()} == set(strategies)
         assert config.data.artifacts_dir == Path(
-            f"outputs/v2/stage3/splits/{name}/prepare/artifacts"
+            f"outputs/v2/stage3/splits/{name}/object_phase1_prepare/artifacts"
         )
         assert config.preparation.cache_dir == Path(
-            f"outputs/v2/stage3/splits/{name}/prepare/object_cache"
+            f"outputs/v2/stage3/splits/{name}/object_phase1_prepare/object_cache"
         )
         assert config.training.sampling_mode == "raw"
         assert config.training.joint_gradient_clip_mode == "ownership"
@@ -874,7 +888,13 @@ def test_transfer_knowledge_config_model_and_zero_gamma_flat_parity() -> None:
     base = load_stage3_config("configs/v2/stage3/base.yaml")
     variant = load_stage3_config("configs/ablations/stage3_transfer_knowledge.yaml")
     assert stage3_config_from_dict(variant.to_dict()) == variant
-    assert replace(variant, transfer_knowledge=None) == base
+    historical_base = replace(
+        base,
+        data=replace(base.data, artifacts_dir=variant.data.artifacts_dir),
+        preparation=replace(base.preparation, cache_dir=variant.preparation.cache_dir),
+        training=replace(base.training, object_encoder_phase1=None),
+    )
+    assert replace(variant, transfer_knowledge=None) == historical_base
     registry = resolve_task_registry(base)
     torch.manual_seed(17)
     flat = Stage3SparseModel(base.model, registry, 4, group_configs=base.groups,
@@ -2977,6 +2997,9 @@ def test_full_finetune_config_only_changes_base_microbatch() -> None:
     )
     base = load_stage3_config("configs/v2/stage3/base.yaml")
     expected = base.to_dict()
+    expected["data"]["artifacts_dir"] = "outputs/v2/stage3/base/prepare/artifacts"
+    expected["preparation"]["cache_dir"] = "outputs/v2/stage3/base/prepare/object_cache"
+    expected["training"].pop("object_encoder_phase1")
     expected["training"]["microbatch_size"] = 8
     assert config.to_dict() == expected
     assert recipe.stage1_lr == pytest.approx(5e-6)
@@ -2986,6 +3009,327 @@ def test_full_finetune_config_only_changes_base_microbatch() -> None:
     assert owner["actual_update_budget"] == 105
     assert owner["warmup_updates"] == 6
     assert owner["terminal_lr"] == pytest.approx(5e-7)
+
+
+def test_object_phase1_config_and_owner_freeze(tmp_path: Path) -> None:
+    paths = sorted(Path("configs/v2/stage3").rglob("*.yaml"))
+    paths.append(Path("configs/ablations/no_stage1_rdkit_stage3.yaml"))
+    for path in paths:
+        config = load_stage3_config(path)
+        recipe = config.training.object_encoder_phase1
+        assert recipe is not None
+        assert (recipe.lr, recipe.epochs, recipe.warmup_ratio, recipe.min_lr_ratio) == (
+            1.5e-5, 15, 0.05, 0.1,
+        )
+        assert stage3_config_from_dict(config.to_dict()) == config
+    no_stage2 = load_stage3_config("configs/ablations/no_stage2_stage3.yaml")
+    formal = load_stage3_config("configs/v2/stage3/base.yaml")
+    assert no_stage2.training.object_encoder_phase1.source_variant == "zero_update"
+    assert replace(
+        no_stage2,
+        data=formal.data,
+        preparation=formal.preparation,
+        initialization=formal.initialization,
+        training=replace(
+            no_stage2.training,
+            object_encoder_phase1=formal.training.object_encoder_phase1,
+        ),
+    ) == formal
+    with patch("stage3.identity._source_content", return_value={}):
+        formal_prepared = build_stage3_prepared_identity(
+            formal, resolve_task_registry(formal), [], {}, {"hash": "trained"},
+        )
+        ablated_prepared = build_stage3_prepared_identity(
+            no_stage2, resolve_task_registry(no_stage2), [], {}, {"hash": "zero"},
+        )
+    assert formal_prepared["hash"] != ablated_prepared["hash"]
+    formal_payload = dict(formal_prepared["payload"])
+    ablated_payload = dict(ablated_prepared["payload"])
+    formal_payload.pop("stage2_encoder_identity")
+    ablated_payload.pop("stage2_encoder_identity")
+    assert formal_payload == ablated_payload
+    assert load_stage3_config("configs/ablations/stage3_transfer_knowledge.yaml").training.object_encoder_phase1 is None
+    with patch("stage3.object_phase1.load_object_phase1_source", return_value={
+        "provenance": {"stage2_checkpoint_hash": "trained"},
+    }):
+        with pytest.raises(ValueError, match="zero-update"):
+            validate_encoder_source(no_stage2)
+    zero_path = tmp_path / "zero" / "stage2_encoder.pt"
+    zero_path.parent.mkdir()
+    zero_path.write_bytes(b"zero")
+    trained_path = tmp_path / "trained.pt"
+    trained_path.write_bytes(b"trained")
+    paired = replace(
+        no_stage2,
+        initialization=replace(no_stage2.initialization, stage2_encoder=zero_path),
+        training=replace(
+            no_stage2.training,
+            object_encoder_phase1=replace(
+                no_stage2.training.object_encoder_phase1,
+                paired_trained_encoder=str(trained_path),
+            ),
+        ),
+    )
+    initial_hash = "initial"
+    (zero_path.parent / "manifest.json").write_text(json.dumps({
+        "kind": "ilume_stage2_zero_update_control",
+        "optimizer_updates": 0,
+        "stage2_encoder_sha256": sha256_file(zero_path),
+        "paired_trained_encoder_sha256": sha256_file(trained_path),
+        "initial_shared_state_hash": initial_hash,
+    }), encoding="utf-8")
+    zero_payload = {
+        "state_hashes": {"object_encoder": "zero"},
+        "model_contract": {"same": True},
+        "provenance": {
+            "zero_stage2_training": True, "optimizer_updates": 0,
+            "initialization_seed": paired.data.seed,
+            "stage2_checkpoint_hash": None,
+            "stage1_checkpoint_hash": "stage1",
+            "paired_trained_encoder_sha256": sha256_file(trained_path),
+            "initial_shared_state_hash": initial_hash,
+        },
+    }
+    trained_payload = {
+        "model_contract": {"same": True},
+        "provenance": {"stage2_checkpoint_hash": "trained", "stage1_checkpoint_hash": "stage1", "refinement_boundary_epoch": 10},
+    }
+    with patch("stage3.object_phase1.load_object_phase1_source", side_effect=[zero_payload, trained_payload]):
+        validate_encoder_source(paired)
+
+    spec = ResolvedTaskSpec(
+        task_id="experiment/a", target_column="value",
+        identity_columns=("cation", "anion"), condition_columns=(),
+        system_type="il", materialized_path="unused", split_strategy="il",
+        cv_repeat=1, meta_group="g", partner_mode="none",
+        primary_slots=("cation", "anion"), partner_slots=(), enabled=True,
+        task_weight=1.0, catalog_schema_version=1, provenance={},
+    )
+    torch.manual_seed(9)
+    model = ObjectPhase1Model(
+        Stage3ModelConfig(global_experts=1, group_experts=1, dropout=0.0),
+        {spec.task_id: spec}, 8,
+        group_configs={"g": Stage3GroupConfig(experts=1, expert_hidden_ratio=1.0)},
+        task_configs={spec.task_id: Stage3TaskConfig(meta_group="g")},
+        object_encoder=ObjectEncoder(8, 2, num_layers=1, feedforward_dim=16, dropout=0.0),
+    )
+    payload = {
+        "slots": torch.randn(2, 2, 8),
+        "roles": torch.tensor([[ROLE_TO_ID["cation"], ROLE_TO_ID["anion"]],
+                               [ROLE_TO_ID["neutral"], 0]]),
+        "counts": torch.tensor([2, 1]),
+    }
+    store = ObjectPhase1Representations(model, payload)
+    model.eval()
+    reference = torch.stack((
+        store.values(torch.tensor([0]), "il")[0],
+        store.values(torch.tensor([1]), "molecule")[0],
+    ))
+    validate_initial_object_embeddings(model, store, {"objects": {"embeddings": reference}})
+    corrupted = reference.clone()
+    corrupted[0] += 1
+    with pytest.raises(ValueError, match="Frozen Stage 1 slots differ"):
+        validate_initial_object_embeddings(model, store, {"objects": {"embeddings": corrupted}})
+    original = {name: value.clone() for name, value in model.state_dict().items()}
+    model.set_trainable_owners((GLOBAL, OBJECT_ENCODER_OWNER))
+    optimizer = torch.optim.AdamW(model.parameters_for_owner(OBJECT_ENCODER_OWNER), lr=1e-3)
+    prediction = model(spec.task_id, store.values(torch.tensor([0]), "il"), torch.empty(1, 0)).predictions
+    prediction.square().sum().backward()
+    assert any(parameter.grad is not None for parameter in model.parameters_for_owner(OBJECT_ENCODER_OWNER))
+    optimizer.step()
+    changed = {name for name, value in model.state_dict().items() if not torch.equal(value, original[name])}
+    assert changed and all(name.startswith("stage2_object_encoder.") for name in changed)
+    model.set_trainable_owners((GLOBAL,))
+    store.freeze_after_phase1(model, "phase1")
+    assert store.final_embedding_hash is not None
+    frozen = {name: value.clone() for name, value in model.stage2_object_encoder.state_dict().items()}
+    model(spec.task_id, store.values(torch.tensor([0]), "il"), torch.empty(1, 0)).predictions.sum().backward()
+    assert all(not parameter.requires_grad for parameter in model.parameters_for_owner(OBJECT_ENCODER_OWNER))
+    assert all(torch.equal(value, frozen[name]) for name, value in model.stage2_object_encoder.state_dict().items())
+    assert store.values(torch.tensor([1]), "molecule").shape == (1, 8)
+
+
+def test_object_phase1_prepared_slots_preserve_object_order(tmp_path: Path) -> None:
+    config = _tiny_config(tmp_path)
+    objects = collect_object_keys(config, resolve_task_registry(config))
+    order = {(item.topology, item.slots): index for index, item in enumerate(objects)}
+
+    def encode(specs):
+        width = len(specs[0].slots)
+        values = torch.stack([
+            torch.full((width, 4), float(order[(spec.topology, spec.slots)])) for spec in specs
+        ])
+        roles = torch.tensor([
+            [ROLE_TO_ID[role] for role, _ in spec.slots] for spec in specs
+        ])
+        return values, roles
+
+    encoder = SimpleNamespace(
+        embedding_dim=4, encoder_identity={"hash": "encoder"}, encode_slots=encode,
+    )
+    with patch("stage3.prepare.load_frozen_object_encoder", return_value=encoder):
+        slots = materialize_object_slots(config, objects)
+    assert slots["objects"] == [item.to_dict() for item in objects]
+    for index, item in enumerate(objects):
+        width = len(item.slots)
+        assert slots["counts"][index] == width
+        assert torch.equal(slots["slots"][index, :width], torch.full((width, 4), float(index)))
+        assert slots["roles"][index, :width].tolist() == [
+            ROLE_TO_ID[role] for role, _ in item.slots
+        ]
+
+
+def test_object_phase1_prepared_contract_rejects_old_and_corrupt_slots(
+    tmp_path: Path,
+) -> None:
+    base = _tiny_three_phase(_tiny_config(tmp_path))
+    config = replace(
+        base,
+        training=replace(
+            base.training,
+            object_encoder_phase1=Stage3ObjectEncoderPhase1Config(1.5e-5, 2, 0.05, 0.1),
+        ),
+    )
+    objects = collect_object_keys(config, resolve_task_registry(config))
+    slots = {
+        "kind": "ilume_stage3_frozen_entity_slots",
+        "format_version": 1,
+        "objects": [key.to_dict() for key in objects],
+        "stage2_encoder_identity": TEST_ENCODER_IDENTITY,
+        "slots": torch.zeros(len(objects), 2, 4),
+        "roles": torch.zeros(len(objects), 2, dtype=torch.long),
+        "counts": torch.tensor([len(key.slots) for key in objects]),
+    }
+    for index, key in enumerate(objects):
+        slots["roles"][index, :len(key.slots)] = torch.tensor([
+            ROLE_TO_ID[role] for role, _ in key.slots
+        ])
+    source = {
+        "state_hashes": {"stage1_backbone": "stage1", "object_encoder": "object"},
+        "provenance": {"stage1_checkpoint_hash": "stage1-checkpoint"},
+    }
+    with patch("stage3.object_phase1.validate_encoder_source", return_value=source), patch(
+        "stage3.prepare.load_stage2_encoder_identity", return_value=TEST_ENCODER_IDENTITY,
+    ), patch(
+        "stage3.identity.load_stage2_encoder_identity", return_value=TEST_ENCODER_IDENTITY,
+    ), patch(
+        "stage3.prepare.materialize_object_embeddings",
+        return_value=(torch.zeros(len(objects), 4), TEST_ENCODER_IDENTITY, {"hits": 0, "misses": len(objects)}),
+    ), patch(
+        "stage3.prepare.materialize_object_slots", return_value=slots,
+    ):
+        expected_identity = resolve_stage3_prepared_identity(
+            config, resolve_task_registry(config), objects,
+        )
+        prepare_stage3(config)
+        prepared = load_prepared_stage3(config)
+        assert prepared["metadata"]["prepared_contract_version"] == 3
+        assert metadata_identity(prepared["metadata"], "prepared", context="test")["hash"] == expected_identity["hash"]
+        assert prepared["slots"]["objects"] == slots["objects"]
+        with pytest.raises(ValueError, match="prepared contract"):
+            load_prepared_stage3(replace(config, training=replace(config.training, object_encoder_phase1=None)))
+        (config.data.artifacts_dir / "object_slots.pt").write_bytes(b"corrupt")
+        with pytest.raises(ValueError, match="artifact hash mismatch"):
+            load_prepared_stage3(config)
+
+
+def test_object_phase1_three_phase_final_and_resume(
+    tiny_prepared: Stage3Config, tmp_path: Path,
+) -> None:
+    base = _tiny_three_phase(tiny_prepared)
+    config = replace(
+        base,
+        training=replace(
+            base.training,
+            object_encoder_phase1=Stage3ObjectEncoderPhase1Config(1.5e-5, 2, 0.05, 0.1),
+        ),
+    )
+    prepared = load_prepared_stage3(tiny_prepared)
+    prepared["metadata"] = {
+        **prepared["metadata"],
+        "stage2_encoder_sha256": sha256_file(config.initialization.stage2_encoder),
+        "source_encoder_state_hashes": {"stage1_backbone": "stage1", "object_encoder": "object"},
+        "source_stage1_checkpoint_sha256": "synthetic-stage1",
+        "object_slots_sha256": "synthetic-slots",
+    }
+    objects = prepared["objects"]["objects"]
+    torch.manual_seed(101)
+    slots = torch.zeros((len(objects), 2, 4))
+    roles = torch.zeros((len(objects), 2), dtype=torch.long)
+    counts = torch.zeros(len(objects), dtype=torch.long)
+    for index, item in enumerate(objects):
+        count = len(item["slots"])
+        slots[index, :count] = torch.randn(count, 4)
+        roles[index, :count] = torch.tensor([ROLE_TO_ID[role] for role, _ in item["slots"]])
+        counts[index] = count
+    payload = {"slots": slots, "roles": roles, "counts": counts}
+    active = tuple(config.tasks)
+    train = {task: Stage3TaskDataset(config.data.artifacts_dir, 1, task, "train") for task in active}
+    valid = {task: Stage3TaskDataset(config.data.artifacts_dir, 1, task, "valid") for task in active}
+
+    def build():
+        seed_everything(77)
+        model = ObjectPhase1Model(
+            config.model, prepared["registry"], 4,
+            group_configs=config.groups, task_configs=config.tasks,
+            task_private_recipes={task: config.resolved_private_recipe(task) for task in active},
+            object_encoder=ObjectEncoder(4, 2, num_layers=1, feedforward_dim=8, dropout=0.0),
+        )
+        model.set_trainable_owners(set(model.parameter_ownership().values()))
+        return model, ObjectPhase1Representations(model, payload)
+
+    model, store = build()
+    initial_encoder = {name: value.clone() for name, value in model.stage2_object_encoder.state_dict().items()}
+    plan = build_resolved_training_plan(
+        config, 1, model, train, active, prepared, {}, prepared["normalization"]["fold1"],
+    )
+    assert plan["format_version"] == 7
+    assert build_stage3_training_identity(plan)["payload"]["contract_version"] == 9
+    assert plan["phases"]["phase1"]["owners"]["ENCODER_STAGE2"]["actual_update_budget"] == 2 * plan["data"]["K"]
+    output = tmp_path / "object-phase1"
+    run_three_phase_training(
+        config=config, fold=1, output_dir=output, resume_from=None,
+        model=model, registry=prepared["registry"], active=active,
+        train_data=train, valid_data=valid, representations=store,
+        normalizations=prepared["normalization"]["fold1"],
+        plan=plan, device=torch.device("cpu"),
+    )
+    phase1 = torch.load(output / "phase_1/checkpoint_epoch_00002.pt", weights_only=False)
+    final = torch.load(output / "three_phase_final.pt", weights_only=False)
+    assert final["kind"] == "ilume_stage3_object_phase1_three_phase_final"
+    assert final["final_embedding_hash"] == store.final_embedding_hash
+    assert any(not torch.equal(value, initial_encoder[name]) for name, value in model.stage2_object_encoder.state_dict().items())
+    for name in phase1["model"]:
+        if name.startswith("stage2_object_encoder."):
+            assert torch.equal(phase1["model"][name], final["model"][name])
+    resumed_model, resumed_store = build()
+    run_three_phase_training(
+        config=config, fold=1, output_dir=output, resume_from=output,
+        model=resumed_model, registry=prepared["registry"], active=active,
+        train_data=train, valid_data=valid, representations=resumed_store,
+        normalizations=prepared["normalization"]["fold1"],
+        plan=plan, device=torch.device("cpu"),
+    )
+    assert resumed_store.final_embedding_hash == store.final_embedding_hash
+    with patch("stage3.object_phase1.build_object_phase1_model", side_effect=lambda *_args, **_kwargs: build()):
+        loaded_model, loaded_artifact, loaded_store = _load_model(
+            config, prepared, output / "three_phase_final.pt", 1, 2,
+            torch.device("cpu"), three_phase_final=True,
+        )
+    assert loaded_artifact["model_state_hash"] == final["model_state_hash"]
+    assert loaded_store.final_embedding_hash == final["final_embedding_hash"]
+    assert loaded_model.ownership_manifest() == model.ownership_manifest()
+    other_source = tmp_path / "different-stage2.pt"
+    other_source.write_bytes(b"different source")
+    wrong_arm = replace(
+        config,
+        initialization=replace(config.initialization, stage2_encoder=other_source),
+    )
+    with pytest.raises(ValueError, match="source or recipe mismatch"):
+        _load_model(
+            wrong_arm, prepared, output / "three_phase_final.pt", 1, 2,
+            torch.device("cpu"), three_phase_final=True,
+        )
 
 
 def test_full_finetune_features_bind_base_prepared_and_encoder(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+from dataclasses import is_dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -20,9 +21,19 @@ from stage3.config import load_stage3_config
 from stage3.data import ObjectKey, Stage3TaskDataset, stable_seed
 from stage3.identity import metadata_identity
 from stage3.prepare import load_prepared_stage3
-
 from .config import TransferExperimentConfig, require_full_transfer_artifact
 
+
+def _historical_stage3_authority(experiment: TransferExperimentConfig):
+    authority = load_stage3_config(experiment.stage3.authority_config)
+    if (authority.data.artifacts_dir == experiment.stage3.prepared_artifacts
+        or not is_dataclass(authority.data)):
+        return authority
+    return replace(
+        authority,
+        data=replace(authority.data, artifacts_dir=experiment.stage3.prepared_artifacts),
+        training=replace(authority.training, object_encoder_phase1=None),
+    )
 
 REPRESENTATION_KIND = "ilume_stage2_stage3_transfer_trainable_object_encoder"
 REPRESENTATION_VERSION = 2
@@ -100,7 +111,7 @@ def prepare_representation_bank(
     encoder_manifest_path = Path(encoder_manifest_path)
     encoder_manifest = json.loads(encoder_manifest_path.read_text(encoding="utf-8"))
     require_full_transfer_artifact(encoder_manifest)
-    authority = load_stage3_config(experiment.stage3.authority_config)
+    authority = _historical_stage3_authority(experiment)
     prepared = load_prepared_stage3(authority)
     keys = _object_keys(prepared["objects"])
     if encoder_manifest.get("encoder_sha256") != sha256_file(encoder_path):
@@ -410,7 +421,7 @@ def train_transfer_job(
     root = Path(output_dir)
     if root.exists():
         raise FileExistsError(f"Transfer MLP output exists: {root}")
-    authority = load_stage3_config(experiment.stage3.authority_config)
+    authority = _historical_stage3_authority(experiment)
     prepared = load_prepared_stage3(authority)
     prepared_identity = dict(
         metadata_identity(
