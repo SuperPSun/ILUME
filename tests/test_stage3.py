@@ -773,10 +773,10 @@ def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
         assert len(enabled) == task_count
         assert {spec.split_strategy for spec in enabled.values()} == set(strategies)
         assert config.data.artifacts_dir == Path(
-            f"outputs/v2/stage3/splits/{name}/object_phase1_prepare/artifacts"
+            f"outputs/v2/stage3/splits/{name}/prepare/artifacts"
         )
         assert config.preparation.cache_dir == Path(
-            f"outputs/v2/stage3/splits/{name}/object_phase1_prepare/object_cache"
+            f"outputs/v2/stage3/splits/{name}/prepare/object_cache"
         )
         assert config.training.sampling_mode == "raw"
         assert config.training.joint_gradient_clip_mode == "ownership"
