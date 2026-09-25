@@ -309,6 +309,7 @@ def _ilume_stage3_variant(
     if (
         candidate.metadata.get("stage") != "stage3"
         or reporting.get("model_id") != "ilume"
+        or reporting.get("model_display_name") != "ILUME"
     ):
         return None
     source = Path(candidate.source_run).parts
