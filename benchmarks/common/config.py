@@ -575,10 +575,23 @@ class BenchmarkConfig:
             "pressure_transform": "train_only_sample_zscore",
             "frequency_transform": "frequency_MHz_div_1000",
             "wavelength_transform": "wavelength_nm_div_1000",
-            "scalar_head": "linear_512_1024_relu_linear_1024_1",
         }
         variable = {"base_files", "pretrained_files"}
-        if {key: value for key, value in self.model.items() if key not in variable} != expected_model:
+        head_hidden_dim = self.model.get("scalar_head_hidden_dim", 1024)
+        expected_heads = {
+            1024: "linear_512_1024_relu_linear_1024_1",
+            128: "linear_512_128_relu_linear_128_1",
+        }
+        if (
+            head_hidden_dim not in expected_heads
+            or self.model.get("scalar_head") != expected_heads[head_hidden_dim]
+            or {
+                key: value
+                for key, value in self.model.items()
+                if key not in variable | {"scalar_head", "scalar_head_hidden_dim"}
+            }
+            != expected_model
+        ):
             raise ValueError("AIonopedia model must match the registered multimodal recipe")
         for group in variable:
             files = self.model.get(group)

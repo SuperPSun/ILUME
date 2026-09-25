@@ -480,6 +480,26 @@ def test_formal_baseline_configs_use_fixed_final_state(
         }.isdisjoint(config.training)
 
 
+def test_aionopedia_head128_variant_preserves_the_official_training_recipe() -> None:
+    official = load_benchmark_config("configs/benchmarks/aionopedia.yaml")
+    variant = load_benchmark_config("configs/benchmarks/aionopedia_head128.yaml")
+    assert official.model.get("scalar_head_hidden_dim", 1024) == 1024
+    assert variant.model["scalar_head_hidden_dim"] == 128
+    assert variant.model["scalar_head"] == "linear_512_128_relu_linear_128_1"
+    assert variant.training == official.training
+    assert variant.data == official.data
+    assert variant.model["base_files"] == official.model["base_files"]
+    assert variant.model["pretrained_files"] == official.model["pretrained_files"]
+
+
+def test_aionopedia_regression_head_uses_configured_hidden_width() -> None:
+    model = AIonopediaRegressor(torch.nn.Identity(), head_hidden_dim=128)
+    assert model.fc_out[0].in_features == 512
+    assert model.fc_out[0].out_features == 128
+    assert model.fc_out[2].in_features == 128
+    assert model.fc_out[2].out_features == 1
+
+
 @pytest.mark.parametrize(
     "name",
     (

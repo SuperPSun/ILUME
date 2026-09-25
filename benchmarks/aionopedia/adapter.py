@@ -336,7 +336,11 @@ def _build_model(config: BenchmarkConfig, *, device: torch.device) -> Any:
         peft_config.base_model_name_or_path = str(
             repository_path(config.model["base_snapshot"])
         )
-    model = MultiModalRegressor(llm, llm_dim=1024)
+    model = MultiModalRegressor(
+        llm,
+        llm_dim=1024,
+        head_hidden_dim=int(config.model.get("scalar_head_hidden_dim", 1024)),
+    )
     pretrained = repository_path(config.model["pretrained_snapshot"])
     for filename, attribute in OFFICIAL_MODULE_FILES.items():
         getattr(model, attribute).load_state_dict(

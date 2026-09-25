@@ -33,6 +33,7 @@
 | SPMM | [0035](0035-spmm-baseline.md)、[0037](0037-spmm-wordpiece-character-limit.md)、[0038](0038-spmm-throughput-contract.md) |
 | LlaSMol | [0040](0040-llasmol-mistral-7b-baseline.md) |
 | AIonopedia | [0049](0049-aionopedia-multimodal-baseline.md) |
+| AIonopedia 128-wide scalar-head comparison | [0076](0076-aionopedia-scalar-head-capacity-comparison.md) |
 | ILTransR | [0057](0057-iltransr-stage3-baseline.md) |
 | AIFC | [0060](0060-aifc-stage3-baseline.md) |
 | Single-task MLP | [0033](0033-stage3-single-task-mlp-ablation.md) |

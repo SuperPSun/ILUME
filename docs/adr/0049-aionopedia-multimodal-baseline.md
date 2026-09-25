@@ -79,3 +79,8 @@ PyTorch 2.6/CUDA 12.4 仍保留为 provenance，模型、优化器和数据合�
   hard failure 审计。
 - 后续 baseline 的 epoch、validation、selection、early stopping、scheduler 和 reporting policy
   逐模型冻结；ADR-0045 只继续约束其列出的七个旧 baseline。
+
+## 容量对照
+
+官方宽度的正式配置保持 `Linear(512,1024) → ReLU → Linear(1024,1)`。独立的 128-wide 对照见
+[ADR-0076](0076-aionopedia-scalar-head-capacity-comparison.md)；它不改变本 ADR 的正式 baseline。

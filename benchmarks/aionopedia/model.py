@@ -38,7 +38,13 @@ def _condition_projector() -> nn.Sequential:
 
 
 class MultiModalRegressor(nn.Module):
-    def __init__(self, llm: nn.Module, *, llm_dim: int = 1024) -> None:
+    def __init__(
+        self,
+        llm: nn.Module,
+        *,
+        llm_dim: int = 1024,
+        head_hidden_dim: int = 1024,
+    ) -> None:
         super().__init__()
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=256, nhead=4, dim_feedforward=1024, dropout=0.1,
@@ -60,7 +66,11 @@ class MultiModalRegressor(nn.Module):
         self.segment_embed_cation = nn.Parameter(torch.randn(1, 256))
         self.segment_embed_anion = nn.Parameter(torch.randn(1, 256))
         self.segment_embed_property = nn.Parameter(torch.randn(1, 256))
-        self.fc_out = nn.Sequential(nn.Linear(512, 1024), nn.ReLU(), nn.Linear(1024, 1))
+        self.fc_out = nn.Sequential(
+            nn.Linear(512, head_hidden_dim),
+            nn.ReLU(),
+            nn.Linear(head_hidden_dim, 1),
+        )
         decoder_layer = nn.TransformerDecoderLayer(
             d_model=256, nhead=4, dim_feedforward=1024, dropout=0.1,
             activation="relu", batch_first=True,
