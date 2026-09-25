@@ -132,8 +132,12 @@ python scripts/stage3/full_finetune.py evaluate \
   --checkpoint-dir outputs/ablations/stage3_full_finetune/train \
   --historical-base-root outputs/v2/stage3/base \
   --split test \
-  --output outputs/ablations/stage3_full_finetune/evaluate_test
+ --output outputs/ablations/stage3_full_finetune/evaluate_test
 ```
+
+新生成的全量微调 evaluation 目录包含标准 `metadata.json`，可与 Base 一起交给
+`scripts/benchmarks/summarize.py` 汇总。旧版 evaluation 目录没有该文件；请在新的
+`--output` 路径重新运行上述两个 evaluate 命令（无需重训），不要覆盖历史输出。
 
 训练默认串行；多卡时可在上述 `train` 命令末尾添加 `--max-parallel 2 --devices cuda:0,cuda:1`。并发槽按设备列表轮流绑定；若每卡显存允许，也可设置大于设备数的并发数。中断后在原命令上添加 `--resume`，已存在的 fold 严格恢复或校验完成状态，尚未启动的 fold 从头运行。历史Base不是在同一可微输入路径下重训的配对frozen control，因此分数差异不可全部归因于“解冻编码器”。
 

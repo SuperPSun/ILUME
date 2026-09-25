@@ -2383,6 +2383,33 @@ def test_scheduler_binds_slots_for_successful_folds(
     ]
 
 
+def test_full_finetune_evaluation_identity_binds_final_artifact(
+    tmp_path: Path,
+) -> None:
+    config, recipe = load_full_finetune_config(
+        "configs/ablations/stage3_full_finetune.yaml"
+    )
+    fold_root = tmp_path / "fold1"
+    fold_root.mkdir()
+    manifest = {
+        "artifact_sha256": "a" * 64,
+        "training_identity": {"hash": "b" * 64},
+    }
+    path = fold_root / "three_phase_final.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    first = full_finetune_launcher._evaluation_identity(
+        config, recipe, tmp_path, split="valid", fold=1
+    )
+    assert first == full_finetune_launcher._evaluation_identity(
+        config, recipe, tmp_path, split="valid", fold=1
+    )
+    manifest["artifact_sha256"] = "c" * 64
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert first["hash"] != full_finetune_launcher._evaluation_identity(
+        config, recipe, tmp_path, split="valid", fold=1
+    )["hash"]
+
+
 def test_full_finetune_scheduler_reuses_cuda_slots(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

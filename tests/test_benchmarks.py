@@ -1243,6 +1243,25 @@ def test_stage3_summary_separates_ilume_variants_by_output_directory(
     assert scatter.read_text(encoding="utf-8") == original
 
 
+def test_stage3_summary_accepts_full_finetune_reporting(
+    tmp_path: Path,
+) -> None:
+    inputs = tmp_path / "outputs" / "ablations" / "stage3_full_finetune"
+    for fold in range(1, 6):
+        summary = _stage3_validation_summary(
+            "ilume-stage3-full-finetune-v1", fold, mae=0.5
+        )
+        summary["ablation"] = "stage3_full_finetune"
+        summary["reporting"]["model_display_name"] = "ILUME (full fine-tune)"
+        _write_run(inputs / "evaluate_valid" / f"fold{fold}", summary, stage="stage3")
+
+    payload = publish_summary(inputs, tmp_path / "summary", tmp_path)
+    rows = payload["leaderboards"]["stage3_validation"]
+    assert len(rows) == 1
+    assert rows[0]["model"] == "ILUME (full fine-tune)"
+    assert rows[0]["macro_normalized_mae"] == 0.5
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     (

@@ -87,6 +87,7 @@ def evaluate_finetuned(
         model_loader=load_model,
     )
     result["ablation"] = "stage3_full_finetune"
+    result["reporting"]["model_display_name"] = "ILUME (full fine-tune)"
     result["source_encoder_sha256"] = features["stage2_encoder_sha256"]
     if historical_base_root is not None:
         result["historical_base_comparison"] = compare_historical_base(

@@ -181,6 +181,36 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _evaluation_identity(
+    config: Any, recipe: Any, checkpoint_dir: Path, *, split: str,
+    fold: int | None,
+) -> dict[str, Any]:
+    import json
+
+    from common.identity import semantic_identity
+
+    folds = (fold,) if fold is not None else range(1, 6)
+    anchors = []
+    for current_fold in folds:
+        manifest = json.loads(
+            (checkpoint_dir / f"fold{current_fold}" / "three_phase_final.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        anchors.append({
+            "fold": current_fold,
+            "artifact_sha256": manifest["artifact_sha256"],
+            "training_identity": manifest["training_identity"]["hash"],
+        })
+    return semantic_identity(
+        "stage3.full-finetune-evaluation.v1",
+        {
+            "config": config.to_dict(), "recipe": recipe.to_dict(),
+            "split": split, "fold": fold, "anchors": anchors,
+        },
+    )
+
+
 def main() -> int:
     parser = _parser()
     args = parser.parse_args()
@@ -223,7 +253,8 @@ def main() -> int:
         return 1 if any(status == "failed" for status in results.values()) else 0
     else:
         from ablations.stage3_full_finetune.evaluate import evaluate_finetuned
-        from common.io import atomic_json
+        from common.outputs import open_run_directory, repository_relative
+        from common.reporting import REPORTING_SCHEMA_VERSION
 
         configure_process_runtime(config)
         if args.split == "valid":
@@ -238,15 +269,33 @@ def main() -> int:
         root.mkdir(parents=True)
         for fold in folds:
             destination = root / (f"fold{fold}" if fold is not None else "test")
-            destination.mkdir()
-            result = evaluate_finetuned(
-                config, recipe, feature_dir=args.feature_dir,
-                checkpoint_dir=args.checkpoint_dir,
-                split=args.split, fold=fold,
-                predictions_dir=destination / "predictions",
-                historical_base_root=args.historical_base_root,
+            run = open_run_directory(
+                stage="stage3", operation="evaluate",
+                config_path=args.config, config_payload=config.to_dict(),
+                semantic_identity=_evaluation_identity(
+                    config, recipe, Path(args.checkpoint_dir),
+                    split=args.split, fold=fold,
+                ),
+                output=destination, seed=config.data.seed,
+                details={
+                    "reporting_schema_version": REPORTING_SCHEMA_VERSION,
+                    "ablation": "stage3_full_finetune",
+                    "checkpoint_dir": repository_relative(args.checkpoint_dir),
+                    "split": args.split, "fold": fold,
+                },
             )
-            atomic_json(destination / "summary.json", result)
+            try:
+                result = evaluate_finetuned(
+                    config, recipe, feature_dir=args.feature_dir,
+                    checkpoint_dir=args.checkpoint_dir,
+                    split=args.split, fold=fold,
+                    predictions_dir=run.root / "predictions",
+                    historical_base_root=args.historical_base_root,
+                )
+                run.complete(result)
+            except BaseException:
+                run.fail()
+                raise
     return 0
 
 
