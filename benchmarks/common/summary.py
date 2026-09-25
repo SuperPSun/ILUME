@@ -313,6 +313,8 @@ def _ilume_stage3_variant(
         return None
     source = Path(candidate.source_run).parts
     for index, part in enumerate(source[:-1]):
+        if part == "ablations" and index + 1 < len(source):
+            return source[index + 1]
         marker = source[index - 2:index]
         if (
             part == "stage3"

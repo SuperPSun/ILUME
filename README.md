@@ -313,6 +313,7 @@ Capacity v1 继续冻结在 legacy v1 五模态合同，并直接使用已提交
 RDKit 2D descriptors 与两个可训练的 `Linear → LayerNorm` adapter 替换 frozen
 Stage2 Object representation；HoME、原始梯度 owner 加权聚合、sampling、三阶段训练和 evaluation 保持
 Stage3 Base 合同。该实验不读取 Stage1/2 checkpoint，也不单独 HPO。
+现役配置使用与 Base 相同的 `system` split；旧 `prefer_il` 输出保留在原目录，不能复用。
 
 ```bash
 python scripts/stage3/prepare.py \
@@ -322,22 +323,23 @@ python scripts/stage3/prepare.py \
 python scripts/stage3/train.py \
   --config configs/ablations/stage1_stage2_rdkit_home.yaml \
   --fold 1 2 3 4 5 \
-  --output outputs/ablations/stage1_stage2_rdkit_home_no_pcgrad/train
+  --output outputs/ablations/stage1_stage2_rdkit_home/train
 
 python scripts/stage3/evaluate.py \
   --config configs/ablations/stage1_stage2_rdkit_home.yaml \
-  --checkpoint-dir outputs/ablations/stage1_stage2_rdkit_home_no_pcgrad/train \
+  --checkpoint-dir outputs/ablations/stage1_stage2_rdkit_home/train \
   --split valid --fold 1 2 3 4 5 \
-  --output outputs/ablations/stage1_stage2_rdkit_home_no_pcgrad/evaluate/valid
+  --output outputs/ablations/stage1_stage2_rdkit_home/evaluate/valid
 
 python scripts/stage3/evaluate.py \
   --config configs/ablations/stage1_stage2_rdkit_home.yaml \
-  --checkpoint-dir outputs/ablations/stage1_stage2_rdkit_home_no_pcgrad/train \
+  --checkpoint-dir outputs/ablations/stage1_stage2_rdkit_home/train \
   --split test --ensemble-folds \
-  --output outputs/ablations/stage1_stage2_rdkit_home_no_pcgrad/evaluate/test
+  --output outputs/ablations/stage1_stage2_rdkit_home/evaluate/test
 
 python scripts/benchmarks/summarize.py \
-  --input outputs/v2 outputs/benchmarks outputs/ablations \
+  --input outputs/v2 outputs/ablations \
+  --include outputs/v2 outputs/ablations/stage1_stage2_rdkit_home/evaluate \
   --output summary
 ```
 
@@ -351,6 +353,7 @@ python scripts/benchmarks/summarize.py \
 `217D → 1024D → 512D` RDKit MLP 替换 Stage1 backbone，保留 Stage2 ObjectEncoder 与
 Stage3 Base。该路径不读取 Stage1 artifact/checkpoint 或 teacher cache；Stage2 仍按冻结配置
 训练八个 object/interaction task，但不再执行或汇总 Stage 2 test evaluation。
+Stage3 现役配置使用与 Base 相同的 `system` split；已有 `prefer_il` Stage3 输出不能复用。
 
 ```bash
 python scripts/stage2/prepare.py \
@@ -368,22 +371,23 @@ python scripts/stage3/prepare.py \
 python scripts/stage3/train.py \
   --config configs/ablations/no_stage1_rdkit_stage3.yaml \
   --fold 1 2 3 4 5 \
-  --output outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3_no_pcgrad/train
+  --output outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/train
 
 python scripts/stage3/evaluate.py \
   --config configs/ablations/no_stage1_rdkit_stage3.yaml \
-  --checkpoint-dir outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3_no_pcgrad/train \
+  --checkpoint-dir outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/train \
   --split valid --fold 1 2 3 4 5 \
-  --output outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3_no_pcgrad/evaluate/valid
+  --output outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/valid
 
 python scripts/stage3/evaluate.py \
   --config configs/ablations/no_stage1_rdkit_stage3.yaml \
-  --checkpoint-dir outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3_no_pcgrad/train \
+  --checkpoint-dir outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/train \
   --split test --ensemble-folds \
-  --output outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3_no_pcgrad/evaluate/test
+  --output outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate/test
 
 python scripts/benchmarks/summarize.py \
-  --input outputs/v2 outputs/benchmarks outputs/ablations \
+  --input outputs/v2 outputs/ablations \
+  --include outputs/v2 outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/evaluate \
   --output summary
 ```
 

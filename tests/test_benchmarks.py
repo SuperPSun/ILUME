@@ -1222,10 +1222,18 @@ def test_stage3_summary_separates_ilume_variants_by_output_directory(
     tmp_path: Path,
 ) -> None:
     inputs = tmp_path / "outputs"
-    for variant, mae in (("base", 1.0), ("base-uniform", 2.0)):
+    variants = (
+        ("base", inputs / "v2" / "stage3" / "base", 1.0),
+        (
+            "stage3_transfer_knowledge",
+            inputs / "ablations" / "stage3_transfer_knowledge",
+            2.0,
+        ),
+    )
+    for variant, output_root, mae in variants:
         for fold in range(1, 6):
             _write_run(
-                inputs / "v2" / "stage3" / variant / "validation" / f"fold{fold}",
+                output_root / "validation" / f"fold{fold}",
                 _stage3_validation_summary("shared-study", fold, mae=mae),
                 stage="stage3",
             )
@@ -1233,7 +1241,7 @@ def test_stage3_summary_separates_ilume_variants_by_output_directory(
     payload = publish_summary(inputs, tmp_path / "summary", tmp_path)
     rows = payload["leaderboards"]["stage3_validation"]
     assert [row["model"] for row in rows] == [
-        "ILUME (base)", "ILUME (base-uniform)"
+        "ILUME (base)", "ILUME (stage3_transfer_knowledge)"
     ]
     assert [row["macro_normalized_mae"] for row in rows] == [1.0, 2.0]
     assert all("duplicate_folds" not in row["issues"] for row in payload["health"])

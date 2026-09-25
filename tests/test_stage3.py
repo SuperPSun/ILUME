@@ -394,6 +394,8 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
     assert no_stage1.training.schedule_mode == "three_phase"
 
     v2 = load_stage3_config("configs/v2/stage3/base.yaml")
+    assert ablation.data.split_policy == v2.data.split_policy == "system"
+    assert no_stage1.data.split_policy == v2.data.split_policy
     assert v2.model == config.model
     assert all(group.experts is not None for group in v2.groups.values())
     assert all(v2.resolved_private_recipe(task).phase3_epochs >= 0 for task in v2.tasks)

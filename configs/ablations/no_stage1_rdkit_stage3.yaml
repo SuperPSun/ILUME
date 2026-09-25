@@ -1,15 +1,15 @@
 data:
   stage3_dir: data/stage3
   task_catalog: data/task_catalog.csv
-  artifacts_dir: outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/object_phase1_prepare/artifacts
-  split_policy: prefer_il
+  artifacts_dir: outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/prepare/artifacts
+  split_policy: system
   split_strategies: {}
   cv_repeat: 1
   cv_repeats: {}
   seed: 42
 preparation:
   encoding_batch_size: 256
-  cache_dir: outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/object_phase1_prepare/object_cache
+  cache_dir: outputs/ablations/no_stage1_rdkit_stage2_stage3/stage3/prepare/object_cache
 initialization:
   stage2_encoder: outputs/ablations/no_stage1_rdkit_stage2_stage3/stage2/train/stage2_encoder.pt
   plugin: null
