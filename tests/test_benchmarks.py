@@ -18,7 +18,7 @@ from rdkit import Chem
 from torch_geometric.data import Batch, Data
 import yaml
 
-from ablations.stage3_single_task_mlp.adapter import _run_training_epochs, build_input_features
+from ablations.stage3_single_task_mlp.adapter import _manifest, _run_training_epochs, build_input_features
 from ablations.stage3_single_task_mlp.model import Stage3SingleTaskMLP
 from benchmarks.aifc.adapter import (
     ConditionStats as AIFCConditionStats,
@@ -670,6 +670,60 @@ def test_stage3_single_task_mlp_runs_full_budget_and_selects_best() -> None:
     assert reporter.bars[0].n == 3 and reporter.bars[0].closed
 
 
+def test_stage3_single_task_mlp_v2_config_features_and_final_state(tmp_path: Path) -> None:
+    legacy = load_benchmark_config("configs/ablations/ilume_stage3_single_task_mlp.yaml")
+    config = load_benchmark_config("configs/ablations/ilume_stage3_single_task_mlp_v2.yaml")
+    assert config.data.stage3_authority_config == Path("configs/v2/stage3/base.yaml")
+    assert len(configured_tasks(config, "stage3")) == 20
+    assert config.training["max_epochs"] == 10
+    assert config.training["model_selection"] == "final_training_state"
+    with pytest.raises(ValueError, match="registered recipe"):
+        replace(config, model={**config.model, "hidden_dims": [512, 256]}).validate()
+
+    embeddings = torch.arange(4 * 1024, dtype=torch.float32).reshape(4, 1024)
+    class Rows:
+        conditions = torch.tensor([[0.25], [-0.5]])
+        primary_object_ids = torch.tensor([0, 1])
+        partner_object_ids = torch.tensor([2, 3])
+
+        def __len__(self) -> int:
+            return 2
+
+    features = build_input_features(
+        Rows(), embeddings,
+        SimpleNamespace(task_id="example", condition_columns=("temperature_K",), partner_slots=("solute",)),
+    )
+    assert features.shape == (2, 2049)
+    torch.testing.assert_close(features[:, :1024], embeddings[[0, 1]])
+    torch.testing.assert_close(features[:, 1024:2048], embeddings[[2, 3]])
+    torch.testing.assert_close(features[:, 2048:], Rows.conditions)
+
+    small = replace(config, training={**config.training, "batch_size": 2, "max_epochs": 2})
+    model = Stage3SingleTaskMLP(4, (1024, 512))
+    history, state, epoch, score = _run_training_epochs(
+        model, torch.randn(4, 4), torch.randn(4), torch.randn(2, 4), torch.randn(2),
+        small, training_seed=123, device=torch.device("cpu"), use_bf16=False,
+        reporter=RecordingReporter(),
+    )
+    assert epoch == 2 and score == history[-1]["valid_normalized_mae"]
+    for name, value in model.state_dict().items():
+        torch.testing.assert_close(state[name], value.cpu())
+
+    (tmp_path / "checkpoint.json").write_text(
+        json.dumps({"format_version": 1, "kind": "ilume_stage3_single_task_mlp_model_v2", "integrity": {}}),
+        encoding="utf-8",
+    )
+    assert _manifest(tmp_path, config)["kind"].endswith("_v2")
+    with pytest.raises(ValueError, match="Unsupported"):
+        _manifest(tmp_path, legacy)
+    (tmp_path / "checkpoint.json").write_text(
+        json.dumps({"format_version": 1, "kind": "ilume_stage3_single_task_mlp_model", "integrity": {}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="Unsupported"):
+        _manifest(tmp_path, config)
+
+
 @pytest.mark.parametrize("name", ("dmpnn", "molformer", "ilbert", "spmm", "llasmol", "aionopedia", "iltransr", "aifc"))
 def test_baseline_environment_command(name: str) -> None:
     config_path = f"configs/benchmarks/{name}.yaml"
@@ -905,11 +959,18 @@ def test_sweep_scheduler_caps_concurrency_per_gpu(
     assert maximum_active == 4
     assert maximum_by_device == {"cuda:0": 2, "cuda:1": 2}
 
+@pytest.mark.parametrize(
+    "config_name, expected_selector",
+    [
+        ("ilume_stage3_single_task_mlp", "validation_best"),
+        ("ilume_stage3_single_task_mlp_v2", "final_training_state"),
+    ],
+)
 def test_stage3_only_ablation_aggregate_has_one_model_and_no_stage2_sections(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config_name: str, expected_selector: str,
 ) -> None:
     config = load_benchmark_config(
-        "configs/ablations/ilume_stage3_single_task_mlp.yaml"
+        f"configs/ablations/{config_name}.yaml"
     )
     task = "experiment/example"
     study_id = f"{config.name}-{semantic_identity(
@@ -996,7 +1057,7 @@ def test_stage3_only_ablation_aggregate_has_one_model_and_no_stage2_sections(
     }
     assert summary["reporting"]["model_id"] == config.name
     assert summary["reporting"]["model_display_name"] == config.display_name
-    assert summary["model_selector"] == "validation_best"
+    assert summary["model_selector"] == expected_selector
     assert summary["checkpoint_epoch"] is None
     _write_run(tmp_path / "published", summary, stage="benchmark")
     published = publish_summary(

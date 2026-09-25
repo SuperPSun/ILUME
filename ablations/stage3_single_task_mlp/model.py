@@ -12,8 +12,8 @@ class Stage3SingleTaskMLP(nn.Module):
         dropout: float = 0.1,
     ) -> None:
         super().__init__()
-        if input_dim <= 0 or hidden_dims != (512, 256):
-            raise ValueError("Stage3 Single-task MLP requires positive input and [512, 256]")
+        if input_dim <= 0 or hidden_dims not in {(512, 256), (1024, 512)}:
+            raise ValueError("Stage3 Single-task MLP requires positive input and a registered width")
         if not 0.0 <= dropout < 1.0:
             raise ValueError("Stage3 Single-task MLP dropout must be in [0, 1)")
         layers: list[nn.Module] = []

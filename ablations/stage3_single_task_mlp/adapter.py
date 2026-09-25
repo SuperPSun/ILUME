@@ -28,10 +28,10 @@ from benchmarks.common.metrics import target_metrics
 from .model import Stage3SingleTaskMLP
 
 
-MODEL_KIND = "ilume_stage3_single_task_mlp"
 CHECKPOINT_VERSION = 1
 CHECKPOINT_KIND = "ilume_stage3_single_task_mlp_model"
 STATE_NAMESPACE = "benchmark.ilume-stage3-single-task-mlp-state.v1"
+V2_STATE_NAMESPACE = "benchmark.ilume-stage3-single-task-mlp-state.v2"
 INPUT_CONTRACT = {
     "embedding_source": "stage3_prepared_frozen_stage2_object_v1",
     "embedding_dim": 512,
@@ -44,6 +44,19 @@ INPUT_CONTRACT = {
     "partner_fusion": "ordered_concat",
     "condition_fusion": "ordered_concat",
 }
+V2_INPUT_CONTRACT = {
+    **INPUT_CONTRACT,
+    "embedding_source": "stage3_prepared_frozen_stage2_object_v2",
+    "embedding_dim": 1024,
+}
+
+
+def _v2(config: BenchmarkConfig) -> bool:
+    return config.name == "ilume_stage3_single_task_mlp_v2"
+
+
+def _input_contract(config: BenchmarkConfig) -> dict[str, Any]:
+    return V2_INPUT_CONTRACT if _v2(config) else INPUT_CONTRACT
 
 
 @dataclass
@@ -78,14 +91,15 @@ def _load_prepared(config: BenchmarkConfig) -> tuple[Stage3Config, dict[str, Any
         raise ValueError("Stage3 authority and ablation prepared artifact paths differ")
     prepared = load_prepared_stage3(authority)
     metadata = prepared["metadata"]
-    if metadata.get("embedding_dim") != 512:
-        raise ValueError("Stage3 Single-task MLP requires 512-dimensional embeddings")
+    embedding_dim = _input_contract(config)["embedding_dim"]
+    if metadata.get("embedding_dim") != embedding_dim:
+        raise ValueError(f"Stage3 Single-task MLP requires {embedding_dim}-dimensional embeddings")
     embeddings = prepared["objects"].get("embeddings")
     if (
         not isinstance(embeddings, torch.Tensor)
         or embeddings.ndim != 2
         or embeddings.dtype != torch.float32
-        or embeddings.shape[1] != 512
+        or embeddings.shape[1] != embedding_dim
         or not torch.isfinite(embeddings).all()
     ):
         raise ValueError("Stage3 Single-task MLP object embeddings are invalid")
@@ -138,7 +152,7 @@ def build_input_features(
     features = torch.cat(chunks, dim=1)
     if features.dtype != torch.float32 or not torch.isfinite(features).all():
         raise ValueError(f"Stage3 Single-task MLP features are invalid: {spec.task_id}")
-    expected = 512 * (2 if spec.partner_slots else 1) + len(spec.condition_columns)
+    expected = embeddings.shape[1] * (2 if spec.partner_slots else 1) + len(spec.condition_columns)
     if features.shape != (len(dataset), expected):
         raise ValueError(f"Stage3 Single-task MLP input shape mismatch: {spec.task_id}")
     return features.contiguous()
@@ -199,7 +213,7 @@ def _identity_payload(
             prepared["metadata"], "stage2_encoder", context="Stage3 Single-task MLP artifact"
         )["hash"],
         "artifact_hashes": prepared["metadata"]["artifact_hashes"],
-        "input_contract": INPUT_CONTRACT,
+        "input_contract": _input_contract(config),
         "input_dim": input_dim,
         "target_statistics": target_stats.to_dict(),
         "model": config.model,
@@ -419,7 +433,7 @@ def _run_training_epochs(
                     "learning_rate": float(optimizer.param_groups[0]["lr"]),
                 }
             )
-            if score < best_score:
+            if score < best_score or config.training.get("model_selection") == "final_training_state":
                 best_score = score
                 best_epoch = epoch
                 best_state = {
@@ -427,7 +441,8 @@ def _run_training_epochs(
                     for name, value in model.state_dict().items()
                 }
             progress.set_postfix(
-                {"val_nmae": f"{score:.4f}", "best": f"{best_score:.4f}@{best_epoch}"}
+                {"val_nmae": f"{score:.4f}"} if config.training.get("model_selection") == "final_training_state"
+                else {"val_nmae": f"{score:.4f}", "best": f"{best_score:.4f}@{best_epoch}"}
             )
             progress.update(1)
     finally:
@@ -471,19 +486,21 @@ def train_stage3_single_task_mlp_bundle(
         use_bf16=True,
         reporter=reporter,
     )
-    state_hash = tensor_state_hash(STATE_NAMESPACE, best_state)
+    state_namespace = V2_STATE_NAMESPACE if _v2(config) else STATE_NAMESPACE
+    model_selector = "final_training_state" if _v2(config) else "validation_best"
+    state_hash = tensor_state_hash(state_namespace, best_state)
     model_path = root / "model.pt"
     atomic_torch_save(model_path, {"state_dict": best_state, "state_hash": state_hash})
     history_path = root / "training_history.json"
     atomic_json(history_path, history)
     manifest = {
         "format_version": CHECKPOINT_VERSION,
-        "kind": CHECKPOINT_KIND,
-        "model_kind": MODEL_KIND,
+        "kind": CHECKPOINT_KIND + "_v2" if _v2(config) else CHECKPOINT_KIND,
+        "model_kind": config.name,
         "training_identity": bundle.training_identity,
         "prepared_identity": bundle.prepared_identity,
         "stage2_encoder_identity": bundle.stage2_encoder_identity,
-        "input_contract": INPUT_CONTRACT,
+        "input_contract": _input_contract(config),
         "input_dim": bundle.input_dim,
         "hidden_dims": list(config.model["hidden_dims"]),
         "activation": config.model["activation"],
@@ -493,10 +510,10 @@ def train_stage3_single_task_mlp_bundle(
             "scale": list(bundle.target_stats.scale),
         },
         "target_columns": list(bundle.task.target_columns),
-        "best_epoch": best_epoch,
-        "best_valid_normalized_mae": best_score,
+        **({"final_epoch": best_epoch, "final_valid_normalized_mae": best_score}
+           if _v2(config) else {"best_epoch": best_epoch, "best_valid_normalized_mae": best_score}),
         "epochs_ran": len(history),
-        "model_selector": "validation_best",
+        "model_selector": model_selector,
         "checkpoint_epoch": None,
         "model_state_hash": state_hash,
         "integrity": {
@@ -512,20 +529,20 @@ def train_stage3_single_task_mlp_bundle(
     }
     atomic_json(root / "checkpoint.json", manifest)
     return {
-        "best_epoch": best_epoch,
-        "best_valid_normalized_mae": best_score,
+        **({"final_epoch": best_epoch, "final_valid_normalized_mae": best_score}
+           if _v2(config) else {"best_epoch": best_epoch, "best_valid_normalized_mae": best_score}),
         "epochs_ran": len(history),
-        "model_selector": "validation_best",
+        "model_selector": model_selector,
         "checkpoint_epoch": None,
     }
 
 
-def _manifest(root: Path) -> dict[str, Any]:
+def _manifest(root: Path, config: BenchmarkConfig) -> dict[str, Any]:
     path = root / "checkpoint.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
     if (
         payload.get("format_version") != CHECKPOINT_VERSION
-        or payload.get("kind") != CHECKPOINT_KIND
+        or payload.get("kind") != (CHECKPOINT_KIND + "_v2" if _v2(config) else CHECKPOINT_KIND)
     ):
         raise ValueError("Unsupported Stage3 Single-task MLP checkpoint")
     for filename, expected in payload.get("integrity", {}).items():
@@ -552,7 +569,7 @@ def evaluate_stage3_single_task_mlp_checkpoint(
     if split not in {"valid", "test"}:
         raise ValueError("Stage3 Single-task MLP evaluation split must be valid or test")
     root = Path(checkpoint_dir)
-    manifest = _manifest(root)
+    manifest = _manifest(root, config)
     bundle = prepare_stage3_single_task_mlp_training(config, benchmark, task_id, fold)
     require_compatible_identity(
         bundle.training_identity,
@@ -560,10 +577,10 @@ def evaluate_stage3_single_task_mlp_checkpoint(
         context="Stage3 Single-task MLP evaluation checkpoint",
     )
     expected_manifest = {
-        "model_kind": MODEL_KIND,
+        "model_kind": config.name,
         "prepared_identity": bundle.prepared_identity,
         "stage2_encoder_identity": bundle.stage2_encoder_identity,
-        "input_contract": INPUT_CONTRACT,
+        "input_contract": _input_contract(config),
         "input_dim": bundle.input_dim,
         "hidden_dims": list(config.model["hidden_dims"]),
         "activation": "silu",
@@ -574,8 +591,9 @@ def evaluate_stage3_single_task_mlp_checkpoint(
         },
         "target_columns": list(bundle.task.target_columns),
         "epochs_ran": int(config.training["max_epochs"]),
-        "model_selector": "validation_best",
+        "model_selector": "final_training_state" if _v2(config) else "validation_best",
         "checkpoint_epoch": None,
+        **({"final_epoch": int(config.training["max_epochs"])} if _v2(config) else {}),
     }
     for name, expected in expected_manifest.items():
         if manifest.get(name) != expected:
@@ -599,7 +617,8 @@ def evaluate_stage3_single_task_mlp_checkpoint(
         float(manifest["dropout"]),
     )
     payload = torch.load(root / "model.pt", map_location="cpu", weights_only=True)
-    state_hash = tensor_state_hash(STATE_NAMESPACE, payload["state_dict"])
+    state_namespace = V2_STATE_NAMESPACE if _v2(config) else STATE_NAMESPACE
+    state_hash = tensor_state_hash(state_namespace, payload["state_dict"])
     if (
         state_hash != manifest["model_state_hash"]
         or payload.get("state_hash") != state_hash

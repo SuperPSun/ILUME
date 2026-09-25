@@ -39,4 +39,8 @@ ADAPTERS = {
         "ablations.stage3_single_task_mlp", "stage3_single_task_mlp",
         isolated_environment=False, evaluation_audit=False,
     ),
+    "ilume_stage3_single_task_mlp_v2": Adapter(
+        "ablations.stage3_single_task_mlp", "stage3_single_task_mlp",
+        isolated_environment=False, evaluation_audit=False,
+    ),
 }

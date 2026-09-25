@@ -36,7 +36,7 @@
 | AIonopedia 128-wide scalar-head comparison | [0076](0076-aionopedia-scalar-head-capacity-comparison.md) |
 | ILTransR | [0057](0057-iltransr-stage3-baseline.md) |
 | AIFC | [0060](0060-aifc-stage3-baseline.md) |
-| Single-task MLP | [0033](0033-stage3-single-task-mlp-ablation.md) |
+| Single-task MLP | [0033](0033-stage3-single-task-mlp-ablation.md)（历史 v1）、[0077](0077-stage3-single-task-mlp-v2-ablation.md)（现役 v2） |
 | RDKit-HoME | [0034](0034-rdkit-2d-home-representation-ablation.md) |
 | No-Stage1 | [0036](0036-no-stage1-rdkit-stage2-stage3-ablation.md) |
 | Stage 3 no-PCGrad（历史对照） | [0069](0069-stage3-no-pcgrad-ablation.md) |

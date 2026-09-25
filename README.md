@@ -468,6 +468,22 @@ Stage3 Single-task MLP 是绑定旧 v1 512D prepared artifact 的冻结 21-task 
 汇总。它同时移除 HoME routing、跨任务共享与 composite sampling，因此只能解释为
 整体架构消融，不能解释成某个单组件的贡献。
 
+现役 v2 消融见 [ADR-0077](docs/adr/0077-stage3-single-task-mlp-v2-ablation.md)：使用 v2 Base 的
+20-task、1024D prepared artifact，每个 task × fold 独立训练 `input -> 1024 -> 512 -> 1`
+MLP，固定 10 epochs 并发布末轮模型。需有 BF16-capable CUDA；正式 sweep 共 100 个训练 job。
+
+```bash
+python scripts/benchmarks/sweep.py \
+  --config configs/ablations/ilume_stage3_single_task_mlp_v2.yaml \
+  --output outputs/ablations/stage3_single_task_mlp_v2 \
+  --max-workers 1
+
+python scripts/benchmarks/summarize.py \
+  --input outputs/v2 outputs/ablations \
+  --include outputs/v2/stage3/base/test outputs/v2/stage3/base/valid outputs/ablations/stage3_single_task_mlp_v2 \
+  --output summary/stage3_single_task_mlp_v2
+```
+
 ### Stage2→Stage3 transfer matrix
 
 该隔离消融从同一个 Stage1 初始化构造零 update baseline 与九个 physics-only Stage2

@@ -47,6 +47,7 @@ class BenchmarkConfig:
         "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm", "llasmol",
         "aionopedia", "iltransr", "aifc",
         "ilume_stage3_single_task_mlp",
+        "ilume_stage3_single_task_mlp_v2",
     ]
     data: DataConfig
     features: FeatureConfig | None
@@ -63,6 +64,7 @@ class BenchmarkConfig:
             "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm", "llasmol",
             "aionopedia", "iltransr", "aifc",
             "ilume_stage3_single_task_mlp",
+            "ilume_stage3_single_task_mlp_v2",
         }:
             raise ValueError(f"Unknown benchmark model: {self.name}")
         if not self.display_name:
@@ -83,7 +85,7 @@ class BenchmarkConfig:
             or self.features.n_bits <= 0
         ):
             raise ValueError("Fingerprint radius and n_bits must be positive")
-        if self.name == "ilume_stage3_single_task_mlp":
+        if self.name in {"ilume_stage3_single_task_mlp", "ilume_stage3_single_task_mlp_v2"}:
             self._validate_ilume_stage3_single_task_mlp()
         else:
             retired = {
@@ -104,6 +106,7 @@ class BenchmarkConfig:
         advanced = self.name in {
             "dmpnn", "molformer", "ilbert", "spmm", "llasmol", "aionopedia", "iltransr", "aifc",
             "ilume_stage3_single_task_mlp",
+            "ilume_stage3_single_task_mlp_v2",
         }
         if not advanced and self.data.feature_cache is None:
             raise ValueError("Feature baselines require data.feature_cache")
@@ -180,8 +183,9 @@ class BenchmarkConfig:
             raise ValueError(
                 "ILUME Stage3 Single-task MLP requires folds [1, 2, 3, 4, 5]"
             )
+        v2 = self.name == "ilume_stage3_single_task_mlp_v2"
         expected_model = {
-            "hidden_dims": [512, 256],
+            "hidden_dims": [1024, 512] if v2 else [512, 256],
             "activation": "silu",
             "dropout": 0.1,
         }
@@ -199,11 +203,11 @@ class BenchmarkConfig:
             "warmup_ratio": 0.05,
             "min_lr_ratio": 0.05,
             "batch_size": 128,
-            "max_epochs": 100,
+            "max_epochs": 10 if v2 else 100,
             "loss": "normalized_smooth_l1",
             "smooth_l1_beta": 1.0,
             "max_grad_norm": 1.0,
-            "selection_metric": "validation_normalized_mae",
+            **({"model_selection": "final_training_state"} if v2 else {"selection_metric": "validation_normalized_mae"}),
             "device": "cuda",
             "precision": "bf16",
         }
