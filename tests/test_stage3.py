@@ -63,7 +63,7 @@ from stage3.data import (
     shuffled_epoch_indices,
     source_path,
 )
-from stage3.evaluate import _load_model, evaluate_checkpoints
+from stage3.evaluate import _load_model, evaluate_checkpoints, resolve_stage3_evaluation_identity
 from stage3.identity import build_stage3_prepared_identity, build_stage3_training_identity, metadata_identity, resolve_stage3_prepared_identity
 from stage3.model import (
     GLOBAL,
@@ -3319,6 +3319,15 @@ def test_object_phase1_three_phase_final_and_resume(
     assert loaded_artifact["model_state_hash"] == final["model_state_hash"]
     assert loaded_store.final_embedding_hash == final["final_embedding_hash"]
     assert loaded_model.ownership_manifest() == model.ownership_manifest()
+    with patch("stage3.evaluate.load_prepared_stage3", return_value=prepared), patch(
+        "stage3.object_phase1.build_object_phase1_model", side_effect=lambda *_args, **_kwargs: build(),
+    ), patch.object(ObjectPhase1Representations, "freeze_after_phase1", side_effect=AssertionError(
+        "CPU identity resolution must not recompute the CUDA representation"
+    )):
+        identity = resolve_stage3_evaluation_identity(
+            config, output, split="valid", ensemble_folds=False, fold=1,
+        )
+    assert identity["hash"]
     other_source = tmp_path / "different-stage2.pt"
     other_source.write_bytes(b"different source")
     wrong_arm = replace(

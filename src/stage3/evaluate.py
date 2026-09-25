@@ -169,6 +169,7 @@ def _load_model(
     *,
     taskwise_refined: bool = False,
     three_phase_final: bool = False,
+    verify_final_representation: bool = True,
 ) -> tuple[Stage3SparseModel, dict[str, Any], Stage3RepresentationStore]:
     if taskwise_refined and three_phase_final:
         raise ValueError("Stage 3 checkpoint cannot have two final selectors")
@@ -341,9 +342,12 @@ def _load_model(
         )
         if checkpoint.get("object_encoder_state_hash") != observed:
             raise ValueError("Stage 3 final ObjectEncoder hash mismatch")
-        representations.freeze_after_phase1(model, checkpoint["phase1_model_state_hash"])
-        if checkpoint.get("final_embedding_hash") != representations.final_embedding_hash:
-            raise ValueError("Stage 3 final representation hash mismatch")
+        if not isinstance(checkpoint.get("final_embedding_hash"), str):
+            raise ValueError("Stage 3 final representation hash is missing")
+        if verify_final_representation:
+            representations.freeze_after_phase1(model, checkpoint["phase1_model_state_hash"])
+            if checkpoint["final_embedding_hash"] != representations.final_embedding_hash:
+                raise ValueError("Stage 3 final representation hash mismatch")
     return model.to(device).eval(), checkpoint, representations
 
 
@@ -1081,6 +1085,9 @@ def resolve_stage3_evaluation_identity(
             config, prepared, path, current_fold, epoch, torch.device("cpu"),
             taskwise_refined=taskwise_refined,
             three_phase_final=three_phase_final,
+            # Identity resolution runs on CPU; float embeddings were hashed on
+            # the training GPU and are verified during the actual evaluation.
+            verify_final_representation=False,
         )
         identities.append(checkpoint["training_identity"])
         state_hashes.append(checkpoint["model_state_hash"])
