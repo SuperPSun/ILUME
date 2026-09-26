@@ -567,6 +567,45 @@ python scripts/benchmarks/summarize.py \
 
 旧版本仅写 `summary.json` 的 evaluation 目录不自动补写或覆盖；只有包含标准 metadata 的新输出会被识别。
 
+### Stage2-HoME Transfer 全量微调
+
+[ADR-0080](docs/adr/0080-stage2-home-transfer-full-finetune.md) 在已训好的HoME迁移源上，
+只在Stage3 Phase 1同时更新Stage1表示编码器、ObjectEncoder和HoME；Phase 2/3冻结两级编码器。
+不重跑Stage2，不修改原迁移结果或Base。下列 `--source-dir` 指已有实验根（含 `stage2/`），
+必须与配置中 `home_transfer.experiment_config` 的源训练合同一致；`--output` 是新的共同实验根。
+
+```bash
+python scripts/stage3/home_transfer_full_finetune.py prepare \
+  --config configs/ablations/stage2_home_transfer_full_finetune.yaml \
+  --source-dir outputs/ablations/stage2_home_transfer_batch256 \
+  --output outputs/ablations/stage2_home_transfer_full_finetune
+
+python scripts/stage3/home_transfer_full_finetune.py train \
+  --config configs/ablations/stage2_home_transfer_full_finetune.yaml \
+  --source-dir outputs/ablations/stage2_home_transfer_batch256 \
+  --fold 1 2 3 4 5 --max-parallel 5 --devices cuda:0,cuda:1,cuda:2,cuda:3,cuda:4 \
+  --output outputs/ablations/stage2_home_transfer_full_finetune
+
+python scripts/stage3/home_transfer_full_finetune.py evaluate \
+  --config configs/ablations/stage2_home_transfer_full_finetune.yaml \
+  --source-dir outputs/ablations/stage2_home_transfer_batch256 \
+  --split valid --fold 1 2 3 4 5 \
+  --output outputs/ablations/stage2_home_transfer_full_finetune
+
+python scripts/stage3/home_transfer_full_finetune.py evaluate \
+  --config configs/ablations/stage2_home_transfer_full_finetune.yaml \
+  --source-dir outputs/ablations/stage2_home_transfer_batch256 --split test \
+  --output outputs/ablations/stage2_home_transfer_full_finetune
+
+python scripts/benchmarks/summarize.py \
+  --input outputs/ablations/stage2_home_transfer_batch256 outputs/ablations/stage2_home_transfer_full_finetune \
+  --output summary_home_transfer_full_finetune
+```
+
+训练microbatch固定8，不自动调整；每个并发fold持有完整编码器和HoME，须确认显存容量。
+中断后在同一train命令追加 `--resume`；validation只报告，始终使用固定末轮。
+原迁移结果不是同microbatch重新训练的配对control，结果差异不能全部归因于Stage1解冻。
+
 ### Stage 3 三级 transfer knowledge 消融
 
 该隔离实验按 [ADR-0072](docs/adr/0072-stage3-transfer-knowledge-hierarchy-ablation.md)

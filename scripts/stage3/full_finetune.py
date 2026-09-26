@@ -93,7 +93,7 @@ def _terminate_workers(running: Mapping[int, tuple[Any, int, Any]]) -> None:
 def _run_schedule(
     *, config_path: str, feature_dir: str, folds: tuple[int, ...],
     output_root: str, resume: bool, max_parallel: int,
-    devices: tuple[str, ...],
+    devices: tuple[str, ...], worker_entry: Any = None,
 ) -> dict[int, str]:
     from multiprocessing.connection import wait
 
@@ -109,7 +109,7 @@ def _run_schedule(
     def launch(slot: int, fold: int) -> None:
         result_queue = context.Queue()
         process = context.Process(
-            target=_worker_entry,
+            target=_worker_entry if worker_entry is None else worker_entry,
             args=(
                 config_path, feature_dir, output_root, fold, resume,
                 slot_devices[slot], fold == folds[0], result_queue,
@@ -152,6 +152,11 @@ def _run_schedule(
         _terminate_workers(running)
         raise
     return results
+
+
+def run_fold_schedule(**kwargs: Any) -> dict[int, str]:
+    """Schedule isolated live-encoder folds using explicit CUDA slots."""
+    return _run_schedule(**kwargs)
 
 
 def _parser() -> argparse.ArgumentParser:

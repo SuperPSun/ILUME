@@ -2650,24 +2650,27 @@ def test_full_finetune_evaluation_identity_binds_final_artifact(
     )["hash"]
 
 
+@pytest.mark.parametrize("custom_worker", [False, True])
 def test_full_finetune_scheduler_reuses_cuda_slots(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, custom_worker: bool,
 ) -> None:
     _FakeProcess.created = []
     calls: list[tuple[int, str | None, bool]] = []
 
     def worker(config, features, output, fold, resume, device, progress, result_queue):
-        del config, features, output, resume
+        assert features == "features"
+        del config, output, resume
         calls.append((fold, device, progress))
         result_queue.put(("failed" if fold == 2 else "completed", None, None))
 
     monkeypatch.setattr(full_finetune_launcher.multiprocessing, "get_context", lambda mode: _FakeContext())
     monkeypatch.setattr("multiprocessing.connection.wait", lambda sentinels: sentinels)
     monkeypatch.setattr(full_finetune_launcher, "_worker_entry", worker)
-    results = full_finetune_launcher._run_schedule(
+    results = full_finetune_launcher.run_fold_schedule(
         config_path="config.yaml", feature_dir="features", folds=(1, 2, 3, 4, 5),
         output_root="outputs/test", resume=True, max_parallel=4,
         devices=("cuda:0", "cuda:1"),
+        worker_entry=worker if custom_worker else None,
     )
     assert results == {1: "completed", 2: "failed", 3: "completed", 4: "completed", 5: "completed"}
     assert calls == [
@@ -2738,13 +2741,30 @@ def test_home_transfer_output_override_reaches_both_stage_entries(
     assert seen == [root, root]
 
 
-def test_home_transfer_evaluation_publishes_discoverable_runs(monkeypatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("full_finetune", [False, True])
+def test_home_transfer_evaluation_publishes_discoverable_runs(monkeypatch, tmp_path: Path, full_finetune: bool) -> None:
     from benchmarks.common.summary import build_summary, discover_candidates
     from common.reporting import REPORTING_SCHEMA_VERSION, comparison_identity
 
     config_path = tmp_path / "experiment.yaml"
-    config_path.write_text(Path("configs/ablations/stage2_home_transfer.yaml").read_text())
+    config_path.write_text(Path(
+        "configs/ablations/stage2_home_transfer_full_finetune.yaml" if full_finetune
+        else "configs/ablations/stage2_home_transfer.yaml"
+    ).read_text())
     root = Path("outputs/home-transfer")
+    launcher = home_transfer_launcher
+    module = "ablations.stage2_home_transfer.stage3"
+    display = "ILUME (Stage2-HoME transfer)"
+    study = "ilume-stage2-home-transfer-v1"
+    extra = []
+    if full_finetune:
+        import scripts.stage3.home_transfer_full_finetune as launcher
+        module = "ablations.stage2_home_transfer.full_finetune"
+        display = "ILUME (HoME transfer full fine-tune)"
+        study = "ilume-stage2-home-transfer-full-finetune-v1"
+        extra = ["--source-dir", "outputs/source-home-transfer"]
+        monkeypatch.setattr(module + ".evaluation_identity", lambda *_args, **kwargs:
+                            semantic_identity("fixture.evaluation", kwargs))
     monkeypatch.setattr("common.outputs.REPOSITORY_ROOT", tmp_path)
     monkeypatch.setattr("common.outputs._runtime_metadata", lambda: {})
     monkeypatch.setattr(home_transfer_launcher, "_evaluation_identity", lambda *_args, **kwargs:
@@ -2760,8 +2780,8 @@ def test_home_transfer_evaluation_publishes_discoverable_runs(monkeypatch, tmp_p
             "split": split, "checkpoint_epoch": None,
             "reporting": {
                 "schema_version": REPORTING_SCHEMA_VERSION, "model_id": "ilume",
-                "model_display_name": "ILUME (Stage2-HoME transfer)",
-                "study_id": "ilume-stage2-home-transfer-v1",
+                "model_display_name": display,
+                "study_id": study,
                 "protocol": {"split": split, "fold": fold, "folds": list(range(1, 6)),
                              "ensemble": split == "test", "expected_tasks": [task]},
                 "comparison_identity": comparison_identity(
@@ -2773,11 +2793,11 @@ def test_home_transfer_evaluation_publishes_discoverable_runs(monkeypatch, tmp_p
         result["tasks" if split == "valid" else "ensemble"] = metrics if split == "valid" else {"tasks": metrics}
         return result
 
-    monkeypatch.setattr("ablations.stage2_home_transfer.stage3.evaluate", fake_evaluate)
+    monkeypatch.setattr(module + ".evaluate", fake_evaluate)
     for selection in (["--split", "valid", "--fold", "1", "2", "3", "4", "5"], ["--split", "test"]):
         monkeypatch.setattr(sys, "argv", ["home_transfer.py", "evaluate", "--config", str(config_path),
-                                         "--output", str(root), *selection])
-        assert home_transfer_launcher.main() == 0
+                                         "--output", str(root), *extra, *selection])
+        assert launcher.main() == 0
     candidates = discover_candidates(tmp_path / root, tmp_path)
     assert len(candidates) == 6
     assert all(candidate.current and candidate.metadata["status"] == "completed" for candidate in candidates)
@@ -2785,16 +2805,17 @@ def test_home_transfer_evaluation_publishes_discoverable_runs(monkeypatch, tmp_p
     summary = build_summary(tmp_path / root, tmp_path)
     for split in ("stage3_validation", "stage3_test"):
         assert len(summary["leaderboards"][split]) == 1
-        assert summary["leaderboards"][split][0]["model"] == "ILUME (Stage2-HoME transfer)"
+        assert summary["leaderboards"][split][0]["model"] == display
 
     def fail(*_args, **_kwargs):
         raise RuntimeError("evaluation failure")
-    monkeypatch.setattr("ablations.stage2_home_transfer.stage3.evaluate", fail)
+    monkeypatch.setattr(module + ".evaluate", fail)
     monkeypatch.setattr(sys, "argv", ["home_transfer.py", "evaluate", "--config", str(config_path),
-                                     "--output", "outputs/failed-home-transfer", "--split", "test"])
+                                     "--output", "outputs/failed-home-transfer", *extra, "--split", "test"])
     with pytest.raises(RuntimeError, match="evaluation failure"):
-        home_transfer_launcher.main()
-    failed = json.loads((tmp_path / "outputs/failed-home-transfer/stage3/test/metadata.json").read_text())
+        launcher.main()
+    failed_path = "outputs/failed-home-transfer/test/metadata.json" if full_finetune else "outputs/failed-home-transfer/stage3/test/metadata.json"
+    failed = json.loads((tmp_path / failed_path).read_text())
     assert failed["status"] == "failed"
 
 
@@ -3371,6 +3392,75 @@ def test_full_finetune_config_only_changes_base_microbatch() -> None:
     assert owner["terminal_lr"] == pytest.approx(5e-7)
 
 
+def test_home_transfer_full_finetune_recipe_and_initialization(tmp_path: Path) -> None:
+    from ablations.stage2_home_transfer.full_finetune import load_config
+    import yaml
+
+    path = Path("configs/ablations/stage2_home_transfer_full_finetune.yaml")
+    raw = yaml.safe_load(path.read_text())
+    experiment = load_config(path, source_dir=tmp_path / "source", output_root=tmp_path / "new")
+    base = load_stage3_config("configs/v2/stage3/base.yaml")
+    expected = base.to_dict()
+    expected["training"].pop("object_encoder_phase1")
+    expected["training"]["microbatch_size"] = 8
+    expected["data"]["artifacts_dir"] = str(tmp_path / "new/prepare/artifacts")
+    expected["preparation"]["cache_dir"] = str(tmp_path / "new/prepare/object_cache")
+    expected["initialization"]["stage2_encoder"] = str(tmp_path / "source/stage2/stage2_encoder.pt")
+    assert experiment.stage3.to_dict() == expected
+    assert experiment.recipe.to_dict() == FinetuneRecipe(5e-6, 1.5e-5, 15, 0.05, 0.1).to_dict()
+    with pytest.raises(ValueError, match="isolated"):
+        load_config(path, source_dir=tmp_path / "source", output_root=tmp_path / "source")
+    altered = tmp_path / "altered.yaml"
+    raw["training"]["microbatch_size"] = 16
+    altered.write_text(yaml.safe_dump(raw))
+    with pytest.raises(ValueError, match="preserve the source Stage3 recipe"):
+        load_config(altered, source_dir=tmp_path / "source")
+
+
+def test_home_transfer_full_finetune_exact_shared_initialization(tiny_prepared: Stage3Config, tmp_path: Path) -> None:
+    import copy
+    from ablations.stage2_home_transfer.config import load_experiment
+    from ablations.stage2_home_transfer.contract import transferable_state, state_hash
+    from ablations.stage2_home_transfer.full_finetune import FinetuneExperiment, build_model_and_store
+    from ablations.stage3_full_finetune.train import build_model_and_store as build_live
+
+    config = _tiny_three_phase(tiny_prepared)
+    groups = {"g1": "thermophysical", "g2": "solvation"}
+    config = replace(config, groups={groups[name]: item for name, item in config.groups.items()},
+                     tasks={task: replace(item, meta_group=groups[item.meta_group]) for task, item in config.tasks.items()})
+    prepared = load_prepared_stage3(tiny_prepared)
+    prepared = {**prepared, "registry": {task: replace(item, meta_group=groups[item.meta_group])
+                                       for task, item in prepared["registry"].items()}}
+    encoder = SimpleNamespace(backbone=torch.nn.Linear(4, 4),
+                              object_encoder=ObjectEncoder(4, 2, num_layers=1, feedforward_dim=8, dropout=0),
+                              embedding_dim=4, packer=None)
+    features = {"samples": {}}
+    experiment = FinetuneExperiment(load_experiment("configs/ablations/stage2_home_transfer.yaml"),
+                                    config, FinetuneRecipe(5e-6, 1.5e-5, 2, .05, .1), tmp_path)
+    with patch("ablations.stage3_full_finetune.train.load_frozen_object_encoder", side_effect=lambda *_args, **_kwargs: copy.deepcopy(encoder)):
+        control, _ = build_live(config, prepared, features, fold=1, device=torch.device("cpu"))
+        initial = {name: value.clone() for name, value in control.state_dict().items()}
+        from stage3.config import effective_training_seed
+        from stage3.object_phase1 import ObjectPhase1Model
+        seed_everything(effective_training_seed(config) + 1)
+        frozen_control = ObjectPhase1Model(
+            config.model, prepared["registry"], 4, group_configs=config.groups, task_configs=config.tasks,
+            task_private_recipes={task: config.resolved_private_recipe(task) for task in config.tasks},
+            object_encoder=copy.deepcopy(encoder.object_encoder),
+        )
+        for name, value in initial.items():
+            if not name.startswith("stage1_encoder."):
+                assert torch.equal(value, frozen_control.state_dict()[name])
+        transferred = {name: value + .5 for name, value in transferable_state(control).items()}
+        source = {"shared_state": transferred, "shared_state_hash": state_hash(transferred)}
+        with patch("ablations.stage2_home_transfer.full_finetune.load_source", return_value=source):
+            model, _, names, _ = build_model_and_store(experiment, prepared, features, fold=1, device=torch.device("cpu"))
+    assert set(names) == set(transferred)
+    for name, value in model.state_dict().items():
+        assert torch.equal(value, transferred[name] if name in transferred else initial[name])
+    assert model.joint_upstream_owners == (STAGE1_OWNER, STAGE2_OWNER)
+
+
 def test_object_phase1_config_and_owner_freeze(tmp_path: Path) -> None:
     paths = sorted(Path("configs/v2/stage3").rglob("*.yaml"))
     paths.append(Path("configs/ablations/no_stage1_rdkit_stage3.yaml"))
@@ -3873,8 +3963,9 @@ def test_full_finetune_live_gradients_and_phase1_freeze(
     assert not store.values(torch.tensor([0]), keys[0].topology).requires_grad
 
 
+@pytest.mark.parametrize("home_transfer", [False, True])
 def test_full_finetune_three_phase_artifact_freezes_encoders(
-    tiny_prepared: Stage3Config, tmp_path: Path,
+    tiny_prepared: Stage3Config, tmp_path: Path, home_transfer: bool,
 ) -> None:
     config = _tiny_three_phase(tiny_prepared)
     prepared = load_prepared_stage3(config)
@@ -3946,21 +4037,52 @@ def test_full_finetune_three_phase_artifact_freezes_encoders(
     }
     recipe = FinetuneRecipe(5e-6, 1.5e-5, 2, 0.05, 0.1)
     plan = resolved_plan(config, recipe, 1, model, prepared, train_data, features)
-    output = tmp_path / "fine-tune-train"
-    result = run_three_phase_training(
+    if home_transfer:
+        from ablations.stage2_home_transfer.config import load_experiment
+        from ablations.stage2_home_transfer.full_finetune import (
+            FinetuneExperiment, FINAL_KIND, resolved_plan as transfer_plan,
+        )
+        source_root = tmp_path / "source"
+        (source_root / "stage2").mkdir(parents=True)
+        (source_root / "stage2/stage2_home_transfer.pt").write_bytes(b"source")
+        experiment = FinetuneExperiment(
+            replace(load_experiment("configs/ablations/stage2_home_transfer.yaml"), output_root=source_root),
+            config, recipe, tmp_path,
+        )
+        source = {"training_identity": {"hash": "source-identity"},
+                  "stage2_encoder_sha256": "encoder-hash", "shared_state_hash": "shared-hash"}
+        names = tuple(sorted(name for name, owner in model.ownership_manifest().items() if owner == "GLOBAL"))
+        plan = transfer_plan(experiment, prepared, features, model, train_data,
+                             fold=1, source=source, names=names)
+    output = experiment.checkpoint_dir / "fold1" if home_transfer else tmp_path / "fine-tune-train"
+    training_kwargs = dict(
         config=config, fold=1, output_dir=output, resume_from=None,
         model=model, registry=prepared["registry"], active=active,
         train_data=train_data, valid_data=valid_data,
         representations=store, normalizations=prepared["normalization"]["fold1"],
         plan=plan, device=torch.device("cpu"),
     )
+    if home_transfer:
+        initial_state = {name: value.clone() for name, value in model.state_dict().items()}
+        with patch("stage3.three_phase._run_delta_branch", side_effect=RuntimeError("interrupted after Phase 1")):
+            with pytest.raises(RuntimeError, match="interrupted after Phase 1"):
+                run_three_phase_training(**training_kwargs)
+        model.load_state_dict(initial_state)
+        model.set_trainable_owners(set(model.parameter_ownership().values()))
+        store = LiveRepresentationStore(model, Packer(), keys, samples)
+        training_kwargs.update(resume_from=output, representations=store)
+    result = run_three_phase_training(**training_kwargs)
     assert result[0]["phase"] == "three_phase_final"
     phase1 = torch.load(output / "phase_1/checkpoint_epoch_00002.pt", weights_only=False)
     final = torch.load(output / "three_phase_final.pt", weights_only=False)
     manifest = json.loads((output / "three_phase_final.json").read_text())
-    assert final["kind"] == "ilume_stage3_encoder_finetune_three_phase_final"
-    assert final["training_identity"]["payload"]["contract_version"] == 8
+    assert final["kind"] == (FINAL_KIND if home_transfer else "ilume_stage3_encoder_finetune_three_phase_final")
+    assert final["training_identity"]["payload"]["contract_version"] == (11 if home_transfer else 8)
     assert manifest["encoder_state_hashes"] == final["encoder_state_hashes"]
+    if home_transfer:
+        for prefix in ("stage1_encoder.", "stage2_object_encoder."):
+            assert any(not torch.equal(initial_state[name], value)
+                       for name, value in phase1["model"].items() if name.startswith(prefix))
     for name in phase1["model"]:
         if name.startswith(("stage1_encoder.", "stage2_object_encoder.")):
             assert torch.equal(phase1["model"][name], final["model"][name])
@@ -3981,6 +4103,29 @@ def test_full_finetune_three_phase_artifact_freezes_encoders(
             object_encoder=ObjectEncoder(4, 2, num_layers=1, feedforward_dim=8, dropout=0.0),
         )
         return fresh, LiveRepresentationStore(fresh, Packer(), keys, samples)
+
+    if home_transfer:
+        from ablations.stage2_home_transfer.full_finetune import evaluate as evaluate_transfer
+
+        def rebuild_transfer(*args, **kwargs):
+            fresh, live = rebuild(*args, **kwargs)
+            return fresh, live, names, source
+
+        with patch("ablations.stage2_home_transfer.full_finetune.load_features", return_value=features), patch(
+            "ablations.stage2_home_transfer.full_finetune.build_model_and_store", side_effect=rebuild_transfer
+        ):
+            evaluated = evaluate_transfer(experiment, split="valid", fold=1, predictions_dir=tmp_path / "predictions")
+            assert set(evaluated["tasks"]) == set(active)
+            assert set(evaluated["gate_diagnostics"]) == set(active)
+            assert evaluated["ablation"] == "stage2_home_transfer_full_finetune"
+            assert evaluated["reporting"]["study_id"] == "ilume-stage2-home-transfer-full-finetune-v1"
+            damaged = {**final, "stage2_home_transfer": {"source": "wrong"}}
+            torch.save(damaged, output / "three_phase_final.pt")
+            manifest["artifact_sha256"] = sha256_file(output / "three_phase_final.pt")
+            (output / "three_phase_final.json").write_text(json.dumps(manifest))
+            with pytest.raises(ValueError, match="incompatible or corrupt"):
+                evaluate_transfer(experiment, split="valid", fold=1)
+        return
 
     with patch(
         "ablations.stage3_full_finetune.evaluate.load_features", return_value=features

@@ -195,7 +195,8 @@ def build_stage3_training_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
     contract_version = STAGE3_TRAINING_IDENTITY_CONTRACT_VERSION
     if three_phase:
         contract_version = (
-            10 if "stage2_home_transfer" in plan
+            11 if "stage2_home_transfer" in plan and "encoder_finetune" in plan
+            else 10 if "stage2_home_transfer" in plan
             else 9 if "object_encoder_phase1" in plan
             else 8 if "encoder_finetune" in plan
             else 7 if "transfer_knowledge" in plan else 6

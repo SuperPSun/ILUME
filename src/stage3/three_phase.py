@@ -34,7 +34,9 @@ THREE_PHASE_KNOWLEDGE_FINAL_KIND = "ilume_stage3_transfer_knowledge_three_phase_
 
 
 def _scope_kind(plan: Mapping[str, Any], suffix: str) -> str:
-    if "stage2_home_transfer" in plan:
+    if "stage2_home_transfer" in plan and "encoder_finetune" in plan:
+        prefix = "ilume_stage3_home_transfer_full_finetune_three_phase"
+    elif "stage2_home_transfer" in plan:
         prefix = "ilume_stage3_stage2_home_transfer_three_phase"
     elif "object_encoder_phase1" in plan:
         prefix = "ilume_stage3_object_phase1_three_phase"
@@ -223,6 +225,8 @@ def _representation_fields(plan: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _final_kind(plan: Mapping[str, Any]) -> str:
+    if "stage2_home_transfer" in plan and "encoder_finetune" in plan:
+        return "ilume_stage3_home_transfer_full_finetune_three_phase_final"
     if "stage2_home_transfer" in plan:
         return "ilume_stage3_stage2_home_transfer_three_phase_final"
     if "object_encoder_phase1" in plan:
@@ -1306,6 +1310,13 @@ def run_three_phase_training(
             or artifact.get("ownership_manifest") != model.ownership_manifest()
             or artifact.get("normalization_hash") != plan["normalization_hash"]
             or (
+                "stage2_home_transfer" in plan and "encoder_finetune" in plan
+                and (
+                    artifact.get("stage2_home_transfer") != plan["stage2_home_transfer"]
+                    or artifact.get("encoder_state_hashes") != _encoder_hashes(model)
+                )
+            )
+            or (
                 "object_encoder_phase1" in plan
                 and (
                     artifact.get("final_embedding_hash") != representations.final_embedding_hash
@@ -1327,6 +1338,13 @@ def run_three_phase_training(
             or manifest.get("format_version") != artifact["format_version"]
             or manifest.get("fold") != fold
             or manifest.get("model_state_hash") != artifact["model_state_hash"]
+            or (
+                "stage2_home_transfer" in plan and "encoder_finetune" in plan
+                and (
+                    manifest.get("stage2_home_transfer") != plan["stage2_home_transfer"]
+                    or manifest.get("encoder_state_hashes") != artifact.get("encoder_state_hashes")
+                )
+            )
             or (
                 "object_encoder_phase1" in plan
                 and (

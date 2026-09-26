@@ -101,7 +101,10 @@ def stage3_config(experiment: Experiment) -> Stage3Config:
     )
 
 
-def _require_paired_data(experiment: Experiment, prepared: Mapping[str, Any]) -> None:
+def require_paired_data(
+    experiment: Experiment, prepared: Mapping[str, Any], config: Stage3Config | None = None,
+) -> None:
+    config = config or stage3_config(experiment)
     control = load_prepared_stage3(experiment.stage3)
     if prepared["normalization"] != control["normalization"]:
         raise ValueError("Stage2-HoME Stage3 normalization differs from Base")
@@ -119,7 +122,7 @@ def _require_paired_data(experiment: Experiment, prepared: Mapping[str, Any]) ->
         for task in sorted(target_tasks):
             for split in ("train", "valid"):
                 source = Stage3TaskDataset(experiment.stage3.data.artifacts_dir, fold, task, split)
-                target = Stage3TaskDataset(stage3_config(experiment).data.artifacts_dir, fold, task, split)
+                target = Stage3TaskDataset(config.data.artifacts_dir, fold, task, split)
                 if any(not torch.equal(getattr(source, field), getattr(target, field)) for field in fields):
                     raise ValueError(f"Stage2-HoME Stage3 fold/split differs from Base: {fold}/{task}/{split}")
 
@@ -128,7 +131,7 @@ def prepare(experiment: Experiment) -> dict[str, Any]:
     load_source(experiment)
     config = stage3_config(experiment)
     result = prepare_stage3(config)
-    _require_paired_data(experiment, load_prepared_stage3(config))
+    require_paired_data(experiment, load_prepared_stage3(config))
     return result
 
 
@@ -151,7 +154,7 @@ def train_fold(experiment: Experiment, fold: int, *, resume: bool = False) -> li
     config = stage3_config(experiment)
     source = load_source(experiment)
     prepared = load_prepared_stage3(config)
-    _require_paired_data(experiment, prepared)
+    require_paired_data(experiment, prepared)
     device = resolve_device(config.training.device)
     model, store, loaded_names = build_model_and_store(experiment, prepared, fold=fold, device=device)
     validate_initial_object_embeddings(model, store, prepared)
