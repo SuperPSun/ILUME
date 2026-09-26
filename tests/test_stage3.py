@@ -7,6 +7,7 @@ import json
 import math
 from pathlib import Path
 import shutil
+import sys
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -22,8 +23,10 @@ from common.io import sha256_file
 from common.training import canonical_json_sha256, seed_everything
 import scripts.stage3.evaluate as evaluate_launcher
 import scripts.stage3.full_finetune as full_finetune_launcher
+import scripts.stage3.home_transfer as home_transfer_launcher
 import scripts.stage3.transfer as transfer_launcher
 import scripts.stage3.train as train_launcher
+import scripts.stage2.home_transfer as stage2_home_transfer_launcher
 from stage1.descriptors import calculate_descriptors, rdkit_descriptor_names
 from stage1.features import ROLE_TO_ID
 from stage2.model import ObjectEncoder
@@ -130,6 +133,221 @@ from ablations.stage3_full_finetune.train import (
 )
 from ablations.stage3_full_finetune.evaluate import compare_historical_base, evaluate_finetuned
 from stage3.three_phase import run_three_phase_training
+
+
+def test_stage2_home_transfer_source_mapping_and_state_boundary() -> None:
+    from ablations.stage2_home_transfer.contract import (
+        SOURCE_GROUPS, load_transferable_state, source_task_specs,
+        state_hash, transferable_state,
+    )
+
+    tasks = tuple(
+        SimpleNamespace(
+            task_id=task,
+            target_columns=tuple(f"y{index}" for index in range(11))
+            if task == "simulation/simulated_qm_elec_hf" else ("y",),
+            condition_columns=("temperature_K",) if task in {
+                "simulation/density", "simulation/heat_capacity",
+                "simulation/thermal_expansion", "simulation/heat_of_vaporization",
+            } else (),
+            topology="interaction" if task == "simulation/transfer_organic" else
+                "ionic_liquid" if task in {
+                    "simulation/density", "simulation/heat_capacity",
+                    "simulation/thermal_expansion", "simulation/heat_of_vaporization",
+                } else "single_entity",
+        )
+        for task in SOURCE_GROUPS
+    )
+    registry = SimpleNamespace(tasks=tasks, task_ids=tuple(task.task_id for task in tasks))
+    specs = source_task_specs(registry)
+    assert len(specs) == 19
+    assert {spec.meta_group for spec in specs.values()} == {
+        "thermophysical", "solvation", "electronic_structure",
+    }
+    config = load_stage3_config("configs/v2/stage3/base.yaml")
+    source = Stage3SparseModel(
+        config.model, specs, 16,
+        group_configs={
+            **{name: config.groups[name] for name in ("thermophysical", "solvation")},
+            "electronic_structure": config.groups["thermophysical"],
+        },
+    )
+    state = transferable_state(source)
+    assert state
+    assert all("electronic_structure" not in name for name in state)
+    assert all(not name.startswith(("private_experts.", "task_gates.", "towers.")) for name in state)
+    from ablations.stage2_home_transfer.config import load_experiment
+    from ablations.stage2_home_transfer.model import SimulationHoME
+
+    experiment = load_experiment("configs/ablations/stage2_home_transfer.yaml")
+    fake_backbone = torch.nn.Module()
+    fake_backbone.entity_dim = 16
+    fake_backbone.atom_dim = 8
+    fake_backbone.config = SimpleNamespace(model=SimpleNamespace(n_heads=8))
+    simulation = SimulationHoME(fake_backbone, registry, config, experiment.stage2)
+    assert not hasattr(simulation, "object_heads")
+    assert not hasattr(simulation, "interaction_heads")
+    assert not hasattr(simulation, "atom_heads")
+    target = Stage3SparseModel(
+        config.model,
+        {**specs, "experiment/new": replace(next(iter(specs.values())), task_id="experiment/new", meta_group="transport")},
+        16,
+        group_configs={
+            **{name: config.groups[name] for name in ("thermophysical", "solvation", "transport")},
+            "electronic_structure": config.groups["thermophysical"],
+        },
+    )
+    before = {name: value.clone() for name, value in target.state_dict().items()}
+    names = load_transferable_state(target, state, state_hash(state))
+    assert set(names) == set(state)
+    for name, value in target.state_dict().items():
+        assert torch.equal(value, state[name] if name in state else before[name])
+    with pytest.raises(ValueError, match="hash mismatch"):
+        load_transferable_state(target, state, "wrong")
+    incomplete = {name: value for name, value in state.items() if name != names[0]}
+    with pytest.raises(ValueError, match="incomplete"):
+        load_transferable_state(target, incomplete, state_hash(incomplete))
+
+
+def test_stage2_home_transfer_masked_micro_loss_and_identity() -> None:
+    from ablations.stage2_home_transfer.config import load_experiment
+    from ablations.stage2_home_transfer.stage2 import _loss_for_micro
+
+    experiment = load_experiment("configs/ablations/stage2_home_transfer.yaml")
+    assert experiment.stage2_microbatch_size == 256
+    assert experiment.stage2_epochs == 10
+    assert experiment.stage2.training.backbone_frozen_epochs == 0
+    assert experiment.stage2.loss.lambda_teacher == 0
+    predictions = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    targets = torch.zeros_like(predictions)
+    mask = torch.tensor([[True, False], [False, True]])
+    data = SimpleNamespace(targets=targets, target_mask=mask)
+    parts = (
+        SimpleNamespace(row_indices=torch.tensor([0])),
+        SimpleNamespace(row_indices=torch.tensor([1])),
+    )
+    observed = sum(
+        _loss_for_micro(
+            "simulation/simulated_qm_elec_hf", predictions[part.row_indices],
+            part, data, torch.tensor([0, 1]),
+        )
+        for part in parts
+    )
+    expected = (torch.nn.functional.smooth_l1_loss(predictions[0, 0], targets[0, 0])
+                + torch.nn.functional.smooth_l1_loss(predictions[1, 1], targets[1, 1])) / 2
+    assert torch.equal(observed, expected)
+    plan = {"schedule_mode": "three_phase"}
+    from stage3.three_phase import _final_kind, _scope_kind
+    assert _final_kind(plan) == "ilume_stage3_three_phase_final"
+    plan["stage2_home_transfer"] = {"source": "x"}
+    assert _final_kind(plan) == "ilume_stage3_stage2_home_transfer_three_phase_final"
+    assert _scope_kind(plan, "1_full") == "ilume_stage3_stage2_home_transfer_three_phase_1_full"
+
+
+def test_home_transfer_microbatch_config_and_identity(tmp_path: Path) -> None:
+    import yaml
+    from ablations.stage2_home_transfer.config import load_experiment
+    from ablations.stage2_home_transfer.stage2 import training_identity
+
+    raw = yaml.safe_load(Path("configs/ablations/stage2_home_transfer.yaml").read_text())
+    identities = []
+    for size in (8, 64, 256):
+        raw["stage2_microbatch_size"] = size
+        path = tmp_path / "experiment.yaml"
+        path.write_text(yaml.safe_dump(raw))
+        experiment = load_experiment(path)
+        assert experiment.stage2_microbatch_size == size
+        with patch("ablations.stage2_home_transfer.stage2.sha256_file", return_value="source"):
+            identities.append(training_identity(experiment, {"hash": "data"}, {})["hash"])
+    assert len(set(identities)) == 3
+    for size in (0, 257, True, 8.5, "8"):
+        raw["stage2_microbatch_size"] = size
+        path.write_text(yaml.safe_dump(raw))
+        with pytest.raises(ValueError, match="stage2_microbatch_size"):
+            load_experiment(path)
+
+
+@pytest.mark.parametrize("task", ["simulation/density", "simulation/simulated_qm_elec_hf", "simulation/partial_atomic_charge"])
+def test_home_transfer_logical_batch_updates_once(task: str) -> None:
+    from ablations.stage2_home_transfer.stage2 import _train_batch
+    from stage2.data import Stage2BatchDescriptor
+
+    class Packed:
+        def __init__(self, indices):
+            self.row_indices = indices
+            self.atom_targets = SimpleNamespace(
+                values=torch.zeros(len(indices)), mask=torch.ones(len(indices), dtype=torch.bool),
+                atom_sample_indices=torch.arange(len(indices)),
+            )
+
+        def to(self, device, *, non_blocking):
+            assert device.type == "cpu" and not non_blocking
+            return self
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.tensor(0.5))
+
+        def predict(self, task_id, packed, data):
+            result = self.weight * (packed.row_indices.float() + 1)
+            return result if task_id.endswith("partial_atomic_charge") else result[:, None].expand(-1, 2)
+
+    mask = torch.tensor([[True, False], [False, True], [True, True], [True, False], [True, True]])
+    if task == "simulation/density":
+        mask[:] = True
+    data = SimpleNamespace(targets=torch.zeros((5, 2)), target_mask=mask)
+    config = SimpleNamespace(training=SimpleNamespace(amp_dtype="fp32", max_grad_norm=1.0))
+    states = []
+    losses = []
+    for size in (1, 2, 5):
+        model = Model()
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1)
+        descriptor = Stage2BatchDescriptor(task, torch.arange(5))
+        losses.append(_train_batch(
+            model, descriptor, tuple(Packed(part) for part in descriptor.indices.split(size)),
+            data, torch.device("cpu"), optimizer, scheduler, tuple(model.parameters()), config, 0.7,
+        ))
+        assert scheduler.last_epoch == 1
+        assert optimizer.state[model.weight]["step"].item() == 1
+        states.append(model.weight.detach().clone())
+    assert losses == pytest.approx([losses[0]] * 3, abs=1e-6)
+    assert all(torch.allclose(states[0], value, atol=1e-7) for value in states)
+    model = Model()
+    model.weight.data.fill_(float("nan"))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1)
+    with pytest.raises(RuntimeError, match="Non-finite"):
+        _train_batch(model, descriptor, (Packed(descriptor.indices),), data, torch.device("cpu"),
+                     optimizer, scheduler, tuple(model.parameters()), config, 0.7)
+    assert not optimizer.state and scheduler.last_epoch == 0
+
+
+def test_home_transfer_prefetch_preserves_order_and_propagates_packing_errors(monkeypatch) -> None:
+    from ablations.stage2_home_transfer.stage2 import _prefetched_batches
+    from stage2.data import Stage2BatchDescriptor
+
+    schedule = [Stage2BatchDescriptor(f"task{index}", torch.arange(5)) for index in range(4)]
+    calls = []
+    def pack(descriptor, *_args, **kwargs):
+        assert kwargs["pin_memory"]
+        calls.append((descriptor.task, descriptor.indices.tolist()))
+        return descriptor.indices.clone()
+    monkeypatch.setattr("ablations.stage2_home_transfer.stage2.pack_stage2_batch", pack)
+    rng_before = torch.random.get_rng_state().clone()
+    with _prefetched_batches(schedule, {}, None, None, 2, pin_memory=True) as batches:
+        observed = list(batches)
+    assert [item[0].task for item in observed] == [item.task for item in schedule]
+    assert all(torch.equal(torch.cat(item[1]), item[0].indices) for item in observed)
+    assert [task for task, _ in calls] == [task.task for task in schedule for _ in range(3)]
+    assert torch.equal(rng_before, torch.random.get_rng_state())
+    def fail(*_args, **_kwargs):
+        raise ValueError("packing failure")
+    monkeypatch.setattr("ablations.stage2_home_transfer.stage2.pack_stage2_batch", fail)
+    with pytest.raises(ValueError, match="packing failure"):
+        with _prefetched_batches(schedule, {}, None, None, 256, pin_memory=False) as batches:
+            next(batches)
 
 
 # --- Sparse-label model, training, and resume contracts ---
@@ -2459,6 +2677,67 @@ def test_full_finetune_scheduler_reuses_cuda_slots(
     ]
 
 
+def test_home_transfer_scheduler_reuses_cuda_slots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeProcess.created = []
+    calls: list[tuple[int, str, str | None, bool]] = []
+
+    def worker(config, output, fold, resume, device, show_progress, result_queue):
+        del config, resume
+        calls.append((fold, output, device, show_progress))
+        result_queue.put(("failed" if fold == 2 else "completed", None, None))
+
+    monkeypatch.setattr(home_transfer_launcher.multiprocessing, "get_context", lambda mode: _FakeContext())
+    monkeypatch.setattr("multiprocessing.connection.wait", lambda sentinels: sentinels)
+    monkeypatch.setattr(home_transfer_launcher, "_worker_entry", worker)
+    results = home_transfer_launcher._run_schedule(
+        config_path="config.yaml", output_root="outputs/override",
+        folds=(1, 2, 3, 4, 5), resume=True,
+        max_parallel=4, devices=("cuda:0", "cuda:1"),
+    )
+    assert results == {1: "completed", 2: "failed", 3: "completed", 4: "completed", 5: "completed"}
+    assert calls == [
+        (1, "outputs/override", "cuda:0", True),
+        (2, "outputs/override", "cuda:1", False),
+        (3, "outputs/override", "cuda:0", False),
+        (4, "outputs/override", "cuda:1", False),
+        (5, "outputs/override", "cuda:0", False),
+    ]
+
+
+def test_home_transfer_output_override_reaches_both_stage_entries(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    root = tmp_path / "alternate"
+    seen: list[Path] = []
+
+    def fake_stage2(experiment, output, *, resume):
+        assert not resume
+        seen.append(experiment.output_root)
+        assert output == root / "stage2"
+        return {"artifact": "stage2_home_transfer.pt"}
+
+    monkeypatch.setattr("ablations.stage2_home_transfer.stage2.train_stage2_home", fake_stage2)
+    monkeypatch.setattr(sys, "argv", [
+        "home_transfer.py", "--config", "configs/ablations/stage2_home_transfer.yaml",
+        "--output", str(root),
+    ])
+    stage2_home_transfer_launcher.main()
+
+    def fake_prepare(experiment):
+        seen.append(experiment.output_root)
+        return {"prepared": True}
+
+    monkeypatch.setattr("ablations.stage2_home_transfer.stage3.prepare", fake_prepare)
+    monkeypatch.setattr(sys, "argv", [
+        "home_transfer.py", "prepare", "--config",
+        "configs/ablations/stage2_home_transfer.yaml", "--output", str(root),
+    ])
+    assert home_transfer_launcher.main() == 0
+    assert seen == [root, root]
+
+
 def test_full_finetune_resume_starts_missing_fold(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
@@ -3287,6 +3566,9 @@ def test_object_phase1_three_phase_final_and_resume(
     )
     assert plan["format_version"] == 7
     assert build_stage3_training_identity(plan)["payload"]["contract_version"] == 9
+    isolated = {**plan, "stage2_home_transfer": {"source_artifact_sha256": "synthetic"}}
+    assert build_stage3_training_identity(isolated)["payload"]["contract_version"] == 10
+    assert build_stage3_training_identity(isolated)["hash"] != build_stage3_training_identity(plan)["hash"]
     assert plan["phases"]["phase1"]["owners"]["ENCODER_STAGE2"]["actual_update_budget"] == 2 * plan["data"]["K"]
     output = tmp_path / "object-phase1"
     run_three_phase_training(
@@ -3330,6 +3612,41 @@ def test_object_phase1_three_phase_final_and_resume(
             config, output, split="valid", ensemble_folds=False, fold=1,
         )
     assert identity["hash"]
+    transfer_model, transfer_store = build()
+    transfer_output = tmp_path / "stage2-home-transfer"
+
+    class RecordingProgress:
+        def __init__(self) -> None:
+            self.totals: list[int] = []
+            self.updates = 0
+
+        def bar(self, *, total: int, desc: str, unit: str):
+            assert desc.startswith("fold1 ") and unit == "step"
+            self.totals.append(total)
+            return self
+
+        def update(self, count: int) -> None:
+            self.updates += count
+
+        def close(self) -> None:
+            pass
+
+    progress = RecordingProgress()
+    run_three_phase_training(
+        config=config, fold=1, output_dir=transfer_output, resume_from=None,
+        model=transfer_model, registry=prepared["registry"], active=active,
+        train_data=train, valid_data=valid, representations=transfer_store,
+        normalizations=prepared["normalization"]["fold1"],
+        plan={**isolated, "format_version": 8}, device=torch.device("cpu"),
+        progress=progress,
+    )
+    assert progress.updates == sum(progress.totals)
+    assert progress.updates > 0
+    transfer_final = torch.load(transfer_output / "three_phase_final.pt", weights_only=False)
+    transfer_manifest = json.loads((transfer_output / "three_phase_final.json").read_text(encoding="utf-8"))
+    assert transfer_final["kind"] == "ilume_stage3_stage2_home_transfer_three_phase_final"
+    assert transfer_manifest["stage2_home_transfer"] == isolated["stage2_home_transfer"]
+    assert transfer_final["training_identity"]["hash"] != final["training_identity"]["hash"]
     other_source = tmp_path / "different-stage2.pt"
     other_source.write_bytes(b"different source")
     wrong_arm = replace(

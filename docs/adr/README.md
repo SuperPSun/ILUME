@@ -45,6 +45,7 @@
 | Stage 2 零训练 + Stage 3 配对适配 | [0075](0075-stage2-zero-update-stage3-object-phase1.md) |
 | Stage2→Stage3 全迁移矩阵 | [0062](0062-stage2-stage3-full-transfer-matrix.md) |
 | Stage2→Stage3 下游联合适配 | [0068](0068-stage2-stage3-joint-downstream-adaptation.md) |
+| Stage2-HoME → Stage3-HoME 迁移消融 | [0079](0079-stage2-home-stage3-home-transfer-ablation.md) |
 
 ## 冻结合同与历史
 

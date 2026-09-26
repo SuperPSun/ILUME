@@ -523,6 +523,52 @@ Stage2 和 Stage3 的训练命令都支持单卡多进程，例如
 `--max-parallel 4 --devices cuda:0`；多GPU例如
 `--max-parallel 8 --devices cuda:0,cuda:1,cuda:2,cuda:3`，即每张卡2个并发job。
 
+### Stage2-HoME → Stage3-HoME 迁移消融
+
+该独立消融见 [ADR-0079](docs/adr/0079-stage2-home-stage3-home-transfer-ablation.md)。
+它复用正式 Stage2 prepared 数据，但另训十轮 physics-only Stage2-HoME，之后在独立目录
+prepare、训练及评估 20-task Stage3。正式 Base 的权重和输出不改动。以下命令按顺序运行，
+首次训练不带 `--resume`；中断后 Stage2/Stage3 训练才追加 `--resume`：
+
+```bash
+python scripts/stage2/home_transfer.py \
+  --config configs/ablations/stage2_home_transfer.yaml \
+  --device cuda:0 \
+  --output outputs/ablations/stage2_home_transfer
+
+python scripts/stage3/home_transfer.py prepare \
+  --config configs/ablations/stage2_home_transfer.yaml \
+  --output outputs/ablations/stage2_home_transfer
+
+python scripts/stage3/home_transfer.py train \
+  --config configs/ablations/stage2_home_transfer.yaml --fold 1 2 3 4 5 \
+  --max-parallel 2 --devices cuda:0,cuda:1 \
+  --output outputs/ablations/stage2_home_transfer
+
+python scripts/stage3/home_transfer.py evaluate \
+  --config configs/ablations/stage2_home_transfer.yaml \
+  --split valid --fold 1 2 3 4 5 \
+  --output outputs/ablations/stage2_home_transfer
+
+python scripts/stage3/home_transfer.py evaluate \
+  --config configs/ablations/stage2_home_transfer.yaml --split test \
+  --output outputs/ablations/stage2_home_transfer
+```
+
+训练与评估只写入 `outputs/ablations/stage2_home_transfer/`。Stage3 先用五折 validation
+与正式 Base 比较，test ensemble 只作后续独立报告；不得依据 test 反向选择 recipe。
+`--output` 指整条消融的共同实验根目录，而不是单个 fold 或 train 子目录；每一步必须使用同一个值。
+省略时使用 YAML 的 `output_root`。
+Stage3 消融训练默认串行；`--max-parallel` 是同时训练的 fold 数，设备槽按 `--devices`
+轮转。单卡多进程可用 `--max-parallel 2 --devices cuda:0`，但须按显存容量控制并发数。
+Stage2 显示每轮逻辑 batch 进度；Stage3 显示各 phase/branch 的 optimizer-step 进度。
+进度条仅在交互式终端显示，并发时只由第一个 fold 绘制，其他 fold 保留开始/结束状态行。
+Stage2 源训练的逻辑 batch 固定 256 行，`stage2_microbatch_size` 当前默认 256，允许配置为 1–256。
+训练提前按顺序打包两个待消费 batch，并使用 pinned memory；每轮耗时与逐任务统计写入
+`stage2/performance.jsonl`。改变微批后应给整条链指定新的 `--output`（例如
+`outputs/ablations/stage2_home_transfer_batch256`），不能 resume 旧 8 行微批的 checkpoint。
+若 256 行反传显存不足，显式修改 YAML 为 128 或 64，再使用另一个新输出目录；代码不自动降低微批。
+
 ### Stage 3 三级 transfer knowledge 消融
 
 该隔离实验按 [ADR-0072](docs/adr/0072-stage3-transfer-knowledge-hierarchy-ablation.md)

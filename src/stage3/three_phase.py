@@ -11,6 +11,7 @@ from torch import nn
 
 from common.identity import require_compatible_identity, tensor_state_hash
 from common.io import atomic_json, atomic_torch_save, sha256_file
+from common.progress import ProgressReporter
 from common.training import capture_rng_state, restore_rng_state, seed_everything
 from .config import Stage3Config, effective_training_seed
 from .data import (
@@ -33,7 +34,9 @@ THREE_PHASE_KNOWLEDGE_FINAL_KIND = "ilume_stage3_transfer_knowledge_three_phase_
 
 
 def _scope_kind(plan: Mapping[str, Any], suffix: str) -> str:
-    if "object_encoder_phase1" in plan:
+    if "stage2_home_transfer" in plan:
+        prefix = "ilume_stage3_stage2_home_transfer_three_phase"
+    elif "object_encoder_phase1" in plan:
         prefix = "ilume_stage3_object_phase1_three_phase"
     elif "encoder_finetune" in plan:
         prefix = "ilume_stage3_encoder_finetune_three_phase"
@@ -220,6 +223,8 @@ def _representation_fields(plan: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _final_kind(plan: Mapping[str, Any]) -> str:
+    if "stage2_home_transfer" in plan:
+        return "ilume_stage3_stage2_home_transfer_three_phase_final"
     if "object_encoder_phase1" in plan:
         return "ilume_stage3_object_phase1_three_phase_final"
     if "encoder_finetune" in plan:
@@ -518,6 +523,8 @@ def _joint_epoch(
     registry: Mapping[str, Any],
     group_weights: Mapping[str, float],
     task_order_rng: random.Random,
+    progress: ProgressReporter | None = None,
+    progress_desc: str = "",
 ) -> tuple[dict[str, float], dict[str, Any]]:
     from .train import compute_task_gradient
 
@@ -533,6 +540,7 @@ def _joint_epoch(
     clip_values: tuple[float, float, dict[str, float], dict[str, float]] = (
         0.0, 0.0, {}, {}
     )
+    bar = progress.bar(total=steps_per_epoch, desc=progress_desc, unit="step") if progress else None
     for step in range(steps_per_epoch):
         order = list(tasks)
         task_order_rng.shuffle(order)
@@ -556,6 +564,10 @@ def _joint_epoch(
         _assign_gradients(model, latest.gradients)
         clip_values = _clip(model, config)
         scheduler.step(_gradient_owners(optimizer))
+        if bar is not None:
+            bar.update(1)
+    if bar is not None:
+        bar.close()
     if sample_counts != {task: counts[task] for task in tasks}:
         raise RuntimeError("Stage 3 three-phase raw epoch coverage is incomplete")
     assert latest is not None
@@ -588,6 +600,8 @@ def _task_epoch(
     device: torch.device,
     optimizer: torch.optim.Optimizer,
     scheduler: _OwnerScheduler,
+    progress: ProgressReporter | None = None,
+    progress_desc: str = "",
 ) -> tuple[float, dict[str, Any]]:
     from .train import compute_task_gradient
 
@@ -598,6 +612,7 @@ def _task_epoch(
     samples = 0
     pre_norm = post_norm = 0.0
     parameters = tuple(parameter for parameter in model.parameters() if parameter.requires_grad)
+    bar = progress.bar(total=(count + allocation - 1) // allocation, desc=progress_desc, unit="step") if progress else None
     for begin in range(0, count, allocation):
         indices = sequence[begin : begin + allocation]
         gradient, loss = compute_task_gradient(
@@ -623,6 +638,10 @@ def _task_epoch(
         scheduler.step(_gradient_owners(optimizer))
         loss_sum += loss * len(indices)
         samples += len(indices)
+        if bar is not None:
+            bar.update(1)
+    if bar is not None:
+        bar.close()
     if samples != count:
         raise RuntimeError("Stage 3 Phase 3 raw epoch coverage is incomplete")
     return loss_sum / count, {
@@ -650,6 +669,7 @@ def _run_phase1(
     device: torch.device,
     resume: bool,
     anchor_state: Mapping[str, torch.Tensor],
+    progress: ProgressReporter | None = None,
 ) -> tuple[dict[str, torch.Tensor], dict[str, Any], str]:
     from .train import validate_tasks
 
@@ -752,6 +772,7 @@ def _run_phase1(
             optimizer=optimizer, scheduler=scheduler, registry=registry,
             group_weights=group_weights,
             task_order_rng=task_order_rng,
+            progress=progress, progress_desc=f"fold{fold} P1 epoch {epoch}/{epochs}",
         )
         updates += steps_per_epoch
         remaining_owners = tuple(
@@ -831,6 +852,7 @@ def _run_delta_branch(
     resume: bool,
     anchor_state: Mapping[str, torch.Tensor],
     anchor_hash: str,
+    progress: ProgressReporter | None = None,
 ) -> tuple[dict[str, torch.Tensor], dict[str, Any], str]:
     from .train import validate_tasks
 
@@ -937,6 +959,8 @@ def _run_delta_branch(
                 optimizer=optimizer, scheduler=scheduler, registry=registry,
                 group_weights=group_weights,
                 task_order_rng=task_order_rng,
+                progress=progress,
+                progress_desc=f"fold{fold} {phase}/{scope} epoch {epoch}/{epochs}",
             )
         else:
             task = tasks[0]
@@ -946,6 +970,8 @@ def _run_delta_branch(
                 dataset=train_data[task], representations=representations,
                 normalization=normalizations[task], config=config, device=device,
                 optimizer=optimizer, scheduler=scheduler,
+                progress=progress,
+                progress_desc=f"fold{fold} {phase}/{scope} epoch {epoch}/{epochs}",
             )
             losses = {task: loss}
         updates += steps_per_epoch
@@ -1135,6 +1161,7 @@ def run_three_phase_training(
     normalizations: Mapping[str, Any],
     plan: Mapping[str, Any],
     device: torch.device,
+    progress: ProgressReporter | None = None,
 ) -> list[dict[str, Any]]:
     from .train import validate_tasks
 
@@ -1164,7 +1191,7 @@ def run_three_phase_training(
         config=config, fold=fold, plan=plan, train_data=train_data,
         valid_data=valid_data, representations=representations,
         normalizations=normalizations, registry=registry, device=device,
-        resume=resume, anchor_state=initial_state,
+        resume=resume, anchor_state=initial_state, progress=progress,
     )
     if "encoder_finetune" in plan or "object_encoder_phase1" in plan:
         representations.freeze_after_phase1(model, phase1_hash)
@@ -1185,7 +1212,7 @@ def run_three_phase_training(
             config=config, fold=fold, plan=plan, train_data=train_data, valid_data=valid_data,
             representations=representations, normalizations=normalizations,
             registry=registry, device=device, resume=resume,
-            anchor_state=phase1_state, anchor_hash=phase1_hash,
+            anchor_state=phase1_state, anchor_hash=phase1_hash, progress=progress,
         )
         phase2_deltas[group] = (owners, state, state_hash)
         phase2_records[group] = {
@@ -1240,6 +1267,7 @@ def run_three_phase_training(
                 valid_data=valid_data, representations=representations,
                 normalizations=normalizations, registry=registry, device=device,
                 resume=resume, anchor_state=phase2_state, anchor_hash=phase2_hash,
+                progress=progress,
             )
         phase3_deltas[task] = ((owner,), state, state_hash)
         phase3_records[task] = {
@@ -1348,6 +1376,8 @@ def run_three_phase_training(
             model.stage2_object_encoder.state_dict(),
         )
         artifact["final_embedding_hash"] = representations.final_embedding_hash
+    if "stage2_home_transfer" in plan:
+        artifact["stage2_home_transfer"] = dict(plan["stage2_home_transfer"])
     atomic_torch_save(artifact_path, artifact)
     manifest = {
         "kind": _final_kind(plan),
@@ -1383,6 +1413,8 @@ def run_three_phase_training(
         manifest["object_encoder_phase1"] = dict(plan["object_encoder_phase1"])
         manifest["object_encoder_state_hash"] = artifact["object_encoder_state_hash"]
         manifest["final_embedding_hash"] = artifact["final_embedding_hash"]
+    if "stage2_home_transfer" in plan:
+        manifest["stage2_home_transfer"] = dict(plan["stage2_home_transfer"])
     atomic_json(manifest_path, manifest)
     return [{"phase": "three_phase_final", "validation": final_validation}]
 
