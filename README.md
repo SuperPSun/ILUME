@@ -414,20 +414,8 @@ Stage3 Single-task MLP 内部消融位于 `ablations/`。二者均与 Stage 代�
 | `ecfp_xgboost` | 1000 trees | `outputs/benchmarks/fixed-budget-v1/ecfp_xgboost` |
 | `llasmol` | 10 epochs | `outputs/benchmarks/fixed-budget-v1/llasmol-10e-bs16-ga2` |
 | `aionopedia` | 10 epochs | `outputs/benchmarks/model-native-v1/aionopedia` |
-| `aionopedia_no_extra_graph_conditions` | 10 epochs；移除新增图侧条件通路 | `outputs/benchmarks/model-native-v1/aionopedia-no-extra-graph-conditions` |
 | `iltransr` | 10 epochs | `outputs/benchmarks/model-native-10e-v1/iltransr` |
 | `aifc` | 10 epochs | `outputs/benchmarks/model-native-10e-v1/aifc` |
-
-`aionopedia_no_extra_graph_conditions` 是独立的图侧条件消融：压力、频率、波长仍写入文本
-prompt，但不生成对应的图侧 projector/segment token；官方温度通路与 1024 宽回归头保持不变。
-输出不得与正式 AIonopedia 结果混合。
-
-```bash
-python scripts/benchmarks/sweep.py \
-  --config configs/benchmarks/aionopedia_no_extra_graph_conditions.yaml \
-  --output outputs/benchmarks/model-native-v1/aionopedia-no-extra-graph-conditions \
-  --max-workers 1
-```
 
 先完成下方对应模型的环境、资产与 validator 步骤，再使用通用命令。以 D-MPNN 为例，替换下列两个变量即可选择其他模型；LlaSMol 输出后缀保持上表约定。
 

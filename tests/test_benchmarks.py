@@ -18,7 +18,6 @@ from rdkit import Chem
 from torch_geometric.data import Batch, Data
 import yaml
 
-import benchmarks.aionopedia.adapter as aionopedia_adapter
 from ablations.stage3_single_task_mlp.adapter import _manifest, _run_training_epochs, build_input_features
 from ablations.stage3_single_task_mlp.model import Stage3SingleTaskMLP
 from benchmarks.aifc.adapter import (
@@ -479,26 +478,6 @@ def test_formal_baseline_configs_use_fixed_final_state(
             "scheduler_metric", "scheduler_patience", "scheduler_factor",
             "minimum_learning_rate",
         }.isdisjoint(config.training)
-
-
-def test_aionopedia_no_extra_graph_conditions_is_single_variable() -> None:
-    official = load_benchmark_config("configs/benchmarks/aionopedia.yaml")
-    variant = load_benchmark_config(
-        "configs/benchmarks/aionopedia_no_extra_graph_conditions.yaml"
-    )
-    assert variant.model["extra_graph_conditions"] is False
-    assert {key: value for key, value in variant.model.items() if key != "extra_graph_conditions"} == official.model
-    assert variant.data == official.data
-    assert variant.training == official.training
-    assert variant.stage3 == official.stage3
-
-    invalid = yaml.safe_load(
-        Path("configs/benchmarks/aionopedia_no_extra_graph_conditions.yaml").read_text()
-    )
-    invalid["model"]["scalar_head_hidden_dim"] = 128
-    invalid["model"]["scalar_head"] = "linear_512_128_relu_linear_128_1"
-    with pytest.raises(ValueError, match="registered multimodal recipe"):
-        benchmark_config_from_dict(invalid)
 
 
 @pytest.mark.parametrize(
@@ -2224,26 +2203,6 @@ def test_aionopedia_condition_scales_and_prompt_units() -> None:
     assert wavelength.extra_conditions["wavelength"].tolist() == pytest.approx([0.589])
 
 
-def test_aionopedia_no_extra_graph_conditions_keeps_text_prompt() -> None:
-    task = _aionopedia_task(
-        slots=("cation", "anion"),
-        conditions=("temperature_K", "pressure_kPa", "frequency_MHz", "wavelength_nm"),
-    )
-    raw = _aionopedia_raw(("[Na+]", "[Cl-]"), (300.0, 150.0, 18000.0, 589.0))
-    pressure = AIonopediaSampleStats.fit(np.asarray([100.0, 200.0]), allow_constant=True)
-    full = prepare_aionopedia_split(task, raw, pressure)
-    variant = prepare_aionopedia_split(
-        task, raw, pressure, extra_graph_conditions=False
-    )
-    assert variant.prompts == full.prompts
-    assert variant.audit["prompt_sha256"] == full.audit["prompt_sha256"]
-    assert variant.temperature.tolist() == full.temperature.tolist()
-    assert variant.extra_conditions.keys() == full.extra_conditions.keys()
-    assert variant.active_conditions == ()
-    assert variant.audit["active_graph_conditions"] == []
-    assert full.active_conditions == ("pressure", "frequency", "wavelength")
-
-
 def test_aionopedia_graph_preprocessing_matches_official_golden_contract() -> None:
     graph = aionopedia_graph("C")
     assert graph.x.shape == (1, 35)
@@ -2302,62 +2261,6 @@ def test_aionopedia_sample_std_scheduler_and_condition_tokens() -> None:
         active_conditions=("pressure", "frequency", "wavelength"),
     )
     assert with_conditions.shape[1] == without.shape[1] + 3
-
-    text_only = AIonopediaRegressor(
-        FakeLLM(), extra_graph_conditions=False
-    ).eval()
-    assert len(text_only.condition_projectors) == 0
-    assert len(text_only.condition_segments) == 0
-    assert text_only.fc_out[0].out_features == 1024
-    assert text_only.projector_temp[0].in_features == 1
-    text_only_graph, _ = text_only.encode_graphs(
-        **common, extra_conditions={}, active_conditions=()
-    )
-    assert text_only_graph.shape[1] == without.shape[1]
-
-
-def test_aionopedia_no_extra_graph_checkpoint_and_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import peft
-
-    monkeypatch.setattr(peft, "get_peft_model_state_dict", lambda _model: {})
-    monkeypatch.setattr(
-        peft, "set_peft_model_state_dict",
-        lambda _model, _state: SimpleNamespace(unexpected_keys=()),
-    )
-    model = AIonopediaRegressor(torch.nn.Identity(), extra_graph_conditions=False)
-    payload = aionopedia_adapter._checkpoint_payload(model)
-    assert payload["modules"]["condition_projectors"] == {}
-    assert payload["condition_segments"] == {}
-    original = model.fc_out[0].weight[0, 0].item()
-    with torch.no_grad():
-        model.fc_out[0].weight[0, 0].add_(1.0)
-    aionopedia_adapter._restore_checkpoint(model, payload)
-    assert model.fc_out[0].weight[0, 0].item() == original
-
-    official = load_benchmark_config("configs/benchmarks/aionopedia.yaml")
-    variant = load_benchmark_config(
-        "configs/benchmarks/aionopedia_no_extra_graph_conditions.yaml"
-    )
-    official_identity = semantic_identity(
-        "benchmark.aionopedia-training.v1", {"model": official.model}
-    )
-    variant_identity = semantic_identity(
-        "benchmark.aionopedia-training.v1", {"model": variant.model}
-    )
-    (tmp_path / "checkpoint.json").write_text(json.dumps({
-        "model_kind": "aionopedia", "final_epoch": 10, "integrity": {},
-        "training_identity": official_identity,
-    }))
-    monkeypatch.setattr(
-        aionopedia_adapter, "prepare_aionopedia_training",
-        lambda *_args: SimpleNamespace(training_identity=variant_identity),
-    )
-    with pytest.raises(ValueError, match="semantic identity mismatch"):
-        aionopedia_adapter.evaluate_aionopedia_checkpoint(
-            variant, "stage3", "experiment/density", 1, tmp_path, "valid"
-        )
 
 
 # --- ILTransR baseline contracts ---

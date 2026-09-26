@@ -159,21 +159,18 @@ def _prepare_split(
     task: BenchmarkTask,
     raw: RawDataset,
     pressure_stats: SampleStats | None,
-    *,
-    extra_graph_conditions: bool = True,
 ) -> PreparedSplit:
     topology, topology_name = _topology(task)
     prompts: list[str] = []
     graph_roles: list[tuple[str, str, str]] = []
     temperature = np.zeros((len(raw),), dtype=np.float32)
     extras: dict[str, np.ndarray] = {}
-    extra_names = tuple(
+    active = tuple(
         EXTRA_CONDITION_COLUMNS[column]
         for column in task.condition_columns
         if column in EXTRA_CONDITION_COLUMNS
     )
-    active = extra_names if extra_graph_conditions else ()
-    for name in extra_names:
+    for name in active:
         extras[name] = np.zeros((len(raw),), dtype=np.float32)
     for index, (components, conditions) in enumerate(
         zip(raw.components, raw.conditions, strict=True)
@@ -268,15 +265,8 @@ def prepare_aionopedia_training(
     if "pressure_kPa" in task.condition_columns:
         column = task.condition_columns.index("pressure_kPa")
         pressure_stats = SampleStats.fit(train_raw.conditions[:, column], allow_constant=True)
-    extra_graph_conditions = config.model.get("extra_graph_conditions", True)
-    train = _prepare_split(
-        task, train_raw, pressure_stats,
-        extra_graph_conditions=extra_graph_conditions,
-    )
-    valid = _prepare_split(
-        task, valid_raw, pressure_stats,
-        extra_graph_conditions=extra_graph_conditions,
-    )
+    train = _prepare_split(task, train_raw, pressure_stats)
+    valid = _prepare_split(task, valid_raw, pressure_stats)
     source_hashes = {
         "train": [sha256_file(path) for path in task.train_paths],
         "valid": [sha256_file(path) for path in task.valid_paths],
@@ -291,11 +281,7 @@ def prepare_aionopedia_training(
             "source_hashes": source_hashes,
             "target_statistics": asdict(target_stats),
             "pressure_statistics": asdict(pressure_stats) if pressure_stats else None,
-            "input_contract": (
-                AIONOPEDIA_INPUT_CONTRACT
-                if extra_graph_conditions
-                else {**AIONOPEDIA_INPUT_CONTRACT, "extra_graph_conditions": False}
-            ),
+            "input_contract": AIONOPEDIA_INPUT_CONTRACT,
             "model": config.model,
             "training": config.training,
             "effective_seed": effective_seed,
@@ -353,7 +339,6 @@ def _build_model(config: BenchmarkConfig, *, device: torch.device) -> Any:
     model = MultiModalRegressor(
         llm,
         llm_dim=1024,
-        extra_graph_conditions=config.model.get("extra_graph_conditions", True),
     )
     pretrained = repository_path(config.model["pretrained_snapshot"])
     for filename, attribute in OFFICIAL_MODULE_FILES.items():
@@ -629,12 +614,10 @@ def train_aionopedia_bundle(
             *(
                 f"condition_projectors.{name}"
                 for name in ("pressure", "frequency", "wavelength")
-                if name in model.condition_projectors
             ),
             *(
                 f"condition_segments.{name}"
                 for name in ("pressure", "frequency", "wavelength")
-                if name in model.condition_segments
             ),
         ],
         "integrity": integrity,
@@ -673,10 +656,7 @@ def evaluate_aionopedia_checkpoint(
         context="AIonopedia evaluation checkpoint",
     )
     raw = load_split(bundle.task, split)
-    prepared = _prepare_split(
-        bundle.task, raw, bundle.pressure_stats,
-        extra_graph_conditions=config.model.get("extra_graph_conditions", True),
-    )
+    prepared = _prepare_split(bundle.task, raw, bundle.pressure_stats)
     for roles in prepared.graph_roles:
         for smiles in roles:
             if smiles and smiles not in bundle.graph_cache:
@@ -725,10 +705,7 @@ def aionopedia_evaluation_audit(
     if "pressure_kPa" in task.condition_columns:
         column = task.condition_columns.index("pressure_kPa")
         pressure_stats = SampleStats.fit(train.conditions[:, column], allow_constant=True)
-    return _prepare_split(
-        task, load_split(task, split), pressure_stats,
-        extra_graph_conditions=config.model.get("extra_graph_conditions", True),
-    ).audit
+    return _prepare_split(task, load_split(task, split), pressure_stats).audit
 
 
 __all__ = [

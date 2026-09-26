@@ -581,17 +581,12 @@ class BenchmarkConfig:
             "wavelength_transform": "wavelength_nm_div_1000",
         }
         variable = {"base_files", "pretrained_files"}
-        extra_graph_conditions = self.model.get("extra_graph_conditions", True)
         if (
             self.model.get("scalar_head") != "linear_512_1024_relu_linear_1024_1"
-            or (
-                "extra_graph_conditions" in self.model
-                and extra_graph_conditions is not False
-            )
             or {
                 key: value
                 for key, value in self.model.items()
-                if key not in variable | {"scalar_head", "extra_graph_conditions"}
+                if key not in variable | {"scalar_head"}
             }
             != expected_model
         ):
