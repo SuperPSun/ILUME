@@ -2738,6 +2738,85 @@ def test_home_transfer_output_override_reaches_both_stage_entries(
     assert seen == [root, root]
 
 
+def test_home_transfer_evaluation_publishes_discoverable_runs(monkeypatch, tmp_path: Path) -> None:
+    from benchmarks.common.summary import build_summary, discover_candidates
+    from common.reporting import REPORTING_SCHEMA_VERSION, comparison_identity
+
+    config_path = tmp_path / "experiment.yaml"
+    config_path.write_text(Path("configs/ablations/stage2_home_transfer.yaml").read_text())
+    root = Path("outputs/home-transfer")
+    monkeypatch.setattr("common.outputs.REPOSITORY_ROOT", tmp_path)
+    monkeypatch.setattr("common.outputs._runtime_metadata", lambda: {})
+    monkeypatch.setattr(home_transfer_launcher, "_evaluation_identity", lambda *_args, **kwargs:
+                        semantic_identity("fixture.evaluation", kwargs))
+    task = "experiment/example"
+
+    def fake_evaluate(experiment, *, split, fold, predictions_dir):
+        assert experiment.output_root == root
+        assert predictions_dir.is_relative_to(tmp_path / root)
+        metrics = {task: {"count": 1, "mae": 0.2, "rmse": 0.2, "r2": 0.5,
+                          "normalized_mae": 0.2, "normalized_rmse": 0.2}}
+        result = {
+            "split": split, "checkpoint_epoch": None,
+            "reporting": {
+                "schema_version": REPORTING_SCHEMA_VERSION, "model_id": "ilume",
+                "model_display_name": "ILUME (Stage2-HoME transfer)",
+                "study_id": "ilume-stage2-home-transfer-v1",
+                "protocol": {"split": split, "fold": fold, "folds": list(range(1, 6)),
+                             "ensemble": split == "test", "expected_tasks": [task]},
+                "comparison_identity": comparison_identity(
+                    "stage3_property", split=split, expected=[task], sources={"shared": "data"},
+                    normalization={}, folds=range(1, 6), ensemble=split == "test",
+                ),
+            },
+        }
+        result["tasks" if split == "valid" else "ensemble"] = metrics if split == "valid" else {"tasks": metrics}
+        return result
+
+    monkeypatch.setattr("ablations.stage2_home_transfer.stage3.evaluate", fake_evaluate)
+    for selection in (["--split", "valid", "--fold", "1", "2", "3", "4", "5"], ["--split", "test"]):
+        monkeypatch.setattr(sys, "argv", ["home_transfer.py", "evaluate", "--config", str(config_path),
+                                         "--output", str(root), *selection])
+        assert home_transfer_launcher.main() == 0
+    candidates = discover_candidates(tmp_path / root, tmp_path)
+    assert len(candidates) == 6
+    assert all(candidate.current and candidate.metadata["status"] == "completed" for candidate in candidates)
+    assert all((candidate.root / "run_config.yaml").is_file() for candidate in candidates)
+    summary = build_summary(tmp_path / root, tmp_path)
+    for split in ("stage3_validation", "stage3_test"):
+        assert len(summary["leaderboards"][split]) == 1
+        assert summary["leaderboards"][split][0]["model"] == "ILUME (Stage2-HoME transfer)"
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("evaluation failure")
+    monkeypatch.setattr("ablations.stage2_home_transfer.stage3.evaluate", fail)
+    monkeypatch.setattr(sys, "argv", ["home_transfer.py", "evaluate", "--config", str(config_path),
+                                     "--output", "outputs/failed-home-transfer", "--split", "test"])
+    with pytest.raises(RuntimeError, match="evaluation failure"):
+        home_transfer_launcher.main()
+    failed = json.loads((tmp_path / "outputs/failed-home-transfer/stage3/test/metadata.json").read_text())
+    assert failed["status"] == "failed"
+
+
+def test_home_transfer_publication_identity_binds_all_test_folds(tmp_path: Path) -> None:
+    experiment = SimpleNamespace(output_root=tmp_path)
+    for fold in range(1, 6):
+        root = tmp_path / "stage3" / "train" / f"fold{fold}"
+        root.mkdir(parents=True)
+        (root / "three_phase_final.json").write_text(json.dumps({
+            "training_identity": {"hash": f"training-{fold}"},
+            "model_state_hash": f"model-{fold}", "artifact_sha256": f"artifact-{fold}",
+        }))
+    valid = home_transfer_launcher._evaluation_identity(experiment, split="valid", fold=1)
+    test = home_transfer_launcher._evaluation_identity(experiment, split="test", fold=None)
+    path = tmp_path / "stage3/train/fold5/three_phase_final.json"
+    manifest = json.loads(path.read_text())
+    manifest["artifact_sha256"] = "different"
+    path.write_text(json.dumps(manifest))
+    assert valid == home_transfer_launcher._evaluation_identity(experiment, split="valid", fold=1)
+    assert test != home_transfer_launcher._evaluation_identity(experiment, split="test", fold=None)
+
+
 def test_full_finetune_resume_starts_missing_fold(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:

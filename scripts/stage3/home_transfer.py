@@ -146,6 +146,25 @@ def _run_schedule(
     return results
 
 
+def _evaluation_identity(experiment: Any, *, split: str, fold: int | None) -> dict[str, Any]:
+    from common.identity import semantic_identity
+
+    folds = (fold,) if split == "valid" else range(1, 6)
+    anchors = []
+    for current_fold in folds:
+        path = experiment.output_root / "stage3" / "train" / f"fold{current_fold}" / "three_phase_final.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        anchors.append({
+            "fold": current_fold,
+            "training_identity": manifest["training_identity"]["hash"],
+            "model_state_hash": manifest["model_state_hash"],
+            "artifact_sha256": manifest["artifact_sha256"],
+        })
+    return semantic_identity("stage3.home-transfer-evaluation.v1", {
+        "split": split, "fold": fold, "selector": "three_phase_final", "anchors": anchors,
+    })
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run isolated Stage2-HoME to Stage3-HoME transfer.")
     parser.add_argument("command", choices=("prepare", "train", "evaluate"))
@@ -160,8 +179,7 @@ def main() -> int:
     if args.command != "train" and (args.max_parallel != 1 or args.devices is not None):
         parser.error("--max-parallel and --devices are only supported by train")
     from ablations.stage2_home_transfer.config import load_experiment
-    from ablations.stage2_home_transfer.stage3 import evaluate, prepare
-    from common.io import atomic_json
+    from ablations.stage2_home_transfer.stage3 import evaluate, prepare, stage3_config
 
     experiment = load_experiment(args.config)
     if args.output is not None:
@@ -203,24 +221,41 @@ def main() -> int:
     if args.split == "valid":
         if not args.fold or len(args.fold) != len(set(args.fold)) or any(fold not in range(1, 6) for fold in args.fold):
             parser.error("validation requires unique --fold values in 1..5")
-        for fold in args.fold:
-            destination = experiment.output_root / "stage3" / "valid" / f"fold{fold}"
-            if destination.exists():
-                raise FileExistsError(f"Evaluation output exists: {destination}")
-            destination.mkdir(parents=True)
-            result = evaluate(experiment, split="valid", fold=fold, predictions_dir=destination / "predictions")
-            atomic_json(destination / "summary.json", result)
-            print(f"validation fold{fold} complete")
+        folds = tuple(args.fold)
     else:
         if args.fold:
             parser.error("test ensemble forbids --fold")
-        destination = experiment.output_root / "stage3" / "test"
-        if destination.exists():
-            raise FileExistsError(f"Evaluation output exists: {destination}")
-        destination.mkdir(parents=True)
-        result = evaluate(experiment, split="test", predictions_dir=destination / "predictions")
-        atomic_json(destination / "summary.json", result)
-        print("test ensemble complete")
+        folds = (None,)
+
+    import yaml
+    from common.outputs import open_run_directory, repository_relative
+    from common.reporting import REPORTING_SCHEMA_VERSION
+
+    config = stage3_config(experiment)
+    snapshot = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
+    snapshot["output_root"] = repository_relative(experiment.output_root)
+    for fold in folds:
+        destination = experiment.output_root / "stage3" / ("valid" if args.split == "valid" else "test")
+        if fold is not None:
+            destination /= f"fold{fold}"
+        run = open_run_directory(
+            stage="stage3", operation="evaluate", config_path=args.config,
+            config_payload={"experiment": snapshot, "stage3": config.to_dict()},
+            semantic_identity=_evaluation_identity(experiment, split=args.split, fold=fold),
+            output=destination, seed=config.data.seed,
+            details={
+                "reporting_schema_version": REPORTING_SCHEMA_VERSION,
+                "ablation": "stage2_home_transfer", "split": args.split, "fold": fold,
+                "checkpoint_dir": repository_relative(experiment.output_root / "stage3" / "train"),
+            },
+        )
+        try:
+            result = evaluate(experiment, split=args.split, fold=fold, predictions_dir=run.root / "predictions")
+            run.complete(result)
+        except BaseException:
+            run.fail()
+            raise
+        print(f"validation fold{fold} complete" if fold is not None else "test ensemble complete")
     return 0
 
 

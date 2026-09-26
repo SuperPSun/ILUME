@@ -556,6 +556,16 @@ Stage2 源训练的逻辑 batch 固定 256 行，`stage2_microbatch_size` 当前
 `stage2/performance.jsonl`。改变微批后应给整条链指定新的 `--output`（例如
 `outputs/ablations/stage2_home_transfer_batch256`），不能 resume 旧 8 行微批的 checkpoint。
 若 256 行反传显存不足，显式修改 YAML 为 128 或 64，再使用另一个新输出目录；代码不自动降低微批。
+消融 evaluation 发布标准 `run_config.yaml`、`metadata.json`、`summary.json` 和 prediction CSV；
+统一 summarizer 可直接读取五折 validation 与 test ensemble（Stage2 源训练不进入榜单）。例如：
+
+```bash
+python scripts/benchmarks/summarize.py \
+  --input outputs/v2/stage3/base outputs/ablations/stage2_home_transfer_batch256 \
+  --output summary_stage2_home_transfer
+```
+
+旧版本仅写 `summary.json` 的 evaluation 目录不自动补写或覆盖；只有包含标准 metadata 的新输出会被识别。
 
 ### Stage 3 三级 transfer knowledge 消融
 

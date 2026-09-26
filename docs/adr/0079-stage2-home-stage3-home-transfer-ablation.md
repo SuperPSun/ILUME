@@ -18,4 +18,6 @@ Stage3 在独立 prepared/output root 使用正式 Base 的 20-task split、norm
 
 ## 边界与解释
 
+Stage3 消融 evaluation 使用统一 `open_run_directory()` 发布 `run_config.yaml`、`metadata.json`、`attempts.jsonl` 与 `summary.json`。metadata 标记 `stage3/evaluate`、reporting schema、fold/split 和完成/失败状态；运行身份绑定相应 fold 的 final artifact SHA、training identity 与 model state hash。原有 summary reporting 和 prediction 合同保留，study 为 `ilume-stage2-home-transfer-v1`，显示名为 `ILUME (Stage2-HoME transfer)`。统一 summarizer 可发现五折 validation 和 test ensemble，不读取 Stage2 源训练指标；旧缺少 metadata 的目录仍只读，不自动迁移或覆盖。
+
 正式 `stage2_encoder.pt`、Stage3 Base、checkpoint、prepared artifact 和评估入口保持原合同，旧输出只读。消融使用独立训练身份、checkpoint/final kind，不能与正式 Base 交叉恢复或加载。由于新源模型同时移除了 teacher loss 并取消首轮 Stage1 冻结，结果衡量的是完整预训练方案差异，不能严格单独归因于 HoME 与浅层 head 的架构差异。
