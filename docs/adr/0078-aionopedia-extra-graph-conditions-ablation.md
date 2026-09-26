@@ -14,7 +14,7 @@
 
 通用 pretrained assets、released Qwen LoRA、多模态模块的下游微调、数据与 fold、loss、优化器、
 各组学习率、batch、精度、10-epoch 预算及 final-state 选择均沿用 ADR-0049。原始
-`aionopedia.yaml` 和 `aionopedia_head128.yaml` 不变。
+`aionopedia.yaml` 不变。
 
 ## 身份与输出
 
@@ -23,7 +23,7 @@
 模块清单仅含 `fc_out`；三项新增图侧模块不存在，评估不能跨变体加载 checkpoint。
 
 输出使用独立根 `outputs/benchmarks/model-native-v1/aionopedia-no-extra-graph-conditions/`，
-不能与正式 AIonopedia 或 128-wide head 对照混用。该结果只解释图侧通路的作用；
+不能与正式 AIonopedia 结果混用。该结果只解释图侧通路的作用；
 不能解释为完全恢复官方输入，因为文本仍包含压力、频率和波长。
 
 ## 验证边界

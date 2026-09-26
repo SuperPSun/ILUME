@@ -43,7 +43,6 @@ class MultiModalRegressor(nn.Module):
         llm: nn.Module,
         *,
         llm_dim: int = 1024,
-        head_hidden_dim: int = 1024,
         extra_graph_conditions: bool = True,
     ) -> None:
         super().__init__()
@@ -68,9 +67,9 @@ class MultiModalRegressor(nn.Module):
         self.segment_embed_anion = nn.Parameter(torch.randn(1, 256))
         self.segment_embed_property = nn.Parameter(torch.randn(1, 256))
         self.fc_out = nn.Sequential(
-            nn.Linear(512, head_hidden_dim),
+            nn.Linear(512, 1024),
             nn.ReLU(),
-            nn.Linear(head_hidden_dim, 1),
+            nn.Linear(1024, 1),
         )
         decoder_layer = nn.TransformerDecoderLayer(
             d_model=256, nhead=4, dim_feedforward=1024, dropout=0.1,

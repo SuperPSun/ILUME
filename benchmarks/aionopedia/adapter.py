@@ -353,7 +353,6 @@ def _build_model(config: BenchmarkConfig, *, device: torch.device) -> Any:
     model = MultiModalRegressor(
         llm,
         llm_dim=1024,
-        head_hidden_dim=int(config.model.get("scalar_head_hidden_dim", 1024)),
         extra_graph_conditions=config.model.get("extra_graph_conditions", True),
     )
     pretrained = repository_path(config.model["pretrained_snapshot"])

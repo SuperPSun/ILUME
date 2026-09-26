@@ -414,25 +414,13 @@ Stage3 Single-task MLP 内部消融位于 `ablations/`。二者均与 Stage 代�
 | `ecfp_xgboost` | 1000 trees | `outputs/benchmarks/fixed-budget-v1/ecfp_xgboost` |
 | `llasmol` | 10 epochs | `outputs/benchmarks/fixed-budget-v1/llasmol-10e-bs16-ga2` |
 | `aionopedia` | 10 epochs | `outputs/benchmarks/model-native-v1/aionopedia` |
-| `aionopedia_head128` | 10 epochs；新建 128 宽回归头 | `outputs/benchmarks/model-native-v1/aionopedia-head128` |
 | `aionopedia_no_extra_graph_conditions` | 10 epochs；移除新增图侧条件通路 | `outputs/benchmarks/model-native-v1/aionopedia-no-extra-graph-conditions` |
 | `iltransr` | 10 epochs | `outputs/benchmarks/model-native-10e-v1/iltransr` |
 | `aifc` | 10 epochs | `outputs/benchmarks/model-native-10e-v1/aifc` |
 
-`aionopedia_head128` 是隔离的容量对照，只把新建 scalar head 从 `512 → 1024 → 1` 改为
-`512 → 128 → 1`；released pretrained modules、Qwen LoRA 路径、训练配方、数据与 folds 均保持一致。
-输出不得与官方宽度的 AIonopedia 结果混合。
-
-```bash
-python scripts/benchmarks/sweep.py \
-  --config configs/benchmarks/aionopedia_head128.yaml \
-  --output outputs/benchmarks/model-native-v1/aionopedia-head128 \
-  --max-workers 1
-```
-
 `aionopedia_no_extra_graph_conditions` 是独立的图侧条件消融：压力、频率、波长仍写入文本
 prompt，但不生成对应的图侧 projector/segment token；官方温度通路与 1024 宽回归头保持不变。
-输出不得与正式 AIonopedia 或 `head128` 对照混合。
+输出不得与正式 AIonopedia 结果混合。
 
 ```bash
 python scripts/benchmarks/sweep.py \

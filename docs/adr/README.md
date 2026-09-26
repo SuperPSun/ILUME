@@ -33,7 +33,6 @@
 | SPMM | [0035](0035-spmm-baseline.md)、[0037](0037-spmm-wordpiece-character-limit.md)、[0038](0038-spmm-throughput-contract.md) |
 | LlaSMol | [0040](0040-llasmol-mistral-7b-baseline.md) |
 | AIonopedia | [0049](0049-aionopedia-multimodal-baseline.md) |
-| AIonopedia 128-wide scalar-head comparison | [0076](0076-aionopedia-scalar-head-capacity-comparison.md) |
 | AIonopedia 新增图侧条件通路消融 | [0078](0078-aionopedia-extra-graph-conditions-ablation.md) |
 | ILTransR | [0057](0057-iltransr-stage3-baseline.md) |
 | AIFC | [0060](0060-aifc-stage3-baseline.md) |
@@ -52,6 +51,7 @@
 | 范围 | 入口与状态 |
 |---|---|
 | Capacity v1 | [0026](0026-capacity-v1-pipeline-study.md)、[0027](0027-late-taskwise-refinement.md)；legacy 端到端研究，HPO 已退役。固定运行见 [手册](../capacity-v1-runbook.md) |
+| AIonopedia 128-wide scalar head | [0076](0076-aionopedia-scalar-head-capacity-comparison.md)：已退役；现役配置不再支持 128 宽头 |
 | Stage 1 基础 | [0001](0001-data-and-role-sampling.md)、[0002](0002-descriptor-schema-and-tokens.md)、[0003](0003-smiles-tokenizers.md)、[0004](0004-fourth-modality-and-training.md)、[0005](0005-exclude-invalid-pretraining-entities.md)；按各篇顶部区分有效数据/预处理规则与被 0039 取代的模态设计 |
 | 早期 Stage 1/2/3、Object v1/v2、四阶段训练 | [合并历史摘要](history.md)：0006～0012、0016、0018、0047，均已被取代；保留原编号、理由和 Git 原文定位 |
 | Stage 2 evaluation | [0023](0023-unified-evaluation-reporting.md)、[0024](0024-stage2-partial-charge-benchmark-suite.md)、[0025](0025-stage2-homo-lumo-scalar-tasks.md)、[0027](0027-late-taskwise-refinement.md) 的相关段落已由 [0043](0043-retire-stage2-evaluation-and-v2-refinement.md) 退役；未涉及的训练/通用 reporting 合同保留 |
