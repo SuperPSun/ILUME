@@ -127,9 +127,11 @@ def discover_candidates(
     repository_root: Path,
     *,
     include_roots: Path | Sequence[Path] = (),
+    exclude_roots: Path | Sequence[Path] = (),
 ) -> list[Candidate]:
     inputs = _resolved_directories(input_roots, label="input", required=True)
     includes = _resolved_directories(include_roots, label="include", required=False)
+    excludes = _resolved_directories(exclude_roots, label="exclude", required=False)
     outside = [
         include for include in includes
         if not any(_is_within(include, input_root) for input_root in inputs)
@@ -138,6 +140,15 @@ def discover_candidates(
         raise ValueError(
             "Summary include directories must be inside an input directory:\n- "
             + "\n- ".join(str(path) for path in outside)
+        )
+    outside_excludes = [
+        exclude for exclude in excludes
+        if not any(_is_within(exclude, input_root) for input_root in inputs)
+    ]
+    if outside_excludes:
+        raise ValueError(
+            "Summary exclude directories must be inside an input directory:\n- "
+            + "\n- ".join(str(path) for path in outside_excludes)
         )
 
     candidates: list[Candidate] = []
@@ -151,6 +162,10 @@ def discover_candidates(
             if not includes or any(
                 _is_within(metadata_path.resolve().parent, include)
                 for include in includes
+            )
+            if not any(
+                _is_within(metadata_path.resolve().parent, exclude)
+                for exclude in excludes
             )
         },
         key=lambda path: path.as_posix(),
@@ -1502,9 +1517,11 @@ def build_summary(
     repository_root: Path,
     *,
     include_roots: Path | Sequence[Path] = (),
+    exclude_roots: Path | Sequence[Path] = (),
 ) -> dict[str, Any]:
     candidates = discover_candidates(
-        input_roots, repository_root, include_roots=include_roots
+        input_roots, repository_root,
+        include_roots=include_roots, exclude_roots=exclude_roots,
     )
     return _build_summary(candidates)
 
@@ -1723,9 +1740,11 @@ def publish_summary(
     repository_root: Path,
     *,
     include_roots: Path | Sequence[Path] = (),
+    exclude_roots: Path | Sequence[Path] = (),
 ) -> dict[str, Any]:
     candidates = discover_candidates(
-        input_roots, repository_root, include_roots=include_roots
+        input_roots, repository_root,
+        include_roots=include_roots, exclude_roots=exclude_roots,
     )
     payload = _build_summary(candidates)
     scatter_plots = _ilume_scatter_plots(candidates, payload)

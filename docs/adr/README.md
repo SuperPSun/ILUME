@@ -34,6 +34,7 @@
 | LlaSMol | [0040](0040-llasmol-mistral-7b-baseline.md) |
 | AIonopedia | [0049](0049-aionopedia-multimodal-baseline.md) |
 | AIonopedia 128-wide scalar-head comparison | [0076](0076-aionopedia-scalar-head-capacity-comparison.md) |
+| AIonopedia 新增图侧条件通路消融 | [0078](0078-aionopedia-extra-graph-conditions-ablation.md) |
 | ILTransR | [0057](0057-iltransr-stage3-baseline.md) |
 | AIFC | [0060](0060-aifc-stage3-baseline.md) |
 | Single-task MLP | [0033](0033-stage3-single-task-mlp-ablation.md)（历史 v1）、[0077](0077-stage3-single-task-mlp-v2-ablation.md)（现役 v2） |

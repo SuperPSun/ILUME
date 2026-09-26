@@ -27,13 +27,19 @@ def main() -> None:
             "each must be inside an input directory."
         ),
     )
+    parser.add_argument(
+        "--exclude", nargs="+", metavar="PATH",
+        help="Optional repository-relative directories inside an input to exclude recursively.",
+    )
     parser.add_argument("--output", default="summary")
     args = parser.parse_args()
     input_roots = [repository_path(path) for path in args.input]
     include_roots = [repository_path(path) for path in (args.include or ())]
+    exclude_roots = [repository_path(path) for path in (args.exclude or ())]
     output = repository_path(args.output)
     publish_summary(
-        input_roots, output, ROOT, include_roots=include_roots
+        input_roots, output, ROOT,
+        include_roots=include_roots, exclude_roots=exclude_roots,
     )
 
 
