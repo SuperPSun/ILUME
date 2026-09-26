@@ -582,6 +582,7 @@ class BenchmarkConfig:
         }
         variable = {"base_files", "pretrained_files"}
         head_hidden_dim = self.model.get("scalar_head_hidden_dim", 1024)
+        extra_graph_conditions = self.model.get("extra_graph_conditions", True)
         expected_heads = {
             1024: "linear_512_1024_relu_linear_1024_1",
             128: "linear_512_128_relu_linear_128_1",
@@ -589,10 +590,16 @@ class BenchmarkConfig:
         if (
             head_hidden_dim not in expected_heads
             or self.model.get("scalar_head") != expected_heads[head_hidden_dim]
+            or (
+                "extra_graph_conditions" in self.model
+                and (extra_graph_conditions is not False or head_hidden_dim != 1024)
+            )
             or {
                 key: value
                 for key, value in self.model.items()
-                if key not in variable | {"scalar_head", "scalar_head_hidden_dim"}
+                if key not in variable | {
+                    "scalar_head", "scalar_head_hidden_dim", "extra_graph_conditions"
+                }
             }
             != expected_model
         ):

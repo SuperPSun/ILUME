@@ -44,6 +44,7 @@ class MultiModalRegressor(nn.Module):
         *,
         llm_dim: int = 1024,
         head_hidden_dim: int = 1024,
+        extra_graph_conditions: bool = True,
     ) -> None:
         super().__init__()
         encoder_layer = nn.TransformerEncoderLayer(
@@ -78,10 +79,18 @@ class MultiModalRegressor(nn.Module):
         self.decoder1 = nn.TransformerDecoder(decoder_layer, num_layers=3)
         self.decoder2 = nn.TransformerDecoder(decoder_layer, num_layers=3)
         self.condition_projectors = nn.ModuleDict(
-            {name: _condition_projector() for name in ("pressure", "frequency", "wavelength")}
+            {
+                name: _condition_projector()
+                for name in ("pressure", "frequency", "wavelength")
+                if extra_graph_conditions
+            }
         )
         self.condition_segments = nn.ParameterDict(
-            {name: nn.Parameter(torch.randn(1, 256)) for name in ("pressure", "frequency", "wavelength")}
+            {
+                name: nn.Parameter(torch.randn(1, 256))
+                for name in ("pressure", "frequency", "wavelength")
+                if extra_graph_conditions
+            }
         )
 
     def _graph_nodes(self, graph: Any) -> list[torch.Tensor]:

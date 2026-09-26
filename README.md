@@ -415,6 +415,7 @@ Stage3 Single-task MLP 内部消融位于 `ablations/`。二者均与 Stage 代�
 | `llasmol` | 10 epochs | `outputs/benchmarks/fixed-budget-v1/llasmol-10e-bs16-ga2` |
 | `aionopedia` | 10 epochs | `outputs/benchmarks/model-native-v1/aionopedia` |
 | `aionopedia_head128` | 10 epochs；新建 128 宽回归头 | `outputs/benchmarks/model-native-v1/aionopedia-head128` |
+| `aionopedia_no_extra_graph_conditions` | 10 epochs；移除新增图侧条件通路 | `outputs/benchmarks/model-native-v1/aionopedia-no-extra-graph-conditions` |
 | `iltransr` | 10 epochs | `outputs/benchmarks/model-native-10e-v1/iltransr` |
 | `aifc` | 10 epochs | `outputs/benchmarks/model-native-10e-v1/aifc` |
 
@@ -426,6 +427,17 @@ Stage3 Single-task MLP 内部消融位于 `ablations/`。二者均与 Stage 代�
 python scripts/benchmarks/sweep.py \
   --config configs/benchmarks/aionopedia_head128.yaml \
   --output outputs/benchmarks/model-native-v1/aionopedia-head128 \
+  --max-workers 1
+```
+
+`aionopedia_no_extra_graph_conditions` 是独立的图侧条件消融：压力、频率、波长仍写入文本
+prompt，但不生成对应的图侧 projector/segment token；官方温度通路与 1024 宽回归头保持不变。
+输出不得与正式 AIonopedia 或 `head128` 对照混合。
+
+```bash
+python scripts/benchmarks/sweep.py \
+  --config configs/benchmarks/aionopedia_no_extra_graph_conditions.yaml \
+  --output outputs/benchmarks/model-native-v1/aionopedia-no-extra-graph-conditions \
   --max-workers 1
 ```
 
@@ -912,7 +924,7 @@ unknown motif（2.236%），不会删除样本。完整科学与审计边界见
 
 新 train/evaluate 不覆盖既有输出，恢复必须显式请求。每个操作目录冻结 `run_config.yaml`，写入公开安全的 `metadata.json`，成功后生成 `summary.json`；checkpoint、训练日志和 tensor 默认不进入 Git。完整身份与 checkpoint 规则见 [ADR-0021](docs/adr/0021-identity-audit-contract-v1.md)。
 
-全局 summarizer 只收录显式选中的目录。`--input` 提供一个或多个扫描根；可选 `--include` 是精确目录前缀白名单，省略时扫描全部 input。include 必须存在、位于某个 input 内并至少匹配一个 reporting candidate；重叠路径会去重，不支持 glob。
+全局 summarizer 只收录显式选中的目录。`--input` 提供一个或多个扫描根；可选 `--include` 是精确目录前缀白名单，省略时扫描全部 input。可选 `--exclude` 排除指定目录及其全部后代，优先于 include。include 必须存在、位于某个 input 内并至少匹配一个未排除的 reporting candidate；exclude 必须存在且位于某个 input 内。重叠路径会去重，不支持 glob。
 
 ```bash
 python scripts/benchmarks/summarize.py \
