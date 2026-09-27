@@ -6,6 +6,8 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
@@ -13,7 +15,8 @@ from common.data_identity import write_data_identity
 from common.outputs import open_run_directory, repository_relative
 from common.training import resolve_device
 from stage2.config import load_stage2_config
-from stage2.prepare import prepare_teacher_cache
+from stage2.home_config import load_home_recipe
+from stage2.prepare import prepare_stage2_data, prepare_teacher_cache
 from stage2.registry import load_stage2_registry
 from stage2.runtime import configure_stage2_math
 from stage2.identity import build_stage2_data_identity
@@ -25,6 +28,8 @@ def main() -> None:
     parser.add_argument("--config", required=True)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
+    is_home = "home" in (yaml.safe_load(Path(args.config).read_text(encoding="utf-8")) or {})
+    recipe = load_home_recipe(args.config) if is_home else None
     config = load_stage2_config(args.config)
     device = resolve_device(config.training.device)
     math_contract = configure_stage2_math(device)
@@ -64,25 +69,28 @@ def main() -> None:
         data_identity = build_stage2_data_identity(config, registry, feature_identity)
     run = open_run_directory(
         stage="stage2", operation="prepare", config_path=args.config,
-        config_payload=config.to_dict(), semantic_identity=data_identity,
+        config_payload=recipe.to_dict() if recipe else config.to_dict(),
+        semantic_identity=data_identity,
         output=args.output, seed=config.data.seed, reusable=True,
         details=(
             {"representation": "rdkit_2d_mlp", "math_contract": math_contract}
             if config.representation is not None
             else {
-                "checkpoint": repository_relative(config.initialization.checkpoint),
+                **(
+                    {"checkpoint": repository_relative(config.initialization.checkpoint)}
+                    if config.initialization.checkpoint is not None
+                    else {"stage1_config": repository_relative(config.initialization.stage1_config)}
+                ),
                 "math_contract": math_contract,
-                "teacher_dtype": "float32",
+                **({} if recipe else {"teacher_dtype": "float32"}),
             }
         ),
     )
     effective = replace(config, data=replace(config.data, artifacts_dir=run.artifacts))
     try:
-        run.complete(
-            prepare_teacher_cache(
-                effective, rdkit_materialization=rdkit_materialization
-            )
-        )
+        result = (prepare_stage2_data(effective) if recipe else
+                  prepare_teacher_cache(effective, rdkit_materialization=rdkit_materialization))
+        run.complete(result)
     except BaseException:
         run.fail()
         raise

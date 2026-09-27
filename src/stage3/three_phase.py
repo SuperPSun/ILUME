@@ -34,12 +34,10 @@ THREE_PHASE_KNOWLEDGE_FINAL_KIND = "ilume_stage3_transfer_knowledge_three_phase_
 
 
 def _scope_kind(plan: Mapping[str, Any], suffix: str) -> str:
-    if "cross_domain_home" in plan:
-        prefix = "ilume_stage3_cross_domain_home_three_phase"
-    elif "stage2_home_transfer" in plan and "encoder_finetune" in plan:
-        prefix = "ilume_stage3_home_transfer_full_finetune_three_phase"
-    elif "stage2_home_transfer" in plan:
-        prefix = "ilume_stage3_stage2_home_transfer_three_phase"
+    if "simulation_training" in plan:
+        prefix = "ilume_stage3_home_simulation_three_phase_v2"
+    elif "stage2_pretraining" in plan:
+        prefix = "ilume_stage3_home_three_phase_v1"
     elif "object_encoder_phase1" in plan:
         prefix = "ilume_stage3_object_phase1_three_phase"
     elif "encoder_finetune" in plan:
@@ -227,12 +225,10 @@ def _representation_fields(plan: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _final_kind(plan: Mapping[str, Any]) -> str:
-    if "cross_domain_home" in plan:
-        return "ilume_stage3_cross_domain_home_three_phase_final"
-    if "stage2_home_transfer" in plan and "encoder_finetune" in plan:
-        return "ilume_stage3_home_transfer_full_finetune_three_phase_final"
-    if "stage2_home_transfer" in plan:
-        return "ilume_stage3_stage2_home_transfer_three_phase_final"
+    if "simulation_training" in plan:
+        return "ilume_stage3_home_simulation_three_phase_final_v2"
+    if "stage2_pretraining" in plan:
+        return "ilume_stage3_home_three_phase_final_v1"
     if "object_encoder_phase1" in plan:
         return "ilume_stage3_object_phase1_three_phase_final"
     if "encoder_finetune" in plan:
@@ -536,6 +532,7 @@ def _joint_epoch(
     progress: ProgressReporter | None = None,
     progress_desc: str = "",
     phase1_extension: Any = None,
+    simulation_data: Any = None,
 ) -> tuple[dict[str, float], dict[str, Any]]:
     from .train import compute_task_gradient
 
@@ -561,10 +558,15 @@ def _joint_epoch(
             indices = sequences[task][begin : begin + allocation[task]]
             if not len(indices):
                 continue
-            gradient, loss = compute_task_gradient(
-                model, task, train_data[task], indices, representations,
-                normalizations[task], config, device,
-            )
+            if task.startswith("simulation/"):
+                if simulation_data is None:
+                    raise ValueError("Stage 3 simulation task lacks its prepared data")
+                gradient, loss = simulation_data.compute_gradient(model, task, indices, device)
+            else:
+                gradient, loss = compute_task_gradient(
+                    model, task, train_data[task], indices, representations,
+                    normalizations[task], config, device,
+                )
             gradients[task] = gradient
             loss_sums[task] += loss * len(indices)
             sample_counts[task] += len(indices)
@@ -618,6 +620,7 @@ def _task_epoch(
     scheduler: _OwnerScheduler,
     progress: ProgressReporter | None = None,
     progress_desc: str = "",
+    simulation_data: Any = None,
 ) -> tuple[float, dict[str, Any]]:
     from .train import compute_task_gradient
 
@@ -631,10 +634,15 @@ def _task_epoch(
     bar = progress.bar(total=(count + allocation - 1) // allocation, desc=progress_desc, unit="step") if progress else None
     for begin in range(0, count, allocation):
         indices = sequence[begin : begin + allocation]
-        gradient, loss = compute_task_gradient(
-            model, task, dataset, indices, representations,
-            normalization, config, device,
-        )
+        if task.startswith("simulation/"):
+            if simulation_data is None:
+                raise ValueError("Stage 3 simulation task lacks its prepared data")
+            gradient, loss = simulation_data.compute_gradient(model, task, indices, device)
+        else:
+            gradient, loss = compute_task_gradient(
+                model, task, dataset, indices, representations,
+                normalization, config, device,
+            )
         optimizer.zero_grad(set_to_none=True)
         _assign_gradients(model, gradient)
         pre_norm = float(
@@ -881,6 +889,7 @@ def _run_delta_branch(
     anchor_state: Mapping[str, torch.Tensor],
     anchor_hash: str,
     progress: ProgressReporter | None = None,
+    simulation_data: Any = None,
 ) -> tuple[dict[str, torch.Tensor], dict[str, Any], str]:
     from .train import validate_tasks
 
@@ -989,17 +998,19 @@ def _run_delta_branch(
                 task_order_rng=task_order_rng,
                 progress=progress,
                 progress_desc=f"fold{fold} {phase}/{scope} epoch {epoch}/{epochs}",
+                simulation_data=simulation_data,
             )
         else:
             task = tasks[0]
             loss, diagnostics = _task_epoch(
                 model=model, task=task, epoch=epoch, phase_seed=phase_seed,
                 allocation=int(allocation[task]), count=int(counts[task]),
-                dataset=train_data[task], representations=representations,
-                normalization=normalizations[task], config=config, device=device,
+                dataset=train_data.get(task), representations=representations,
+                normalization=normalizations.get(task), config=config, device=device,
                 optimizer=optimizer, scheduler=scheduler,
                 progress=progress,
                 progress_desc=f"fold{fold} {phase}/{scope} epoch {epoch}/{epochs}",
+                simulation_data=simulation_data,
             )
             losses = {task: loss}
         updates += steps_per_epoch
@@ -1009,14 +1020,19 @@ def _run_delta_branch(
             if epoch < int(recipe["effective_epochs"])
         )
         _set_trainable(model, remaining_owners)
-        validation = validate_tasks(
-            model,
-            {task: valid_data[task] for task in tasks},
-            representations,
-            {task: normalizations[task] for task in tasks},
-            config,
-            device,
+        experimental_valid = {task: valid_data[task] for task in tasks if task in valid_data}
+        validation = (
+            validate_tasks(
+                model, experimental_valid, representations,
+                {task: normalizations[task] for task in experimental_valid},
+                config, device,
+            )
+            if experimental_valid else {"tasks": {}}
         )
+        if simulation_data is not None:
+            validation.update(simulation_data.validate_tasks(
+                model, tuple(task for task in tasks if task.startswith("simulation/")), device,
+            ))
         _append_jsonl(
             root / "metrics.jsonl",
             {
@@ -1191,6 +1207,7 @@ def run_three_phase_training(
     device: torch.device,
     progress: ProgressReporter | None = None,
     phase1_extension: Any = None,
+    simulation_data: Any = None,
 ) -> list[dict[str, Any]]:
     from .train import validate_tasks
 
@@ -1208,7 +1225,11 @@ def run_three_phase_training(
     else:
         atomic_json(plan_path, plan)
     phases = plan["phases"]
-    groups = sorted({registry[task].meta_group for task in active})
+    simulation_tasks = tuple(plan.get("simulation_training", {}).get("tasks", ()))
+    if bool(simulation_tasks) != (simulation_data is not None):
+        raise ValueError("Stage 3 simulation training plan/data mismatch")
+    final_tasks = tuple(active) + simulation_tasks
+    groups = sorted({registry[task].meta_group for task in final_tasks})
     capacity = plan["model"]["capacity_recipe"]
 
     initial_state = _model_state(model)
@@ -1230,7 +1251,7 @@ def run_three_phase_training(
     phase2_deltas: dict[str, tuple[Sequence[Ownership], Mapping[str, torch.Tensor], str]] = {}
     phase2_records: dict[str, Any] = {}
     for group in groups:
-        tasks = tuple(task for task in active if registry[task].meta_group == group)
+        tasks = tuple(task for task in final_tasks if registry[task].meta_group == group)
         owners = (group_owner(group), *(private_owner(task) for task in tasks))
         branch = phase2["branches"][group]
         state, validation, state_hash = _run_delta_branch(
@@ -1243,6 +1264,7 @@ def run_three_phase_training(
             representations=representations, normalizations=normalizations,
             registry=registry, device=device, resume=resume,
             anchor_state=phase1_state, anchor_hash=phase1_hash, progress=progress,
+            simulation_data=simulation_data,
         )
         phase2_deltas[group] = (owners, state, state_hash)
         phase2_records[group] = {
@@ -1269,7 +1291,7 @@ def run_three_phase_training(
     phase3 = phases["phase3"]
     phase3_deltas: dict[str, tuple[Sequence[Ownership], Mapping[str, torch.Tensor], str]] = {}
     phase3_records: dict[str, Any] = {}
-    for task in sorted(active):
+    for task in sorted(final_tasks):
         owner = private_owner(task)
         branch = phase3["branches"][task]
         carried_from_anchor = int(branch["epochs"]) == 0
@@ -1278,13 +1300,12 @@ def run_three_phase_training(
             _set_trainable(model, ())
             state = _owner_state(model, (owner,))
             state_hash = _owner_hash(state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
-            validation = validate_tasks(
-                model,
-                {task: valid_data[task]},
-                representations,
-                {task: normalizations[task]},
-                config,
-                device,
+            validation = (
+                simulation_data.validate_tasks(model, (task,), device)
+                if task in simulation_tasks else validate_tasks(
+                    model, {task: valid_data[task]}, representations,
+                    {task: normalizations[task]}, config, device,
+                )
             )
         else:
             state, validation, state_hash = _run_delta_branch(
@@ -1297,7 +1318,7 @@ def run_three_phase_training(
                 valid_data=valid_data, representations=representations,
                 normalizations=normalizations, registry=registry, device=device,
                 resume=resume, anchor_state=phase2_state, anchor_hash=phase2_hash,
-                progress=progress,
+                progress=progress, simulation_data=simulation_data,
             )
         phase3_deltas[task] = ((owner,), state, state_hash)
         phase3_records[task] = {
@@ -1310,11 +1331,15 @@ def run_three_phase_training(
             "validation": validation,
         }
 
-    if set(phase3_deltas) != set(active):
+    if set(phase3_deltas) != set(final_tasks):
         raise RuntimeError("Stage 3 Phase 3 branch set is incomplete")
     _stitch_owner_deltas(model, phase2_state, phase3_deltas)
     final_validation = validate_tasks(
         model, valid_data, representations, normalizations, config, device
+    )
+    simulation_validation = (
+        simulation_data.validate_tasks(model, simulation_tasks, device)
+        if simulation_data is not None else None
     )
     final_state = _model_state(model)
     final_hash = _model_hash(final_state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
@@ -1335,16 +1360,17 @@ def run_three_phase_training(
             or artifact.get("model_state_hash") != final_hash
             or artifact.get("ownership_manifest") != model.ownership_manifest()
             or artifact.get("normalization_hash") != plan["normalization_hash"]
-            or ("cross_domain_home" in plan and (
-                artifact.get("cross_domain_home") != plan["cross_domain_home"]
-                or manifest.get("cross_domain_home") != plan["cross_domain_home"]
-            ))
             or (
-                "stage2_home_transfer" in plan and "encoder_finetune" in plan
-                and (
-                    artifact.get("stage2_home_transfer") != plan["stage2_home_transfer"]
-                    or artifact.get("encoder_state_hashes") != _encoder_hashes(model)
-                )
+                "stage2_pretraining" in plan
+                and artifact.get("stage2_pretraining") != plan["stage2_pretraining"]
+            )
+            or (
+                "simulation_training" in plan
+                and artifact.get("simulation_training") != plan["simulation_training"]
+            )
+            or (
+                simulation_validation is not None
+                and artifact.get("simulation_validation") != simulation_validation
             )
             or (
                 "object_encoder_phase1" in plan
@@ -1369,11 +1395,16 @@ def run_three_phase_training(
             or manifest.get("fold") != fold
             or manifest.get("model_state_hash") != artifact["model_state_hash"]
             or (
-                "stage2_home_transfer" in plan and "encoder_finetune" in plan
-                and (
-                    manifest.get("stage2_home_transfer") != plan["stage2_home_transfer"]
-                    or manifest.get("encoder_state_hashes") != artifact.get("encoder_state_hashes")
-                )
+                "stage2_pretraining" in plan
+                and manifest.get("stage2_pretraining") != plan["stage2_pretraining"]
+            )
+            or (
+                "simulation_training" in plan
+                and manifest.get("simulation_training") != plan["simulation_training"]
+            )
+            or (
+                simulation_validation is not None
+                and manifest.get("simulation_validation") != simulation_validation
             )
             or (
                 "object_encoder_phase1" in plan
@@ -1424,10 +1455,11 @@ def run_three_phase_training(
             model.stage2_object_encoder.state_dict(),
         )
         artifact["final_embedding_hash"] = representations.final_embedding_hash
-    if "stage2_home_transfer" in plan:
-        artifact["stage2_home_transfer"] = dict(plan["stage2_home_transfer"])
-    if "cross_domain_home" in plan:
-        artifact["cross_domain_home"] = dict(plan["cross_domain_home"])
+    if "stage2_pretraining" in plan:
+        artifact["stage2_pretraining"] = dict(plan["stage2_pretraining"])
+    if "simulation_training" in plan:
+        artifact["simulation_training"] = dict(plan["simulation_training"])
+        artifact["simulation_validation"] = simulation_validation
     atomic_torch_save(artifact_path, artifact)
     manifest = {
         "kind": _final_kind(plan),
@@ -1463,10 +1495,11 @@ def run_three_phase_training(
         manifest["object_encoder_phase1"] = dict(plan["object_encoder_phase1"])
         manifest["object_encoder_state_hash"] = artifact["object_encoder_state_hash"]
         manifest["final_embedding_hash"] = artifact["final_embedding_hash"]
-    if "stage2_home_transfer" in plan:
-        manifest["stage2_home_transfer"] = dict(plan["stage2_home_transfer"])
-    if "cross_domain_home" in plan:
-        manifest["cross_domain_home"] = dict(plan["cross_domain_home"])
+    if "stage2_pretraining" in plan:
+        manifest["stage2_pretraining"] = dict(plan["stage2_pretraining"])
+    if "simulation_training" in plan:
+        manifest["simulation_training"] = dict(plan["simulation_training"])
+        manifest["simulation_validation"] = simulation_validation
     atomic_json(manifest_path, manifest)
     return [{"phase": "three_phase_final", "validation": final_validation}]
 

@@ -1,6 +1,6 @@
 # ADR-0068：Stage2→Stage3 transfer 下游联合适配
 
-- 状态：Accepted
+- 状态：Historical / Superseded by [ADR-0082](0082-home-mainline-and-core-ablations.md)
 - 日期：2026-09-22
 - 修订：[ADR-0062](0062-stage2-stage3-full-transfer-matrix.md) 与
   [ADR-0065](0065-stage2-stage3-balanced-transfer-matrix.md) 的 Stage 3 下游训练

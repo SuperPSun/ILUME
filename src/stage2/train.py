@@ -61,6 +61,8 @@ from stage1.identity import metadata_identity as stage1_metadata_identity
 
 STAGE2_ENCODER_VERSION = 1
 STAGE2_ENCODER_KIND = "ilume_stage2_encoder"
+STAGE2_HOME_ENCODER_KIND = "ilume_stage2_home_encoder_v1"
+STAGE2_ZERO_UPDATE_HOME_ENCODER_KIND = "ilume_stage2_home_zero_update_encoder_v1"
 STAGE2_REFINED_VERSION = 2
 STAGE2_REFINED_KIND = "ilume_stage2_taskwise_refined"
 STAGE2_TRANSFER_CHECKPOINT_VERSION = 1
@@ -697,7 +699,7 @@ def _save_epoch_checkpoint(path: Path, *, model: Stage2ObjectModel, optimizer: t
     })
 
 
-def _export_encoder(path: Path, *, model: Stage2ObjectModel, config: Stage2Config, registry: Stage2Registry, checkpoint_path: Path | None, data_identity: dict[str, Any], refinement_state: Mapping[str, Any], provenance_extra: Mapping[str, Any] | None = None) -> None:
+def _export_encoder(path: Path, *, model: Stage2ObjectModel, config: Stage2Config, registry: Stage2Registry, checkpoint_path: Path | None, data_identity: dict[str, Any], refinement_state: Mapping[str, Any], provenance_extra: Mapping[str, Any] | None = None, encoder_kind: str = STAGE2_ENCODER_KIND) -> None:
     if path.exists():
         raise FileExistsError(f"Stage 2 encoder artifact already exists: {path}")
     stage1_state = {
@@ -772,7 +774,7 @@ def _export_encoder(path: Path, *, model: Stage2ObjectModel, config: Stage2Confi
         role_to_id=ROLE_TO_ID,
     )
     atomic_torch_save(path, {
-        "kind": STAGE2_ENCODER_KIND, "format_version": STAGE2_ENCODER_VERSION,
+        "kind": encoder_kind, "format_version": STAGE2_ENCODER_VERSION,
         "identity_contract_version": IDENTITY_CONTRACT_VERSION,
         "semantic_identity": encoder_identity,
         "stage1_backbone": stage1_state, "object_encoder": object_state,
@@ -784,7 +786,10 @@ def _export_encoder(path: Path, *, model: Stage2ObjectModel, config: Stage2Confi
         "role_to_id": dict(ROLE_TO_ID), "model_contract": model.model_contract,
         "state_hashes": {"stage1_backbone": stage1_state_hash, "object_encoder": object_state_hash},
         "provenance": {
-            "stage1_checkpoint_hash": sha256_file(config.initialization.checkpoint),
+            "stage1_checkpoint_hash": (
+                sha256_file(config.initialization.checkpoint)
+                if config.initialization.checkpoint is not None else None
+            ),
             "stage2_checkpoint_hash": (
                 sha256_file(checkpoint_path) if checkpoint_path is not None else None
             ),
@@ -807,6 +812,7 @@ def export_stage2_encoder_artifact(
     registry: Stage2Registry,
     data_identity: dict[str, Any],
     provenance: Mapping[str, Any],
+    encoder_kind: str = STAGE2_ENCODER_KIND,
 ) -> None:
     """Export an initialized encoder for an isolated zero-update experiment."""
     shared_state = {
@@ -830,12 +836,16 @@ def export_stage2_encoder_artifact(
             ),
         },
         provenance_extra=provenance,
+        encoder_kind=encoder_kind,
     )
 
 
 def load_stage2_encoder_artifact(path: str | Path) -> dict[str, Any]:
     payload = torch.load(Path(path), map_location="cpu", weights_only=False)
-    if payload.get("kind") != STAGE2_ENCODER_KIND or payload.get("format_version") != STAGE2_ENCODER_VERSION:
+    if payload.get("kind") not in {
+        STAGE2_ENCODER_KIND, STAGE2_HOME_ENCODER_KIND,
+        STAGE2_ZERO_UPDATE_HOME_ENCODER_KIND,
+    } or payload.get("format_version") != STAGE2_ENCODER_VERSION:
         raise ValueError("Unsupported Stage 2 encoder artifact")
     if payload.get("identity_contract_version") != IDENTITY_CONTRACT_VERSION:
         raise ValueError(

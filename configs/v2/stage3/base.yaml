@@ -1,7 +1,7 @@
 data:
   stage3_dir: data/stage3
   task_catalog: data/task_catalog.csv
-  artifacts_dir: outputs/v2/stage3/base/prepare/artifacts
+  artifacts_dir: outputs/v3/stage3/base/prepare/artifacts
   split_policy: system
   split_strategies: {}
   cv_repeat: 1
@@ -9,9 +9,12 @@ data:
   seed: 42
 preparation:
   encoding_batch_size: 256
-  cache_dir: outputs/v2/stage3/base/prepare/object_cache
+  cache_dir: outputs/v3/stage3/base/prepare/object_cache
 initialization:
-  stage2_encoder: outputs/v2/stage2/base/train/stage2_encoder.pt
+  stage2_encoder: outputs/v3/stage2/base/train/stage2_encoder.pt
+  home_mode: trained
+  stage2_final: outputs/v3/stage2/base/train/stage2_final.pt
+  simulation_artifacts_dir: outputs/v3/stage2/base/prepare/artifacts
   plugin: null
 model:
   global_experts: 2
@@ -26,6 +29,7 @@ model:
 groups:
   transport: {enabled: true, group_weight: 1.0, experts: 2, expert_hidden_ratio: 1.5, phase1: {lr: 1.5e-4, epochs: 12}, phase2: {lr: 7.5e-5, epochs: 12}}
   thermophysical: {enabled: true, group_weight: 1.0, experts: 2, expert_hidden_ratio: 1.5, phase1: {lr: 1.5e-4, epochs: 10}, phase2: {lr: 7.5e-5, epochs: 4}}
+  electronic_structure: {enabled: true, group_weight: 1.0, experts: 2, expert_hidden_ratio: 1.5, phase1: {lr: 1.5e-4, epochs: 10}, phase2: {lr: 7.5e-5, epochs: 4}}
   phase_stability: {enabled: true, group_weight: 1.0, experts: 3, expert_hidden_ratio: 1.5, phase1: {lr: 2.0e-4, epochs: 15}, phase2: {lr: 1.0e-4, epochs: 20}}
   dielectric_optical: {enabled: true, group_weight: 1.0, experts: 1, expert_hidden_ratio: 0.75, phase1: {lr: 1.0e-4, epochs: 8}, phase2: {lr: 5.0e-5, epochs: 3}}
   solvation: {enabled: true, group_weight: 1.0, experts: 3, expert_hidden_ratio: 1.5, phase1: {lr: 2.0e-4, epochs: 15}, phase2: {lr: 1.0e-4, epochs: 24}}
@@ -72,6 +76,7 @@ tasks:
   experiment/x_co2: {meta_group: solvation, unique_systems: 122, size_class: small, phase3_private_epochs: 5}
   experiment/pec50: {meta_group: biological, unique_systems: 305, size_class: small, phase3_private_epochs: 3, model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75}}
 training:
+  simulation: {batch_size: 256, microbatch_size: 256, private_size_class: large, shared_group_task_weight: 0.1}
   composite_batch_size: 2048
   microbatch_size: 1024
   sampling_mode: raw

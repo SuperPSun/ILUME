@@ -1,6 +1,6 @@
 # ADR-0062：Stage2→Stage3 全迁移矩阵消融
 
-- 状态：Accepted
+- 状态：Historical / Superseded by [ADR-0082](0082-home-mainline-and-core-ablations.md)
 - 日期：2026-09-19
 - 隔离范围：`configs/ablations/stage2_stage3_transfer.yaml`
 

@@ -1,6 +1,6 @@
 # ADR-0073：Stage 3 表示编码器全量微调消融
 
-- 状态：Experimental
+- 状态：Historical / Superseded by [ADR-0082](0082-home-mainline-and-core-ablations.md)
 - 日期：2026-09-24
 - 范围：`configs/ablations/stage3_full_finetune.yaml`，不替代 v2 Flat Base
 

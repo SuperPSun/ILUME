@@ -22,7 +22,7 @@ def test_global_rdkit_v2_base_configs_are_isolated() -> None:
     assert stage1.architecture.kind == "global_rdkit_v2"
     assert "outputs/v2" in str(stage2.initialization.checkpoint)
     assert stage3.training.schedule_mode != legacy_stage3.training.schedule_mode
-    assert "outputs/v2" in str(stage3.initialization.stage2_encoder)
+    assert "outputs/v3" in str(stage3.initialization.stage2_encoder)
 
 
 def _cross_stage_private_imports(

@@ -17,7 +17,7 @@ from common.io import atomic_json, sha256_file
 from common.reporting import REPORTING_SCHEMA_VERSION, sanitize_task_id
 
 
-SUMMARY_SCHEMA_VERSION = 1
+SUMMARY_SCHEMA_VERSION = 2
 RADAR_TASK_GROUPS = (
     (
         "experiment/electrical_conductivity",
@@ -54,6 +54,14 @@ SUMMARY_FILES = (
     "overview.md",
     "radar.svg",
     "ilume_scatter",
+    "stage2_test_leaderboard.csv",
+    "stage2_validation_leaderboard.csv",
+    "stage2_test_metrics.csv",
+    "stage2_validation_metrics.csv",
+    "stage2_test_task_mae.csv",
+    "stage2_test_task_rank.csv",
+    "stage2_validation_task_mae.csv",
+    "stage2_validation_task_rank.csv",
     "stage3_test_leaderboard.csv",
     "stage3_validation_leaderboard.csv",
     "stage3_test_metrics.csv",
@@ -179,6 +187,7 @@ def discover_candidates(
         key = (metadata.get("stage"), metadata.get("operation"))
         if key not in {
             ("benchmark", "sweep"),
+            ("stage2", "evaluate"),
             ("stage3", "evaluate"),
         }:
             continue
@@ -276,14 +285,40 @@ def _validate_current(candidate: Candidate) -> None:
         if not isinstance(reporting.get("source_runs"), dict):
             raise ValueError("benchmark sweep reporting lacks source runs")
         return
-    _validate_comparison(
-        reporting.get("comparison_identity"), "stage3 evaluation"
-    )
+    _validate_comparison(reporting.get("comparison_identity"), f"{stage} evaluation")
     protocol = reporting.get("protocol")
     if not isinstance(protocol, dict) or protocol.get("split") not in {
         "valid", "test"
     }:
-        raise ValueError("stage3 evaluation protocol is malformed")
+        raise ValueError(f"{stage} evaluation protocol is malformed")
+    if stage == "stage2":
+        expected = tuple(protocol.get("expected_tasks", ()))
+        if (reporting.get("benchmark") != "stage2_property"
+                or reporting["comparison_identity"]["payload"].get("benchmark") != "stage2_property"
+                or reporting["comparison_identity"]["payload"].get("split") != protocol["split"]
+                or tuple(reporting["comparison_identity"]["payload"].get("expected", ())) != expected
+                or not expected or set(summary.get("tasks", {})) != set(expected)):
+            raise ValueError("Stage 2 evaluation comparison/task set is incomplete")
+        manifests = reporting.get("predictions")
+        if not isinstance(manifests, list) or {item.get("task") for item in manifests if isinstance(item, dict)} != set(expected) or len(manifests) != len(expected):
+            raise ValueError("Stage 2 prediction manifests are incomplete")
+        for item in manifests:
+            task = item["task"]
+            relative = item.get("path")
+            if relative != f"predictions/{sanitize_task_id(task)}.csv":
+                raise ValueError("Stage 2 prediction manifest path mismatch")
+            prediction = candidate.root / relative
+            if not prediction.is_file() or sha256_file(prediction) != item.get("sha256"):
+                raise ValueError("Stage 2 prediction file hash mismatch")
+            with prediction.open(newline="", encoding="utf-8") as handle:
+                if sum(1 for _ in csv.DictReader(handle)) != item.get("rows"):
+                    raise ValueError("Stage 2 prediction row count mismatch")
+            value = summary["tasks"][task]
+            if int(value.get("count", 0)) <= 0 or not _finite(value.get("normalized_mae")):
+                raise ValueError("Stage 2 task metric is incomplete")
+            expected_rows = value.get("atom_count") if value.get("atom_count") is not None else value["count"]
+            if item["rows"] != expected_rows:
+                raise ValueError("Stage 2 prediction/metric count mismatch")
 
 def _finite(value: Any) -> bool:
     try:
@@ -445,7 +480,7 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
                 expected = len(expected_tasks)
                 metrics = (
                     summary.get("ensemble", {}).get("tasks", {})
-                    if summary.get("split") == "test"
+                    if summary.get("split") == "test" and candidate.metadata["stage"] == "stage3"
                     else summary.get("tasks", {})
                 )
                 available = sum(
@@ -495,6 +530,8 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
 
     validation_groups: dict[tuple[str, str, str], dict[int, list[Candidate]]] = {}
     for candidate in _current_completed(candidates):
+        if candidate.metadata["stage"] == "stage2":
+            continue
         summary = candidate.summary or {}
         reporting = summary["reporting"]
         if candidate.metadata["stage"] == "benchmark":
@@ -659,6 +696,46 @@ def _current_completed(candidates: Sequence[Candidate]) -> list[Candidate]:
         and candidate.metadata.get("status") == "completed"
         and candidate.summary is not None
     ]
+
+
+def _stage2_results(
+    candidates: Sequence[Candidate], split: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    leaders: list[dict[str, Any]] = []
+    metrics_rows: list[dict[str, Any]] = []
+    comparisons: dict[str, list[str]] = {}
+    for candidate in _current_completed(candidates):
+        if candidate.metadata["stage"] != "stage2":
+            continue
+        summary = candidate.summary or {}
+        if summary.get("split") != split:
+            continue
+        reporting = summary["reporting"]
+        expected = tuple(reporting["protocol"]["expected_tasks"])
+        values = summary["tasks"]
+        model_id = str(reporting["model_id"])
+        display = _display_name(candidate, reporting)
+        run = _run_id(model_id, candidate.source_run)
+        comparisons.setdefault(reporting["comparison_identity"]["hash"], []).append(run)
+        for task in expected:
+            value = values[task]
+            metrics_rows.append({
+                "run": run, "model": display, "task": task,
+                "count": value["count"], "atom_count": value.get("atom_count"),
+                "mae": value["mae"], "rmse": value["rmse"], "r2": value["r2"],
+                "normalized_mae": value["normalized_mae"],
+                "normalized_rmse": value["normalized_rmse"],
+                "atom_micro_mae": value.get("atom_micro_mae"),
+                "source_run": candidate.source_run,
+            })
+        leaders.append({
+            "run": run, "model": display,
+            "macro_normalized_mae": sum(float(values[task]["normalized_mae"]) for task in expected) / len(expected),
+            "valid_tasks": len(expected), "total_tasks": len(expected),
+            "source_run": candidate.source_run, "checkpoint_epoch": summary.get("checkpoint_epoch", ""),
+        })
+    _require_one_comparison(comparisons, f"Stage 2 {split}")
+    return _rank(leaders, "macro_normalized_mae"), sorted(metrics_rows, key=lambda row: (row["run"], row["task"]))
 
 
 def _stage3_test(
@@ -1479,6 +1556,8 @@ def _scatter_svg(plot: ScatterPlot) -> str:
 
 def _build_summary(candidates: Sequence[Candidate]) -> dict[str, Any]:
     health = _health(candidates)
+    stage2_test, stage2_test_metrics = _stage2_results(candidates, "test")
+    stage2_validation, stage2_validation_metrics = _stage2_results(candidates, "valid")
     stage3_test, stage3_test_metrics, test_wins = _stage3_test(
         candidates
     )
@@ -1500,10 +1579,14 @@ def _build_summary(candidates: Sequence[Candidate]) -> dict[str, Any]:
         ),
         "comparison_identities": _comparison_catalog(candidates),
         "leaderboards": {
+            "stage2_test": stage2_test,
+            "stage2_validation": stage2_validation,
             "stage3_test": stage3_test,
             "stage3_validation": stage3_validation,
         },
         "metrics": {
+            "stage2_test": stage2_test_metrics,
+            "stage2_validation": stage2_validation_metrics,
             "stage3_test": stage3_test_metrics,
             "stage3_validation": stage3_validation_metrics,
         },
@@ -1529,6 +1612,8 @@ def _comparison_catalog(
     candidates: Sequence[Candidate],
 ) -> dict[str, list[dict[str, Any]]]:
     catalog: dict[str, dict[str, dict[str, Any]]] = {
+        "stage2_test": {},
+        "stage2_validation": {},
         "stage3_test": {},
         "stage3_validation": {},
     }
@@ -1546,6 +1631,9 @@ def _comparison_catalog(
                     reporting["benchmarks"]["stage3_validation"],
                 ),
             )
+        elif candidate.metadata["stage"] == "stage2":
+            name = "stage2_test" if candidate.summary.get("split") == "test" else "stage2_validation"
+            sections = ((name, reporting),)
         else:
             name = (
                 "stage3_test"
@@ -1598,6 +1686,21 @@ def write_summary_snapshot(
         path.write_text(_scatter_svg(plot), encoding="utf-8")
     leaderboards = payload["leaderboards"]
     metrics = payload["metrics"]
+    for name in ("stage2_test", "stage2_validation"):
+        split = "test" if name.endswith("test") else "validation"
+        task_fields, task_mae, task_rank = _stage3_task_tables(
+            metrics[name], leaderboards[name], metric_key="mae", split=f"stage2_{split}",
+        )
+        _write_csv(
+            destination / f"{name}_leaderboard.csv", leaderboards[name],
+            ("rank", "run", "model", "macro_normalized_mae", "valid_tasks", "total_tasks", "source_run", "checkpoint_epoch"),
+        )
+        _write_csv(
+            destination / f"{name}_metrics.csv", metrics[name],
+            ("run", "model", "task", "count", "atom_count", "mae", "rmse", "r2", "normalized_mae", "normalized_rmse", "atom_micro_mae", "source_run"),
+        )
+        _write_csv(destination / f"{name}_task_mae.csv", task_mae, ("run", "model", *task_fields))
+        _write_csv(destination / f"{name}_task_rank.csv", task_rank, ("run", "model", *task_fields))
     test_fields, test_mae, test_rank = _stage3_task_tables(
         metrics["stage3_test"],
         leaderboards["stage3_test"],

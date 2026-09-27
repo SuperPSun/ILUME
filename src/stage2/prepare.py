@@ -19,6 +19,7 @@ import torch
 from rdkit import Chem, rdBase
 
 from stage1.config import PretrainConfig
+from stage1.config import load_config as load_stage1_config
 from stage1.features import (
     ROLE_TO_ID,
     build_entity_sample,
@@ -31,6 +32,8 @@ from stage1.descriptors import (
     calculate_descriptors,
     rdkit_descriptor_names,
 )
+from stage1.tokenizer import SmilesTokenizer
+from stage1.identity import validate_feature_generation_runtime
 from stage1.masking import MultimodalPacker
 from stage1.model import LoadedStage1Model, load_stage1_model
 from common.identity import (
@@ -926,7 +929,25 @@ def prepare_stage2_data(config: Stage2Config, *, reporter: ProgressReporter | No
         if manifest is not None:
             source_paths.append(manifest)
     source_hashes = {str(path): sha256_file(path) for path in source_paths}
-    pretrain_config, vocabulary, schema, standardizer, artifact_hash = load_stage1_feature_inputs(config.initialization.checkpoint, config.data.pretrain_artifacts_dir)
+    if config.initialization.stage1_config is None:
+        pretrain_config, vocabulary, schema, standardizer, artifact_hash = load_stage1_feature_inputs(
+            config.initialization.checkpoint, config.data.pretrain_artifacts_dir
+        )
+    else:
+        feature_root = config.data.pretrain_artifacts_dir
+        pretrain_config = load_stage1_config(config.initialization.stage1_config)
+        vocabulary = SmilesTokenizer.load(feature_root / "tokenizer.json")
+        schema = DescriptorSchema.load(
+            feature_root / "descriptor_schema.json", expected_raw_names=rdkit_descriptor_names()
+        )
+        standardizer = DescriptorStandardizer.load(
+            feature_root / "descriptor_scaler.json", expected_names=schema.selected_names
+        )
+        feature_metadata = json.loads((feature_root / "metadata.json").read_text(encoding="utf-8"))
+        validate_feature_generation_runtime(feature_metadata)
+        artifact_hash = stage1_metadata_identity(
+            feature_metadata, "feature", context="Stage 1 feature artifact"
+        )["hash"]
     stage1_metadata = json.loads(
         (config.data.pretrain_artifacts_dir / "metadata.json").read_text(
             encoding="utf-8"

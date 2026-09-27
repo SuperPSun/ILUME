@@ -1,6 +1,6 @@
 # ADR-0066：Stage 3 知识图谱分组定向小实验
 
-- 状态：Accepted（独立候选实验，未替代 Base/base1 系列）
+- 状态：Historical / Superseded by [ADR-0082](0082-home-mainline-and-core-ablations.md)
 - 日期：2026-09-21
 - 配置：`configs/v2/stage3/base2_1.yaml` 至 `base2_5.yaml`
 

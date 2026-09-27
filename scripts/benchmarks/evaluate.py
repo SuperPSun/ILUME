@@ -202,11 +202,7 @@ def main() -> None:
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     config = load_benchmark_config(args.config)
-    model_selector = (
-        "validation_best"
-        if config.name == "ilume_stage3_single_task_mlp"
-        else str(config.training["model_selection"])
-    )
+    model_selector = str(config.training["model_selection"])
     environment_snapshot = ensure_benchmark_environment(config)
     reporter = ProgressReporter()
     if args.split == "test":

@@ -46,8 +46,7 @@ class BenchmarkConfig:
     name: Literal[
         "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm", "llasmol",
         "aionopedia", "iltransr", "aifc",
-        "ilume_stage3_single_task_mlp",
-        "ilume_stage3_single_task_mlp_v2",
+        "ilume_stage3_single_task_mlp_home_v1",
     ]
     data: DataConfig
     features: FeatureConfig | None
@@ -63,8 +62,7 @@ class BenchmarkConfig:
         if self.name not in {
             "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm", "llasmol",
             "aionopedia", "iltransr", "aifc",
-            "ilume_stage3_single_task_mlp",
-            "ilume_stage3_single_task_mlp_v2",
+            "ilume_stage3_single_task_mlp_home_v1",
         }:
             raise ValueError(f"Unknown benchmark model: {self.name}")
         if not self.display_name:
@@ -85,7 +83,7 @@ class BenchmarkConfig:
             or self.features.n_bits <= 0
         ):
             raise ValueError("Fingerprint radius and n_bits must be positive")
-        if self.name in {"ilume_stage3_single_task_mlp", "ilume_stage3_single_task_mlp_v2"}:
+        if self.name == "ilume_stage3_single_task_mlp_home_v1":
             self._validate_ilume_stage3_single_task_mlp()
         else:
             retired = {
@@ -105,8 +103,7 @@ class BenchmarkConfig:
                 )
         advanced = self.name in {
             "dmpnn", "molformer", "ilbert", "spmm", "llasmol", "aionopedia", "iltransr", "aifc",
-            "ilume_stage3_single_task_mlp",
-            "ilume_stage3_single_task_mlp_v2",
+            "ilume_stage3_single_task_mlp_home_v1",
         }
         if not advanced and self.data.feature_cache is None:
             raise ValueError("Feature baselines require data.feature_cache")
@@ -183,7 +180,7 @@ class BenchmarkConfig:
             raise ValueError(
                 "ILUME Stage3 Single-task MLP requires folds [1, 2, 3, 4, 5]"
             )
-        v2 = self.name == "ilume_stage3_single_task_mlp_v2"
+        v2 = True
         expected_model = {
             "hidden_dims": [1024, 512] if v2 else [512, 256],
             "activation": "silu",

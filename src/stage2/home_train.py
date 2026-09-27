@@ -13,12 +13,15 @@ from typing import Any, Mapping
 import torch
 import torch.nn.functional as F
 
-from common.identity import require_compatible_identity, semantic_identity, tensor_state_hash
+from common.identity import require_compatible_identity, semantic_hash, semantic_identity, tensor_state_hash
 from common.io import atomic_json, atomic_torch_save, sha256_file
 from common.progress import ProgressReporter
 from common.training import capture_rng_state, cosine_warmup, resolve_device, restore_rng_state, seed_everything
 from stage1.masking import MultimodalPacker
-from stage1.model import load_stage1_model
+from stage1.config import load_config as load_stage1_config
+from stage1.descriptors import DescriptorSchema, rdkit_descriptor_names
+from stage1.model import LoadedStage1Model, MultimodalPretrainModel, load_stage1_model
+from stage1.tokenizer import SmilesTokenizer
 from stage2.data import (
     Stage2BatchDescriptor, Stage2DeviceTaskData, Stage2EntityDataset,
     Stage2TaskDataset, epoch_batch_schedule, load_artifact_registry,
@@ -27,15 +30,15 @@ from stage2.data import (
 from stage2.identity import metadata_identity
 from stage2.model import Stage2ObjectModel, molecule_equal_smooth_l1_loss
 from stage2.runtime import configure_stage2_math
-from stage2.train import export_stage2_encoder_artifact, task_compensation_scale
+from stage2.train import STAGE2_HOME_ENCODER_KIND, export_stage2_encoder_artifact, task_compensation_scale
 
-from .config import Experiment
-from .contract import SOURCE_GROUPS, state_hash, transferable_state
-from .model import SimulationHoME
+from .home_config import HomeRecipe
+from .home_contract import SOURCE_GROUPS, state_hash, transferable_state
+from .home_model import SimulationHoME
+from .home_artifact import STAGE2_HOME_FINAL_KIND, full_owner_manifest, full_state_hash, load_home_final
 
 
-STAGE2_HOME_CHECKPOINT_KIND = "ilume_stage2_home_transfer_checkpoint"
-STAGE2_HOME_ARTIFACT_KIND = "ilume_stage2_home_transfer_shared"
+STAGE2_HOME_CHECKPOINT_KIND = "ilume_stage2_home_checkpoint_v1"
 
 
 def _cpu_state(model: torch.nn.Module) -> dict[str, torch.Tensor]:
@@ -43,18 +46,25 @@ def _cpu_state(model: torch.nn.Module) -> dict[str, torch.Tensor]:
 
 
 def _model_hash(state: Mapping[str, torch.Tensor]) -> str:
-    return tensor_state_hash("stage2-home-transfer.full-model.v1", state)
+    return tensor_state_hash("stage2.home.full-model.v1", state)
 
 
 def training_identity(
-    experiment: Experiment, data_identity: Mapping[str, Any],
+    experiment: HomeRecipe, data_identity: Mapping[str, Any],
     math_contract: Mapping[str, Any],
 ) -> dict[str, Any]:
     config = experiment.stage2
-    return semantic_identity("stage2.home-transfer-training", {
+    return semantic_identity("stage2.home-training.v1", {
         "contract_version": 1,
         "stage2_data_identity": data_identity["hash"],
-        "stage1_checkpoint_sha256": sha256_file(config.initialization.checkpoint),
+        "stage1_source": (
+            {"checkpoint_sha256": sha256_file(config.initialization.checkpoint)}
+            if experiment.initialization == "pretrained"
+            else {
+                "config_sha256": sha256_file(config.initialization.stage1_config),
+                "random_seed": experiment.random_seed,
+            }
+        ),
         "stage2_config": config.experiment_dict(),
         "stage3_model": asdict(experiment.stage3.model),
         "transfer_groups": {group: asdict(experiment.stage3.groups[group]) for group in ("thermophysical", "solvation")},
@@ -74,13 +84,41 @@ def training_identity(
     })
 
 
-def build_model(experiment: Experiment, registry: Any) -> tuple[SimulationHoME, Any]:
-    config = experiment.stage2
-    seed_everything(config.data.seed)
-    loaded = load_stage1_model(
-        config.initialization.checkpoint, config.data.pretrain_artifacts_dir,
-        device="cpu", backbone_dropout=0.0,
+def resolve_training_identity(recipe: HomeRecipe, math_contract: Mapping[str, Any]) -> dict[str, Any]:
+    metadata = json.loads(
+        (recipe.stage2.data.artifacts_dir / "metadata.json").read_text(encoding="utf-8")
     )
+    data_identity = metadata_identity(metadata, "data", context="Stage 2 HoME data")
+    return training_identity(recipe, data_identity, math_contract)
+
+
+def build_model(experiment: HomeRecipe, registry: Any) -> tuple[SimulationHoME, Any]:
+    config = experiment.stage2
+    seed_everything(config.data.seed if experiment.random_seed is None else experiment.random_seed)
+    if experiment.initialization == "pretrained":
+        loaded = load_stage1_model(
+            config.initialization.checkpoint, config.data.pretrain_artifacts_dir,
+            device="cpu", backbone_dropout=0.0,
+        )
+    else:
+        from dataclasses import replace
+        from stage1.identity import metadata_identity as stage1_metadata_identity
+
+        assert config.initialization.stage1_config is not None
+        feature_root = config.data.pretrain_artifacts_dir
+        source_config = load_stage1_config(config.initialization.stage1_config)
+        source_config = replace(source_config, model=replace(source_config.model, dropout=0.0))
+        vocabulary = SmilesTokenizer.load(feature_root / "tokenizer.json")
+        schema = DescriptorSchema.load(
+            feature_root / "descriptor_schema.json", expected_raw_names=rdkit_descriptor_names()
+        )
+        feature_metadata = json.loads((feature_root / "metadata.json").read_text(encoding="utf-8"))
+        loaded = LoadedStage1Model(
+            MultimodalPretrainModel(source_config, vocabulary, schema), source_config,
+            vocabulary, stage1_metadata_identity(
+                feature_metadata, "feature", context="Stage 1 feature artifact"
+            )["hash"],
+        )
     model = SimulationHoME(loaded.model, registry, experiment.stage3, config)
     return model, loaded
 
@@ -109,6 +147,13 @@ def _loss_for_micro(
     return F.smooth_l1_loss(predictions, targets, reduction="sum") / task_data.targets[full_indices].numel()
 
 
+def simulation_loss(
+    task: str, predictions: torch.Tensor, packed: Any,
+    task_data: Stage2DeviceTaskData, full_indices: torch.Tensor,
+) -> torch.Tensor:
+    return _loss_for_micro(task, predictions, packed, task_data, full_indices)
+
+
 @contextmanager
 def _prefetched_batches(schedule, datasets, entities, packer, microbatch_size, *, pin_memory):
     """Pack at most two pending logical batches, in schedule order, on one CPU worker."""
@@ -124,7 +169,7 @@ def _prefetched_batches(schedule, datasets, entities, packer, microbatch_size, *
         )
         return batches, time.perf_counter() - started
 
-    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="home-transfer-pack")
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stage2-home-pack")
     pending = deque()
     descriptors = iter(schedule)
 
@@ -239,7 +284,7 @@ def _validate(
 
 
 def _export(
-    root: Path, experiment: Experiment, model: SimulationHoME,
+    root: Path, experiment: HomeRecipe, model: SimulationHoME,
     registry: Any, identity: Mapping[str, Any], data_identity: Mapping[str, Any],
 ) -> dict[str, Any]:
     checkpoint_path = root / "checkpoint_epoch_00010.pt"
@@ -258,17 +303,38 @@ def _export(
         provenance={
             "stage2_checkpoint_hash": sha256_file(checkpoint_path),
             "refinement_boundary_epoch": experiment.stage2_epochs,
-            "home_transfer_identity": identity["hash"],
+            "home_training_identity": identity["hash"],
             "physics_only": True,
+            **({"stage1_checkpoint_hash": None, "random_stage1_seed": experiment.random_seed}
+               if experiment.initialization == "random_stage1" else {}),
         },
+        encoder_kind=STAGE2_HOME_ENCODER_KIND,
     )
     compatible_encoder = torch.load(encoder_path, map_location="cpu", weights_only=False)
     shared = transferable_state(model.home)
     shared_hash = state_hash(shared)
+    full_state = _cpu_state(model)
+    owner_manifest = full_owner_manifest(model)
+    data_metadata = json.loads((experiment.stage2.data.artifacts_dir / "metadata.json").read_text(encoding="utf-8"))
     payload = {
-        "kind": STAGE2_HOME_ARTIFACT_KIND,
-        "format_version": 1,
+        "kind": STAGE2_HOME_FINAL_KIND,
+        "format_version": 2,
         "training_identity": dict(identity),
+        "stage2_data_identity": dict(data_identity),
+        "recipe": experiment.to_dict(),
+        "registry": registry.snapshot(),
+        "registry_hash": registry.registry_hash,
+        "catalog_sha256": registry.catalog_sha256,
+        "scalers": data_metadata["scalers"],
+        "scalers_hash": semantic_hash("stage2.home.scalers.v1", data_metadata["scalers"]),
+        "stage1_config": compatible_encoder["stage1_config"],
+        "stage1_feature_identity": compatible_encoder["stage1_feature_identity"],
+        "stage1_encoding_contract": compatible_encoder["stage1_encoding_contract"],
+        "feature_artifacts": compatible_encoder["feature_artifacts"],
+        "feature_artifacts_hash": semantic_hash("stage2.home.feature-artifacts.v1", compatible_encoder["feature_artifacts"]),
+        "full_model_state": full_state,
+        "full_model_state_hash": full_state_hash(full_state),
+        "owner_manifest": owner_manifest,
         "stage2_encoder": encoder_path.name,
         "stage2_encoder_sha256": sha256_file(encoder_path),
         "checkpoint_sha256": sha256_file(checkpoint_path),
@@ -290,23 +356,30 @@ def _export(
             "object_encoder": compatible_encoder["state_hashes"]["object_encoder"],
         },
     }
-    artifact = root / "stage2_home_transfer.pt"
+    artifact = root / "stage2_final.pt"
     atomic_torch_save(artifact, payload)
     manifest = {
-        "kind": STAGE2_HOME_ARTIFACT_KIND,
+        "kind": STAGE2_HOME_FINAL_KIND,
         "artifact": artifact.name,
         "artifact_sha256": sha256_file(artifact),
         "stage2_encoder_sha256": sha256_file(encoder_path),
+        "checkpoint_sha256": payload["checkpoint_sha256"],
+        "feature_artifacts_hash": payload["feature_artifacts_hash"],
+        "scalers_hash": payload["scalers_hash"],
         "training_identity": dict(identity),
+        "full_model_state_hash": payload["full_model_state_hash"],
+        "owner_manifest": owner_manifest,
+        "registry_hash": registry.registry_hash,
+        "stage2_data_identity": dict(data_identity),
         "shared_state_hash": shared_hash,
         "encoder_state_hashes": payload["encoder_state_hashes"],
         "fixed_final_epoch": 10,
     }
-    atomic_json(root / "stage2_home_transfer.json", manifest)
+    atomic_json(root / "stage2_final.json", manifest)
     return manifest
 
 
-def train_stage2_home(experiment: Experiment, output_dir: str | Path, *, resume: bool = False) -> dict[str, Any]:
+def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume: bool = False) -> dict[str, Any]:
     config = experiment.stage2
     device = resolve_device(config.training.device)
     math_contract = configure_stage2_math(device)
@@ -350,7 +423,7 @@ def train_stage2_home(experiment: Experiment, output_dir: str | Path, *, resume:
     )
     weights = config.normalized_task_weights(registry)
     output = Path(output_dir)
-    if output.exists() and not resume:
+    if output.exists() and not resume and any(output.glob("checkpoint_epoch_*.pt")):
         raise FileExistsError(f"Stage2-HoME output already exists: {output}")
     output.mkdir(parents=True, exist_ok=True)
     checkpoint_files = sorted(output.glob("checkpoint_epoch_*.pt"))
@@ -380,13 +453,12 @@ def train_stage2_home(experiment: Experiment, output_dir: str | Path, *, resume:
             raise ValueError("Stage2-HoME resume scheduler/update mismatch")
         start_epoch = epoch + 1
     if start_epoch > experiment.stage2_epochs:
-        if not (output / "stage2_home_transfer.json").is_file():
+        if not (output / "stage2_final.json").is_file():
             return _export(output, experiment, model, registry, identity, data_identity)
-        manifest = json.loads((output / "stage2_home_transfer.json").read_text(encoding="utf-8"))
+        manifest = json.loads((output / "stage2_final.json").read_text(encoding="utf-8"))
+        payload, _, _ = load_home_final(output / "stage2_final.pt")
         if (
-            manifest.get("kind") != STAGE2_HOME_ARTIFACT_KIND
-            or manifest.get("training_identity") != identity
-            or manifest.get("artifact_sha256") != sha256_file(output / "stage2_home_transfer.pt")
+            payload["training_identity"]["hash"] != identity["hash"]
             or manifest.get("stage2_encoder_sha256") != sha256_file(output / "stage2_encoder.pt")
         ):
             raise ValueError("Completed Stage2-HoME artifact is corrupt")

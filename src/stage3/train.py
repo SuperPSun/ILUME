@@ -973,6 +973,13 @@ def run_stage3_training(
     resume_from: str | Path | None = None,
     expected_training_identity: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    if config.initialization.home_mode is not None:
+        from .home import train_fold
+
+        return train_fold(
+            config, fold, output_dir=output_dir, resume_from=resume_from,
+            expected_training_identity=expected_training_identity,
+        )
     if config.training.schedule_mode != "three_phase":
         raise ValueError("Legacy Stage 3 training and resume are retired; historical final artifacts remain read-only")
     if fold not in range(1, 6):
@@ -1065,6 +1072,10 @@ def resolve_stage3_training_identity(
     config: Stage3Config, fold: int
 ) -> dict[str, Any]:
     """Resolve the exact semantic identity used by ``run_stage3_training``."""
+    if config.initialization.home_mode is not None:
+        from .home import resolve_training_identity
+
+        return resolve_training_identity(config, fold)
     if config.training.schedule_mode != "three_phase":
         raise ValueError("Legacy Stage 3 training and resume are retired; historical final artifacts remain read-only")
     if fold not in range(1, 6):

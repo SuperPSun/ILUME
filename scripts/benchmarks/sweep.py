@@ -518,10 +518,7 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
         raise ValueError(
             "Benchmark sweep contains incompatible reporting study identities"
         )
-    model_selector = (
-        "validation_best" if config.name == "ilume_stage3_single_task_mlp"
-        else str(config.training["model_selection"])
-    )
+    model_selector = str(config.training["model_selection"])
     stage3_sections = {
         "stage3_test": {
             "benchmark": "stage3_property",
@@ -634,8 +631,7 @@ def main() -> None:
         parser.error(str(error))
     if devices and config.name not in {
         "mlp", "dmpnn", "molformer", "ilbert", "spmm", "llasmol", "aionopedia", "iltransr", "aifc",
-        "ilume_stage3_single_task_mlp",
-        "ilume_stage3_single_task_mlp_v2",
+        "ilume_stage3_single_task_mlp_home_v1",
     }:
         parser.error("--devices is only supported for GPU neural-network benchmarks")
     if devices and config.training.get("device") != "cuda":

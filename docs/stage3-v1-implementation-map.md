@@ -1,3 +1,5 @@
+> Historical: 旧 Stage3 v1 实现地图；正式入口及三项消融见 [README](../README.md) 和 [ADR-0082](adr/0082-home-mainline-and-core-ablations.md)。
+
 # Stage 3 v1 implementation map
 
 本表只记录 legacy v1 的迁移历史，不是现役 v2 实现指南。现役合同见 [ADR 索引](adr/README.md)，早期设计理由见 [历史摘要](adr/history.md)。表中的 refinement、plugin 和 validation-best 不得套用到现役三阶段。

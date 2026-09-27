@@ -1,6 +1,6 @@
 # ADR-0034：RDKit 2D → HoME Stage1+2 representation 消融
 
-- 状态：Accepted
+- 状态：Historical / Superseded by [ADR-0082](0082-home-mainline-and-core-ablations.md)
 - 日期：2026-08-31
 
 > 2026-09-07：Stage 3 sampling 与 joint clipping 已随现役 Base 由 [ADR-0046](0046-stage3-ownership-clipping-raw-sampling.md) 修订；本消融继续只替换 representation。

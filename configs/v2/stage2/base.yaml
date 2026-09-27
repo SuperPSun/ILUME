@@ -2,14 +2,14 @@ data:
   data_root: data
   task_catalog_path: data/task_catalog.csv
   pretrain_artifacts_dir: outputs/v2/stage1/base/prepare/artifacts
-  artifacts_dir: outputs/v2/stage2/base/prepare/artifacts
+  artifacts_dir: outputs/v3/stage2/base/prepare/artifacts
   entity_shard_size: 4096
   seed: 42
   target_materialization_modes:
     simulation/simulated_qm_elec_hf: allow_partial_drop_all_missing
 preparation:
   workers: 8
-  teacher_batch_size: 512
+  teacher_batch_size: null
 initialization:
   checkpoint: outputs/v2/stage1/base/train/checkpoint_epoch_00005.pt
 model:
@@ -17,7 +17,7 @@ model:
   object_ffn_dim: 2048
   dropout: 0.10
 loss:
-  lambda_teacher: 0.10
+  lambda_teacher: 0.0
   teacher_weighting: task_compensated
   task_weights:
     simulation/density: 1.0
@@ -35,7 +35,7 @@ training:
   batch_size: 256
   gradient_accumulation_steps: 1
   epochs: 10
-  backbone_frozen_epochs: 1
+  backbone_frozen_epochs: 0
   backbone_learning_rate: 0.00001
   object_encoder_learning_rate: 0.00003
   task_head_learning_rate: 0.0001
@@ -51,3 +51,20 @@ training:
   refinement_epochs: 0
   refinement_tasks: []
   refinement_lr_multiplier: 0.10
+home:
+  microbatch_size: 256
+  initialization: pretrained
+  random_seed: null
+  model:
+    global_experts: 2
+    private_experts: 1
+    dropout: 0.10
+    activation: silu
+    expert_hidden_ratio: 2.0
+    interaction_hidden_ratio: 2.0
+    film_hidden_ratio: 1.0
+    tower_hidden_ratio: 1.0
+    l2_residual: true
+  groups:
+    thermophysical: {enabled: true, group_weight: 1.0, experts: 2, expert_hidden_ratio: 1.5, phase1: {lr: 1.5e-4, epochs: 10}, phase2: {lr: 7.5e-5, epochs: 4}}
+    solvation: {enabled: true, group_weight: 1.0, experts: 3, expert_hidden_ratio: 1.5, phase1: {lr: 2.0e-4, epochs: 15}, phase2: {lr: 1.0e-4, epochs: 24}}

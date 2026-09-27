@@ -1,6 +1,6 @@
 # ADR-0044：现役 v2 Stage 2 Task-Compensated Teacher Loss
 
-- 状态：Accepted
+- 状态：Historical for formal Stage2; superseded by [ADR-0082](0082-home-mainline-and-core-ablations.md)
 - 日期：2026-09-07
 - 修订：取代 ADR-0019 中现役 v2 joint phase 的 teacher loss weighting；legacy v1、Capacity v1 与 No-Stage1 合同不变
 

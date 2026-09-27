@@ -1,6 +1,6 @@
 # ADR-0080：Stage2-HoME Transfer 表示编码器全量微调
 
-- 状态：Experimental
+- 状态：Historical / Superseded by [ADR-0082](0082-home-mainline-and-core-ablations.md)
 - 日期：2026-09-27
 - 范围：独立组合消融，不替代 ADR-0079 或正式 Base
 

@@ -82,7 +82,7 @@ def transferable_state(model: Stage3SparseModel) -> dict[str, torch.Tensor]:
 
 
 def state_hash(state: Mapping[str, torch.Tensor]) -> str:
-    return tensor_state_hash("stage2-home-transfer.shared-state.v1", state)
+    return tensor_state_hash("stage2.home.shared-state.v1", state)
 
 
 def load_transferable_state(

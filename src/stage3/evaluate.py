@@ -141,7 +141,11 @@ def _validate_three_phase_manifest(
         raise ValueError(
             "Stage 3 three-phase final manifest/artifact integrity mismatch"
         )
-    if artifact.get("kind") == "ilume_stage3_object_phase1_three_phase_final":
+    if artifact.get("kind") in {
+        "ilume_stage3_object_phase1_three_phase_final",
+        "ilume_stage3_home_three_phase_final_v1",
+        "ilume_stage3_home_simulation_three_phase_final_v2",
+    }:
         plan = artifact.get("resolved_training_plan", {})
         if (
             manifest.get("object_encoder_phase1") != plan.get("object_encoder_phase1")
@@ -149,6 +153,20 @@ def _validate_three_phase_manifest(
             or manifest.get("final_embedding_hash") != artifact.get("final_embedding_hash")
         ):
             raise ValueError("Stage 3 ObjectEncoder Phase 1 final manifest mismatch")
+        if artifact.get("kind") in {
+            "ilume_stage3_home_three_phase_final_v1",
+            "ilume_stage3_home_simulation_three_phase_final_v2",
+        } and (
+            manifest.get("stage2_pretraining") != plan.get("stage2_pretraining")
+            or artifact.get("stage2_pretraining") != plan.get("stage2_pretraining")
+        ):
+            raise ValueError("Stage 3 HoME source manifest mismatch")
+        if artifact.get("kind") == "ilume_stage3_home_simulation_three_phase_final_v2" and (
+            manifest.get("simulation_training") != plan.get("simulation_training")
+            or artifact.get("simulation_training") != plan.get("simulation_training")
+            or manifest.get("simulation_validation") != artifact.get("simulation_validation")
+        ):
+            raise ValueError("Stage 3 simulation training manifest mismatch")
     require_compatible_identity(
         artifact["training_identity"],
         manifest.get("training_identity", {}),
@@ -182,7 +200,10 @@ def _load_model(
         )
 
         expected_kind = (
-            "ilume_stage3_object_phase1_three_phase_final" if config.training.object_encoder_phase1 is not None
+            "ilume_stage3_home_simulation_three_phase_final_v2"
+            if config.initialization.simulation_artifacts_dir is not None
+            else "ilume_stage3_home_three_phase_final_v1" if config.initialization.home_mode is not None
+            else "ilume_stage3_object_phase1_three_phase_final" if config.training.object_encoder_phase1 is not None
             else THREE_PHASE_KNOWLEDGE_FINAL_KIND if config.transfer_knowledge is not None
             else THREE_PHASE_RDKIT_FINAL_KIND if rdkit else THREE_PHASE_FINAL_KIND
         )
@@ -198,12 +219,22 @@ def _load_model(
             if taskwise_refined
             else STAGE3_CHECKPOINT_KIND
         )
+    expected_registry = dict(prepared["registry"])
+    simulation_source = None
+    if config.initialization.simulation_artifacts_dir is not None:
+        from .home import load_source
+        from .simulation import SIMULATION_TASKS, resolve_simulation_specs
+
+        simulation_source = load_source(config)
+        expected_registry.update(resolve_simulation_specs(
+            simulation_source["_loaded_model"].registry, prepared["registry"], config.training.simulation,
+        ))
     expected = {
         "kind": expected_kind,
         "format_version": expected_format,
         "fold": fold,
         "resolved_registry": {
-            task_id: spec.to_dict() for task_id, spec in prepared["registry"].items()
+            task_id: spec.to_dict() for task_id, spec in expected_registry.items()
         },
     }
     if not taskwise_refined and not three_phase_final:
@@ -218,6 +249,11 @@ def _load_model(
     plan = checkpoint.get("resolved_training_plan")
     if not isinstance(plan, dict):
         raise ValueError("Stage 3 checkpoint lacks its resolved training plan")
+    if config.training.simulation is not None and (
+        plan.get("simulation_training", {}).get("recipe") != asdict(config.training.simulation)
+        or plan.get("simulation_training", {}).get("tasks") != list(SIMULATION_TASKS)
+    ):
+        raise ValueError("Stage 3 simulation training recipe mismatch")
     training_identity = checkpoint.get("training_identity")
     if not isinstance(training_identity, Mapping):
         raise ValueError("Stage 3 checkpoint predates identity contract v1; retrain it")
@@ -228,9 +264,9 @@ def _load_model(
     )
     if three_phase_final:
         if (
-            plan.get("format_version") != (7 if config.training.object_encoder_phase1 is not None else 5 if config.transfer_knowledge is not None else 4)
+            plan.get("format_version") != (10 if config.initialization.simulation_artifacts_dir is not None else 9 if config.initialization.home_mode is not None else 7 if config.training.object_encoder_phase1 is not None else 5 if config.transfer_knowledge is not None else 4)
             or plan.get("math", {}).get("gradient_aggregation") != "weighted_owner_raw_v1"
-            or training_identity.get("payload", {}).get("contract_version") != (9 if config.training.object_encoder_phase1 is not None else 7 if config.transfer_knowledge is not None else 6)
+            or training_identity.get("payload", {}).get("contract_version") != (14 if config.initialization.simulation_artifacts_dir is not None else 13 if config.initialization.home_mode is not None else 9 if config.training.object_encoder_phase1 is not None else 7 if config.transfer_knowledge is not None else 6)
         ):
             raise ValueError("Stage 3 evaluation requires weighted_owner_raw_v1 artifacts")
     if plan.get("prepared_identity") != metadata_identity(
@@ -266,7 +302,23 @@ def _load_model(
             "encoding": "frozen_stage1_slots_live_object_encoder_v1",
         }:
             raise ValueError("Stage 3 ObjectEncoder Phase 1 source or recipe mismatch")
-        model, representations = build_object_phase1_model(config, prepared, fold=fold, device=device)
+        if config.initialization.home_mode is not None:
+            from .home import build_model_and_store, load_source, source_plan
+
+            source = simulation_source if simulation_source is not None else load_source(config)
+            model, representations, loaded_names = build_model_and_store(
+                config, prepared, fold=fold, device=device, source=source,
+            )
+            if source is not None:
+                source.pop("_loaded_model", None)
+            expected_source = source_plan(config, source, loaded_names)
+            if (
+                plan.get("stage2_pretraining") != expected_source
+                or checkpoint.get("stage2_pretraining") != expected_source
+            ):
+                raise ValueError("Stage 3 HoME source identity mismatch")
+        else:
+            model, representations = build_object_phase1_model(config, prepared, fold=fold, device=device)
         initial_home_hash = tensor_state_hash(
             "stage3.object-phase1.initial-home.v1",
             {name: value for name, value in model.state_dict().items()
@@ -558,10 +610,26 @@ def _configured_study_id(
     config: Stage3Config, metadata: Mapping[str, Any], selector: str
 ) -> str:
     study = _default_reporting_study_id(metadata, selector)
+    if config.initialization.home_mode == "no_stage2":
+        study = study.replace("ilume-stage3-", "ilume-no-stage2-", 1)
+    elif (
+        config.initialization.home_mode == "trained"
+        and metadata.get("source_stage1_checkpoint_sha256") is None
+    ):
+        study = study.replace("ilume-stage3-", "ilume-no-stage1-", 1)
     return study + "-transfer-knowledge" if config.transfer_knowledge is not None else study
 
 
-def _reporting_model(metadata: Mapping[str, Any]) -> tuple[str, str]:
+def _reporting_model(
+    config: Stage3Config, metadata: Mapping[str, Any]
+) -> tuple[str, str]:
+    if config.initialization.home_mode == "no_stage2":
+        return "ilume_no_stage2", "ILUME w/o Stage2"
+    if (
+        config.initialization.home_mode == "trained"
+        and metadata.get("source_stage1_checkpoint_sha256") is None
+    ):
+        return "ilume_no_stage1", "ILUME w/o Stage1"
     if metadata.get("provenance", {}).get("representation") == "rdkit_2d_stage2":
         return "rdkit_2d_stage2_home", "RDKit 2D MLP + Stage2 + HoME"
     if metadata.get("kind") != STAGE3_ARTIFACT_KIND:
@@ -931,7 +999,7 @@ def evaluate_checkpoints(
             prepared["metadata"],
             selector_label if final_artifact else f"epoch{epoch}",
         )
-        model_id, model_display_name = _reporting_model(prepared["metadata"])
+        model_id, model_display_name = _reporting_model(config, prepared["metadata"])
         result["reporting"] = reporting_block(
             model_id=model_id,
             model_display_name=model_display_name,
@@ -1000,7 +1068,7 @@ def evaluate_checkpoints(
         prepared["metadata"],
         selector_label if final_artifact else f"epoch{epoch}",
     )
-    model_id, model_display_name = _reporting_model(prepared["metadata"])
+    model_id, model_display_name = _reporting_model(config, prepared["metadata"])
     result["reporting"] = reporting_block(
         model_id=model_id,
         model_display_name=model_display_name,

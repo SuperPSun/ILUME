@@ -1,6 +1,6 @@
 # ADR-0064：Stage 3 知识图谱分组容量与预算候选
 
-- 状态：Accepted（独立候选实验，未替代 Base/base1）
+- 状态：Historical / Superseded by [ADR-0082](0082-home-mainline-and-core-ablations.md)
 - 日期：2026-09-21
 - 配置：`configs/v2/stage3/base1_1.yaml` 至 `base1_5.yaml`
 

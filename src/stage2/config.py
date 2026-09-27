@@ -55,6 +55,8 @@ class Stage2PreparationConfig:
 @dataclass(frozen=True)
 class Stage2InitializationConfig:
     checkpoint: Path | None = Path("outputs/v1/stage1/base/train/checkpoint_epoch_00005.pt")
+    stage1_config: Path | None = None
+    random_seed: int | None = None
 
 
 @dataclass(frozen=True)
@@ -147,9 +149,22 @@ class Stage2Config:
                 "loss.teacher_weighting must be uncompensated or task_compensated"
             )
         if self.representation is None:
-            if self.data.pretrain_artifacts_dir is None or self.initialization.checkpoint is None:
-                raise ValueError("Stage 2 Object v3 requires Stage 1 artifacts and checkpoint")
-            if self.preparation.teacher_batch_size is None or self.preparation.teacher_batch_size <= 0:
+            if self.data.pretrain_artifacts_dir is None:
+                raise ValueError("Stage 2 requires Stage 1 feature artifacts")
+            if (self.initialization.checkpoint is None) == (self.initialization.stage1_config is None):
+                raise ValueError("Stage 2 requires exactly one Stage 1 weight source")
+            if self.initialization.stage1_config is not None and (
+                self.loss.lambda_teacher != 0.0
+                or type(self.initialization.random_seed) is not int
+                or self.initialization.random_seed < 0
+            ):
+                raise ValueError("Random Stage 1 source requires a seed and physics-only loss")
+            if self.initialization.stage1_config is None and self.initialization.random_seed is not None:
+                raise ValueError("Stage 1 random seed requires a random source")
+            if self.loss.lambda_teacher > 0 and (
+                self.preparation.teacher_batch_size is None
+                or self.preparation.teacher_batch_size <= 0
+            ):
                 raise ValueError("Stage 2 teacher batch size must be positive")
         else:
             expected = {
@@ -269,6 +284,9 @@ class Stage2Config:
                 return [convert(item) for item in value]
             return value
         payload = convert(asdict(self))
+        for name in ("stage1_config", "random_seed"):
+            if payload["initialization"].get(name) is None:
+                payload["initialization"].pop(name)
         if self.representation is None:
             payload.pop("representation")
         if self.loss.teacher_weighting == "uncompensated":
@@ -306,8 +324,10 @@ def _construct(section_type: type, values: dict[str, Any] | None) -> Any:
         for key in ("data_root", "task_catalog_path", "pretrain_artifacts_dir", "artifacts_dir"):
             if values.get(key) is not None:
                 values[key] = Path(values[key])
-    elif section_type is Stage2InitializationConfig and values.get("checkpoint") is not None:
-        values["checkpoint"] = Path(values["checkpoint"])
+    elif section_type is Stage2InitializationConfig:
+        for key in ("checkpoint", "stage1_config"):
+            if values.get(key) is not None:
+                values[key] = Path(values[key])
     elif section_type is Stage2RepresentationConfig and "unsupported_tasks" in values:
         if not isinstance(values["unsupported_tasks"], list):
             raise ValueError("representation.unsupported_tasks must be a list")
@@ -341,4 +361,8 @@ def load_stage2_config(path: str | Path) -> Stage2Config:
         raw = yaml.safe_load(handle) or {}
     if not isinstance(raw, dict):
         raise ValueError("Stage 2 configuration root must be a mapping")
+    if "home" in raw:
+        from .home_config import load_home_recipe
+
+        return load_home_recipe(path).stage2
     return stage2_config_from_dict(raw)

@@ -190,16 +190,15 @@ def build_stage3_training_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
         semantic_plan["encoder_finetune"] = plan["encoder_finetune"]
     if "object_encoder_phase1" in plan:
         semantic_plan["object_encoder_phase1"] = plan["object_encoder_phase1"]
-    if "stage2_home_transfer" in plan:
-        semantic_plan["stage2_home_transfer"] = plan["stage2_home_transfer"]
-    if "cross_domain_home" in plan:
-        semantic_plan["cross_domain_home"] = plan["cross_domain_home"]
+    if "stage2_pretraining" in plan:
+        semantic_plan["stage2_pretraining"] = plan["stage2_pretraining"]
+    if "simulation_training" in plan:
+        semantic_plan["simulation_training"] = plan["simulation_training"]
     contract_version = STAGE3_TRAINING_IDENTITY_CONTRACT_VERSION
     if three_phase:
         contract_version = (
-            12 if "cross_domain_home" in plan
-            else 11 if "stage2_home_transfer" in plan and "encoder_finetune" in plan
-            else 10 if "stage2_home_transfer" in plan
+            14 if "simulation_training" in plan
+            else 13 if "stage2_pretraining" in plan
             else 9 if "object_encoder_phase1" in plan
             else 8 if "encoder_finetune" in plan
             else 7 if "transfer_knowledge" in plan else 6

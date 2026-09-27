@@ -28,7 +28,7 @@ def comparison_identity(
     folds: Sequence[int] = (),
     ensemble: bool = False,
 ) -> dict[str, Any]:
-    if benchmark != "stage3_property":
+    if benchmark not in {"stage2_property", "stage3_property"}:
         raise ValueError(f"Unsupported reporting benchmark: {benchmark}")
     if split not in {"valid", "test"} or not expected:
         raise ValueError("Reporting comparison requires a valid split and expected set")

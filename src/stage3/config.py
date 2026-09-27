@@ -146,6 +146,9 @@ class Stage3InitializationConfig:
         "outputs/v1/stage2/base/train/stage2_encoder.pt"
     )
     plugin: Stage3PluginConfig | None = None
+    home_mode: str | None = None
+    stage2_final: Path | None = None
+    simulation_artifacts_dir: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -232,6 +235,14 @@ class Stage3ObjectEncoderPhase1Config:
 
 
 @dataclass(frozen=True)
+class Stage3SimulationTrainingConfig:
+    batch_size: int
+    microbatch_size: int
+    private_size_class: str
+    shared_group_task_weight: float = 0.1
+
+
+@dataclass(frozen=True)
 class Stage3TrainingConfig:
     seed: int | None = None
     composite_batch_size: int = 2048
@@ -260,6 +271,7 @@ class Stage3TrainingConfig:
     schedule_mode: str = "legacy_joint_refinement"
     three_phase: Stage3ThreePhaseConfig | None = None
     object_encoder_phase1: Stage3ObjectEncoderPhase1Config | None = None
+    simulation: Stage3SimulationTrainingConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -345,6 +357,14 @@ class Stage3Config:
         )
 
     def validate(self) -> None:
+        simulation = self.training.simulation
+        if (self.initialization.simulation_artifacts_dir is not None) != (simulation is not None):
+            raise ValueError("Stage 3 simulation data and training recipe must be declared together")
+        if simulation is not None and (
+            asdict(simulation) != {"batch_size": 256, "microbatch_size": 256, "private_size_class": "large", "shared_group_task_weight": 0.1}
+            or self.training.schedule_mode != "three_phase"
+        ):
+            raise ValueError("Stage 3 simulation recipe requires 256/256 batches and large PRIVATE")
         if self.data.split_policy not in {
             "prefer_il", "random", "system", "individual"
         }:
@@ -361,6 +381,14 @@ class Stage3Config:
         if self.representation is None:
             if self.initialization.stage2_encoder is None:
                 raise ValueError("Stage 2 Object representation requires stage2_encoder")
+            if self.initialization.home_mode not in {None, "trained", "no_stage2"}:
+                raise ValueError("Invalid Stage 3 HoME source mode")
+            if self.initialization.home_mode == "trained" and self.initialization.stage2_final is None:
+                raise ValueError("Trained Stage 3 HoME requires Stage 2 final artifact")
+            if self.initialization.home_mode != "trained" and self.initialization.stage2_final is not None:
+                raise ValueError("Stage 2 final artifact requires trained HoME mode")
+            if self.initialization.simulation_artifacts_dir is not None and self.initialization.home_mode != "trained":
+                raise ValueError("Stage 3 simulation training requires a trained Stage 2 HoME source")
         else:
             expected = {
                 "kind": "rdkit_2d_adapter",
@@ -374,6 +402,9 @@ class Stage3Config:
                 )
             if self.initialization.stage2_encoder is not None:
                 raise ValueError("RDKit representation forbids stage2_encoder")
+            if (self.initialization.home_mode is not None or self.initialization.stage2_final is not None
+                    or self.initialization.simulation_artifacts_dir is not None):
+                raise ValueError("RDKit representation forbids Stage 2 HoME initialization")
             if self.initialization.plugin is not None:
                 raise ValueError("RDKit representation forbids plugin initialization")
         if not self.groups or not self.tasks:
@@ -501,6 +532,11 @@ class Stage3Config:
                 raise ValueError(f"model.{name} must be positive")
         training = self.training
         encoder_phase1 = training.object_encoder_phase1
+        if self.initialization.home_mode is not None:
+            if encoder_phase1 is None or encoder_phase1.source_variant != (
+                "trained" if self.initialization.home_mode == "trained" else "zero_update"
+            ):
+                raise ValueError("Stage 3 HoME mode and ObjectEncoder source disagree")
         if encoder_phase1 is not None:
             if (
                 training.schedule_mode != "three_phase"
@@ -727,10 +763,15 @@ class Stage3Config:
         if self.representation is None:
             payload.pop("representation")
         plugin = payload["initialization"].get("plugin")
+        for name in ("home_mode", "stage2_final", "simulation_artifacts_dir"):
+            if payload["initialization"].get(name) is None:
+                payload["initialization"].pop(name)
         if plugin is not None:
             adaptation = plugin["adaptation"]
             adaptation["global"] = adaptation.pop("global_scope")
         training = payload["training"]
+        if training["simulation"] is None:
+            training.pop("simulation")
         if training["object_encoder_phase1"] is None:
             training.pop("object_encoder_phase1")
         elif training["object_encoder_phase1"]["paired_trained_encoder"] is None:
@@ -799,6 +840,10 @@ def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
         initialization_raw["stage2_encoder"] = Path(
             initialization_raw["stage2_encoder"]
         )
+    if initialization_raw.get("stage2_final") is not None:
+        initialization_raw["stage2_final"] = Path(initialization_raw["stage2_final"])
+    if initialization_raw.get("simulation_artifacts_dir") is not None:
+        initialization_raw["simulation_artifacts_dir"] = Path(initialization_raw["simulation_artifacts_dir"])
     plugin_raw = initialization_raw.get("plugin")
     if plugin_raw is not None:
         plugin_values = dict(plugin_raw)
@@ -858,6 +903,10 @@ def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
                 },
             )
     training_raw = dict(raw.get("training") or {})
+    if training_raw.get("simulation") is not None:
+        training_raw["simulation"] = _construct_dataclass(
+            Stage3SimulationTrainingConfig, training_raw["simulation"],
+        )
     schedule_mode = training_raw.get("schedule_mode", "legacy_joint_refinement")
     if schedule_mode == "four_phase" or "four_phase" in training_raw:
         raise ValueError(

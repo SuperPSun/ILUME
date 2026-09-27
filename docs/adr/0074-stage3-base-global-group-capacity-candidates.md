@@ -1,6 +1,6 @@
 # ADR-0074：Stage 3 Base GLOBAL/GROUP 容量候选
 
-- 状态：Experimental
+- 状态：Historical / Superseded by [ADR-0082](0082-home-mainline-and-core-ablations.md)
 - 日期：2026-09-24
 - 配置：`configs/v2/stage3/base3_1.yaml` 至 `base3_5.yaml`
 

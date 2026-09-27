@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — 独立消融，不替代正式 Base 或 ADR-0079/0080。
+Historical / Superseded by [ADR-0082](0082-home-mainline-and-core-ablations.md). 原跨域共享实验已退出活跃代码。
 
 ## Context
 

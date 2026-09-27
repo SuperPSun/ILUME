@@ -1,6 +1,6 @@
 # ADR-0069：Stage 3 no-PCGrad 单变量消融
 
-- 状态：Accepted
+- 状态：Historical / Superseded by [ADR-0082](0082-home-mainline-and-core-ablations.md)
 - 日期：2026-09-22
 - 范围：现役 Base 的独立 Stage 3 三阶段消融
 

@@ -1,6 +1,6 @@
 # ADR-0033：Stage3 frozen Object representation + single-task MLP 整体消融
 
-- 状态：Accepted
+- 状态：Historical / Superseded by [ADR-0082](0082-home-mainline-and-core-ablations.md)
 - 日期：2026-08-31
 
 > 2026-09-22：本消融冻结为旧 v1 512D、21-task 历史合同。现役 Stage 3 task 集合已由

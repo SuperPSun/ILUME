@@ -1,6 +1,6 @@
 # ADR-0019：Stage 2 Catalog 驱动的 Object v3 Physics Trainer
 
-- 状态：Accepted
+- 状态：Partially superseded by [ADR-0082](0082-home-mainline-and-core-ablations.md); Object/data contracts remain historical reference
 - 日期：2026-08-18
 - 取代：ADR-0016 的固定任务、head routing 与 batch 调度合同，以及 ADR-0018 的 data/cache/checkpoint 版本、冻结快路径、loss 组合和 accumulation-window 合同。
 

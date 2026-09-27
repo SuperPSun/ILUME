@@ -1,6 +1,6 @@
 # ADR-0077：现役 v2 Stage 3 单任务 MLP 整体消融
 
-- 状态：Accepted
+- 状态：Historical / Superseded by [ADR-0082](0082-home-mainline-and-core-ablations.md)
 - 日期：2026-09-26
 - 范围：`ilume_stage3_single_task_mlp_v2`
 

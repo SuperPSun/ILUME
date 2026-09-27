@@ -1,6 +1,6 @@
 # ADR-0075：Stage 2 零训练对照与 Stage 3 ObjectEncoder Phase 1 适配
 
-- 状态：Experimental
+- 状态：Partially superseded by [ADR-0082](0082-home-mainline-and-core-ablations.md); Phase1 mechanism remains
 - 日期：2026-09-25
 - 范围：Object-backed v2 Stage 3 与隔离的 No-Stage2 对照
 

@@ -4,6 +4,8 @@
 - 日期：2026-09-05
 - 修订：取代 ADR-0023、ADR-0024、ADR-0025、ADR-0027 中的 Stage 2 reporting、最终评估 artifact 与现役 v2 refinement 决定；同时取代 ADR-0022、ADR-0028～0030、ADR-0032、ADR-0035、ADR-0037、ADR-0038、ADR-0040、ADR-0042 中的 Stage 2 baseline/reporting 部分
 
+> 历史边界：正式 Stage2-HoME 的完整模型评估与独立榜单已由 [ADR-0083](0083-stage2-home-full-artifact-evaluation.md) 恢复。本文的入口删除及 Stage2 全面不报告决定不再适用于正式 HoME；旧 baseline 榜单仍保持退役。
+
 ## 背景
 
 Stage 2 的任务表现不再作为论文比较目标。继续训练四个 task head 的末期 refinement，并让主模型、消融和 baseline 生成 Stage 2 test 榜单，会增加运行成本和汇总复杂度，但不再服务当前结论。Stage 2 作为 Stage 3 的表示学习阶段仍然保留。

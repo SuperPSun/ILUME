@@ -38,6 +38,8 @@ from .rdkit_train import (
 
 STAGE2_ENCODER_VERSION = 1
 STAGE2_ENCODER_KIND = "ilume_stage2_encoder"
+STAGE2_HOME_ENCODER_KIND = "ilume_stage2_home_encoder_v1"
+STAGE2_ZERO_UPDATE_HOME_ENCODER_KIND = "ilume_stage2_home_zero_update_encoder_v1"
 
 
 @dataclass(frozen=True)
@@ -234,7 +236,10 @@ class FrozenRDKitStage2ObjectEncoder:
 def _load_payload(path: Path) -> dict[str, Any]:
     payload = torch.load(path, map_location="cpu", weights_only=False)
     if (
-        payload.get("kind") != STAGE2_ENCODER_KIND
+        payload.get("kind") not in {
+            STAGE2_ENCODER_KIND, STAGE2_HOME_ENCODER_KIND,
+            STAGE2_ZERO_UPDATE_HOME_ENCODER_KIND,
+        }
         or payload.get("format_version") != STAGE2_ENCODER_VERSION
     ):
         raise ValueError("Stage 3 requires a Stage 2 encoder artifact v1")

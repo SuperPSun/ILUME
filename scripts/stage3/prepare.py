@@ -20,6 +20,10 @@ def main() -> None:
     args = parser.parse_args()
     config = load_stage3_config(args.config)
     configure_process_runtime(config)
+    if config.initialization.home_mode is not None:
+        from stage3.home import load_source
+
+        load_source(config)
     from stage3.data import collect_object_keys, resolve_task_registry, source_hashes
     from stage3.identity import resolve_stage3_prepared_identity
     from stage3.prepare import prepare_stage3

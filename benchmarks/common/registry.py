@@ -35,11 +35,7 @@ ADAPTERS = {
     "aionopedia": Adapter("benchmarks.aionopedia", "aionopedia"),
     "iltransr": Adapter("benchmarks.iltransr", "iltransr"),
     "aifc": Adapter("benchmarks.aifc", "aifc"),
-    "ilume_stage3_single_task_mlp": Adapter(
-        "ablations.stage3_single_task_mlp", "stage3_single_task_mlp",
-        isolated_environment=False, evaluation_audit=False,
-    ),
-    "ilume_stage3_single_task_mlp_v2": Adapter(
+    "ilume_stage3_single_task_mlp_home_v1": Adapter(
         "ablations.stage3_single_task_mlp", "stage3_single_task_mlp",
         isolated_environment=False, evaluation_audit=False,
     ),

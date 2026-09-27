@@ -1,6 +1,6 @@
 # ADR-0079：Stage2-HoME → Stage3-HoME 独立迁移消融
 
-- 状态：Experimental
+- 状态：Historical / Superseded by [ADR-0082](0082-home-mainline-and-core-ablations.md)
 - 日期：2026-09-26
 - 范围：`configs/ablations/stage2_home_transfer.yaml`；不修订正式 Stage2/Stage3 Base
 

@@ -557,18 +557,14 @@ def test_native_split_benchmark_configs_follow_v2_authorities() -> None:
 
 
 def test_stage3_single_task_mlp_config_and_ordered_concat() -> None:
-    config = load_benchmark_config(
-        "configs/ablations/ilume_stage3_single_task_mlp.yaml"
-    )
-    assert config.display_name == "ILUME Stage3 Single-task MLP"
-    assert config.data.stage3_authority_config == Path("configs/v1/stage3/base.yaml")
-    with pytest.raises(ValueError, match="isobaric_coefficient_of_volume_expansion"):
-        configured_tasks(config, "stage3")
+    config = load_benchmark_config("configs/ablations/no_stage3_home.yaml")
+    assert config.display_name == "ILUME w/o Stage3-HoME"
+    assert len(configured_tasks(config, "stage3")) == 20
     assert config.data.feature_cache is None and config.features is None
     with pytest.raises(ValueError, match="registered recipe"):
         replace(config, model={**config.model, "dropout": 0.2}).validate()
 
-    embeddings = torch.arange(4 * 512, dtype=torch.float32).reshape(4, 512)
+    embeddings = torch.arange(4 * 1024, dtype=torch.float32).reshape(4, 1024)
     class Dataset:
         conditions = torch.tensor([[0.25, -0.5], [1.0, 2.0]])
         primary_object_ids = torch.tensor([0, 1])
@@ -584,10 +580,10 @@ def test_stage3_single_task_mlp_config_and_ordered_concat() -> None:
         partner_slots=("solute",),
     )
     features = build_input_features(dataset, embeddings, spec)
-    assert features.shape == (2, 1026)
-    torch.testing.assert_close(features[:, :512], embeddings[[0, 1]])
-    torch.testing.assert_close(features[:, 512:1024], embeddings[[2, 3]])
-    torch.testing.assert_close(features[:, 1024:], dataset.conditions)
+    assert features.shape == (2, 2050)
+    torch.testing.assert_close(features[:, :1024], embeddings[[0, 1]])
+    torch.testing.assert_close(features[:, 1024:2048], embeddings[[2, 3]])
+    torch.testing.assert_close(features[:, 2048:], dataset.conditions)
     first_model = Stage3SingleTaskMLP(features.shape[1])
     second_model = Stage3SingleTaskMLP(features.shape[1])
     assert {
@@ -600,7 +596,7 @@ def test_stage3_single_task_mlp_config_and_ordered_concat() -> None:
         partner_slots=(),
     )
     dataset.partner_object_ids = torch.full((2,), -1)
-    assert build_input_features(dataset, embeddings, condition_only).shape == (2, 514)
+    assert build_input_features(dataset, embeddings, condition_only).shape == (2, 1026)
     with pytest.raises(ValueError, match="partner embedding is missing"):
         build_input_features(dataset, embeddings, spec)
 
@@ -609,50 +605,11 @@ def test_stage3_single_task_mlp_config_and_ordered_concat() -> None:
     )
     dataset.conditions = torch.empty((2, 0))
     dataset.partner_object_ids = torch.full((2,), -1)
-    assert build_input_features(dataset, embeddings, ordinary).shape == (2, 512)
-
-
-def test_stage3_single_task_mlp_runs_full_budget_and_selects_best() -> None:
-    config = load_benchmark_config(
-        "configs/ablations/ilume_stage3_single_task_mlp.yaml"
-    )
-    config = replace(
-        config,
-        training={**config.training, "batch_size": 2, "max_epochs": 3},
-    )
-    torch.manual_seed(7)
-    model = Stage3SingleTaskMLP(4)
-    train_features = torch.randn(6, 4)
-    train_targets = torch.linspace(-1.0, 1.0, 6)
-    valid_features = torch.randn(3, 4)
-    valid_targets = torch.tensor([-0.5, 0.0, 0.5])
-    reporter = RecordingReporter()
-    history, best_state, best_epoch, best_score = _run_training_epochs(
-        model,
-        train_features,
-        train_targets,
-        valid_features,
-        valid_targets,
-        config,
-        training_seed=123,
-        device=torch.device("cpu"),
-        use_bf16=False,
-        reporter=reporter,
-    )
-    assert [row["epoch"] for row in history] == [1, 2, 3]
-    assert best_score == min(row["valid_normalized_mae"] for row in history)
-    assert best_epoch == next(
-        row["epoch"] for row in history
-        if row["valid_normalized_mae"] == best_score
-    )
-    restored = Stage3SingleTaskMLP(4)
-    restored.load_state_dict(best_state, strict=True)
-    assert reporter.bars[0].n == 3 and reporter.bars[0].closed
+    assert build_input_features(dataset, embeddings, ordinary).shape == (2, 1024)
 
 
 def test_stage3_single_task_mlp_v2_config_features_and_final_state(tmp_path: Path) -> None:
-    legacy = load_benchmark_config("configs/ablations/ilume_stage3_single_task_mlp.yaml")
-    config = load_benchmark_config("configs/ablations/ilume_stage3_single_task_mlp_v2.yaml")
+    config = load_benchmark_config("configs/ablations/no_stage3_home.yaml")
     assert config.data.stage3_authority_config == Path("configs/v2/stage3/base.yaml")
     assert len(configured_tasks(config, "stage3")) == 20
     assert config.training["max_epochs"] == 10
@@ -690,12 +647,10 @@ def test_stage3_single_task_mlp_v2_config_features_and_final_state(tmp_path: Pat
         torch.testing.assert_close(state[name], value.cpu())
 
     (tmp_path / "checkpoint.json").write_text(
-        json.dumps({"format_version": 1, "kind": "ilume_stage3_single_task_mlp_model_v2", "integrity": {}}),
+        json.dumps({"format_version": 1, "kind": "ilume_stage3_single_task_mlp_model_home_v1", "integrity": {}}),
         encoding="utf-8",
     )
-    assert _manifest(tmp_path, config)["kind"].endswith("_v2")
-    with pytest.raises(ValueError, match="Unsupported"):
-        _manifest(tmp_path, legacy)
+    assert _manifest(tmp_path, config)["kind"].endswith("_home_v1")
     (tmp_path / "checkpoint.json").write_text(
         json.dumps({"format_version": 1, "kind": "ilume_stage3_single_task_mlp_model", "integrity": {}}),
         encoding="utf-8",
@@ -942,8 +897,7 @@ def test_sweep_scheduler_caps_concurrency_per_gpu(
 @pytest.mark.parametrize(
     "config_name, expected_selector",
     [
-        ("ilume_stage3_single_task_mlp", "validation_best"),
-        ("ilume_stage3_single_task_mlp_v2", "final_training_state"),
+        ("no_stage3_home", "final_training_state"),
     ],
 )
 def test_stage3_only_ablation_aggregate_has_one_model_and_no_stage2_sections(
@@ -1052,7 +1006,7 @@ def test_stage3_only_ablation_aggregate_has_one_model_and_no_stage2_sections(
 def _write_run(
     root: Path, summary: dict[str, object], *, stage: str = "benchmark"
 ) -> None:
-    root.mkdir(parents=True)
+    root.mkdir(parents=True, exist_ok=True)
     reporting = summary.get("reporting", {})
     if stage == "stage3" and reporting.get("model_id") == "ilume":
         protocol = reporting["protocol"]
@@ -1091,6 +1045,62 @@ def _write_run(
     }
     (root / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
     (root / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+
+
+def _stage2_reporting_run(root: Path, *, split: str, tasks: tuple[str, ...]) -> None:
+    root.mkdir(parents=True)
+    manifests = []
+    metrics = {}
+    for task in tasks:
+        path = root / "predictions" / f"{sanitize_task_id(task)}.csv"
+        manifest = write_prediction_csv(
+            path,
+            [{"source_row": 2, "target_column": "property", "target": 1.0, "prediction": 1.25, "absolute_error": 0.25}],
+            ("source_row", "target_column", "target", "prediction", "absolute_error"),
+        )
+        manifest.update({"task": task, "path": f"predictions/{path.name}"})
+        manifests.append(manifest)
+        metrics[task] = {"count": 1, "mae": 0.25, "rmse": 0.25, "r2": None, "normalized_mae": 0.5, "normalized_rmse": 0.5}
+    comparison = comparison_identity(
+        "stage2_property", split=split, expected=tasks,
+        sources={"prepared_data_identity": "prepared", "source_hashes": {task: "source" for task in tasks}},
+        normalization={task: {"scale": 0.5} for task in tasks},
+    )
+    _write_run(root, {
+        "split": split, "checkpoint_epoch": 10, "tasks": metrics,
+        "reporting": {
+            "schema_version": REPORTING_SCHEMA_VERSION,
+            "model_id": "ilume_stage2", "model_display_name": "ILUME Stage2-HoME",
+            "study_id": "stage2-home-v2", "benchmark": "stage2_property",
+            "protocol": {"split": split, "expected_tasks": list(tasks), "folds": [], "ensemble": False},
+            "comparison_identity": comparison, "predictions": manifests,
+        },
+    }, stage="stage2")
+
+
+def test_stage2_summary_is_separate_and_requires_complete_predictions(tmp_path: Path) -> None:
+    inputs = tmp_path / "inputs"
+    task = "simulation/heat_of_vaporization"
+    _stage2_reporting_run(inputs / "valid", split="valid", tasks=(task,))
+    _stage2_reporting_run(inputs / "test", split="test", tasks=(task,))
+    _write_run(inputs / "stage3", _stage3_benchmark_summary("baseline", scale=1.0), stage="benchmark")
+    published = publish_summary(inputs, tmp_path / "summary", tmp_path)
+    assert len(published["leaderboards"]["stage2_validation"]) == 1
+    assert len(published["leaderboards"]["stage2_test"]) == 1
+    assert len(published["leaderboards"]["stage3_test"]) == 1
+    assert published["leaderboards"]["stage2_test"][0]["macro_normalized_mae"] == 0.5
+    assert (tmp_path / "summary" / "stage2_test_task_mae.csv").is_file()
+    prediction = inputs / "test" / "predictions" / f"{sanitize_task_id(task)}.csv"
+    original_prediction = prediction.read_bytes()
+    prediction.write_bytes(original_prediction + b"extra\n")
+    with pytest.raises(ValueError, match="prediction file hash mismatch"):
+        publish_summary(inputs, tmp_path / "rejected", tmp_path)
+    prediction.write_bytes(original_prediction)
+    _stage2_reporting_run(
+        inputs / "test_new", split="test", tasks=(task, "simulation/thermal_expansion"),
+    )
+    with pytest.raises(ValueError, match="incompatible comparison identities"):
+        publish_summary(inputs, tmp_path / "mixed", tmp_path)
 
 
 def _stage3_benchmark_summary(
@@ -1221,8 +1231,9 @@ def test_stage3_summary_ignores_normalization_but_requires_shared_sources(
     assert not any(
         (tmp_path / "summary" / "ilume_scatter" / "validation").iterdir()
     )
-    assert "stage2" not in json.dumps(payload).lower()
-    assert all("stage2" not in name for name in SUMMARY_FILES)
+    assert payload["leaderboards"]["stage2_test"] == []
+    assert payload["leaderboards"]["stage2_validation"] == []
+    assert (tmp_path / "summary" / "stage2_test_leaderboard.csv").is_file()
     with (tmp_path / "summary" / "stage3_test_task_mae.csv").open(
         newline="", encoding="utf-8"
     ) as handle:
@@ -1334,25 +1345,6 @@ def test_stage3_summary_separates_ilume_variants_by_output_directory(
     with pytest.raises(ValueError, match="SHA256 mismatch"):
         publish_summary(inputs, tmp_path / "summary", tmp_path)
     assert scatter.read_text(encoding="utf-8") == original
-
-
-def test_stage3_summary_accepts_full_finetune_reporting(
-    tmp_path: Path,
-) -> None:
-    inputs = tmp_path / "outputs" / "ablations" / "stage3_full_finetune"
-    for fold in range(1, 6):
-        summary = _stage3_validation_summary(
-            "ilume-stage3-full-finetune-v1", fold, mae=0.5
-        )
-        summary["ablation"] = "stage3_full_finetune"
-        summary["reporting"]["model_display_name"] = "ILUME (full fine-tune)"
-        _write_run(inputs / "evaluate_valid" / f"fold{fold}", summary, stage="stage3")
-
-    payload = publish_summary(inputs, tmp_path / "summary", tmp_path)
-    rows = payload["leaderboards"]["stage3_validation"]
-    assert len(rows) == 1
-    assert rows[0]["model"] == "ILUME (full fine-tune)"
-    assert rows[0]["macro_normalized_mae"] == 0.5
 
 
 @pytest.mark.parametrize(

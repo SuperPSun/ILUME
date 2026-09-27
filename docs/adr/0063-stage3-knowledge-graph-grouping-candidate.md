@@ -1,6 +1,6 @@
 # ADR-0063：Stage 3 知识图谱分组候选配置
 
-- 状态：Accepted（独立候选实验）
+- 状态：Historical / Superseded by [ADR-0082](0082-home-mainline-and-core-ablations.md)
 - 日期：2026-09-19
 - 适用配置：`configs/v2/stage3/base1.yaml`
 
