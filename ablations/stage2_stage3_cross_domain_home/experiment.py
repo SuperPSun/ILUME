@@ -179,17 +179,18 @@ def prepare(experiment):
     packer = MultimodalPacker(loaded.vocabulary)
     progress = ProgressReporter()
     bar = progress.bar(total=len(entities), desc="Frozen replay entity cache", unit="entity")
-    for start in range(0, len(entities), 128):
-        ids = list(range(start, min(len(entities), start + 128)))
-        batch = packer([entities[index] for index in ids]).to(device)
-        encoded = model.backbone.encode_entity(batch)
-        slots[ids] = encoded.entity_embedding.float().cpu()
-        for local_id, entity_id in enumerate(ids):
-            if entity_id in atom_ids:
-                atoms[entity_id] = encoded.atom_states[encoded.atom_batch == local_id].float().cpu()
-        bar.update(len(ids))
-    bar.close()
-    progress.close()
+    try:
+        for start in range(0, len(entities), 128):
+            ids = list(range(start, min(len(entities), start + 128)))
+            batch = packer([entities[index] for index in ids]).to(device)
+            encoded = model.backbone.encode_entity(batch)
+            slots[ids] = encoded.entity_embedding.float().cpu()
+            for local_id, entity_id in enumerate(ids):
+                if entity_id in atom_ids:
+                    atoms[entity_id] = encoded.atom_states[encoded.atom_batch == local_id].float().cpu()
+            bar.update(len(ids))
+    finally:
+        bar.close()
     state = {"slots": slots, "roles": roles, **{f"atoms/{index}": value for index, value in atoms.items()}}
     data_metadata = json.loads((experiment.source.stage2.data.artifacts_dir / "metadata.json").read_text())
     payload = {"kind": "ilume_cross_domain_replay_cache", "source_identity": source["identity"]["hash"],

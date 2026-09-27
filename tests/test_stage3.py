@@ -4441,3 +4441,64 @@ def test_cross_domain_source_integrity(tmp_path, monkeypatch):
     torch.save(loaded, experiment.source_path)
     with pytest.raises(ValueError, match="source artifact mismatch"):
         integration.load_source(experiment)
+
+
+def test_cross_domain_prepare_publishes_replay_cache_without_reporter_close(tmp_path, monkeypatch):
+    from ablations.stage2_stage3_cross_domain_home import experiment as integration
+
+    class Entities:
+        entries = [{"role_id": 0}]
+        def __len__(self): return 1
+        def __getitem__(self, index): return {"entity": index}
+
+    class Dataset:
+        entity_indices = torch.tensor([[0]])
+
+    class Packed:
+        def to(self, _device): return self
+
+    class Packer:
+        def __init__(self, _vocabulary): pass
+        def __call__(self, _samples): return Packed()
+
+    class Backbone:
+        entity_dim = 2
+        def to(self, _device): return self
+        def eval(self): return self
+        def encode_entity(self, _batch):
+            return SimpleNamespace(entity_embedding=torch.tensor([[1.0, 2.0]]),
+                                   atom_states=torch.tensor([[3.0, 4.0]]),
+                                   atom_batch=torch.tensor([0]))
+
+    root = tmp_path / "cross-domain-prepare"
+    (root / "prepare").mkdir(parents=True)
+    source_data = tmp_path / "source-data"
+    source_data.mkdir()
+    (source_data / "metadata.json").write_text(json.dumps({"semantic": {"identities": {"data": {"hash": "stage2-data"}}}}))
+    config = SimpleNamespace(data=SimpleNamespace(artifacts_dir=root / "prepare/artifacts"),
+                             preparation=SimpleNamespace(cache_dir=root / "prepare/object_cache"),
+                             training=SimpleNamespace(device="cpu"))
+    experiment = SimpleNamespace(output_root=root, stage3=config,
+        source=SimpleNamespace(stage2=SimpleNamespace(data=SimpleNamespace(artifacts_dir=source_data))))
+    prepared = {"metadata": {"semantic": {"identities": {"prepared": {"hash": "stage3-prepared"}}}}}
+    source = {"identity": {"hash": "source-artifact"}}
+    loaded = SimpleNamespace(vocabulary=object())
+    model = SimpleNamespace(backbone=Backbone())
+    monkeypatch.setattr(integration, "load_source", lambda _experiment: source)
+    monkeypatch.setattr(integration, "prepare_stage3", lambda _config: {"prepared": True})
+    monkeypatch.setattr(integration, "load_prepared_stage3", lambda _config: prepared)
+    monkeypatch.setattr(integration, "require_paired_data", lambda *_args: None)
+    monkeypatch.setattr(integration, "simulation_model", lambda *_args: (model, loaded, None))
+    monkeypatch.setattr(integration, "resolve_device", lambda _device: torch.device("cpu"))
+    monkeypatch.setattr(integration, "replay_datasets", lambda _experiment: ({
+        "simulation/partial_atomic_charge": Dataset()}, Entities()))
+    monkeypatch.setattr(integration, "MultimodalPacker", Packer)
+
+    result = integration.prepare(experiment)
+    cache_path = root / "replay/entities.pt"
+    payload = torch.load(cache_path, map_location="cpu", weights_only=False)
+    assert payload["slots"].tolist() == [[1.0, 2.0]]
+    assert payload["atoms"][0].tolist() == [[3.0, 4.0]]
+    assert (root / "replay/entities.json").is_file()
+    assert (root / "prepare/experiment.json").is_file()
+    assert result["identity"]["hash"]
