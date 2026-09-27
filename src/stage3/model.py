@@ -255,6 +255,16 @@ def summarize_task_gate_observations(
 
 
 class Stage3SparseModel(nn.Module):
+    def gate_observations(self, diagnostics: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        return task_gate_observations(diagnostics)
+
+    def summarize_gate_observations(self, observations: torch.Tensor) -> dict[str, float]:
+        return summarize_task_gate_observations(observations)
+
+    @property
+    def gate_observation_width(self) -> int:
+        return 4
+
     def __init__(
         self,
         model_config: Stage3ModelConfig,

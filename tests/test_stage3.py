@@ -83,6 +83,8 @@ from stage3.object_phase1 import (
 from stage3.transfer_knowledge import (
     KNOWLEDGE_KIND, KNOWLEDGE_VERSION, SOURCES, TransferKnowledgeBank,
 )
+
+
 from stage3.gradient_assembly import assemble_owner_gradients
 from stage3.prepare import load_prepared_stage3, materialize_object_slots, prepare_stage3
 from stage3.three_phase import (
@@ -4200,3 +4202,242 @@ def test_full_finetune_three_phase_artifact_freezes_encoders(
     )
     partial_final = torch.load(partial / "three_phase_final.pt", weights_only=False)
     assert partial_final["model_state_hash"] == final["model_state_hash"]
+
+
+def _cross_domain_test_model(config, registry):
+    from ablations.stage2_home_transfer.contract import SOURCE_GROUPS
+    from ablations.stage2_stage3_cross_domain_home.model import CrossDomainHoME
+    template = next(iter(registry.values()))
+    source_specs = {}
+    for task, group in SOURCE_GROUPS.items():
+        for index in range(11 if task.endswith("simulated_qm_elec_hf") else 1):
+            key = f"{task}::target_{index}" if task.endswith("simulated_qm_elec_hf") else task
+            source_specs[key] = replace(template, task_id=key, meta_group=group,
+                                        condition_columns=(), partner_mode="none")
+    groups = {group: Stage3GroupConfig(experts=index + 1, expert_hidden_ratio=1.0)
+              for index, group in enumerate(sorted(set(SOURCE_GROUPS.values())))}
+    with torch.random.fork_rng(devices=[]):
+        simulation = Stage3SparseModel(config.model, source_specs, 4, group_configs=groups)
+    return CrossDomainHoME(
+        config.model, registry, 4, group_configs=config.groups, task_configs=config.tasks,
+        task_private_recipes={task: config.resolved_private_recipe(task) for task in config.tasks},
+        object_encoder=ObjectEncoder(4, 2, num_layers=1, feedforward_dim=8, dropout=0.0),
+        simulation_home=simulation, atom_adapter=torch.nn.Linear(8, 4),
+    )
+
+
+def _cross_domain_replay_fixture():
+    from ablations.stage2_home_transfer.contract import SOURCE_GROUPS
+    class Dataset:
+        def __init__(self, task):
+            count = 11 if task.endswith("simulated_qm_elec_hf") else 1
+            self.entity_indices = torch.arange(5).unsqueeze(1)
+            self.targets = torch.randn(5, count)
+            self.target_mask = torch.ones(5, count, dtype=torch.bool)
+            if count == 11:
+                self.target_mask[0, 0] = False
+            self.conditions = torch.empty(5, 0)
+            self.spec = SimpleNamespace(target_level="atom" if task.endswith("partial_atomic_charge") else "object",
+                                        topology="molecule", target_columns=tuple(range(count)))
+            self.atom_target_offsets = torch.arange(0, 16, 3)
+            self.atom_target_values = torch.randn(15)
+            self.atom_target_mask = torch.ones(15, dtype=torch.bool)
+        def __len__(self):
+            return 5
+    return ({task: Dataset(task) for task in SOURCE_GROUPS},
+            {"slots": torch.randn(5, 4), "roles": torch.zeros(5, dtype=torch.long),
+             "atoms": {index: torch.randn(3, 4) for index in range(5)}})
+
+
+def test_cross_domain_routing_and_replay_boundaries(tiny_prepared):
+    from ablations.stage2_stage3_cross_domain_home.replay import SimulationReplay, replay_events
+    config = _tiny_three_phase(tiny_prepared)
+    prepared = load_prepared_stage3(tiny_prepared)
+    model = _cross_domain_test_model(config, prepared["registry"])
+    task = next(iter(prepared["registry"]))
+    spec = prepared["registry"][task]
+    output = model(task, torch.randn(3, 4), torch.randn(3, len(spec.condition_columns)),
+                   partner_embedding=torch.randn(3, 4) if spec.partner_mode == "interaction" else None)
+    gate = output.diagnostics["task_gate"]
+    assert gate.shape == (3, 3)
+    assert torch.isfinite(gate).all() and (gate >= 0).all()
+    assert torch.allclose(gate.sum(-1), torch.ones(3))
+    stats = model.summarize_gate_observations(model.gate_observations(output.diagnostics))
+    for level in (1, 2):
+        for family in ("global", "group"):
+            assert stats[f"mean_l{level}_{family}_sim_weight"] + stats[f"mean_l{level}_{family}_exp_weight"] == pytest.approx(1)
+        assert sum(stats[f"mean_l{level}_sim_group_{group}_weight"] for group in model.sim_groups) == pytest.approx(1)
+    assert stats["effective_sim_global_contribution"] <= stats["mean_global_gate_weight"]
+    parameters = tuple(model.parameters())
+    gradients = dict(zip(parameters, torch.autograd.grad(output.predictions.sum(), parameters, allow_unused=True), strict=True))
+    for group in model.sim_groups:
+        owned = model.parameters_for_owner(next(owner for owner in set(model.parameter_ownership().values())
+                                                 if owner.label == f"SIM_GROUP:{group}"))
+        assert any(gradients[parameter] is not None for parameter in owned)
+    assert all(gradients[parameter] is None for parameter, owner in model.parameter_ownership().items() if owner.scope == "SIM_PRIVATE")
+    datasets, cache = _cross_domain_replay_fixture()
+    replay = SimulationReplay(datasets, cache, seed=42, fold=1, total_updates=44,
+                              weights={task: 1.0 for task in datasets}, batch_size=3, microbatch_size=2)
+    assert all(update % 4 == 0 and weight > 0 for update, weight in replay_events(44))
+    before = torch.get_rng_state().clone()
+    assembled = {}
+    replay.add_gradients(model, assembled, 4)
+    assert torch.equal(before, torch.get_rng_state())
+    selected = replay.by_update[4][0]
+    assert {model.parameter_ownership()[parameter].label for parameter in assembled if model.parameter_ownership()[parameter].scope == "SIM_PRIVATE"} == {f"SIM_PRIVATE:{selected}"}
+    saved = replay.state_dict()
+    restored = SimulationReplay(datasets, cache, seed=42, fold=1, total_updates=44,
+                                weights={task: 1.0 for task in datasets}, batch_size=3, microbatch_size=2)
+    restored.load_state_dict(saved, 4)
+    left, right = {}, {}
+    replay.add_gradients(model, left, 8)
+    restored.add_gradients(model, right, 8)
+    assert left.keys() == right.keys()
+    assert all(torch.equal(left[parameter], right[parameter]) for parameter in left)
+    with pytest.raises(ValueError, match="count mismatch"):
+        restored.load_state_dict(saved, 8)
+    for update, _ in replay.events[2:]:
+        replay.add_gradients(model, {}, update)
+    assert {record["task"] for record in replay.records} == set(datasets)
+    model.set_trainable_owners((group_owner(spec.meta_group),))
+    model.train()
+    assert all(not parameter.requires_grad for parameter, owner in model.parameter_ownership().items() if owner.scope.startswith("SIM_") or owner == OBJECT_ENCODER_OWNER)
+    assert all(not module.training for owner, modules in model._modules_by_owner.items() if owner.scope.startswith("SIM_") for module in modules)
+
+
+def test_cross_domain_recipe_preserves_base():
+    from ablations.stage2_stage3_cross_domain_home.experiment import load_config, RECIPE
+    import yaml
+    path = Path("configs/ablations/stage2_stage3_cross_domain_home.yaml")
+    payload = yaml.safe_load(path.read_text())
+    payload.pop("cross_domain_home")
+    payload.pop("output_root")
+    assert stage3_config_from_dict(payload).to_dict() == load_stage3_config("configs/v2/stage3/base.yaml").to_dict()
+    experiment = load_config(path, source_dir="outputs/ablations/stage2_home_transfer")
+    assert experiment.recipe == RECIPE
+
+
+def test_cross_domain_three_phase_and_epoch_resume(tiny_prepared, tmp_path):
+    from ablations.stage2_stage3_cross_domain_home.experiment import resolved_plan, RECIPE, FINAL_KIND
+    from ablations.stage2_stage3_cross_domain_home.replay import SimulationReplay
+    base = _tiny_three_phase(tiny_prepared)
+    config = replace(base, training=replace(base.training, composite_batch_size=3,
+                     object_encoder_phase1=Stage3ObjectEncoderPhase1Config(1.5e-5, 2, 0.05, 0.1)))
+    prepared = load_prepared_stage3(tiny_prepared)
+    prepared["metadata"] = {**prepared["metadata"],
+        "stage2_encoder_sha256": sha256_file(config.initialization.stage2_encoder),
+        "source_encoder_state_hashes": {"stage1_backbone": "stage1", "object_encoder": "object"},
+        "source_stage1_checkpoint_sha256": "synthetic-stage1", "object_slots_sha256": "slots"}
+    count = len(prepared["objects"]["objects"])
+    slots = {"slots": torch.randn(count, 2, 4), "roles": torch.zeros(count, 2, dtype=torch.long),
+             "counts": torch.tensor([len(item["slots"]) for item in prepared["objects"]["objects"]])}
+    for index, item in enumerate(prepared["objects"]["objects"]):
+        slots["roles"][index, :len(item["slots"])] = torch.tensor([ROLE_TO_ID[role] for role, _ in item["slots"]])
+    active = tuple(config.tasks)
+    train = {task: Stage3TaskDataset(config.data.artifacts_dir, 1, task, "train") for task in active}
+    valid = {task: Stage3TaskDataset(config.data.artifacts_dir, 1, task, "valid") for task in active}
+    datasets, cache = _cross_domain_replay_fixture()
+    weights = {task: 1.0 for task in datasets}
+    source_path = tmp_path / "simulation.pt"
+    torch.save({"synthetic": True}, source_path)
+    experiment = SimpleNamespace(stage3=config, source_path=source_path, recipe=RECIPE,
+                                 source=SimpleNamespace(stage2=SimpleNamespace(loss=SimpleNamespace(task_weights=weights))))
+    source = {"identity": {"hash": "source"}, "blocks": {"stage1": "stage1"}, "task_contracts": []}
+    cache_manifest = {"artifact_sha256": "cache", "state_hash": "cache-state", "stage2_data_identity": "data"}
+    def build():
+        seed_everything(77)
+        model = _cross_domain_test_model(config, prepared["registry"])
+        model.set_trainable_owners(set(model.parameter_ownership().values()))
+        return model, ObjectPhase1Representations(model, slots)
+    model, store = build()
+    plan = resolved_plan(experiment, model, prepared, train, source, cache_manifest, 1)
+    assert build_stage3_training_identity(plan)["payload"]["contract_version"] == 12
+    total = plan["phases"]["phase1"]["epochs"] * plan["data"]["K"]
+    assert total > 4
+    initial = {name: value.clone() for name, value in model.state_dict().items()}
+    def run(root, model, store, resume=False):
+        replay = SimulationReplay(datasets, cache, seed=42, fold=1, total_updates=total, weights=weights)
+        return run_three_phase_training(config=config, fold=1, output_dir=root,
+                resume_from=root if resume else None, model=model, registry=prepared["registry"],
+                active=active, train_data=train, valid_data=valid, representations=store,
+                normalizations=prepared["normalization"]["fold1"], plan=plan,
+                device=torch.device("cpu"), phase1_extension=replay)
+    output = tmp_path / "complete" / "train" / "fold1"
+    experiment.output_root = tmp_path / "complete"
+    run(output, model, store)
+    phase1 = torch.load(output / "phase_1/checkpoint_epoch_00002.pt", weights_only=False)
+    final = torch.load(output / "three_phase_final.pt", weights_only=False)
+    assert final["kind"] == FINAL_KIND
+    assert "effective_sim_global_contribution" in final["validation"]["gate_diagnostics"][active[0]]
+    assert phase1["phase1_extension"]["consumed"] > 0
+    from ablations.stage2_stage3_cross_domain_home import experiment as integration
+    with patch.object(integration, "load_source", return_value=source), patch.object(
+        integration, "load_cache", return_value=(cache, cache_manifest)
+    ), patch.object(integration, "validate_prepared"), patch.object(
+        integration, "load_prepared_stage3", return_value=prepared
+    ), patch("stage3.evaluate.load_prepared_stage3", return_value=prepared), patch.object(
+        integration, "build", side_effect=lambda *_args: build()
+    ):
+        evaluated = integration.evaluate(experiment, split="valid", fold=1, predictions_dir=tmp_path / "predictions")
+    assert evaluated["reporting"]["study_id"] == "ilume-cross-domain-home-v1"
+    assert "effective_sim_global_contribution" in evaluated["gate_diagnostics"][active[0]]
+    assert evaluated["tasks"] == final["validation"]["tasks"]
+    for prefix in ("simulation_home.", "stage2_object_encoder."):
+        assert any(not torch.equal(initial[name], value) for name, value in phase1["model"].items() if name.startswith(prefix))
+        assert all(torch.equal(phase1["model"][name], value) for name, value in final["model"].items() if name.startswith(prefix))
+    partial = tmp_path / "partial"
+    fresh, fresh_store = build()
+    from stage3 import three_phase as runner
+    original_save = runner.atomic_torch_save
+    def interrupt_after_checkpoint(path, payload):
+        original_save(path, payload)
+        if Path(path).name == "checkpoint_epoch_00001.pt" and Path(path).parent.name == "phase_1":
+            raise RuntimeError("test interruption")
+    with patch.object(runner, "atomic_torch_save", side_effect=interrupt_after_checkpoint), pytest.raises(RuntimeError, match="test interruption"):
+        run(partial, fresh, fresh_store)
+    fresh, fresh_store = build()
+    run(partial, fresh, fresh_store, resume=True)
+    recovered = torch.load(partial / "three_phase_final.pt", weights_only=False)
+    assert recovered["model_state_hash"] == final["model_state_hash"]
+    broken = json.loads((partial / "phase_1/diagnostics.jsonl").read_text().splitlines()[-1])
+    broken["replay"]["rng_hash"] = "bad"
+    history = (partial / "phase_1/diagnostics.jsonl").read_text().splitlines()
+    history[-1] = json.dumps(broken)
+    (partial / "phase_1/diagnostics.jsonl").write_text("\n".join(history) + "\n")
+    fresh, fresh_store = build()
+    with pytest.raises(ValueError, match="replay checkpoint/history"):
+        run(partial, fresh, fresh_store, resume=True)
+
+
+def test_cross_domain_source_integrity(tmp_path, monkeypatch):
+    from ablations.stage2_stage3_cross_domain_home import experiment as integration
+    source_root = tmp_path / "existing"
+    (source_root / "stage2").mkdir(parents=True)
+    root = tmp_path / "new"
+    experiment = SimpleNamespace(source=SimpleNamespace(output_root=source_root,
+        stage2=SimpleNamespace(data=SimpleNamespace(artifacts_dir=tmp_path / "unused-data"))),
+                                 source_path=root / "source/simulation_home.pt")
+    with pytest.raises(ValueError, match="complete.*checkpoint"):
+        integration.export_source(experiment)
+    state = {prefix + "weight": torch.randn(2, 2) for prefix in ("backbone.", "object_encoder.", "home.", "atom_adapter.")}
+    original = {"kind": integration.STAGE2_HOME_CHECKPOINT_KIND, "epoch": 10,
+                "training_identity": {"hash": "old"}, "model": state,
+                "model_hash": tensor_state_hash("stage2-home-transfer.full-model.v1", state)}
+    checkpoint = source_root / "stage2/checkpoint_epoch_00010.pt"
+    torch.save(original, checkpoint)
+    before = sha256_file(checkpoint)
+    monkeypatch.setattr(integration, "load_transfer_source", lambda *_: {
+        "training_identity": original["training_identity"], "architecture": {"groups": 3},
+        "stage2_encoder_sha256": "encoder"})
+    monkeypatch.setattr(integration, "load_artifact_registry", lambda *_: SimpleNamespace(tasks=[
+        SimpleNamespace(to_dict=lambda: {"task_id": "simulation/density", "entity_columns": ("cation", "anion")})]))
+    integration.export_source(experiment)
+    loaded = integration.load_source(experiment)
+    assert loaded["model_hash"] == original["model_hash"]
+    assert sha256_file(checkpoint) == before
+    with pytest.raises(FileExistsError):
+        integration.export_source(experiment)
+    loaded["model"]["home.weight"][0, 0] += 1
+    torch.save(loaded, experiment.source_path)
+    with pytest.raises(ValueError, match="source artifact mismatch"):
+        integration.load_source(experiment)

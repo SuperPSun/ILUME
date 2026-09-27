@@ -33,8 +33,6 @@ from .data import (
 )
 from .model import (
     Stage3SparseModel,
-    summarize_task_gate_observations,
-    task_gate_observations,
 )
 from .prepare import load_prepared_stage3
 from .train import (
@@ -417,7 +415,7 @@ def _predict(
             raise RuntimeError(f"Non-finite Stage 3 evaluation prediction: {task_id}")
         normalized_predictions.append(prediction.float().cpu())
         if config.training.schedule_mode == "three_phase":
-            gate_observations.append(task_gate_observations(output.diagnostics).cpu())
+            gate_observations.append(model.gate_observations(output.diagnostics).cpu())
     normalized = (
         torch.cat(normalized_predictions) if normalized_predictions else torch.empty(0)
     )
@@ -431,7 +429,7 @@ def _predict(
         normalized,
         raw_predictions,
         normalized_targets,
-        torch.cat(gate_observations) if gate_observations else torch.empty((0, 4)),
+        torch.cat(gate_observations) if gate_observations else torch.empty((0, model.gate_observation_width)),
     )
 
 
@@ -876,7 +874,7 @@ def evaluate_checkpoints(
             }
             if config.training.schedule_mode == "three_phase":
                 fold_result["gate_diagnostics"] = {
-                    task: summarize_task_gate_observations(observations)
+                    task: model.summarize_gate_observations(observations)
                     for task, observations in fold_gate_observations[
                         current_fold
                     ].items()
@@ -987,7 +985,7 @@ def evaluate_checkpoints(
     }
     if config.training.schedule_mode == "three_phase":
         ensemble_result["gate_diagnostics"] = {
-            task: summarize_task_gate_observations(torch.cat(observations))
+            task: model.summarize_gate_observations(torch.cat(observations))
             for task, observations in pooled_gate_observations.items()
         }
     result = {

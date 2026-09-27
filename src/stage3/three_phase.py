@@ -34,7 +34,9 @@ THREE_PHASE_KNOWLEDGE_FINAL_KIND = "ilume_stage3_transfer_knowledge_three_phase_
 
 
 def _scope_kind(plan: Mapping[str, Any], suffix: str) -> str:
-    if "stage2_home_transfer" in plan and "encoder_finetune" in plan:
+    if "cross_domain_home" in plan:
+        prefix = "ilume_stage3_cross_domain_home_three_phase"
+    elif "stage2_home_transfer" in plan and "encoder_finetune" in plan:
         prefix = "ilume_stage3_home_transfer_full_finetune_three_phase"
     elif "stage2_home_transfer" in plan:
         prefix = "ilume_stage3_stage2_home_transfer_three_phase"
@@ -225,6 +227,8 @@ def _representation_fields(plan: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _final_kind(plan: Mapping[str, Any]) -> str:
+    if "cross_domain_home" in plan:
+        return "ilume_stage3_cross_domain_home_three_phase_final"
     if "stage2_home_transfer" in plan and "encoder_finetune" in plan:
         return "ilume_stage3_home_transfer_full_finetune_three_phase_final"
     if "stage2_home_transfer" in plan:
@@ -409,6 +413,7 @@ def _phase_checkpoint(
     fold: int,
     plan: Mapping[str, Any],
     normalizations: Mapping[str, Any],
+    phase1_extension: Any = None,
 ) -> dict[str, Any]:
     state = _model_state(model)
     return {
@@ -441,6 +446,7 @@ def _phase_checkpoint(
         "resolved_registry": plan["resolved_registry"],
         "normalization": dict(normalizations),
         "ownership_manifest": model.ownership_manifest(),
+        **({"phase1_extension": phase1_extension.state_dict()} if phase1_extension is not None else {}),
         **_representation_fields(plan),
     }
 
@@ -529,6 +535,7 @@ def _joint_epoch(
     task_order_rng: random.Random,
     progress: ProgressReporter | None = None,
     progress_desc: str = "",
+    phase1_extension: Any = None,
 ) -> tuple[dict[str, float], dict[str, Any]]:
     from .train import compute_task_gradient
 
@@ -564,6 +571,10 @@ def _joint_epoch(
         if not gradients:
             raise RuntimeError("Stage 3 three-phase joint step has no tasks")
         latest = assemble_owner_gradients(model, gradients, registry, group_weights)
+        if phase1_extension is not None:
+            phase1_extension.add_gradients(
+                model, latest.gradients, (epoch - 1) * steps_per_epoch + step + 1,
+            )
         optimizer.zero_grad(set_to_none=True)
         _assign_gradients(model, latest.gradients)
         clip_values = _clip(model, config)
@@ -582,6 +593,7 @@ def _joint_epoch(
             "task_gradient_norms": latest.task_norms,
             "assembled_owner_norms": latest.assembled_owner_norms,
             "clip_pre_norm": pre,
+            **({"replay": phase1_extension.diagnostics()} if phase1_extension is not None else {}),
             "clip_post_norm": post,
             "clip_owner_pre_norms": owner_pre,
             "clip_owner_post_norms": owner_post,
@@ -674,6 +686,7 @@ def _run_phase1(
     resume: bool,
     anchor_state: Mapping[str, torch.Tensor],
     progress: ProgressReporter | None = None,
+    phase1_extension: Any = None,
 ) -> tuple[dict[str, torch.Tensor], dict[str, Any], str]:
     from .train import validate_tasks
 
@@ -726,6 +739,13 @@ def _run_phase1(
             * int(recipe["updates_per_epoch"])
             for label, recipe in owner_recipes.items()
         }
+        if phase1_extension is not None:
+            expected_owner_updates.update(phase1_extension.expected_updates(expected_updates))
+            phase1_extension.load_state_dict(checkpoint.get("phase1_extension"), expected_updates)
+            saved_replay = _history_last(root / "diagnostics.jsonl").get("replay", {})
+            replay_state = phase1_extension.state_dict()
+            if any(saved_replay.get(key) != replay_state[key] for key in ("cursor_hash", "rng_hash")):
+                raise ValueError("Phase1 replay checkpoint/history mismatch")
         if scheduler.updates != expected_owner_updates:
             raise ValueError("Stage 3 three-phase owner scheduler update mismatch")
         expected_frozen = sorted(
@@ -762,6 +782,8 @@ def _run_phase1(
     counts = plan["data"]["N_t"]
     group_weights = {group: config.groups[group].group_weight for group in config.groups}
     for epoch in range(start, epochs + 1):
+        if phase1_extension is not None:
+            phase1_extension.begin_epoch()
         active_owners = tuple(
             owners[label]
             for label, recipe in owner_recipes.items()
@@ -777,6 +799,7 @@ def _run_phase1(
             group_weights=group_weights,
             task_order_rng=task_order_rng,
             progress=progress, progress_desc=f"fold{fold} P1 epoch {epoch}/{epochs}",
+            phase1_extension=phase1_extension,
         )
         updates += steps_per_epoch
         remaining_owners = tuple(
@@ -825,6 +848,7 @@ def _run_phase1(
                     task_order_rng=task_order_rng,
                     config=config, fold=fold, plan=plan,
                     normalizations=normalizations,
+                    phase1_extension=phase1_extension,
                 ),
             )
     if validation is None:
@@ -1166,6 +1190,7 @@ def run_three_phase_training(
     plan: Mapping[str, Any],
     device: torch.device,
     progress: ProgressReporter | None = None,
+    phase1_extension: Any = None,
 ) -> list[dict[str, Any]]:
     from .train import validate_tasks
 
@@ -1196,6 +1221,7 @@ def run_three_phase_training(
         valid_data=valid_data, representations=representations,
         normalizations=normalizations, registry=registry, device=device,
         resume=resume, anchor_state=initial_state, progress=progress,
+        phase1_extension=phase1_extension,
     )
     if "encoder_finetune" in plan or "object_encoder_phase1" in plan:
         representations.freeze_after_phase1(model, phase1_hash)
@@ -1309,6 +1335,10 @@ def run_three_phase_training(
             or artifact.get("model_state_hash") != final_hash
             or artifact.get("ownership_manifest") != model.ownership_manifest()
             or artifact.get("normalization_hash") != plan["normalization_hash"]
+            or ("cross_domain_home" in plan and (
+                artifact.get("cross_domain_home") != plan["cross_domain_home"]
+                or manifest.get("cross_domain_home") != plan["cross_domain_home"]
+            ))
             or (
                 "stage2_home_transfer" in plan and "encoder_finetune" in plan
                 and (
@@ -1396,6 +1426,8 @@ def run_three_phase_training(
         artifact["final_embedding_hash"] = representations.final_embedding_hash
     if "stage2_home_transfer" in plan:
         artifact["stage2_home_transfer"] = dict(plan["stage2_home_transfer"])
+    if "cross_domain_home" in plan:
+        artifact["cross_domain_home"] = dict(plan["cross_domain_home"])
     atomic_torch_save(artifact_path, artifact)
     manifest = {
         "kind": _final_kind(plan),
@@ -1433,6 +1465,8 @@ def run_three_phase_training(
         manifest["final_embedding_hash"] = artifact["final_embedding_hash"]
     if "stage2_home_transfer" in plan:
         manifest["stage2_home_transfer"] = dict(plan["stage2_home_transfer"])
+    if "cross_domain_home" in plan:
+        manifest["cross_domain_home"] = dict(plan["cross_domain_home"])
     atomic_json(manifest_path, manifest)
     return [{"phase": "three_phase_final", "validation": final_validation}]
 

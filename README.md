@@ -606,6 +606,55 @@ python scripts/benchmarks/summarize.py \
 中断后在同一train命令追加 `--resume`；validation只报告，始终使用固定末轮。
 原迁移结果不是同microbatch重新训练的配对control，结果差异不能全部归因于Stage1解冻。
 
+### Stage2–Stage3 HoME 跨域共享与 replay
+
+该独立消融保留完整 simulation HoME 作为持续参与预测的 physics prior；实验 GROUP
+对全部 simulation GROUP 可见。Stage1冻结，ObjectEncoder仅Phase1更新，replay与实验
+梯度合并后只执行一次optimizer step。需要已有Stage2-HoME完整epoch10 checkpoint，
+不能只使用旧的部分迁移artifact；还需保留现役Stage2 prepared数据与Base Stage3
+prepared artifact，用于replay与逐项核对split/归一化。正式Base不改变，具体合同见
+[ADR-0081](docs/adr/0081-stage2-stage3-cross-domain-home.md)。
+
+下面假设完整源模型位于 `outputs/ablations/stage2_home_transfer_batch256`；如实际位于
+其他目录，只替换所有命令的 `--source-dir`。新根目录不能包含历史实验输出。
+
+```bash
+python scripts/stage3/cross_domain_home.py export-source \
+  --config configs/ablations/stage2_stage3_cross_domain_home.yaml \
+  --source-dir outputs/ablations/stage2_home_transfer_batch256 \
+  --output outputs/ablations/stage2_stage3_cross_domain_home
+
+python scripts/stage3/cross_domain_home.py prepare \
+  --config configs/ablations/stage2_stage3_cross_domain_home.yaml \
+  --source-dir outputs/ablations/stage2_home_transfer_batch256 \
+  --output outputs/ablations/stage2_stage3_cross_domain_home
+
+python scripts/stage3/cross_domain_home.py train \
+  --config configs/ablations/stage2_stage3_cross_domain_home.yaml \
+  --source-dir outputs/ablations/stage2_home_transfer_batch256 \
+  --output outputs/ablations/stage2_stage3_cross_domain_home \
+  --fold 1 2 3 4 5 --max-parallel 4 --devices cuda:0,cuda:1,cuda:2,cuda:3
+
+python scripts/stage3/cross_domain_home.py evaluate \
+  --config configs/ablations/stage2_stage3_cross_domain_home.yaml \
+  --source-dir outputs/ablations/stage2_home_transfer_batch256 \
+  --output outputs/ablations/stage2_stage3_cross_domain_home \
+  --split valid --fold 1 2 3 4 5
+
+python scripts/stage3/cross_domain_home.py evaluate \
+  --config configs/ablations/stage2_stage3_cross_domain_home.yaml \
+  --source-dir outputs/ablations/stage2_home_transfer_batch256 \
+  --output outputs/ablations/stage2_stage3_cross_domain_home --split test
+
+python scripts/benchmarks/summarize.py \
+  --input outputs/ablations/stage2_stage3_cross_domain_home \
+  --output summary_cross_domain_home
+```
+
+训练有进度条，`--resume`只恢复严格匹配的完整epoch。每个fold拥有两个HoME分支，
+显存不足时先降低并发数，不自动改microbatch或科研预算。先分析五折validation和
+effective simulation contribution，再报告test；不得依据test选择checkpoint或配置。
+
 ### Stage 3 三级 transfer knowledge 消融
 
 该隔离实验按 [ADR-0072](docs/adr/0072-stage3-transfer-knowledge-hierarchy-ablation.md)

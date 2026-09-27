@@ -46,6 +46,7 @@
 | Stage2→Stage3 下游联合适配 | [0068](0068-stage2-stage3-joint-downstream-adaptation.md) |
 | Stage2-HoME → Stage3-HoME 迁移消融 | [0079](0079-stage2-home-stage3-home-transfer-ablation.md) |
 | Stage2-HoME Transfer 全量微调 | [0080](0080-stage2-home-transfer-full-finetune.md) |
+| Stage2–Stage3 HoME 跨域共享 + replay | [0081](0081-stage2-stage3-cross-domain-home.md) |
 
 ## 冻结合同与历史
 

@@ -44,8 +44,6 @@ from .model import (
     Stage3SparseModel,
     group_owner,
     private_owner,
-    summarize_task_gate_observations,
-    task_gate_observations,
 )
 from .gradient_assembly import GradientMap
 from .prepare import load_prepared_stage3
@@ -920,13 +918,13 @@ def validate_tasks(
             targets.append(target.float().cpu())
             if config.training.schedule_mode == "three_phase":
                 gate_observations.append(
-                    task_gate_observations(output.diagnostics).cpu()
+                    model.gate_observations(output.diagnostics).cpu()
                 )
         per_task[task_id] = regression_metrics(
             torch.cat(predictions), torch.cat(targets), normalizations[task_id]
         )
         if gate_observations:
-            gate_diagnostics[task_id] = summarize_task_gate_observations(
+            gate_diagnostics[task_id] = model.summarize_gate_observations(
                 torch.cat(gate_observations)
             )
     metrics = ("mae", "rmse", "r2", "pearson_r", "normalized_mae", "normalized_rmse")
