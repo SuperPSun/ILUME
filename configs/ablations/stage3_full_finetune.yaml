@@ -73,7 +73,7 @@ tasks:
   experiment/pec50: {meta_group: biological, unique_systems: 305, size_class: small, phase3_private_epochs: 3, model_overrides: {private_hidden_ratio: 0.75, tower_hidden_ratio: 0.75, film_hidden_ratio: 0.75}}
 training:
   composite_batch_size: 2048
-  microbatch_size: 8
+  microbatch_size: 128
   sampling_mode: raw
   schedule_mode: three_phase
   three_phase:

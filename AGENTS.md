@@ -32,7 +32,7 @@
 - Stage 3 编码器微调（ADR-0073）是隔离消融：只在Phase 1更新Stage 1表示编码器和Stage 2 ObjectEncoder，Phase 2/3冻结；独立特征输入、训练身份和final kind，不修改Base prepared artifact或正式Flat路径。历史Base只作非严格配对对照。
 - Stage 2 零训练对照（ADR-0075）从相同Stage 1 checkpoint和Stage 2 seed导出零更新ObjectEncoder；新正式Base和No-Stage2在Stage 3 Phase 1都适配ObjectEncoder。旧冻结Base不是配对control；transfer-knowledge固定bank保留历史例外。
 - Stage2-HoME→Stage3-HoME（ADR-0079）是独立消融：九任务 physics-only HoME 源模型训练十轮，仅迁移表示、GLOBAL和可映射的thermophysical/solvation GROUP；电子GROUP、simulation PRIVATE不迁移。Stage3仍按现役Base的ObjectEncoder Phase 1与`weighted_owner_raw_v1`三阶段训练，独立身份和产物不得与Base交叉加载。它是整套预训练方案对比，不是纯head架构单变量对比。
-- Stage2-HoME Transfer 全量微调（ADR-0080）复用0079源artifact与HoME初始化，仅Phase 1以5e-6/1.5e-5更新Stage1编码器/ObjectEncoder，microbatch8；Phase 2/3冻结。独立prepare、identity和final kind，不改0079或Base。历史迁移结果不是同微批配对control。
+- Stage2-HoME Transfer 全量微调（ADR-0080）复用0079源artifact与HoME初始化，仅Phase 1以5e-6/1.5e-5更新Stage1编码器/ObjectEncoder，microbatch128（普通全量微调同样为128）；Phase 2/3冻结。独立prepare、identity和final kind，不改0079或Base。历史迁移结果不是同微批配对control。
 - 等行数迁移矩阵（ADR-0065/0071）已退役；旧输出只读，现役 transfer 只接受 full-data 配置与产物。
 - Baseline 只复用 registry、split、canonical SMILES、condition/target 与评估口径，不改变 Stage 数值合同。按 ADR 索引读取各模型合同，不能把一个模型的预算推及其他模型。
 - ADR-0045：MLP/D-MPNN/MoLFormer/ILBERT/SPMM/LlaSMol 均为 10 epochs，XGBoost 为 1000 trees；全部发布 final state。AIonopedia、ILTransR 与 AIFC 也使用各自现役的 10-epoch recipe。除模型 ADR 明定外，validation 不驱动早停、选 checkpoint、scheduler 或训练决策。

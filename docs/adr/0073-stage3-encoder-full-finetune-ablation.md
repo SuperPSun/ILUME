@@ -8,7 +8,9 @@
 
 本实验从 Base 所用的 `stage2_encoder.pt` 初始化 Stage 1 三模态表示编码器与 Stage 2 ObjectEncoder。仅在 Stage 3 Phase 1 的 15 个 raw epochs 中，使用 Stage 3 标签反向更新这两级编码器；Stage 1 重建头与 Stage 2 physics heads 不参与前向或优化。Phase 2/3 将编码器以 `requires_grad=False` 冻结并置为 eval，六个 GROUP 与二十个 PRIVATE 分支继续从共同 anchor 独立训练、固定末轮 stitch。Flat HoME、owner lifetime、`weighted_owner_raw_v1`、task/group weight、loss 和 validation reporting-only 保持 Base 配置。
 
-Stage 1/ObjectEncoder 分别是两个独立的 Phase 1 owner，LR 为 `5e-6`/`1.5e-5`，各使用 5% update warmup、cosine 到初始值的 0.1，并各自裁剪到 norm 1。两级共享表示梯度按与 GLOBAL 相同的 task/group 权重汇总。行级 microbatch 固定为 8；每 task 的 `B_t`、epoch exposure和optimizer update次数仍由 Base raw allocation 决定。
+Stage 1/ObjectEncoder 分别是两个独立的 Phase 1 owner，LR 为 `5e-6`/`1.5e-5`，各使用 5% update warmup、cosine 到初始值的 0.1，并各自裁剪到 norm 1。两级共享表示梯度按与 GLOBAL 相同的 task/group 权重汇总。行级 microbatch 固定为 128；每 task 的 `B_t`、epoch exposure和optimizer update次数仍由 Base raw allocation 决定。
+
+2026-09-27 因用户报告 microbatch256 显存不足，将 microbatch 统一为 128，退役 8/64/256 的现役训练设置。该字段进入训练身份，旧 checkpoint 不可续训，新训练使用独立输出目录；prepared/features 数学合同不变，但入口要求新输出根中具备相应输入，HoME-Transfer 全量微调须先运行 prepare。浮点累加和 dropout 随机数路径可能变化，不保证复现旧微批结果。
 
 消融 prepare 只把 Base ObjectKey 转成 Stage 1 tokenizer/graph/RDKit 输入，并绑定 Base prepared identity、Stage 2 encoder SHA 与 ObjectKey 顺序。Phase 1 不缓存可微 embedding；结束后可缓存绑定 Phase 1 模型状态的只读 embedding 供 Phase 2/3 使用。Base prepared artifact不修改、不覆盖。
 

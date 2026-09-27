@@ -3381,7 +3381,7 @@ def test_full_finetune_config_only_changes_base_microbatch() -> None:
     expected["data"]["artifacts_dir"] = "outputs/v2/stage3/base/prepare/artifacts"
     expected["preparation"]["cache_dir"] = "outputs/v2/stage3/base/prepare/object_cache"
     expected["training"].pop("object_encoder_phase1")
-    expected["training"]["microbatch_size"] = 8
+    expected["training"]["microbatch_size"] = 128
     assert config.to_dict() == expected
     assert recipe.stage1_lr == pytest.approx(5e-6)
     assert recipe.stage2_lr == pytest.approx(1.5e-5)
@@ -3402,7 +3402,7 @@ def test_home_transfer_full_finetune_recipe_and_initialization(tmp_path: Path) -
     base = load_stage3_config("configs/v2/stage3/base.yaml")
     expected = base.to_dict()
     expected["training"].pop("object_encoder_phase1")
-    expected["training"]["microbatch_size"] = 8
+    expected["training"]["microbatch_size"] = 128
     expected["data"]["artifacts_dir"] = str(tmp_path / "new/prepare/artifacts")
     expected["preparation"]["cache_dir"] = str(tmp_path / "new/prepare/object_cache")
     expected["initialization"]["stage2_encoder"] = str(tmp_path / "source/stage2/stage2_encoder.pt")

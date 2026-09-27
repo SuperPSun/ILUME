@@ -73,7 +73,7 @@ def load_config(
         raise ValueError("Fine-tuning output must be isolated from the source experiment")
     expected = source.stage3.to_dict()
     expected["training"].pop("object_encoder_phase1")
-    expected["training"]["microbatch_size"] = 8
+    expected["training"]["microbatch_size"] = 128
     if config.to_dict() != expected:
         raise ValueError("HoME full fine-tuning must preserve the source Stage3 recipe except microbatch/encoder owners")
     recipe.validate(config)

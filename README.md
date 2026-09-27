@@ -602,7 +602,7 @@ python scripts/benchmarks/summarize.py \
   --output summary_home_transfer_full_finetune
 ```
 
-训练microbatch固定8，不自动调整；每个并发fold持有完整编码器和HoME，须确认显存容量。
+两套全量微调配置的训练microbatch统一为128，不自动调整；实际每次前向最多使用当前task batch的剩余行数，不补齐。每个并发fold持有完整编码器和HoME，须确认显存容量。旧microbatch8/64/256 checkpoint不能续训到新配置，须使用新输出目录，并先在该目录运行prepare。
 中断后在同一train命令追加 `--resume`；validation只报告，始终使用固定末轮。
 原迁移结果不是同microbatch重新训练的配对control，结果差异不能全部归因于Stage1解冻。
 
