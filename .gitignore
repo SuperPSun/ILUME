@@ -14,6 +14,7 @@ dist/
 # Includes run_config.yaml, metadata.json, summary.json,
 # attempts.jsonl, checkpoints, metrics, artifacts, etc.
 /outputs/
+summary*/
 
 # Historical and local research payloads
 /artifacts/
@@ -38,4 +39,4 @@ dist/
 *.log
 *.tmp
 metrics.jsonl
-summary/
+
