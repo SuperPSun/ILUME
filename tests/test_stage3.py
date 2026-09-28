@@ -131,7 +131,7 @@ def test_stage2_home_source_mapping_and_state_boundary() -> None:
     assert {spec.meta_group for spec in specs.values()} == {
         "thermophysical", "solvation", "electronic_structure",
     }
-    config = load_stage3_config("configs/v2/stage3/base.yaml")
+    config = load_stage3_config("configs/v3/stage3/base.yaml")
     source = Stage3SparseModel(
         config.model, specs, 16,
         group_configs={
@@ -146,7 +146,7 @@ def test_stage2_home_source_mapping_and_state_boundary() -> None:
     from stage2.home_config import load_home_recipe
     from stage2.home_model import SimulationHoME
 
-    experiment = load_home_recipe("configs/v2/stage2/base.yaml")
+    experiment = load_home_recipe("configs/v3/stage2/base.yaml")
     fake_backbone = torch.nn.Module()
     fake_backbone.entity_dim = 16
     fake_backbone.atom_dim = 8
@@ -206,7 +206,7 @@ def test_stage2_home_source_mapping_and_state_boundary() -> None:
 def test_formal_home_source_rejects_old_kind(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config = load_stage3_config("configs/v2/stage3/base.yaml")
+    config = load_stage3_config("configs/v3/stage3/base.yaml")
     root = tmp_path / "train"
     root.mkdir()
     artifact = root / "stage2_final.pt"
@@ -280,7 +280,7 @@ def test_simulation_phase2_phase3_plan_and_identity() -> None:
     from stage3.simulation import SIMULATION_TASKS, extend_simulation_plan
     from stage3.three_phase import _final_kind, _scope_kind
 
-    config = load_stage3_config("configs/v2/stage3/base.yaml")
+    config = load_stage3_config("configs/v3/stage3/base.yaml")
     plan = {
         "data": {
             "N_t": {"experiment/density": 3}, "B_t": {"experiment/density": 2},
@@ -322,7 +322,7 @@ def test_simulation_phase2_phase3_plan_and_identity() -> None:
 def test_core_home_ablation_source_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
     from stage2.home_config import load_home_recipe
 
-    formal = load_home_recipe("configs/v2/stage2/base.yaml")
+    formal = load_home_recipe("configs/v3/stage2/base.yaml")
     random_stage1 = load_home_recipe("configs/ablations/no_stage1_stage2.yaml")
     assert random_stage1.initialization == "random_stage1"
     assert random_stage1.random_seed == 42
@@ -341,7 +341,7 @@ def test_core_home_ablation_source_isolation(monkeypatch: pytest.MonkeyPatch) ->
     with pytest.raises(ValueError, match="zero-update"):
         validate_encoder_source(no_stage2)
 
-    formal_config = load_stage3_config("configs/v2/stage3/base.yaml")
+    formal_config = load_stage3_config("configs/v3/stage3/base.yaml")
     no_stage1 = load_stage3_config("configs/ablations/no_stage1_stage3.yaml")
     metadata = {
         "kind": STAGE3_ARTIFACT_KIND,
@@ -360,7 +360,7 @@ def test_stage2_home_masked_micro_loss_and_identity() -> None:
     from stage2.home_config import load_home_recipe
     from stage2.home_train import _loss_for_micro
 
-    experiment = load_home_recipe("configs/v2/stage2/base.yaml")
+    experiment = load_home_recipe("configs/v3/stage2/base.yaml")
     assert experiment.stage2_microbatch_size == 256
     assert experiment.stage2_epochs == 10
     assert experiment.stage2.training.backbone_frozen_epochs == 0
@@ -396,7 +396,7 @@ def test_home_microbatch_config_and_identity(tmp_path: Path) -> None:
     from stage2.home_config import load_home_recipe
     from stage2.home_train import training_identity
 
-    raw = yaml.safe_load(Path("configs/v2/stage2/base.yaml").read_text())
+    raw = yaml.safe_load(Path("configs/v3/stage2/base.yaml").read_text())
     identities = []
     for size in (8, 64, 256):
         raw["home"]["microbatch_size"] = size
@@ -737,7 +737,7 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
     assert checkpoint_epochs(100, 10) == tuple(range(10, 101, 10))
     assert checkpoint_epochs(23, 10) == (10, 20, 23)
 
-    v2 = load_stage3_config("configs/v2/stage3/base.yaml")
+    v2 = load_stage3_config("configs/v3/stage3/base.yaml")
     no_stage1 = load_stage3_config("configs/ablations/no_stage1_stage3.yaml")
     no_stage2 = load_stage3_config("configs/ablations/no_stage2_stage3.yaml")
     assert len(v2.enabled_task_ids) == 20
@@ -806,7 +806,7 @@ def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
 
 
 def test_three_phase_config_and_task_specific_gate_contract() -> None:
-    config = load_stage3_config("configs/v2/stage3/base.yaml")
+    config = load_stage3_config("configs/v3/stage3/base.yaml")
     assert config.training.schedule_mode == "three_phase"
     assert config.training.three_phase is not None
     serialized = config.to_dict()
@@ -907,7 +907,7 @@ def test_three_phase_config_and_task_specific_gate_contract() -> None:
 
 
 def test_three_phase_private_capacity_ratios_follow_size_class() -> None:
-    config = load_stage3_config("configs/v2/stage3/base.yaml")
+    config = load_stage3_config("configs/v3/stage3/base.yaml")
     fallback_task = "experiment/dynamic_relative_permittivity"
     fallback_config = replace(
         config,
@@ -1023,7 +1023,7 @@ def test_task_gate_diagnostics_partition_entropy_and_pooled_quantiles() -> None:
 def test_three_phase_task_budget_overrides_are_strict(
     field: str, value: object, message: str
 ) -> None:
-    payload = load_stage3_config("configs/v2/stage3/base.yaml").to_dict()
+    payload = load_stage3_config("configs/v3/stage3/base.yaml").to_dict()
     payload = json.loads(json.dumps(payload))
     payload["tasks"]["experiment/density"][field] = value
     with pytest.raises(ValueError, match=message):
@@ -1032,7 +1032,7 @@ def test_three_phase_task_budget_overrides_are_strict(
 
 @pytest.mark.parametrize("value", (True, -0.01, 0.151, "0.15"))
 def test_three_phase_private_dropout_override_is_bounded(value: object) -> None:
-    payload = load_stage3_config("configs/v2/stage3/base.yaml").to_dict()
+    payload = load_stage3_config("configs/v3/stage3/base.yaml").to_dict()
     payload = json.loads(json.dumps(payload))
     payload["tasks"]["experiment/density"]["model_overrides"] = {
         "private_dropout": value
@@ -1079,7 +1079,7 @@ def test_simulation_branches_stitch_and_resume(tiny_prepared: Stage3Config) -> N
     )
     config = replace(config, training=replace(
         config.training,
-        simulation=load_stage3_config("configs/v2/stage3/base.yaml").training.simulation,
+        simulation=load_stage3_config("configs/v3/stage3/base.yaml").training.simulation,
     ))
 
     class TinySimulationData:
@@ -1876,7 +1876,7 @@ def test_microbatch_accumulation_matches_full_task_batch(tiny_prepared: Stage3Co
             assert torch.allclose(left, right, atol=1e-6, rtol=1e-5)
 
 def test_raw_gradient_config_and_identity(tiny_prepared: Stage3Config) -> None:
-    base = load_stage3_config("configs/v2/stage3/base.yaml")
+    base = load_stage3_config("configs/v3/stage3/base.yaml")
     assert "pcgrad_mode" not in base.to_dict()["training"]
     assert "debug_pcgrad_traces" not in base.to_dict()["training"]
     assert stage3_config_from_dict(base.to_dict()) == base

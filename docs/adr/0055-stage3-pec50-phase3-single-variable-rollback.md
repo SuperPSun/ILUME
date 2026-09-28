@@ -6,7 +6,7 @@
 
 以当时最佳 recipe 为基线，只将 pEC50 Phase 3 从 5 回调到 3，避免混入其他变量。
 本页是现役 task recipe 的阅读入口；完整参数以各正式 YAML 为准，主线见
-[Base YAML](../../configs/v2/stage3/base.yaml)。历史尝试见 [历史摘要](history.md#adr-0051)。
+[Base YAML](../../configs/v3/stage3/base.yaml)。历史尝试见 [历史摘要](history.md#adr-0051)。
 
 ## 现役例外
 

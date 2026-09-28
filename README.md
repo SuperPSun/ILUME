@@ -17,24 +17,22 @@ python scripts/stage1/prepare.py --config configs/v2/stage1/base.yaml --output o
 python scripts/stage1/train.py --config configs/v2/stage1/base.yaml --output outputs/v2/stage1/base/train
 ```
 
-Stage2 只准备九任务数据，不建立 teacher cache。physics-only HoME 使用逻辑 batch 256、微批 256，训练 10 轮并发布末轮完整九任务模型 `stage2_final.pt`、manifest 和供 Stage3 表示迁移的 `stage2_encoder.pt`。完整模型包括 Stage1 backbone、ObjectEncoder、全部 HoME owner、task routing/towers 与 atom adapter。一个逻辑 batch 只执行一次 optimizer/scheduler update；评估合同见 [ADR-0083](docs/adr/0083-stage2-home-full-artifact-evaluation.md)。
+Stage2 只准备九任务数据，不建立 teacher cache。physics-only HoME 使用逻辑 batch 256、微批 256，训练 10 轮并发布末轮完整九任务模型 `stage2_final.pt`、manifest 和供 Stage3 表示迁移的 `stage2_encoder.pt`。完整模型包括 Stage1 backbone、ObjectEncoder、全部 HoME owner、task routing/towers 与 atom adapter。一个逻辑 batch 只执行一次 optimizer/scheduler update；完整产物合同见 [ADR-0083](docs/adr/0083-stage2-home-full-artifact-evaluation.md)。
 
 ```bash
-python scripts/stage2/prepare.py --config configs/v2/stage2/base.yaml --output outputs/v3/stage2/base/prepare
-python scripts/stage2/train.py --config configs/v2/stage2/base.yaml --output outputs/v3/stage2/base/train
-python scripts/stage2/evaluate.py --config configs/v2/stage2/base.yaml --checkpoint-dir outputs/v3/stage2/base/train --split valid --output outputs/v3/stage2/base/valid
-python scripts/stage2/evaluate.py --config configs/v2/stage2/base.yaml --checkpoint-dir outputs/v3/stage2/base/train --split test --output outputs/v3/stage2/base/test
+python scripts/stage2/prepare.py --config configs/v3/stage2/base.yaml --output outputs/v3/stage2/base/prepare
+python scripts/stage2/train.py --config configs/v3/stage2/base.yaml --output outputs/v3/stage2/base/train
 ```
 
-Stage2 正式评估只报告 heat of vaporization、thermal expansion、HOMO、LUMO、partial atomic charge；simulated QM electrostatic/HF 权重仍保存在完整模型中。当前 thermal expansion test split 已补齐，test 榜单纳入五项；任务集合和数据来源仍进入比较身份。Stage2 与 Stage3 榜单分开发布。
+Stage2 不再提供独立 evaluate 入口或 validation/test 榜单（[ADR-0085](docs/adr/0085-retire-stage2-home-evaluation.md)）。完整九任务模型及 `SimulationHoME.predict` 保留；五项模拟任务在 Stage3 Phase2/3 继续训练，最终由 Stage3 模型预测。
 
-Stage3 在 Phase1 适配 ObjectEncoder，Phase2/3 冻结它。Stage1 entity slots 冻结；15-epoch Phase1 仍只训练 20 项实验任务。Phase2 将五项模拟任务加入 thermophysical 与新增 electronic GROUP，Phase3 分别训练它们的 PRIVATE；Stage2 的模拟预测头和 atom adapter 进入最终 `three_phase_final.pt`。模拟任务使用 Stage2 prepared train 的原始样本逐轮覆盖，Phase2 共享 thermophysical GROUP 内模拟任务权重为 0.1、实验任务为 1.0，电子 GROUP 和 Phase3 不降权；电子 GROUP 沿用 thermophysical 的 4 轮预算，五项 PRIVATE 均按 Stage3 large 类训练。Stage3 实验 leaderboard 仍只汇总 20 项实验任务；模拟 validation 在 final 中单独记录，Stage2 五任务榜单继续独立发布。`--output` 是五折共同 root，实际训练位于 `foldN/`；并行时显式指定 GPU 槽。
+Stage3 在 Phase1 适配 ObjectEncoder，Phase2/3 冻结它。Stage1 entity slots 冻结；15-epoch Phase1 仍只训练 20 项实验任务。Phase2 将五项模拟任务加入 thermophysical 与新增 electronic GROUP，Phase3 分别训练它们的 PRIVATE；Stage2 的模拟预测头和 atom adapter 进入最终 `three_phase_final.pt`。模拟任务使用 Stage2 prepared train 的原始样本逐轮覆盖，Phase2 共享 thermophysical GROUP 内模拟任务权重为 0.1、实验任务为 1.0，电子 GROUP 和 Phase3 不降权；电子 GROUP 沿用 thermophysical 的 4 轮预算，五项 PRIVATE 均按 Stage3 large 类训练。Stage3 实验 leaderboard 仍只汇总 20 项实验任务；模拟 validation 在 final 中单独记录。`--output` 是五折共同 root，实际训练位于 `foldN/`；并行时显式指定 GPU 槽。
 
 ```bash
-python scripts/stage3/prepare.py --config configs/v2/stage3/base.yaml --output outputs/v3/stage3/base/prepare
-python scripts/stage3/train.py --config configs/v2/stage3/base.yaml --fold 1 2 3 4 5 --output outputs/v3/stage3/base/train --max-parallel 4 --devices cuda:0,cuda:1,cuda:2,cuda:3
-python scripts/stage3/evaluate.py --config configs/v2/stage3/base.yaml --checkpoint-dir outputs/v3/stage3/base/train --split valid --fold 1 2 3 4 5 --output outputs/v3/stage3/base/valid
-python scripts/stage3/evaluate.py --config configs/v2/stage3/base.yaml --checkpoint-dir outputs/v3/stage3/base/train --split test --ensemble-folds --output outputs/v3/stage3/base/test
+python scripts/stage3/prepare.py --config configs/v3/stage3/base.yaml --output outputs/v3/stage3/base/prepare
+python scripts/stage3/train.py --config configs/v3/stage3/base.yaml --fold 1 2 3 4 5 --output outputs/v3/stage3/base/train --max-parallel 4 --devices cuda:0,cuda:1,cuda:2,cuda:3
+python scripts/stage3/evaluate.py --config configs/v3/stage3/base.yaml --checkpoint-dir outputs/v3/stage3/base/train --split valid --fold 1 2 3 4 5 --output outputs/v3/stage3/base/valid
+python scripts/stage3/evaluate.py --config configs/v3/stage3/base.yaml --checkpoint-dir outputs/v3/stage3/base/train --split test --ensemble-folds --output outputs/v3/stage3/base/test
 ```
 
 只有身份一致且完整的 checkpoint 可以恢复；验证只记录，不选模型。先看五折 validation，再报告 test ensemble。Stage3 的正式最终文件名仍为 `three_phase_final.pt`；五项模拟任务可通过 `stage3.home.load_simulation_final()` 加载 final，并使用模型的 `predict_simulation()` 接口和 Stage2 的 packed 输入推理。
@@ -61,7 +59,7 @@ python scripts/stage3/evaluate.py --config configs/ablations/no_stage1_stage3.ya
 从同一 Stage1 checkpoint 与 Stage2 seed 导出零更新 ObjectEncoder；Stage3 Phase1 仍适配它，且不接收 Stage2-HoME owner。按当前消融合同，该对照维持 20 项实验任务，不加入五项模拟辅助训练；因此与 Full ILUME 的差异不只包含 Stage2 权重。该对照依赖已完成的正式 Stage2 encoder，仅用于验证配对来源与身份。
 
 ```bash
-python scripts/stage2/zero_update.py --config configs/v2/stage2/base.yaml --trained-encoder outputs/v3/stage2/base/train/stage2_encoder.pt --output outputs/v3/ablations/no_stage2/stage2_zero_update
+python scripts/stage2/zero_update.py --config configs/v3/stage2/base.yaml --trained-encoder outputs/v3/stage2/base/train/stage2_encoder.pt --output outputs/v3/ablations/no_stage2/stage2_zero_update
 python scripts/stage3/prepare.py --config configs/ablations/no_stage2_stage3.yaml --output outputs/v3/ablations/no_stage2/stage3/prepare
 python scripts/stage3/train.py --config configs/ablations/no_stage2_stage3.yaml --fold 1 2 3 4 5 --output outputs/v3/ablations/no_stage2/stage3/train --max-parallel 4 --devices cuda:0,cuda:1,cuda:2,cuda:3
 python scripts/stage3/evaluate.py --config configs/ablations/no_stage2_stage3.yaml --checkpoint-dir outputs/v3/ablations/no_stage2/stage3/train --split valid --fold 1 2 3 4 5 --output outputs/v3/ablations/no_stage2/stage3/valid
@@ -76,12 +74,35 @@ python scripts/stage3/evaluate.py --config configs/ablations/no_stage2_stage3.ya
 python scripts/benchmarks/sweep.py --config configs/ablations/no_stage3_home.yaml --output outputs/v3/ablations/no_stage3_home --max-workers 1
 ```
 
+## 四项模拟性质比较
+
+十个正式 baseline 另训 heat of vaporization、thermal expansion、HOMO、LUMO，各任务使用 catalog 的原有 train/valid/test，独立训练一次；不训练 partial charge，也不让模拟数据更新实验任务模型。神经 baseline 沿用各自 10 epochs、XGBoost 保持 1000 trees，发布末轮状态。内部单任务 MLP 消融及历史 split 配置不加入这些作业。合同见 [ADR-0086](docs/adr/0086-scalar-simulation-baselines-and-reporting.md)。
+
+正式 baseline 的 sweep 默认运行实验任务和四项模拟任务；仅训练模拟任务时使用：
+
+```bash
+python scripts/benchmarks/sweep.py --config configs/benchmarks/mlp.yaml --benchmark simulation --output outputs/benchmarks/v4/mlp --max-workers 1
+```
+
+其余九个模型使用对应 `configs/benchmarks/<model>.yaml` 和独立 `outputs/benchmarks/v4/<model>`。全部任务可省略 `--benchmark`，只跑实验任务用 `--benchmark stage3`；新运行不覆盖旧 v3 输出；同一输出根固定使用同一种 sweep selector。模拟模型位于 `simulation/<task>/train/attempt-NNN/`，valid/test 在同一 task scope 下。单任务入口使用 `--benchmark simulation`，训练不传 `--fold`，评估使用 `--checkpoint .../train/attempt-NNN`（模型目录），不传 fold 或 ensemble 参数。
+
+Full ILUME 与 no-Stage1 的模拟性质评估使用五个 Stage3 final 对同一固定 split 预测：每折先还原到原单位，再取预测均值计算指标；不对指标取均值。Full 命令为：
+
+```bash
+python scripts/stage3/evaluate.py --config configs/v3/stage3/base.yaml --domain simulation --split valid --ensemble-folds --checkpoint-dir outputs/v3/stage3/base/train --output outputs/v3/stage3/base/simulation_valid
+python scripts/stage3/evaluate.py --config configs/v3/stage3/base.yaml --domain simulation --split test --ensemble-folds --checkpoint-dir outputs/v3/stage3/base/train --output outputs/v3/stage3/base/simulation_test
+```
+
+no-Stage1 使用其独立配置与输出根；no-Stage2 和单任务 MLP 消融没有这四项模拟预测分支，不支持该 domain。simulation 评估不接受 `--fold`、`--tasks` 或 `--checkpoint-epoch`。partial charge 仍在 Stage3 中训练并记录 validation，但不进入本次四项 scalar 比较。
+
+统一 summarizer 发布独立 `simulation_{validation,test}_leaderboard.csv`、逐任务 metrics/MAE/rank 表。主指标为四任务等权 macro normalized MAE，归一尺度来自原始 train split 的 population standard deviation；原单位 MAE/RMSE/R² 同时发布。比较身份严格核对原始 split、完整行集合和尺度，不能静默取交集。模拟结果不进入实验榜单、wins、radar 或 scatter。Stage2 evaluate 继续退役。
+
 ## Baselines and Ablations
 
 独立 baseline 的配置在 `configs/benchmarks/`，代码在 `benchmarks/`。训练预算、环境和模型合同从 [ADR 索引](docs/adr/README.md)查阅。以 D-MPNN 为例：
 
 ```bash
-python scripts/benchmarks/sweep.py --config configs/benchmarks/dmpnn.yaml --output outputs/benchmarks/fixed-budget-10e-v1/dmpnn --max-workers 1
+python scripts/benchmarks/sweep.py --config configs/benchmarks/dmpnn.yaml --output outputs/benchmarks/v4/dmpnn --max-workers 1
 ```
 
 高级 baseline 的环境与资产步骤如下；各模型不自动安装或回退。

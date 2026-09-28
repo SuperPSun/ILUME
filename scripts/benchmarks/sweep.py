@@ -227,7 +227,7 @@ def _run(
     return output if exit_code == 0 else None
 
 
-JobKind = Literal["stage3_fold", "stage3_ensemble"]
+JobKind = Literal["stage3_fold", "stage3_ensemble", "simulation"]
 
 
 @dataclass(frozen=True)
@@ -251,6 +251,9 @@ class _JobResult:
 
 
 def _job_roots(root: Path, job: _Job) -> tuple[Path, ...]:
+    if job.kind == "simulation":
+        task_root = root / "simulation" / _sanitize(job.task)
+        return task_root / "train", task_root / "evaluate_valid", task_root / "evaluate_test"
     if job.kind == "stage3_fold":
         assert job.fold is not None
         task_root = root / "stage3" / _sanitize(job.task)
@@ -260,7 +263,7 @@ def _job_roots(root: Path, job: _Job) -> tuple[Path, ...]:
 
 def _build_jobs(
     *, root: Path, stage3_tasks: tuple[str, ...], folds: tuple[int, ...],
-    devices: tuple[str, ...],
+    devices: tuple[str, ...], simulation_tasks: tuple[str, ...] = (),
 ) -> tuple[list[_Job], dict[str, _Job]]:
     jobs: list[_Job] = []
     ensembles: dict[str, _Job] = {}
@@ -282,6 +285,8 @@ def _build_jobs(
         ensembles[task] = _Job(
             (0, task_index, len(folds)), "stage3_ensemble", "stage3", task, None, next_device()
         )
+    for index, task in enumerate(simulation_tasks):
+        jobs.append(_Job((1, index, 0), "simulation", "simulation", task, None, next_device()))
     all_jobs = [*jobs, *ensembles.values()]
     keys = [job.key for job in all_jobs]
     roots = [job_root for job in all_jobs for job_root in _job_roots(root, job)]
@@ -310,6 +315,22 @@ def _execute_job(
     train_script: Path, evaluate_script: Path,
 ) -> _JobResult:
     env = _subprocess_env(job.device)
+    if job.kind == "simulation":
+        task_root = root / "simulation" / _sanitize(job.task)
+        checkpoint = _run(
+            state, operation="train", benchmark="simulation", task=job.task, fold=None,
+            root=task_root / "train", required="checkpoint.json", training_job=True, env=env,
+            command=[sys.executable, str(train_script), "--config", config_path, "--benchmark", "simulation", "--task", job.task],
+        )
+        if checkpoint is None:
+            return _JobResult(job, False)
+        for split in ("valid", "test"):
+            _run(
+                state, operation=f"evaluate_{split}", benchmark="simulation", task=job.task, fold=None,
+                root=task_root / f"evaluate_{split}", required="summary.json", env=env,
+                command=[sys.executable, str(evaluate_script), "--config", config_path, "--benchmark", "simulation", "--task", job.task, "--split", split, "--checkpoint", repository_relative(checkpoint)],
+            )
+        return _JobResult(job, True)
     if job.kind == "stage3_fold":
         assert job.fold is not None
         task_root = root / "stage3" / _sanitize(job.task)
@@ -414,7 +435,7 @@ def _schedule(
                     sequence += 1
 
 
-def _aggregate(root: Path, config: Any) -> dict[str, Any]:
+def _aggregate(root: Path, config: Any, *, benchmark: str = "all") -> dict[str, Any]:
     stage3_valid: dict[str, Any] = {}
     stage3_test: dict[str, Any] = {}
     stage3_valid_reporting: list[dict[str, Any]] = []
@@ -423,7 +444,7 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
         "stage3_validation": {},
         "stage3_test": {},
     }
-    for task in configured_tasks(config, "stage3"):
+    for task in configured_tasks(config, "stage3") if benchmark != "simulation" else ():
         task_root = root / "stage3" / _sanitize(task)
         fold_values = []
         for fold in config.stage3.folds:
@@ -474,6 +495,8 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
         expected: list[str],
         ensemble: bool,
     ) -> dict[str, Any]:
+        if not expected:
+            return {}
         sources: dict[str, Any] = {}
         normalization: dict[str, Any] = {}
         for fragment in fragments:
@@ -498,7 +521,7 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
             ensemble=ensemble,
         )
 
-    valid_expected = list(configured_tasks(config, "stage3"))
+    valid_expected = list(configured_tasks(config, "stage3")) if benchmark != "simulation" else []
     test_expected = [
         task
         for task in valid_expected
@@ -560,7 +583,40 @@ def _aggregate(root: Path, config: Any) -> dict[str, Any]:
             ),
         },
     }
+    if not valid_expected:
+        for section in stage3_sections.values():
+            section["status"] = "unsupported"
+    simulation_metrics = {}
+    if benchmark != "stage3" and config.simulation.enabled:
+        from stage3.simulation_reporting import simulation_comparison
+
+        for split, label in (("valid", "simulation_validation"), ("test", "simulation_test")):
+            values, sources, scales, fragments = {}, {}, {}, []
+            source_runs[label] = {}
+            for task in configured_tasks(config, "simulation"):
+                run = _latest_completed(root / "simulation" / _sanitize(task) / f"evaluate_{split}", "summary.json")
+                if run is None:
+                    continue
+                payload = json.loads((run / "summary.json").read_text())
+                fragment = payload["reporting"]
+                if fragment["study_id"] != study_id:
+                    raise ValueError("Simulation sweep contains incompatible reporting study identities")
+                values[task] = next(iter(payload["targets"].values()))
+                sources.update(fragment["comparison_identity"]["payload"]["sources"])
+                scales[task] = fragment["comparison_identity"]["payload"]["normalization"][task]["scale"]
+                source_runs[label][task] = repository_relative(run)
+                fragments.append(fragment)
+            expected = list(config.simulation.tasks)
+            complete = set(values) == set(expected)
+            section = {
+                "benchmark": "simulation_property", "status": "complete" if complete else "incomplete",
+                "protocol": {"split": split, "expected_tasks": expected, "ensemble": False, "folds": [], "model_selector": model_selector},
+                "comparison_identity": simulation_comparison(split=split, tasks=expected, sources=sources, scales=scales) if complete else None,
+            }
+            stage3_sections[label] = section
+            simulation_metrics[label] = values
     return {
+        "simulation_property_benchmark": simulation_metrics,
         "model": config.name,
         "model_selector": model_selector,
         "checkpoint_epoch": None,
@@ -611,6 +667,7 @@ def main() -> None:
     )
     parser.add_argument("--config", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--benchmark", choices=("all", "stage3", "simulation"), default="all")
     parser.add_argument(
         "--max-workers", type=_positive_int, default=1,
         help=("maximum concurrent train/evaluate subprocesses (default: 1); for "
@@ -624,6 +681,10 @@ def main() -> None:
     )
     args = parser.parse_args()
     config = load_benchmark_config(args.config)
+    stage3_tasks = configured_tasks(config, "stage3") if args.benchmark != "simulation" else ()
+    simulation_tasks = configured_tasks(config, "simulation") if args.benchmark != "stage3" else ()
+    if not stage3_tasks and not simulation_tasks:
+        parser.error("No configured tasks for the selected benchmark")
     environment_snapshot = ensure_benchmark_environment(config)
     try:
         devices = _parse_devices(args.devices)
@@ -638,12 +699,15 @@ def main() -> None:
         parser.error("--devices requires training.device: cuda")
 
     root = repository_path(args.output)
-    identity = semantic_identity("benchmark.sweep.v1", {"config": _scientific_config(config)})
+    identity_payload = {"config": _scientific_config(config)}
+    if config.simulation.enabled:
+        identity_payload["benchmark"] = args.benchmark
+    identity = semantic_identity("benchmark.sweep.v1", identity_payload)
     run = open_run_directory(
         stage="benchmark", operation="sweep", config_path=args.config,
         config_payload=config.to_dict(), semantic_identity=identity,
         output=args.output, seed=config.seed, reusable=True,
-        data_metadata="data/stage3/metadata.json",
+        data_metadata=f"data/{'stage2' if args.benchmark == 'simulation' else 'stage3'}/metadata.json",
         details={
             "reporting_schema_version": REPORTING_SCHEMA_VERSION,
             **environment_run_details(environment_snapshot),
@@ -654,8 +718,7 @@ def main() -> None:
     rows: list[dict[str, Any]] = []
     train_script = ROOT / "scripts/benchmarks/train.py"
     evaluate_script = ROOT / "scripts/benchmarks/evaluate.py"
-    stage3_tasks = configured_tasks(config, "stage3")
-    training_job_total = len(stage3_tasks) * len(config.stage3.folds)
+    training_job_total = len(stage3_tasks) * len(config.stage3.folds) + len(simulation_tasks)
     sweep_progress = ProgressReporter().bar(
         total=training_job_total, desc=f"{config.name} sweep", unit="train-job"
     )
@@ -665,7 +728,7 @@ def main() -> None:
     )
     jobs, ensembles = _build_jobs(
         root=root, stage3_tasks=stage3_tasks, folds=config.stage3.folds,
-        devices=devices,
+        devices=devices, simulation_tasks=simulation_tasks,
     )
     try:
         _schedule(
@@ -681,7 +744,7 @@ def main() -> None:
         sweep_progress.close()
 
     failures = sum(row["status"] == "FAILED" for row in rows)
-    summary = _aggregate(root, config)
+    summary = _aggregate(root, config, benchmark=args.benchmark)
     summary["jobs"] = {"total": len(rows), "failed": failures}
     if failures:
         run.fail()

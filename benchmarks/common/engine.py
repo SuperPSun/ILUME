@@ -39,13 +39,16 @@ class TargetStats:
     scale: tuple[float, ...]
 
     @classmethod
-    def fit(cls, values: np.ndarray) -> "TargetStats":
+    def fit(cls, values: np.ndarray, *, allow_constant: bool = False) -> "TargetStats":
         if values.ndim != 2 or values.shape[0] == 0 or not np.isfinite(values).all():
             raise ValueError("Benchmark train targets must be a non-empty finite matrix")
         mean = values.mean(axis=0)
         scale = values.std(axis=0)
-        if not np.isfinite(scale).all() or bool((scale <= 0).any()):
+        if not np.isfinite(scale).all():
+            raise ValueError("Benchmark train target has invalid variance")
+        if bool((scale <= 0).any()) and not allow_constant:
             raise ValueError("Benchmark train target has zero or invalid variance")
+        scale = np.where(scale > 0, scale, 1.0)
         return cls(tuple(float(value) for value in mean), tuple(float(value) for value in scale))
 
     def normalize(self, values: np.ndarray) -> np.ndarray:
@@ -149,7 +152,7 @@ def prepare_training(
         preprocessor = None
         train_features = ensure_finite_raw_features(train_raw)
         valid_features = ensure_finite_raw_features(valid_raw)
-    target_stats = TargetStats.fit(train.targets)
+    target_stats = TargetStats.fit(train.targets, allow_constant=task.benchmark == "simulation")
     source_hashes = _source_hashes(task)
     identity = semantic_identity(
         "benchmark.training.v1",

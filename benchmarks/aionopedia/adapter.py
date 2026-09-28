@@ -126,6 +126,8 @@ def _number(value: float) -> str:
 
 
 def _topology(task: BenchmarkTask) -> tuple[int, str]:
+    if task.slots == ("SMILES",) and not task.condition_columns:
+        return 4, "single_molecule"
     conditions = bool(task.condition_columns)
     if task.slots == ("cation", "anion"):
         return (2, "il_conditions") if conditions else (3, "il")
@@ -178,7 +180,10 @@ def _prepare_split(
         component = dict(zip(task.slots, components, strict=True))
         condition = dict(zip(task.condition_columns, conditions, strict=True))
         phrases = _condition_phrases(task, conditions)
-        if topology == 0:
+        if topology == 4:
+            prompts.append("molecule " + component["SMILES"])
+            graph_roles.append((component["SMILES"], "", ""))
+        elif topology == 0:
             prompts.append(
                 " ".join(
                     ["solute", component["solute"], *phrases, "solvent", component["solvent"]]
@@ -260,7 +265,7 @@ def prepare_aionopedia_training(
 
     task = resolve_task(config, benchmark, task_id, fold)
     train_raw, valid_raw = load_split(task, "train"), load_split(task, "valid")
-    target_stats = SampleStats.fit(train_raw.targets[:, 0], allow_constant=False)
+    target_stats = SampleStats.fit(train_raw.targets[:, 0], allow_constant=task.benchmark == "simulation")
     pressure_stats = None
     if "pressure_kPa" in task.condition_columns:
         column = task.condition_columns.index("pressure_kPa")
@@ -281,7 +286,7 @@ def prepare_aionopedia_training(
             "source_hashes": source_hashes,
             "target_statistics": asdict(target_stats),
             "pressure_statistics": asdict(pressure_stats) if pressure_stats else None,
-            "input_contract": AIONOPEDIA_INPUT_CONTRACT,
+            "input_contract": {**AIONOPEDIA_INPUT_CONTRACT, **({"single_molecule": {"topology_id": 4, "graph_role": "solute", "missing_roles": "empty_graph"}} if task.slots == ("SMILES",) else {})},
             "model": config.model,
             "training": config.training,
             "effective_seed": effective_seed,

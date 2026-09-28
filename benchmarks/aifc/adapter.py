@@ -111,6 +111,8 @@ def aifc_model_views(
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     if len(components) != len(task.slots):
         raise ValueError("AIFC components differ from registry slots")
+    if task.slots == ("SMILES",):
+        return ((canonicalize_view(components[0]),), ("molecule",))
     if task.slots == ("cation", "anion"):
         return (canonicalize_view(".".join(components)),), ("ionic_liquid",)
     if task.slots == ("cation", "anion", "solute"):
@@ -198,7 +200,7 @@ def prepare_aifc_training(
     train_raw = load_split(task, "train")
     valid_raw = load_split(task, "valid")
     condition_stats = ConditionStats.fit(task.condition_columns, train_raw.conditions)
-    target_stats = TargetStats.fit(train_raw.targets)
+    target_stats = TargetStats.fit(train_raw.targets, allow_constant=task.benchmark == "simulation")
     scheme_path = repository_path(config.model["fragment_scheme"])
     scheme = FragmentScheme.load(scheme_path)
     cache: dict[str, AIFCGraph] = {}

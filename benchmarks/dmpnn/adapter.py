@@ -166,7 +166,7 @@ def _prepare_scalar(
     valid = load_split(task, "valid")
     if len(task.target_columns) != 1:
         raise ValueError("D-MPNN v1 requires one scalar target per task")
-    target_stats = TargetStats.fit(train.targets)
+    target_stats = TargetStats.fit(train.targets, allow_constant=task.benchmark == "simulation")
     condition_stats = ConditionStats.fit(train.conditions)
     source_hashes = {
         "train": [sha256_file(path) for path in task.train_paths],

@@ -7,7 +7,7 @@
 
 > 2026-09-06：本 ADR 定义的搜索入口、报告入口、配置、实现与 Optuna 依赖均已移除。
 > 下文只保留历史设计与结果解释边界，不再构成可运行合同；现役 v2 Stage 3 直接使用
-> `configs/v2/stage3/base.yaml`。
+> `configs/v3/stage3/base.yaml`。
 
 ## 背景
 

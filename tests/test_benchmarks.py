@@ -610,7 +610,7 @@ def test_stage3_single_task_mlp_config_and_ordered_concat() -> None:
 
 def test_stage3_single_task_mlp_v2_config_features_and_final_state(tmp_path: Path) -> None:
     config = load_benchmark_config("configs/ablations/no_stage3_home.yaml")
-    assert config.data.stage3_authority_config == Path("configs/v2/stage3/base.yaml")
+    assert config.data.stage3_authority_config == Path("configs/v3/stage3/base.yaml")
     assert len(configured_tasks(config, "stage3")) == 20
     assert config.training["max_epochs"] == 10
     assert config.training["model_selection"] == "final_training_state"
@@ -1047,62 +1047,6 @@ def _write_run(
     (root / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
 
 
-def _stage2_reporting_run(root: Path, *, split: str, tasks: tuple[str, ...]) -> None:
-    root.mkdir(parents=True)
-    manifests = []
-    metrics = {}
-    for task in tasks:
-        path = root / "predictions" / f"{sanitize_task_id(task)}.csv"
-        manifest = write_prediction_csv(
-            path,
-            [{"source_row": 2, "target_column": "property", "target": 1.0, "prediction": 1.25, "absolute_error": 0.25}],
-            ("source_row", "target_column", "target", "prediction", "absolute_error"),
-        )
-        manifest.update({"task": task, "path": f"predictions/{path.name}"})
-        manifests.append(manifest)
-        metrics[task] = {"count": 1, "mae": 0.25, "rmse": 0.25, "r2": None, "normalized_mae": 0.5, "normalized_rmse": 0.5}
-    comparison = comparison_identity(
-        "stage2_property", split=split, expected=tasks,
-        sources={"prepared_data_identity": "prepared", "source_hashes": {task: "source" for task in tasks}},
-        normalization={task: {"scale": 0.5} for task in tasks},
-    )
-    _write_run(root, {
-        "split": split, "checkpoint_epoch": 10, "tasks": metrics,
-        "reporting": {
-            "schema_version": REPORTING_SCHEMA_VERSION,
-            "model_id": "ilume_stage2", "model_display_name": "ILUME Stage2-HoME",
-            "study_id": "stage2-home-v2", "benchmark": "stage2_property",
-            "protocol": {"split": split, "expected_tasks": list(tasks), "folds": [], "ensemble": False},
-            "comparison_identity": comparison, "predictions": manifests,
-        },
-    }, stage="stage2")
-
-
-def test_stage2_summary_is_separate_and_requires_complete_predictions(tmp_path: Path) -> None:
-    inputs = tmp_path / "inputs"
-    task = "simulation/heat_of_vaporization"
-    _stage2_reporting_run(inputs / "valid", split="valid", tasks=(task,))
-    _stage2_reporting_run(inputs / "test", split="test", tasks=(task,))
-    _write_run(inputs / "stage3", _stage3_benchmark_summary("baseline", scale=1.0), stage="benchmark")
-    published = publish_summary(inputs, tmp_path / "summary", tmp_path)
-    assert len(published["leaderboards"]["stage2_validation"]) == 1
-    assert len(published["leaderboards"]["stage2_test"]) == 1
-    assert len(published["leaderboards"]["stage3_test"]) == 1
-    assert published["leaderboards"]["stage2_test"][0]["macro_normalized_mae"] == 0.5
-    assert (tmp_path / "summary" / "stage2_test_task_mae.csv").is_file()
-    prediction = inputs / "test" / "predictions" / f"{sanitize_task_id(task)}.csv"
-    original_prediction = prediction.read_bytes()
-    prediction.write_bytes(original_prediction + b"extra\n")
-    with pytest.raises(ValueError, match="prediction file hash mismatch"):
-        publish_summary(inputs, tmp_path / "rejected", tmp_path)
-    prediction.write_bytes(original_prediction)
-    _stage2_reporting_run(
-        inputs / "test_new", split="test", tasks=(task, "simulation/thermal_expansion"),
-    )
-    with pytest.raises(ValueError, match="incompatible comparison identities"):
-        publish_summary(inputs, tmp_path / "mixed", tmp_path)
-
-
 def _stage3_benchmark_summary(
     model: str, *, scale: float, source: str = "shared"
 ) -> dict[str, object]:
@@ -1215,6 +1159,12 @@ def test_stage3_summary_ignores_normalization_but_requires_shared_sources(
     tmp_path: Path,
 ) -> None:
     inputs = tmp_path / "inputs"
+    retired = inputs / "stage2"
+    retired.mkdir(parents=True)
+    (retired / "metadata.json").write_text(json.dumps({
+        "stage": "stage2", "operation": "evaluate", "status": "completed",
+        "provenance": {"reporting_schema_version": 1},
+    }))
     _write_run(
         inputs / "one", _stage3_benchmark_summary("one", scale=1.0),
         stage="benchmark",
@@ -1231,9 +1181,10 @@ def test_stage3_summary_ignores_normalization_but_requires_shared_sources(
     assert not any(
         (tmp_path / "summary" / "ilume_scatter" / "validation").iterdir()
     )
-    assert payload["leaderboards"]["stage2_test"] == []
-    assert payload["leaderboards"]["stage2_validation"] == []
-    assert (tmp_path / "summary" / "stage2_test_leaderboard.csv").is_file()
+    assert set(payload["leaderboards"]) == {"stage3_test", "stage3_validation", "simulation_test", "simulation_validation"}
+    assert payload["schema_version"] == 4
+    assert not list((tmp_path / "summary").glob("stage2_*"))
+    assert all(row["stage"] != "stage2" for row in payload["health"])
     with (tmp_path / "summary" / "stage3_test_task_mae.csv").open(
         newline="", encoding="utf-8"
     ) as handle:
@@ -2515,3 +2466,157 @@ def test_aifc_train_only_conditions_and_shared_encoder_gradient() -> None:
     assert model.encoder.fragment_heads[0].atom.layers[0].node_embedding[0].weight.grad is not None
     assert model.encoder.junction_heads[0].atom.layers[0].node_embedding[0].weight.grad is not None
     assert model.predictor[1].weight.grad is not None
+
+
+def test_scalar_simulation_catalog_and_jobs(tmp_path: Path) -> None:
+    from stage3.simulation_reporting import SCALAR_SIMULATION_TASKS, simulation_scale, simulation_task_sources
+    from stage2.registry import load_stage2_registry
+    from benchmarks.common.data import configured_tasks, load_split, resolve_task
+    from benchmarks.common.engine import TargetStats
+
+    # Copy only the catalog; all training/evaluation rows are tiny temporary data.
+    catalog = tmp_path / "task_catalog.csv"
+    catalog.write_bytes(Path("data/task_catalog.csv").read_bytes())
+    registry = load_stage2_registry(catalog)
+    for task in SCALAR_SIMULATION_TASKS:
+        spec = registry.by_id(task)
+        for split in ("train", "valid", "test"):
+            source = spec.dataset.split_path(tmp_path, split)
+            source.parent.mkdir(parents=True, exist_ok=True)
+            columns = (*spec.entity_columns, *spec.condition_columns, *spec.target_columns, "ion_role", "provenance_source_file", "provenance_source_row")
+            with source.open("w", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=columns)
+                writer.writeheader()
+                for target in (1.0, 3.0):
+                    row = {column: "1" for column in columns}
+                    row.update({column: "C[NH3+]" if column in ("cation", "SMILES") else "[Cl-]" for column in spec.entity_columns})
+                    row[spec.target_columns[0]] = target
+                    row.update(ion_role="cation", provenance_source_file="simulation/simulated_HOMO+LUMO_PBE_TZVP_cations_structured.csv", provenance_source_row="2")
+                    writer.writerow(row)
+    config = load_benchmark_config("configs/benchmarks/mlp.yaml")
+    config = replace(config, data=replace(config.data, data_root=tmp_path, task_catalog=catalog))
+    assert configured_tasks(config, "simulation") == SCALAR_SIMULATION_TASKS
+    for task in SCALAR_SIMULATION_TASKS:
+        resolved = resolve_task(config, "simulation", task, None)
+        raw = load_split(resolved, "train")
+        assert len(raw) == 2
+        assert raw.conditions.shape == ((2, 1) if task.endswith(("thermal_expansion", "heat_of_vaporization")) else (2, 0))
+        assert simulation_scale(resolved.train_paths[0], resolved.target_columns[0]) == 1.0
+        simulation_task_sources(task, resolved.train_paths[0], resolved.train_paths[0], raw.source_rows)
+        with pytest.raises(ValueError, match="coverage"):
+            simulation_task_sources(task, resolved.train_paths[0], resolved.train_paths[0], raw.source_rows[:1])
+        with pytest.raises(ValueError, match="fold"):
+            resolve_task(config, "simulation", task, 1)
+    with pytest.raises(ValueError, match="disabled"):
+        resolve_task(config, "simulation", "simulation/partial_atomic_charge", None)
+    assert TargetStats.fit(np.ones((2, 1)), allow_constant=True).scale == (1.0,)
+    with pytest.raises(ValueError, match="zero"):
+        TargetStats.fit(np.ones((2, 1)))
+    jobs, ensembles = sweep_module._build_jobs(
+        root=tmp_path / "run", stage3_tasks=(), folds=(1, 2, 3, 4, 5), devices=("cuda:0",), simulation_tasks=SCALAR_SIMULATION_TASKS,
+    )
+    assert len(jobs) == 4 and not ensembles
+    assert all(job.fold is None and job.kind == "simulation" for job in jobs)
+    assert all(len(sweep_module._job_roots(tmp_path, job)) == 3 for job in jobs)
+
+
+def test_simulation_single_molecule_adapter_topologies() -> None:
+    from benchmarks.common.data import resolve_task
+    from benchmarks.iltransr.adapter import iltransr_model_views
+    from benchmarks.aifc.adapter import aifc_model_views
+    from benchmarks.ilbert.adapter import ilbert_model_sequences
+    from benchmarks.llasmol.adapter import llasmol_model_views
+    from benchmarks.aionopedia.adapter import _prepare_split, _topology
+    from benchmarks.common.data import RawDataset
+
+    task = resolve_task(load_benchmark_config("configs/benchmarks/mlp.yaml"), "simulation", "simulation/homo", None)
+    assert iltransr_model_views(task, ("C[NH3+]",))[1] == ("molecule",)
+    assert aifc_model_views(task, ("C[NH3+]",))[1] == ("molecule",)
+    assert ilbert_model_sequences(task, ("C[NH3+]",)) == (("C[NH3+]",), ("SMILES",))
+    assert llasmol_model_views(task, ("C[NH3+]",)) == (("C[NH3+]",), ("SMILES",))
+    assert _topology(task) == (4, "single_molecule")
+    raw = RawDataset((("C[NH3+]",),), 1, np.empty((1, 0)), np.ones((1, 1)), ("valid.csv:2",), ())
+    split = _prepare_split(task, raw, None)
+    assert split.graph_roles == (("C[NH3+]", "", ""),)
+    assert split.prompts == ("molecule C[NH3+]",)
+    assert split.active_conditions == ()
+    from benchmarks.aionopedia.graph import empty_graph
+
+    model = AIonopediaRegressor(torch.nn.Identity()).eval()
+    with torch.no_grad():
+        encoded, padding = model.encode_graphs(
+            solute_graph=Batch.from_data_list([aionopedia_graph("C[NH3+]")]),
+            cation_graph=Batch.from_data_list([empty_graph()]),
+            anion_graph=Batch.from_data_list([empty_graph()]),
+            temperature=torch.zeros(1), topology=torch.tensor([4]),
+            extra_conditions={}, active_conditions=(),
+        )
+    assert torch.isfinite(encoded).all() and encoded.shape[:2] == padding.shape
+
+
+def test_simulation_summary_isolated_and_prediction_integrity(tmp_path: Path, monkeypatch) -> None:
+    from stage3.simulation_reporting import SCALAR_SIMULATION_TASKS, simulation_comparison
+
+    config = load_benchmark_config("configs/benchmarks/mlp.yaml")
+    monkeypatch.setattr(sweep_module, "repository_relative", lambda value: str(value))
+    study = f"{config.name}-" + semantic_identity("benchmark.reporting-study.v1", {"model": config.name, "config": sweep_module._scientific_config(config)})["hash"]
+    baseline_root = tmp_path / "inputs" / "baseline"
+    for split in ("valid", "test"):
+        sources = {}
+        metrics = {}
+        for task in SCALAR_SIMULATION_TASKS:
+            sources.update({f"{task}:train": "train", f"{task}:evaluation": split, f"{task}:rows": "rows"})
+            metric = {"count": 1, "mae": 0.25, "rmse": 0.25, "r2": None, "normalized_mae": 0.25, "normalized_rmse": 0.25}
+            metrics[task] = metric
+            root = baseline_root / "simulation" / sanitize_task_id(task) / f"evaluate_{split}" / "attempt-001"
+            path = root / "predictions" / f"{sanitize_task_id(task)}.csv"
+            manifest = write_prediction_csv(path, [{"source_row": 2, "target": 1.0, "prediction": 1.25}], ("source_row", "target", "prediction"))
+            manifest.update({"task": task, "path": f"predictions/{path.name}"})
+            reporting = {"schema_version": 1, "model_id": "mlp", "model_display_name": "MLP", "study_id": study,
+                "benchmark": "simulation_property", "protocol": {"split": split, "expected_tasks": [task], "folds": [], "ensemble": False},
+                "comparison_identity": simulation_comparison(split=split, tasks=(task,), sources={key: value for key, value in sources.items() if key.startswith(task + ":")}, scales={task: 1.0}),
+                "predictions": [manifest]}
+            _write_run(root, {"split": split, "task": task, "targets": {"target": metric}, "reporting": reporting}, stage="baseline_task")
+        comparison = simulation_comparison(split=split, tasks=SCALAR_SIMULATION_TASKS, sources=sources, scales={task: 1.0 for task in SCALAR_SIMULATION_TASKS})
+        ilume = {"split": split, "checkpoint_epoch": None, "tasks": metrics,
+            "reporting": {"schema_version": 1, "model_id": "ilume", "model_display_name": "ILUME", "study_id": "full",
+                "benchmark": "simulation_property", "protocol": {"split": split, "expected_tasks": list(SCALAR_SIMULATION_TASKS), "folds": [1, 2, 3, 4, 5], "ensemble": True},
+                "comparison_identity": comparison}}
+        _write_run(tmp_path / "inputs" / f"ilume_{split}", ilume, stage="stage3")
+    aggregate = sweep_module._aggregate(baseline_root, config, benchmark="simulation")
+    _write_run(baseline_root, aggregate, stage="benchmark")
+    published = publish_summary(tmp_path / "inputs", tmp_path / "summary", tmp_path)
+    for label in ("simulation_test", "simulation_validation"):
+        assert len(published["leaderboards"][label]) == 2
+        assert len(published["metrics"][label]) == 8
+        assert (tmp_path / "summary" / f"{label}_task_mae.csv").is_file()
+    assert published["leaderboards"]["stage3_test"] == []
+    assert published["leaderboards"]["stage3_validation"] == []
+    assert published["wins"] == {"stage3_test": {}}
+    assert not list((tmp_path / "summary").glob("stage2_*"))
+    prediction = baseline_root / "simulation" / sanitize_task_id(SCALAR_SIMULATION_TASKS[0]) / "evaluate_valid" / "attempt-001" / "predictions" / f"{sanitize_task_id(SCALAR_SIMULATION_TASKS[0])}.csv"
+    prediction.write_text(prediction.read_text() + "3,1,2\n")
+    with pytest.raises(ValueError, match="prediction file hash mismatch"):
+        publish_summary(tmp_path / "inputs", tmp_path / "tampered", tmp_path)
+
+
+def test_simulation_cli_rejects_fold_and_ensemble(tmp_path: Path, monkeypatch) -> None:
+    from scripts.stage3.evaluate import _build_parser, _validate_request
+
+    output = tmp_path / "invalid"
+    for launcher in (benchmark_train_launcher, benchmark_evaluate_launcher):
+        arguments = [str(launcher.__file__), "--config", "configs/benchmarks/mlp.yaml", "--benchmark", "simulation",
+                     "--task", "simulation/homo", "--fold", "1", "--output", str(output)]
+        if launcher is benchmark_evaluate_launcher:
+            arguments += ["--split", "valid", "--checkpoint", "unused"]
+        monkeypatch.setattr(sys, "argv", arguments)
+        with pytest.raises(SystemExit):
+            launcher.main()
+    assert not output.exists()
+    parser = _build_parser()
+    base = ["--config", "configs/v3/stage3/base.yaml", "--domain", "simulation", "--checkpoint-dir", "unused", "--split", "valid", "--output", str(output)]
+    with pytest.raises(ValueError, match="ensemble"):
+        _validate_request(parser.parse_args(base))
+    assert _validate_request(parser.parse_args(base + ["--ensemble-folds"])) is None
+    with pytest.raises(ValueError, match="forbids"):
+        _validate_request(parser.parse_args(base + ["--ensemble-folds", "--fold", "1"]))

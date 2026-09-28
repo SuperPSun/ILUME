@@ -4,7 +4,7 @@
 - 日期：2026-09-05
 - 修订：取代 ADR-0023、ADR-0024、ADR-0025、ADR-0027 中的 Stage 2 reporting、最终评估 artifact 与现役 v2 refinement 决定；同时取代 ADR-0022、ADR-0028～0030、ADR-0032、ADR-0035、ADR-0037、ADR-0038、ADR-0040、ADR-0042 中的 Stage 2 baseline/reporting 部分
 
-> 历史边界：正式 Stage2-HoME 的完整模型评估与独立榜单已由 [ADR-0083](0083-stage2-home-full-artifact-evaluation.md) 恢复。本文的入口删除及 Stage2 全面不报告决定不再适用于正式 HoME；旧 baseline 榜单仍保持退役。
+> 后续边界：[ADR-0083](0083-stage2-home-full-artifact-evaluation.md) 曾恢复正式 HoME 独立评估，现由 [ADR-0085](0085-retire-stage2-home-evaluation.md) 再次退役。完整 Stage2 产物合同仍按 0083，正式训练配方按 0082；本文旧训练描述不恢复。
 
 ## 背景
 

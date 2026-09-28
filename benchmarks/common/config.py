@@ -8,7 +8,7 @@ from typing import Any, Literal
 import yaml
 
 
-BenchmarkName = Literal["stage3"]
+BenchmarkName = Literal["stage3", "simulation"]
 
 
 @dataclass(frozen=True)
@@ -42,6 +42,12 @@ class Stage3BenchmarkConfig:
 
 
 @dataclass(frozen=True)
+class SimulationBenchmarkConfig:
+    enabled: bool = False
+    tasks: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class BenchmarkConfig:
     name: Literal[
         "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm", "llasmol",
@@ -57,8 +63,13 @@ class BenchmarkConfig:
     stage3: Stage3BenchmarkConfig
     seed: int
     display_name: str = ""
+    simulation: SimulationBenchmarkConfig = SimulationBenchmarkConfig()
 
     def validate(self) -> None:
+        from stage3.simulation_reporting import SCALAR_SIMULATION_TASKS
+
+        if self.simulation.enabled and (self.name == "ilume_stage3_single_task_mlp_home_v1" or self.simulation.tasks != SCALAR_SIMULATION_TASKS):
+            raise ValueError("Simulation baselines require the four scalar tasks and exclude ablations")
         if self.name not in {
             "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm", "llasmol",
             "aionopedia", "iltransr", "aifc",
@@ -804,6 +815,8 @@ class BenchmarkConfig:
             return value
 
         payload = convert(asdict(self))
+        if not self.simulation.enabled:
+            payload.pop("simulation")
         if payload["data"].get("stage3_prepared_artifacts") is None:
             payload["data"].pop("stage3_prepared_artifacts")
         if not payload["runtime"]:
@@ -826,7 +839,7 @@ def _only(values: dict[str, Any], allowed: set[str], context: str) -> None:
 def benchmark_config_from_dict(raw: dict[str, Any]) -> BenchmarkConfig:
     _only(
         raw,
-        {"name", "display_name", "seed", "data", "features", "environment", "model", "training", "runtime", "stage3"},
+        {"name", "display_name", "seed", "data", "features", "environment", "model", "training", "runtime", "stage3", "simulation"},
         "benchmark config",
     )
     data = _mapping(raw.get("data"), "data")
@@ -860,10 +873,16 @@ def benchmark_config_from_dict(raw: dict[str, Any]) -> BenchmarkConfig:
         tasks = tuple(str(value) for value in stage3["tasks"])
     else:
         raise ValueError("stage3.tasks must be 'all' or a list")
+    simulation = _mapping(raw.get("simulation", {}), "simulation")
+    _only(simulation, {"enabled", "tasks"}, "simulation")
     config = BenchmarkConfig(
         name=str(raw.get("name")),  # type: ignore[arg-type]
         display_name=str(raw.get("display_name", str(raw.get("name", "")).upper())),
         seed=int(raw.get("seed", 42)),
+        simulation=SimulationBenchmarkConfig(
+            enabled=bool(simulation.get("enabled", False)),
+            tasks=tuple(str(value) for value in simulation.get("tasks", ())),
+        ),
         data=DataConfig(
             data_root=Path(data["data_root"]),
             task_catalog=Path(data["task_catalog"]),

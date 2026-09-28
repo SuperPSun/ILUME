@@ -432,7 +432,7 @@ def prepare_molformer_training(
         condition_stats.normalize(provisional_train.raw.conditions),
         provisional_train.audit,
     )
-    target_stats = TargetStats.fit(train.raw.targets)
+    target_stats = TargetStats.fit(train.raw.targets, allow_constant=task.benchmark == "simulation")
     valid = _prepare_split(
         load_split(task, "valid"),
         task,

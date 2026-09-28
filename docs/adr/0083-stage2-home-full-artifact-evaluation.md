@@ -1,8 +1,10 @@
 # ADR-0083：完整 Stage2-HoME 产物与独立评估
 
-- 状态：Accepted
+- 状态：Accepted（完整产物合同）；评估与独立榜单部分由 ADR-0085 superseded
 - 日期：2026-09-27
 - 修订：扩展 ADR-0082 的 `stage2_final.pt` 合同；在正式 Stage2-HoME 范围取代 ADR-0043 的 Stage2 evaluation/reporting 退役决定。旧 Stage2 baseline/Core/Partial/Full 榜单仍为历史。
+
+> 后续边界：[ADR-0084](0084-stage3-simulation-phase2-phase3.md) 扩展模拟 GROUP/PRIVATE 迁移；[ADR-0085](0085-retire-stage2-home-evaluation.md) 退役本篇独立 evaluator/reporting。以下评估描述仅保留为历史，完整九任务产物与预测接口仍有效。
 
 ## 决定
 

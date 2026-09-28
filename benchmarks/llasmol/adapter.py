@@ -443,7 +443,7 @@ def prepare_llasmol_training(
     )
     if train.view_names != valid.view_names:
         raise ValueError("LlaSMol train and valid view topology differ")
-    target_stats = TargetStats.fit(train.raw.targets)
+    target_stats = TargetStats.fit(train.raw.targets, allow_constant=task.benchmark == "simulation")
     source_hashes = {
         "train": [sha256_file(path) for path in task.train_paths],
         "valid": [sha256_file(path) for path in task.valid_paths],

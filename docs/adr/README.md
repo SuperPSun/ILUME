@@ -8,13 +8,14 @@
 |---|---|---|
 | v2 表示与隔离 | [0039](0039-global-rdkit-v2-mainline.md) | 三模态 Stage 1、1024D entity/Object/HoME；v1 隔离 |
 | Stage 1 执行 | [0013](0013-stage1-full-corpus-ddp.md)、[0014](0014-stage1-prepare-performance-and-corpus-v2.md)、[0015](0015-stage1-high-throughput-epoch-resume.md)、[0017](0017-stage1-base-runtime-profile.md) | 全量 epoch、prepare/runtime、DDP 与完整 epoch 恢复 |
-| 正式 Stage2-HoME | [0082](0082-home-mainline-and-core-ablations.md)、[0083](0083-stage2-home-full-artifact-evaluation.md)、[0079](0079-stage2-home-stage3-home-transfer-ablation.md)（历史配方来源）、[0025](0025-stage2-homo-lumo-scalar-tasks.md) | 九任务 physics-only HoME、完整模型产物、GLOBAL/GROUP 迁移与五任务独立评估；正式数值读 YAML |
+| 正式 Stage2-HoME | [0082](0082-home-mainline-and-core-ablations.md)、[0083](0083-stage2-home-full-artifact-evaluation.md)、[0085](0085-retire-stage2-home-evaluation.md)、[0079](0079-stage2-home-stage3-home-transfer-ablation.md)（历史配方来源）、[0025](0025-stage2-homo-lumo-scalar-tasks.md) | 九任务 physics-only HoME、完整模型产物与 GLOBAL/GROUP 迁移；独立评估由 0085 退役；正式数值读 YAML |
 | Stage 3 训练 | [0084](0084-stage3-simulation-phase2-phase3.md)、[0020](0020-stage3-v1-sparse-home-pcgrad.md)、[0046](0046-stage3-ownership-clipping-raw-sampling.md)、[0048](0048-stage3-owner-lifetime-three-phase-training.md)、[0050](0050-stage3-task-specific-owner-budget-and-private-capacity.md)、[0070](0070-stage3-retire-pcgrad.md)、[0075](0075-stage2-zero-update-stage3-object-phase1.md) | 正式 20 项实验 + 五项模拟 Phase2/3；sparse HoME、raw sampling/clipping、三阶段 owner lifetime/capacity、ObjectEncoder Phase 1 |
 | Stage 3 recipe | [0050](0050-stage3-task-specific-owner-budget-and-private-capacity.md)、[0055](0055-stage3-pec50-phase3-single-variable-rollback.md) | owner 默认/覆盖/零预算与现役 task 例外，完整数值读 YAML；0051～0053 已并入历史摘要 |
 | Stage 3 diagnostics | [0054](0054-stage3-task-gate-diagnostics-and-weak-task-tuning.md) | 只读 task gate 统计、fold-sample 聚合与输出边界 |
 | Stage 3 二十任务 catalog | [0067](0067-stage3-twenty-task-catalog.md) | 移除 volume expansion；现役 v2/消融/baseline/transfer target 同步与 artifact 边界 |
 | 身份与 legacy refinement | [0021](0021-identity-audit-contract-v1.md)、[0027](0027-late-taskwise-refinement.md) | semantic identity/audit；0027 refinement 只约束 legacy/Capacity |
-| Reporting | [0023](0023-unified-evaluation-reporting.md)、[0031](0031-stage3-summary-normalization-relaxation.md)、[0043](0043-retire-stage2-evaluation-and-v2-refinement.md)（历史）、[0061](0061-ilume-task-scatter-summary.md)、[0083](0083-stage2-home-full-artifact-evaluation.md) | Stage 3 原合同；正式 Stage2 独立五任务评估与榜单 |
+| 模拟性质 baseline/评估 | [0086](0086-scalar-simulation-baselines-and-reporting.md) | 四项 scalar 单次 baseline 与 Stage3 五模型原单位 ensemble，独立 valid/test 榜单；Stage2 evaluate 保持退役 |
+| Reporting | [0023](0023-unified-evaluation-reporting.md)、[0031](0031-stage3-summary-normalization-relaxation.md)、[0043](0043-retire-stage2-evaluation-and-v2-refinement.md)（历史）、[0061](0061-ilume-task-scatter-summary.md)、[0085](0085-retire-stage2-home-evaluation.md) | Stage3 experimental 与 0086 独立 simulation 榜单；Stage2 evaluator/reporting 由 0085 退役 |
 
 ## Baseline 与内部消融
 
@@ -44,7 +45,7 @@
 | AIonopedia 新增图侧条件通路消融 | [0078](0078-aionopedia-extra-graph-conditions-ablation.md)：已退役；现役模型保留完整条件通路 |
 | Stage 1 基础 | [0001](0001-data-and-role-sampling.md)、[0002](0002-descriptor-schema-and-tokens.md)、[0003](0003-smiles-tokenizers.md)、[0004](0004-fourth-modality-and-training.md)、[0005](0005-exclude-invalid-pretraining-entities.md)；按各篇顶部区分有效数据/预处理规则与被 0039 取代的模态设计 |
 | 早期 Stage 1/2/3、Object v1/v2、四阶段训练 | [合并历史摘要](history.md)：0006～0012、0016、0018、0047，均已被取代；保留原编号、理由和 Git 原文定位 |
-| 旧 Stage 2 evaluation | [0023](0023-unified-evaluation-reporting.md)、[0024](0024-stage2-partial-charge-benchmark-suite.md)、[0025](0025-stage2-homo-lumo-scalar-tasks.md)、[0027](0027-late-taskwise-refinement.md) 的旧榜单由 [0043](0043-retire-stage2-evaluation-and-v2-refinement.md) 退役；正式 HoME 五任务评估见 [0083](0083-stage2-home-full-artifact-evaluation.md) |
+| 旧 Stage 2 evaluation | [0023](0023-unified-evaluation-reporting.md)、[0024](0024-stage2-partial-charge-benchmark-suite.md)、[0025](0025-stage2-homo-lumo-scalar-tasks.md)、[0027](0027-late-taskwise-refinement.md) 的旧榜单由 [0043](0043-retire-stage2-evaluation-and-v2-refinement.md) 退役；[0083](0083-stage2-home-full-artifact-evaluation.md) 的正式 HoME 五任务独立评估也由 [0085](0085-retire-stage2-home-evaluation.md) 退役 |
 | PRIVATE recipe 试验 | [0051～0053 历史摘要](history.md#adr-0051)；有效机制见 0050，最终 task 设置见 0055 |
 | v2 Stage 3 HPO | [0041](0041-stage3-v2-three-phase-hpo.md)：搜索入口退役；prepared identity 的数据/训练分离修订仍需按当前实现核对，不能据此恢复搜索 |
 | Routing / gate calibration | [0056](0056-stage3-inference-only-routing-ablation.md)、[0059](0059-stage3-gate-only-post-training-calibration.md)：Retired，保留问题、负结果与不恢复边界 |

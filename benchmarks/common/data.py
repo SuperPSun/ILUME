@@ -60,6 +60,24 @@ def resolve_task(
     task_id: str,
     fold: int | None,
 ) -> BenchmarkTask:
+    if benchmark == "simulation":
+        from stage2.registry import load_stage2_registry, orbital_audit_columns
+
+        if fold is not None:
+            raise ValueError("Simulation baseline forbids --fold")
+        if not config.simulation.enabled or task_id not in config.simulation.tasks:
+            raise ValueError(f"Unknown or disabled simulation baseline task: {task_id}")
+        spec = load_stage2_registry(config.data.task_catalog).by_id(task_id)
+        return BenchmarkTask(
+            benchmark=benchmark, task_id=task_id, slots=spec.entity_columns,
+            condition_columns=spec.condition_columns, target_columns=spec.target_columns,
+            audit_columns=orbital_audit_columns(task_id),
+            train_paths=(spec.dataset.split_path(config.data.data_root, "train"),),
+            valid_paths=(spec.dataset.split_path(config.data.data_root, "valid"),),
+            test_path=spec.dataset.split_path(config.data.data_root, "test"),
+            fold=None, meta_group=("thermophysical" if len(spec.entity_columns) == 2 else "electronic_structure"),
+            registry_payload={"contract": "simulation.scalar-baseline.v1", **spec.to_dict()},
+        )
     if benchmark == "stage3":
         if not config.stage3.enabled or fold not in config.stage3.folds:
             raise ValueError("Stage 3 benchmark requires an enabled configured --fold")
@@ -97,6 +115,10 @@ def resolve_task(
 
 
 def configured_tasks(config: BenchmarkConfig, benchmark: BenchmarkName) -> tuple[str, ...]:
+    if benchmark == "simulation":
+        return config.simulation.tasks if config.simulation.enabled else ()
+    if benchmark != "stage3":
+        raise ValueError(f"Unknown benchmark domain: {benchmark}")
     if not config.stage3.enabled:
         return ()
     authority = load_stage3_config(config.data.stage3_authority_config)
@@ -150,6 +172,13 @@ def _read_paths(task: BenchmarkTask, paths: Iterable[Path], *, allow_empty: bool
                     )
                     for slot in task.slots
                 )
+                if task.benchmark == "simulation" and task.task_id in {"simulation/homo", "simulation/lumo"}:
+                    from rdkit import Chem
+                    from stage2.registry import validate_orbital_audit_row
+
+                    charge = Chem.GetFormalCharge(Chem.MolFromSmiles(component[0]))
+                    role = "cation" if charge > 0 else "anion" if charge < 0 else "neutral"
+                    validate_orbital_audit_row(task.task_id, row, inferred_role=role, context=context)
                 components.append(component)
                 audit = {name: row.get(name, "") for name in task.audit_columns}
                 audit_rows.append(audit)

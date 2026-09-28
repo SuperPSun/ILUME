@@ -22,12 +22,14 @@ from common.progress import ProgressReporter
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train one ILUME baseline task/fold.")
     parser.add_argument("--config", required=True)
-    parser.add_argument("--benchmark", required=True, choices=("stage3",))
+    parser.add_argument("--benchmark", required=True, choices=("stage3", "simulation"))
     parser.add_argument("--task", required=True)
     parser.add_argument("--fold", type=int)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     config = load_benchmark_config(args.config)
+    if args.benchmark == "simulation" and args.fold is not None:
+        parser.error("Simulation baseline forbids --fold")
     environment_snapshot = ensure_benchmark_environment(config)
     reporter = ProgressReporter()
     bundle = prepare_training(
@@ -41,7 +43,7 @@ def main() -> None:
         semantic_identity=bundle.training_identity,
         output=args.output,
         seed=config.seed,
-        data_metadata="data/stage3/metadata.json",
+        data_metadata=f"data/{'stage2' if args.benchmark == 'simulation' else 'stage3'}/metadata.json",
         details={
             "benchmark": args.benchmark,
             "task": args.task,

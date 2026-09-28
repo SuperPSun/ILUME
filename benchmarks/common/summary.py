@@ -17,7 +17,7 @@ from common.io import atomic_json, sha256_file
 from common.reporting import REPORTING_SCHEMA_VERSION, sanitize_task_id
 
 
-SUMMARY_SCHEMA_VERSION = 2
+SUMMARY_SCHEMA_VERSION = 4
 RADAR_TASK_GROUPS = (
     (
         "experiment/electrical_conductivity",
@@ -54,14 +54,14 @@ SUMMARY_FILES = (
     "overview.md",
     "radar.svg",
     "ilume_scatter",
-    "stage2_test_leaderboard.csv",
-    "stage2_validation_leaderboard.csv",
-    "stage2_test_metrics.csv",
-    "stage2_validation_metrics.csv",
-    "stage2_test_task_mae.csv",
-    "stage2_test_task_rank.csv",
-    "stage2_validation_task_mae.csv",
-    "stage2_validation_task_rank.csv",
+    "simulation_test_leaderboard.csv",
+    "simulation_validation_leaderboard.csv",
+    "simulation_test_metrics.csv",
+    "simulation_validation_metrics.csv",
+    "simulation_test_task_mae.csv",
+    "simulation_test_task_rank.csv",
+    "simulation_validation_task_mae.csv",
+    "simulation_validation_task_rank.csv",
     "stage3_test_leaderboard.csv",
     "stage3_validation_leaderboard.csv",
     "stage3_test_metrics.csv",
@@ -82,6 +82,7 @@ class Candidate:
     summary: dict[str, Any] | None
     current: bool
     issues: tuple[str, ...] = ()
+    repository_root: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -187,7 +188,6 @@ def discover_candidates(
         key = (metadata.get("stage"), metadata.get("operation"))
         if key not in {
             ("benchmark", "sweep"),
-            ("stage2", "evaluate"),
             ("stage3", "evaluate"),
         }:
             continue
@@ -214,6 +214,7 @@ def discover_candidates(
         candidate = Candidate(
             root=root,
             source_run=_source_run(root, repository_root),
+            repository_root=repository_root,
             metadata=metadata,
             summary=summary,
             current=current,
@@ -284,6 +285,13 @@ def _validate_current(candidate: Candidate) -> None:
                 _validate_comparison(section.get("comparison_identity"), name)
         if not isinstance(reporting.get("source_runs"), dict):
             raise ValueError("benchmark sweep reporting lacks source runs")
+        for label in ("simulation_test", "simulation_validation"):
+            section = benchmarks.get(label)
+            if section is not None and section.get("status") not in {"unsupported", "incomplete"}:
+                _validate_comparison(section.get("comparison_identity"), label)
+        return
+    if reporting.get("benchmark") == "simulation_property":
+        _validate_simulation_report(candidate.root, summary)
         return
     _validate_comparison(reporting.get("comparison_identity"), f"{stage} evaluation")
     protocol = reporting.get("protocol")
@@ -291,34 +299,35 @@ def _validate_current(candidate: Candidate) -> None:
         "valid", "test"
     }:
         raise ValueError(f"{stage} evaluation protocol is malformed")
-    if stage == "stage2":
-        expected = tuple(protocol.get("expected_tasks", ()))
-        if (reporting.get("benchmark") != "stage2_property"
-                or reporting["comparison_identity"]["payload"].get("benchmark") != "stage2_property"
-                or reporting["comparison_identity"]["payload"].get("split") != protocol["split"]
-                or tuple(reporting["comparison_identity"]["payload"].get("expected", ())) != expected
-                or not expected or set(summary.get("tasks", {})) != set(expected)):
-            raise ValueError("Stage 2 evaluation comparison/task set is incomplete")
-        manifests = reporting.get("predictions")
-        if not isinstance(manifests, list) or {item.get("task") for item in manifests if isinstance(item, dict)} != set(expected) or len(manifests) != len(expected):
-            raise ValueError("Stage 2 prediction manifests are incomplete")
-        for item in manifests:
-            task = item["task"]
-            relative = item.get("path")
-            if relative != f"predictions/{sanitize_task_id(task)}.csv":
-                raise ValueError("Stage 2 prediction manifest path mismatch")
-            prediction = candidate.root / relative
-            if not prediction.is_file() or sha256_file(prediction) != item.get("sha256"):
-                raise ValueError("Stage 2 prediction file hash mismatch")
-            with prediction.open(newline="", encoding="utf-8") as handle:
-                if sum(1 for _ in csv.DictReader(handle)) != item.get("rows"):
-                    raise ValueError("Stage 2 prediction row count mismatch")
-            value = summary["tasks"][task]
-            if int(value.get("count", 0)) <= 0 or not _finite(value.get("normalized_mae")):
-                raise ValueError("Stage 2 task metric is incomplete")
-            expected_rows = value.get("atom_count") if value.get("atom_count") is not None else value["count"]
-            if item["rows"] != expected_rows:
-                raise ValueError("Stage 2 prediction/metric count mismatch")
+
+
+def _validate_simulation_report(root: Path, summary: Mapping[str, Any]) -> None:
+    reporting = summary["reporting"]
+    _validate_comparison(reporting.get("comparison_identity"), "simulation evaluation")
+    protocol = reporting.get("protocol", {})
+    expected = tuple(protocol.get("expected_tasks", ()))
+    comparison = reporting["comparison_identity"]["payload"]
+    if (reporting.get("benchmark") != "simulation_property" or comparison.get("benchmark") != "simulation_property"
+            or comparison.get("split") != protocol.get("split") or tuple(comparison.get("expected", ())) != expected):
+        raise ValueError("Simulation report comparison mismatch")
+    values = summary.get("tasks", {}) if "tasks" in summary else {summary["task"]: next(iter(summary["targets"].values()))}
+    if not expected or set(values) != set(expected):
+        raise ValueError("Simulation report task coverage mismatch")
+    manifests = reporting.get("predictions", [])
+    if len(manifests) != len(expected) or {item.get("task") for item in manifests} != set(expected):
+        raise ValueError("Simulation prediction manifests are incomplete")
+    for manifest in manifests:
+        task = manifest["task"]
+        if manifest.get("path") != f"predictions/{sanitize_task_id(task)}.csv":
+            raise ValueError("Simulation prediction path mismatch")
+        path = root / manifest["path"]
+        if not path.is_file() or sha256_file(path) != manifest.get("sha256"):
+            raise ValueError("Simulation prediction file hash mismatch")
+        with path.open(newline="", encoding="utf-8") as handle:
+            count = sum(1 for _ in csv.DictReader(handle))
+        if count != manifest.get("rows") or count != values[task].get("count") or count <= 0 or not _finite(values[task].get("normalized_mae")):
+            raise ValueError("Simulation prediction row/metric coverage mismatch")
+
 
 def _finite(value: Any) -> bool:
     try:
@@ -480,7 +489,7 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
                 expected = len(expected_tasks)
                 metrics = (
                     summary.get("ensemble", {}).get("tasks", {})
-                    if summary.get("split") == "test" and candidate.metadata["stage"] == "stage3"
+                    if summary.get("split") == "test" and candidate.metadata["stage"] == "stage3" and reporting.get("benchmark") != "simulation_property"
                     else summary.get("tasks", {})
                 )
                 available = sum(
@@ -530,10 +539,10 @@ def _health(candidates: Sequence[Candidate]) -> list[dict[str, Any]]:
 
     validation_groups: dict[tuple[str, str, str], dict[int, list[Candidate]]] = {}
     for candidate in _current_completed(candidates):
-        if candidate.metadata["stage"] == "stage2":
-            continue
         summary = candidate.summary or {}
         reporting = summary["reporting"]
+        if reporting.get("benchmark") == "simulation_property":
+            continue
         if candidate.metadata["stage"] == "benchmark":
             sections = reporting["benchmarks"]
             test_expected = tuple(
@@ -698,44 +707,56 @@ def _current_completed(candidates: Sequence[Candidate]) -> list[Candidate]:
     ]
 
 
-def _stage2_results(
-    candidates: Sequence[Candidate], split: str,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    leaders: list[dict[str, Any]] = []
-    metrics_rows: list[dict[str, Any]] = []
-    comparisons: dict[str, list[str]] = {}
+def _simulation_results(candidates: Sequence[Candidate], split: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    from stage3.simulation_reporting import SCALAR_SIMULATION_TASKS
+
+    label = "simulation_test" if split == "test" else "simulation_validation"
+    leaders, rows, comparisons = [], [], {}
     for candidate in _current_completed(candidates):
-        if candidate.metadata["stage"] != "stage2":
-            continue
-        summary = candidate.summary or {}
-        if summary.get("split") != split:
-            continue
+        summary = candidate.summary
         reporting = summary["reporting"]
-        expected = tuple(reporting["protocol"]["expected_tasks"])
-        values = summary["tasks"]
-        model_id = str(reporting["model_id"])
+        if candidate.metadata["stage"] == "benchmark":
+            section = reporting["benchmarks"].get(label)
+            if section is None or section.get("status") in {"unsupported", "incomplete"}:
+                continue
+            values = summary.get("simulation_property_benchmark", {}).get(label, {})
+            source_runs = reporting.get("source_runs", {}).get(label, {})
+            if set(source_runs) != set(SCALAR_SIMULATION_TASKS):
+                raise ValueError("Simulation sweep source coverage mismatch")
+            for task, relative in source_runs.items():
+                root = candidate.repository_root / relative
+                metadata = _json(root / "metadata.json")
+                if metadata.get("status") != "completed":
+                    raise ValueError("Simulation sweep source run is incomplete")
+                fragment = _json(root / "summary.json")
+                _validate_simulation_report(root, fragment)
+                fragment_comparison = fragment["reporting"]["comparison_identity"]["payload"]
+                aggregate_comparison = section["comparison_identity"]["payload"]
+                if fragment["split"] != split or any(aggregate_comparison["sources"].get(key) != value for key, value in fragment_comparison["sources"].items()) or aggregate_comparison["normalization"].get(task) != fragment_comparison["normalization"].get(task):
+                    raise ValueError("Simulation sweep comparison differs from its source run")
+                if fragment["task"] != task or fragment["reporting"]["study_id"] != reporting["study_id"] or fragment["targets"][next(iter(fragment["targets"]))] != values[task]:
+                    raise ValueError("Simulation sweep source identity/metrics mismatch")
+        elif reporting.get("benchmark") == "simulation_property" and summary.get("split") == split:
+            section = reporting
+            values = summary["tasks"]
+        else:
+            continue
+        if tuple(section["protocol"].get("expected_tasks", ())) != SCALAR_SIMULATION_TASKS or set(values) != set(SCALAR_SIMULATION_TASKS):
+            raise ValueError("Simulation leaderboard requires all four scalar tasks")
+        comparison = section["comparison_identity"]
+        _validate_comparison(comparison, label)
+        run = _run_id(reporting["model_id"], candidate.source_run)
+        comparisons.setdefault(comparison["hash"], []).append(run)
         display = _display_name(candidate, reporting)
-        run = _run_id(model_id, candidate.source_run)
-        comparisons.setdefault(reporting["comparison_identity"]["hash"], []).append(run)
-        for task in expected:
-            value = values[task]
-            metrics_rows.append({
-                "run": run, "model": display, "task": task,
-                "count": value["count"], "atom_count": value.get("atom_count"),
-                "mae": value["mae"], "rmse": value["rmse"], "r2": value["r2"],
-                "normalized_mae": value["normalized_mae"],
-                "normalized_rmse": value["normalized_rmse"],
-                "atom_micro_mae": value.get("atom_micro_mae"),
-                "source_run": candidate.source_run,
-            })
-        leaders.append({
-            "run": run, "model": display,
-            "macro_normalized_mae": sum(float(values[task]["normalized_mae"]) for task in expected) / len(expected),
-            "valid_tasks": len(expected), "total_tasks": len(expected),
-            "source_run": candidate.source_run, "checkpoint_epoch": summary.get("checkpoint_epoch", ""),
-        })
-    _require_one_comparison(comparisons, f"Stage 2 {split}")
-    return _rank(leaders, "macro_normalized_mae"), sorted(metrics_rows, key=lambda row: (row["run"], row["task"]))
+        for task in SCALAR_SIMULATION_TASKS:
+            metric = values[task]
+            if metric.get("count", 0) <= 0 or not _finite(metric.get("normalized_mae")):
+                raise ValueError("Simulation leaderboard has incomplete metrics")
+            rows.append({"run": run, "model": display, "task": task, **metric, "source_run": candidate.source_run})
+        leaders.append({"run": run, "model": display, "macro_normalized_mae": sum(float(value["normalized_mae"]) for value in values.values()) / 4,
+                        "valid_tasks": 4, "total_tasks": 4, "source_run": candidate.source_run, "checkpoint_epoch": summary.get("checkpoint_epoch")})
+    _require_one_comparison(comparisons, label)
+    return _rank(leaders, "macro_normalized_mae"), sorted(rows, key=lambda row: (row["run"], row["task"]))
 
 
 def _stage3_test(
@@ -747,6 +768,8 @@ def _stage3_test(
     for candidate in _current_completed(candidates):
         summary = candidate.summary or {}
         reporting = summary["reporting"]
+        if reporting.get("benchmark") == "simulation_property":
+            continue
         if candidate.metadata["stage"] == "benchmark":
             section = reporting["benchmarks"]["stage3_test"]
             metrics = summary["stage3_property_benchmark"]["test_ensemble"]
@@ -818,7 +841,7 @@ def _stage3_validation(
     fold_groups: dict[tuple[str, str, str], dict[int, Candidate]] = {}
     ambiguous: set[tuple[str, str, str]] = set()
     for candidate in _current_completed(candidates):
-        if candidate.metadata["stage"] != "stage3" or candidate.summary.get("split") != "valid":
+        if candidate.metadata["stage"] != "stage3" or candidate.summary.get("split") != "valid" or candidate.summary["reporting"].get("benchmark") == "simulation_property":
             continue
         reporting = candidate.summary["reporting"]
         key = _validation_study_key(candidate, reporting)
@@ -1556,8 +1579,8 @@ def _scatter_svg(plot: ScatterPlot) -> str:
 
 def _build_summary(candidates: Sequence[Candidate]) -> dict[str, Any]:
     health = _health(candidates)
-    stage2_test, stage2_test_metrics = _stage2_results(candidates, "test")
-    stage2_validation, stage2_validation_metrics = _stage2_results(candidates, "valid")
+    simulation_test, simulation_test_metrics = _simulation_results(candidates, "test")
+    simulation_validation, simulation_validation_metrics = _simulation_results(candidates, "valid")
     stage3_test, stage3_test_metrics, test_wins = _stage3_test(
         candidates
     )
@@ -1579,14 +1602,12 @@ def _build_summary(candidates: Sequence[Candidate]) -> dict[str, Any]:
         ),
         "comparison_identities": _comparison_catalog(candidates),
         "leaderboards": {
-            "stage2_test": stage2_test,
-            "stage2_validation": stage2_validation,
+            "simulation_test": simulation_test, "simulation_validation": simulation_validation,
             "stage3_test": stage3_test,
             "stage3_validation": stage3_validation,
         },
         "metrics": {
-            "stage2_test": stage2_test_metrics,
-            "stage2_validation": stage2_validation_metrics,
+            "simulation_test": simulation_test_metrics, "simulation_validation": simulation_validation_metrics,
             "stage3_test": stage3_test_metrics,
             "stage3_validation": stage3_validation_metrics,
         },
@@ -1612,8 +1633,7 @@ def _comparison_catalog(
     candidates: Sequence[Candidate],
 ) -> dict[str, list[dict[str, Any]]]:
     catalog: dict[str, dict[str, dict[str, Any]]] = {
-        "stage2_test": {},
-        "stage2_validation": {},
+        "simulation_test": {}, "simulation_validation": {},
         "stage3_test": {},
         "stage3_validation": {},
     }
@@ -1631,14 +1651,13 @@ def _comparison_catalog(
                     reporting["benchmarks"]["stage3_validation"],
                 ),
             )
-        elif candidate.metadata["stage"] == "stage2":
-            name = "stage2_test" if candidate.summary.get("split") == "test" else "stage2_validation"
-            sections = ((name, reporting),)
+            sections += tuple((label, reporting["benchmarks"][label]) for label in ("simulation_test", "simulation_validation") if label in reporting["benchmarks"])
         else:
+            prefix = "simulation" if reporting.get("benchmark") == "simulation_property" else "stage3"
             name = (
-                "stage3_test"
+                f"{prefix}_test"
                 if candidate.summary.get("split") == "test"
-                else "stage3_validation"
+                else f"{prefix}_validation"
             )
             sections = ((name, reporting),)
         for name, section in sections:
@@ -1686,21 +1705,12 @@ def write_summary_snapshot(
         path.write_text(_scatter_svg(plot), encoding="utf-8")
     leaderboards = payload["leaderboards"]
     metrics = payload["metrics"]
-    for name in ("stage2_test", "stage2_validation"):
-        split = "test" if name.endswith("test") else "validation"
-        task_fields, task_mae, task_rank = _stage3_task_tables(
-            metrics[name], leaderboards[name], metric_key="mae", split=f"stage2_{split}",
-        )
-        _write_csv(
-            destination / f"{name}_leaderboard.csv", leaderboards[name],
-            ("rank", "run", "model", "macro_normalized_mae", "valid_tasks", "total_tasks", "source_run", "checkpoint_epoch"),
-        )
-        _write_csv(
-            destination / f"{name}_metrics.csv", metrics[name],
-            ("run", "model", "task", "count", "atom_count", "mae", "rmse", "r2", "normalized_mae", "normalized_rmse", "atom_micro_mae", "source_run"),
-        )
-        _write_csv(destination / f"{name}_task_mae.csv", task_mae, ("run", "model", *task_fields))
-        _write_csv(destination / f"{name}_task_rank.csv", task_rank, ("run", "model", *task_fields))
+    for name in ("simulation_test", "simulation_validation"):
+        fields, task_mae, task_rank = _stage3_task_tables(metrics[name], leaderboards[name], metric_key="mae", split=name)
+        _write_csv(destination / f"{name}_leaderboard.csv", leaderboards[name], ("rank", "run", "model", "macro_normalized_mae", "valid_tasks", "total_tasks", "source_run", "checkpoint_epoch"))
+        _write_csv(destination / f"{name}_metrics.csv", metrics[name], ("run", "model", "task", "count", "mae", "rmse", "r2", "normalized_mae", "normalized_rmse", "source_run"))
+        _write_csv(destination / f"{name}_task_mae.csv", task_mae, ("run", "model", *fields))
+        _write_csv(destination / f"{name}_task_rank.csv", task_rank, ("run", "model", *fields))
     test_fields, test_mae, test_rank = _stage3_task_tables(
         metrics["stage3_test"],
         leaderboards["stage3_test"],

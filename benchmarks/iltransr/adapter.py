@@ -162,6 +162,8 @@ def iltransr_model_views(
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     slots = tuple(task.slots)
     values = dict(zip(slots, components, strict=True))
+    if task.slots == ("SMILES",):
+        return ((_canonical_non_isomeric(components[0]),), ("molecule",))
     if slots == ("cation", "anion"):
         return (
             (_canonical_non_isomeric(f"{values['cation']}.{values['anion']}"),),
@@ -311,7 +313,7 @@ def prepare_iltransr_training(
     cache: dict[str, tuple[torch.Tensor, int, dict[str, int]]] = {}
     train = _prepare_split(task, train_raw, condition_stats, vocabulary, cache)
     valid = _prepare_split(task, valid_raw, condition_stats, vocabulary, cache)
-    target_stats = TargetStats.fit(train_raw.targets)
+    target_stats = TargetStats.fit(train_raw.targets, allow_constant=task.benchmark == "simulation")
     recipe = resolve_iltransr_recipe(config, task_id)
     source_hashes = {
         "train": [sha256_file(path) for path in task.train_paths],

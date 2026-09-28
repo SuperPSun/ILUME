@@ -38,6 +38,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", required=True)
     parser.add_argument("--checkpoint-dir", required=True)
     parser.add_argument("--split", required=True, choices=("valid", "test"))
+    parser.add_argument("--domain", choices=("experimental", "simulation"), default="experimental")
     parser.add_argument("--ensemble-folds", action="store_true")
     parser.add_argument("--fold", type=int, nargs="+")
     parser.add_argument(
@@ -55,6 +56,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _validate_request(args: argparse.Namespace) -> tuple[int, ...] | None:
+    if getattr(args, "domain", "experimental") == "simulation":
+        if not args.ensemble_folds or args.fold is not None or args.checkpoint_epoch is not None or args.tasks:
+            raise ValueError("Simulation evaluation requires five final ensemble models and forbids fold/epoch/tasks")
+        return None
     if args.split == "valid":
         if args.fold is None:
             raise ValueError("Stage 3 validation requires --fold")
@@ -246,6 +251,27 @@ def main() -> int:
 
     config = load_stage3_config(args.config)
     configure_process_runtime(config)
+    if args.domain == "simulation":
+        from stage3.simulation_evaluate import evaluate_simulation_checkpoints, resolve_simulation_evaluation_identity
+
+        checkpoint_dir = repository_path(args.checkpoint_dir)
+        identity = resolve_simulation_evaluation_identity(config, checkpoint_dir, split=args.split)
+        run = open_run_directory(
+            stage="stage3", operation="evaluate", config_path=args.config,
+            config_payload=config.to_dict(), output=args.output, seed=config.data.seed,
+            semantic_identity=identity,
+            details={"reporting_schema_version": REPORTING_SCHEMA_VERSION, "domain": "simulation",
+                     "split": args.split, "ensemble_folds": True, "model_selector": "three_phase_final"},
+        )
+        try:
+            run.complete(evaluate_simulation_checkpoints(
+                config, checkpoint_dir, split=args.split, predictions_dir=run.root / "predictions",
+                expected_evaluation_identity=identity, reporting_study_id=args.study_id,
+            ))
+        except BaseException:
+            run.fail()
+            raise
+        return 0
     from stage3.evaluate import (
         evaluate_checkpoints,
         resolve_stage3_evaluation_identity,

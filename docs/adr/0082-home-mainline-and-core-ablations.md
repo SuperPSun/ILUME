@@ -2,12 +2,14 @@
 
 - 状态：Accepted
 - 日期：2026-09-27
-- 范围：`configs/v2/stage2/base.yaml`、`configs/v2/stage3/base.yaml`、三项核心消融
+- 范围：`configs/v3/stage2/base.yaml`、`configs/v3/stage3/base.yaml`、三项核心消融
 - 替代：ADR-0079 的实验身份；ADR-0019/0043/0044 的正式 Stage2 浅层 teacher 训练配方；ADR-0075 的旧 Base/No-Stage2 配对身份
 
-> 完整九任务 `stage2_final.pt` 与正式 Stage2 property evaluation 由 [ADR-0083](0083-stage2-home-full-artifact-evaluation.md) 扩展；本文的迁移 owner 范围保持不变。
+> 完整九任务 `stage2_final.pt` 由 [ADR-0083](0083-stage2-home-full-artifact-evaluation.md) 扩展；独立评估现已由 [ADR-0085](0085-retire-stage2-home-evaluation.md) 退役。
 
 > Stage3 Phase2/3 增加五项 simulation 训练与预测能力的后续决定见 [ADR-0084](0084-stage3-simulation-phase2-phase3.md)。本篇的 20-task Stage3 描述只适用于实验任务子集和旧 20-task 产物。
+
+> 配置目录于 2026-09-28 对齐正式输出版本：Stage2/3 Base 使用 `configs/v3`，Stage1 继续使用 `configs/v2/stage1/base.yaml`。此次仅迁移配置路径，数值配方、artifact kind 与输出路径不变；历史 split 配置仍保留在 `configs/v2/stage3/splits`。
 
 ## 决定
 

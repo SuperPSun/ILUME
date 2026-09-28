@@ -73,6 +73,15 @@ def _comparison_fragment(
     ensemble: bool,
     ensemble_results: list[Any] | None = None,
 ) -> dict[str, Any]:
+    if task.benchmark == "simulation":
+        from stage3.simulation_reporting import simulation_comparison, simulation_scale, simulation_task_sources
+
+        source = task.test_path if split == "test" else task.valid_paths[0]
+        return simulation_comparison(
+            split=split, tasks=(task.task_id,),
+            sources=simulation_task_sources(task.task_id, task.train_paths[0], source, result.source_rows),
+            scales={task.task_id: simulation_scale(task.train_paths[0], task.target_columns[0])},
+        )
     sources = {
         f"{task.task_id}:fold{path.stem.removeprefix('fold')}": sha256_file(path)
         for path in (*task.train_paths, *task.valid_paths)
@@ -192,7 +201,7 @@ def _write_task_predictions(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate ILUME baseline checkpoints.")
     parser.add_argument("--config", required=True)
-    parser.add_argument("--benchmark", required=True, choices=("stage3",))
+    parser.add_argument("--benchmark", required=True, choices=("stage3", "simulation"))
     parser.add_argument("--task", required=True)
     parser.add_argument("--split", required=True, choices=("valid", "test"))
     parser.add_argument("--checkpoint")
@@ -203,9 +212,16 @@ def main() -> None:
     args = parser.parse_args()
     config = load_benchmark_config(args.config)
     model_selector = str(config.training["model_selection"])
+    if args.benchmark == "simulation" and (args.fold is not None or args.ensemble_folds or not args.checkpoint or args.checkpoint_dir):
+        parser.error("Simulation evaluation requires --checkpoint and forbids fold/ensemble")
     environment_snapshot = ensure_benchmark_environment(config)
     reporter = ProgressReporter()
-    if args.split == "test":
+    if args.benchmark == "simulation":
+        if args.fold is not None or args.ensemble_folds or not args.checkpoint or args.checkpoint_dir:
+            raise ValueError("Simulation evaluation requires --checkpoint and forbids fold/ensemble")
+        checkpoints = [repository_path(args.checkpoint)]
+        selector_fold = None
+    elif args.split == "test":
         if not args.ensemble_folds or args.fold is not None or not args.checkpoint_dir or args.checkpoint:
             raise ValueError("Stage 3 test requires --checkpoint-dir and --ensemble-folds only")
         checkpoint_root = repository_path(args.checkpoint_dir)
@@ -255,7 +271,7 @@ def main() -> None:
         stage="benchmark", operation="evaluate", config_path=args.config,
         config_payload=config.to_dict(), semantic_identity=evaluation_identity,
         output=args.output, seed=config.seed,
-        data_metadata="data/stage3/metadata.json",
+        data_metadata=f"data/{'stage2' if args.benchmark == 'simulation' else 'stage3'}/metadata.json",
         details={
             "reporting_schema_version": REPORTING_SCHEMA_VERSION,
             "benchmark": args.benchmark, "task": args.task, "split": args.split,
@@ -289,6 +305,11 @@ def main() -> None:
         if [_checkpoint_fingerprint(path) for path in checkpoints] != checkpoint_fingerprints:
             raise ValueError("Benchmark checkpoint changed during evaluation")
         first = results[0]
+        if args.benchmark == "simulation":
+            from stage3.simulation_reporting import scalar_metrics, simulation_scale
+
+            scale = simulation_scale(evaluation_task.train_paths[0], evaluation_task.target_columns[0])
+            first.metrics = {evaluation_task.target_columns[0]: scalar_metrics(first.targets, first.predictions, scale)}
         # Fold-local scalers and preprocessing audits are expected to differ in
         # ensemble evaluation: each checkpoint was trained with its own fold
         # train rows. A single-fold evaluation can still enforce exact audit
@@ -346,11 +367,11 @@ def main() -> None:
         summary["reporting"] = reporting_block(
             model_id=config.name,
             model_display_name=config.display_name,
-            benchmark="stage3_property",
+            benchmark="simulation_property" if args.benchmark == "simulation" else "stage3_property",
             protocol={
                 "split": args.split,
                 "fold": selector_fold,
-                "folds": list(config.stage3.folds),
+                "folds": [] if args.benchmark == "simulation" else list(config.stage3.folds),
                 "ensemble": args.ensemble_folds,
                 "expected_tasks": [args.task],
                 "model_selector": model_selector,

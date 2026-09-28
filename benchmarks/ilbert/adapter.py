@@ -303,7 +303,7 @@ def prepare_ilbert_training(
         raise ValueError("ILBERT requires non-empty validation rows")
     if train.view_count != valid.view_count:
         raise ValueError("ILBERT train and valid sequence topology differ")
-    target_stats = TargetStats.fit(train.raw.targets)
+    target_stats = TargetStats.fit(train.raw.targets, allow_constant=task.benchmark == "simulation")
     source_hashes = {
         "train": [sha256_file(path) for path in task.train_paths],
         "valid": [sha256_file(path) for path in task.valid_paths],

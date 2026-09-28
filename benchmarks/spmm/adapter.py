@@ -439,7 +439,7 @@ def prepare_spmm_training(
     )
     if train.component_count != valid.component_count:
         raise ValueError("SPMM train and valid component topology differ")
-    target_stats = TargetStats.fit(train.raw.targets)
+    target_stats = TargetStats.fit(train.raw.targets, allow_constant=task.benchmark == "simulation")
     source_hashes = {
         "train": [sha256_file(path) for path in task.train_paths],
         "valid": [sha256_file(path) for path in task.valid_paths],

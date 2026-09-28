@@ -15,8 +15,8 @@ EXTERNAL_PACKAGES = {"ablations", "benchmarks"}
 
 def test_global_rdkit_v2_base_configs_are_isolated() -> None:
     stage1 = load_stage1_config(ROOT / "configs/v2/stage1/base.yaml")
-    stage2 = load_stage2_config(ROOT / "configs/v2/stage2/base.yaml")
-    stage3 = load_stage3_config(ROOT / "configs/v2/stage3/base.yaml")
+    stage2 = load_stage2_config(ROOT / "configs/v3/stage2/base.yaml")
+    stage3 = load_stage3_config(ROOT / "configs/v3/stage3/base.yaml")
     legacy_stage3 = load_stage3_config(ROOT / "configs/v1/stage3/base.yaml")
 
     assert stage1.architecture.kind == "global_rdkit_v2"

@@ -246,7 +246,7 @@ def test_full_home_final_roundtrip_and_transfer(tiny_stage2_setup, tmp_path, mon
     from stage2.home_contract import state_hash, transferable_state
     from stage2.home_train import _export, build_model, training_identity
 
-    base = load_home_recipe("configs/v2/stage2/base.yaml")
+    base = load_home_recipe("configs/v3/stage2/base.yaml")
     stage1_root = tmp_path / "global_pretrain"
     stage1_config = PretrainConfig(
         architecture=ArchitectureConfig(kind="global_rdkit_v2"),
@@ -313,48 +313,12 @@ def test_full_home_final_roundtrip_and_transfer(tiny_stage2_setup, tmp_path, mon
         task_data = Stage2DeviceTaskData.from_dataset(dataset, torch.device("cpu"))
         with torch.no_grad():
             assert torch.equal(model.predict(task, packed, task_data), reloaded.predict(task, packed, task_data))
-    from stage2.evaluate import EVALUATION_TASKS, evaluate_home_final, resolve_evaluation_identity
-
-    valid = evaluate_home_final(recipe, output, split="valid", predictions_dir=tmp_path / "valid" / "predictions")
-    assert set(valid["tasks"]) == set(EVALUATION_TASKS)
-    assert valid["tasks"]["simulation/partial_atomic_charge"]["count"] == 1
-    for task in EVALUATION_TASKS:
-        if task == "simulation/thermal_expansion":
-            continue
-        source = registry.by_id(task).dataset.split_path(config.data.data_root, "valid")
-        destination = registry.by_id(task).dataset.split_path(config.data.data_root, "test")
-        destination.write_bytes(source.read_bytes())
-    test_identity = resolve_evaluation_identity(recipe, output, split="test")
-    assert "simulation/thermal_expansion" not in test_identity["payload"]["tasks"]
-    test = evaluate_home_final(recipe, output, split="test", predictions_dir=tmp_path / "test" / "predictions")
-    assert len(test["tasks"]) == 4
-    hidden_prepared = tmp_path / "hidden_prepared"
-    config.data.artifacts_dir.rename(hidden_prepared)
-    try:
-        standalone = evaluate_home_final(
-            recipe, output, split="test",
-            predictions_dir=tmp_path / "standalone_test" / "predictions",
-        )
-        assert standalone["macro_normalized_mae"] == test["macro_normalized_mae"]
-    finally:
-        hidden_prepared.rename(config.data.artifacts_dir)
-    atom_path = tmp_path / "test" / "predictions" / "simulation__partial_atomic_charge.csv"
-    with atom_path.open(newline="", encoding="utf-8") as handle:
-        atom_rows = list(csv.DictReader(handle))
-    assert [int(row["atom_index"]) for row in atom_rows] == [0]
-    thermal = registry.by_id("simulation/thermal_expansion").dataset
-    thermal.split_path(config.data.data_root, "test").write_bytes(
-        thermal.split_path(config.data.data_root, "valid").read_bytes()
-    )
-    expanded_identity = resolve_evaluation_identity(recipe, output, split="test")
-    assert len(expanded_identity["payload"]["tasks"]) == 5
-    assert expanded_identity["hash"] != test_identity["hash"]
     (output / "checkpoint_epoch_00010.pt").unlink()
     load_home_final(output / "stage2_final.pt")
     from stage3.config import load_stage3_config
     from stage3.home import load_source
 
-    stage3_config = load_stage3_config("configs/v2/stage3/base.yaml")
+    stage3_config = load_stage3_config("configs/v3/stage3/base.yaml")
     stage3_config = replace(stage3_config, initialization=replace(
         stage3_config.initialization,
         stage2_final=output / "stage2_final.pt",
@@ -565,6 +529,48 @@ def test_full_home_final_roundtrip_and_transfer(tiny_stage2_setup, tmp_path, mon
     loaded_final = load_simulation_final(stage3_config, inference_root, fold=1)
     assert set(loaded_final.task_specs) == set(experimental) | set(SIMULATION_TASKS)
     assert all(torch.equal(loaded_final.state_dict()[name], value) for name, value in state.items())
+    from stage3.simulation_reporting import SCALAR_SIMULATION_TASKS
+    from stage3.simulation_evaluate import evaluate_simulation_checkpoints, resolve_simulation_evaluation_identity
+
+    # Real packed features and predictions; only the five-fold final selection is synthetic.
+    for fold in range(1, 6):
+        fold_root = inference_root / f"fold{fold}"
+        fold_root.mkdir()
+        torch.save(final, fold_root / "three_phase_final.pt")
+        (fold_root / "three_phase_final.json").write_text(json.dumps(manifest))
+    for task in SCALAR_SIMULATION_TASKS:
+        spec = registry.by_id(task)
+        spec.dataset.split_path(config.data.data_root, "test").write_bytes(spec.dataset.split_path(config.data.data_root, "valid").read_bytes())
+    stage3_config = replace(stage3_config, data=replace(stage3_config.data, task_catalog=config.data.task_catalog_path), training=replace(stage3_config.training, device="cpu", amp_dtype="fp32"))
+    loaded_final.eval()
+    base_predictions = {}
+    for task in SCALAR_SIMULATION_TASKS:
+        dataset = Stage2TaskDataset(config.data.artifacts_dir, task, "valid")
+        packed = pack_stage2_batch(Stage2BatchDescriptor(task, torch.arange(len(dataset))), {task: dataset}, entities,
+                                  MultimodalPacker(vocabulary), needs_entities=True, include_raw_atom_targets=False, pin_memory=False)
+        with torch.no_grad():
+            base_predictions[task] = loaded_final.predict_simulation(task, packed, Stage2DeviceTaskData.from_dataset(dataset, torch.device("cpu"))).numpy()
+    def fake_final(_config, _root, *, fold, device):
+        selected = copy.deepcopy(loaded_final)
+        original_predict = selected.predict_simulation
+        selected.predict_simulation = lambda task, packed, data: original_predict(task, packed, data) + fold
+        return selected
+    monkeypatch.setattr("stage3.simulation_evaluate.load_simulation_final", fake_final)
+    for split in ("valid", "test"):
+        evaluation = evaluate_simulation_checkpoints(stage3_config, inference_root, split=split, predictions_dir=tmp_path / split / "predictions")
+        assert tuple(evaluation["tasks"]) == SCALAR_SIMULATION_TASKS
+        assert evaluation["reporting"]["benchmark"] == "simulation_property"
+        for task in SCALAR_SIMULATION_TASKS:
+            stats = payload["scalers"][task]["targets"][registry.by_id(task).target_columns[0]]
+            prediction_path = tmp_path / split / "predictions" / (task.replace("/", "__") + ".csv")
+            with prediction_path.open() as handle:
+                actual = [float(row["prediction"]) for row in csv.DictReader(handle)]
+            expected = (base_predictions[task].reshape(-1) + 3.0) * stats["scale"] + stats["mean"]
+            np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-5)
+    assert resolve_simulation_evaluation_identity(stage3_config, inference_root, split="valid")["hash"] != resolve_simulation_evaluation_identity(stage3_config, inference_root, split="test")["hash"]
+    without_simulation = replace(stage3_config, training=replace(stage3_config.training, simulation=None))
+    with pytest.raises(ValueError, match="simulation-trained"):
+        resolve_simulation_evaluation_identity(without_simulation, inference_root, split="valid")
     final_path = output / "stage2_final.pt"
     manifest_path = output / "stage2_final.json"
     original = torch.load(final_path, map_location="cpu", weights_only=False)
@@ -603,22 +609,6 @@ def test_full_home_final_roundtrip_and_transfer(tiny_stage2_setup, tmp_path, mon
     manifest_path.write_text(json.dumps(manifest))
     with pytest.raises(ValueError, match="scaler hash"):
         load_home_final(final_path)
-
-
-def test_home_partial_charge_metric_is_molecule_equal() -> None:
-    from stage2.evaluate import _metrics
-
-    value = _metrics(
-        np.asarray([0.0, 0.0, 0.0]),
-        np.asarray([0.0, 0.0, 3.0]),
-        2.0,
-        molecule_offsets=[0, 2, 3],
-    )
-    assert value["count"] == 2
-    assert value["atom_count"] == 3
-    assert value["mae"] == pytest.approx(1.5)
-    assert value["normalized_mae"] == pytest.approx(0.75)
-    assert value["atom_micro_mae"] == pytest.approx(1.0)
 
 
 def test_registry_is_catalog_driven_and_model_independent(tiny_stage2_setup):
@@ -784,7 +774,7 @@ def test_global_rdkit_v2_teacher_cache_uses_entity_embedding(
     ).shape == (1, 32)
 
 def test_stage2_refinement_config_contract(tiny_stage2_setup):
-    active = load_stage2_config(Path("configs/v2/stage2/base.yaml"))
+    active = load_stage2_config(Path("configs/v3/stage2/base.yaml"))
     assert active.model.object_layers == 2
     assert active.model.object_ffn_dim == 2048
     assert active.loss.lambda_teacher == 0.0
