@@ -19,7 +19,7 @@
 | Stage 3 owner | Phase 1/2 使用原始梯度的 task/group 加权聚合，Phase 3 单任务更新；`weighted_owner_raw_v1` 进入训练身份。owner LR/lifetime 与 size-class 默认、task override 的 width/dropout 进入 identity；提前结束用 `requires_grad=False`，不删除 task；零预算 PRIVATE 逐 bit 继承 anchor。Base train/valid microbatch 上限 1024 | 0050/0055/0070；诊断 0054 |
 | Stage 3 diagnostics | 只读 gate mass、normalized entropy、PRIVATE mass 分位数；test aggregate 合并 fold-sample。不得新增 forward、进入 loss/selection 或改 prediction CSV；legacy 不输出。pEC50 Phase 3 为 3 epochs | 0054/0055 |
 
-禁止恢复：Stage 1 fingerprint/grouped descriptor/projection、45/45/10 sampler、augmentation multiplier、多容量正式配置、mid-epoch 恢复或旧格式兼容；Stage 2 双实体编码器、体系采样、渐进解冻、early stopping、best/last、step checkpoint、PCGrad 或 accumulation window；Stage 3 four-phase、routing intervention、gate calibration 或 HPO/Optuna。
+禁止恢复：Stage 1 fingerprint/grouped descriptor/projection、45/45/10 sampler、augmentation multiplier、多容量正式配置、mid-epoch 恢复或旧格式兼容；Stage 2 双实体编码器、体系采样、渐进解冻、early stopping、best/last、step checkpoint、PCGrad 或 accumulation window；Stage 3 four-phase、routing intervention、gate calibration 或 HPO/Optuna。ADR-0087 的十组 HoME 配置仅是隔离候选，不增加正式 Base 数量；Stage2 候选可在 8、10、12 轮按配置末轮发布，正式 Base 仍为 10 轮。
 
 ### Legacy、消融与 baseline
 

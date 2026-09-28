@@ -287,7 +287,7 @@ def _export(
     root: Path, experiment: HomeRecipe, model: SimulationHoME,
     registry: Any, identity: Mapping[str, Any], data_identity: Mapping[str, Any],
 ) -> dict[str, Any]:
-    checkpoint_path = root / "checkpoint_epoch_00010.pt"
+    checkpoint_path = root / f"checkpoint_epoch_{experiment.stage2_epochs:05d}.pt"
     encoder_path = root / "stage2_encoder.pt"
     # The transient compatibility scaffold is never optimized and exports only encoding state.
     scaffold = Stage2ObjectModel(
@@ -373,7 +373,7 @@ def _export(
         "stage2_data_identity": dict(data_identity),
         "shared_state_hash": shared_hash,
         "encoder_state_hashes": payload["encoder_state_hashes"],
-        "fixed_final_epoch": 10,
+        "fixed_final_epoch": experiment.stage2_epochs,
     }
     atomic_json(root / "stage2_final.json", manifest)
     return manifest

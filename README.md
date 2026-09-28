@@ -37,6 +37,19 @@ python scripts/stage3/evaluate.py --config configs/v3/stage3/base.yaml --checkpo
 
 只有身份一致且完整的 checkpoint 可以恢复；验证只记录，不选模型。先看五折 validation，再报告 test ensemble。Stage3 的正式最终文件名仍为 `three_phase_final.pt`；五项模拟任务可通过 `stage3.home.load_simulation_final()` 加载 final，并使用模型的 `predict_simulation()` 接口和 Stage2 的 packed 输入推理。
 
+## HoME 主模型候选
+
+`base1-1` 至 `base1-10` 是十组隔离调参配置，差异和配对规则见 [ADR-0087](docs/adr/0087-stage2-stage3-home-base1-candidates.md)。先完成上方正式 Base 的 Stage2 prepare。`base1-1`～`base1-6` 各自训练 Stage2 并重新准备 Stage3；`base1-7`～`base1-10` 直接复用 Base 的 Stage2 和 Stage3 prepared 数据。下面分别示范 `base1-1` 与 `base1-7`；将编号替换为对应候选即可，不复用其他候选的 checkpoint 或输出。
+
+```bash
+python scripts/stage2/train.py --config configs/v3/stage2/candidates/base1-1.yaml --output outputs/v3/stage2/base1-1/train
+python scripts/stage3/prepare.py --config configs/v3/stage3/candidates/base1-1.yaml --output outputs/v3/stage3/base1-1/prepare
+python scripts/stage3/train.py --config configs/v3/stage3/candidates/base1-1.yaml --fold 1 2 3 4 5 --output outputs/v3/stage3/base1-1/train --max-parallel 4 --devices cuda:0,cuda:1,cuda:2,cuda:3
+python scripts/stage3/train.py --config configs/v3/stage3/candidates/base1-7.yaml --fold 1 2 3 4 5 --output outputs/v3/stage3/base1-7/train --max-parallel 4 --devices cuda:0,cuda:1,cuda:2,cuda:3
+```
+
+评估时使用同名候选的 Stage3 配置、train root 和独立 valid/test 输出路径；模拟域沿用上方 `--domain simulation --ensemble-folds` 命令形式。候选不自动选优，不影响正式 Base。
+
 ## 三项核心消融
 
 三个对照各自有独立身份与输出根，不与正式产物交叉加载；模型细节及解释边界见 [ADR-0082](docs/adr/0082-home-mainline-and-core-ablations.md)。

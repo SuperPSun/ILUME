@@ -55,8 +55,7 @@ def load_home_final(path: str | Path) -> tuple[dict[str, Any], SimulationHoME, S
     payload = torch.load(artifact, map_location="cpu", weights_only=False)
     if (payload.get("kind") != STAGE2_HOME_FINAL_KIND
             or manifest.get("kind") != STAGE2_HOME_FINAL_KIND
-            or payload.get("format_version") != 2
-            or manifest.get("fixed_final_epoch") != 10):
+            or payload.get("format_version") != 2):
         raise ValueError("Unsupported Stage 2 full HoME artifact kind")
     identity = payload["training_identity"]
     validate_semantic_identity(identity)
@@ -97,7 +96,9 @@ def load_home_final(path: str | Path) -> tuple[dict[str, Any], SimulationHoME, S
                 raise ValueError("Stage 2 full model scaler values are invalid")
     recipe = home_recipe_from_dict(payload["recipe"])
     if (recipe.stage2.experiment_dict() != identity["payload"]["stage2_config"]
-            or asdict(recipe.stage3.model) != identity["payload"]["stage3_model"]):
+            or asdict(recipe.stage3.model) != identity["payload"]["stage3_model"]
+            or identity["payload"].get("epochs") != recipe.stage2_epochs
+            or manifest.get("fixed_final_epoch") != recipe.stage2_epochs):
         raise ValueError("Stage 2 full model recipe mismatch")
     features = payload["feature_artifacts"]
     if semantic_hash("stage2.home.feature-artifacts.v1", features) != payload["feature_artifacts_hash"]:

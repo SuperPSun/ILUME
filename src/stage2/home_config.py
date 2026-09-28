@@ -80,9 +80,9 @@ def home_recipe_from_dict(raw: Any) -> HomeRecipe:
         or config.loss.lambda_teacher != 0.0
         or config.training.backbone_frozen_epochs != 0
         or config.training.batch_size != 256
-        or config.training.epochs != 10
+        or config.training.epochs not in {8, 10, 12}
         or config.training.refinement_epochs != 0
         or set(config.loss.task_weights) != set(SOURCE_GROUPS)
     ):
         raise ValueError("Stage 2 HoME requires the fixed nine-task physics-only recipe")
-    return HomeRecipe(config, HomeArchitecture(model, groups), microbatch, 10, initialization, random_seed)
+    return HomeRecipe(config, HomeArchitecture(model, groups), microbatch, config.training.epochs, initialization, random_seed)

@@ -70,7 +70,7 @@ def load_source(config: Stage3Config) -> dict[str, Any] | None:
         or payload.get("stage2_encoder_sha256") != sha256_file(encoder_path)
         or manifest.get("stage2_encoder_sha256") != payload["stage2_encoder_sha256"]
         or payload.get("group_mapping") != expected_mapping
-        or manifest.get("fixed_final_epoch") != 10
+        or manifest.get("fixed_final_epoch") != payload["training_identity"]["payload"].get("epochs")
         or encoder.get("provenance", {}).get("home_training_identity") != identity["hash"]
         or encoder.get("state_hashes", {}).get("stage1_backbone") != payload.get("encoder_state_hashes", {}).get("stage1")
         or encoder.get("state_hashes", {}).get("object_encoder") != payload.get("encoder_state_hashes", {}).get("object_encoder")

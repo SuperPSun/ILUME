@@ -15,6 +15,7 @@
 | Stage 3 二十任务 catalog | [0067](0067-stage3-twenty-task-catalog.md) | 移除 volume expansion；现役 v2/消融/baseline/transfer target 同步与 artifact 边界 |
 | 身份与 legacy refinement | [0021](0021-identity-audit-contract-v1.md)、[0027](0027-late-taskwise-refinement.md) | semantic identity/audit；0027 refinement 只约束 legacy/Capacity |
 | 模拟性质 baseline/评估 | [0086](0086-scalar-simulation-baselines-and-reporting.md) | 四项 scalar 单次 baseline 与 Stage3 五模型原单位 ensemble，独立 valid/test 榜单；Stage2 evaluate 保持退役 |
+| Stage2/Stage3 HoME 候选 | [0087](0087-stage2-stage3-home-base1-candidates.md) | base1-1～base1-10 的配对来源、容量与预算差异；隔离于正式 Base |
 | Reporting | [0023](0023-unified-evaluation-reporting.md)、[0031](0031-stage3-summary-normalization-relaxation.md)、[0043](0043-retire-stage2-evaluation-and-v2-refinement.md)（历史）、[0061](0061-ilume-task-scatter-summary.md)、[0085](0085-retire-stage2-home-evaluation.md) | Stage3 experimental 与 0086 独立 simulation 榜单；Stage2 evaluator/reporting 由 0085 退役 |
 
 ## Baseline 与内部消融

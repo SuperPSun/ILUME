@@ -174,6 +174,7 @@ def test_stage2_home_source_mapping_and_state_boundary() -> None:
     incomplete = {name: value for name, value in state.items() if name != names[0]}
     with pytest.raises(ValueError, match="incomplete"):
         load_transferable_state(target, incomplete, state_hash(incomplete))
+
     from stage3.simulation import (
         SIMULATION_TASKS, SimulationObjectPhase1Model, copy_simulation_owners,
     )
@@ -201,6 +202,33 @@ def test_stage2_home_source_mapping_and_state_boundary() -> None:
         torch.equal(combined_state["simulation_atom_adapter." + name], value)
         for name, value in simulation.atom_adapter.state_dict().items()
     )
+
+
+@pytest.mark.parametrize("number", [1, 2, 3, 4])
+def test_home_candidate_transfer_shapes(number: int) -> None:
+    from stage2.home_config import load_home_recipe
+    from stage2.home_contract import SOURCE_GROUPS, load_transferable_state, source_task_specs, state_hash, transferable_state
+    from stage2.home_model import SimulationHoME
+
+    name = f"base1-{number}"
+    stage2 = load_home_recipe(f"configs/v3/stage2/candidates/{name}.yaml")
+    stage3 = load_stage3_config(f"configs/v3/stage3/candidates/{name}.yaml")
+    tasks = tuple(SimpleNamespace(
+        task_id=task, target_columns=("y",), condition_columns=(),
+        topology="single_entity",
+    ) for task in SOURCE_GROUPS)
+    registry = SimpleNamespace(tasks=tasks, task_ids=tuple(task.task_id for task in tasks))
+    backbone = torch.nn.Module()
+    backbone.entity_dim = 16
+    backbone.atom_dim = 8
+    backbone.config = SimpleNamespace(model=SimpleNamespace(n_heads=8))
+    source = SimulationHoME(backbone, registry, stage3, stage2.stage2)
+    state = transferable_state(source.home)
+    target = Stage3SparseModel(stage3.model, source_task_specs(registry), 16,
+                               group_configs=stage3.groups)
+    names = load_transferable_state(target, state, state_hash(state))
+    assert set(names) == set(state)
+    assert all(torch.equal(target.state_dict()[key], value) for key, value in state.items())
 
 
 def test_formal_home_source_rejects_old_kind(

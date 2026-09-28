@@ -238,7 +238,8 @@ def tiny_stage2_setup(tmp_path: Path) -> Stage2Config:
         training=Stage2TrainingConfig(batch_size=2, epochs=2, backbone_frozen_epochs=1, packing_workers=2, packing_prefetch_batches=2, cuda_prefetch_batches=1, log_every_batches=3, device="cpu", amp_dtype="none", refinement_epochs=2),
     )
 
-def test_full_home_final_roundtrip_and_transfer(tiny_stage2_setup, tmp_path, monkeypatch):
+@pytest.mark.parametrize("final_epoch", [8, 10, 12])
+def test_full_home_final_roundtrip_and_transfer(tiny_stage2_setup, tmp_path, monkeypatch, final_epoch):
     from stage1.masking import MultimodalPacker
     from stage2.data import Stage2BatchDescriptor, Stage2DeviceTaskData, Stage2EntityDataset, pack_stage2_batch
     from stage2.home_artifact import load_home_final
@@ -283,11 +284,11 @@ def test_full_home_final_roundtrip_and_transfer(tiny_stage2_setup, tmp_path, mon
         model=replace(tiny_stage2_setup.model, object_ffn_dim=64, dropout=0.0),
         loss=replace(tiny_stage2_setup.loss, lambda_teacher=0.0),
         training=replace(
-            tiny_stage2_setup.training, batch_size=256, epochs=10,
+            tiny_stage2_setup.training, batch_size=256, epochs=final_epoch,
             backbone_frozen_epochs=0, refinement_epochs=0, refinement_tasks=(),
         ),
     )
-    recipe = HomeRecipe(config, base.stage3, 256, 10, "pretrained", None)
+    recipe = HomeRecipe(config, base.stage3, 256, final_epoch, "pretrained", None)
     prepared = prepare_stage2_data(config)
     registry = load_artifact_registry(config.data.artifacts_dir)
     model, _ = build_model(recipe, registry)
@@ -295,10 +296,13 @@ def test_full_home_final_roundtrip_and_transfer(tiny_stage2_setup, tmp_path, mon
     output = tmp_path / "home_train"
     output.mkdir()
     checkpoint_state = {name: value.detach().clone() for name, value in model.state_dict().items()}
-    torch.save({"model": checkpoint_state}, output / "checkpoint_epoch_00010.pt")
+    checkpoint_path = output / f"checkpoint_epoch_{final_epoch:05d}.pt"
+    torch.save({"model": checkpoint_state}, checkpoint_path)
     data_identity = prepared["semantic"]["identities"]["data"]
     _export(output, recipe, model, registry, training_identity(recipe, data_identity, {}), data_identity)
     payload, reloaded, vocabulary = load_home_final(output / "stage2_final.pt")
+    assert json.loads((output / "stage2_final.json").read_text())["fixed_final_epoch"] == final_epoch
+    assert payload["checkpoint_sha256"] == sha256_file(checkpoint_path)
     assert payload["full_model_state"].keys() == checkpoint_state.keys()
     assert all(torch.equal(value, payload["full_model_state"][name]) for name, value in checkpoint_state.items())
     assert state_hash(transferable_state(reloaded.home)) == payload["shared_state_hash"]
@@ -313,7 +317,7 @@ def test_full_home_final_roundtrip_and_transfer(tiny_stage2_setup, tmp_path, mon
         task_data = Stage2DeviceTaskData.from_dataset(dataset, torch.device("cpu"))
         with torch.no_grad():
             assert torch.equal(model.predict(task, packed, task_data), reloaded.predict(task, packed, task_data))
-    (output / "checkpoint_epoch_00010.pt").unlink()
+    checkpoint_path.unlink()
     load_home_final(output / "stage2_final.pt")
     from stage3.config import load_stage3_config
     from stage3.home import load_source
@@ -325,6 +329,8 @@ def test_full_home_final_roundtrip_and_transfer(tiny_stage2_setup, tmp_path, mon
         stage2_encoder=output / "stage2_encoder.pt",
     ))
     assert load_source(stage3_config)["shared_state_hash"] == payload["shared_state_hash"]
+    with pytest.raises(ValueError, match="incompatible"):
+        load_source(replace(stage3_config, model=replace(stage3_config.model, global_experts=3)))
     from stage2.home_contract import load_transferable_state, source_task_specs
     from stage3.model import group_owner, private_owner
     from stage3.simulation import (
@@ -575,6 +581,11 @@ def test_full_home_final_roundtrip_and_transfer(tiny_stage2_setup, tmp_path, mon
     manifest_path = output / "stage2_final.json"
     original = torch.load(final_path, map_location="cpu", weights_only=False)
     manifest = json.loads(manifest_path.read_text())
+    wrong_epoch_manifest = {**manifest, "fixed_final_epoch": 10 if final_epoch != 10 else 8}
+    manifest_path.write_text(json.dumps(wrong_epoch_manifest))
+    with pytest.raises(ValueError, match="recipe mismatch"):
+        load_home_final(final_path)
+    manifest_path.write_text(json.dumps(manifest))
     changed = copy.deepcopy(original)
     changed["kind"] = "ilume_stage2_home_final_v1"
     torch.save(changed, final_path)
