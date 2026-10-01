@@ -13,8 +13,8 @@ python -m pip install -e ".[dev,tokenizers]"
 Stage1 保持现有 v2 来源，完成 prepare 后训练：
 
 ```bash
-python scripts/stage1/prepare.py --config configs/v2/stage1/base.yaml --output outputs/v2/stage1/base/prepare
-python scripts/stage1/train.py --config configs/v2/stage1/base.yaml --output outputs/v2/stage1/base/train
+python scripts/stage1/prepare.py --config configs/v2/stage1/base.yaml --output outputs/v3/stage1/base/prepare
+python scripts/stage1/train.py --config configs/v2/stage1/base.yaml --output outputs/v3/stage1/base/train
 ```
 
 Stage2 只准备九任务数据，不建立 teacher cache。physics-only HoME 使用逻辑 batch 256、微批 256，训练 10 轮并发布末轮完整九任务模型 `stage2_final.pt`、manifest 和供 Stage3 表示迁移的 `stage2_encoder.pt`。完整模型包括 Stage1 backbone、ObjectEncoder、全部 HoME owner、task routing/towers 与 atom adapter。一个逻辑 batch 只执行一次 optimizer/scheduler update；完整产物合同见 [ADR-0083](docs/adr/0083-stage2-home-full-artifact-evaluation.md)。
