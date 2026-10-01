@@ -44,7 +44,7 @@ RADAR_TASK_GROUPS = (
     ),
     (
         "experiment/solvation",
-        "experiment/transfer",
+        "experiment/hydration",
         "experiment/transfer_organic",
         "experiment/x_co2",
     ),

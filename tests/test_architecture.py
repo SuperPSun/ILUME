@@ -24,7 +24,7 @@ def test_global_rdkit_v2_base_configs_are_isolated() -> None:
     legacy_stage3 = load_stage3_config(ROOT / "configs/v1/stage3/base.yaml")
 
     assert stage1.architecture.kind == "global_rdkit_v2"
-    assert "outputs/v2" in str(stage2.initialization.checkpoint)
+    assert stage2.initialization.checkpoint == Path("outputs/v3/stage1/base/train/checkpoint_epoch_00005.pt")
     assert stage3.training.schedule_mode != legacy_stage3.training.schedule_mode
     assert "outputs/v3" in str(stage3.initialization.stage2_encoder)
 

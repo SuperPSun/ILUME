@@ -322,6 +322,10 @@ def test_formal_configs_and_registry_resolution(
             launcher.main()
     solvation = resolve_task(config, "stage3", "experiment/solvation", 1)
     organic = resolve_task(config, "stage3", "experiment/transfer_organic", 1)
+    hydration = resolve_task(config, "stage3", "experiment/hydration", 1)
+    assert hydration.slots == ("solute",)
+    assert hydration.condition_columns == ("temperature_K",)
+    assert len(load_split(hydration, "test")) == 0
     assert solvation.slots == ("cation", "anion", "solute")
     assert organic.slots == ("solute", "solvent")
     missing_test = resolve_task(config, "stage3", "experiment/self_diffusion_coefficient", 1)

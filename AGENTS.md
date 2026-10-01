@@ -42,6 +42,8 @@
 
 ## 数据、身份、输出与恢复
 
+现役 Stage3 以 `experiment/hydration` 替代 `experiment/transfer`（[ADR-0088](docs/adr/0088-stage3-hydration-replaces-transfer.md)）：单 solute + temperature_K、151 个体系、solvation GROUP、small 默认 PRIVATE 配方、random 五折、无 test。旧 transfer 产物保持历史身份；更换后的任务集合需要新的 Stage3 与 baseline 产物，禁止覆写既有输出。
+
 - 数据不进 Git；prepare 写 `data/stage*/metadata.json`。每次操作冻结 `run_config.yaml`、公开安全的 `metadata.json`，成功后写 `summary.json`；禁止用户名、hostname、私有绝对路径。
 - 新 train/evaluate 输出不可覆盖。reusable Stage 1/2 prepare 只在数据身份不变时刷新允许忽略的执行/模型字段（ADR-0019）。Stage 2 prepared data 不绑定 HoME model；正式 HoME 不生成 teacher cache，模型合同属于训练 checkpoint/encoder。
 - 保留 prepared SHA 和完整性检查；跨 Stage 保留 ADR-0021 semantic identity、必要 state hash；正式 HoME transfer 还绑定 Stage2 final artifact 与 encoder SHA。

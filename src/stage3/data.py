@@ -232,8 +232,10 @@ def resolve_task_registry(config: Stage3Config) -> dict[str, ResolvedTaskSpec]:
                 f"Stage 3 unique_systems/catalog mismatch for {task_id}: "
                 f"{task.unique_systems} != {fact.unique_systems}"
             )
-        strategy = config.data.split_strategies.get(
-            task_id, _default_strategy(fact, config.data.split_policy)
+        strategy = (
+            config.data.split_strategies[task_id]
+            if task_id in config.data.split_strategies
+            else _default_strategy(fact, config.data.split_policy)
         )
         strategy = strategy.replace("-", "_")
         if strategy not in fact.split_strategies:
@@ -244,7 +246,7 @@ def resolve_task_registry(config: Stage3Config) -> dict[str, ResolvedTaskSpec]:
                 f"Stage 3 slot/catalog mismatch for {task_id}: "
                 f"{configured_slots} != {fact.identity_columns}"
             )
-        if fact.system_type not in {"il", "il_solute", "solute_solvent"}:
+        if fact.system_type not in {"il", "il_solute", "solute_solvent", "solute"}:
             raise ValueError(
                 f"Unsupported Stage 3 topology for {task_id}: {fact.system_type}"
             )

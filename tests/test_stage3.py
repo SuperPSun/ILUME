@@ -801,9 +801,9 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
 
 def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
     expected = {
-        "system": ({"il", "il_solute", "solute_solvent"}, 20),
+        "system": ({"il", "il_solute", "solute_solvent", "random"}, 20),
         "random": ({"random"}, 20),
-        "individual": ({"cation", "solvent"}, 20),
+        "individual": ({"cation", "solvent", "random"}, 20),
     }
     root = Path("configs/v2/stage3/splits")
     for name, (strategies, task_count) in expected.items():
@@ -824,9 +824,9 @@ def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
         assert config.training.joint_gradient_clip_mode == "ownership"
         assert config.training.schedule_mode == "three_phase"
         if name == "system":
-            assert {spec.system_type for spec in enabled.values()} == strategies
+            assert {spec.system_type for spec in enabled.values()} == {"il", "il_solute", "solute_solvent", "solute"}
         elif name == "individual":
-            assert sum(spec.split_strategy == "cation" for spec in enabled.values()) == 19
+            assert sum(spec.split_strategy == "cation" for spec in enabled.values()) == 18
             assert enabled["experiment/transfer_organic"].split_strategy == "solvent"
         for spec in enabled.values():
             for fold in range(1, 6):
@@ -2610,3 +2610,35 @@ def test_object_phase1_prepared_contract_rejects_old_and_corrupt_slots(
         (config.data.artifacts_dir / "object_slots.pt").write_bytes(b"corrupt")
         with pytest.raises(ValueError, match="artifact hash mismatch"):
             load_prepared_stage3(config)
+
+
+def test_hydration_single_solute_preparation_and_train_only_scaler(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = _tiny_config(tmp_path)
+    task = "experiment/hydration"
+    row = _catalog_row(task, "hydration_kcal/mol", "solute", "temperature_K", "solute", "random")
+    _write_csv(config.data.task_catalog, list(row), [row])
+    config = replace(config, data=replace(config.data, split_policy="system", split_strategies={task: "random"}),
+                     tasks={task: Stage3TaskConfig(meta_group="g1", primary_slots=("solute",))})
+    fields = ["solute", "temperature_K", "hydration_kcal/mol"]
+    for fold in range(1, 6):
+        _write_csv(config.data.stage3_dir / task / "random" / "cv1" / f"fold{fold}.csv", fields,
+                   [{"solute": "C", "temperature_K": 290 + fold, "hydration_kcal/mol": fold * 10},
+                    {"solute": "CC", "temperature_K": 300 + fold, "hydration_kcal/mol": fold * 10 + 1}])
+    monkeypatch.setattr("stage3.prepare.load_stage2_encoder_identity", lambda _: TEST_ENCODER_IDENTITY)
+    def fake_materialize(config, object_keys, reporter=None):
+        return torch.zeros(len(object_keys), 4), TEST_ENCODER_IDENTITY, {"hits": 0, "misses": len(object_keys)}
+    with patch("stage3.prepare.materialize_object_embeddings", side_effect=fake_materialize):
+        prepare_stage3(config)
+    prepared = load_prepared_stage3(config)
+    assert prepared["registry"][task].primary_slots == ("solute",)
+    assert prepared["registry"][task].partner_slots == ()
+    assert prepared["normalization"]["fold1"][task]["target"]["mean"] == pytest.approx(35.5)
+    assert len(Stage3TaskDataset(config.data.artifacts_dir, 1, task, "train")) == 8
+    assert len(Stage3TaskDataset(config.data.artifacts_dir, 1, task, "valid")) == 2
+    assert len(Stage3TaskDataset(config.data.artifacts_dir, 1, task, "test")) == 0
+    old = replace(config, tasks={"experiment/transfer": config.tasks[task]})
+    with pytest.raises(ValueError):
+        load_prepared_stage3(old)
+    formal = load_stage3_config("configs/v3/stage3/base.yaml")
+    assert formal.tasks[task].size_class == "small"
+    assert formal.resolved_private_recipe(task).phase3_epochs == formal.training.three_phase.private_classes["small"].phase3_epochs

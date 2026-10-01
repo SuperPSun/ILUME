@@ -10,6 +10,8 @@ python -m pip install -e ".[dev,tokenizers]"
 
 ## 正式主线
 
+现役 Stage3 以 `experiment/hydration` 替代 `experiment/transfer`（[ADR-0088](docs/adr/0088-stage3-hydration-replaces-transfer.md)）：单 solute + temperature_K、151 个体系、solvation GROUP、small 默认 PRIVATE 配方、random 五折、无 test。旧 transfer 产物保持历史身份；更换后的任务集合需要新的 Stage3 与 baseline 产物，禁止覆写既有输出。
+
 Stage1 保持现有 v2 来源，完成 prepare 后训练：
 
 ```bash

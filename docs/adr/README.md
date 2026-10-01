@@ -12,7 +12,7 @@
 | Stage 3 训练 | [0084](0084-stage3-simulation-phase2-phase3.md)、[0020](0020-stage3-v1-sparse-home-pcgrad.md)、[0046](0046-stage3-ownership-clipping-raw-sampling.md)、[0048](0048-stage3-owner-lifetime-three-phase-training.md)、[0050](0050-stage3-task-specific-owner-budget-and-private-capacity.md)、[0070](0070-stage3-retire-pcgrad.md)、[0075](0075-stage2-zero-update-stage3-object-phase1.md) | 正式 20 项实验 + 五项模拟 Phase2/3；sparse HoME、raw sampling/clipping、三阶段 owner lifetime/capacity、ObjectEncoder Phase 1 |
 | Stage 3 recipe | [0050](0050-stage3-task-specific-owner-budget-and-private-capacity.md)、[0055](0055-stage3-pec50-phase3-single-variable-rollback.md) | owner 默认/覆盖/零预算与现役 task 例外，完整数值读 YAML；0051～0053 已并入历史摘要 |
 | Stage 3 diagnostics | [0054](0054-stage3-task-gate-diagnostics-and-weak-task-tuning.md) | 只读 task gate 统计、fold-sample 聚合与输出边界 |
-| Stage 3 二十任务 catalog | [0067](0067-stage3-twenty-task-catalog.md) | 移除 volume expansion；现役 v2/消融/baseline/transfer target 同步与 artifact 边界 |
+| Stage 3 二十任务 catalog | [0088](0088-stage3-hydration-replaces-transfer.md)、[0067](0067-stage3-twenty-task-catalog.md) | 移除 volume expansion；现役 v2/消融/baseline/transfer target 同步与 artifact 边界 |
 | 身份与 legacy refinement | [0021](0021-identity-audit-contract-v1.md)、[0027](0027-late-taskwise-refinement.md) | semantic identity/audit；0027 refinement 只约束 legacy/Capacity |
 | 模拟性质 baseline/评估 | [0086](0086-scalar-simulation-baselines-and-reporting.md) | 四项 scalar 单次 baseline 与 Stage3 五模型原单位 ensemble，独立 valid/test 榜单；Stage2 evaluate 保持退役 |
 | Stage2/Stage3 HoME 候选 | [0087](0087-stage2-stage3-home-base1-candidates.md) | base1-1～base1-10 的配对来源、容量与预算差异；隔离于正式 Base |

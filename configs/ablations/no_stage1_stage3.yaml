@@ -3,7 +3,7 @@ data:
   task_catalog: data/task_catalog.csv
   artifacts_dir: outputs/v3/ablations/no_stage1/stage3/prepare/artifacts
   split_policy: system
-  split_strategies: {}
+  split_strategies: {experiment/hydration: random}
   cv_repeat: 1
   cv_repeats: {}
   seed: 42
@@ -57,14 +57,13 @@ tasks:
     partner_mode: interaction
     primary_slots: [cation, anion]
     partner_slots: [solute]
-  experiment/transfer:
+  experiment/hydration:
     meta_group: solvation
-    unique_systems: 3079
-    size_class: large
-    phase3_private_epochs: 10
-    partner_mode: interaction
-    primary_slots: [cation, anion]
-    partner_slots: [solute]
+    unique_systems: 151
+    size_class: small
+    partner_mode: none
+    primary_slots: [solute]
+    partner_slots: []
   experiment/transfer_organic:
     meta_group: solvation
     unique_systems: 1914
