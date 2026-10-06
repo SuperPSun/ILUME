@@ -32,7 +32,7 @@ from .config import (
 )
 from .data import PreparedCorpusDataset
 from .masking import MultimodalMasker, MultimodalPacker
-from .model import LossStatistics, MultimodalPretrainModel, PretrainOutput
+from .model import LossStatistics, MultimodalPretrainModel, PretrainOutput, build_stage1_model
 from .tokenizer import SmilesTokenizer
 from .identity import (
     build_stage1_training_identity,
@@ -170,7 +170,9 @@ def _loss_lambdas(config: PretrainConfig) -> dict[str, float]:
         "atom": config.loss.lambda_atom,
         "bond": config.loss.lambda_bond,
     }
-    if not config.is_global_rdkit:
+    if config.is_dual_view:
+        values.update(alignment=config.loss.lambda_alignment, unimol=config.loss.lambda_unimol, electronic=config.loss.lambda_electronic)
+    elif not config.is_global_rdkit:
         values["fingerprint"] = config.loss.lambda_fingerprint
     return values
 
@@ -539,8 +541,12 @@ def run_training(
     valid_dataset = PreparedCorpusDataset(
         artifact_dir, "valid", config.data.shard_cache_size
     )
+    if config.is_dual_view:
+        from .auxiliary import TeacherCache
+        for dataset in (train_dataset, valid_dataset):
+            dataset.teacher_cache = TeacherCache(config.auxiliary.teacher_cache, artifact_metadata, require_complete=True)
     vocabulary = SmilesTokenizer.load(artifact_dir / "tokenizer.json")
-    raw_model = MultimodalPretrainModel(
+    raw_model = build_stage1_model(
         config, vocabulary, train_dataset.descriptor_schema
     ).to(device)
     if config.training.compile:
@@ -806,4 +812,14 @@ def run_training(
             source_hashes=artifact_metadata.get("source_hashes", {}),
             attempt_id=attempt_id,
         )
+    if config.is_dual_view and context.is_primary:
+        from common.identity import tensor_state_hash
+        state = {name: value.detach().cpu().clone() for name, value in raw_model.state_dict().items() if name.startswith(("smiles_encoder.", "graph_encoder.", "fusion."))}
+        atomic_torch_save(output_dir / "stage1_encoder.pt", {
+            "kind": "ilume_stage1_dual_view_encoder_v4", "format_version": 4,
+            "config": config.to_dict(), "model": state,
+            "state_hash": tensor_state_hash("stage1.dual-view.encoder.v4", state),
+            "training_identity": training_identity, "corpus_identity": corpus_identity,
+            "fixed_final_epoch": completed_epoch,
+        })
     return results

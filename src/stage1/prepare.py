@@ -1094,6 +1094,9 @@ def _stage1_shard_sample(sample: dict[str, Any]) -> dict[str, Any]:
             name: value.to(torch.uint8)
             for name, value in sample["fingerprints"].items()
         }
+    if "auxiliary_targets" in sample:
+        result["canonical_smiles"] = sample["canonical_smiles"]
+        result["auxiliary_targets"] = sample["auxiliary_targets"]
     return result
 
 
@@ -1108,11 +1111,11 @@ def _write_shards(
     signature: str,
     reporter: ProgressReporter,
 ) -> tuple[list[dict[str, Any]], int, dict[str, float | int | bool]]:
-    corpus_format_version = (
-        GLOBAL_RDKIT_CORPUS_FORMAT_VERSION
-        if config.is_global_rdkit
-        else CORPUS_FORMAT_VERSION
-    )
+    corpus_format_version = config.corpus_version
+    electronic = None
+    if config.is_dual_view:
+        from .auxiliary import fit_electronic_targets
+        electronic = fit_electronic_targets(config, connection, output_dir)
     started = time.perf_counter()
     shard_dir = output_dir / "shards"
     shard_dir.mkdir(parents=True, exist_ok=True)
@@ -1186,6 +1189,11 @@ def _write_shards(
                         )
                         for row, record in zip(rows, records, strict=True)
                     ]
+                    if electronic is not None:
+                        from .auxiliary import empty_auxiliary_targets
+                        for sample, record in zip(samples, records, strict=True):
+                            sample["canonical_smiles"] = record["canonical_smiles"]
+                            sample["auxiliary_targets"] = {**empty_auxiliary_targets(), **electronic.get(record["canonical_smiles"], {})}
                     temporary = path.with_suffix(".pt.tmp")
                     torch.save(
                         {
@@ -1320,11 +1328,7 @@ def prepare_corpus(
         config = PretrainConfig(data=config)
     config.validate()
     data_config = config.data
-    corpus_format_version = (
-        GLOBAL_RDKIT_CORPUS_FORMAT_VERSION
-        if config.is_global_rdkit
-        else CORPUS_FORMAT_VERSION
-    )
+    corpus_format_version = config.corpus_version
     output_dir = data_config.artifacts_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     reporter = ProgressReporter()
@@ -1618,6 +1622,8 @@ def prepare_corpus(
         "excluded_entities.csv",
         "augmentation_audit.json",
     )
+    if config.is_dual_view:
+        artifact_files += ("electronic_scaler.json",)
     shard_manifest = json.loads(
         (output_dir / "shard_manifest.json").read_text(encoding="utf-8")
     )["shards"]
@@ -1666,7 +1672,7 @@ def prepare_corpus(
             for filename in artifact_files
         },
     }
-    if not config.is_global_rdkit:
+    if not (config.is_global_rdkit or config.is_dual_view):
         metadata.update(
             {
                 "fingerprint_kind": config.fingerprint.kind,

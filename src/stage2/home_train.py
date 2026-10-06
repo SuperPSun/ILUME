@@ -20,7 +20,7 @@ from common.training import capture_rng_state, cosine_warmup, resolve_device, re
 from stage1.masking import MultimodalPacker
 from stage1.config import load_config as load_stage1_config
 from stage1.descriptors import DescriptorSchema, rdkit_descriptor_names
-from stage1.model import LoadedStage1Model, MultimodalPretrainModel, load_stage1_model
+from stage1.model import LoadedStage1Model, build_stage1_model, load_stage1_model
 from stage1.tokenizer import SmilesTokenizer
 from stage2.data import (
     Stage2BatchDescriptor, Stage2DeviceTaskData, Stage2EntityDataset,
@@ -35,7 +35,7 @@ from stage2.train import STAGE2_HOME_ENCODER_KIND, export_stage2_encoder_artifac
 from .home_config import HomeRecipe
 from .home_contract import SOURCE_GROUPS, state_hash, transferable_state
 from .home_model import SimulationHoME
-from .home_artifact import STAGE2_HOME_FINAL_KIND, full_owner_manifest, full_state_hash, load_home_final
+from .home_artifact import final_kind, full_owner_manifest, full_state_hash, load_home_final
 
 
 STAGE2_HOME_CHECKPOINT_KIND = "ilume_stage2_home_checkpoint_v1"
@@ -46,7 +46,7 @@ def _cpu_state(model: torch.nn.Module) -> dict[str, torch.Tensor]:
 
 
 def _model_hash(state: Mapping[str, torch.Tensor]) -> str:
-    return tensor_state_hash("stage2.home.full-model.v1", state)
+    return tensor_state_hash("stage2.home.full-model.v4" if any(name.startswith("object_encoder.input_projection.") for name in state) else "stage2.home.full-model.v1", state)
 
 
 def training_identity(
@@ -54,9 +54,10 @@ def training_identity(
     math_contract: Mapping[str, Any],
 ) -> dict[str, Any]:
     config = experiment.stage2
-    return semantic_identity("stage2.home-training.v1", {
-        "contract_version": 1,
+    return semantic_identity("stage2.home-training.v4" if experiment.freeze_stage1 else "stage2.home-training.v1", {
+        "contract_version": 4 if experiment.freeze_stage1 else 1,
         "stage2_data_identity": data_identity["hash"],
+        **({"frozen_entity_cache": json.loads((config.data.artifacts_dir / "frozen_entities.json").read_text())} if experiment.freeze_stage1 else {}),
         "stage1_source": (
             {"checkpoint_sha256": sha256_file(config.initialization.checkpoint)}
             if experiment.initialization == "pretrained"
@@ -78,7 +79,7 @@ def training_identity(
         "microbatch_size": experiment.stage2_microbatch_size,
         "epochs": experiment.stage2_epochs,
         "loss": "physics_only_homemodel_v1",
-        "backbone_frozen_epochs": 0,
+        "backbone_frozen_epochs": "permanent" if experiment.freeze_stage1 else 0,
         "scheduler": "stage2_cosine_warmup_v1",
         "math_contract": dict(math_contract),
     })
@@ -92,7 +93,7 @@ def resolve_training_identity(recipe: HomeRecipe, math_contract: Mapping[str, An
     return training_identity(recipe, data_identity, math_contract)
 
 
-def build_model(experiment: HomeRecipe, registry: Any) -> tuple[SimulationHoME, Any]:
+def load_backbone(experiment: HomeRecipe):
     config = experiment.stage2
     seed_everything(config.data.seed if experiment.random_seed is None else experiment.random_seed)
     if experiment.initialization == "pretrained":
@@ -114,12 +115,19 @@ def build_model(experiment: HomeRecipe, registry: Any) -> tuple[SimulationHoME, 
         )
         feature_metadata = json.loads((feature_root / "metadata.json").read_text(encoding="utf-8"))
         loaded = LoadedStage1Model(
-            MultimodalPretrainModel(source_config, vocabulary, schema), source_config,
+            build_stage1_model(source_config, vocabulary, schema, encoder_only=source_config.is_dual_view), source_config,
             vocabulary, stage1_metadata_identity(
                 feature_metadata, "feature", context="Stage 1 feature artifact"
             )["hash"],
         )
-    model = SimulationHoME(loaded.model, registry, experiment.stage3, config)
+    return loaded
+
+
+def build_model(experiment: HomeRecipe, registry: Any) -> tuple[SimulationHoME, Any]:
+    loaded = load_backbone(experiment)
+    if loaded.config.is_dual_view != experiment.freeze_stage1:
+        raise ValueError("Stage2/Stage1 representation family mismatch: v4 requires permanent Stage1 freeze")
+    model = SimulationHoME(loaded.model, registry, experiment.stage3, experiment.stage2)
     return model, loaded
 
 
@@ -317,8 +325,8 @@ def _export(
     owner_manifest = full_owner_manifest(model)
     data_metadata = json.loads((experiment.stage2.data.artifacts_dir / "metadata.json").read_text(encoding="utf-8"))
     payload = {
-        "kind": STAGE2_HOME_FINAL_KIND,
-        "format_version": 2,
+        "kind": final_kind(experiment),
+        "format_version": 4 if experiment.freeze_stage1 else 2,
         "training_identity": dict(identity),
         "stage2_data_identity": dict(data_identity),
         "recipe": experiment.to_dict(),
@@ -359,7 +367,7 @@ def _export(
     artifact = root / "stage2_final.pt"
     atomic_torch_save(artifact, payload)
     manifest = {
-        "kind": STAGE2_HOME_FINAL_KIND,
+        "kind": final_kind(experiment),
         "artifact": artifact.name,
         "artifact_sha256": sha256_file(artifact),
         "stage2_encoder_sha256": sha256_file(encoder_path),
@@ -398,6 +406,9 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
             if not bool(train[task].target_mask.all()) or not bool(valid[task].target_mask.all()):
                 raise ValueError(f"Stage2-HoME ordinary task has missing labels: {task}")
     model, loaded = build_model(experiment, registry)
+    if loaded.config.is_dual_view:
+        from .entity_cache import validate_frozen_entity_source
+        validate_frozen_entity_source(entities, model.backbone)
     model.to(device)
     packer = MultimodalPacker(loaded.vocabulary)
     train_device = {task: Stage2DeviceTaskData.from_dataset(data, device) for task, data in train.items()}
@@ -413,6 +424,8 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
         {"params": tuple(model.object_encoder.parameters()), "lr": config.training.object_encoder_learning_rate},
         {"params": model.home_parameters(), "lr": config.training.task_head_learning_rate},
     ]
+    if loaded.config.is_dual_view:
+        groups = [group for group in groups if len(group["params"])]
     optimizer = torch.optim.AdamW(
         groups, weight_decay=config.training.weight_decay,
         fused=device.type == "cuda", foreach=False if device.type != "cuda" else None,
@@ -437,7 +450,9 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
         if checkpoint_files != [output / f"checkpoint_epoch_{index:05d}.pt" for index in range(1, epoch + 1)]:
             raise ValueError("Stage2-HoME checkpoint sequence is incomplete")
         _check_history(output, epoch)
-        if checkpoint.get("kind") != STAGE2_HOME_CHECKPOINT_KIND or checkpoint.get("training_identity") != identity:
+        if (checkpoint.get("kind") != ("ilume_stage2_home_checkpoint_v4" if experiment.freeze_stage1 else STAGE2_HOME_CHECKPOINT_KIND)
+            or checkpoint.get("format_version") != (4 if experiment.freeze_stage1 else 1)
+            or checkpoint.get("training_identity") != identity):
             raise ValueError("Stage2-HoME resume identity mismatch")
         if checkpoint.get("model_hash") != _model_hash(checkpoint["model"]):
             raise ValueError("Stage2-HoME resume model hash mismatch")
@@ -522,8 +537,8 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
             "validation_normalized_mae": validation,
         }
         checkpoint = {
-            "kind": STAGE2_HOME_CHECKPOINT_KIND,
-            "format_version": 1, "epoch": epoch, "updates": update,
+            "kind": "ilume_stage2_home_checkpoint_v4" if experiment.freeze_stage1 else STAGE2_HOME_CHECKPOINT_KIND,
+            "format_version": 4 if experiment.freeze_stage1 else 1, "epoch": epoch, "updates": update,
             "training_identity": identity, "model": state,
             "model_hash": _model_hash(state),
             "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(),

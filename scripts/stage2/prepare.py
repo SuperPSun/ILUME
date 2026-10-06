@@ -90,6 +90,11 @@ def main() -> None:
     try:
         result = (prepare_stage2_data(effective) if recipe else
                   prepare_teacher_cache(effective, rdkit_materialization=rdkit_materialization))
+        if recipe is not None:
+            from stage2.entity_cache import prepare_frozen_entities
+            cache = prepare_frozen_entities(replace(recipe, stage2=effective))
+            if cache is not None:
+                result = {**result, "frozen_entities": cache}
         run.complete(result)
     except BaseException:
         run.fail()

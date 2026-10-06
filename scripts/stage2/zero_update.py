@@ -37,7 +37,7 @@ def main() -> None:
         raise FileExistsError(f"Zero-update artifact already exists: {root}")
     trained = load_stage2_encoder_artifact(args.trained_encoder)
     if (
-        trained["kind"] != STAGE2_HOME_ENCODER_KIND
+        trained["kind"] != ("ilume_stage2_home_encoder_v4" if recipe.freeze_stage1 else STAGE2_HOME_ENCODER_KIND)
         or trained["provenance"].get("stage2_checkpoint_hash") is None
         or trained["provenance"].get("refinement_boundary_epoch") != 10
         or trained["provenance"].get("stage1_checkpoint_hash") != sha256_file(config.initialization.checkpoint)
@@ -91,7 +91,7 @@ def main() -> None:
             encoder_kind=STAGE2_ZERO_UPDATE_HOME_ENCODER_KIND,
         )
         atomic_json(staging / "manifest.json", {
-            "kind": "ilume_stage2_home_zero_update_control_v1",
+            "kind": "ilume_stage2_home_zero_update_control_v4" if recipe.freeze_stage1 else "ilume_stage2_home_zero_update_control_v1",
             "identity": control_identity,
             "optimizer_updates": 0,
             "initial_shared_state_hash": initial_hash,

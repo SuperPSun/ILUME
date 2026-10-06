@@ -13,6 +13,7 @@ from rdkit.Chem import Descriptors
 from common.identity import require_compatible_identity
 from .config import (
     GLOBAL_RDKIT_STAGE1_CHECKPOINT_VERSION,
+    DUAL_VIEW_STAGE1_CHECKPOINT_VERSION,
     STAGE1_CHECKPOINT_KIND,
     STAGE1_CHECKPOINT_VERSION,
     PretrainConfig,
@@ -115,7 +116,7 @@ def build_entity_sample(
         "descriptors": torch.from_numpy(standardized[0]),
         "descriptor_valid": torch.from_numpy(descriptor_valid[0]),
     }
-    if not config.is_global_rdkit:
+    if not (config.is_global_rdkit or config.is_dual_view):
         sample["fingerprints"] = {
             name: torch.from_numpy(value).float()
             for name, value in calculate_fingerprints(mol, config.fingerprint).items()
@@ -138,12 +139,13 @@ def load_stage1_feature_inputs(
     )
     config = config_from_dict(checkpoint["config"])
     if (
-        checkpoint.get("kind") != STAGE1_CHECKPOINT_KIND
+        checkpoint.get("kind") not in {STAGE1_CHECKPOINT_KIND, "ilume_stage1_dual_view_encoder_v4"}
         or checkpoint.get("format_version") != config.checkpoint_version
         or checkpoint.get("format_version")
         not in {
             STAGE1_CHECKPOINT_VERSION,
             GLOBAL_RDKIT_STAGE1_CHECKPOINT_VERSION,
+            DUAL_VIEW_STAGE1_CHECKPOINT_VERSION,
         }
     ):
         raise ValueError("Stage 1 checkpoint architecture/version mismatch")

@@ -198,8 +198,15 @@ def load_simulation_training_data(
 ) -> SimulationTrainingData:
     planned = load_simulation_plan_data(artifacts_dir, source_payload)
     valid = {task: Stage2TaskDataset(artifacts_dir, task, "valid") for task in SIMULATION_TASKS}
+    entities = Stage2EntityDataset(artifacts_dir)
+    if source_payload.get("kind") == "ilume_stage2_home_final_v4":
+        from common.identity import tensor_state_hash
+
+        manifest = entities.frozen_entity_manifest
+        if manifest is None or manifest["identity"]["payload"]["stage1_state_hash"] != tensor_state_hash("stage1.encoding-state", source_payload["stage1_backbone"]):
+            raise ValueError("Stage 3 simulation frozen entity cache source mismatch")
     return SimulationTrainingData(
-        Stage2EntityDataset(artifacts_dir), planned.train, valid,
+        entities, planned.train, valid,
         MultimodalPacker(vocabulary),
         {task: Stage2DeviceTaskData.from_dataset(data, device) for task, data in planned.train.items()},
         {task: Stage2DeviceTaskData.from_dataset(data, device) for task, data in valid.items()},
@@ -325,4 +332,4 @@ def extend_simulation_plan(
             "shared_group_task_weight": simulation_recipe.shared_group_task_weight,
         },
     }
-    plan["format_version"] = 10
+    plan["format_version"] = 11 if config.initialization.representation_contract == "dual_view_v4" else 10

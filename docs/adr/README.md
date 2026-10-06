@@ -6,6 +6,7 @@
 
 | 主题 | ADR（按修订顺序） | 阅读重点 |
 |---|---|---|
+| v4 冻结双视图主线 | [0089](0089-v4-frozen-dual-view-stage1.md) | Stage1 learned1024、五类辅助监督、自然 shuffle 与2/2/1 loss权重；下游1241输入、永久冻结Stage1；v3保留历史合同 |
 | v2 表示与隔离 | [0039](0039-global-rdkit-v2-mainline.md) | 三模态 Stage 1、1024D entity/Object/HoME；v1 隔离 |
 | Stage 1 执行 | [0013](0013-stage1-full-corpus-ddp.md)、[0014](0014-stage1-prepare-performance-and-corpus-v2.md)、[0015](0015-stage1-high-throughput-epoch-resume.md)、[0017](0017-stage1-base-runtime-profile.md) | 全量 epoch、prepare/runtime、DDP 与完整 epoch 恢复 |
 | 正式 Stage2-HoME | [0082](0082-home-mainline-and-core-ablations.md)、[0083](0083-stage2-home-full-artifact-evaluation.md)、[0085](0085-retire-stage2-home-evaluation.md)、[0079](0079-stage2-home-stage3-home-transfer-ablation.md)（历史配方来源）、[0025](0025-stage2-homo-lumo-scalar-tasks.md) | 九任务 physics-only HoME、完整模型产物与 GLOBAL/GROUP 迁移；独立评估由 0085 退役；正式数值读 YAML |

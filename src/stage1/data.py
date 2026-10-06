@@ -136,6 +136,9 @@ class MultimodalBatch:
     sample_ids: tuple[str, ...]
     fusion_layout: BatchFusionLayout
     masks: MaskPlan | None = None
+    auxiliary_targets: dict[str, torch.Tensor] | None = None
+    frozen_entity_embedding: torch.Tensor | None = None
+    frozen_atom_states: torch.Tensor | None = None
 
     def to(
         self, device: torch.device | str, *, non_blocking: bool = False
@@ -161,6 +164,12 @@ class MultimodalBatch:
                 if self.masks is None
                 else self.masks.to(device, non_blocking=non_blocking)
             ),
+            auxiliary_targets=None if self.auxiliary_targets is None else {
+                key: value.to(device, non_blocking=non_blocking)
+                for key, value in self.auxiliary_targets.items()
+            },
+            frozen_entity_embedding=None if self.frozen_entity_embedding is None else self.frozen_entity_embedding.to(device, non_blocking=non_blocking),
+            frozen_atom_states=None if self.frozen_atom_states is None else self.frozen_atom_states.to(device, non_blocking=non_blocking),
         )
 
     def pin_memory(self) -> "MultimodalBatch":
@@ -175,6 +184,11 @@ class MultimodalBatch:
             sample_ids=self.sample_ids,
             fusion_layout=self.fusion_layout.pin_memory(),
             masks=None if self.masks is None else self.masks.pin_memory(),
+            auxiliary_targets=None if self.auxiliary_targets is None else {
+                key: value.pin_memory() for key, value in self.auxiliary_targets.items()
+            },
+            frozen_entity_embedding=None if self.frozen_entity_embedding is None else self.frozen_entity_embedding.pin_memory(),
+            frozen_atom_states=None if self.frozen_atom_states is None else self.frozen_atom_states.pin_memory(),
         )
 
 
@@ -199,7 +213,7 @@ class PreparedCorpusDataset(Dataset):
         if (
             self.metadata.get("kind") != CORPUS_KIND
             or self.metadata.get("format_version")
-            not in {CORPUS_FORMAT_VERSION, GLOBAL_RDKIT_CORPUS_FORMAT_VERSION}
+            not in {CORPUS_FORMAT_VERSION, GLOBAL_RDKIT_CORPUS_FORMAT_VERSION, 4}
         ):
             raise ValueError(
                 "Unsupported Stage 1 corpus artifact version; "
@@ -248,6 +262,7 @@ class PreparedCorpusDataset(Dataset):
         self.shard_cache_size = shard_cache_size
         self._cache: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
         self._verified_shards: set[str] = set()
+        self.teacher_cache = None
 
     def __len__(self) -> int:
         return sum(self._lengths)
@@ -298,6 +313,9 @@ class PreparedCorpusDataset(Dataset):
         self._cache[relative_path] = samples
         while len(self._cache) > self.shard_cache_size:
             self._cache.popitem(last=False)
+        if self.teacher_cache is not None:
+            samples = [self.teacher_cache.attach(sample) for sample in samples]
+            self._cache[relative_path] = samples
         return samples
 
     def __getitem__(self, index: int) -> dict[str, Any]:

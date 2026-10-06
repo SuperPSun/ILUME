@@ -1118,6 +1118,8 @@ def stage1_encoding_contract(loaded: LoadedStage1Model) -> dict[str, Any]:
                 },
             }
         )
+    elif loaded.config.is_dual_view:
+        contract.update(contract_version=4, encoding_api="dual-view-learned-v4", representation={"kind": loaded.model.representation_kind, "learned_dim": loaded.model.entity_dim, "entity_input_dim": loaded.model.entity_dim + 217, "atom_dim": loaded.model.atom_dim})
     else:
         contract["fingerprint"] = raw_config["fingerprint"]
     return contract

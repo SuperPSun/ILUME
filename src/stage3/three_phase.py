@@ -34,7 +34,9 @@ THREE_PHASE_KNOWLEDGE_FINAL_KIND = "ilume_stage3_transfer_knowledge_three_phase_
 
 
 def _scope_kind(plan: Mapping[str, Any], suffix: str) -> str:
-    if "simulation_training" in plan:
+    if plan.get("representation_contract") == "dual_view_v4":
+        prefix = "ilume_stage3_dual_view_three_phase_v4"
+    elif "simulation_training" in plan:
         prefix = "ilume_stage3_home_simulation_three_phase_v2"
     elif "stage2_pretraining" in plan:
         prefix = "ilume_stage3_home_three_phase_v1"
@@ -47,6 +49,14 @@ def _scope_kind(plan: Mapping[str, Any], suffix: str) -> str:
     else:
         prefix = "ilume_stage3_three_phase"
     return f"{prefix}_{suffix}"
+
+
+def _final_format(plan: Mapping[str, Any]) -> int:
+    return 4 if plan.get("representation_contract") == "dual_view_v4" else THREE_PHASE_FINAL_FORMAT_VERSION
+
+
+def _checkpoint_format(plan: Mapping[str, Any]) -> int:
+    return 4 if plan.get("representation_contract") == "dual_view_v4" else THREE_PHASE_CHECKPOINT_VERSION
 
 
 def _append_jsonl(path: Path, payload: Mapping[str, Any]) -> None:
@@ -112,6 +122,7 @@ def _model_state(model: nn.Module) -> dict[str, torch.Tensor]:
 
 def _model_hash(state: Mapping[str, torch.Tensor], knowledge: bool = False, object_phase1: bool = False) -> str:
     namespace = (
+        "stage3.dual-view-model-state.v4" if any(name.startswith("object_encoder.input_projection.") for name in state) else
         "stage3.object-phase1-model-state.v1" if object_phase1 else
         "stage3.transfer-knowledge-model-state.v1" if knowledge else
         "stage3.three-phase-model-state"
@@ -225,6 +236,8 @@ def _representation_fields(plan: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _final_kind(plan: Mapping[str, Any]) -> str:
+    if plan.get("representation_contract") == "dual_view_v4":
+        return "ilume_stage3_dual_view_three_phase_final_v4"
     if "simulation_training" in plan:
         return "ilume_stage3_home_simulation_three_phase_final_v2"
     if "stage2_pretraining" in plan:
@@ -414,7 +427,7 @@ def _phase_checkpoint(
     state = _model_state(model)
     return {
         "kind": _scope_kind(plan, "checkpoint"),
-        "format_version": THREE_PHASE_CHECKPOINT_VERSION,
+        "format_version": _checkpoint_format(plan),
         "stage": "stage3",
         "fold": fold,
         "phase": phase,
@@ -465,7 +478,7 @@ def _delta_checkpoint(
     state = _owner_state(model, owners)
     return {
         "kind": _scope_kind(plan, "owner_delta"),
-        "format_version": THREE_PHASE_CHECKPOINT_VERSION,
+        "format_version": _checkpoint_format(plan),
         "stage": "stage3",
         "fold": fold,
         "phase": phase,
@@ -499,7 +512,7 @@ def _validate_checkpoint_common(
     plan: Mapping[str, Any],
 ) -> None:
     expected = {
-        "format_version": THREE_PHASE_CHECKPOINT_VERSION,
+        "format_version": _checkpoint_format(plan),
         "stage": "stage3",
         "fold": fold,
         "phase": phase,
@@ -1111,7 +1124,7 @@ def _load_or_publish_stitched(
         expected_stitched_hash = _model_hash(_model_state(model), model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
         if (
             artifact.get("kind") != _scope_kind(plan, "2_stitched")
-            or artifact.get("format_version") != THREE_PHASE_FINAL_FORMAT_VERSION
+            or artifact.get("format_version") != _final_format(plan)
             or artifact.get("fold") != fold
             or manifest.get("artifact_sha256") != sha256_file(artifact_path)
             or artifact.get("model_state_hash") != _model_hash(artifact["model"], model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
@@ -1158,7 +1171,7 @@ def _load_or_publish_stitched(
         artifact_path,
         {
             "kind": _scope_kind(plan, "2_stitched"),
-            "format_version": THREE_PHASE_FINAL_FORMAT_VERSION,
+            "format_version": _final_format(plan),
             "fold": fold,
             "anchor_model_state_hash": anchor_hash,
             "model": state,
@@ -1175,7 +1188,7 @@ def _load_or_publish_stitched(
         manifest_path,
         {
             "kind": _scope_kind(plan, "2_stitched"),
-            "format_version": THREE_PHASE_FINAL_FORMAT_VERSION,
+            "format_version": _final_format(plan),
             "fold": fold,
             "artifact": artifact_path.name,
             "artifact_sha256": sha256_file(artifact_path),
@@ -1353,7 +1366,7 @@ def run_three_phase_training(
         expected_identity = build_stage3_training_identity(plan)
         if (
             artifact.get("kind") != _final_kind(plan)
-            or artifact.get("format_version") != THREE_PHASE_FINAL_FORMAT_VERSION
+            or artifact.get("format_version") != _final_format(plan)
             or artifact.get("fold") != fold
             or manifest.get("artifact_sha256") != sha256_file(artifact_path)
             or artifact.get("model_state_hash") != _model_hash(artifact["model"], model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
@@ -1425,7 +1438,7 @@ def run_three_phase_training(
     training_identity = build_stage3_training_identity(plan)
     artifact = {
         "kind": _final_kind(plan),
-        "format_version": THREE_PHASE_FINAL_FORMAT_VERSION,
+        "format_version": _final_format(plan),
         "fold": fold,
         "model": final_state,
         "model_state_hash": final_hash,
@@ -1463,7 +1476,7 @@ def run_three_phase_training(
     atomic_torch_save(artifact_path, artifact)
     manifest = {
         "kind": _final_kind(plan),
-        "format_version": THREE_PHASE_FINAL_FORMAT_VERSION,
+        "format_version": _final_format(plan),
         "fold": fold,
         "artifact": artifact_path.name,
         "artifact_sha256": sha256_file(artifact_path),

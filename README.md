@@ -1,6 +1,6 @@
 # ILUME
 
-ILUME 的正式流程是 **Stage1 → Stage2-HoME → Stage3-HoME**。Stage1 预训练通用 molecular representation；Stage2 用九个 simulation task 预训练与 Stage3 对齐的 hierarchical mixture-of-experts，使 simulation supervision 同时塑造 molecular representation 和可迁移的 GLOBAL / GROUP expert structure；Stage3 接收 GLOBAL 与匹配的 thermophysical、solvation GROUP，Phase1 训练 20 项实验任务，Phase2/3 再加入五项模拟任务以保留其预测能力。科研合同见 [ADR 索引](docs/adr/README.md)、[ADR-0082](docs/adr/0082-home-mainline-and-core-ablations.md)与 [ADR-0084](docs/adr/0084-stage3-simulation-phase2-phase3.md)。
+ILUME 的正式 v4 流程是 **冻结双视图 Stage1 → Stage2-HoME → Stage3-HoME**。Stage1 只从 SMILES/2D graph 学习 task-agnostic1024D 表示；结构重建、双视图一致性、RDKit、离线Uni-Mol2与电子标签只在预训练中监督。角色2/2/1是 **loss权重，不是采样比例**；全量自然shuffle不变。下游拼接RDKit217，由ObjectEncoder内部投影1241→1024；Stage2/3永久冻结Stage1。Stage3保留20项实验任务与Phase2/3五项模拟辅助任务、Flat routing和固定末轮。合同见 [ADR-0089](docs/adr/0089-v4-frozen-dual-view-stage1.md)及 [ADR索引](docs/adr/README.md)。
 
 命令从仓库根目录执行。安装依赖并准备 ILUME-Data 的 Stage1/2/3 输入；CSV 与输出不进入 Git。正式训练使用尚不存在的输出目录，旧 HoME 产物不能与新正式身份交叉加载。本页命令是运行手册，不属于自动验收。
 
@@ -8,7 +8,13 @@ ILUME 的正式流程是 **Stage1 → Stage2-HoME → Stage3-HoME**。Stage1 预
 python -m pip install -e ".[dev,tokenizers]"
 ```
 
-## 正式主线
+## 正式 v4 主线
+
+配置位于 `configs/v4/`，输出隔离到 `outputs/v4/`；Base与三个核心消融的完整命令，以及 Uni-Mol2 独立环境的创建、依赖安装和版本核验步骤，见 [v4运行手册](docs/v4-runbook.md)。先独立进行Uni-Mol2小样本成功率/吞吐/存储审计，再生成全量分片缓存；teacher使用版本锁定的独立环境，本仓库不会自动下载权重。Stage1训练导出仅encoder/fusion的 `stage1_encoder.pt`，下游不加载teacher或辅助头。旧v3 prepared/checkpoint不可直接复用，新Stage1/2/3均需prepare/train。
+
+## v3 历史运行手册
+
+下列v3主线、候选与核心消融命令保留用于历史追溯，不是v4入口，不覆盖旧结果；v3/legacy数值合同与代码路径未迁移。
 
 现役 Stage3 以 `experiment/hydration` 替代 `experiment/transfer`（[ADR-0088](docs/adr/0088-stage3-hydration-replaces-transfer.md)）：单 solute + temperature_K、151 个体系、solvation GROUP、small 默认 PRIVATE 配方、random 五折、无 test。旧 transfer 产物保持历史身份；更换后的任务集合需要新的 Stage3 与 baseline 产物，禁止覆写既有输出。
 

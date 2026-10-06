@@ -115,6 +115,29 @@ class Stage2EntityDataset:
         if any(sample is None for sample in samples):
             raise ValueError("Stage 2 entity preload is incomplete")
         self.samples = tuple(sample for sample in samples if sample is not None)
+        self.frozen_entity_manifest = None
+        cache_path = self.artifact_dir / "frozen_entities.pt"
+        if cache_path.exists():
+            from common.identity import validate_semantic_identity
+            manifest = json.loads((self.artifact_dir / "frozen_entities.json").read_text())
+            if manifest.get("kind") != "ilume_stage2_frozen_entities_v4" or manifest.get("artifact_sha256") != sha256_file(cache_path):
+                raise ValueError("Frozen Stage1 entity cache hash mismatch")
+            payload = torch.load(cache_path, map_location="cpu", weights_only=False)
+            validate_semantic_identity(manifest["identity"])
+            if (payload.get("kind") != manifest["kind"] or payload.get("identity") != manifest["identity"]
+                or manifest["identity"]["payload"]["data_identity"] != self.metadata["semantic"]["identities"]["data"]["hash"]
+                or len(payload["samples"]) != len(self.samples)):
+                raise ValueError("Frozen Stage1 entity cache identity mismatch")
+            merged = []
+            for sample, cached in zip(self.samples, payload["samples"], strict=True):
+                if (sample["sample_id"] != cached["sample_id"]
+                    or cached["entity"].shape != (manifest["identity"]["payload"]["entity_input_dim"],)
+                    or cached["atoms"].shape != (len(sample["atom_categorical"]), manifest["identity"]["payload"]["atom_dim"])
+                    or not torch.isfinite(cached["entity"]).all() or not torch.isfinite(cached["atoms"]).all()):
+                    raise ValueError("Frozen Stage1 entity cache tensor/order mismatch")
+                merged.append({**sample, "frozen_entity_embedding": cached["entity"], "frozen_atom_states": cached["atoms"]})
+            self.samples = tuple(merged)
+            self.frozen_entity_manifest = manifest
 
     def __len__(self) -> int:
         return len(self.entries)

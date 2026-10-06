@@ -26,6 +26,7 @@ class HomeRecipe:
     stage2_epochs: int
     initialization: str
     random_seed: int | None
+    freeze_stage1: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -36,6 +37,7 @@ class HomeRecipe:
                 "random_seed": self.random_seed,
                 "model": asdict(self.stage3.model),
                 "groups": {name: asdict(group) for name, group in self.stage3.groups.items()},
+                **({"freeze_stage1": True} if self.freeze_stage1 else {}),
             },
         }
 
@@ -50,6 +52,9 @@ def home_recipe_from_dict(raw: Any) -> HomeRecipe:
         raise ValueError("Stage 2 HoME config requires a home section")
     source = dict(raw)
     home = dict(source.pop("home"))
+    freeze_stage1 = home.pop("freeze_stage1", False)
+    if type(freeze_stage1) is not bool:
+        raise ValueError("home.freeze_stage1 must be a boolean")
     if set(home) != {"microbatch_size", "initialization", "random_seed", "model", "groups"}:
         raise ValueError("Stage 2 HoME config has missing or unknown home fields")
     config = stage2_config_from_dict(source)
@@ -85,4 +90,4 @@ def home_recipe_from_dict(raw: Any) -> HomeRecipe:
         or set(config.loss.task_weights) != set(SOURCE_GROUPS)
     ):
         raise ValueError("Stage 2 HoME requires the fixed nine-task physics-only recipe")
-    return HomeRecipe(config, HomeArchitecture(model, groups), microbatch, config.training.epochs, initialization, random_seed)
+    return HomeRecipe(config, HomeArchitecture(model, groups), microbatch, config.training.epochs, initialization, random_seed, freeze_stage1)

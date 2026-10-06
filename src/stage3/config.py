@@ -149,6 +149,7 @@ class Stage3InitializationConfig:
     home_mode: str | None = None
     stage2_final: Path | None = None
     simulation_artifacts_dir: Path | None = None
+    representation_contract: str = "object_v3"
 
 
 @dataclass(frozen=True)
@@ -381,6 +382,10 @@ class Stage3Config:
         if self.representation is None:
             if self.initialization.stage2_encoder is None:
                 raise ValueError("Stage 2 Object representation requires stage2_encoder")
+            if self.initialization.representation_contract not in {"object_v3", "dual_view_v4"}:
+                raise ValueError("Unsupported Stage3 representation contract")
+            if self.initialization.representation_contract == "dual_view_v4" and (self.training.object_encoder_phase1 is None or self.initialization.home_mode is None):
+                raise ValueError("v4 requires HoME and ObjectEncoder Phase1 adaptation")
             if self.initialization.home_mode not in {None, "trained", "no_stage2"}:
                 raise ValueError("Invalid Stage 3 HoME source mode")
             if self.initialization.home_mode == "trained" and self.initialization.stage2_final is None:
@@ -758,6 +763,8 @@ class Stage3Config:
             return value
 
         payload = convert(asdict(self))
+        if self.initialization.representation_contract == "object_v3":
+            payload["initialization"].pop("representation_contract")
         if self.transfer_knowledge is None:
             payload.pop("transfer_knowledge")
         if self.representation is None:

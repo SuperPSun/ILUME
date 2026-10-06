@@ -239,7 +239,8 @@ def tiny_stage2_setup(tmp_path: Path) -> Stage2Config:
     )
 
 @pytest.mark.parametrize("final_epoch", [8, 10, 12])
-def test_full_home_final_roundtrip_and_transfer(tiny_stage2_setup, tmp_path, monkeypatch, final_epoch):
+@pytest.mark.parametrize("architecture", ["global_rdkit_v2", "dual_view_v4"])
+def test_full_home_final_roundtrip_and_transfer(tiny_stage2_setup, tmp_path, monkeypatch, final_epoch, architecture):
     from stage1.masking import MultimodalPacker
     from stage2.data import Stage2BatchDescriptor, Stage2DeviceTaskData, Stage2EntityDataset, pack_stage2_batch
     from stage2.home_artifact import load_home_final
@@ -250,7 +251,7 @@ def test_full_home_final_roundtrip_and_transfer(tiny_stage2_setup, tmp_path, mon
     base = load_home_recipe("configs/v3/stage2/base.yaml")
     stage1_root = tmp_path / "global_pretrain"
     stage1_config = PretrainConfig(
-        architecture=ArchitectureConfig(kind="global_rdkit_v2"),
+        architecture=ArchitectureConfig(kind=architecture),
         data=replace(
             PretrainConfig().data, stage1_dir=tmp_path / "stage1",
             artifacts_dir=stage1_root, valid_fraction=0.5,
@@ -263,9 +264,18 @@ def test_full_home_final_roundtrip_and_transfer(tiny_stage2_setup, tmp_path, mon
             fusion_layers=1, feedforward_dim=32, dropout=0.0,
         ),
     )
+    dual_view = architecture == "dual_view_v4"
+    if dual_view:
+        from stage1.config import AuxiliaryConfig, MaskingConfig
+        stage1_config = replace(
+            stage1_config, model=replace(stage1_config.model, role_embedding=False),
+            masking=MaskingConfig(fusion_only_dropout=True, descriptor_dropout=0.),
+            auxiliary=AuxiliaryConfig(simulation_dir=tmp_path / "stage2"),
+        )
     prepare_corpus(stage1_config)
     vocabulary = SmilesTokenizer.load(stage1_root / "tokenizer.json")
-    stage1_model = MultimodalPretrainModel(
+    from stage1.model import build_stage1_model
+    stage1_model = build_stage1_model(
         stage1_config, vocabulary, PreparedCorpusDataset(stage1_root, "train").descriptor_schema,
     )
     stage1_checkpoint = tmp_path / "global_stage1.pt"
@@ -273,7 +283,7 @@ def test_full_home_final_roundtrip_and_transfer(tiny_stage2_setup, tmp_path, mon
     torch.save({
         "identity_contract_version": IDENTITY_CONTRACT_VERSION,
         "kind": STAGE1_CHECKPOINT_KIND,
-        "format_version": GLOBAL_RDKIT_STAGE1_CHECKPOINT_VERSION,
+        "format_version": stage1_config.checkpoint_version,
         "model": stage1_model.state_dict(), "config": stage1_config.to_dict(),
         "corpus_identity": dict(metadata_identity(stage1_metadata, "corpus", context="test corpus")),
     }, stage1_checkpoint)
@@ -288,11 +298,35 @@ def test_full_home_final_roundtrip_and_transfer(tiny_stage2_setup, tmp_path, mon
             backbone_frozen_epochs=0, refinement_epochs=0, refinement_tasks=(),
         ),
     )
-    recipe = HomeRecipe(config, base.stage3, 256, final_epoch, "pretrained", None)
+    recipe = HomeRecipe(config, base.stage3, 256, final_epoch, "pretrained", None, freeze_stage1=dual_view)
     prepared = prepare_stage2_data(config)
+    if dual_view:
+        from stage2.entity_cache import prepare_frozen_entities
+        prepare_frozen_entities(recipe)
     registry = load_artifact_registry(config.data.artifacts_dir)
     model, _ = build_model(recipe, registry)
     model.eval()
+    if dual_view:
+        assert all(not parameter.requires_grad for parameter in model.backbone.parameters())
+        assert model.object_encoder.input_dim == 249
+        frozen_state = {key: value.clone() for key, value in model.backbone.state_dict().items()}
+        model.train()
+        assert not model.backbone.training
+        entities = Stage2EntityDataset(config.data.artifacts_dir)
+        dataset = Stage2TaskDataset(config.data.artifacts_dir, "simulation/density", "train")
+        packed = pack_stage2_batch(
+            Stage2BatchDescriptor(dataset.spec.task_id, torch.arange(len(dataset))),
+            {dataset.spec.task_id: dataset}, entities, MultimodalPacker(vocabulary),
+            needs_entities=True, include_raw_atom_targets=False, pin_memory=False,
+        )
+        optimizer = torch.optim.AdamW(tuple(model.object_encoder.parameters()) + model.home_parameters(), lr=1e-4)
+        model.predict(dataset.spec.task_id, packed, Stage2DeviceTaskData.from_dataset(dataset, torch.device("cpu"))).square().mean().backward()
+        assert model.object_encoder.input_projection[0].weight.grad.abs().sum() > 0
+        optimizer.step()
+        assert all(parameter.grad is None for parameter in model.backbone.parameters())
+        assert all(torch.equal(value, model.backbone.state_dict()[key]) for key, value in frozen_state.items())
+        model.zero_grad(set_to_none=True)
+        model.eval()
     output = tmp_path / "home_train"
     output.mkdir()
     checkpoint_state = {name: value.detach().clone() for name, value in model.state_dict().items()}
@@ -327,6 +361,7 @@ def test_full_home_final_roundtrip_and_transfer(tiny_stage2_setup, tmp_path, mon
         stage3_config.initialization,
         stage2_final=output / "stage2_final.pt",
         stage2_encoder=output / "stage2_encoder.pt",
+        representation_contract="dual_view_v4" if dual_view else "object_v3",
     ))
     assert load_source(stage3_config)["shared_state_hash"] == payload["shared_state_hash"]
     with pytest.raises(ValueError, match="incompatible"):
@@ -445,7 +480,7 @@ def test_full_home_final_roundtrip_and_transfer(tiny_stage2_setup, tmp_path, mon
             "experiment/transfer_organic": replace(source_specs["simulation/transfer_organic"], task_id="experiment/transfer_organic"),
         },
         "slots": {
-            "slots": torch.zeros((2, 2, reloaded.backbone.entity_dim)),
+            "slots": torch.zeros((2, 2, reloaded.object_encoder.input_dim)),
             "roles": torch.tensor([[0, 1], [0, 1]]),
             "counts": torch.tensor([2, 2]),
         },
@@ -506,9 +541,9 @@ def test_full_home_final_roundtrip_and_transfer(tiny_stage2_setup, tmp_path, mon
     inference_path = inference_root / "three_phase_final.pt"
     state = {name: value.clone() for name, value in inference_model.state_dict().items()}
     final = {
-        "kind": "ilume_stage3_home_simulation_three_phase_final_v2",
-        "format_version": 1, "fold": 1, "model": state,
-        "model_state_hash": tensor_state_hash("stage3.object-phase1-model-state.v1", state),
+        "kind": "ilume_stage3_dual_view_three_phase_final_v4" if dual_view else "ilume_stage3_home_simulation_three_phase_final_v2",
+        "format_version": 4 if dual_view else 1, "fold": 1, "model": state,
+        "model_state_hash": tensor_state_hash("stage3.dual-view-model-state.v4" if dual_view else "stage3.object-phase1-model-state.v1", state),
         "resolved_registry": plan["resolved_registry"], "resolved_training_plan": plan,
         "training_identity": build_stage3_training_identity(plan),
         "normalization": normalization, "normalization_hash": canonical_json_sha256(normalization),

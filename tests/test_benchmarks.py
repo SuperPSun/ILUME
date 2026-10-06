@@ -560,8 +560,9 @@ def test_native_split_benchmark_configs_follow_v2_authorities() -> None:
                 assert config.model["multicomponent_shared"] is True
 
 
-def test_stage3_single_task_mlp_config_and_ordered_concat() -> None:
-    config = load_benchmark_config("configs/ablations/no_stage3_home.yaml")
+@pytest.mark.parametrize("config_path", ("configs/ablations/no_stage3_home.yaml", "configs/v4/ablations/no_stage3_home.yaml"))
+def test_stage3_single_task_mlp_config_and_ordered_concat(config_path) -> None:
+    config = load_benchmark_config(config_path)
     assert config.display_name == "ILUME w/o Stage3-HoME"
     assert len(configured_tasks(config, "stage3")) == 20
     assert config.data.feature_cache is None and config.features is None
@@ -612,9 +613,10 @@ def test_stage3_single_task_mlp_config_and_ordered_concat() -> None:
     assert build_input_features(dataset, embeddings, ordinary).shape == (2, 1024)
 
 
-def test_stage3_single_task_mlp_v2_config_features_and_final_state(tmp_path: Path) -> None:
-    config = load_benchmark_config("configs/ablations/no_stage3_home.yaml")
-    assert config.data.stage3_authority_config == Path("configs/v3/stage3/base.yaml")
+@pytest.mark.parametrize("version", (3, 4))
+def test_stage3_single_task_mlp_v2_config_features_and_final_state(tmp_path: Path, version) -> None:
+    config = load_benchmark_config("configs/ablations/no_stage3_home.yaml" if version == 3 else "configs/v4/ablations/no_stage3_home.yaml")
+    assert config.data.stage3_authority_config == Path(f"configs/v{version}/stage3/base.yaml")
     assert len(configured_tasks(config, "stage3")) == 20
     assert config.training["max_epochs"] == 10
     assert config.training["model_selection"] == "final_training_state"
@@ -651,10 +653,10 @@ def test_stage3_single_task_mlp_v2_config_features_and_final_state(tmp_path: Pat
         torch.testing.assert_close(state[name], value.cpu())
 
     (tmp_path / "checkpoint.json").write_text(
-        json.dumps({"format_version": 1, "kind": "ilume_stage3_single_task_mlp_model_home_v1", "integrity": {}}),
+        json.dumps({"format_version": 1 if version == 3 else 4, "kind": f"ilume_stage3_single_task_mlp_model_home_v{1 if version == 3 else 4}", "integrity": {}}),
         encoding="utf-8",
     )
-    assert _manifest(tmp_path, config)["kind"].endswith("_home_v1")
+    assert _manifest(tmp_path, config)["kind"].endswith(f"_home_v{1 if version == 3 else 4}")
     (tmp_path / "checkpoint.json").write_text(
         json.dumps({"format_version": 1, "kind": "ilume_stage3_single_task_mlp_model", "integrity": {}}),
         encoding="utf-8",

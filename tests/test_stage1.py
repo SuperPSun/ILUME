@@ -117,6 +117,164 @@ def test_global_rdkit_v2_representation_and_losses(
 
 ROOT = Path(__file__).resolve().parents[1]
 
+
+def test_dual_view_structure_only_losses_and_downstream_freeze(tiny_config, tiny_samples, monkeypatch):
+    from stage1.auxiliary import empty_auxiliary_targets
+    from stage1.dual_view import DualViewPretrainModel, molecule_loss_statistics, reduce_molecule_elements
+    from stage1.masking import sample_modality_dropout
+    from stage2.model import ObjectEncoder, encode_object_entities
+
+    config = replace(
+        tiny_config, architecture=ArchitectureConfig("dual_view_v4"),
+        descriptor=DescriptorConfig(mode="full", token_count=1),
+        fingerprint=FingerprintConfig(),
+        model=replace(tiny_config.model, role_embedding=False),
+        masking=replace(tiny_config.masking, fusion_only_dropout=True, descriptor_dropout=0,
+                        smiles_dropout=0.1, graph_dropout=0.1),
+    )
+    config.validate()
+    assert config_from_dict(config.to_dict()).to_dict() == config.to_dict()
+    vocabulary, samples = tiny_samples
+    samples = [{**{key: value for key, value in sample.items() if key != "fingerprints"}, "auxiliary_targets": empty_auxiliary_targets()} for sample in samples]
+    packed = MultimodalPacker(vocabulary)(samples)
+    model = DualViewPretrainModel(config, vocabulary).eval()
+    encoded = model.encode_entity(packed)
+    altered = replace(packed, descriptors=torch.randn_like(packed.descriptors), roles=packed.roles.flip(0))
+    assert torch.equal(model.encode_entity(altered).entity_embedding, encoded.entity_embedding)
+    assert encoded.entity_embedding.shape == (3, 64)
+    assert encoded.atom_states.shape[1] == 32
+    assert not any("role_embedding" in key or "descriptor_encoder" in key for key in model.state_dict())
+
+    choices = sample_modality_dropout(10000, config.masking, torch.Generator().manual_seed(42))
+    assert not choices[:, :2].all(1).any()
+    assert choices[:, 0].float().mean().item() == pytest.approx(0.1, abs=0.02)
+    assert choices[:, 1].float().mean().item() == pytest.approx(0.1, abs=0.02)
+    masked = MultimodalMasker(vocabulary, config.masking).apply(packed)
+    output = model(masked)
+    assert set(output.losses) == {"smiles", "atom", "bond", "alignment", "descriptor", "unimol", "electronic"}
+    assert output.losses["unimol"].item() == output.losses["electronic"].item() == 0
+    output.loss.backward()
+    assert model.unimol_projector.weight.grad is not None
+    assert model.electronic_head.weight.grad is not None
+
+    values = torch.tensor([1., 3., 10., 20.], requires_grad=True)
+    mean, valid = reduce_molecule_elements(values, torch.ones(4, dtype=torch.bool), torch.tensor([0, 0, 1, 2]), 3)
+    stats = molecule_loss_statistics(mean, valid, packed.roles, torch.tensor([2., 2., 1.]))
+    assert stats.mean().item() == pytest.approx((2 * 2 + 2 * 10 + 20) / 5)
+    # DDP averages gradients: the local objective must divide by GLOBAL weights.
+    monkeypatch.setattr(dist, "all_reduce", lambda tensor, op: tensor.add_(5))
+    distributed = PretrainOutput(stats.mean(), {"descriptor": stats.mean()}, {"descriptor": stats}, {}, mean)
+    context = _DistributedContext(rank=0, local_rank=0, world_size=2)
+    total, _ = _global_training_losses(distributed, context, config)
+    assert total.item() == pytest.approx(2 * 44 / 10)
+
+    # All Stage1 gradients and dropout are disabled even while ObjectEncoder trains.
+    model.zero_grad(set_to_none=True)
+    baseline = {key: value.clone() for key, value in model.state_dict().items()}
+    object_encoder = ObjectEncoder(64, 4, num_layers=1, feedforward_dim=64, dropout=0., input_dim=281)
+    downstream = encode_object_entities(model, packed)
+    assert not downstream.entity_embedding.requires_grad and not model.training
+    optimizer = torch.optim.AdamW(object_encoder.parameters(), lr=1e-3)
+    prediction = object_encoder(downstream.entity_embedding[:, None], packed.roles[:, None])
+    prediction.square().mean().backward()
+    assert object_encoder.input_projection[0].weight.grad.abs().sum() > 0
+    optimizer.step()
+    assert all(parameter.grad is None for parameter in model.parameters())
+    assert all(torch.equal(value, model.state_dict()[key]) for key, value in baseline.items())
+    legacy = ObjectEncoder(64, 4, num_layers=1, feedforward_dim=64, dropout=0.)
+    assert not any("input_projection" in key for key in legacy.state_dict())
+
+
+def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeypatch):
+    from stage1.config import AuxiliaryConfig, MaskingConfig
+    from stage1.auxiliary import ELECTRONIC_SOURCES, TeacherCache, prepare_teacher_cache, load_electronic_labels
+    from stage1.model import load_stage1_model
+    from stage1.identity import resolve_stage1_training_identity
+
+    source = tmp_path / "stage1"
+    source.mkdir()
+    for name, molecules in {"cation": ["[Na+]", "[K+]", "C[NH3+]"], "anion": ["[Cl-]", "[Br-]", "C(=O)[O-]"], "molecule": ["O", "CC", "CCO"]}.items():
+        _write_smiles(source / f"{name}.csv", molecules)
+    for task, columns, _ in ELECTRONIC_SOURCES:
+        root = tmp_path / "simulation" / task
+        root.mkdir(parents=True)
+        with (root / "train.csv").open("w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=["SMILES", *columns])
+            writer.writeheader()
+            writer.writerow({"SMILES": "CCO", **{column: index + 1 for index, column in enumerate(columns)}})
+        (root / "valid.csv").write_text("must not be read")
+        (root / "test.csv").write_text("must not be read")
+    checkpoint = tmp_path / "teacher.pt"
+    checkpoint.write_bytes(b"isolated fake teacher for contract tests only")
+    config = PretrainConfig(
+        architecture=ArchitectureConfig("dual_view_v4"),
+        data=DataConfig(stage1_dir=source, artifacts_dir=tmp_path / "prepared", valid_fraction=0.4, max_smiles_tokens=64, shard_size=3),
+        model=ModelConfig(d_model=16, n_heads=4, smiles_layers=1, graph_depth=2, feedforward_dim=32, dropout=0., role_embedding=False, fusion_layers=0),
+        masking=MaskingConfig(fusion_only_dropout=True, descriptor_ratio=0., descriptor_dropout=0.),
+        auxiliary=AuxiliaryConfig(simulation_dir=tmp_path / "simulation", teacher_cache=tmp_path / "cache", teacher_checkpoint=checkpoint, teacher_shard_size=2),
+        training=TrainingConfig(batch_size=2, epochs=2, device="cpu", amp_dtype="none", num_workers=0, validation_interval_steps=100),
+    )
+    prepare_corpus(config)
+    # Missing/failed 3D is masked, never removed from the molecular corpus.
+    import stage1.auxiliary as auxiliary
+    real_conformer = auxiliary.generate_conformer
+    monkeypatch.setattr(auxiliary, "generate_conformer", lambda smiles, seed: (_ for _ in ()).throw(ValueError("audit_failure")) if smiles == "CC" else real_conformer(smiles, seed))
+    calls = []
+    def teacher(molecules):
+        calls.extend(molecules)
+        return torch.ones(len(molecules), 768)
+    manifest = prepare_teacher_cache(config, teacher=teacher, batch_size=2)
+    assert manifest["complete"] and manifest["attempted"] == manifest["unique_structures"] == 9
+    assert manifest["failed"] == 1
+    assert prepare_teacher_cache(config, teacher=lambda _: pytest.fail("completed cache reran teacher")) == manifest
+    # A committed shard survives interruption; changing its source cannot resume.
+    interrupted_root = tmp_path / "interrupted_cache"
+    attempts = []
+    def interrupted_teacher(molecules):
+        attempts.append(len(molecules))
+        if len(attempts) == 2:
+            raise RuntimeError("planned teacher interruption")
+        return torch.ones(len(molecules), 768)
+    with pytest.raises(RuntimeError, match="planned teacher interruption"):
+        prepare_teacher_cache(config, teacher=interrupted_teacher, batch_size=2, output=interrupted_root)
+    committed = (interrupted_root / "shard_000000.pt").read_bytes()
+    changed = replace(config, auxiliary=replace(config.auxiliary, teacher_version="different"))
+    with pytest.raises(ValueError, match="resume recipe mismatch"):
+        prepare_teacher_cache(changed, teacher=teacher, output=interrupted_root)
+    resumed = prepare_teacher_cache(config, teacher=teacher, batch_size=2, output=interrupted_root)
+    assert resumed["complete"] and resumed["attempted"] == 9
+    assert (interrupted_root / "shard_000000.pt").read_bytes() == committed
+    assert len(load_electronic_labels(config)) == 1
+    metadata = json.loads((config.data.artifacts_dir / "metadata.json").read_text())
+    cache = TeacherCache(config.auxiliary.teacher_cache, metadata, require_complete=True)
+    dataset = PreparedCorpusDataset(config.data.artifacts_dir, "train")
+    dataset.teacher_cache = cache
+    assert all("canonical_smiles" in dataset[index] for index in range(len(dataset)))
+
+    output = tmp_path / "train"
+    real_save = train_module._save_checkpoint
+    def stop_after_epoch(*args, **kwargs):
+        real_save(*args, **kwargs)
+        if kwargs["completed_epoch"] == 1:
+            raise RuntimeError("planned interruption")
+    monkeypatch.setattr(train_module, "_save_checkpoint", stop_after_epoch)
+    with pytest.raises(RuntimeError, match="planned interruption"):
+        run_training(config, output_dir=output)
+    monkeypatch.setattr(train_module, "_save_checkpoint", real_save)
+    run_training(config, output_dir=output, resume_from=output / "last.pt")
+    encoder = load_stage1_model(output / "stage1_encoder.pt", config.data.artifacts_dir)
+    assert encoder.model.entity_dim == 32 and encoder.model.atom_dim == 16
+    assert all(key.startswith(("smiles_encoder.", "graph_encoder.", "fusion.")) for key in encoder.model.state_dict())
+    exported = torch.load(output / "stage1_encoder.pt", weights_only=False)
+    assert exported["fixed_final_epoch"] == 2
+    assert exported["training_identity"] == resolve_stage1_training_identity(config)
+    shard = config.auxiliary.teacher_cache / manifest["shards"][0]["path"]
+    shard.write_bytes(b"corrupt")
+    with pytest.raises(ValueError, match="integrity mismatch"):
+        resolve_stage1_training_identity(config)
+    with pytest.raises(ValueError, match="integrity mismatch"):
+        prepare_teacher_cache(config, teacher=teacher)
+
 def test_formal_stage1_has_one_large_capacity_base_profile() -> None:
     active = load_config(ROOT / "configs/v2/stage1/base.yaml")
     assert active.data.descriptor_dim == 217

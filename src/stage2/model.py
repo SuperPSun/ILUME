@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 from typing import Any, Iterator
 
@@ -37,7 +37,7 @@ def build_model_contract(
         family = "atom" if spec.target_level == "atom" else ("interaction" if spec.topology == "interaction" else "object")
         input_dim = (
             atom_dim
-            if family == "atom" and representation_kind == "cls_rdkit_concat_v2"
+            if family == "atom" and representation_kind in {"cls_rdkit_concat_v2", "dual_view_learned_v4"}
             else d_model + (0 if family == "atom" else len(spec.condition_columns))
         )
         task_contract = {
@@ -49,7 +49,7 @@ def build_model_contract(
             task_contract.update(
                 {"atom_dim": atom_dim, "object_projection_dim": atom_dim}
             )
-            if representation_kind == "cls_rdkit_concat_v2":
+            if representation_kind in {"cls_rdkit_concat_v2", "dual_view_learned_v4"}:
                 task_contract["object_context_dim"] = d_model
         tasks[spec.task_id] = task_contract
     contract = {
@@ -71,9 +71,12 @@ def build_model_contract(
 
 
 class ObjectEncoder(nn.Module):
-    def __init__(self, d_model: int, n_heads: int, *, num_layers: int, feedforward_dim: int, dropout: float) -> None:
+    def __init__(self, d_model: int, n_heads: int, *, num_layers: int, feedforward_dim: int, dropout: float, input_dim: int | None = None) -> None:
         super().__init__()
         self.d_model = d_model
+        self.input_dim = d_model if input_dim is None else input_dim
+        if self.input_dim != d_model:
+            self.input_projection = nn.Sequential(nn.Linear(self.input_dim, d_model), nn.LayerNorm(d_model))
         self.object_cls = nn.Parameter(torch.empty(d_model))
         nn.init.normal_(self.object_cls, std=0.02)
         self.role_embedding = nn.Embedding(len(ROLE_TO_ID), d_model)
@@ -90,8 +93,10 @@ class ObjectEncoder(nn.Module):
         self.output_normalization = nn.LayerNorm(d_model)
 
     def forward(self, entity_cls: torch.Tensor, entity_roles: torch.Tensor) -> torch.Tensor:
-        if entity_cls.ndim != 3 or entity_roles.shape != entity_cls.shape[:2] or entity_cls.shape[-1] != self.d_model:
+        if entity_cls.ndim != 3 or entity_roles.shape != entity_cls.shape[:2] or entity_cls.shape[-1] != self.input_dim:
             raise ValueError("ObjectEncoder entity tensor contract mismatch")
+        if self.input_dim != self.d_model:
+            entity_cls = self.input_projection(entity_cls)
         slots = entity_cls.shape[1]
         if slots == 1:
             if entity_roles.device.type == "cpu" and not bool(
@@ -111,6 +116,25 @@ class ObjectEncoder(nn.Module):
         cls = self.object_cls.expand(entity_cls.shape[0], 1, -1)
         encoded = self.encoder(torch.cat((cls, entity_cls + self.role_embedding(entity_roles)), dim=1))
         return self.output_normalization(residual + self.residual_projection(encoded[:, 0]))
+
+
+@dataclass(frozen=True)
+class ObjectEntityEncoding:
+    entity_embedding: torch.Tensor
+    atom_states: torch.Tensor
+    atom_batch: torch.Tensor
+
+
+def encode_object_entities(backbone, batch):
+    """Descriptors enter only the downstream entity input, never Stage1."""
+    if not getattr(backbone.config, "is_dual_view", False):
+        return backbone.encode_entity(batch)
+    if batch.frozen_entity_embedding is not None:
+        return ObjectEntityEncoding(batch.frozen_entity_embedding, batch.frozen_atom_states, batch.graphs.atom_batch)
+    backbone.eval()
+    with torch.no_grad():
+        encoded = backbone.encode_entity(batch)
+    return ObjectEntityEncoding(torch.cat((encoded.entity_embedding, batch.descriptors), -1), encoded.atom_states, encoded.atom_batch)
 
 
 class RDKitDescriptorBackbone(nn.Module):
@@ -253,7 +277,7 @@ class Stage2ObjectModel(nn.Module):
         config = backbone.config.model
         d_model = backbone.entity_dim
         atom_dim = backbone.atom_dim
-        self.object_encoder = ObjectEncoder(d_model, config.n_heads, num_layers=object_layers, feedforward_dim=object_ffn_dim, dropout=dropout)
+        self.object_encoder = ObjectEncoder(d_model, config.n_heads, num_layers=object_layers, feedforward_dim=object_ffn_dim, dropout=dropout, input_dim=d_model + 217 if getattr(backbone.config, "is_dual_view", False) else None)
         self.object_heads = nn.ModuleDict()
         self.interaction_heads = nn.ModuleDict()
         self.atom_heads = nn.ModuleDict()
@@ -271,7 +295,7 @@ class Stage2ObjectModel(nn.Module):
 
     @property
     def model_contract(self) -> dict[str, Any]:
-        return build_model_contract(
+        contract = build_model_contract(
             self.backbone.entity_dim,
             self.backbone.config.model.n_heads,
             self.registry,
@@ -281,13 +305,22 @@ class Stage2ObjectModel(nn.Module):
             object_ffn_dim=self._object_config["ffn_dim"],
             dropout=self._object_config["dropout"],
         )
+        if getattr(self.backbone.config, "is_dual_view", False):
+            contract["object_encoder"]["input_dim"] = self.object_encoder.input_dim
+            contract.update(representation_kind="dual_view_rdkit_v4", entity_dim=self.object_encoder.input_dim, atom_dim=self.backbone.atom_dim)
+        return contract
 
     def encode_entities(self, batch: Any) -> torch.Tensor:
+        if getattr(self.backbone.config, "is_dual_view", False):
+            return encode_object_entities(self.backbone, batch).entity_embedding
         if getattr(self.backbone.config, "is_global_rdkit", False):
             return self.backbone.encode_entity(batch).entity_embedding
         return self.backbone.encode(batch)
 
     def encode_entity_states(self, batch: MultimodalBatch) -> EncodedEntityStates:
+        if getattr(self.backbone.config, "is_dual_view", False):
+            encoded = encode_object_entities(self.backbone, batch)
+            return EncodedEntityStates(encoded.entity_embedding, encoded.atom_states, encoded.atom_batch)
         if getattr(self.backbone.config, "is_global_rdkit", False):
             encoded = self.backbone.encode_entity(batch)
             return EncodedEntityStates(
@@ -301,6 +334,9 @@ class Stage2ObjectModel(nn.Module):
         return self.object_encoder(entity_cls, roles)
 
     def set_backbone_trainable(self, trainable: bool) -> None:
+        if getattr(self.backbone.config, "is_dual_view", False):
+            trainable = False
+            self.backbone.eval()
         for name, parameter in self.backbone.named_parameters():
             reconstruction = any(name == prefix or name.startswith(prefix + ".") for prefix in RECONSTRUCTION_MODULES)
             parameter.requires_grad_(trainable and not reconstruction)

@@ -45,16 +45,24 @@ INPUT_CONTRACT = {
 }
 
 
+def _is_v4(config: BenchmarkConfig) -> bool:
+    return load_stage3_config(config.data.stage3_authority_config).initialization.representation_contract == "dual_view_v4"
+
+
 def _checkpoint_kind(config: BenchmarkConfig) -> str:
-    return CHECKPOINT_KIND
+    return "ilume_stage3_single_task_mlp_model_home_v4" if _is_v4(config) else CHECKPOINT_KIND
+
+
+def _checkpoint_version(config: BenchmarkConfig) -> int:
+    return 4 if _is_v4(config) else CHECKPOINT_VERSION
 
 
 def _state_namespace(config: BenchmarkConfig) -> str:
-    return STATE_NAMESPACE
+    return "ablation.ilume-stage3-single-task-mlp-home-state.v4" if _is_v4(config) else STATE_NAMESPACE
 
 
 def _input_contract(config: BenchmarkConfig) -> dict[str, Any]:
-    return INPUT_CONTRACT
+    return {**INPUT_CONTRACT, "embedding_source": "stage3_prepared_home_object_v4"} if _is_v4(config) else INPUT_CONTRACT
 
 
 @dataclass
@@ -492,7 +500,7 @@ def train_stage3_single_task_mlp_bundle(
     history_path = root / "training_history.json"
     atomic_json(history_path, history)
     manifest = {
-        "format_version": CHECKPOINT_VERSION,
+        "format_version": _checkpoint_version(config),
         "kind": _checkpoint_kind(config),
         "model_kind": config.name,
         "training_identity": bundle.training_identity,
@@ -539,7 +547,7 @@ def _manifest(root: Path, config: BenchmarkConfig) -> dict[str, Any]:
     path = root / "checkpoint.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
     if (
-        payload.get("format_version") != CHECKPOINT_VERSION
+        payload.get("format_version") != _checkpoint_version(config)
         or payload.get("kind") != _checkpoint_kind(config)
     ):
         raise ValueError("Unsupported Stage3 Single-task MLP checkpoint")

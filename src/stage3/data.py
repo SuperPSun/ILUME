@@ -18,8 +18,17 @@ from .config import Stage3Config
 
 STAGE3_ARTIFACT_VERSION = 1
 STAGE3_ARTIFACT_KIND = "ilume_stage3_sparse_data"
+STAGE3_V4_ARTIFACT_KIND = "ilume_stage3_dual_view_sparse_data_v4"
 OBJECT_ENCODING_CONTRACT_VERSION = 1
 MISSING_MARKERS = frozenset({"", "nan", "na", "n/a", "null", "none", "missing"})
+
+
+def prepared_artifact_kind(config: Stage3Config) -> str:
+    return STAGE3_V4_ARTIFACT_KIND if config.initialization.representation_contract == "dual_view_v4" else STAGE3_ARTIFACT_KIND
+
+
+def prepared_artifact_version(config: Stage3Config) -> int:
+    return 4 if config.initialization.representation_contract == "dual_view_v4" else STAGE3_ARTIFACT_VERSION
 
 
 def _parts(value: str) -> tuple[str, ...]:
@@ -500,8 +509,8 @@ def build_task_payload(
     if not rows and split != "test":
         raise ValueError(f"No Stage 3 observations for {spec.task_id}/{split}")
     return {
-        "format_version": STAGE3_ARTIFACT_VERSION,
-        "kind": STAGE3_ARTIFACT_KIND,
+        "format_version": prepared_artifact_version(config),
+        "kind": prepared_artifact_kind(config),
         "task_id": spec.task_id,
         "fold": held_out_fold,
         "split": split,
@@ -533,10 +542,12 @@ class Stage3TaskDataset:
         metadata_path = self.artifact_dir / "metadata.json"
         self.metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         artifact_kind = self.metadata.get("kind")
+        version = 4 if artifact_kind == STAGE3_V4_ARTIFACT_KIND else STAGE3_ARTIFACT_VERSION
         if (
-            self.metadata.get("format_version") != STAGE3_ARTIFACT_VERSION
+            self.metadata.get("format_version") != version
             or artifact_kind not in {
                 STAGE3_ARTIFACT_KIND,
+                STAGE3_V4_ARTIFACT_KIND,
                 "ilume_stage3_rdkit_sparse_data",
             }
         ):
@@ -547,7 +558,7 @@ class Stage3TaskDataset:
             raise ValueError(f"Stage 3 artifact hash mismatch: {relative}")
         payload = torch.load(path, map_location="cpu", weights_only=True)
         if (
-            payload.get("format_version") != STAGE3_ARTIFACT_VERSION
+            payload.get("format_version") != version
             or payload.get("kind") != artifact_kind
             or payload.get("task_id") != task_id
             or payload.get("fold") != fold
@@ -575,7 +586,7 @@ class Stage3RepresentationStore:
         self.fold = fold
         self.artifact_kind = artifact_kind
         self.knowledge_bank = None
-        if artifact_kind == STAGE3_ARTIFACT_KIND:
+        if artifact_kind in {STAGE3_ARTIFACT_KIND, STAGE3_V4_ARTIFACT_KIND}:
             embeddings = prepared_objects.get("embeddings")
             if not isinstance(embeddings, torch.Tensor) or embeddings.ndim != 2:
                 raise ValueError("Stage 3 Object representation matrix is malformed")

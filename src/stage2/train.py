@@ -753,7 +753,7 @@ def _export_encoder(path: Path, *, model: Stage2ObjectModel, config: Stage2Confi
             "feature_generation_contract"
         ],
     }
-    if model.backbone.config.is_global_rdkit:
+    if model.backbone.config.is_global_rdkit or model.backbone.config.is_dual_view:
         stage1_contract.update(
             {
                 "encoding_api": "encode-entity-v2",
@@ -765,6 +765,9 @@ def _export_encoder(path: Path, *, model: Stage2ObjectModel, config: Stage2Confi
                 },
             }
         )
+    if model.backbone.config.is_dual_view:
+        stage1_contract["encoding_api"] = "dual-view-learned-v4"
+        encoder_kind = ("ilume_stage2_home_zero_update_encoder_v4" if encoder_kind == STAGE2_ZERO_UPDATE_HOME_ENCODER_KIND else "ilume_stage2_home_encoder_v4")
     encoder_identity = build_stage2_encoder_identity(
         stage1_feature_identity=feature_identity,
         stage1_encoding_contract=stage1_contract,
@@ -774,7 +777,7 @@ def _export_encoder(path: Path, *, model: Stage2ObjectModel, config: Stage2Confi
         role_to_id=ROLE_TO_ID,
     )
     atomic_torch_save(path, {
-        "kind": encoder_kind, "format_version": STAGE2_ENCODER_VERSION,
+        "kind": encoder_kind, "format_version": 4 if model.backbone.config.is_dual_view else STAGE2_ENCODER_VERSION,
         "identity_contract_version": IDENTITY_CONTRACT_VERSION,
         "semantic_identity": encoder_identity,
         "stage1_backbone": stage1_state, "object_encoder": object_state,
@@ -845,7 +848,8 @@ def load_stage2_encoder_artifact(path: str | Path) -> dict[str, Any]:
     if payload.get("kind") not in {
         STAGE2_ENCODER_KIND, STAGE2_HOME_ENCODER_KIND,
         STAGE2_ZERO_UPDATE_HOME_ENCODER_KIND,
-    } or payload.get("format_version") != STAGE2_ENCODER_VERSION:
+        "ilume_stage2_home_encoder_v4", "ilume_stage2_home_zero_update_encoder_v4",
+    } or payload.get("format_version") != (4 if str(payload.get("kind", "")).endswith("_v4") else STAGE2_ENCODER_VERSION):
         raise ValueError("Unsupported Stage 2 encoder artifact")
     if payload.get("identity_contract_version") != IDENTITY_CONTRACT_VERSION:
         raise ValueError(

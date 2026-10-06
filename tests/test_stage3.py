@@ -2558,8 +2558,9 @@ def test_object_phase1_prepared_slots_preserve_object_order(tmp_path: Path) -> N
         ]
 
 
+@pytest.mark.parametrize("dual_view", [False, True])
 def test_object_phase1_prepared_contract_rejects_old_and_corrupt_slots(
-    tmp_path: Path,
+    tmp_path: Path, dual_view: bool,
 ) -> None:
     base = _tiny_three_phase(_tiny_config(tmp_path))
     config = replace(
@@ -2569,13 +2570,19 @@ def test_object_phase1_prepared_contract_rejects_old_and_corrupt_slots(
             object_encoder_phase1=Stage3ObjectEncoderPhase1Config(1.5e-5, 2, 0.05, 0.1),
         ),
     )
+    if dual_view:
+        config = replace(config, initialization=replace(
+            config.initialization, representation_contract="dual_view_v4",
+            home_mode="trained", stage2_final=tmp_path / "source-final.pt",
+        ))
+    width = 1241 if dual_view else 4
     objects = collect_object_keys(config, resolve_task_registry(config))
     slots = {
         "kind": "ilume_stage3_frozen_entity_slots",
         "format_version": 1,
         "objects": [key.to_dict() for key in objects],
         "stage2_encoder_identity": TEST_ENCODER_IDENTITY,
-        "slots": torch.zeros(len(objects), 2, 4),
+        "slots": torch.zeros(len(objects), 2, width),
         "roles": torch.zeros(len(objects), 2, dtype=torch.long),
         "counts": torch.tensor([len(key.slots) for key in objects]),
     }
@@ -2593,7 +2600,7 @@ def test_object_phase1_prepared_contract_rejects_old_and_corrupt_slots(
         "stage3.identity.load_stage2_encoder_identity", return_value=TEST_ENCODER_IDENTITY,
     ), patch(
         "stage3.prepare.materialize_object_embeddings",
-        return_value=(torch.zeros(len(objects), 4), TEST_ENCODER_IDENTITY, {"hits": 0, "misses": len(objects)}),
+        return_value=(torch.zeros(len(objects), 1024 if dual_view else 4), TEST_ENCODER_IDENTITY, {"hits": 0, "misses": len(objects)}),
     ), patch(
         "stage3.prepare.materialize_object_slots", return_value=slots,
     ):
@@ -2602,11 +2609,19 @@ def test_object_phase1_prepared_contract_rejects_old_and_corrupt_slots(
         )
         prepare_stage3(config)
         prepared = load_prepared_stage3(config)
-        assert prepared["metadata"]["prepared_contract_version"] == 3
+        assert prepared["metadata"]["prepared_contract_version"] == (4 if dual_view else 3)
         assert metadata_identity(prepared["metadata"], "prepared", context="test")["hash"] == expected_identity["hash"]
         assert prepared["slots"]["objects"] == slots["objects"]
-        with pytest.raises(ValueError, match="prepared contract"):
-            load_prepared_stage3(replace(config, training=replace(config.training, object_encoder_phase1=None)))
+        if dual_view:
+            from stage3.data import STAGE3_V4_ARTIFACT_KIND
+            assert prepared["metadata"]["kind"] == STAGE3_V4_ARTIFACT_KIND
+            assert prepared["metadata"]["format_version"] == 4
+            assert Stage3TaskDataset(config.data.artifacts_dir, 1, next(iter(prepared["registry"])), "train").targets.numel() > 0
+            with pytest.raises(ValueError, match="Unsupported Stage 3"):
+                load_prepared_stage3(replace(config, initialization=replace(config.initialization, representation_contract="object_v3")))
+        else:
+            with pytest.raises(ValueError, match="prepared contract"):
+                load_prepared_stage3(replace(config, training=replace(config.training, object_encoder_phase1=None)))
         (config.data.artifacts_dir / "object_slots.pt").write_bytes(b"corrupt")
         with pytest.raises(ValueError, match="artifact hash mismatch"):
             load_prepared_stage3(config)

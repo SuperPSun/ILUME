@@ -12,7 +12,7 @@ from common.identity import semantic_hash, tensor_state_hash, validate_semantic_
 from common.io import sha256_file
 from stage1.config import config_from_dict
 from stage1.descriptors import DescriptorSchema, rdkit_descriptor_names
-from stage1.model import MultimodalPretrainModel
+from stage1.model import build_stage1_model
 from stage1.tokenizer import SmilesTokenizer
 
 from .home_config import home_recipe_from_dict
@@ -23,10 +23,15 @@ from .registry import Stage2Registry
 
 
 STAGE2_HOME_FINAL_KIND = "ilume_stage2_home_final_v2"
+STAGE2_HOME_V4_FINAL_KIND = "ilume_stage2_home_final_v4"
+
+
+def final_kind(recipe):
+    return STAGE2_HOME_V4_FINAL_KIND if recipe.freeze_stage1 else STAGE2_HOME_FINAL_KIND
 
 
 def full_state_hash(state: Mapping[str, torch.Tensor]) -> str:
-    return tensor_state_hash("stage2.home.full-model.v2", state)
+    return tensor_state_hash("stage2.home.full-model.v4" if any(key.startswith("object_encoder.input_projection.") for key in state) else "stage2.home.full-model.v2", state)
 
 
 def full_owner_manifest(model: SimulationHoME) -> dict[str, str]:
@@ -53,9 +58,9 @@ def load_home_final(path: str | Path) -> tuple[dict[str, Any], SimulationHoME, S
     if manifest.get("artifact") != artifact.name or manifest.get("artifact_sha256") != sha256_file(artifact):
         raise ValueError("Stage 2 final artifact SHA mismatch")
     payload = torch.load(artifact, map_location="cpu", weights_only=False)
-    if (payload.get("kind") != STAGE2_HOME_FINAL_KIND
-            or manifest.get("kind") != STAGE2_HOME_FINAL_KIND
-            or payload.get("format_version") != 2):
+    if (payload.get("kind") not in {STAGE2_HOME_FINAL_KIND, STAGE2_HOME_V4_FINAL_KIND}
+            or manifest.get("kind") != payload.get("kind")
+            or payload.get("format_version") != (4 if payload.get("kind") == STAGE2_HOME_V4_FINAL_KIND else 2)):
         raise ValueError("Unsupported Stage 2 full HoME artifact kind")
     identity = payload["training_identity"]
     validate_semantic_identity(identity)
@@ -95,6 +100,8 @@ def load_home_final(path: str | Path) -> tuple[dict[str, Any], SimulationHoME, S
             if not math.isfinite(float(value["mean"])) or not math.isfinite(float(value["scale"])) or float(value["scale"]) <= 0:
                 raise ValueError("Stage 2 full model scaler values are invalid")
     recipe = home_recipe_from_dict(payload["recipe"])
+    if payload["kind"] != final_kind(recipe):
+        raise ValueError("Stage 2 final representation family mismatch")
     if (recipe.stage2.experiment_dict() != identity["payload"]["stage2_config"]
             or asdict(recipe.stage3.model) != identity["payload"]["stage3_model"]
             or identity["payload"].get("epochs") != recipe.stage2_epochs
@@ -107,7 +114,8 @@ def load_home_final(path: str | Path) -> tuple[dict[str, Any], SimulationHoME, S
     schema = DescriptorSchema.from_payload(
         features["descriptor_schema.json"], expected_raw_names=rdkit_descriptor_names(),
     )
-    backbone = MultimodalPretrainModel(config_from_dict(payload["stage1_config"]), vocabulary, schema)
+    stage1_config = config_from_dict(payload["stage1_config"])
+    backbone = build_stage1_model(stage1_config, vocabulary, schema, encoder_only=stage1_config.is_dual_view)
     model = SimulationHoME(backbone, registry, recipe.stage3, recipe.stage2)
     model.load_state_dict(state, strict=True)
     if payload["owner_manifest"] != full_owner_manifest(model):

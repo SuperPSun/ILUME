@@ -73,6 +73,13 @@ def sample_modality_dropout(
     progress: float = 1.0,
     fingerprint_active: bool = True,
 ) -> torch.Tensor:
+    if config.fusion_only_dropout:
+        dropped = torch.zeros((batch_size, 3), dtype=torch.bool, device=generator.device)
+        draws = torch.rand(batch_size, generator=generator, device=generator.device)
+        if config.dropout_schedule != "off":
+            dropped[:, SMILES_MODALITY] = draws < config.smiles_dropout
+            dropped[:, GRAPH_MODALITY] = (draws >= config.smiles_dropout) & (draws < config.smiles_dropout + config.graph_dropout)
+        return dropped
     probabilities = _dropout_probabilities(
         config, progress, fingerprint_active=fingerprint_active
     ).to(generator.device)
@@ -220,6 +227,13 @@ class MultimodalPacker:
                 max_bond_count=int(bond_counts.max()),
             ),
             masks=None,
+            auxiliary_targets=(
+                {key: torch.stack([sample["auxiliary_targets"][key] for sample in samples])
+                 for key in samples[0]["auxiliary_targets"]}
+                if "auxiliary_targets" in samples[0] else None
+            ),
+            frozen_entity_embedding=torch.stack([sample["frozen_entity_embedding"] for sample in samples]) if "frozen_entity_embedding" in samples[0] else None,
+            frozen_atom_states=torch.cat([sample["frozen_atom_states"] for sample in samples]) if "frozen_atom_states" in samples[0] else None,
         )
 
 
@@ -263,6 +277,9 @@ class MultimodalMasker:
             progress=progress,
             fingerprint_active=fingerprint_active,
         )
+        fusion_dropped = dropped
+        if self.config.fusion_only_dropout:
+            dropped = torch.zeros_like(dropped)
 
         ratios = torch.tensor(
             [
@@ -410,7 +427,7 @@ class MultimodalMasker:
                 descriptor_loss_mask=descriptor_loss_mask,
                 fingerprint_indicator=fingerprint_indicator,
                 fingerprint_loss_mask=fingerprint_loss_mask,
-                modality_dropped=dropped,
+                modality_dropped=fusion_dropped,
             ),
         )
 

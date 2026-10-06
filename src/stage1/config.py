@@ -9,6 +9,7 @@ import yaml
 
 STAGE1_CHECKPOINT_VERSION = 2
 GLOBAL_RDKIT_STAGE1_CHECKPOINT_VERSION = 3
+DUAL_VIEW_STAGE1_CHECKPOINT_VERSION = 4
 STAGE1_CHECKPOINT_KIND = "ilume_stage1_pretraining"
 
 
@@ -78,6 +79,7 @@ class MaskingConfig:
     asymmetric_enabled: bool = False
     asymmetric_probability: float = 0.25
     asymmetric_ratio: float = 0.50
+    fusion_only_dropout: bool = False
 
 
 @dataclass(frozen=True)
@@ -104,6 +106,18 @@ class LossConfig:
     lambda_bond: float = 1.0
     lambda_fingerprint: float = 1.0
     role_weights: tuple[float, float, float] = (2.0, 2.0, 1.0)
+    lambda_alignment: float = 0.1
+    lambda_unimol: float = 0.1
+    lambda_electronic: float = 0.1
+
+
+@dataclass(frozen=True)
+class AuxiliaryConfig:
+    simulation_dir: Path = Path("data/stage2")
+    teacher_cache: Path = Path("outputs/v4/stage1/base/teacher")
+    teacher_checkpoint: Path = Path("assets/unimol2/modelzoo/84M/checkpoint.pt")
+    teacher_version: str = "0.1.3.post1"
+    teacher_shard_size: int = 4096
 
 
 @dataclass(frozen=True)
@@ -134,11 +148,13 @@ class PretrainConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
     loss: LossConfig = field(default_factory=LossConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
+    auxiliary: AuxiliaryConfig = field(default_factory=AuxiliaryConfig)
 
     def validate(self) -> None:
         if self.architecture.kind not in {
             "legacy_five_modality_v1",
             "global_rdkit_v2",
+            "dual_view_v4",
         }:
             raise ValueError("Unsupported Stage 1 architecture kind")
         if not 0.0 < self.data.valid_fraction < 1.0:
@@ -235,6 +251,20 @@ class PretrainConfig:
             )
         if self.training.num_workers < 0:
             raise ValueError("training.num_workers cannot be negative")
+        if self.is_dual_view:
+            if (self.model.role_embedding or self.descriptor.mode != "full"
+                or self.descriptor.token_count != 1 or self.fingerprint.kind != "none"
+                or self.masking.asymmetric_enabled
+                or not self.masking.fusion_only_dropout
+                or self.masking.dropout_schedule != "static"
+                or self.masking.smiles_dropout + self.masking.graph_dropout > 1):
+                raise ValueError("dual_view_v4 requires role-free dual views and exclusive static dropout")
+            if self.auxiliary.teacher_shard_size < 1 or self.auxiliary.teacher_version != "0.1.3.post1":
+                raise ValueError("Invalid Uni-Mol2 84M cache recipe")
+            import math
+            for value in (self.loss.lambda_alignment, self.loss.lambda_unimol, self.loss.lambda_electronic):
+                if not math.isfinite(value) or value < 0:
+                    raise ValueError("Auxiliary loss weights must be finite and nonnegative")
 
     def to_dict(self) -> dict[str, Any]:
         def convert(value: Any) -> Any:
@@ -249,13 +279,18 @@ class PretrainConfig:
             return value
 
         payload = convert(asdict(self))
-        if self.is_global_rdkit:
+        if self.is_global_rdkit or self.is_dual_view:
             payload.pop("fingerprint")
             payload["masking"].pop("fingerprint_ratio")
             payload["masking"].pop("fingerprint_dropout")
             payload["loss"].pop("lambda_fingerprint")
         else:
             payload.pop("architecture")
+        if not self.is_dual_view:
+            payload.pop("auxiliary")
+            for name in ("lambda_alignment", "lambda_unimol", "lambda_electronic"):
+                payload["loss"].pop(name)
+            payload["masking"].pop("fusion_only_dropout")
         return payload
 
     @property
@@ -263,7 +298,17 @@ class PretrainConfig:
         return self.architecture.kind == "global_rdkit_v2"
 
     @property
+    def is_dual_view(self) -> bool:
+        return self.architecture.kind == "dual_view_v4"
+
+    @property
+    def corpus_version(self) -> int:
+        return 4 if self.is_dual_view else 3 if self.is_global_rdkit else 2
+
+    @property
     def checkpoint_version(self) -> int:
+        if self.is_dual_view:
+            return DUAL_VIEW_STAGE1_CHECKPOINT_VERSION
         return (
             GLOBAL_RDKIT_STAGE1_CHECKPOINT_VERSION
             if self.is_global_rdkit
@@ -288,6 +333,7 @@ _SECTIONS: dict[str, type] = {
     "model": ModelConfig,
     "loss": LossConfig,
     "training": TrainingConfig,
+    "auxiliary": AuxiliaryConfig,
 }
 
 
@@ -303,6 +349,10 @@ def _construct(section_type: type, values: dict[str, Any] | None) -> Any:
         for key in ("stage1_dir", "artifacts_dir"):
             if key in values:
                 values[key] = Path(values[key])
+    elif section_type is AuxiliaryConfig:
+        for key in ("simulation_dir", "teacher_cache", "teacher_checkpoint"):
+            if key in values:
+                values[key] = Path(values[key])
     elif section_type is LossConfig and "role_weights" in values:
         values["role_weights"] = tuple(values["role_weights"])
     return section_type(**values)
@@ -314,7 +364,7 @@ def config_from_dict(raw: dict[str, Any]) -> PretrainConfig:
     if unknown:
         raise ValueError(f"Unknown config sections: {', '.join(sorted(unknown))}")
     architecture = raw.get("architecture") or {}
-    if architecture.get("kind") == "global_rdkit_v2":
+    if architecture.get("kind") in {"global_rdkit_v2", "dual_view_v4"}:
         forbidden = []
         if "fingerprint" in raw:
             forbidden.append("fingerprint")

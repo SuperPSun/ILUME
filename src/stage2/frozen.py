@@ -26,10 +26,10 @@ from rdkit import rdBase
 from stage1.features import ROLE_TO_ID, build_entity_sample, inspect_entity_qc
 from stage1.identity import validate_feature_generation_runtime
 from stage1.masking import MultimodalPacker
-from stage1.model import MultimodalPretrainModel
+from stage1.model import MultimodalPretrainModel, build_stage1_model
 from stage1.tokenizer import SmilesTokenizer
 from .identity import build_stage2_encoder_identity
-from .model import ObjectEncoder, RDKitDescriptorBackbone, RECONSTRUCTION_MODULES
+from .model import ObjectEncoder, RDKitDescriptorBackbone, RECONSTRUCTION_MODULES, encode_object_entities
 from .rdkit_train import (
     STAGE2_RDKIT_ENCODER_KIND,
     load_rdkit_stage2_encoder_artifact,
@@ -63,6 +63,10 @@ class FrozenStage2ObjectEncoder:
     @property
     def embedding_dim(self) -> int:
         return int(self.object_encoder.d_model)
+
+    @property
+    def entity_input_dim(self) -> int:
+        return self.object_encoder.input_dim
 
     def _sample(self, role: str, canonical_smiles: str) -> dict[str, Any]:
         if role not in ROLE_TO_ID:
@@ -110,7 +114,7 @@ class FrozenStage2ObjectEncoder:
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if not objects:
             return (
-                torch.empty((0, 0, self.embedding_dim), dtype=torch.float32),
+                torch.empty((0, 0, self.entity_input_dim), dtype=torch.float32),
                 torch.empty((0, 0), dtype=torch.long),
             )
         slot_counts = {len(item.slots) for item in objects}
@@ -128,11 +132,11 @@ class FrozenStage2ObjectEncoder:
             ]
         ).to(self.device)
         entity_cls = (
-            self.backbone.encode_entity(packed).entity_embedding
-            if self.pretrain_config.is_global_rdkit
+            encode_object_entities(self.backbone, packed).entity_embedding
+            if self.pretrain_config.is_global_rdkit or self.pretrain_config.is_dual_view
             else self.backbone.encode(packed)
         ).reshape(
-            len(objects), slot_count, self.embedding_dim
+            len(objects), slot_count, self.entity_input_dim
         )
         roles = torch.tensor(
             [ROLE_TO_ID[role] for item in objects for role, _ in item.slots],
@@ -239,8 +243,9 @@ def _load_payload(path: Path) -> dict[str, Any]:
         payload.get("kind") not in {
             STAGE2_ENCODER_KIND, STAGE2_HOME_ENCODER_KIND,
             STAGE2_ZERO_UPDATE_HOME_ENCODER_KIND,
+            "ilume_stage2_home_encoder_v4", "ilume_stage2_home_zero_update_encoder_v4",
         }
-        or payload.get("format_version") != STAGE2_ENCODER_VERSION
+        or payload.get("format_version") != (4 if str(payload.get("kind", "")).endswith("_v4") else STAGE2_ENCODER_VERSION)
     ):
         raise ValueError("Stage 3 requires a Stage 2 encoder artifact v1")
     if payload.get("identity_contract_version") != IDENTITY_CONTRACT_VERSION:
@@ -358,7 +363,7 @@ def load_frozen_object_encoder(
         expected_names=schema.selected_names,
     )
     target_device = torch.device(device)
-    backbone = MultimodalPretrainModel(config, vocabulary, schema)
+    backbone = build_stage1_model(config, vocabulary, schema, encoder_only=config.is_dual_view)
     missing, unexpected = backbone.load_state_dict(
         payload["stage1_backbone"], strict=False
     )
@@ -377,6 +382,7 @@ def load_frozen_object_encoder(
         num_layers=int(object_config["layers"]),
         feedforward_dim=int(object_config["ffn_dim"]),
         dropout=float(object_config["dropout"]),
+        input_dim=object_config.get("input_dim"),
     )
     object_encoder.load_state_dict(payload["object_encoder"], strict=True)
     backbone.to(target_device).eval()

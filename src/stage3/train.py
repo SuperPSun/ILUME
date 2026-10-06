@@ -30,6 +30,7 @@ from common.training import (
 from .config import Stage3Config, effective_training_seed
 from .data import (
     STAGE3_ARTIFACT_KIND,
+    STAGE3_V4_ARTIFACT_KIND,
     Stage3RepresentationStore,
     Stage3TaskDataset,
     composite_steps_per_epoch,
@@ -543,6 +544,8 @@ def build_resolved_training_plan(
         },
     }
     if three_phase:
+        if config.initialization.representation_contract == "dual_view_v4":
+            plan["representation_contract"] = "dual_view_v4"
         plan["model"].pop("group_experts")
         plan["schedule_mode"] = "three_phase"
         plan["phases"] = phase_plan
@@ -611,7 +614,7 @@ def build_resolved_training_plan(
         plan["math"]["joint_gradient_clip_mode"] = (
             config.training.joint_gradient_clip_mode
         )
-    if prepared["metadata"].get("kind") == STAGE3_ARTIFACT_KIND:
+    if prepared["metadata"].get("kind") in {STAGE3_ARTIFACT_KIND, STAGE3_V4_ARTIFACT_KIND}:
         plan["stage2_encoder_identity"] = metadata_identity(
             prepared["metadata"],
             "stage2_encoder",
@@ -1029,7 +1032,7 @@ def run_stage3_training(
             "stage2_encoder",
             context="Stage 3 prepared artifact",
         )["hash"]
-        if prepared["metadata"].get("kind") == STAGE3_ARTIFACT_KIND
+        if prepared["metadata"].get("kind") in {STAGE3_ARTIFACT_KIND, STAGE3_V4_ARTIFACT_KIND}
         else metadata_identity(
             prepared["metadata"], "prepared", context="RDKit Stage 3 artifact"
         )["hash"]
@@ -1114,7 +1117,7 @@ def resolve_stage3_training_identity(
             "stage2_encoder",
             context="Stage 3 prepared artifact",
         )["hash"]
-        if prepared["metadata"].get("kind") == STAGE3_ARTIFACT_KIND
+        if prepared["metadata"].get("kind") in {STAGE3_ARTIFACT_KIND, STAGE3_V4_ARTIFACT_KIND}
         else metadata_identity(
             prepared["metadata"], "prepared", context="RDKit Stage 3 artifact"
         )["hash"]

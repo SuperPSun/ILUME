@@ -8,6 +8,7 @@ from typing import Any, Mapping
 from rdkit import rdBase
 
 from common.identity import (
+    require_compatible_identity,
     semantic_identity,
     tensor_state_hash,
     validate_semantic_identity,
@@ -60,7 +61,7 @@ def feature_generation_contract(config: PretrainConfig) -> dict[str, Any]:
         "atom_in_smiles_version": importlib.metadata.version("atomInSmiles"),
         "graph_contract": "stage1-rdkit-graph-v1",
     }
-    if config.is_global_rdkit:
+    if config.is_global_rdkit or config.is_dual_view:
         contract["architecture"] = config.architecture.kind
     return contract
 
@@ -84,10 +85,14 @@ def build_stage1_corpus_identity(
         "descriptor": raw["descriptor"],
         "feature_generation_contract": feature_generation_contract(config),
         "corpus_kind": "ilume_stage1_corpus",
-        "corpus_format_version": 3 if config.is_global_rdkit else 2,
+        "corpus_format_version": config.corpus_version,
     }
-    if not config.is_global_rdkit:
+    if not (config.is_global_rdkit or config.is_dual_view):
         payload["fingerprint"] = raw["fingerprint"]
+    if config.is_dual_view:
+        from .auxiliary import electronic_source_contract
+        payload["electronic_sources"] = electronic_source_contract(config)
+        payload["electronic_contract"] = "canonical-exact-train-only-molecule-normalized-v4"
     return semantic_identity(
         "stage1.corpus",
         payload,
@@ -135,7 +140,7 @@ def build_stage1_feature_identity(
         "descriptor_scaler": payloads["descriptor_scaler.json"],
         "max_smiles_tokens": int(metadata["max_smiles_tokens"]),
     }
-    if generation.get("architecture") != "global_rdkit_v2":
+    if generation.get("architecture") not in {"global_rdkit_v2", "dual_view_v4"}:
         payload["fingerprint"] = metadata["fingerprint_contract"]
     return semantic_identity(
         "stage1.feature-artifact",
@@ -158,6 +163,17 @@ def build_stage1_training_identity(
         "quick_validation_samples_per_role",
     ):
         training.pop(name, None)
+    if config.is_dual_view:
+        from .auxiliary import TeacherCache, teacher_recipe
+        metadata = json.loads((config.data.artifacts_dir / "metadata.json").read_text())
+        teacher = TeacherCache(config.auxiliary.teacher_cache, metadata, require_complete=True, validate_all=True)
+        require_compatible_identity(teacher_recipe(config, metadata), teacher.manifest["identity"], context="Stage 1 teacher source")
+        training["auxiliary_identity"] = semantic_identity("stage1.auxiliary-materialization.v4", {
+            "recipe": teacher.manifest["identity"]["hash"],
+            "shards": teacher.manifest["shards"],
+            "index_sha256": teacher.manifest["index_sha256"],
+        })["hash"]
+        training["architecture"] = config.architecture.kind
     return semantic_identity(
         "stage1.training",
         {
@@ -226,6 +242,7 @@ def encoding_state_hash(model: Any) -> str:
             name == prefix or name.startswith(prefix + ".")
             for prefix in _RECONSTRUCTION_MODULES
         )
+        and (not model.config.is_dual_view or name.startswith(("smiles_encoder.", "graph_encoder.", "fusion.")))
     }
     return tensor_state_hash("stage1.encoding-state", state)
 
@@ -270,6 +287,8 @@ def build_stage1_encoder_identity(
             "atom_dim": model.atom_dim,
             "entity_dim": model.entity_dim,
         }
+    if config.is_dual_view:
+        payload.update(contract_version=4, encoding_api="dual-view-learned-v4", representation={"kind": model.representation_kind, "learned_dim": model.entity_dim, "atom_dim": model.atom_dim, "descriptor_input": False})
     return semantic_identity("stage1.encoder", payload)
 
 

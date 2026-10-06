@@ -29,6 +29,7 @@ def load_object_phase1_source(path: Any) -> Mapping[str, Any]:
     if (payload.get("kind") not in {
             STAGE2_ENCODER_KIND, STAGE2_HOME_ENCODER_KIND,
             STAGE2_ZERO_UPDATE_HOME_ENCODER_KIND, STAGE2_RDKIT_ENCODER_KIND,
+            "ilume_stage2_home_encoder_v4", "ilume_stage2_home_zero_update_encoder_v4",
         }
         or not isinstance(payload.get("provenance"), Mapping)
         or not isinstance(payload.get("state_hashes"), Mapping)):
@@ -41,9 +42,12 @@ def validate_encoder_source(config: Stage3Config) -> Mapping[str, Any]:
     recipe = config.training.object_encoder_phase1
     assert path is not None and recipe is not None
     payload = load_object_phase1_source(path)
-    if config.initialization.home_mode == "trained" and payload["kind"] != STAGE2_HOME_ENCODER_KIND:
+    v4 = config.initialization.representation_contract == "dual_view_v4"
+    home_kind = "ilume_stage2_home_encoder_v4" if v4 else STAGE2_HOME_ENCODER_KIND
+    zero_kind = "ilume_stage2_home_zero_update_encoder_v4" if v4 else STAGE2_ZERO_UPDATE_HOME_ENCODER_KIND
+    if config.initialization.home_mode == "trained" and payload["kind"] != home_kind:
         raise ValueError("Formal Stage 3 requires a Stage 2 HoME encoder")
-    if config.initialization.home_mode == "no_stage2" and payload["kind"] != STAGE2_ZERO_UPDATE_HOME_ENCODER_KIND:
+    if config.initialization.home_mode == "no_stage2" and payload["kind"] != zero_kind:
         raise ValueError("No-Stage2 requires its zero-update HoME encoder")
     provenance = payload["provenance"]
     if recipe.source_variant == "zero_update":
@@ -55,7 +59,7 @@ def validate_encoder_source(config: Stage3Config) -> Mapping[str, Any]:
         assert recipe.paired_trained_encoder is not None
         trained = load_object_phase1_source(recipe.paired_trained_encoder)
         if (
-            (config.initialization.home_mode == "no_stage2" and trained["kind"] != STAGE2_HOME_ENCODER_KIND)
+            (config.initialization.home_mode == "no_stage2" and trained["kind"] != home_kind)
             or trained["provenance"].get("stage2_checkpoint_hash") is None
             or trained["provenance"].get("refinement_boundary_epoch") != 10
             or provenance.get("paired_trained_encoder_sha256") != sha256_file(recipe.paired_trained_encoder)
@@ -67,7 +71,7 @@ def validate_encoder_source(config: Stage3Config) -> Mapping[str, Any]:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         if (
             manifest.get("kind") != (
-                "ilume_stage2_home_zero_update_control_v1"
+                ("ilume_stage2_home_zero_update_control_v4" if v4 else "ilume_stage2_home_zero_update_control_v1")
                 if config.initialization.home_mode == "no_stage2"
                 else "ilume_stage2_zero_update_control"
             )
@@ -100,7 +104,7 @@ class ObjectPhase1Representations:
         self.slots = payload["slots"]
         self.roles = payload["roles"]
         self.counts = payload["counts"]
-        self.output_dim = int(self.slots.shape[-1])
+        self.output_dim = model.stage2_object_encoder.d_model
         self.input_dims = None
         self.knowledge_bank = None
         self._embeddings: torch.Tensor | None = None

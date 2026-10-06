@@ -13,7 +13,7 @@ from common.io import sha256_file
 from common.progress import ProgressReporter
 from common.training import resolve_device, seed_everything
 from stage2.home_contract import SOURCE_GROUPS, load_transferable_state, state_hash
-from stage2.home_artifact import STAGE2_HOME_FINAL_KIND, load_home_final
+from stage2.home_artifact import STAGE2_HOME_FINAL_KIND, STAGE2_HOME_V4_FINAL_KIND, load_home_final
 from stage2.train import load_stage2_encoder_artifact
 from stage2 import load_frozen_object_encoder
 
@@ -61,8 +61,8 @@ def load_source(config: Stage3Config) -> dict[str, Any] | None:
     }
     source_recipe = identity.get("payload", {})
     if (
-        payload.get("kind") != STAGE2_HOME_FINAL_KIND
-        or manifest.get("kind") != STAGE2_HOME_FINAL_KIND
+        payload.get("kind") != (STAGE2_HOME_V4_FINAL_KIND if config.initialization.representation_contract == "dual_view_v4" else STAGE2_HOME_FINAL_KIND)
+        or manifest.get("kind") != payload.get("kind")
         or manifest.get("artifact_sha256") != sha256_file(artifact_path)
         or manifest.get("training_identity", {}).get("hash") != identity["hash"]
         or payload.get("shared_state_hash") != state_hash(payload["shared_state"])
@@ -222,7 +222,7 @@ def train_fold(
     if simulation_data is not None:
         extend_simulation_plan(plan, config, model, simulation_data, source)
     else:
-        plan["format_version"] = 9
+        plan["format_version"] = 11 if config.initialization.representation_contract == "dual_view_v4" else 9
     if expected_training_identity is not None:
         require_compatible_identity(
             expected_training_identity, build_stage3_training_identity(plan),
@@ -261,7 +261,7 @@ def resolve_training_identity(config: Stage3Config, fold: int) -> dict[str, Any]
         )
         extend_simulation_plan(plan, config, model, simulation_data, source)
     else:
-        plan["format_version"] = 9
+        plan["format_version"] = 11 if config.initialization.representation_contract == "dual_view_v4" else 9
     return build_stage3_training_identity(plan)
 
 

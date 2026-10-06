@@ -78,7 +78,7 @@ def build_stage3_prepared_identity(
     return semantic_identity(
         "stage3.prepared-data",
         {
-            "contract_version": 3 if config.training.object_encoder_phase1 is not None else STAGE3_PREPARED_IDENTITY_CONTRACT_VERSION,
+            "contract_version": 4 if config.initialization.representation_contract == "dual_view_v4" else 3 if config.training.object_encoder_phase1 is not None else STAGE3_PREPARED_IDENTITY_CONTRACT_VERSION,
             "source_content": _source_content(config, registry),
             "resolved_registry": {
                 task: spec.prepared_dict()
@@ -194,6 +194,8 @@ def build_stage3_training_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
         semantic_plan["stage2_pretraining"] = plan["stage2_pretraining"]
     if "simulation_training" in plan:
         semantic_plan["simulation_training"] = plan["simulation_training"]
+    if "representation_contract" in plan:
+        semantic_plan["representation_contract"] = plan["representation_contract"]
     contract_version = STAGE3_TRAINING_IDENTITY_CONTRACT_VERSION
     if three_phase:
         contract_version = (
@@ -203,6 +205,8 @@ def build_stage3_training_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
             else 8 if "encoder_finetune" in plan
             else 7 if "transfer_knowledge" in plan else 6
         )
+        if plan.get("representation_contract") == "dual_view_v4":
+            contract_version = 15
     return semantic_identity(
         "stage3.training",
         {

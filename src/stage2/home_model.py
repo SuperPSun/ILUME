@@ -5,7 +5,7 @@ from typing import Any
 import torch
 from torch import nn
 
-from stage2.model import ObjectEncoder, RECONSTRUCTION_MODULES
+from stage2.model import ObjectEncoder, RECONSTRUCTION_MODULES, encode_object_entities
 from stage3.model import Stage3SparseModel
 
 from .home_contract import model_task_ids, source_task_specs
@@ -17,6 +17,8 @@ class SimulationHoME(nn.Module):
     def __init__(self, backbone: nn.Module, registry: Any, base_config: Any, stage2_config: Any) -> None:
         super().__init__()
         self.backbone = backbone
+        if getattr(backbone.config, "is_dual_view", False):
+            backbone.requires_grad_(False).eval()
         for name, parameter in backbone.named_parameters():
             if any(name == prefix or name.startswith(prefix + ".") for prefix in RECONSTRUCTION_MODULES):
                 parameter.requires_grad_(False)
@@ -25,6 +27,7 @@ class SimulationHoME(nn.Module):
             num_layers=stage2_config.model.object_layers,
             feedforward_dim=stage2_config.model.object_ffn_dim,
             dropout=stage2_config.model.dropout,
+            input_dim=backbone.entity_dim + 217 if getattr(backbone.config, "is_dual_view", False) else None,
         )
         group_configs = {
             name: base_config.groups[name] for name in ("thermophysical", "solvation")
@@ -39,6 +42,12 @@ class SimulationHoME(nn.Module):
             nn.SiLU(), nn.LayerNorm(backbone.entity_dim),
         )
         self.registry = registry
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if getattr(self.backbone.config, "is_dual_view", False):
+            self.backbone.eval()
+        return self
 
     def backbone_parameters(self) -> tuple[nn.Parameter, ...]:
         return tuple(parameter for parameter in self.backbone.parameters() if parameter.requires_grad)
@@ -63,7 +72,7 @@ def predict_simulation_task(
         raise ValueError("Stage2-HoME needs live Stage1 entities for every task")
     spec = registry.by_id(task_id)
     positions = packed.entity_positions
-    encoded = backbone.encode_entity(packed.entities)
+    encoded = encode_object_entities(backbone, packed.entities)
     slots = encoded.entity_embedding[positions]
     roles = packed.entities.roles[positions]
     conditions = dataset.conditions[packed.row_indices]
