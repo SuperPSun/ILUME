@@ -17,10 +17,11 @@ def main():
     parser.add_argument("--config", required=True)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--workers", type=int, default=1, help="CPU conformer/feature workers; reserve matching Slurm CPUs (default: serial)")
     parser.add_argument("--limit", type=int, help="Small audit only; requires a separate --output")
     parser.add_argument("--output", help="Optional cache root; audit roots cannot equal the configured formal cache")
     args = parser.parse_args()
-    print(json.dumps(prepare_teacher_cache(load_config(args.config), device=args.device, batch_size=args.batch_size, limit=args.limit, output=args.output), sort_keys=True))
+    print(json.dumps(prepare_teacher_cache(load_config(args.config), device=args.device, batch_size=args.batch_size, workers=args.workers, limit=args.limit, output=args.output), sort_keys=True), flush=True)
 
 
 if __name__ == "__main__":

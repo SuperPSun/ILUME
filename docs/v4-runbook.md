@@ -69,11 +69,24 @@ First generate an independent small audit and inspect `manifest.json` (attempted
 python scripts/stage1/teacher.py --config configs/v4/stage1/base.yaml --device cuda:0 --batch-size 32 --limit 100 --output outputs/v4/stage1/base/teacher_audit
 ```
 
-After approving success rate, throughput and storage, generate the full cache. Rerunning the identical command resumes immutable shards, not arbitrary partial rows. OOM is a failed run, not a masked molecule. Batch size/device are execution settings; canonical structure order and per-molecule conformer seed are fixed.
+After approving success rate, throughput and storage, generate the full cache. Rerunning the identical command resumes immutable shards, not arbitrary partial rows. OOM is a failed run, not a masked molecule. Batch size/device and `--workers` are execution settings; canonical structure order and per-molecule conformer seed are fixed.
 
 ```bash
 python scripts/stage1/teacher.py --config configs/v4/stage1/base.yaml --device cuda:0 --batch-size 32
 ```
+
+If GPU utilization is low, use `--workers` to prepare conformers and Uni-Mol features in parallel CPU processes. A bounded ordered queue prefetches inputs while the parent performs GPU inference; no worker loads the teacher model or uses CUDA. Features are computed once rather than repeated before inference. Default `--workers 1` retains serial execution. Worker processes consume additional RAM; do not exceed the job's CPU allocation.
+
+For a Slurm job, start with `#SBATCH --cpus-per-task=8`, one GPU, and the following commands inside the allocated job. Keep the existing isolated teacher environment. First inspect this **new** parallel audit before running the full command:
+
+```bash
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+python -u scripts/stage1/teacher.py --config configs/v4/stage1/base.yaml --device cuda:0 --batch-size 64 --workers 8 --limit 100 --output outputs/v4/stage1/base/teacher_audit_parallel
+python -u scripts/stage1/teacher.py --config configs/v4/stage1/base.yaml --device cuda:0 --batch-size 64 --workers 8
+```
+
+Stop the old job before restarting against the same cache root; concurrent writers are not supported. Completed shards are reused even if worker count changes. Redirected/Slurm output emits flushed `teacher_progress` JSON at startup, each committed shard and approximately every 30 seconds between inference batches. `processed/total` includes in-memory work; `committed` counts safely published molecules. A single slow conformer/batch can delay the next log. Monitor with `tail -f slurm-<job-id>.out`.
 
 After the full cache completes, return to the original training environment (replace `ilagent2` if yours has a different name). Uni-Mol is required only for cache generation; Stage1 training reads the cache. Stage1 refuses partial/unbound teacher caches; losses weight roles2/2/1 while the loader remains the original natural shuffle.
 

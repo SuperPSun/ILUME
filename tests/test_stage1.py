@@ -215,6 +215,57 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
         training=TrainingConfig(batch_size=2, epochs=2, device="cpu", amp_dtype="none", num_workers=0, validation_interval_steps=100),
     )
     prepare_corpus(config)
+    # Parallel execution preserves conformer coordinates, order and immutable resume.
+    parallel_config = replace(config, auxiliary=replace(config.auxiliary, teacher_shard_size=4))
+    def coordinate_teacher(molecules):
+        # Uni-Mol featurization consumes float32 coordinates.
+        return torch.from_numpy(np.stack([mol.GetConformer().GetPositions().astype(np.float32).sum(axis=0) for mol in molecules])).repeat(1, 256)
+    serial_root = tmp_path / "serial_cache"
+    serial = prepare_teacher_cache(parallel_config, teacher=coordinate_teacher, batch_size=2, output=serial_root)
+    parallel_root = tmp_path / "parallel_cache"
+    attempts = []
+    def fail_after_shard(molecules):
+        attempts.append(len(molecules))
+        if len(attempts) == 3:
+            raise RuntimeError("parallel audit interruption")
+        return coordinate_teacher(molecules)
+    with pytest.raises(RuntimeError, match="parallel audit interruption"):
+        prepare_teacher_cache(parallel_config, teacher=fail_after_shard, batch_size=2, output=parallel_root)
+    committed = (parallel_root / "shard_000000.pt").read_bytes()
+    parallel = prepare_teacher_cache(parallel_config, teacher=coordinate_teacher, batch_size=2, workers=2, output=parallel_root)
+    assert (parallel_root / "shard_000000.pt").read_bytes() == committed
+    assert serial["identity"] == parallel["identity"]
+    assert serial["valid"] == parallel["valid"] == 9
+    for record in serial["shards"]:
+        before = torch.load(serial_root / record["path"], weights_only=False)
+        after = torch.load(parallel_root / record["path"], weights_only=False)
+        assert before["smiles"] == after["smiles"] and before["failures"] == after["failures"]
+        assert torch.equal(before["embeddings"], after["embeddings"])
+        assert torch.equal(before["valid"], after["valid"])
+    with pytest.raises(ValueError, match="workers must be positive"):
+        prepare_teacher_cache(config, workers=0)
+    # Exercise the real adapter's prepared-feature path without downloading a teacher.
+    import sys
+    from types import SimpleNamespace
+    from stage1.auxiliary import UniMolTeacher
+    feature_calls = []
+    def featurize(molecule, **kwargs):
+        feature_calls.append(Chem.MolToSmiles(Chem.RemoveHs(molecule)))
+        if feature_calls[-1] == "CC":
+            raise ValueError("unsupported teacher feature")
+        return torch.tensor([molecule.GetNumAtoms()], dtype=torch.float32)
+    class TeacherModel:
+        def batch_collate_fn(self, examples):
+            return {"features": torch.stack([item[0] for item in examples])}, None
+        def __call__(self, *, features, return_repr):
+            return {"cls_repr": features.repeat(1, 768)}
+    adapter = object.__new__(UniMolTeacher)
+    adapter.model, adapter.device = TeacherModel(), torch.device("cpu")
+    with monkeypatch.context() as patch:
+        patch.setitem(sys.modules, "unimol_tools.data.conformer", SimpleNamespace(mol2unimolv2=featurize))
+        feature_manifest = prepare_teacher_cache(config, teacher=adapter, batch_size=2, output=tmp_path / "feature_cache")
+    assert len(feature_calls) == len(set(feature_calls)) == 9
+    assert feature_manifest["valid"] == 8 and feature_manifest["failed"] == 1
     # Missing/failed 3D is masked, never removed from the molecular corpus.
     import stage1.auxiliary as auxiliary
     real_conformer = auxiliary.generate_conformer

@@ -4,10 +4,13 @@ import csv
 import hashlib
 import importlib.metadata
 import json
+import multiprocessing
 import os
 import sqlite3
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
+from concurrent.futures import ProcessPoolExecutor
+from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
@@ -89,6 +92,37 @@ def generate_conformer(smiles, seed):
     return molecule
 
 
+def _teacher_input(smiles, seed, featurize):
+    try:
+        molecule = generate_conformer(smiles, seed)
+        if featurize:
+            from unimol_tools.data.conformer import mol2unimolv2
+            return mol2unimolv2(molecule, max_atoms=Chem.RemoveHs(molecule).GetNumAtoms(), remove_hs=True), None
+        return molecule, None
+    except (ValueError, RuntimeError, AssertionError, KeyError, IndexError) as error:
+        return None, f"{type(error).__name__}: {error}"
+
+
+def _teacher_inputs(keys, seed, featurize, executor, prefetch):
+    if executor is None:
+        for key in keys:
+            yield _teacher_input(key, seed, featurize)
+        return
+    # Ordered, bounded work: CPU workers prepare the next batch during GPU inference.
+    pending = deque()
+    iterator = iter(keys)
+    for key in iterator:
+        pending.append(executor.submit(_teacher_input, key, seed, featurize))
+        if len(pending) == prefetch:
+            break
+    while pending:
+        future = pending.popleft()
+        key = next(iterator, None)
+        if key is not None:
+            pending.append(executor.submit(_teacher_input, key, seed, featurize))
+        yield future.result()
+
+
 class UniMolTeacher:
     """Offline-only adapter; refuses implicit downloads and atom cropping."""
 
@@ -121,9 +155,13 @@ class UniMolTeacher:
     @torch.inference_mode()
     def __call__(self, molecules):
         features = [self.featurize(mol, max_atoms=Chem.RemoveHs(mol).GetNumAtoms(), remove_hs=True) for mol in molecules]
+        return self.predict_features(features)
+
+    @torch.inference_mode()
+    def predict_features(self, features):
         batch, _ = self.model.batch_collate_fn([(item, 0) for item in features])
         result = self.model(**{key: value.to(self.device) for key, value in batch.items()}, return_repr=True)["cls_repr"].float().cpu()
-        if result.shape != (len(molecules), 768) or not torch.isfinite(result).all():
+        if result.shape != (len(features), 768) or not torch.isfinite(result).all():
             raise ValueError("Invalid Uni-Mol2 teacher output")
         return result
 
@@ -139,7 +177,9 @@ def teacher_recipe(config, corpus_metadata):
     })
 
 
-def prepare_teacher_cache(config, *, device="cpu", batch_size=32, limit=None, output=None, teacher=None):
+def prepare_teacher_cache(config, *, device="cpu", batch_size=32, workers=1, limit=None, output=None, teacher=None):
+    if workers < 1:
+        raise ValueError("Teacher --workers must be positive")
     if not config.is_dual_view or batch_size < 1 or (limit is not None and (limit < 1 or output is None)):
         raise ValueError("Teacher preparation requires dual_view_v4; audits need a separate --output and positive --limit")
     root = Path(output) if output is not None else config.auxiliary.teacher_cache
@@ -176,8 +216,23 @@ def prepare_teacher_cache(config, *, device="cpu", batch_size=32, limit=None, ou
     success = 0
     started = time.perf_counter()
     reporter = ProgressReporter()
+    processed = 0
+    last_log = started
+    def log_progress(committed):
+        nonlocal last_log
+        last_log = time.perf_counter()
+        elapsed = last_log - started
+        if not reporter.interactive:
+            print(json.dumps({"event": "teacher_progress", "processed": processed, "total": count,
+                              "committed": committed, "valid": success, "failed": processed - success,
+                              "elapsed_seconds": elapsed, "molecules_per_second": processed / max(elapsed, 1e-9),
+                              "workers": workers, "batch_size": batch_size}, sort_keys=True), flush=True)
     cursor = connection.execute("SELECT smiles FROM structures ORDER BY smiles LIMIT ?", (count,))
-    with reporter.bar(total=count, desc="Uni-Mol2 teacher", unit="molecule") as progress:
+    # Never fork a CUDA-initialized process. Only the parent owns the teacher model.
+    pool = ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn"),
+                               initializer=torch.set_num_threads, initargs=(1,)) if workers > 1 else nullcontext(None)
+    log_progress(0)
+    with pool as executor, reporter.bar(total=count, desc="Uni-Mol2 teacher", unit="molecule") as progress:
         while keys := [row[0] for row in cursor.fetchmany(config.auxiliary.teacher_shard_size)]:
             shard_id = len(shards)
             filename = f"shard_{shard_id:06d}.pt"
@@ -190,28 +245,36 @@ def prepare_teacher_cache(config, *, device="cpu", batch_size=32, limit=None, ou
                 payload = torch.load(path, map_location="cpu", weights_only=False)
                 if payload["identity_hash"] != identity["hash"] or payload["smiles"] != keys:
                     raise ValueError("Teacher shard identity/order mismatch")
+                processed += len(keys)
+                success += record["valid"]
+                progress.update(len(keys))
             else:
                 vectors = torch.zeros((len(keys), 768))
                 valid = torch.zeros(len(keys), dtype=torch.bool)
                 failures = {}
+                inputs = _teacher_inputs(keys, config.data.seed, isinstance(teacher, UniMolTeacher), executor,
+                                         prefetch=max(2 * batch_size, 2 * workers))
                 for begin in range(0, len(keys), batch_size):
                     molecules, positions = [], []
                     for offset in range(begin, min(begin + batch_size, len(keys))):
-                        try:
-                            molecule = generate_conformer(keys[offset], config.data.seed)
-                            # Unsupported featurization is a molecule failure, not a batch fallback.
-                            if isinstance(teacher, UniMolTeacher):
-                                teacher.featurize(molecule, max_atoms=Chem.RemoveHs(molecule).GetNumAtoms(), remove_hs=True)
+                        molecule, failure = next(inputs)
+                        if failure is None:
                             molecules.append(molecule)
                             positions.append(offset)
-                        except (ValueError, RuntimeError, AssertionError, KeyError, IndexError) as error:
-                            failures[str(offset)] = f"{type(error).__name__}: {error}"
+                        else:
+                            failures[str(offset)] = failure
                     if positions:
-                        values = teacher(molecules)
+                        values = teacher.predict_features(molecules) if isinstance(teacher, UniMolTeacher) else teacher(molecules)
                         if values.shape != (len(positions), 768) or not torch.isfinite(values).all():
                             raise ValueError("Teacher returned invalid representations")
                         vectors[positions] = values
                         valid[positions] = True
+                    completed = min(batch_size, len(keys) - begin)
+                    processed += completed
+                    success += len(positions)
+                    progress.update(completed)
+                    if time.perf_counter() - last_log >= 30:
+                        log_progress(sum(shard["count"] for shard in shards))
                 payload = {"identity_hash": identity["hash"], "smiles": keys, "embeddings": vectors, "valid": valid, "failures": failures}
                 atomic_torch_save(path, payload)
                 record = {"path": filename, "sha256": sha256_file(path), "count": len(keys), "valid": int(valid.sum())}
@@ -219,8 +282,7 @@ def prepare_teacher_cache(config, *, device="cpu", batch_size=32, limit=None, ou
             connection.executemany("UPDATE structures SET shard=?, offset=? WHERE smiles=?", ((shard_id, offset, key) for offset, key in enumerate(keys)))
             connection.commit()
             shards.append(record)
-            success += record["valid"]
-            progress.update(len(keys))
+            log_progress(processed)
     connection.close()
     elapsed = time.perf_counter() - started
     manifest = {"kind": "ilume_stage1_unimol2_cache_v4", "identity": identity, "complete": limit is None, "attempted": count, "unique_structures": total, "valid": success, "failed": count - success, "elapsed_seconds": elapsed, "molecules_per_second": count / max(elapsed, 1e-9), "embedding_bytes": count * 768 * 4, "index_sha256": sha256_file(root / "index.sqlite"), "shards": shards}
