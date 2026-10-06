@@ -7,16 +7,15 @@
 | 主题 | ADR（按修订顺序） | 阅读重点 |
 |---|---|---|
 | v4 冻结双视图主线 | [0089](0089-v4-frozen-dual-view-stage1.md) | Stage1 learned1024、五类辅助监督、自然 shuffle 与2/2/1 loss权重；下游1241输入、永久冻结Stage1；v3保留历史合同 |
-| v2 表示与隔离 | [0039](0039-global-rdkit-v2-mainline.md) | 三模态 Stage 1、1024D entity/Object/HoME；v1 隔离 |
+| 历史 v2/v3 表示与隔离 | [0039](0039-global-rdkit-v2-mainline.md) | 三模态 Stage 1、1024D entity/Object/HoME；仅约束历史配置，现役表示由 0089 取代 |
 | Stage 1 执行 | [0013](0013-stage1-full-corpus-ddp.md)、[0014](0014-stage1-prepare-performance-and-corpus-v2.md)、[0015](0015-stage1-high-throughput-epoch-resume.md)、[0017](0017-stage1-base-runtime-profile.md) | 全量 epoch、prepare/runtime、DDP 与完整 epoch 恢复 |
-| 正式 Stage2-HoME | [0082](0082-home-mainline-and-core-ablations.md)、[0083](0083-stage2-home-full-artifact-evaluation.md)、[0085](0085-retire-stage2-home-evaluation.md)、[0079](0079-stage2-home-stage3-home-transfer-ablation.md)（历史配方来源）、[0025](0025-stage2-homo-lumo-scalar-tasks.md) | 九任务 physics-only HoME、完整模型产物与 GLOBAL/GROUP 迁移；独立评估由 0085 退役；正式数值读 YAML |
-| Stage 3 训练 | [0084](0084-stage3-simulation-phase2-phase3.md)、[0020](0020-stage3-v1-sparse-home-pcgrad.md)、[0046](0046-stage3-ownership-clipping-raw-sampling.md)、[0048](0048-stage3-owner-lifetime-three-phase-training.md)、[0050](0050-stage3-task-specific-owner-budget-and-private-capacity.md)、[0070](0070-stage3-retire-pcgrad.md)、[0075](0075-stage2-zero-update-stage3-object-phase1.md) | 正式 20 项实验 + 五项模拟 Phase2/3；sparse HoME、raw sampling/clipping、三阶段 owner lifetime/capacity、ObjectEncoder Phase 1 |
+| 正式 Stage2-HoME | [0089](0089-v4-frozen-dual-view-stage1.md)（v4 表示与冻结边界）、[0082](0082-home-mainline-and-core-ablations.md)、[0083](0083-stage2-home-full-artifact-evaluation.md)、[0085](0085-retire-stage2-home-evaluation.md)、[0079](0079-stage2-home-stage3-home-transfer-ablation.md)（历史配方来源）、[0025](0025-stage2-homo-lumo-scalar-tasks.md) | 九任务 physics-only HoME、完整模型产物与 GLOBAL/GROUP 迁移；独立评估由 0085 退役；正式数值读 YAML |
+| Stage 3 训练 | [0089](0089-v4-frozen-dual-view-stage1.md)（v4 表示与冻结边界）、[0084](0084-stage3-simulation-phase2-phase3.md)、[0020](0020-stage3-v1-sparse-home-pcgrad.md)、[0046](0046-stage3-ownership-clipping-raw-sampling.md)、[0048](0048-stage3-owner-lifetime-three-phase-training.md)、[0050](0050-stage3-task-specific-owner-budget-and-private-capacity.md)、[0070](0070-stage3-retire-pcgrad.md)、[0075](0075-stage2-zero-update-stage3-object-phase1.md) | 正式 20 项实验 + 五项模拟 Phase2/3；sparse HoME、raw sampling/clipping、三阶段 owner lifetime/capacity、ObjectEncoder Phase 1 |
 | Stage 3 recipe | [0050](0050-stage3-task-specific-owner-budget-and-private-capacity.md)、[0055](0055-stage3-pec50-phase3-single-variable-rollback.md) | owner 默认/覆盖/零预算与现役 task 例外，完整数值读 YAML；0051～0053 已并入历史摘要 |
 | Stage 3 diagnostics | [0054](0054-stage3-task-gate-diagnostics-and-weak-task-tuning.md) | 只读 task gate 统计、fold-sample 聚合与输出边界 |
-| Stage 3 二十任务 catalog | [0088](0088-stage3-hydration-replaces-transfer.md)、[0067](0067-stage3-twenty-task-catalog.md) | 移除 volume expansion；现役 v2/消融/baseline/transfer target 同步与 artifact 边界 |
+| Stage 3 二十任务 catalog | [0088](0088-stage3-hydration-replaces-transfer.md)、[0067](0067-stage3-twenty-task-catalog.md) | hydration 替换 transfer、移除 volume expansion；主线/核心消融/baseline 的任务 authority 与 artifact 边界 |
 | 身份与 legacy refinement | [0021](0021-identity-audit-contract-v1.md)、[0027](0027-late-taskwise-refinement.md) | semantic identity/audit；0027 refinement 只约束 legacy/Capacity |
 | 模拟性质 baseline/评估 | [0086](0086-scalar-simulation-baselines-and-reporting.md) | 四项 scalar 单次 baseline 与 Stage3 五模型原单位 ensemble，独立 valid/test 榜单；Stage2 evaluate 保持退役 |
-| Stage2/Stage3 HoME 候选 | [0087](0087-stage2-stage3-home-base1-candidates.md) | base1-1～base1-10 的配对来源、容量与预算差异；隔离于正式 Base |
 | Reporting | [0023](0023-unified-evaluation-reporting.md)、[0031](0031-stage3-summary-normalization-relaxation.md)、[0043](0043-retire-stage2-evaluation-and-v2-refinement.md)（历史）、[0061](0061-ilume-task-scatter-summary.md)、[0085](0085-retire-stage2-home-evaluation.md) | Stage3 experimental 与 0086 独立 simulation 榜单；Stage2 evaluator/reporting 由 0085 退役 |
 
 ## Baseline 与内部消融
@@ -34,12 +33,13 @@
 | AIonopedia | [0049](0049-aionopedia-multimodal-baseline.md) |
 | ILTransR | [0057](0057-iltransr-stage3-baseline.md) |
 | AIFC | [0060](0060-aifc-stage3-baseline.md) |
-| 核心三项消融 | [0082](0082-home-mainline-and-core-ablations.md)、[0084](0084-stage3-simulation-phase2-phase3.md)、[0077](0077-stage3-single-task-mlp-v2-ablation.md)（MLP 历史配方来源） |
+| 核心三项消融 | [0089](0089-v4-frozen-dual-view-stage1.md)（现役 v4）、[0082](0082-home-mainline-and-core-ablations.md)、[0084](0084-stage3-simulation-phase2-phase3.md)、[0077](0077-stage3-single-task-mlp-v2-ablation.md)（历史配方来源） |
 
 ## 冻结合同与历史
 
 | 范围 | 入口与状态 |
 |---|---|
+| v3 Stage2/Stage3 HoME 候选 | [0087](0087-stage2-stage3-home-base1-candidates.md)：base1-1～base1-10 保留原配对来源、容量与预算合同，不是 v4 入口 |
 | 旧迁移/微调/跨域 HoME 实验 | [0079](0079-stage2-home-stage3-home-transfer-ablation.md)、[0080](0080-stage2-home-transfer-full-finetune.md)、[0081](0081-stage2-stage3-cross-domain-home.md)：历史；正式身份由 0082 替代 |
 | 旧 RDKit / transfer / routing / 分组候选 | [0034](0034-rdkit-2d-home-representation-ablation.md)、[0036](0036-no-stage1-rdkit-stage2-stage3-ablation.md)、[0062](0062-stage2-stage3-full-transfer-matrix.md)、[0072](0072-stage3-transfer-knowledge-hierarchy-ablation.md)、[0073](0073-stage3-encoder-full-finetune-ablation.md)、[0063](0063-stage3-knowledge-graph-grouping-candidate.md)、[0064](0064-stage3-knowledge-graph-budget-candidates.md)、[0066](0066-stage3-knowledge-graph-targeted-small-experiments.md)、[0074](0074-stage3-base-global-group-capacity-candidates.md)：历史，不是活跃入口 |
 | Capacity v1 | [0026](0026-capacity-v1-pipeline-study.md)、[0027](0027-late-taskwise-refinement.md)；legacy 端到端研究，HPO 已退役。固定运行见 [手册](../capacity-v1-runbook.md) |

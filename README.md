@@ -45,7 +45,7 @@ python scripts/stage3/evaluate.py --config configs/v3/stage3/base.yaml --checkpo
 
 只有身份一致且完整的 checkpoint 可以恢复；验证只记录，不选模型。先看五折 validation，再报告 test ensemble。Stage3 的正式最终文件名仍为 `three_phase_final.pt`；五项模拟任务可通过 `stage3.home.load_simulation_final()` 加载 final，并使用模型的 `predict_simulation()` 接口和 Stage2 的 packed 输入推理。
 
-## HoME 主模型候选
+## v3 历史 HoME 候选
 
 `base1-1` 至 `base1-10` 是十组隔离调参配置，差异和配对规则见 [ADR-0087](docs/adr/0087-stage2-stage3-home-base1-candidates.md)。先完成上方正式 Base 的 Stage2 prepare。`base1-1`～`base1-6` 各自训练 Stage2 并重新准备 Stage3；`base1-7`～`base1-10` 直接复用 Base 的 Stage2 和 Stage3 prepared 数据。下面分别示范 `base1-1` 与 `base1-7`；将编号替换为对应候选即可，不复用其他候选的 checkpoint 或输出。
 
@@ -58,7 +58,7 @@ python scripts/stage3/train.py --config configs/v3/stage3/candidates/base1-7.yam
 
 评估时使用同名候选的 Stage3 配置、train root 和独立 valid/test 输出路径；模拟域沿用上方 `--domain simulation --ensemble-folds` 命令形式。候选不自动选优，不影响正式 Base。
 
-## 三项核心消融
+## v3 历史核心消融
 
 三个对照各自有独立身份与输出根，不与正式产物交叉加载；模型细节及解释边界见 [ADR-0082](docs/adr/0082-home-mainline-and-core-ablations.md)。
 
@@ -110,8 +110,8 @@ python scripts/benchmarks/sweep.py --config configs/benchmarks/mlp.yaml --benchm
 Full ILUME 与 no-Stage1 的模拟性质评估使用五个 Stage3 final 对同一固定 split 预测：每折先还原到原单位，再取预测均值计算指标；不对指标取均值。Full 命令为：
 
 ```bash
-python scripts/stage3/evaluate.py --config configs/v3/stage3/base.yaml --domain simulation --split valid --ensemble-folds --checkpoint-dir outputs/v3/stage3/base/train --output outputs/v3/stage3/base/simulation_valid
-python scripts/stage3/evaluate.py --config configs/v3/stage3/base.yaml --domain simulation --split test --ensemble-folds --checkpoint-dir outputs/v3/stage3/base/train --output outputs/v3/stage3/base/simulation_test
+python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --domain simulation --split valid --ensemble-folds --checkpoint-dir outputs/v4/stage3/base/train --output outputs/v4/stage3/base/simulation_valid
+python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --domain simulation --split test --ensemble-folds --checkpoint-dir outputs/v4/stage3/base/train --output outputs/v4/stage3/base/simulation_test
 ```
 
 no-Stage1 使用其独立配置与输出根；no-Stage2 和单任务 MLP 消融没有这四项模拟预测分支，不支持该 domain。simulation 评估不接受 `--fold`、`--tasks` 或 `--checkpoint-epoch`。partial charge 仍在 Stage3 中训练并记录 validation，但不进入本次四项 scalar 比较。
@@ -476,10 +476,10 @@ unknown motif（2.236%），不会删除样本。完整科学与审计边界见
 
 ## 输出与结果汇总
 
-新训练和评估输出不覆盖既有目录；每个操作记录 `run_config.yaml`、`metadata.json` 与完成后的 `summary.json`。全局 summarizer 只收录显式选中的目录，并对 prediction 完整性进行验证；Stage2/Stage3 使用独立 leaderboard 与 comparison identity。见 [ADR-0021](docs/adr/0021-identity-audit-contract-v1.md)、[ADR-0031](docs/adr/0031-stage3-summary-normalization-relaxation.md)与 [ADR-0083](docs/adr/0083-stage2-home-full-artifact-evaluation.md)。
+新训练和评估输出不覆盖既有目录；每个操作记录 `run_config.yaml`、`metadata.json` 与完成后的 `summary.json`。全局 summarizer 只收录显式选中的目录，并对 prediction 完整性进行验证；Stage3 experimental 与 simulation 使用独立 leaderboard，Stage2 不发布榜单。见 [ADR-0021](docs/adr/0021-identity-audit-contract-v1.md)、[ADR-0031](docs/adr/0031-stage3-summary-normalization-relaxation.md)、[ADR-0085](docs/adr/0085-retire-stage2-home-evaluation.md)与 [ADR-0086](docs/adr/0086-scalar-simulation-baselines-and-reporting.md)。
 
 ```bash
-python scripts/benchmarks/summarize.py --input outputs/v3 outputs/benchmarks --include outputs/v3/stage2/base/valid outputs/v3/stage2/base/test outputs/v3/stage3/base/valid outputs/v3/stage3/base/test --output summary
+python scripts/benchmarks/summarize.py --input outputs/v4 outputs/benchmarks/v4 --include outputs/v4/stage3/base/valid outputs/v4/stage3/base/test outputs/v4/stage3/base/simulation_valid outputs/v4/stage3/base/simulation_test outputs/benchmarks/v4 --output summary_v4
 ```
 
 ## 验证

@@ -17,43 +17,51 @@ conda create -n ilume-unimol2 python=3.11 pip -y
 conda activate ilume-unimol2
 python -m pip install --upgrade pip
 python -m pip install torch==2.9.0 --index-url https://download.pytorch.org/whl/cu128
-python -m pip install numpy==1.26.4 pandas==1.5.3 rdkit==2025.9.3
+python -m pip install numpy==1.26.4 pandas==1.5.3 rdkit==2025.9.5
 python -m pip install -e .
 python -m pip install scipy joblib addict scikit-learn numba
 python -m pip install --no-deps unimol-tools==0.1.3.post1
 ```
 
-Place the official Uni-Mol2 84M checkpoint at `assets/unimol2/modelzoo/84M/checkpoint.pt` yourself. The project deliberately disables automatic model downloads. Verify the environment and local file before starting the cache audit:
+Download the official [Uni-Mol2 84M checkpoint](https://huggingface.co/dptech/Uni-Mol2/blob/main/modelzoo/84M/checkpoint.pt) from the repository root. The published file is about 337 MB; its SHA-256 is checked below. The project deliberately disables automatic model downloads, so the file must exist at the exact configured path:
+
+```bash
+mkdir -p assets/unimol2/modelzoo/84M
+curl --fail --location --retry 3 --continue-at - \
+  https://huggingface.co/dptech/Uni-Mol2/resolve/main/modelzoo/84M/checkpoint.pt \
+  --output assets/unimol2/modelzoo/84M/checkpoint.pt
+echo '5b9241630f1cf0b173fb06d1e76096e5daf5f91c3e51b066ba69524dafe60e35  assets/unimol2/modelzoo/84M/checkpoint.pt' | sha256sum --check -
+```
+
+If the checksum fails, do not run cache generation; obtain a verified copy before continuing. Then verify the environment and local file:
 
 ```bash
 python - <<'PY'
 from pathlib import Path
 import importlib.metadata
+import json
 import numpy
 import torch
 from rdkit import rdBase
 from unimol_tools.models import unimolv2
+from stage1.identity import validate_feature_generation_runtime
 
 checkpoint = Path("assets/unimol2/modelzoo/84M/checkpoint.pt")
 assert checkpoint.is_file(), f"Missing local checkpoint: {checkpoint}"
 assert importlib.metadata.version("unimol_tools") == "0.1.3.post1"
-assert torch.__version__ == "2.9.0+cu128", torch.__version__
+assert torch.__version__.split("+", 1)[0] == "2.9.0", torch.__version__
+assert torch.cuda.is_available(), "CUDA is unavailable in the teacher environment"
 assert numpy.__version__ == "1.26.4", numpy.__version__
 assert str(unimolv2.MODEL_CONFIG_V2["weight"]["84m"]) == "modelzoo/84M/checkpoint.pt"
+metadata = json.loads(Path("outputs/v4/stage1/base/prepare/artifacts/metadata.json").read_text())
+validate_feature_generation_runtime(metadata)
 print(f"torch={torch.__version__}; cuda_available={torch.cuda.is_available()}")
 print(f"numpy={numpy.__version__}; rdkit={rdBase.rdkitVersion}")
 print(f"unimol_tools={importlib.metadata.version('unimol_tools')}; checkpoint={checkpoint}")
 PY
 ```
 
-The printed RDKit runtime version must exactly match `rdkit_version` in `outputs/v4/stage1/base/prepare/artifacts/metadata.json`; if it does not, stop and rebuild neither cache nor training data until the environment matches. Once the full teacher cache is complete, leave the isolated environment and return to the regular ILUME environment (replace `ilagent2` below if yours has a different name):
-
-```bash
-conda deactivate
-conda activate ilagent2
-```
-
-Do not install Uni-Mol into the regular training environment. The teacher import is only needed for cache generation, never for Stage1 training or deployment.
+The validator checks the prepared corpus's `feature_generation_contract`, including RDKit runtime and tokenizer versions. Match `rdBase.rdkitVersion`, not only `pip show rdkit`: package metadata and the imported runtime can differ. If the runtime differs from the prepared contract, fix the isolated environment before continuing; do not edit artifact metadata or rebuild the prepared corpus merely to bypass the check. The installation example targets runtime `2025.09.5`; if your corpus records another version, install that exact runtime instead.
 
 First generate an independent small audit and inspect `manifest.json` (attempted/valid/failed, throughput and embedding bytes); this audit is not a training cache:
 
@@ -67,13 +75,30 @@ After approving success rate, throughput and storage, generate the full cache. R
 python scripts/stage1/teacher.py --config configs/v4/stage1/base.yaml --device cuda:0 --batch-size 32
 ```
 
-Return to the original training environment. Stage1 refuses partial/unbound teacher caches; losses weight roles2/2/1 while the loader remains the original natural shuffle.
+After the full cache completes, return to the original training environment (replace `ilagent2` if yours has a different name). Uni-Mol is required only for cache generation; Stage1 training reads the cache. Stage1 refuses partial/unbound teacher caches; losses weight roles2/2/1 while the loader remains the original natural shuffle.
 
 ```bash
+conda deactivate
+conda activate ilagent2
 python scripts/stage1/train.py --config configs/v4/stage1/base.yaml --output outputs/v4/stage1/base/train
 ```
 
 Output includes resume checkpoints with auxiliary heads and encoder-only `stage1_encoder.pt`. Deployment/Stage2 do not load teacher or auxiliary heads.
+
+### Copy an existing teacher checkpoint to another server
+
+The checkpoint can be copied without downloading it again. From the source repository root, replace `SERVER` with your SSH alias (`h100` or `szx`) and `/path/to/ILUME` with that server's repository root. Check any existing destination file first; if its hash matches, skip the copy. If it differs, retain it for inspection and use a fresh destination rather than overwriting it.
+
+```bash
+sha256sum assets/unimol2/modelzoo/84M/checkpoint.pt
+ssh SERVER 'mkdir -p /path/to/ILUME/assets/unimol2/modelzoo/84M'
+rsync -avP --partial --append-verify \
+  assets/unimol2/modelzoo/84M/checkpoint.pt \
+  SERVER:/path/to/ILUME/assets/unimol2/modelzoo/84M/checkpoint.pt
+ssh SERVER 'sha256sum /path/to/ILUME/assets/unimol2/modelzoo/84M/checkpoint.pt'
+```
+
+Both hashes must equal the published SHA-256 above. Repeat for the second server. Create the isolated teacher environment on each server separately, then run the environment check and small audit there before full cache generation.
 
 ## Stage2 and Stage3 Base
 

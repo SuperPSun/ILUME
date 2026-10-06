@@ -55,6 +55,7 @@
 
 ## 验证与清理
 
+- Uni-Mol2 独立环境、权重获取/迁移与 audit 顺序以 [v4 手册](docs/v4-runbook.md) 为准。RDKit 比较导入后的 runtime 与 prepared feature contract，不只比较 pip metadata；完成全量 teacher cache 后才切回训练环境。
 - 修改后运行 `pytest -q`；按风险检查九个Stage入口（含离线`stage1/teacher.py`）与四个benchmark script的`--help`、compileall、diff/Markdown链接检查。只用临时小数据；不自动下载teacher权重、生成全量3D缓存或执行正式prepare/训练/evaluation。先用独立audit输出验证teacher成功率、吞吐、存储，再由用户正式运行。
 - 优先复用/修改现有测试。只有此前未覆盖且会造成实质损失的科研、resume、artifact/identity、CLI/reporting 或高风险调度合同，才新增最小行为测试；不为 private helper、搬家、简单重构或 coverage 扩测试。`tests/` 按 Stage/benchmark/common/architecture 集中组织，`conftest.py` 只放跨文件复用的小 fixture。
 - `trash/` 不进 Git。移动旧 artifact/YAML/未消费数据或删除机器缓存前，报告精确文件数、大小、目标和冲突策略，等用户明确确认。不得覆盖、重排或删除既有 `trash/`。
