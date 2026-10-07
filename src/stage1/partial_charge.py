@@ -10,7 +10,7 @@ import torch
 from rdkit import Chem
 
 from common.atom_targets import (
-    PARTIAL_CHARGE_MAPPING_CONTRACT, load_structure_manifest,
+    PARTIAL_CHARGE_MAPPING_CONTRACT, NoAtomMappingError, load_structure_manifest,
     load_verify_parse_and_map, verify_structure,
 )
 from common.identity import require_compatible_identity, semantic_identity, tensor_state_hash
@@ -44,11 +44,12 @@ def charge_source_contract(config, split="train"):
     return {"split": split, "csv_sha256": sha256_file(path),
             "manifest_sha256": sha256_file(manifest), "structures": structures,
             "mapping": PARTIAL_CHARGE_MAPPING_CONTRACT["hash"],
-            "observations": "all-source-rows-independent-v2"}
+            "observations": "all-source-rows-independent-v2",
+            "unmapped_policy": "skip-no-isomorphism-audit-v1"}
 
 
 def load_charge_rows(config, split="train"):
-    """Retain every source row as an independent observation of its structure."""
+    """Retain mapped observations; audit and skip only absent graph isomorphism."""
     if split not in {"train", "valid"}:
         raise ValueError("Partial-charge supervision accepts train/valid only")
     entries = load_structure_manifest(config.auxiliary.partial_charge_manifest)
@@ -72,17 +73,29 @@ def load_charge_rows(config, split="train"):
                 mol_id = row["mol_id"].strip()
                 if mol_id not in entries:
                     raise ValueError(f"Partial-charge structure missing: {mol_id}")
-                result = load_verify_parse_and_map(entries[mol_id], key)
+                entry = entries[mol_id]
+                provenance = {"canonical_smiles": key, "mol_id": mol_id, "split": split,
+                              "csv_line": reader.line_num, "structure_file": entry.path.name,
+                              "structure_sha256": entry.sha256}
+                try:
+                    result = load_verify_parse_and_map(entry, key)
+                except NoAtomMappingError as error:
+                    audit.append({**provenance, "status": "skipped",
+                                  "reason": "no_graph_isomorphism", "error": str(error)})
+                    progress.update(1)
+                    continue
                 values = np.asarray(result.charges, dtype=np.float64)
                 rows.setdefault(key, []).append({"canonical_smiles": key, "mol_id": mol_id,
                                                  "role_id": ROLE_TO_ID[role], "targets": values})
-                audit.append({"canonical_smiles": key, "mol_id": mol_id,
+                audit.append({**provenance, "status": "mapped",
                               "atom_count": len(values), "mapping_status": result.mapping_status,
                               "bond_match_mode": result.bond_match_mode,
                               "mapping_count_lower_bound": result.mapping_count_lower_bound})
                 progress.update(1)
     reporter.emit_json({"event": "partial_charge_mapping", "split": split,
-                        "rows": len(audit), "unique_molecules": len(rows)})
+                        "rows": len(audit), "unique_molecules": len(rows),
+                        "mapped_rows": sum(map(len, rows.values())),
+                        "skipped_rows": sum(row["status"] == "skipped" for row in audit)})
     return rows, audit
 
 
@@ -133,6 +146,8 @@ def prepare_partial_charge(config, output_dir=None):
                 "identity": identity, "state_hash": state_hash, "scaler": scaler,
                 "matched_molecules": len(matched), "source_molecules": len(rows),
                 "source_observations": sum(map(len, rows.values())),
+                "attempted_observations": len(audit),
+                "skipped_observations": sum(row["status"] == "skipped" for row in audit),
                 "artifact_hashes": {name: sha256_file(root / name) for name in ("targets.pt", "mapping_audit.json")}}
     atomic_json(root / "metadata.json", manifest)
     return manifest

@@ -603,18 +603,38 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
                                         hashlib.sha256(duplicate.read_bytes()).hexdigest(), "true"])
         with charge_file.open("a") as handle:
             handle.write("CC,duplicate\n")
+            handle.write("CCO,mol7\n")
         duplicate_rows, duplicate_audit = load_charge_rows(config)
         assert len(duplicate_rows["CC"]) == 2
         assert [row["mol_id"] for row in duplicate_rows["CC"]] == ["mol7", "duplicate"]
         assert not np.array_equal(*(row["targets"] for row in duplicate_rows["CC"]))
         from stage1.regression import load_regression_rows
-        regression_rows = load_regression_rows(config.auxiliary, config, "partial_atomic_charge", "train")
+        skipped = [row for row in duplicate_audit if row["status"] == "skipped"]
+        assert len(skipped) == 1 and skipped[0]["mol_id"] == "mol7"
+        assert skipped[0]["canonical_smiles"] == "CCO" and skipped[0]["reason"] == "no_graph_isomorphism"
+        assert skipped[0]["csv_line"] == len(duplicate_audit) + 1
+        assert skipped[0]["structure_file"] == "mol7.mol2"
+        regression_rows = load_regression_rows(config.auxiliary, config, "partial_atomic_charge", "train", audit_dir=tmp_path)
         assert [row["mol_id"] for row in regression_rows if row["canonical_smiles"] == "CC"] == ["mol7", "duplicate"]
+        assert [row["mol_id"] for row in regression_rows if row["canonical_smiles"] == "CCO"] == [raw_rows["CCO"][0]["mol_id"]]
+        assert json.loads((tmp_path / "partial_charge_train_mapping_audit.json").read_text()) == duplicate_audit
+        resource_bytes = duplicate.read_bytes()
+        duplicate.write_bytes(b"corrupt")
+        with pytest.raises(ValueError, match="MOL2 size mismatch"):
+            load_charge_rows(config)
+        duplicate.write_bytes(resource_bytes)
         duplicate_config = replace(config, auxiliary=replace(config.auxiliary, partial_charge_cache=tmp_path / "duplicate_charge"))
         duplicate_sidecar = prepare_partial_charge(duplicate_config)
         duplicate_cache = PartialChargeCache(duplicate_config, corpus_metadata)
         assert duplicate_cache.targets["CC"].shape == (2, 2)
-        assert duplicate_sidecar["source_observations"] == len(duplicate_audit)
+        assert duplicate_cache.targets["CCO"].shape == (1, 3)
+        retained_train_atoms = np.concatenate([row["targets"] for key in sorted(train_structures) for row in duplicate_rows[key]])
+        assert duplicate_cache.scaler["mean"] == pytest.approx(retained_train_atoms.mean())
+        assert duplicate_cache.scaler["scale"] == pytest.approx(retained_train_atoms.std())
+        assert duplicate_sidecar["source_observations"] == len(duplicate_audit) - 1
+        assert duplicate_sidecar["skipped_observations"] == 1
+        assert duplicate_sidecar["attempted_observations"] == len(duplicate_audit)
+        assert json.loads((duplicate_config.auxiliary.partial_charge_cache / "mapping_audit.json").read_text()) == duplicate_audit
         with pytest.raises(ValueError, match="source/corpus"):
             PartialChargeCache(config, corpus_metadata)
         charge_file.write_bytes(contents)

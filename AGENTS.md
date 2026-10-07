@@ -23,7 +23,7 @@
 
 ADR-0093仅扩展独立回归头后训练：YAML支持默认Linear及逐目标MLP/residual MLP；Linear继承预训练头并做等价标准化换算，非线性采用task-local随机初始化/dropout。encoder/Fusion永久冻结、entity1024/atom512输入不变，validation只报告；format2内嵌结构并兼容旧Linear format1，不改变Stage1/2/3身份或正式训练。
 
-ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选择；只扩展电荷监督，不复制语料或其他loss。sidecar format2及观察策略进入身份，旧sidecar/checkpoint不得交叉续训；映射、来源与split检查不放宽，机制见ADR-0092与v4手册。
+ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选择；只扩展电荷监督，不复制语料或其他loss。sidecar format2及观察策略进入身份，旧sidecar/checkpoint不得交叉续训；无图同构映射仅跳过电荷记录并审计，策略进入身份；损坏资源/解析错误仍失败，来源与split检查不放宽，机制见ADR-0092与v4手册。
 
 ### Legacy、消融与 baseline
 

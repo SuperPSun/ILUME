@@ -159,13 +159,15 @@ def regression_identity(config, checkpoint_path, tasks=None):
     })
 
 
-def load_regression_rows(config, source_config, task, split):
+def load_regression_rows(config, source_config, task, split, *, audit_dir=None):
     if split not in {"train", "valid"}:
         raise ValueError("Post-training accepts train/valid only, never test")
     if task == "partial_atomic_charge":
         recipe = replace(source_config, auxiliary=replace(source_config.auxiliary,
                          simulation_dir=config.simulation_dir, partial_charge_manifest=config.partial_charge_manifest))
-        rows, _ = load_charge_rows(recipe, split)
+        rows, audit = load_charge_rows(recipe, split)
+        if audit_dir is not None:
+            atomic_json(Path(audit_dir) / f"partial_charge_{split}_mapping_audit.json", audit)
         return [row for key in sorted(rows) for row in rows[key]]
     directory = next(name for name, columns, _ in ELECTRONIC_SOURCES if task in columns)
     rows = {}
@@ -263,7 +265,7 @@ def run_regression(config, checkpoint_path, output_dir, tasks=None):
         charge_scaler = cache.scaler
     data, molecules = {}, {}
     for task in tasks:
-        data[task] = {split: load_regression_rows(config, source_config, task, split) for split in ("train", "valid")}
+        data[task] = {split: load_regression_rows(config, source_config, task, split, audit_dir=root) for split in ("train", "valid")}
         if not data[task]["train"]:
             raise ValueError(f"Regression task has no training labels: {task}")
         if {r["canonical_smiles"] for r in data[task]["train"]} & {r["canonical_smiles"] for r in data[task]["valid"]}:

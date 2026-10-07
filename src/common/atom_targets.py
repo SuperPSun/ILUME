@@ -23,6 +23,11 @@ _BOND_TYPES = {
     "am": "single",
 }
 
+
+class NoAtomMappingError(ValueError):
+    """Verified structures have no compatible atom-graph mapping."""
+
+
 PARTIAL_CHARGE_MAPPING_CONTRACT = semantic_identity(
     "stage2.partial-charge-mapping.v1",
     {
@@ -301,7 +306,7 @@ def map_partial_charges(canonical_smiles: str, structure: Mol2Graph) -> AtomMapp
         fallback_reason = "typed_isomorphism_failed"
         mappings = list(islice(_mapping_candidates(model, structure, typed=False), 2))
     if not mappings:
-        raise ValueError("No graph isomorphism between Stage 1 and MOL2 atoms")
+        raise NoAtomMappingError("No graph isomorphism between Stage 1 and MOL2 atoms")
     selected = mappings[0]
     charges = tuple(structure.atoms[index].partial_charge for index in selected)
     return AtomMappingResult(
@@ -339,7 +344,7 @@ def load_verify_parse_and_map(
 
 
 __all__ = [
-    "AtomMappingResult", "Mol2Graph", "PARTIAL_CHARGE_MAPPING_CONTRACT",
+    "AtomMappingResult", "Mol2Graph", "NoAtomMappingError", "PARTIAL_CHARGE_MAPPING_CONTRACT",
     "StructureManifestEntry",
     "load_structure_manifest", "load_verify_parse_and_map", "map_partial_charges",
     "parse_mol2", "parse_mol2_text", "verify_structure",
