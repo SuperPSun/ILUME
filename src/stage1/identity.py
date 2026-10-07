@@ -176,6 +176,9 @@ def build_stage1_training_identity(
             "index_sha256": teacher.manifest["index_sha256"],
         })["hash"]
         training["architecture"] = config.architecture.kind
+        if config.loss.lambda_partial_charge > 0:
+            from .partial_charge import PartialChargeCache
+            training["partial_charge_identity"] = PartialChargeCache(config, metadata).manifest["identity"]["hash"]
     return semantic_identity(
         "stage1.training",
         {

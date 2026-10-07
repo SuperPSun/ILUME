@@ -102,17 +102,43 @@ Output includes resume checkpoints with auxiliary heads and encoder-only `stage1
 
 ### Stage1 loss and gradient audit
 
-Current Base uses reconstruction1/1/1, alignment0.1, RDKit0.5, Uni-Mol0.25 and electronic0.1 ([ADR-0091](adr/0091-stage1-v4-loss-weights-gradient-audit.md)). This loss change requires a new Stage1 run, not resume from the earlier coefficients; existing corpus/statistics/teacher cache remain reusable. Downstream Stage2/3 must use the newly trained encoder and fresh outputs.
+Current Base uses reconstruction1/1/1, alignment0.1, RDKit0.5, Uni-Mol0.25, electronic0.1 and independent partial-charge0.1 ([ADR-0091](adr/0091-stage1-v4-loss-weights-gradient-audit.md), [ADR-0092](adr/0092-stage1-atom-charge-and-frozen-regression-heads.md)). These loss changes require a new Stage1 run, not resume from earlier coefficients; existing corpus/statistics/teacher cache remain reusable. Downstream Stage2/3 must use the newly trained encoder and fresh outputs.
 
-Training automatically appends `gradient_audit.jsonl` every5,000 completed optimizer updates. Rank0 uses a fixed32-molecule validation probe and evaluation masks with dropout off; other ranks wait. It reports the seven raw encoder norms, `weighted_grad_norms` (absolute loss coefficient times norm), effective target coverage, probe IDs/hash, step and attempt. No extra CLI command is needed. The existing metrics and checkpoint selection remain unchanged.
+Training automatically appends `gradient_audit.jsonl` every1,000 completed optimizer updates. Rank0 uses a fixed32-molecule validation probe and evaluation masks with dropout off; other ranks wait. It reports the original seven raw encoder norms plus `partial_charge_grad_norm` when enabled, `weighted_grad_norms` (absolute loss coefficient times norm), effective target coverage, probe IDs/hash, step and attempt. The existing metrics and checkpoint selection remain unchanged.
 
-Set `training.gradient_audit_interval_steps: 0` to disable or change the positive interval; `gradient_audit_batch_size` controls probe size (default32). These diagnostics settings do not change scientific identity. Missing-label objectives are `null` with `no_valid_targets`; an absent electronic label in this small natural probe is not evidence of weak electronic gradients. Norms are from separate objectives, not the vector sum: do not automatically adjust coefficients based solely on their magnitude. Audits use one additional forward and up to seven gradient calculations; OOM is an explicit failure, not an automatic probe resize. Monitor with:
+Set `training.gradient_audit_interval_steps: 0` or pass `--gradient-audit-interval-steps 0` to disable; a positive CLI value overrides YAML, and an omitted value follows YAML. `gradient_audit_batch_size` controls probe size (default32). These diagnostics settings do not change scientific identity. Missing-label objectives are `null` with `no_valid_targets`; absent electronic/charge labels in this small natural probe are not evidence of weak gradients. Norms are from separate objectives, not the vector sum: do not automatically adjust coefficients based solely on their magnitude. Audits use one additional forward and up to eight gradient calculations; OOM is an explicit failure, not an automatic probe resize. Monitor with:
 
 ```bash
 tail -f outputs/v4/stage1/base/train/gradient_audit.jsonl
 ```
 
 Epoch-boundary resume appends attempt-tagged observations without deleting failed-attempt rows. Audit never uses validation derivatives to update parameters; test is not read.
+
+### Partial-charge sidecar on an existing corpus
+
+Normal Stage1 prepare now also prepares the separate atom-label sidecar. If corpus and teacher cache already exist, run only the sidecar command instead; it does not change either. Supply `data/stage2/partial_atomic_charge/train.csv` and the verified MOL2 resources referenced by `auxiliary.partial_charge_manifest`. Existing electronic sources are still required for formal v4 training. Match the output to `auxiliary.partial_charge_cache` (its `artifacts/` subdirectory):
+
+```bash
+python scripts/stage1/prepare.py --config configs/v4/stage1/base.yaml --partial-charge-only --output outputs/v4/stage1/base/partial_charge
+```
+
+Only exact canonical matches are labeled; train statistics use matched Stage1 train atoms. No corpus extension, role resampling, seed propagation or test/valid label reading occurs. Conflicting labels and corrupt/missing resources fail explicitly. Full checkpoints retain `partial_charge_head`; encoder-only export does not. To opt out scientifically, set `loss.lambda_partial_charge: 0` in a separate self-contained YAML (not an execution-only switch).
+
+### Independent frozen regression-head training
+
+Run explicitly after the final Stage1 epoch; nothing is automatically appended to pretraining. The command needs complete final `last.pt` or the final epoch checkpoint, not `stage1_encoder.pt`. Configure data/artifact paths and budgets in `configs/v4/stage1/regression_heads.yaml`. It encodes clean structures once, freezes the encoder, and independently trains all13 scalar heads plus atom charge from their trained rows/head. Defaults:10 epochs, LR1e-4, constant LR, batch128, AdamW/WD0.01, BF16, clip1. Validation only reports original-unit MAE/RMSE; final means epoch10, never best. Test is not read.
+
+```bash
+python scripts/stage1/regression.py --config configs/v4/stage1/regression_heads.yaml --checkpoint outputs/v4/stage1/base/train/last.pt --output outputs/v4/stage1/base/regression --device cuda:0
+```
+
+Optional subset, including use of old complete v4 checkpoints without an atom head:
+
+```bash
+python scripts/stage1/regression.py --config configs/v4/stage1/regression_heads.yaml --checkpoint outputs/v4/stage1/base/train/last.pt --tasks HOMO_eV LUMO_eV --output outputs/v4/stage1/base/regression_homo_lumo --device cuda:0
+```
+
+Default tasks are HOMO_eV/LUMO_eV, ESP_max/min/std/pos_frac, Dipole, Quadrupole, q_max/min/std/pos_frac, gap_eV and partial_atomic_charge. The q_* summaries are not atom-charge prediction. Train/valid canonical overlap and conflicting labels fail. New task normalization fits full train only; initialized weights/bias are converted to preserve original-unit predictions. Regression output has a source-bound `representations.pt`, per-task `metrics.jsonl` and `regression_head.pt/json`, plus summary. It is not a replacement Stage1 encoder or a Stage3 reporting artifact; no Stage2/3 rerun is needed for this head-only experiment. Source checkpoint, encoder and other heads are read-only. Existing output cannot be overwritten; a failed head run restarts in a fresh directory. No teacher execution or teacher cache is needed for scalar-only post-training; atom-head initialization additionally validates its original sidecar/scaler identity.
 
 ### Copy an existing teacher checkpoint to another server
 

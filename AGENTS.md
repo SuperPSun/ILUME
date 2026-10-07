@@ -12,7 +12,7 @@
 
 | 范围 | 必须保持的边界 | ADR |
 |---|---|---|
-| Stage 1 | 仅SMILES/Graph输入，独立512D encoder、12层SMILES Transformer/8独立residual图block、CLS/atom mean、1024残差MLP；learned1024、atom512，不输入role/descriptor。结构重建、stop-gradient一致性、RDKit217、离线Uni-Mol768、13电子目标；系数1/0.1/0.5/0.25/0.1。各项分子均值再按角色loss权重2/2/1；自然shuffle不变。fusion-only80/10/10，10轮、batch128、完整epoch恢复；训练format4及encoder-only导出。每5000步rank0固定32分子gradient audit只报告，不更新/调权/选模，不进入科研身份 | 0089/0090/0091；执行0013/0014/0015/0017；0039仅历史v3 |
+| Stage 1 | 仅SMILES/Graph输入，独立512D encoder、12层SMILES Transformer/8独立residual图block、CLS/atom mean、1024残差MLP；learned1024、atom512，不输入role/descriptor。结构重建、stop-gradient一致性、RDKit217、离线Uni-Mol768、13电子目标；原系数1/0.1/0.5/0.25/0.1，另有train-only原子电荷Linear512→1及独立系数0.1，标签sidecar不改语料/teacher。各项分子均值再按角色loss权重2/2/1；自然shuffle不变。fusion-only80/10/10，10轮、batch128、完整epoch恢复；训练format4及encoder-only导出。每1000步rank0固定32分子gradient audit只报告，可CLI覆盖，不更新/调权/选模，不进入科研身份；独立14任务后训练只更新回归头，不替换encoder | 0089/0090/0091/0092；执行0013/0014/0015/0017；0039仅历史v3 |
 | Stage 2 | Stage1永久eval/冻结/不进optimizer，缓存learned1024+标准化RDKit217及atom512。ObjectEncoder内部1241→1024投影属于Object优化块；原1024接口不创建投影。九task physics-only HoME，无Stage2 teacher loss；HOMO/LUMO、QM mask、Partial Charge分子等权保留 | 0089/0082；机制0019/0025 |
 | Stage 2 训练与产物 | 256 逻辑 batch、256 微批、每逻辑 batch 一次 optimizer/scheduler update；10 epochs 末轮发布完整 `stage2_final.pt`、manifest 与 `stage2_encoder.pt`，不做 refinement、best/last。不提供独立 evaluate 入口或榜单；实验任务初始化只迁移表示、GLOBAL 与匹配的 thermophysical/solvation GROUP，simulation 预测支路额外从完整产物初始化电子 GROUP、五项 PRIVATE 和 atom adapter | 0082/0083/0084/0085；配方来源 0079 |
 | Stage 3 | v4正式Stage2-HoME来源，严格SHA/owner/tensor hash；永久冻结Stage1、保存1241D slots。Phase1联合更新ObjectEncoder（含入口投影）与20-task Flat HoME；Phase2/3冻结ObjectEncoder并加入五项simulation的thermophysical/electronic GROUP/PRIVATE。共享GROUP模拟权重0.1、实验1，纯模拟电子GROUP/Phase3不降权；共同anchor、25个PRIVATE、固定末轮stitch、实验/模拟validation只读分开 | 0089/0084；机制0020/0046/0048/0067/0075 |
@@ -56,6 +56,6 @@
 ## 验证与清理
 
 - Uni-Mol2 独立环境、权重获取/迁移与 audit 顺序以 [v4 手册](docs/v4-runbook.md) 为准。RDKit 比较导入后的 runtime 与 prepared feature contract，不只比较 pip metadata；完成全量 teacher cache 后才切回训练环境。
-- 修改后运行 `pytest -q`；按风险检查九个Stage入口（含离线`stage1/teacher.py`）与四个benchmark script的`--help`、compileall、diff/Markdown链接检查。只用临时小数据；不自动下载teacher权重、生成全量3D缓存或执行正式prepare/训练/evaluation。先用独立audit输出验证teacher成功率、吞吐、存储，再由用户正式运行。
+- 修改后运行 `pytest -q`；按风险检查十个Stage入口（含离线`stage1/teacher.py`和独立`stage1/regression.py`）与四个benchmark script的`--help`、compileall、diff/Markdown链接检查。只用临时小数据；不自动下载teacher权重、生成全量3D缓存或执行正式prepare/训练/evaluation/回归头后训练。先用独立audit输出验证teacher成功率、吞吐、存储，再由用户正式运行。
 - 优先复用/修改现有测试。只有此前未覆盖且会造成实质损失的科研、resume、artifact/identity、CLI/reporting 或高风险调度合同，才新增最小行为测试；不为 private helper、搬家、简单重构或 coverage 扩测试。`tests/` 按 Stage/benchmark/common/architecture 集中组织，`conftest.py` 只放跨文件复用的小 fixture。
 - `trash/` 不进 Git。移动旧 artifact/YAML/未消费数据或删除机器缓存前，报告精确文件数、大小、目标和冲突策略，等用户明确确认。不得覆盖、重排或删除既有 `trash/`。

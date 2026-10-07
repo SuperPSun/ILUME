@@ -4,6 +4,8 @@
 
 Accepted (2026-10-07). Revises only the RDKit/Uni-Mol coefficients in ADR-0089 and adds execution-only diagnostics. ADR-0090 capacity and all other numerical contracts remain unchanged; no new capacity profile.
 
+[ADR-0092](0092-stage1-atom-charge-and-frozen-regression-heads.md) subsequently changes the active audit interval from5,000 to1,000 and adds optional CLI override plus an atom-charge objective/diagnostic. The original interval/seven-objective table below is historical in those additions; the read-only audit isolation contract remains effective.
+
 ## Decision
 
 The active v4 Base coefficients are SMILES/atom/bond=`1/1/1`, alignment=`0.1`, RDKit=`0.5`, Uni-Mol=`0.25`, electronic=`0.1`. Shared schema defaults and historical YAML remain unchanged. Loss normalization remains valid-element means within molecules, then role2/2/1 weighted molecule means. No sampler, encoder, modality dropout, optimizer, scheduler or fixed-final-epoch change.

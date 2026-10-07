@@ -205,6 +205,12 @@ class MultimodalPacker:
             fingerprint_values[family] = torch.stack(rows)
             fingerprint_valid[family] = torch.stack(valid_rows)
 
+        if samples[0].get("auxiliary_targets", {}).get("partial_charge") is not None:
+            for sample, count in zip(samples, atom_counts.tolist(), strict=True):
+                for name in ("partial_charge", "partial_charge_valid"):
+                    if sample["auxiliary_targets"][name].shape != (count,):
+                        raise ValueError("Partial-charge targets must match each molecule's real atom count")
+
         return MultimodalBatch(
             token_ids=token_ids,
             token_padding_mask=token_padding_mask,
@@ -228,7 +234,7 @@ class MultimodalPacker:
             ),
             masks=None,
             auxiliary_targets=(
-                {key: torch.stack([sample["auxiliary_targets"][key] for sample in samples])
+                {key: (torch.cat if key in {"partial_charge", "partial_charge_valid"} else torch.stack)([sample["auxiliary_targets"][key] for sample in samples])
                  for key in samples[0]["auxiliary_targets"]}
                 if "auxiliary_targets" in samples[0] else None
             ),

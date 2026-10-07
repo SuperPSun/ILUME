@@ -8,6 +8,8 @@ Encoder capacity is subsequently revised by [ADR-0090](0090-stage1-v4-residual-e
 
 [ADR-0091](0091-stage1-v4-loss-weights-gradient-audit.md) subsequently changes the active RDKit/Uni-Mol coefficients to0.5/0.25 and adds read-only gradient audit. The original coefficient table below is historical in those two entries; objectives and normalization remain unchanged.
 
+[ADR-0092](0092-stage1-atom-charge-and-frozen-regression-heads.md) adds train-only partial atomic charge with a disposable atom head and independent frozen regression-head post-training. Existing corpus, encoder dimensions and downstream freeze boundary remain unchanged; the five-family objective list below predates this atom supervision.
+
 ## Context
 
 Stage1 should learn task-agnostic molecular structure; Stage2/3 should optimize multitask HoME without changing the Stage1 encoders. This is a complete recipe comparison, not a single-mechanism attribution: architecture, auxiliary supervision, ten-epoch budget and permanent freezing change together.

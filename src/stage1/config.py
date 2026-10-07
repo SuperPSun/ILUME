@@ -110,6 +110,7 @@ class LossConfig:
     lambda_alignment: float = 0.1
     lambda_unimol: float = 0.1
     lambda_electronic: float = 0.1
+    lambda_partial_charge: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -119,6 +120,8 @@ class AuxiliaryConfig:
     teacher_checkpoint: Path = Path("assets/unimol2/modelzoo/84M/checkpoint.pt")
     teacher_version: str = "0.1.3.post1"
     teacher_shard_size: int = 4096
+    partial_charge_cache: Path = Path("outputs/v4/stage1/base/partial_charge/artifacts")
+    partial_charge_manifest: Path = Path("data/stage1/properties/partial_atomic_charge/charge_20260514/structure_manifest.csv")
 
 
 @dataclass(frozen=True)
@@ -269,6 +272,11 @@ class PretrainConfig:
                 raise ValueError(f"training.{name} must be an integer >= {minimum}")
         if self.training.gradient_audit_interval_steps and not self.is_dual_view:
             raise ValueError("gradient audit requires dual_view_v4")
+        import math
+        if not math.isfinite(self.loss.lambda_partial_charge) or self.loss.lambda_partial_charge < 0:
+            raise ValueError("lambda_partial_charge must be finite and nonnegative")
+        if self.loss.lambda_partial_charge and not self.is_dual_view:
+            raise ValueError("partial charge supervision requires dual_view_v4")
         if self.is_dual_view:
             if (self.model.role_embedding or self.descriptor.mode != "full"
                 or self.descriptor.token_count != 1 or self.fingerprint.kind != "none"
@@ -297,6 +305,10 @@ class PretrainConfig:
             return value
 
         payload = convert(asdict(self))
+        if self.loss.lambda_partial_charge == 0:
+            payload["loss"].pop("lambda_partial_charge")
+            payload["auxiliary"].pop("partial_charge_cache")
+            payload["auxiliary"].pop("partial_charge_manifest")
         for name, default in (("gradient_audit_interval_steps", 0), ("gradient_audit_batch_size", 32)):
             if payload["training"][name] == default:
                 payload["training"].pop(name)
@@ -375,7 +387,7 @@ def _construct(section_type: type, values: dict[str, Any] | None) -> Any:
             if key in values:
                 values[key] = Path(values[key])
     elif section_type is AuxiliaryConfig:
-        for key in ("simulation_dir", "teacher_cache", "teacher_checkpoint"):
+        for key in ("simulation_dir", "teacher_cache", "teacher_checkpoint", "partial_charge_cache", "partial_charge_manifest"):
             if key in values:
                 values[key] = Path(values[key])
     elif section_type is LossConfig and "role_weights" in values:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import os
 import sys
 from pathlib import Path
@@ -22,8 +23,14 @@ def main() -> None:
     parser.add_argument("--config", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--resume")
+    parser.add_argument("--gradient-audit-interval-steps", type=int,
+                        help="Override YAML audit interval; 0 disables gradient audit.")
     args = parser.parse_args()
     config = load_config(args.config)
+    if args.gradient_audit_interval_steps is not None:
+        config = replace(config, training=replace(config.training,
+                         gradient_audit_interval_steps=args.gradient_audit_interval_steps))
+        config.validate()
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     use_cuda = config.training.device == "cuda" or (

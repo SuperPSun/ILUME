@@ -1,0 +1,15 @@
+stage1_artifacts: outputs/v4/stage1/base/prepare/artifacts
+simulation_dir: data/stage2
+partial_charge_manifest: data/stage1/properties/partial_atomic_charge/charge_20260514/structure_manifest.csv
+partial_charge_cache: outputs/v4/stage1/base/partial_charge/artifacts
+epochs: 10
+learning_rate: 0.0001
+batch_size: 128
+weight_decay: 0.01
+betas: [0.9, 0.999]
+eps: 1.0e-8
+max_grad_norm: 1.0
+amp_dtype: bf16
+device: auto
+seed: 42
+role_weights: [2.0, 2.0, 1.0]

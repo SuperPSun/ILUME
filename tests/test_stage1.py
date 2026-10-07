@@ -127,7 +127,8 @@ def test_v4_residual_capacity_and_shared_compatibility(tiny_config, tiny_samples
     assert [base.loss.lambda_smiles, base.loss.lambda_atom, base.loss.lambda_bond,
             base.loss.lambda_alignment, base.loss.lambda_descriptor,
             base.loss.lambda_unimol, base.loss.lambda_electronic] == [1., 1., 1., .1, .5, .25, .1]
-    assert (base.training.gradient_audit_interval_steps, base.training.gradient_audit_batch_size) == (5000, 32)
+    assert (base.training.gradient_audit_interval_steps, base.training.gradient_audit_batch_size) == (1000, 32)
+    assert base.loss.lambda_partial_charge == .1
     assert (base.model.smiles_layers, base.model.graph_depth, base.model.graph_message_mode) == (12, 8, "residual_blocks")
     assert config_from_dict(base.to_dict()).to_dict() == base.to_dict()
     old = replace(base, model=replace(base.model, smiles_layers=8, graph_depth=6, graph_message_mode="shared"))
@@ -138,7 +139,7 @@ def test_v4_residual_capacity_and_shared_compatibility(tiny_config, tiny_samples
         training = DualViewPretrainModel(base, vocabulary)
         legacy = DualViewEncoder(old, vocabulary)
     assert sum(p.numel() for p in encoder.parameters()) == 60_725_419
-    assert sum(p.numel() for p in training.parameters()) == 65_125_947
+    assert sum(p.numel() for p in training.parameters()) == 65_125_947 + 513
     assert sum(p.numel() for p in legacy.parameters()) == 29_466_795
     assert len(encoder.smiles_encoder.encoder.layers) == 12
     assert len(encoder.graph_encoder.blocks) == 8
@@ -167,6 +168,8 @@ def test_v4_residual_capacity_and_shared_compatibility(tiny_config, tiny_samples
     explicit["model"]["graph_message_mode"] = "shared"
     assert config_from_dict(explicit).to_dict() == tiny.to_dict()
     assert not any(name.startswith("gradient_audit") for name in tiny.to_dict()["training"])
+    assert "lambda_partial_charge" not in tiny.to_dict()["loss"]
+    assert "partial_charge_cache" not in tiny.to_dict()["auxiliary"]
     audited = replace(tiny, training=replace(tiny.training, gradient_audit_interval_steps=1))
     assert train_module._config_hash(audited) == train_module._config_hash(tiny)
     with pytest.raises(ValueError, match="dual_view_v4"):
@@ -174,6 +177,11 @@ def test_v4_residual_capacity_and_shared_compatibility(tiny_config, tiny_samples
     for name, value in (("gradient_audit_interval_steps", -1), ("gradient_audit_batch_size", 0), ("gradient_audit_interval_steps", True)):
         with pytest.raises(ValueError, match=name):
             replace(tiny, training=replace(tiny.training, **{name: value})).validate()
+    for value in (-1., float("nan")):
+        with pytest.raises(ValueError, match="lambda_partial_charge"):
+            replace(tiny, loss=replace(tiny.loss, lambda_partial_charge=value)).validate()
+    with pytest.raises(ValueError, match="dual_view_v4"):
+        replace(tiny_config, loss=replace(tiny_config.loss, lambda_partial_charge=.1)).validate()
     torch.manual_seed(42)
     implicit_model = DualViewEncoder(tiny, vocabulary).eval()
     torch.manual_seed(42)
@@ -219,13 +227,16 @@ def test_v4_gradient_audit_reference_and_state_isolation(tiny_config, tiny_sampl
                      descriptor=DescriptorConfig(mode="full", token_count=1), fingerprint=FingerprintConfig(),
                      model=replace(tiny_config.model, role_embedding=False, dropout=.1, graph_message_mode="residual_blocks"),
                      masking=replace(tiny_config.masking, fusion_only_dropout=True, descriptor_dropout=0),
-                     loss=replace(tiny_config.loss, lambda_descriptor=.5, lambda_unimol=.25))
+                     loss=replace(tiny_config.loss, lambda_descriptor=.5, lambda_unimol=.25, lambda_partial_charge=.1))
     vocabulary, samples = tiny_samples
     samples = [{**{k: v for k, v in s.items() if k != "fingerprints"}, "auxiliary_targets": empty_auxiliary_targets()} for s in samples]
     for sample in samples:
         sample["auxiliary_targets"]["unimol"] = torch.ones(768)
         sample["auxiliary_targets"]["unimol_valid"] = torch.tensor(True)
         sample["auxiliary_targets"]["electronic_valid"] = torch.ones(13, dtype=torch.bool)
+        count = len(sample["atom_categorical"])
+        sample["auxiliary_targets"]["partial_charge"] = torch.arange(count).float() / 10
+        sample["auxiliary_targets"]["partial_charge_valid"] = torch.ones(count, dtype=torch.bool)
     probe = MultimodalMasker(vocabulary, config.masking, 400043).apply(MultimodalPacker(vocabulary)(samples), evaluation=True)
     model = DualViewPretrainModel(config, vocabulary).to(device).eval()
     with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp_enabled):
@@ -233,7 +244,8 @@ def test_v4_gradient_audit_reference_and_state_isolation(tiny_config, tiny_sampl
     assert reference.loss.item() == pytest.approx(sum(getattr(config.loss, f"lambda_{name}") * value.item() for name, value in reference.losses.items()))
     parameters = list(model.smiles_encoder.parameters()) + list(model.graph_encoder.parameters()) + list(model.fusion.parameters())
     expected = {}
-    for name, loss in AUDIT_LOSSES.items():
+    objectives = {**AUDIT_LOSSES, "partial_charge": "partial_charge"}
+    for name, loss in objectives.items():
         gradients = torch.autograd.grad(reference.losses[loss], parameters, retain_graph=True, allow_unused=True)
         expected[name] = torch.cat([g.flatten() for g in gradients if g is not None]).norm().item()
     model.train()
@@ -252,7 +264,7 @@ def test_v4_gradient_audit_reference_and_state_isolation(tiny_config, tiny_sampl
         assert torch.equal(torch.cuda.get_rng_state(device), cuda_rng)
     assert all(torch.equal(value, model.state_dict()[name]) for name, value in before.items())
     assert all(torch.equal(p.grad, torch.ones_like(p)) for p in model.parameters())
-    for name, loss in AUDIT_LOSSES.items():
+    for name, loss in objectives.items():
         assert row[f"{name}_grad_norm"] == pytest.approx(expected[name], rel=1e-5)
         assert row["weighted_grad_norms"][name] == pytest.approx(abs(getattr(config.loss, f"lambda_{loss}")) * expected[name], rel=1e-5)
         assert row["coverage"][name]["valid_molecules"] > 0
@@ -260,10 +272,95 @@ def test_v4_gradient_audit_reference_and_state_isolation(tiny_config, tiny_sampl
     row = audit_gradient_norms(model, missing, config, device, amp_enabled=amp_enabled, amp_dtype=torch.bfloat16)
     assert row["electronic_grad_norm"] is None and row["weighted_grad_norms"]["electronic"] is None
     assert row["coverage"]["electronic"]["status"] == "no_valid_targets"
+    missing_atoms = replace(probe, auxiliary_targets={**probe.auxiliary_targets, "partial_charge_valid": torch.zeros_like(probe.auxiliary_targets["partial_charge_valid"])})
+    row = audit_gradient_norms(model, missing_atoms, config, device, amp_enabled=amp_enabled, amp_dtype=torch.bfloat16)
+    assert row["partial_charge_grad_norm"] is None and row["coverage"]["partial_charge"]["status"] == "no_valid_targets"
     with torch.no_grad():
         model.electronic_head.weight.zero_()
     row = audit_gradient_norms(model, probe, config, device, amp_enabled=amp_enabled, amp_dtype=torch.bfloat16)
     assert row["electronic_grad_norm"] == 0 and row["coverage"]["electronic"]["status"] == "ok"
+    # Atom supervision first averages within each molecule, then weights roles.
+    with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp_enabled):
+        model.eval()
+        output = model(probe.to(device))
+    packed = probe.to(device)
+    atom_loss = F.smooth_l1_loss(output.logits["partial_charge"].float(), packed.auxiliary_targets["partial_charge"], reduction="none")
+    molecule_losses = torch.stack([atom_loss[packed.graphs.atom_batch == i].mean() for i in range(len(samples))])
+    weights = torch.as_tensor(config.loss.role_weights, device=device)[packed.roles]
+    assert output.losses["partial_charge"].item() == pytest.approx(((molecule_losses * weights).sum() / weights.sum()).item())
+    malformed = [*samples]
+    malformed[0] = {**samples[0], "auxiliary_targets": {**samples[0]["auxiliary_targets"], "partial_charge": torch.zeros(2)}}
+    with pytest.raises(ValueError, match="real atom count"):
+        MultimodalPacker(vocabulary)(malformed)
+
+
+@pytest.mark.parametrize("override, expected", [(None, 1000), (0, 0), (17, 17), (-1, None)])
+def test_stage1_cli_gradient_audit_override(tiny_config, tmp_path, monkeypatch, override, expected):
+    import importlib.util
+    import sys
+    from types import SimpleNamespace
+
+    script = Path(__file__).resolve().parents[1] / "scripts/stage1/train.py"
+    spec = importlib.util.spec_from_file_location("stage1_train_cli", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    config = replace(load_config(script.parents[2] / "configs/v4/stage1/base.yaml"),
+                     training=replace(tiny_config.training, device="cpu", gradient_audit_interval_steps=1000))
+    captured = []
+    monkeypatch.setattr(module, "load_config", lambda _: config)
+    monkeypatch.setattr(module, "resolve_stage1_training_identity", lambda _: {})
+    run = SimpleNamespace(root=tmp_path, metadata={"attempt_id": "test"},
+                          complete=lambda _: None, fail=lambda: None)
+    monkeypatch.setattr(module, "open_run_directory", lambda **_: run)
+    monkeypatch.setattr(module, "run_training", lambda effective, **_: captured.append(effective) or [])
+    monkeypatch.setenv("WORLD_SIZE", "1")
+    arguments = [str(script), "--config", "fixture.yaml", "--output", str(tmp_path)]
+    if override is not None:
+        arguments += ["--gradient-audit-interval-steps", str(override)]
+    monkeypatch.setattr(sys, "argv", arguments)
+    if expected is None:
+        with pytest.raises(ValueError, match="gradient_audit_interval_steps"):
+            module.main()
+        assert not captured
+    else:
+        module.main()
+        assert captured[0].training.gradient_audit_interval_steps == expected
+
+
+def test_frozen_regression_affine_initialization_and_molecule_loss(tiny_config):
+    from stage1.regression import initialize_regression_head, regression_loss, load_regression_config, regression_tasks
+    from stage1.dual_view import DualViewPretrainModel
+    config = replace(tiny_config, architecture=ArchitectureConfig("dual_view_v4"),
+                     model=replace(tiny_config.model, role_embedding=False),
+                     descriptor=DescriptorConfig(mode="full", token_count=1))
+    vocabulary = SmilesTokenizer.fit(["CC"], backend="ais")
+    torch.manual_seed(123)
+    old = DualViewPretrainModel(config, vocabulary)
+    torch.manual_seed(123)
+    new = DualViewPretrainModel(replace(config, loss=replace(config.loss, lambda_partial_charge=.1)), vocabulary)
+    assert not hasattr(old, "partial_charge_head")
+    assert all(torch.equal(value, new.state_dict()[name]) for name, value in old.state_dict().items())
+    state = {name: value.clone() for name, value in new.state_dict().items()}
+    old_scaler, new_scaler = {"mean": -7., "scale": .4}, {"mean": -5., "scale": 2.}
+    for task, width in (("HOMO_eV", 64), ("partial_atomic_charge", 32)):
+        head = initialize_regression_head(state, task, old_scaler, new_scaler, torch.device("cpu"))
+        inputs = torch.randn(3, width)
+        original = new.electronic_head(inputs)[:, 0] if task == "HOMO_eV" else new.partial_charge_head(inputs).squeeze(-1)
+        assert torch.allclose(original * .4 - 7, head(inputs).squeeze(-1) * 2 - 5, atol=1e-6, rtol=1e-6)
+        optimizer = torch.optim.AdamW(head.parameters(), lr=1e-4)
+        head(inputs).sum().backward()
+        optimizer.step()
+        assert all(torch.equal(value, new.state_dict()[name]) for name, value in state.items())
+    prediction = torch.tensor([.5, 1., 2.], requires_grad=True)
+    labels = torch.zeros(3)
+    ids, counts, roles = torch.tensor([0, 1, 1]), torch.tensor([1, 2]), torch.tensor([0, 2])
+    expected = (2 * F.smooth_l1_loss(prediction[:1], labels[:1]) + F.smooth_l1_loss(prediction[1:], labels[1:])) / 3
+    assert regression_loss(prediction, labels, ids, counts, roles, (2., 2., 1.)).item() == pytest.approx(expected.item())
+    recipe = load_regression_config(ROOT / "configs/v4/stage1/regression_heads.yaml")
+    assert (recipe.epochs, recipe.learning_rate, recipe.batch_size) == (10, 1e-4, 128)
+    assert regression_tasks(["LUMO_eV", "HOMO_eV"]) == ("HOMO_eV", "LUMO_eV")
+    with pytest.raises(ValueError, match="unique"):
+        regression_tasks(["HOMO_eV", "HOMO_eV"])
 
 
 @pytest.mark.parametrize("graph_message_mode", ["shared", "residual_blocks"])
@@ -365,6 +462,56 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
         training=TrainingConfig(batch_size=2, epochs=2, device="cpu", amp_dtype="none", num_workers=0, validation_interval_steps=100),
     )
     prepare_corpus(config)
+    charge_valid = None
+    if graph_message_mode == "residual_blocks":
+        from stage1.partial_charge import PartialChargeCache, prepare_partial_charge
+        molecule_list = ["[Na+]", "[K+]", "C[NH3+]", "[Cl-]", "[Br-]", "C(=O)[O-]", "O", "CC", "CCO"]
+        charge_manifest, charge_valid = _write_charge_resources(tmp_path, molecule_list)
+        original_config = config
+        config = replace(config, loss=replace(config.loss, lambda_partial_charge=.1),
+                         auxiliary=replace(config.auxiliary, partial_charge_manifest=charge_manifest,
+                                           partial_charge_cache=tmp_path / "partial_charge"))
+        corpus_metadata = json.loads((config.data.artifacts_dir / "metadata.json").read_text())
+        before = {name: (config.data.artifacts_dir / name).read_bytes()
+                  for name in ["metadata.json", *corpus_metadata["artifact_hashes"]]}
+        with pytest.raises(FileNotFoundError):
+            PartialChargeCache(config, corpus_metadata)
+        sidecar = prepare_partial_charge(config)
+        cache = PartialChargeCache(config, corpus_metadata)
+        assert "CCC" not in cache.targets and "CCCC" not in cache.targets
+        train_structures = set()
+        with (config.data.artifacts_dir / "manifest.csv").open() as handle:
+            train_structures = {r["canonical_smiles"] for r in csv.DictReader(handle) if r["split"] == "train"}
+        from stage1.partial_charge import load_charge_rows
+        raw_rows, _ = load_charge_rows(config)
+        reference_atoms = np.concatenate([raw_rows[key]["targets"] for key in sorted(train_structures)])
+        assert cache.scaler["mean"] == pytest.approx(reference_atoms.mean())
+        assert cache.scaler["scale"] == pytest.approx(reference_atoms.std())
+        assert sidecar["matched_molecules"] == 9 and sidecar["source_molecules"] == 10
+        assert prepare_partial_charge(config) == sidecar
+        assert all((config.data.artifacts_dir / name).read_bytes() == value for name, value in before.items())
+        # Duplicate canonical structures with conflicting charges fail explicitly.
+        charge_file = config.auxiliary.simulation_dir / "partial_atomic_charge/train.csv"
+        contents, resource_manifest = charge_file.read_bytes(), charge_manifest.read_bytes()
+        duplicate = charge_manifest.parent / "duplicate.mol2"
+        duplicate.write_text((charge_manifest.parent / "mol7.mol2").read_text().replace("0.7", "5.0"))
+        with charge_manifest.open("a", newline="") as handle:
+            csv.writer(handle).writerow(["duplicate", duplicate.name, "mol2", duplicate.stat().st_size,
+                                        hashlib.sha256(duplicate.read_bytes()).hexdigest(), "true"])
+        with charge_file.open("a") as handle:
+            handle.write("CC,duplicate\n")
+        with pytest.raises(ValueError, match="Conflicting partial-charge labels"):
+            load_charge_rows(config)
+        with pytest.raises(ValueError, match="source/corpus"):
+            PartialChargeCache(config, corpus_metadata)
+        charge_file.write_bytes(contents)
+        charge_manifest.write_bytes(resource_manifest)
+        targets_path = config.auxiliary.partial_charge_cache / "targets.pt"
+        original_targets = targets_path.read_bytes()
+        targets_path.write_bytes(b"corrupt")
+        with pytest.raises(ValueError, match="artifact hash"):
+            PartialChargeCache(config, corpus_metadata)
+        targets_path.write_bytes(original_targets)
     # Parallel execution preserves conformer coordinates, order and immutable resume.
     parallel_config = replace(config, auxiliary=replace(config.auxiliary, teacher_shard_size=4))
     def coordinate_teacher(molecules):
@@ -457,6 +604,8 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
     assert all("canonical_smiles" in dataset[index] for index in range(len(dataset)))
     audited_config = replace(config, training=replace(config.training, gradient_audit_interval_steps=1))
     assert resolve_stage1_training_identity(audited_config) == resolve_stage1_training_identity(config)
+    if charge_valid is not None:
+        assert resolve_stage1_training_identity(config) != resolve_stage1_training_identity(original_config)
     changed_loss = replace(config, loss=replace(config.loss, lambda_descriptor=.5, lambda_unimol=.25))
     assert resolve_stage1_training_identity(changed_loss) != resolve_stage1_training_identity(config)
 
@@ -481,6 +630,7 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
     exported = torch.load(output / "stage1_encoder.pt", weights_only=False)
     assert exported["fixed_final_epoch"] == 2
     assert exported["training_identity"] == resolve_stage1_training_identity(config)
+    assert not any("head" in name for name in exported["model"])
     audited_output = tmp_path / "audited_train"
     # The same complete-epoch recovery path with audit enabled changes no updates.
     monkeypatch.setattr(train_module, "_save_checkpoint", stop_after_epoch)
@@ -533,6 +683,65 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
         assert {row["probe_hash"] for row in ddp_rows} == {rows[0]["probe_hash"]}
         mp.spawn(_ddp_training_worker, args=(2, str(tmp_path / "audit_error_init"), audited_config,
                                             str(tmp_path / "ddp_error"), None, False, True), nprocs=2, join=True)
+        assert all("partial_charge_grad_norm" in row for row in ddp_rows)
+    # Independent post-training never reads test and does not change the source.
+    from stage1.regression import RegressionConfig, REGRESSION_TASKS, regression_identity, run_regression, load_regression_head
+    for task, columns, _ in ELECTRONIC_SOURCES:
+        path = config.auxiliary.simulation_dir / task / "valid.csv"
+        with path.open("w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=["SMILES", *columns])
+            writer.writeheader()
+            writer.writerow({"SMILES": "CCCC", **{column: index + 2 for index, column in enumerate(columns)}})
+    if charge_valid is not None:
+        with (config.auxiliary.simulation_dir / "partial_atomic_charge" / "valid.csv").open("w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=["SMILES", "mol_id"])
+            writer.writeheader()
+            writer.writerows(charge_valid)
+    regression_config = RegressionConfig(stage1_artifacts=config.data.artifacts_dir,
+                        simulation_dir=config.auxiliary.simulation_dir,
+                        partial_charge_manifest=config.auxiliary.partial_charge_manifest,
+                        partial_charge_cache=config.auxiliary.partial_charge_cache,
+                        epochs=2, batch_size=2, device="cpu", amp_dtype="none")
+    selected = REGRESSION_TASKS if charge_valid is not None else ["HOMO_eV", "LUMO_eV"]
+    if charge_valid is None:
+        with pytest.raises(ValueError, match="no partial-charge head"):
+            regression_identity(regression_config, output / "last.pt")
+    source_bytes = (output / "last.pt").read_bytes()
+    final_encoder = (output / "stage1_encoder.pt").read_bytes()
+    heads = run_regression(regression_config, output / "last.pt", tmp_path / "regression", selected)
+    assert (output / "last.pt").read_bytes() == source_bytes
+    assert (output / "stage1_encoder.pt").read_bytes() == final_encoder
+    assert set(heads["tasks"]) == set(selected)
+    for task in selected:
+        head, head_manifest = load_regression_head(tmp_path / "regression/tasks" / task, output / "last.pt")
+        assert head_manifest["fixed_final_epoch"] == 2
+        history = [json.loads(line) for line in (tmp_path / "regression/tasks" / task / "metrics.jsonl").read_text().splitlines()]
+        assert head_manifest["validation"] == history[-1]["validation"]
+        assert all(row["learning_rate"] == 1e-4 for row in history)
+        assert head_manifest["updates"] > 0 and head_manifest["input_dim"] == (16 if task == "partial_atomic_charge" else 32)
+        assert all(not p.requires_grad for p in head.parameters())
+    if charge_valid is None:
+        import stage1.regression as regression_module
+        calls = []
+        def worse_validation(*args, **kwargs):
+            calls.append(1)
+            return {"mae": float(len(calls)), "rmse": float(len(calls)), "molecules": 1}
+        with monkeypatch.context() as patch:
+            patch.setattr(regression_module, "evaluate_regression_head", worse_validation)
+            reported = run_regression(regression_config, output / "last.pt", tmp_path / "reporting_only", selected)
+        assert all(reported["tasks"][task]["state_hash"] == heads["tasks"][task]["state_hash"] for task in selected)
+    with pytest.raises(FileExistsError, match="new output"):
+        run_regression(regression_config, output / "last.pt", tmp_path / "regression", selected)
+    wrong = tmp_path / "wrong_anchor.pt"
+    wrong.write_bytes(b"different source")
+    with pytest.raises(ValueError, match="different Stage1 checkpoint"):
+        load_regression_head(tmp_path / "regression/tasks/HOMO_eV", wrong)
+    manifest_path = tmp_path / "regression/tasks/HOMO_eV/regression_head.json"
+    corrupt = json.loads(manifest_path.read_text())
+    corrupt["state_hash"] = "bad hash"
+    manifest_path.write_text(json.dumps(corrupt))
+    with pytest.raises(ValueError, match="manifest/payload"):
+        load_regression_head(manifest_path.parent, output / "last.pt")
     from stage1.dual_view import DualViewEncoder
     from stage1.identity import build_stage1_encoder_identity
     encoder_identity = build_stage1_encoder_identity(model=encoder.model, config=config,
@@ -612,6 +821,41 @@ def _write_smiles(path, values) -> None:
         writer = csv.DictWriter(handle, fieldnames=["SMILES"])
         writer.writeheader()
         writer.writerows({"SMILES": value} for value in values)
+
+
+def _write_charge_resources(root, molecules):
+    """Tiny verified heavy-atom MOL2 resources, including an untouched valid source."""
+    resources = root / "resources"
+    resources.mkdir()
+    entries, train, valid = [], [], []
+    for index, smiles in enumerate([*molecules, "CCC", "CCCC"]):
+        molecule = Chem.MolFromSmiles(smiles)
+        mol_id = f"mol{index}"
+        atom_rows = [f"{i + 1} {atom.GetSymbol()}{i + 1} 0 0 0 {'Du' if atom.GetSymbol() == 'Na' else atom.GetSymbol()} 1 MOL {index / 10 + i / 100}"
+                     for i, atom in enumerate(molecule.GetAtoms())]
+        bond_rows = [f"{i + 1} {bond.GetBeginAtomIdx() + 1} {bond.GetEndAtomIdx() + 1} {int(bond.GetBondTypeAsDouble())}"
+                     for i, bond in enumerate(molecule.GetBonds())]
+        text = f"@<TRIPOS>MOLECULE\n{mol_id}\n{len(atom_rows)} {len(bond_rows)} 0 0 0\nSMALL\nUSER_CHARGES\n@<TRIPOS>ATOM\n" + "\n".join(atom_rows) + "\n@<TRIPOS>BOND\n" + "\n".join(bond_rows) + "\n"
+        path = resources / f"{mol_id}.mol2"
+        path.write_text(text)
+        entries.append({"mol_id": mol_id, "relative_path": path.name, "format": "mol2",
+                        "size_bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                        "referenced_by_charge": "true"})
+        (valid if smiles == "CCCC" else train).append({"SMILES": smiles, "mol_id": mol_id})
+    manifest = resources / "structure_manifest.csv"
+    with manifest.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(entries[0]))
+        writer.writeheader()
+        writer.writerows(entries)
+    task = root / "simulation" / "partial_atomic_charge"
+    task.mkdir()
+    with (task / "train.csv").open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["SMILES", "mol_id"])
+        writer.writeheader()
+        writer.writerows(train)
+    (task / "valid.csv").write_text("must not be read during pretraining")
+    (task / "test.csv").write_text("must never be read")
+    return manifest, valid
 
 
 def test_global_rdkit_v2_corpus_uses_format3_without_fingerprints(

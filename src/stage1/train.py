@@ -173,6 +173,8 @@ def _loss_lambdas(config: PretrainConfig) -> dict[str, float]:
     }
     if config.is_dual_view:
         values.update(alignment=config.loss.lambda_alignment, unimol=config.loss.lambda_unimol, electronic=config.loss.lambda_electronic)
+        if config.loss.lambda_partial_charge > 0:
+            values["partial_charge"] = config.loss.lambda_partial_charge
     elif not config.is_global_rdkit:
         values["fingerprint"] = config.loss.lambda_fingerprint
     return values
@@ -577,6 +579,11 @@ def run_training(
         from .auxiliary import TeacherCache
         for dataset in (train_dataset, valid_dataset):
             dataset.teacher_cache = TeacherCache(config.auxiliary.teacher_cache, artifact_metadata, require_complete=True)
+        if config.loss.lambda_partial_charge > 0:
+            from .partial_charge import PartialChargeCache
+            cache = PartialChargeCache(config, artifact_metadata)
+            for dataset in (train_dataset, valid_dataset):
+                dataset.partial_charge_cache = cache
     vocabulary = SmilesTokenizer.load(artifact_dir / "tokenizer.json")
     raw_model = build_stage1_model(
         config, vocabulary, train_dataset.descriptor_schema

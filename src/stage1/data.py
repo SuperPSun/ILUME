@@ -263,6 +263,7 @@ class PreparedCorpusDataset(Dataset):
         self._cache: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
         self._verified_shards: set[str] = set()
         self.teacher_cache = None
+        self.partial_charge_cache = None
 
     def __len__(self) -> int:
         return sum(self._lengths)
@@ -315,6 +316,9 @@ class PreparedCorpusDataset(Dataset):
             self._cache.popitem(last=False)
         if self.teacher_cache is not None:
             samples = [self.teacher_cache.attach(sample) for sample in samples]
+            self._cache[relative_path] = samples
+        if self.partial_charge_cache is not None:
+            samples = [self.partial_charge_cache.attach(sample) for sample in samples]
             self._cache[relative_path] = samples
         return samples
 

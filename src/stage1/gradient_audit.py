@@ -61,9 +61,12 @@ def audit_gradient_norms(model, probe, config, device, *, amp_enabled, amp_dtype
                 output = model.forward(batch)
             result = {"weighted_grad_norms": {}, "coefficients": {}, "coverage": {}}
             role_weights = torch.as_tensor(config.loss.role_weights, device=device)
-            active = [name for name, loss in AUDIT_LOSSES.items()
+            objectives = dict(AUDIT_LOSSES)
+            if config.loss.lambda_partial_charge > 0:
+                objectives["partial_charge"] = "partial_charge"
+            active = [name for name, loss in objectives.items()
                       if output.loss_statistics[loss].denominators.sum().item() > 0]
-            for name, loss in AUDIT_LOSSES.items():
+            for name, loss in objectives.items():
                 stats = output.loss_statistics[loss]
                 coefficient = getattr(config.loss, f"lambda_{loss}")
                 valid_weight = stats.denominators.sum().item()

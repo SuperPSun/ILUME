@@ -115,6 +115,8 @@ class DualViewPretrainModel(DualViewEncoder):
         self.descriptor_decoder = nn.Linear(self.entity_dim, 217)
         self.unimol_projector = nn.Linear(self.entity_dim, 768)
         self.electronic_head = nn.Linear(self.entity_dim, 13)
+        if config.loss.lambda_partial_charge > 0:
+            self.partial_charge_head = nn.Linear(self.atom_dim, 1)
 
     def forward(self, batch) -> PretrainOutput:
         if batch.masks is None:
@@ -157,6 +159,12 @@ class DualViewPretrainModel(DualViewEncoder):
             raise ValueError("Dual-view training requires audited auxiliary targets")
         record("unimol", 1 - F.cosine_similarity(logits["unimol"].float(), aux["unimol"].float()), aux["unimol_valid"], ids)
         record("electronic", F.smooth_l1_loss(logits["electronic"].float(), aux["electronic"].float(), reduction="none"), aux["electronic_valid"], ids)
+        if self.config.loss.lambda_partial_charge > 0:
+            logits["partial_charge"] = self.partial_charge_head(atoms).squeeze(-1)
+            record("partial_charge", F.smooth_l1_loss(logits["partial_charge"].float(), aux["partial_charge"].float(), reduction="none"),
+                   aux["partial_charge_valid"], batch.graphs.atom_batch)
         losses = {name: stats.mean() for name, stats in statistics.items()}
         coefficients = {"smiles": self.config.loss.lambda_smiles, "atom": self.config.loss.lambda_atom, "bond": self.config.loss.lambda_bond, "descriptor": self.config.loss.lambda_descriptor, "alignment": self.config.loss.lambda_alignment, "unimol": self.config.loss.lambda_unimol, "electronic": self.config.loss.lambda_electronic}
+        if self.config.loss.lambda_partial_charge > 0:
+            coefficients["partial_charge"] = self.config.loss.lambda_partial_charge
         return PretrainOutput(sum(coefficients[name] * value for name, value in losses.items()), losses, statistics, logits, z)
