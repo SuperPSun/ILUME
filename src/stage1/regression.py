@@ -166,7 +166,7 @@ def load_regression_rows(config, source_config, task, split):
         recipe = replace(source_config, auxiliary=replace(source_config.auxiliary,
                          simulation_dir=config.simulation_dir, partial_charge_manifest=config.partial_charge_manifest))
         rows, _ = load_charge_rows(recipe, split)
-        return [rows[key] for key in sorted(rows)]
+        return [row for key in sorted(rows) for row in rows[key]]
     directory = next(name for name, columns, _ in ELECTRONIC_SOURCES if task in columns)
     rows = {}
     with (config.simulation_dir / directory / f"{split}.csv").open(newline="", encoding="utf-8-sig") as handle:

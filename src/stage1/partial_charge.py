@@ -43,11 +43,12 @@ def charge_source_contract(config, split="train"):
         structures[mol_id] = {"sha256": entry.sha256, "size_bytes": entry.size_bytes}
     return {"split": split, "csv_sha256": sha256_file(path),
             "manifest_sha256": sha256_file(manifest), "structures": structures,
-            "mapping": PARTIAL_CHARGE_MAPPING_CONTRACT["hash"]}
+            "mapping": PARTIAL_CHARGE_MAPPING_CONTRACT["hash"],
+            "observations": "all-source-rows-independent-v2"}
 
 
 def load_charge_rows(config, split="train"):
-    """Canonical duplicates agree exactly or fail; never average conflicting labels."""
+    """Retain every source row as an independent observation of its structure."""
     if split not in {"train", "valid"}:
         raise ValueError("Partial-charge supervision accepts train/valid only")
     entries = load_structure_manifest(config.auxiliary.partial_charge_manifest)
@@ -73,10 +74,8 @@ def load_charge_rows(config, split="train"):
                     raise ValueError(f"Partial-charge structure missing: {mol_id}")
                 result = load_verify_parse_and_map(entries[mol_id], key)
                 values = np.asarray(result.charges, dtype=np.float64)
-                if key in rows and not np.array_equal(rows[key]["targets"], values):
-                    raise ValueError(f"Conflicting partial-charge labels: {key}: {rows[key]['mol_id']}/{mol_id}")
-                rows.setdefault(key, {"canonical_smiles": key, "mol_id": mol_id,
-                                     "role_id": ROLE_TO_ID[role], "targets": values})
+                rows.setdefault(key, []).append({"canonical_smiles": key, "mol_id": mol_id,
+                                                 "role_id": ROLE_TO_ID[role], "targets": values})
                 audit.append({"canonical_smiles": key, "mol_id": mol_id,
                               "atom_count": len(values), "mapping_status": result.mapping_status,
                               "bond_match_mode": result.bond_match_mode,
@@ -93,6 +92,7 @@ def partial_charge_recipe(config, metadata):
         "manifest_sha256": metadata["artifact_hashes"]["manifest.csv"],
         "source": charge_source_contract(config),
         "join": "canonical-exact-no-seed-propagation",
+        "observations": "all-source-rows-independent-v2",
         "statistics": "matched-stage1-train-atoms-population-std",
     })
 
@@ -115,22 +115,24 @@ def prepare_partial_charge(config, output_dir=None):
                 matched.add(key)
                 if row["split"] == "train":
                     training.add(key)
-    atoms = np.concatenate([rows[key]["targets"] for key in sorted(training)]) if training else np.empty(0)
+    atoms = np.concatenate([row["targets"] for key in sorted(training) for row in rows[key]]) if training else np.empty(0)
     mean, scale = (float(atoms.mean()), float(atoms.std())) if len(atoms) else (0., 1.)
     scale = scale or 1.
-    targets = {key: torch.from_numpy(((rows[key]["targets"] - mean) / scale).astype(np.float32))
+    targets = {key: torch.from_numpy(np.stack([((row["targets"] - mean) / scale).astype(np.float32) for row in rows[key]]))
                for key in sorted(matched)}
-    scaler = {"mean": mean, "scale": scale, "atom_count": len(atoms), "molecule_count": len(training)}
+    scaler = {"mean": mean, "scale": scale, "atom_count": len(atoms),
+              "molecule_count": len(training), "observation_count": sum(len(rows[key]) for key in training)}
     state_hash = tensor_state_hash("stage1.partial-charge.targets.v4", {"targets": targets, "scaler": scaler})
     identity = semantic_identity("stage1.partial-charge.materialization.v4", {
         "recipe": recipe["hash"], "state_hash": state_hash})
     root.mkdir(parents=True, exist_ok=True)
-    atomic_torch_save(root / "targets.pt", {"kind": PARTIAL_CHARGE_KIND, "format_version": 1,
+    atomic_torch_save(root / "targets.pt", {"kind": PARTIAL_CHARGE_KIND, "format_version": 2,
                                           "targets": targets, "scaler": scaler, "identity": identity})
     atomic_json(root / "mapping_audit.json", audit)
-    manifest = {"kind": PARTIAL_CHARGE_KIND, "format_version": 1, "recipe": recipe,
+    manifest = {"kind": PARTIAL_CHARGE_KIND, "format_version": 2, "recipe": recipe,
                 "identity": identity, "state_hash": state_hash, "scaler": scaler,
                 "matched_molecules": len(matched), "source_molecules": len(rows),
+                "source_observations": sum(map(len, rows.values())),
                 "artifact_hashes": {name: sha256_file(root / name) for name in ("targets.pt", "mapping_audit.json")}}
     atomic_json(root / "metadata.json", manifest)
     return manifest
@@ -140,7 +142,7 @@ class PartialChargeCache:
     def __init__(self, config, metadata, *, root=None):
         root = Path(root) if root is not None else config.auxiliary.partial_charge_cache
         self.manifest = json.loads((root / "metadata.json").read_text())
-        if self.manifest.get("kind") != PARTIAL_CHARGE_KIND or self.manifest.get("format_version") != 1:
+        if self.manifest.get("kind") != PARTIAL_CHARGE_KIND or self.manifest.get("format_version") != 2:
             raise ValueError("Unsupported Stage1 partial-charge sidecar")
         require_compatible_identity(partial_charge_recipe(config, metadata), self.manifest["recipe"],
                                     context="Stage1 partial-charge source/corpus")
@@ -156,15 +158,15 @@ class PartialChargeCache:
             "recipe": self.manifest["recipe"]["hash"], "state_hash": actual})
         require_compatible_identity(identity, self.manifest["identity"], context="Partial-charge sidecar")
         require_compatible_identity(identity, payload["identity"], context="Partial-charge tensor payload")
-        if payload.get("kind") != PARTIAL_CHARGE_KIND or payload.get("format_version") != 1:
+        if payload.get("kind") != PARTIAL_CHARGE_KIND or payload.get("format_version") != 2:
             raise ValueError("Unsupported partial-charge tensor payload")
 
     def attach(self, sample):
         count = len(sample["atom_categorical"])
         values = self.targets.get(sample["canonical_smiles"])
         valid = values is not None and self.scaler["atom_count"] > 0
-        if values is not None and len(values) != count:
+        if values is not None and (values.ndim != 2 or values.shape[1] != count):
             raise ValueError(f"Partial-charge atom count mismatch: {sample['sample_id']}")
         return {**sample, "auxiliary_targets": {**sample["auxiliary_targets"],
-                "partial_charge": values if valid else torch.zeros(count),
-                "partial_charge_valid": torch.full((count,), valid, dtype=torch.bool)}}
+                "partial_charge": values if valid else torch.zeros(1, count),
+                "partial_charge_valid": torch.full(values.shape if valid else (1, count), valid, dtype=torch.bool)}}

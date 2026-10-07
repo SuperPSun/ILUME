@@ -288,6 +288,19 @@ def test_v4_gradient_audit_reference_and_state_isolation(tiny_config, tiny_sampl
     molecule_losses = torch.stack([atom_loss[packed.graphs.atom_batch == i].mean() for i in range(len(samples))])
     weights = torch.as_tensor(config.loss.role_weights, device=device)[packed.roles]
     assert output.losses["partial_charge"].item() == pytest.approx(((molecule_losses * weights).sum() / weights.sum()).item())
+    repeated = [*samples]
+    charge = samples[0]["auxiliary_targets"]["partial_charge"]
+    repeated[0] = {**samples[0], "auxiliary_targets": {**samples[0]["auxiliary_targets"],
+                   "partial_charge": torch.stack([charge, charge + 1]),
+                   "partial_charge_valid": torch.ones(2, len(charge), dtype=torch.bool)}}
+    repeated_probe = replace(MultimodalPacker(vocabulary)(repeated), masks=probe.masks).to(device)
+    with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp_enabled):
+        repeated_output = model(repeated_probe)
+    aux = repeated_probe.auxiliary_targets
+    element_loss = F.smooth_l1_loss(repeated_output.logits["partial_charge"][aux["charge_atom_indices"]].float(), aux["partial_charge"], reduction="none")
+    observation_loss = torch.stack([element_loss[aux["charge_observation_ids"] == i].mean() for i in range(len(aux["charge_observation_roles"]))])
+    observation_weights = torch.as_tensor(config.loss.role_weights, device=device)[aux["charge_observation_roles"]]
+    assert repeated_output.losses["partial_charge"].item() == pytest.approx(((observation_loss * observation_weights).sum() / observation_weights.sum()).item())
     malformed = [*samples]
     malformed[0] = {**samples[0], "auxiliary_targets": {**samples[0]["auxiliary_targets"], "partial_charge": torch.zeros(2)}}
     with pytest.raises(ValueError, match="real atom count"):
@@ -574,13 +587,13 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
             train_structures = {r["canonical_smiles"] for r in csv.DictReader(handle) if r["split"] == "train"}
         from stage1.partial_charge import load_charge_rows
         raw_rows, _ = load_charge_rows(config)
-        reference_atoms = np.concatenate([raw_rows[key]["targets"] for key in sorted(train_structures)])
+        reference_atoms = np.concatenate([row["targets"] for key in sorted(train_structures) for row in raw_rows[key]])
         assert cache.scaler["mean"] == pytest.approx(reference_atoms.mean())
         assert cache.scaler["scale"] == pytest.approx(reference_atoms.std())
         assert sidecar["matched_molecules"] == 9 and sidecar["source_molecules"] == 10
         assert prepare_partial_charge(config) == sidecar
         assert all((config.data.artifacts_dir / name).read_bytes() == value for name, value in before.items())
-        # Duplicate canonical structures with conflicting charges fail explicitly.
+        # Conflicting observations remain independent, without changing the corpus.
         charge_file = config.auxiliary.simulation_dir / "partial_atomic_charge/train.csv"
         contents, resource_manifest = charge_file.read_bytes(), charge_manifest.read_bytes()
         duplicate = charge_manifest.parent / "duplicate.mol2"
@@ -590,8 +603,18 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
                                         hashlib.sha256(duplicate.read_bytes()).hexdigest(), "true"])
         with charge_file.open("a") as handle:
             handle.write("CC,duplicate\n")
-        with pytest.raises(ValueError, match="Conflicting partial-charge labels"):
-            load_charge_rows(config)
+        duplicate_rows, duplicate_audit = load_charge_rows(config)
+        assert len(duplicate_rows["CC"]) == 2
+        assert [row["mol_id"] for row in duplicate_rows["CC"]] == ["mol7", "duplicate"]
+        assert not np.array_equal(*(row["targets"] for row in duplicate_rows["CC"]))
+        from stage1.regression import load_regression_rows
+        regression_rows = load_regression_rows(config.auxiliary, config, "partial_atomic_charge", "train")
+        assert [row["mol_id"] for row in regression_rows if row["canonical_smiles"] == "CC"] == ["mol7", "duplicate"]
+        duplicate_config = replace(config, auxiliary=replace(config.auxiliary, partial_charge_cache=tmp_path / "duplicate_charge"))
+        duplicate_sidecar = prepare_partial_charge(duplicate_config)
+        duplicate_cache = PartialChargeCache(duplicate_config, corpus_metadata)
+        assert duplicate_cache.targets["CC"].shape == (2, 2)
+        assert duplicate_sidecar["source_observations"] == len(duplicate_audit)
         with pytest.raises(ValueError, match="source/corpus"):
             PartialChargeCache(config, corpus_metadata)
         charge_file.write_bytes(contents)

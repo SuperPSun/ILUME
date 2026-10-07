@@ -205,11 +205,26 @@ class MultimodalPacker:
             fingerprint_values[family] = torch.stack(rows)
             fingerprint_valid[family] = torch.stack(valid_rows)
 
+        charge_observations = {}
         if samples[0].get("auxiliary_targets", {}).get("partial_charge") is not None:
+            targets, valid, atom_indices, observation_ids, observation_roles = [], [], [], [], []
+            atom_offset = observation_offset = 0
             for sample, count in zip(samples, atom_counts.tolist(), strict=True):
+                shape = sample["auxiliary_targets"]["partial_charge"].shape
                 for name in ("partial_charge", "partial_charge_valid"):
-                    if sample["auxiliary_targets"][name].shape != (count,):
+                    if sample["auxiliary_targets"][name].shape != shape or not (shape == (count,) or (len(shape) == 2 and shape[1] == count)):
                         raise ValueError("Partial-charge targets must match each molecule's real atom count")
+                observations = 1 if len(shape) == 1 else shape[0]
+                targets.append(sample["auxiliary_targets"]["partial_charge"].flatten())
+                valid.append(sample["auxiliary_targets"]["partial_charge_valid"].flatten())
+                atom_indices.append(torch.arange(count).repeat(observations) + atom_offset)
+                observation_ids.append(torch.arange(observations).repeat_interleave(count) + observation_offset)
+                observation_roles.extend([sample["role_id"]] * observations)
+                atom_offset += count
+                observation_offset += observations
+            charge_observations = {"partial_charge": torch.cat(targets), "partial_charge_valid": torch.cat(valid),
+                                   "charge_atom_indices": torch.cat(atom_indices), "charge_observation_ids": torch.cat(observation_ids),
+                                   "charge_observation_roles": torch.tensor(observation_roles, dtype=torch.long)}
 
         return MultimodalBatch(
             token_ids=token_ids,
@@ -234,8 +249,9 @@ class MultimodalPacker:
             ),
             masks=None,
             auxiliary_targets=(
-                {key: (torch.cat if key in {"partial_charge", "partial_charge_valid"} else torch.stack)([sample["auxiliary_targets"][key] for sample in samples])
-                 for key in samples[0]["auxiliary_targets"]}
+                {**{key: torch.stack([sample["auxiliary_targets"][key] for sample in samples])
+                    for key in samples[0]["auxiliary_targets"] if key not in {"partial_charge", "partial_charge_valid"}},
+                 **charge_observations}
                 if "auxiliary_targets" in samples[0] else None
             ),
             frozen_entity_embedding=torch.stack([sample["frozen_entity_embedding"] for sample in samples]) if "frozen_entity_embedding" in samples[0] else None,

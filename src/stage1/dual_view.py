@@ -161,8 +161,10 @@ class DualViewPretrainModel(DualViewEncoder):
         record("electronic", F.smooth_l1_loss(logits["electronic"].float(), aux["electronic"].float(), reduction="none"), aux["electronic_valid"], ids)
         if self.config.loss.lambda_partial_charge > 0:
             logits["partial_charge"] = self.partial_charge_head(atoms).squeeze(-1)
-            record("partial_charge", F.smooth_l1_loss(logits["partial_charge"].float(), aux["partial_charge"].float(), reduction="none"),
-                   aux["partial_charge_valid"], batch.graphs.atom_batch)
+            values = F.smooth_l1_loss(logits["partial_charge"][aux["charge_atom_indices"]].float(), aux["partial_charge"].float(), reduction="none")
+            roles = aux["charge_observation_roles"]
+            reduced, valid = reduce_molecule_elements(values, aux["partial_charge_valid"], aux["charge_observation_ids"], len(roles))
+            statistics["partial_charge"] = molecule_loss_statistics(reduced, valid, roles, weights)
         losses = {name: stats.mean() for name, stats in statistics.items()}
         coefficients = {"smiles": self.config.loss.lambda_smiles, "atom": self.config.loss.lambda_atom, "bond": self.config.loss.lambda_bond, "descriptor": self.config.loss.lambda_descriptor, "alignment": self.config.loss.lambda_alignment, "unimol": self.config.loss.lambda_unimol, "electronic": self.config.loss.lambda_electronic}
         if self.config.loss.lambda_partial_charge > 0:
