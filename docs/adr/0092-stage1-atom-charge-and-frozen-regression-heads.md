@@ -6,6 +6,8 @@ Accepted (2026-10-07). Extends v4 pretraining with partial atomic charge, revise
 
 ## Pretraining and audit
 
+The pretraining coefficient values below describe this ADR's original recipe. The subsequent 2026-10-07 Base revision is defined by [Base YAML](../../configs/v4/stage1/base.yaml) and the [v4 runbook](../v4-runbook.md#stage1-loss-and-gradient-audit). Objective definitions, sidecar and audit boundaries remain unchanged; the independent frozen-head recipe below retains its own batch128 budget.
+
 Active Base adds `lambda_partial_charge=0.1`, independent of electronic0.1; reconstruction1/1/1, alignment0.1, RDKit0.5 and Uni-Mol0.25 remain unchanged. A disposable `Linear512→1` predicts normalized charges from current graph atom states, using the same masked forward. SmoothL1 first averages atoms within each molecule, then uses role2/2/1 weighted valid-molecule means. Only the graph encoder receives this objective's representation gradient. Missing molecules return differentiable zero. No descriptor/role input, extra forward or sampler change.
 
 The shared coefficient default is0, omitted on serialization; disabled supervision creates no atom head or extra initialization RNG calls. Historical config/state/numerical identities remain unchanged. Enabled supervision is v4-only and adds513 auxiliary parameters, not encoder capacity. Existing v4 kind/format4 remains; loss and label-sidecar identity reject incompatible resumes. Full epoch checkpoints retain all heads; encoder-only export still contains only SMILES encoder, graph encoder and Fusion.

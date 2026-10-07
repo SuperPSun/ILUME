@@ -12,7 +12,7 @@
 
 | 范围 | 必须保持的边界 | ADR |
 |---|---|---|
-| Stage 1 | 仅SMILES/Graph输入，独立512D encoder、12层SMILES Transformer/8独立residual图block、CLS/atom mean、1024残差MLP；learned1024、atom512，不输入role/descriptor。结构重建、stop-gradient一致性、RDKit217、离线Uni-Mol768、13电子目标；原系数1/0.1/0.5/0.25/0.1，另有train-only原子电荷Linear512→1及独立系数0.1，标签sidecar不改语料/teacher。各项分子均值再按角色loss权重2/2/1；自然shuffle不变。fusion-only80/10/10，10轮、batch128、完整epoch恢复；训练format4及encoder-only导出。每1000步rank0固定32分子gradient audit只报告，可CLI覆盖，不更新/调权/选模，不进入科研身份；独立14任务后训练只更新回归头，不替换encoder | 0089/0090/0091/0092；执行0013/0014/0015/0017；0039仅历史v3 |
+| Stage 1 | 仅SMILES/Graph输入，独立512D encoder、12层SMILES Transformer/8独立residual图block、CLS/atom mean、1024残差MLP；learned1024、atom512，不输入role/descriptor。结构重建、stop-gradient一致性、RDKit217、离线Uni-Mol768、13电子目标及train-only原子电荷Linear512→1；现役系数和执行配置只读Base YAML及v4手册，sidecar不改语料/teacher。各项分子均值再按角色loss权重2/2/1；自然shuffle不变。fusion-only80/10/10，10轮、完整epoch恢复；训练format4及encoder-only导出。每1000步rank0固定32分子gradient audit只报告，可CLI覆盖，不更新/调权/选模，不进入科研身份；独立14任务后训练只更新回归头，不替换encoder | 0089/0090/0091/0092；执行0013/0014/0015/0017；0039仅历史v3 |
 | Stage 2 | Stage1永久eval/冻结/不进optimizer，缓存learned1024+标准化RDKit217及atom512。ObjectEncoder内部1241→1024投影属于Object优化块；原1024接口不创建投影。九task physics-only HoME，无Stage2 teacher loss；HOMO/LUMO、QM mask、Partial Charge分子等权保留 | 0089/0082；机制0019/0025 |
 | Stage 2 训练与产物 | 256 逻辑 batch、256 微批、每逻辑 batch 一次 optimizer/scheduler update；10 epochs 末轮发布完整 `stage2_final.pt`、manifest 与 `stage2_encoder.pt`，不做 refinement、best/last。不提供独立 evaluate 入口或榜单；实验任务初始化只迁移表示、GLOBAL 与匹配的 thermophysical/solvation GROUP，simulation 预测支路额外从完整产物初始化电子 GROUP、五项 PRIVATE 和 atom adapter | 0082/0083/0084/0085；配方来源 0079 |
 | Stage 3 | v4正式Stage2-HoME来源，严格SHA/owner/tensor hash；永久冻结Stage1、保存1241D slots。Phase1联合更新ObjectEncoder（含入口投影）与20-task Flat HoME；Phase2/3冻结ObjectEncoder并加入五项simulation的thermophysical/electronic GROUP/PRIVATE。共享GROUP模拟权重0.1、实验1，纯模拟电子GROUP/Phase3不降权；共同anchor、25个PRIVATE、固定末轮stitch、实验/模拟validation只读分开 | 0089/0084；机制0020/0046/0048/0067/0075 |
@@ -20,8 +20,6 @@
 | Stage 3 diagnostics | 只读 gate mass、normalized entropy、PRIVATE mass 分位数；test aggregate 合并 fold-sample。不得新增 forward、进入 loss/selection 或改 prediction CSV；legacy 不输出。pEC50 Phase 3 为 3 epochs | 0054/0055 |
 
 禁止恢复：Stage1 descriptor/role输入、重型token fusion、fingerprint、角色平衡/重复采样、augmentation multiplier、多容量正式配置、mid-epoch恢复；Stage2/3不得反传Stage1，禁止Stage2渐进解冻、early stopping、best/last、PCGrad或accumulation window；Stage3 four-phase、routing intervention、gate calibration或HPO/Optuna。v4 alignment/RDKit/Uni-Mol/electronic heads只用于预训练，不进入encoder-only部署。ADR-0087候选保持历史v3身份，不增加正式Base数量。
-
-现役v4 Stage1 Base数值以YAML及v4手册为准：SMILES/atom/bond/alignment/RDKit/Uni-Mol/electronic/partial-charge系数为0.20/1/1/0.10/0.25/0.50/0.25/0.25，全局batch512、每rank32 workers；上表与ADR中的先前系数/batch128为历史数值，loss定义与审计边界不变。
 
 ADR-0093仅扩展独立回归头后训练：YAML支持默认Linear及逐目标MLP/residual MLP；Linear继承预训练头并做等价标准化换算，非线性采用task-local随机初始化/dropout。encoder/Fusion永久冻结、entity1024/atom512输入不变，validation只报告；format2内嵌结构并兼容旧Linear format1，不改变Stage1/2/3身份或正式训练。
 

@@ -98,7 +98,21 @@ conda activate ilume
 python scripts/stage1/train.py --config configs/v4/stage1/base.yaml --output outputs/v4/stage1/base/train
 ```
 
-Active Base uses global batch512 and32 DataLoader workers per rank. Four-rank DDP therefore uses batch128 per GPU and128 workers in total. LR remains1e-4; the earlier batch128 recipe is historical and cannot resume into this changed training identity. Corpus and teacher cache remain reusable.
+Active Base uses global batch512 and8 DataLoader workers per rank. Four-rank DDP therefore uses batch128 per GPU and32 training-loader workers in total. LR remains1e-4; the earlier batch128 recipe is historical and cannot resume into this changed training identity. Corpus and teacher cache remain reusable. Worker count is execution-only; it does not itself change the scientific training identity.
+
+### Stage1 progress and input stalls
+
+Ordinary `python scripts/stage1/train.py ...` runs one training process; it does not automatically use all GPUs. DDP requires `torchrun`, for example inside an allocation that actually provides four GPUs:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --standalone --nproc_per_node=4 scripts/stage1/train.py --config configs/v4/stage1/base.yaml --output outputs/v4/stage1/base/train
+```
+
+Use an unused output directory. Train, quick-validation and full-validation loaders each use the configured worker count; CUDA loaders keep workers persistent after first use and prefetch two batches per worker. Thus worker resources can grow when validation starts. Choose workers against the job's CPU allocation and storage throughput, not GPU count alone; increasing workers is not guaranteed to improve throughput.
+
+Expected pauses occur every1,000 updates for rank0 gradient audit (other ranks wait), every5,000 updates for audit plus quick validation, and at epoch boundaries for full validation/checkpoint exports. Audit logs are written after the audit completes, not at its start. A pause before these boundaries is not explained by those periodic operations.
+
+If GPU utilization drops while loader workers enter `D` state at `wait_on_page_bit_common`, inspect storage/page reads. Corpus loading verifies and deserializes shards, and associates their samples with a read-only SQLite Uni-Mol index and mmap teacher shards. Many workers reading these files on NFS can stall the GPU despite ample RAM. Prefer a verified byte-identical local-SSD copy of corpus/teacher artifacts, and benchmark worker counts in a separately controlled attempt; do not regenerate labels, disable hash validation, alter sampling, or overwrite an active run. These are operational recommendations, not an implemented local-storage cache or a guarantee that8 workers resolves NFS stalls. Inspect `nvidia-smi`, `vmstat 1`, worker wait states and `metrics.jsonl` timestamps before attributing a stall to a specific cause.
 
 Output includes resume checkpoints with auxiliary heads and encoder-only `stage1_encoder.pt`. Deployment/Stage2 do not load teacher or auxiliary heads.
 
@@ -121,6 +135,8 @@ Epoch-boundary resume appends attempt-tagged observations without deleting faile
 The parser accepts verified `@<TRIPOS>` header aliases: `MOLEMOLE/MOLMOLLE/MOMOLULE/MMOLCULE/MOLECMOL→MOLECULE`, `MOLM/AMOL→ATOM` and `MOLD/BMOL→BOND`. The verified prefix typos `@<TRMOLS>`, `@<TRIMOL>`, `@<TMOLOS>` and `@<MOLPOS>` are also accepted as `@<TRIPOS>`. It does not guess other misspellings; do not edit the original MOL2 or manifest SHA. All other parse/integrity checks remain strict. The full section/prefix alias tables enter Stage1 charge-source identity: retain earlier runs and use a fresh sidecar output/cache path when their identity differs. SUBSTRUCTURE is not consumed by the charge parser and needs no typo correction.
 
 Normal Stage1 prepare also prepares the separate atom-label sidecar. If corpus and teacher cache already exist, run only the sidecar command instead; it does not change either. Active Base reads `data/stage1/properties/partial_atomic_charge/train.csv` through `auxiliary.simulation_dir`, and verifies the MOL2 resources referenced by `auxiliary.partial_charge_manifest`. Existing electronic sources are still required for formal v4 training. The following command matches the current YAML cache path; use it only when the directory is unused or contains a compatible format2 sidecar:
+
+Known display limitation: the mapping progress bar currently uses the full structure-manifest size, while processing only the selected train/valid CSV. It can finish below100% (for example22,530 train rows out of28,214 resources displays80%); this alone is not a failure. Confirm attempted/mapped/skipped audit counts and the completed run's summary/metadata. Correcting the progress total remains a separate code task.
 
 ```bash
 python scripts/stage1/prepare.py --config configs/v4/stage1/base.yaml --partial-charge-only --output outputs/v4/stage1/base/partial_charge

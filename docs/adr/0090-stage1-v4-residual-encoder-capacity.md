@@ -6,6 +6,8 @@ Accepted (2026-10-07). Revises only the encoder capacity in ADR-0089. There is o
 
 ## Decision
 
+The batch128 recipe referenced below is historical after the 2026-10-07 Base update to global batch512. Current execution and loss values are defined in [Base YAML](../../configs/v4/stage1/base.yaml) and the [v4 runbook](../v4-runbook.md); this ADR's architecture and parameter audit remain unchanged.
+
 - SMILES Transformer uses 12 layers instead of 8, with width512, 8 attention heads, FFN2048 and dropout0.10 unchanged.
 - `model.graph_message_mode` accepts `shared` or `residual_blocks`. The default is `shared`, omitted from serialized configuration and encoder identity; historical parameter names, initialization order and forward operations remain unchanged. The residual mode is allowed only for `dual_view_v4`.
 - In residual mode, `graph_depth=8` means eight complete independently parameterized directed message-passing blocks. In shared mode the original initial projection plus `depth−1` shared updates remains intact.

@@ -8,6 +8,8 @@ Accepted (2026-10-07). Revises only the RDKit/Uni-Mol coefficients in ADR-0089 a
 
 ## Decision
 
+The coefficient table below is historical after the subsequent 2026-10-07 Base recipe update. Current coefficients are defined in [Base YAML](../../configs/v4/stage1/base.yaml) and the [v4 runbook](../v4-runbook.md#stage1-loss-and-gradient-audit); the audit/normalization contract remains unchanged, including ADR-0092's active1,000-update interval.
+
 The active v4 Base coefficients are SMILES/atom/bond=`1/1/1`, alignment=`0.1`, RDKit=`0.5`, Uni-Mol=`0.25`, electronic=`0.1`. Shared schema defaults and historical YAML remain unchanged. Loss normalization remains valid-element means within molecules, then role2/2/1 weighted molecule means. No sampler, encoder, modality dropout, optimizer, scheduler or fixed-final-epoch change.
 
 `training.gradient_audit_interval_steps` defaults to0 (off); `gradient_audit_batch_size` defaults to32. Default values are omitted on serialization. Enabled audits require dual-view v4. Active Base explicitly enables every5,000 completed optimizer updates, using32 validation molecules. Both fields are execution-only: recorded in run/checkpoint configuration, excluded from scientific config hash, training identity and encoder identity. Audit cadence or probe size may change on epoch-boundary resume; loss changes may not.

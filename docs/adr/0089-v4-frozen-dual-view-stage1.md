@@ -12,6 +12,8 @@ Encoder capacity is subsequently revised by [ADR-0090](0090-stage1-v4-residual-e
 
 ## Context
 
+The subsequent Base recipe revision on 2026-10-07 uses global batch512 and updated loss coefficients; current values are defined by [Base YAML](../../configs/v4/stage1/base.yaml) and the [v4 runbook](../v4-runbook.md#stage1-loss-and-gradient-audit). The coefficient/batch values below describe the original decision, not the current run recipe. Architecture, objective definitions and permanent downstream freezing are unchanged.
+
 Stage1 should learn task-agnostic molecular structure; Stage2/3 should optimize multitask HoME without changing the Stage1 encoders. This is a complete recipe comparison, not a single-mechanism attribution: architecture, auxiliary supervision, ten-epoch budget and permanent freezing change together.
 
 ## Decision
