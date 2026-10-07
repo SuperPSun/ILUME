@@ -98,6 +98,8 @@ conda activate ilume
 python scripts/stage1/train.py --config configs/v4/stage1/base.yaml --output outputs/v4/stage1/base/train
 ```
 
+Active Base uses global batch512 and32 DataLoader workers per rank. Four-rank DDP therefore uses batch128 per GPU and128 workers in total. LR remains1e-4; the earlier batch128 recipe is historical and cannot resume into this changed training identity. Corpus and teacher cache remain reusable.
+
 Output includes resume checkpoints with auxiliary heads and encoder-only `stage1_encoder.pt`. Deployment/Stage2 do not load teacher or auxiliary heads.
 
 ### Stage1 loss and gradient audit
