@@ -126,9 +126,9 @@ def test_v4_residual_capacity_and_shared_compatibility(tiny_config, tiny_samples
     base = load_config(ROOT / "configs/v4/stage1/base.yaml")
     assert [base.loss.lambda_smiles, base.loss.lambda_atom, base.loss.lambda_bond,
             base.loss.lambda_alignment, base.loss.lambda_descriptor,
-            base.loss.lambda_unimol, base.loss.lambda_electronic] == [1., 1., 1., .1, .5, .25, .1]
+            base.loss.lambda_unimol, base.loss.lambda_electronic] == [.2, 1., 1., .1, .25, .5, .25]
     assert (base.training.gradient_audit_interval_steps, base.training.gradient_audit_batch_size) == (1000, 32)
-    assert base.loss.lambda_partial_charge == .1
+    assert base.loss.lambda_partial_charge == .25
     assert (base.model.smiles_layers, base.model.graph_depth, base.model.graph_message_mode) == (12, 8, "residual_blocks")
     assert config_from_dict(base.to_dict()).to_dict() == base.to_dict()
     old = replace(base, model=replace(base.model, smiles_layers=8, graph_depth=6, graph_message_mode="shared"))

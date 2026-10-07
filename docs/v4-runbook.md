@@ -104,7 +104,7 @@ Output includes resume checkpoints with auxiliary heads and encoder-only `stage1
 
 ### Stage1 loss and gradient audit
 
-Current Base uses reconstruction1/1/1, alignment0.1, RDKit0.5, Uni-Mol0.25, electronic0.1 and independent partial-charge0.1 ([ADR-0091](adr/0091-stage1-v4-loss-weights-gradient-audit.md), [ADR-0092](adr/0092-stage1-atom-charge-and-frozen-regression-heads.md)). These loss changes require a new Stage1 run, not resume from earlier coefficients; existing corpus/statistics/teacher cache remain reusable. Downstream Stage2/3 must use the newly trained encoder and fresh outputs.
+Current Base uses SMILES/atom/bond reconstruction0.20/1/1, alignment0.10, RDKit0.25, Uni-Mol0.50, electronic0.25 and independent partial-charge0.25. This user-selected recipe supersedes the earlier coefficient values in [ADR-0091](adr/0091-stage1-v4-loss-weights-gradient-audit.md) and [ADR-0092](adr/0092-stage1-atom-charge-and-frozen-regression-heads.md); their loss definitions and audit isolation remain unchanged. These loss changes require a new Stage1 run, not resume from earlier coefficients; existing corpus/statistics/teacher cache remain reusable. Downstream Stage2/3 must use the newly trained encoder and fresh outputs.
 
 Training automatically appends `gradient_audit.jsonl` every1,000 completed optimizer updates. Rank0 uses a fixed32-molecule validation probe and evaluation masks with dropout off; other ranks wait. It reports the original seven raw encoder norms plus `partial_charge_grad_norm` when enabled, `weighted_grad_norms` (absolute loss coefficient times norm), effective target coverage, probe IDs/hash, step and attempt. The existing metrics and checkpoint selection remain unchanged.
 
