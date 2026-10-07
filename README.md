@@ -14,7 +14,7 @@ python -m pip install -e ".[dev,tokenizers]"
 
 配置位于 `configs/v4/`，输出隔离到 `outputs/v4/`；Base与三个核心消融的完整命令，以及 Uni-Mol2 独立环境的创建、依赖安装和版本核验步骤，见 [v4运行手册](docs/v4-runbook.md)。先独立进行Uni-Mol2小样本成功率/吞吐/存储审计，再生成全量分片缓存；teacher使用版本锁定的独立环境，本仓库不会自动下载权重。Stage1训练导出仅encoder/fusion的 `stage1_encoder.pt`，下游不加载teacher或辅助头。旧v3 prepared/checkpoint不可直接复用，新Stage1/2/3均需prepare/train。
 
-Stage1现役Base另有train-only原子电荷监督（独立系数0.1），使用绑定旧corpus的标签sidecar，不重建Uni-Mol缓存。梯度审计每1000步，可用`--gradient-audit-interval-steps 0`关闭。完整最终`last.pt`保留辅助回归头；可显式运行`scripts/stage1/regression.py`冻结encoder后独立训练13项电子目标和partial charge，不覆盖正式encoder或下游来源，见[ADR-0092](docs/adr/0092-stage1-atom-charge-and-frozen-regression-heads.md)及[v4手册](docs/v4-runbook.md#independent-frozen-regression-head-training)。
+Stage1现役Base另有train-only原子电荷监督（独立系数0.1），使用绑定既有corpus的format2标签sidecar；同结构电荷源行分别保留，不平均、不复制语料，旧sidecar不可交叉续用；不重建Uni-Mol缓存。梯度审计每1000步，可用`--gradient-audit-interval-steps 0`关闭。完整最终`last.pt`保留辅助回归头；可显式运行`scripts/stage1/regression.py`冻结encoder后独立训练13项电子目标和partial charge，不覆盖正式encoder或下游来源，见[ADR-0092](docs/adr/0092-stage1-atom-charge-and-frozen-regression-heads.md)及[v4手册](docs/v4-runbook.md#independent-frozen-regression-head-training)。
 
 独立 regression YAML 支持 `linear/mlp/residual_mlp` 及逐目标 predictor 覆盖；默认 Linear 保持预训练初始化，非线性头以固定 seed 随机初始化。新 format2 可按内嵌结构加载，旧 Linear format1 仍兼容；encoder及下游身份不变，见[ADR-0093](docs/adr/0093-stage1-configurable-frozen-predictors.md)。
 

@@ -6,7 +6,7 @@
 
 | 主题 | ADR（按修订顺序） | 阅读重点 |
 |---|---|---|
-| v4 冻结双视图主线 | [0089](0089-v4-frozen-dual-view-stage1.md)、[0090](0090-stage1-v4-residual-encoder-capacity.md)、[0091](0091-stage1-v4-loss-weights-gradient-audit.md)、[0092](0092-stage1-atom-charge-and-frozen-regression-heads.md) | Stage1 learned1024、自然shuffle与2/2/1 loss权重；约60.73M encoder，RDKit/Uni-Mol系数0.5/0.25，train-only原子电荷0.1及1000步只读audit；独立冻结回归头后训练不替换encoder；下游永久冻结Stage1 |
+| v4 冻结双视图主线 | [0089](0089-v4-frozen-dual-view-stage1.md)、[0090](0090-stage1-v4-residual-encoder-capacity.md)、[0091](0091-stage1-v4-loss-weights-gradient-audit.md)、[0092](0092-stage1-atom-charge-and-frozen-regression-heads.md) | Stage1 learned1024、自然shuffle与2/2/1 loss权重；约60.73M encoder，RDKit/Uni-Mol系数0.5/0.25，train-only原子电荷0.1、重复结构独立观察/sidecar format2及1000步只读audit；独立冻结回归头后训练不替换encoder；下游永久冻结Stage1 |
 | 历史 v2/v3 表示与隔离 | [0039](0039-global-rdkit-v2-mainline.md) | 三模态 Stage 1、1024D entity/Object/HoME；仅约束历史配置，现役表示由 0089 取代 |
 | Stage 1 执行 | [0013](0013-stage1-full-corpus-ddp.md)、[0014](0014-stage1-prepare-performance-and-corpus-v2.md)、[0015](0015-stage1-high-throughput-epoch-resume.md)、[0017](0017-stage1-base-runtime-profile.md) | 全量 epoch、prepare/runtime、DDP 与完整 epoch 恢复 |
 | Stage1 独立回归头 | [0092](0092-stage1-atom-charge-and-frozen-regression-heads.md)、[0093](0093-stage1-configurable-frozen-predictors.md) | 冻结 entity1024/atom512；Linear/MLP/residual MLP 默认与逐目标覆盖；独立 format2，兼容旧 Linear format1；validation只报告 |

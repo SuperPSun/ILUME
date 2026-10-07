@@ -1,5 +1,5 @@
 stage1_artifacts: outputs/v4/stage1/base/prepare/artifacts
-simulation_dir: data/stage2
+simulation_dir: data/stage1/properties
 partial_charge_manifest: data/stage1/properties/partial_atomic_charge/charge_20260514/structure_manifest.csv
 partial_charge_cache: outputs/v4/stage1/base/partial_charge/artifacts
 epochs: 10
