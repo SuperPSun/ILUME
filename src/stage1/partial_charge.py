@@ -45,6 +45,7 @@ def charge_source_contract(config, split="train"):
             "manifest_sha256": sha256_file(manifest), "structures": structures,
             "mapping": PARTIAL_CHARGE_MAPPING_CONTRACT["hash"],
             "observations": "all-source-rows-independent-v2",
+            "mol2_atom_section_alias": "MOLM",
             "unmapped_policy": "skip-no-isomorphism-audit-v1"}
 
 
