@@ -126,19 +126,41 @@ Only exact canonical matches are labeled; train statistics use matched Stage1 tr
 
 ### Independent frozen regression-head training
 
-Run explicitly after the final Stage1 epoch; nothing is automatically appended to pretraining. The command needs complete final `last.pt` or the final epoch checkpoint, not `stage1_encoder.pt`. Configure data/artifact paths and budgets in `configs/v4/stage1/regression_heads.yaml`. It encodes clean structures once, freezes the encoder, and independently trains all13 scalar heads plus atom charge from their trained rows/head. Defaults:10 epochs, LR1e-4, constant LR, batch128, AdamW/WD0.01, BF16, clip1. Validation only reports original-unit MAE/RMSE; final means epoch10, never best. Test is not read.
+Run explicitly after the final Stage1 epoch; nothing is automatically appended to pretraining. The command needs complete final `last.pt` or the final epoch checkpoint, not `stage1_encoder.pt`. Configure data/artifact paths and budgets in `configs/v4/stage1/regression_heads.yaml`. It encodes clean structures once, freezes the encoder, and independently trains all13 scalar heads plus atom charge. The current YAML explicitly uses MLPs: entity1024→512→256→1 for each electronic target, atom512→256→128→1 for partial charge, GELU and dropout0. Each is independently initialized using its existing task-local seed (656,385 / 164,353 parameters respectively), with no weight sharing. Shared schema default remains Linear, which starts from its trained row/head when predictor is omitted. Defaults:10 epochs, LR1e-4, constant LR, batch128, AdamW/WD0.01, BF16, clip1. Validation only reports original-unit MAE/RMSE; final means epoch10, never best. Test is not read. Use a new output for this MLP recipe; existing Linear outputs remain read-only, and Stage1/2/3 need not be rerun.
 
 ```bash
-python scripts/stage1/regression.py --config configs/v4/stage1/regression_heads.yaml --checkpoint outputs/v4/stage1/base/train/last.pt --output outputs/v4/stage1/base/regression --device cuda:0
+python scripts/stage1/regression.py --config configs/v4/stage1/regression_heads.yaml --checkpoint outputs/v4/stage1/base/train/last.pt --output outputs/v4/stage1/base/regression_mlp --device cuda:0
 ```
 
 Optional subset, including use of old complete v4 checkpoints without an atom head:
 
 ```bash
-python scripts/stage1/regression.py --config configs/v4/stage1/regression_heads.yaml --checkpoint outputs/v4/stage1/base/train/last.pt --tasks HOMO_eV LUMO_eV --output outputs/v4/stage1/base/regression_homo_lumo --device cuda:0
+python scripts/stage1/regression.py --config configs/v4/stage1/regression_heads.yaml --checkpoint outputs/v4/stage1/base/train/last.pt --tasks HOMO_eV LUMO_eV --output outputs/v4/stage1/base/regression_mlp_homo_lumo --device cuda:0
 ```
 
-Default tasks are HOMO_eV/LUMO_eV, ESP_max/min/std/pos_frac, Dipole, Quadrupole, q_max/min/std/pos_frac, gap_eV and partial_atomic_charge. The q_* summaries are not atom-charge prediction. Train/valid canonical overlap and conflicting labels fail. New task normalization fits full train only; initialized weights/bias are converted to preserve original-unit predictions. Regression output has a source-bound `representations.pt`, per-task `metrics.jsonl` and `regression_head.pt/json`, plus summary. It is not a replacement Stage1 encoder or a Stage3 reporting artifact; no Stage2/3 rerun is needed for this head-only experiment. Source checkpoint, encoder and other heads are read-only. Existing output cannot be overwritten; a failed head run restarts in a fresh directory. No teacher execution or teacher cache is needed for scalar-only post-training; atom-head initialization additionally validates its original sidecar/scaler identity.
+Default tasks are HOMO_eV/LUMO_eV, ESP_max/min/std/pos_frac, Dipole, Quadrupole, q_max/min/std/pos_frac, gap_eV and partial_atomic_charge. The q_* summaries are not atom-charge prediction. Train/valid canonical overlap and conflicting labels fail. New task normalization fits full train only; Linear's initialized weights/bias are converted to preserve original-unit predictions. Regression output has a source-bound `representations.pt`, per-task `metrics.jsonl` and `regression_head.pt/json`, plus summary. It is not a replacement Stage1 encoder or a Stage3 reporting artifact; no Stage2/3 rerun is needed for this head-only experiment. Source checkpoint, encoder and other heads are read-only. Existing output cannot be overwritten; a failed head run restarts in a fresh directory. No teacher execution or teacher cache is needed for scalar-only post-training; atom-head initialization additionally validates its original sidecar/scaler identity.
+
+Predictor configuration is YAML-only; CLI arguments above are unchanged. Copy the self-contained regression YAML to a new file and change only the desired recipe. For example:
+
+```yaml
+predictor:
+  type: linear
+predictor_overrides:
+  HOMO_eV:
+    type: mlp
+    hidden_dims: [512, 256]
+    activation: gelu
+    dropout: 0.1
+  partial_atomic_charge:
+    type: residual_mlp
+    hidden_dims: [256, 256]
+    activation: gelu
+    dropout: 0.1
+```
+
+Overrides replace the complete shared predictor recipe; unlisted targets use the shared default. To use one MLP recipe for all targets, set `predictor.type: mlp` and its hidden dimensions/activation/dropout instead. Types are `linear/mlp/residual_mlp`; activations are `gelu/relu/silu`, default GELU, dropout0. Electronic input is learned1024, atom input atom512, and output1 is fixed. MLP uses Linear→activation→Dropout hidden layers. Each residual block uses input→width→width with two dropouts and an Identity/projected shortcut; no normalization or post-add activation. Each hidden width is positive; nonlinear lists cannot be empty. No arbitrary module imports or input/output width overrides.
+
+Linear retains pretrained initialization, numerical behavior and identity. Nonlinear heads are randomly initialized with stable task-local seeds, not pretrained-linear residual calibration; their initial raw predictions need not match the source. Structure enters the selected-target regression identity and requires a new output, but does not change any Stage1/2/3 identity. All predictors keep the same training/data/frozen-encoder rules, including rejection of partial-charge requests when the source lacks its atom head. Format2 stores the resolved structure, input width, parameter count, initialization, seed and hashes; `stage1.regression.load_regression_head(task_root, checkpoint_path)` reconstructs from the artifact without YAML and still accepts old format1 Linear heads. See [ADR-0093](adr/0093-stage1-configurable-frozen-predictors.md).
 
 ### Copy an existing teacher checkpoint to another server
 

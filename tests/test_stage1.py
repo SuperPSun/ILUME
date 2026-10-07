@@ -358,9 +358,99 @@ def test_frozen_regression_affine_initialization_and_molecule_loss(tiny_config):
     assert regression_loss(prediction, labels, ids, counts, roles, (2., 2., 1.)).item() == pytest.approx(expected.item())
     recipe = load_regression_config(ROOT / "configs/v4/stage1/regression_heads.yaml")
     assert (recipe.epochs, recipe.learning_rate, recipe.batch_size) == (10, 1e-4, 128)
+    from stage1.predictors import build_predictor
+    from stage1.regression import REGRESSION_TASKS
+    heads = []
+    for task in REGRESSION_TASKS:
+        predictor = recipe.resolved_predictor(task)
+        atomic = task == "partial_atomic_charge"
+        width, hidden, count = (512, (256, 128), 164353) if atomic else (1024, (512, 256), 656385)
+        assert (predictor.type, predictor.hidden_dims, predictor.activation, predictor.dropout) == ("mlp", hidden, "gelu", 0.)
+        head = build_predictor(predictor, width)
+        assert [(m.in_features, m.out_features) for m in head.modules() if isinstance(m, torch.nn.Linear)] == [
+            (width, hidden[0]), (hidden[0], hidden[1]), (hidden[1], 1)]
+        assert sum(p.numel() for p in head.parameters()) == count
+        heads.append(head)
+    parameters = [p for head in heads for p in head.parameters()]
+    assert len({id(p) for p in parameters}) == len(parameters)
     assert regression_tasks(["LUMO_eV", "HOMO_eV"]) == ("HOMO_eV", "LUMO_eV")
     with pytest.raises(ValueError, match="unique"):
         regression_tasks(["HOMO_eV", "HOMO_eV"])
+
+
+@pytest.mark.parametrize("device_name", ["cpu", "cuda"])
+def test_regression_predictor_config_structure_and_rng(tmp_path, device_name):
+    import yaml
+    from stage1.predictors import PredictorConfig, ResidualPredictorBlock, build_predictor, predictor_from_dict, predictor_rng
+    from stage1.regression import RegressionConfig, initialize_regression_head, load_regression_config
+
+    if device_name == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    device = torch.device(device_name)
+    linear = RegressionConfig()
+    assert "predictor" not in linear.to_dict() and "predictor_overrides" not in linear.to_dict()
+    mlp = PredictorConfig("mlp", (16, 8), "silu", .2)
+    residual = PredictorConfig("residual_mlp", (16, 16), "relu", .1)
+    config = replace(linear, predictor=mlp, predictor_overrides={"partial_atomic_charge": residual, "LUMO_eV": PredictorConfig()})
+    yaml_path = tmp_path / "regression.yaml"
+    yaml_path.write_text(yaml.safe_dump(config.to_dict()))
+    assert load_regression_config(yaml_path).to_dict() == config.to_dict()
+    assert config.resolved_predictor("HOMO_eV") == mlp
+    assert config.resolved_predictor("LUMO_eV") == PredictorConfig()
+    assert config.resolved_predictor("partial_atomic_charge") == residual
+    for invalid in ({"type": "unknown"}, {"type": "mlp"},
+                    {"type": "mlp", "hidden_dims": [True]}, {"type": "mlp", "hidden_dims": [0]},
+                    {"type": "mlp", "hidden_dims": "512"}, {"type": "mlp", "hidden_dims": [16], "activation": "tanh"},
+                    {"type": "mlp", "hidden_dims": [16], "dropout": float("nan")},
+                    {"type": "mlp", "hidden_dims": [16], "dropout": 1.},
+                    {"type": "linear", "hidden_dims": [16]}, {"type": "linear", "input_dim": 1024}):
+        with pytest.raises(ValueError):
+            predictor_from_dict(invalid)
+    yaml_path.write_text(yaml.safe_dump({"predictor_overrides": {"not_a_target": {"type": "linear"}}}))
+    with pytest.raises(ValueError, match="override target"):
+        load_regression_config(yaml_path)
+    # Overrides replace the full recipe, rather than inheriting MLP defaults.
+    yaml_path.write_text(yaml.safe_dump({"predictor": mlp.to_dict(), "predictor_overrides": {"HOMO_eV": {"type": "residual_mlp"}}}))
+    with pytest.raises(ValueError, match="hidden layer"):
+        load_regression_config(yaml_path)
+
+    state = {"electronic_head.weight": torch.randn(13, 1024), "electronic_head.bias": torch.randn(13),
+             "partial_charge_head.weight": torch.randn(1, 512), "partial_charge_head.bias": torch.randn(1)}
+    stats = {"mean": 0., "scale": 1.}
+    for task, width in (("HOMO_eV", 1024), ("partial_atomic_charge", 512)):
+        for recipe in (PredictorConfig(), mlp, residual):
+            head = initialize_regression_head(state, task, stats, stats, device, recipe, seed=71)
+            inputs = torch.ones(4, width, device=device)
+            outputs = head.eval()(inputs)
+            assert outputs.shape == (4, 1) and torch.isfinite(outputs).all()
+            outputs.sum().backward()
+            assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in head.parameters())
+            if recipe.type == "linear":
+                assert set(head.state_dict()) == {"weight", "bias"}
+                continue
+            repeated = initialize_regression_head(state, task, stats, stats, device, recipe, seed=71)
+            assert all(torch.equal(value, repeated.state_dict()[name]) for name, value in head.state_dict().items())
+            other = initialize_regression_head(state, task, stats, stats, device, recipe, seed=72)
+            assert any(not torch.equal(value, other.state_dict()[name]) for name, value in head.state_dict().items())
+            head.train()
+            cpu_rng = torch.get_rng_state().clone()
+            cuda_rng = torch.cuda.get_rng_state(device).clone() if device.type == "cuda" else None
+            with predictor_rng(recipe, 71, device):
+                left = head(inputs)
+            with predictor_rng(recipe, 72, device):
+                head(inputs)
+            with predictor_rng(recipe, 71, device):
+                right = head(inputs)
+            assert torch.equal(left, right) and torch.equal(torch.get_rng_state(), cpu_rng)
+            if cuda_rng is not None:
+                assert torch.equal(torch.cuda.get_rng_state(device), cuda_rng)
+    model = build_predictor(residual, 512).eval()
+    assert isinstance(model[0].shortcut, torch.nn.Linear)
+    assert isinstance(model[1].shortcut, torch.nn.Identity)
+    assert all(not isinstance(module, (torch.nn.LayerNorm, torch.nn.BatchNorm1d)) for module in model.modules())
+    block = ResidualPredictorBlock(16, 16, torch.nn.GELU, 0.)
+    values = torch.randn(2, 16)
+    assert torch.equal(block(values), values + block.residual(values))
 
 
 @pytest.mark.parametrize("graph_message_mode", ["shared", "residual_blocks"])
@@ -709,11 +799,16 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
     source_bytes = (output / "last.pt").read_bytes()
     final_encoder = (output / "stage1_encoder.pt").read_bytes()
     heads = run_regression(regression_config, output / "last.pt", tmp_path / "regression", selected)
+    from stage1.predictors import PredictorConfig
+    assert "predictor" not in regression_config.to_dict()
+    assert regression_identity(replace(regression_config, predictor=PredictorConfig()), output / "last.pt", selected) == heads["identity"]
     assert (output / "last.pt").read_bytes() == source_bytes
     assert (output / "stage1_encoder.pt").read_bytes() == final_encoder
     assert set(heads["tasks"]) == set(selected)
     for task in selected:
         head, head_manifest = load_regression_head(tmp_path / "regression/tasks" / task, output / "last.pt")
+        assert head_manifest["format_version"] == 2
+        assert head_manifest["predictor"] == {"type": "linear"}
         assert head_manifest["fixed_final_epoch"] == 2
         history = [json.loads(line) for line in (tmp_path / "regression/tasks" / task / "metrics.jsonl").read_text().splitlines()]
         assert head_manifest["validation"] == history[-1]["validation"]
@@ -730,6 +825,56 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
             patch.setattr(regression_module, "evaluate_regression_head", worse_validation)
             reported = run_regression(regression_config, output / "last.pt", tmp_path / "reporting_only", selected)
         assert all(reported["tasks"][task]["state_hash"] == heads["tasks"][task]["state_hash"] for task in selected)
+    else:
+        import stage1.regression as regression_module
+        from common.io import atomic_json, atomic_torch_save, sha256_file
+        mixed = replace(regression_config, predictor=PredictorConfig("mlp", (16, 8), "gelu", .15),
+                        predictor_overrides={"LUMO_eV": PredictorConfig(),
+                                             "partial_atomic_charge": PredictorConfig("residual_mlp", (16, 16), "relu", .1)})
+        mixed_tasks = ["HOMO_eV", "LUMO_eV", "partial_atomic_charge"]
+        mixed_identity = regression_identity(mixed, output / "last.pt", mixed_tasks)
+        assert mixed_identity != regression_identity(regression_config, output / "last.pt", mixed_tasks)
+        assert regression_identity(replace(regression_config, predictor_overrides={"gap_eV": mixed.predictor}),
+                                   output / "last.pt", mixed_tasks) == regression_identity(regression_config, output / "last.pt", mixed_tasks)
+        forward = run_regression(mixed, output / "last.pt", tmp_path / "mixed", mixed_tasks)
+        with monkeypatch.context() as patch:
+            # Exercise reversed execution, not just the CLI's stable sorting.
+            patch.setattr(regression_module, "regression_tasks", lambda tasks=None: tuple(tasks) if tasks is not None else REGRESSION_TASKS)
+            reverse = run_regression(mixed, output / "last.pt", tmp_path / "mixed_reverse", list(reversed(mixed_tasks)))
+        for task in mixed_tasks:
+            assert forward["tasks"][task]["state_hash"] == reverse["tasks"][task]["state_hash"]
+            assert forward["tasks"][task]["validation"] == reverse["tasks"][task]["validation"]
+            loaded, loaded_manifest = load_regression_head(tmp_path / "mixed/tasks" / task, output / "last.pt")
+            recipe = mixed.resolved_predictor(task)
+            assert loaded_manifest["predictor"] == recipe.to_dict()
+            assert loaded_manifest["parameter_count"] == sum(p.numel() for p in loaded.parameters())
+            inputs = torch.ones(3, loaded_manifest["input_dim"])
+            reference = regression_module.build_predictor(recipe, loaded_manifest["input_dim"]).eval()
+            reference.load_state_dict(torch.load(tmp_path / "mixed/tasks" / task / "regression_head.pt", weights_only=False)["model"])
+            assert torch.equal(loaded(inputs), reference(inputs))
+        # Historical format1 has no predictor metadata and reconstructs a Linear.
+        legacy_root = tmp_path / "legacy_head"
+        legacy_root.mkdir()
+        payload = torch.load(tmp_path / "regression/tasks/HOMO_eV/regression_head.pt", weights_only=False)
+        for key in ("predictor", "parameter_count", "initialization"):
+            payload.pop(key)
+        payload["format_version"] = 1
+        atomic_torch_save(legacy_root / "regression_head.pt", payload)
+        atomic_json(legacy_root / "regression_head.json", {**{k: v for k, v in payload.items() if k != "model"},
+                    "artifact_sha256": sha256_file(legacy_root / "regression_head.pt")})
+        legacy_head, legacy_manifest = load_regression_head(legacy_root, output / "last.pt")
+        assert legacy_manifest["format_version"] == 1
+        assert all(torch.equal(value, payload["model"][name]) for name, value in legacy_head.state_dict().items())
+        bad_root = tmp_path / "mixed/tasks/HOMO_eV"
+        payload = torch.load(bad_root / "regression_head.pt", weights_only=False)
+        payload["predictor"]["hidden_dims"] = [32, 8]
+        atomic_torch_save(bad_root / "regression_head.pt", payload)
+        atomic_json(bad_root / "regression_head.json", {**{k: v for k, v in payload.items() if k != "model"},
+                    "artifact_sha256": sha256_file(bad_root / "regression_head.pt")})
+        with pytest.raises(ValueError, match="predictor differs"):
+            load_regression_head(bad_root, output / "last.pt")
+        assert (output / "last.pt").read_bytes() == source_bytes
+        assert (output / "stage1_encoder.pt").read_bytes() == final_encoder
     with pytest.raises(FileExistsError, match="new output"):
         run_regression(regression_config, output / "last.pt", tmp_path / "regression", selected)
     wrong = tmp_path / "wrong_anchor.pt"

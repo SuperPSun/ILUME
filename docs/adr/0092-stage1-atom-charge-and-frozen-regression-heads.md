@@ -22,6 +22,8 @@ A separate sidecar binds corpus/manifest, train CSV, structure manifest and refe
 
 ## Independent frozen-head training
 
+[ADR-0093](0093-stage1-configurable-frozen-predictors.md) extends this section with configurable MLP/residual MLP predictors and format2 artifacts; the Linear initialization and all data/freeze/optimization boundaries below remain valid.
+
 `scripts/stage1/regression.py` is explicit opt-in, not automatically called after pretraining. It accepts a complete final v4 pretraining checkpoint, self-contained regression YAML, new output, optional targets and execution-only device. It does not accept encoder-only exports or incomplete epochs. Default targets are HOMO/LUMO plus eleven HF scalar targets and partial atomic charge; `q_max/min/std/pos_frac` are scalar summaries, not atom charge.
 
 Freeze/eval the encoder and Fusion. Encode unmasked full simulation train/valid structures once, without modality dropout or descriptor input; cache learned entity/atom states with source and tensor hashes. No teacher inference is needed. Each target independently starts from the original electronic-head row or atom head and has its own linear-head optimizer. Old v4 checkpoints may select existing scalar tasks; missing atom head is an error, never randomly substituted.

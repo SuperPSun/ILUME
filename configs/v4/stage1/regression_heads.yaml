@@ -13,3 +13,14 @@ amp_dtype: bf16
 device: auto
 seed: 42
 role_weights: [2.0, 2.0, 1.0]
+predictor:
+  type: mlp
+  hidden_dims: [512, 256]
+  activation: gelu
+  dropout: 0.0
+predictor_overrides:
+  partial_atomic_charge:
+    type: mlp
+    hidden_dims: [256, 128]
+    activation: gelu
+    dropout: 0.0

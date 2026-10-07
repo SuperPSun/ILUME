@@ -16,6 +16,8 @@ python -m pip install -e ".[dev,tokenizers]"
 
 Stage1现役Base另有train-only原子电荷监督（独立系数0.1），使用绑定旧corpus的标签sidecar，不重建Uni-Mol缓存。梯度审计每1000步，可用`--gradient-audit-interval-steps 0`关闭。完整最终`last.pt`保留辅助回归头；可显式运行`scripts/stage1/regression.py`冻结encoder后独立训练13项电子目标和partial charge，不覆盖正式encoder或下游来源，见[ADR-0092](docs/adr/0092-stage1-atom-charge-and-frozen-regression-heads.md)及[v4手册](docs/v4-runbook.md#independent-frozen-regression-head-training)。
 
+独立 regression YAML 支持 `linear/mlp/residual_mlp` 及逐目标 predictor 覆盖；默认 Linear 保持预训练初始化，非线性头以固定 seed 随机初始化。新 format2 可按内嵌结构加载，旧 Linear format1 仍兼容；encoder及下游身份不变，见[ADR-0093](docs/adr/0093-stage1-configurable-frozen-predictors.md)。
+
 ## v3 历史运行手册
 
 下列v3主线、候选与核心消融命令保留用于历史追溯，不是v4入口，不覆盖旧结果；v3/legacy数值合同与代码路径未迁移。

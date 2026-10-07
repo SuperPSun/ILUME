@@ -4,7 +4,7 @@ from __future__ import annotations
 import csv
 import json
 import math
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -12,7 +12,6 @@ import torch
 import torch.nn.functional as F
 import yaml
 from rdkit import Chem
-from torch import nn
 
 from common.identity import semantic_identity, tensor_state_hash, validate_semantic_identity
 from common.io import atomic_json, atomic_torch_save, sha256_file
@@ -25,6 +24,7 @@ from .identity import encoding_state_hash
 from .masking import MultimodalPacker
 from .model import load_stage1_model
 from .partial_charge import PartialChargeCache, charge_source_contract, load_charge_rows
+from .predictors import PredictorConfig, build_predictor, predictor_from_dict, predictor_rng
 
 
 REGRESSION_TASKS = (*ELECTRONIC_COLUMNS, "partial_atomic_charge")
@@ -48,8 +48,15 @@ class RegressionConfig:
     device: str = "auto"
     seed: int = 42
     role_weights: tuple[float, float, float] = (2., 2., 1.)
+    predictor: PredictorConfig = field(default_factory=PredictorConfig)
+    predictor_overrides: dict[str, PredictorConfig] = field(default_factory=dict)
 
     def validate(self):
+        self.predictor.validate()
+        if set(self.predictor_overrides) - set(REGRESSION_TASKS):
+            raise ValueError("Unknown predictor override target")
+        for recipe in self.predictor_overrides.values():
+            recipe.validate()
         for name in ("epochs", "batch_size"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -67,8 +74,18 @@ class RegressionConfig:
             raise ValueError("Unsupported regression AMP precision")
 
     def to_dict(self):
-        return {k: str(v) if isinstance(v, Path) else list(v) if isinstance(v, tuple) else v
-                for k, v in asdict(self).items()}
+        result = {k: str(v) if isinstance(v, Path) else list(v) if isinstance(v, tuple) else v
+                  for k, v in asdict(self).items() if k not in {"predictor", "predictor_overrides"}}
+        if self.predictor != PredictorConfig():
+            result["predictor"] = self.predictor.to_dict()
+        if self.predictor_overrides:
+            result["predictor_overrides"] = {task: recipe.to_dict() for task, recipe in self.predictor_overrides.items()}
+        return result
+
+    def resolved_predictor(self, task):
+        if task not in REGRESSION_TASKS:
+            raise ValueError("Unknown predictor target")
+        return self.predictor_overrides.get(task, self.predictor)
 
 
 def load_regression_config(path):
@@ -81,6 +98,12 @@ def load_regression_config(path):
     for name in ("betas", "role_weights"):
         if name in raw:
             raw[name] = tuple(raw[name])
+    if "predictor" in raw:
+        raw["predictor"] = predictor_from_dict(raw["predictor"])
+    if "predictor_overrides" in raw:
+        if not isinstance(raw["predictor_overrides"], dict):
+            raise ValueError("predictor_overrides must be a target-to-predictor mapping")
+        raw["predictor_overrides"] = {task: predictor_from_dict(value) for task, value in raw["predictor_overrides"].items()}
     config = RegressionConfig(**raw)
     config.validate()
     return config
@@ -120,6 +143,10 @@ def regression_identity(config, checkpoint_path, tasks=None):
             data[task] = {split: sha256_file(config.simulation_dir / directory / f"{split}.csv")
                           for split in ("train", "valid")}
     recipe = config.to_dict()
+    recipe.pop("predictor", None)
+    recipe.pop("predictor_overrides", None)
+    if any(config.resolved_predictor(task).type != "linear" for task in tasks):
+        recipe["predictors"] = {task: config.resolved_predictor(task).to_dict() for task in tasks}
     for key in ("stage1_artifacts", "simulation_dir", "partial_charge_manifest", "partial_charge_cache", "device"):
         recipe.pop(key)
     metadata = json.loads((config.stage1_artifacts / "metadata.json").read_text())
@@ -163,13 +190,17 @@ def load_regression_rows(config, source_config, task, split):
     return [rows[key] for key in sorted(rows)]
 
 
-def initialize_regression_head(state, task, old_scaler, new_scaler, device):
+def initialize_regression_head(state, task, old_scaler, new_scaler, device, predictor=None, seed=42):
+    predictor = predictor if predictor is not None else PredictorConfig()
     if task == "partial_atomic_charge":
         weight, bias = state["partial_charge_head.weight"], state["partial_charge_head.bias"]
     else:
         index = ELECTRONIC_COLUMNS.index(task)
         weight, bias = state["electronic_head.weight"][index:index + 1], state["electronic_head.bias"][index:index + 1]
-    head = nn.Linear(weight.shape[1], 1).to(device)
+    with predictor_rng(predictor, seed, device):
+        head = build_predictor(predictor, weight.shape[1]).to(device)
+    if predictor.type != "linear":
+        return head
     with torch.no_grad():
         head.weight.copy_(weight.to(device) * (old_scaler["scale"] / new_scaler["scale"]))
         head.bias.copy_((bias.to(device) * old_scaler["scale"] + old_scaler["mean"] - new_scaler["mean"]) / new_scaler["scale"])
@@ -278,8 +309,10 @@ def run_regression(config, checkpoint_path, output_dir, tasks=None):
             index = ELECTRONIC_COLUMNS.index(task)
             old_scaler = {"mean": electronic_scaler["mean"][index], "scale": electronic_scaler["scale"][index]}
         seed = config.seed + REGRESSION_TASKS.index(task)
+        predictor = config.resolved_predictor(task)
+        input_dim = source["model"]["partial_charge_head.weight" if atom_level else "electronic_head.weight"].shape[1]
         with torch.random.fork_rng(devices=[device.index if device.index is not None else torch.cuda.current_device()] if device.type == "cuda" else []):
-            head = initialize_regression_head(source["model"], task, old_scaler, scaler, device)
+            head = initialize_regression_head(source["model"], task, old_scaler, scaler, device, predictor, seed)
         task_root = root / "tasks" / task
         task_root.mkdir(parents=True)
         initial = evaluate_regression_head(head, valid, bank, atom_level, scaler, device, config.batch_size)
@@ -287,7 +320,7 @@ def run_regression(config, checkpoint_path, output_dir, tasks=None):
                                      betas=config.betas, eps=config.eps)
         grad_scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled and config.amp_dtype == "fp16")
         updates = 0
-        with reporter.bar(total=config.epochs, desc=f"Regression {task}", unit="epoch") as progress:
+        with predictor_rng(predictor, seed, device), reporter.bar(total=config.epochs, desc=f"Regression {task}", unit="epoch") as progress:
             for epoch in range(1, config.epochs + 1):
                 head.train()
                 order = np.random.default_rng(seed + epoch).permutation(len(train))
@@ -317,8 +350,10 @@ def run_regression(config, checkpoint_path, output_dir, tasks=None):
                 progress.update(1)
         state = {name: value.detach().cpu().clone() for name, value in head.state_dict().items()}
         state_hash = tensor_state_hash("stage1.regression.head.v4", state)
-        manifest = {"kind": REGRESSION_KIND, "format_version": 1, "identity": identity,
-                    "task": task, "input_dim": head.in_features, "scaler": scaler,
+        manifest = {"kind": REGRESSION_KIND, "format_version": 2, "identity": identity,
+                    "task": task, "input_dim": input_dim, "scaler": scaler,
+                    "predictor": predictor.to_dict(), "parameter_count": sum(p.numel() for p in head.parameters()),
+                    "initialization": "pretrained-affine" if predictor.type == "linear" else "task-seeded-random",
                     "base_checkpoint_sha256": identity["payload"]["base_checkpoint_sha256"],
                     "base_encoder_hash": encoder_hash, "base_training_identity": source["training_identity"],
                     "fixed_final_epoch": config.epochs, "updates": updates, "seed": seed,
@@ -340,7 +375,7 @@ def run_regression(config, checkpoint_path, output_dir, tasks=None):
 def load_regression_head(task_root, checkpoint_path):
     root = Path(task_root)
     manifest = json.loads((root / "regression_head.json").read_text())
-    if manifest.get("kind") != REGRESSION_KIND or manifest.get("format_version") != 1:
+    if manifest.get("kind") != REGRESSION_KIND or manifest.get("format_version") not in {1, 2}:
         raise ValueError("Unsupported regression-head artifact")
     validate_semantic_identity(manifest["identity"])
     validate_semantic_identity(manifest["base_training_identity"])
@@ -350,6 +385,10 @@ def load_regression_head(task_root, checkpoint_path):
         raise ValueError("Regression-head source/target identity mismatch")
     if sha256_file(checkpoint_path) != manifest["base_checkpoint_sha256"]:
         raise ValueError("Regression head belongs to a different Stage1 checkpoint")
+    source = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    source_key = "partial_charge_head.weight" if manifest["task"] == "partial_atomic_charge" else "electronic_head.weight"
+    if manifest["input_dim"] != source["model"][source_key].shape[1]:
+        raise ValueError("Regression-head input dimension differs from its frozen source")
     if sha256_file(root / "regression_head.pt") != manifest["artifact_sha256"]:
         raise ValueError("Regression-head artifact hash mismatch")
     payload = torch.load(root / "regression_head.pt", map_location="cpu", weights_only=False)
@@ -357,6 +396,16 @@ def load_regression_head(task_root, checkpoint_path):
         raise ValueError("Regression-head manifest/payload mismatch")
     if tensor_state_hash("stage1.regression.head.v4", payload["model"]) != manifest["state_hash"]:
         raise ValueError("Regression-head state hash mismatch")
-    head = nn.Linear(manifest["input_dim"], 1)
+    predictor = predictor_from_dict(manifest["predictor"]) if manifest["format_version"] == 2 else PredictorConfig()
+    resolved = manifest["identity"]["payload"]["recipe"].get("predictors", {})
+    if predictor.to_dict() != resolved.get(manifest["task"], {"type": "linear"}):
+        raise ValueError("Regression-head predictor differs from its training identity")
+    head = build_predictor(predictor, manifest["input_dim"])
+    if manifest["format_version"] == 2:
+        if manifest["parameter_count"] != sum(p.numel() for p in head.parameters()):
+            raise ValueError("Regression-head parameter count mismatch")
+        expected = "pretrained-affine" if predictor.type == "linear" else "task-seeded-random"
+        if manifest["initialization"] != expected:
+            raise ValueError("Regression-head initialization contract mismatch")
     head.load_state_dict(payload["model"], strict=True)
     return head.requires_grad_(False).eval(), manifest

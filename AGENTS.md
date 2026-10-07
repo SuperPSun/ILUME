@@ -21,6 +21,8 @@
 
 禁止恢复：Stage1 descriptor/role输入、重型token fusion、fingerprint、角色平衡/重复采样、augmentation multiplier、多容量正式配置、mid-epoch恢复；Stage2/3不得反传Stage1，禁止Stage2渐进解冻、early stopping、best/last、PCGrad或accumulation window；Stage3 four-phase、routing intervention、gate calibration或HPO/Optuna。v4 alignment/RDKit/Uni-Mol/electronic heads只用于预训练，不进入encoder-only部署。ADR-0087候选保持历史v3身份，不增加正式Base数量。
 
+ADR-0093仅扩展独立回归头后训练：YAML支持默认Linear及逐目标MLP/residual MLP；Linear继承预训练头并做等价标准化换算，非线性采用task-local随机初始化/dropout。encoder/Fusion永久冻结、entity1024/atom512输入不变，validation只报告；format2内嵌结构并兼容旧Linear format1，不改变Stage1/2/3身份或正式训练。
+
 ### Legacy、消融与 baseline
 
 - legacy/Capacity 保持五模态 format v2、Stage 2 仅补偿 physics 的 loss 与既有 refinement；Stage 3 保持整模 clipping、`max(N_t,1000)` virtual oversampling、80/20 refinement 和 `taskwise_refined`（ADR-0026/0027）。Capacity 是端到端预注册研究，不是正式多容量主线、strict scaling law 或 encoder-only effect；只用 Stage 1 Base prepare 一次，共享 `outputs/experiments_v1/stage1/prepare/artifacts`。Stage 3 正式输入只用 `formal/*.yaml`，选择只读 stitched validation，不读末轮均值或 test。
