@@ -88,11 +88,11 @@ python -u scripts/stage1/teacher.py --config configs/v4/stage1/base.yaml --devic
 
 Stop the old job before restarting against the same cache root; concurrent writers are not supported. Completed shards are reused even if worker count changes. Redirected/Slurm output emits flushed `teacher_progress` JSON at startup, each committed shard and approximately every 30 seconds between inference batches. `processed/total` includes in-memory work; `committed` counts safely published molecules. A single slow conformer/batch can delay the next log. Monitor with `tail -f slurm-<job-id>.out`.
 
-After the full cache completes, return to the original training environment (replace `ilagent2` if yours has a different name). Uni-Mol is required only for cache generation; Stage1 training reads the cache. Stage1 refuses partial/unbound teacher caches; losses weight roles2/2/1 while the loader remains the original natural shuffle.
+After the full cache completes, return to the `ilume` training environment. Uni-Mol is required only for cache generation; Stage1 training reads the cache. Stage1 refuses partial/unbound teacher caches; losses weight roles2/2/1 while the loader remains the original natural shuffle.
 
 ```bash
 conda deactivate
-conda activate ilagent2
+conda activate ilume
 python scripts/stage1/train.py --config configs/v4/stage1/base.yaml --output outputs/v4/stage1/base/train
 ```
 
