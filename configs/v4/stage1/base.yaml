@@ -68,7 +68,7 @@ training:
   weight_decay: 0.01
   warmup_fraction: 0.05
   max_grad_norm: 1.0
-  num_workers: 32
+  num_workers: 8
   device: auto
   amp_dtype: bf16
   compile: false
