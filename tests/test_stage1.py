@@ -124,6 +124,10 @@ def test_v4_residual_capacity_and_shared_compatibility(tiny_config, tiny_samples
     from stage1.identity import build_stage1_corpus_identity
 
     base = load_config(ROOT / "configs/v4/stage1/base.yaml")
+    assert [base.loss.lambda_smiles, base.loss.lambda_atom, base.loss.lambda_bond,
+            base.loss.lambda_alignment, base.loss.lambda_descriptor,
+            base.loss.lambda_unimol, base.loss.lambda_electronic] == [1., 1., 1., .1, .5, .25, .1]
+    assert (base.training.gradient_audit_interval_steps, base.training.gradient_audit_batch_size) == (5000, 32)
     assert (base.model.smiles_layers, base.model.graph_depth, base.model.graph_message_mode) == (12, 8, "residual_blocks")
     assert config_from_dict(base.to_dict()).to_dict() == base.to_dict()
     old = replace(base, model=replace(base.model, smiles_layers=8, graph_depth=6, graph_message_mode="shared"))
@@ -162,6 +166,14 @@ def test_v4_residual_capacity_and_shared_compatibility(tiny_config, tiny_samples
     explicit = tiny.to_dict()
     explicit["model"]["graph_message_mode"] = "shared"
     assert config_from_dict(explicit).to_dict() == tiny.to_dict()
+    assert not any(name.startswith("gradient_audit") for name in tiny.to_dict()["training"])
+    audited = replace(tiny, training=replace(tiny.training, gradient_audit_interval_steps=1))
+    assert train_module._config_hash(audited) == train_module._config_hash(tiny)
+    with pytest.raises(ValueError, match="dual_view_v4"):
+        replace(tiny_config, training=replace(tiny_config.training, gradient_audit_interval_steps=1)).validate()
+    for name, value in (("gradient_audit_interval_steps", -1), ("gradient_audit_batch_size", 0), ("gradient_audit_interval_steps", True)):
+        with pytest.raises(ValueError, match=name):
+            replace(tiny, training=replace(tiny.training, **{name: value})).validate()
     torch.manual_seed(42)
     implicit_model = DualViewEncoder(tiny, vocabulary).eval()
     torch.manual_seed(42)
@@ -190,6 +202,68 @@ def test_residual_graph_bonded_and_bondless_gradients(smiles):
             assert block.message_projection.weight.grad.abs().sum() > 0
         else:
             assert all(torch.count_nonzero(p.grad) == 0 for p in block.parameters())
+
+
+@pytest.mark.parametrize("device_name", ["cpu", "cuda"])
+def test_v4_gradient_audit_reference_and_state_isolation(tiny_config, tiny_samples, device_name):
+    import random
+    from stage1.auxiliary import empty_auxiliary_targets
+    from stage1.dual_view import DualViewPretrainModel
+    from stage1.gradient_audit import AUDIT_LOSSES, audit_gradient_norms
+
+    if device_name == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    device = torch.device(device_name)
+    amp_enabled = device.type == "cuda"
+    config = replace(tiny_config, architecture=ArchitectureConfig("dual_view_v4"),
+                     descriptor=DescriptorConfig(mode="full", token_count=1), fingerprint=FingerprintConfig(),
+                     model=replace(tiny_config.model, role_embedding=False, dropout=.1, graph_message_mode="residual_blocks"),
+                     masking=replace(tiny_config.masking, fusion_only_dropout=True, descriptor_dropout=0),
+                     loss=replace(tiny_config.loss, lambda_descriptor=.5, lambda_unimol=.25))
+    vocabulary, samples = tiny_samples
+    samples = [{**{k: v for k, v in s.items() if k != "fingerprints"}, "auxiliary_targets": empty_auxiliary_targets()} for s in samples]
+    for sample in samples:
+        sample["auxiliary_targets"]["unimol"] = torch.ones(768)
+        sample["auxiliary_targets"]["unimol_valid"] = torch.tensor(True)
+        sample["auxiliary_targets"]["electronic_valid"] = torch.ones(13, dtype=torch.bool)
+    probe = MultimodalMasker(vocabulary, config.masking, 400043).apply(MultimodalPacker(vocabulary)(samples), evaluation=True)
+    model = DualViewPretrainModel(config, vocabulary).to(device).eval()
+    with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp_enabled):
+        reference = model(probe.to(device))
+    assert reference.loss.item() == pytest.approx(sum(getattr(config.loss, f"lambda_{name}") * value.item() for name, value in reference.losses.items()))
+    parameters = list(model.smiles_encoder.parameters()) + list(model.graph_encoder.parameters()) + list(model.fusion.parameters())
+    expected = {}
+    for name, loss in AUDIT_LOSSES.items():
+        gradients = torch.autograd.grad(reference.losses[loss], parameters, retain_graph=True, allow_unused=True)
+        expected[name] = torch.cat([g.flatten() for g in gradients if g is not None]).norm().item()
+    model.train()
+    model.electronic_head.eval()  # Preserve heterogeneous module modes too.
+    modes = [module.training for module in model.modules()]
+    before = {k: v.clone() for k, v in model.state_dict().items()}
+    for p in model.parameters():
+        p.grad = torch.ones_like(p)  # autograd.grad must leave existing .grad untouched.
+    python_rng, numpy_rng, torch_rng = random.getstate(), np.random.get_state(), torch.get_rng_state()
+    cuda_rng = torch.cuda.get_rng_state(device) if amp_enabled else None
+    row = audit_gradient_norms(model, probe, config, device, amp_enabled=amp_enabled, amp_dtype=torch.bfloat16)
+    assert modes == [module.training for module in model.modules()]
+    assert random.getstate() == python_rng and torch.equal(torch.get_rng_state(), torch_rng)
+    np.testing.assert_equal(np.random.get_state(), numpy_rng)
+    if amp_enabled:
+        assert torch.equal(torch.cuda.get_rng_state(device), cuda_rng)
+    assert all(torch.equal(value, model.state_dict()[name]) for name, value in before.items())
+    assert all(torch.equal(p.grad, torch.ones_like(p)) for p in model.parameters())
+    for name, loss in AUDIT_LOSSES.items():
+        assert row[f"{name}_grad_norm"] == pytest.approx(expected[name], rel=1e-5)
+        assert row["weighted_grad_norms"][name] == pytest.approx(abs(getattr(config.loss, f"lambda_{loss}")) * expected[name], rel=1e-5)
+        assert row["coverage"][name]["valid_molecules"] > 0
+    missing = replace(probe, auxiliary_targets={**probe.auxiliary_targets, "electronic_valid": torch.zeros_like(probe.auxiliary_targets["electronic_valid"])})
+    row = audit_gradient_norms(model, missing, config, device, amp_enabled=amp_enabled, amp_dtype=torch.bfloat16)
+    assert row["electronic_grad_norm"] is None and row["weighted_grad_norms"]["electronic"] is None
+    assert row["coverage"]["electronic"]["status"] == "no_valid_targets"
+    with torch.no_grad():
+        model.electronic_head.weight.zero_()
+    row = audit_gradient_norms(model, probe, config, device, amp_enabled=amp_enabled, amp_dtype=torch.bfloat16)
+    assert row["electronic_grad_norm"] == 0 and row["coverage"]["electronic"]["status"] == "ok"
 
 
 @pytest.mark.parametrize("graph_message_mode", ["shared", "residual_blocks"])
@@ -285,7 +359,7 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
     config = PretrainConfig(
         architecture=ArchitectureConfig("dual_view_v4"),
         data=DataConfig(stage1_dir=source, artifacts_dir=tmp_path / "prepared", valid_fraction=0.4, max_smiles_tokens=64, shard_size=3),
-        model=ModelConfig(d_model=16, n_heads=4, smiles_layers=1, graph_depth=2, feedforward_dim=32, dropout=0., role_embedding=False, fusion_layers=0, graph_message_mode=graph_message_mode),
+        model=ModelConfig(d_model=16, n_heads=4, smiles_layers=1, graph_depth=2, feedforward_dim=32, dropout=0.1, role_embedding=False, fusion_layers=0, graph_message_mode=graph_message_mode),
         masking=MaskingConfig(fusion_only_dropout=True, descriptor_ratio=0., descriptor_dropout=0.),
         auxiliary=AuxiliaryConfig(simulation_dir=tmp_path / "simulation", teacher_cache=tmp_path / "cache", teacher_checkpoint=checkpoint, teacher_shard_size=2),
         training=TrainingConfig(batch_size=2, epochs=2, device="cpu", amp_dtype="none", num_workers=0, validation_interval_steps=100),
@@ -381,6 +455,10 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
     dataset = PreparedCorpusDataset(config.data.artifacts_dir, "train")
     dataset.teacher_cache = cache
     assert all("canonical_smiles" in dataset[index] for index in range(len(dataset)))
+    audited_config = replace(config, training=replace(config.training, gradient_audit_interval_steps=1))
+    assert resolve_stage1_training_identity(audited_config) == resolve_stage1_training_identity(config)
+    changed_loss = replace(config, loss=replace(config.loss, lambda_descriptor=.5, lambda_unimol=.25))
+    assert resolve_stage1_training_identity(changed_loss) != resolve_stage1_training_identity(config)
 
     output = tmp_path / "train"
     real_save = train_module._save_checkpoint
@@ -394,6 +472,8 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
     monkeypatch.setattr(train_module, "_save_checkpoint", real_save)
     with pytest.raises(ValueError, match="identity"):
         run_training(alternate, output_dir=tmp_path / "incompatible", resume_from=output / "last.pt")
+    with pytest.raises(ValueError, match="identity"):
+        run_training(changed_loss, output_dir=tmp_path / "incompatible_loss", resume_from=output / "last.pt")
     run_training(config, output_dir=output, resume_from=output / "last.pt")
     encoder = load_stage1_model(output / "stage1_encoder.pt", config.data.artifacts_dir)
     assert encoder.model.entity_dim == 32 and encoder.model.atom_dim == 16
@@ -401,6 +481,58 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
     exported = torch.load(output / "stage1_encoder.pt", weights_only=False)
     assert exported["fixed_final_epoch"] == 2
     assert exported["training_identity"] == resolve_stage1_training_identity(config)
+    audited_output = tmp_path / "audited_train"
+    # The same complete-epoch recovery path with audit enabled changes no updates.
+    monkeypatch.setattr(train_module, "_save_checkpoint", stop_after_epoch)
+    with pytest.raises(RuntimeError, match="planned interruption"):
+        run_training(audited_config, output_dir=audited_output)
+    committed_audits = (audited_output / "gradient_audit.jsonl").read_bytes()
+    monkeypatch.setattr(train_module, "_save_checkpoint", real_save)
+    run_training(audited_config, output_dir=audited_output, resume_from=audited_output / "last.pt")
+    assert (audited_output / "gradient_audit.jsonl").read_bytes().startswith(committed_audits)
+    assert (audited_output / "metrics.jsonl").read_bytes() == (output / "metrics.jsonl").read_bytes()
+    from common.identity import tensor_state_hash
+    original = torch.load(output / "last.pt", weights_only=False)
+    audited = torch.load(audited_output / "last.pt", weights_only=False)
+    for key in ("model", "optimizer", "scheduler", "scaler"):
+        left, right = original[key], audited[key]
+        if key == "optimizer":
+            left = {**left, "state": {str(k): v for k, v in left["state"].items()}}
+            right = {**right, "state": {str(k): v for k, v in right["state"].items()}}
+        assert tensor_state_hash("test.audit-state", left) == tensor_state_hash("test.audit-state", right)
+    rows = [json.loads(line) for line in (audited_output / "gradient_audit.jsonl").read_text().splitlines()]
+    assert [row["global_step"] for row in rows] == list(range(1, original["global_step"] + 1))
+    assert len({row["probe_hash"] for row in rows}) == len({row["mask_hash"] for row in rows}) == 1
+    valid_dataset = PreparedCorpusDataset(config.data.artifacts_dir, "valid")
+    valid_ids = {valid_dataset[i]["sample_id"] for i in range(len(valid_dataset))}
+    assert all(set(row["probe_ids"]) <= valid_ids and len(row["probe_ids"]) == len(set(row["probe_ids"])) for row in rows)
+    from stage1.gradient_audit import prepare_gradient_probe
+    valid_dataset.teacher_cache = cache
+    _, same_probe = prepare_gradient_probe(valid_dataset, vocabulary=encoder.vocabulary, config=audited_config)
+    assert same_probe["probe_hash"] == rows[0]["probe_hash"]
+    # Tiny runs exercise positive multiples without adding epoch-final audits.
+    interval_output = tmp_path / "interval_train"
+    interval_config = replace(audited_config, training=replace(audited_config.training, gradient_audit_interval_steps=4))
+    run_training(interval_config, output_dir=interval_output)
+    assert [json.loads(line)["global_step"] for line in (interval_output / "gradient_audit.jsonl").read_text().splitlines()] == [4]
+    if graph_message_mode == "residual_blocks":
+        for label, recipe in (("off", config), ("on", audited_config)):
+            mp.spawn(_ddp_training_worker, args=(2, str(tmp_path / f"audit_{label}_init"), recipe,
+                                                str(tmp_path / f"ddp_{label}"), None, False), nprocs=2, join=True)
+        left = torch.load(tmp_path / "ddp_off/last.pt", weights_only=False)
+        right = torch.load(tmp_path / "ddp_on/last.pt", weights_only=False)
+        for key in ("model", "optimizer", "scheduler", "scaler"):
+            a, b = left[key], right[key]
+            if key == "optimizer":
+                a = {**a, "state": {str(k): v for k, v in a["state"].items()}}
+                b = {**b, "state": {str(k): v for k, v in b["state"].items()}}
+            assert tensor_state_hash("test.audit-ddp", a) == tensor_state_hash("test.audit-ddp", b)
+        assert (tmp_path / "ddp_off/metrics.jsonl").read_bytes() == (tmp_path / "ddp_on/metrics.jsonl").read_bytes()
+        ddp_rows = [json.loads(line) for line in (tmp_path / "ddp_on/gradient_audit.jsonl").read_text().splitlines()]
+        assert len(ddp_rows) == left["global_step"]  # Only rank0 appends.
+        assert {row["probe_hash"] for row in ddp_rows} == {rows[0]["probe_hash"]}
+        mp.spawn(_ddp_training_worker, args=(2, str(tmp_path / "audit_error_init"), audited_config,
+                                            str(tmp_path / "ddp_error"), None, False, True), nprocs=2, join=True)
     from stage1.dual_view import DualViewEncoder
     from stage1.identity import build_stage1_encoder_identity
     encoder_identity = build_stage1_encoder_identity(model=encoder.model, config=config,
@@ -539,6 +671,7 @@ def _ddp_training_worker(
     output_dir: str,
     resume_from: str | None,
     stop_after_first_epoch: bool,
+    audit_failure: bool = False,
 ) -> None:
     torch.set_num_threads(1)
     dist.init_process_group(
@@ -572,7 +705,14 @@ def _ddp_training_worker(
         parameter.grad /= world_size
         assert parameter.grad.item() == pytest.approx(11.0 / 5.0)
 
-        if stop_after_first_epoch:
+        if audit_failure:
+            def fail_probe(*args, **kwargs):
+                raise ValueError("intentional probe failure")
+            train_module.prepare_gradient_probe = fail_probe
+            with pytest.raises(RuntimeError, match="intentional probe failure"):
+                run_training(config, output_dir=output_dir)
+            dist.barrier()  # Both ranks received the ordinary error.
+        elif stop_after_first_epoch:
             real_save = train_module._save_checkpoint
 
             class StopAfterCheckpoint(RuntimeError):

@@ -100,6 +100,20 @@ python scripts/stage1/train.py --config configs/v4/stage1/base.yaml --output out
 
 Output includes resume checkpoints with auxiliary heads and encoder-only `stage1_encoder.pt`. Deployment/Stage2 do not load teacher or auxiliary heads.
 
+### Stage1 loss and gradient audit
+
+Current Base uses reconstruction1/1/1, alignment0.1, RDKit0.5, Uni-Mol0.25 and electronic0.1 ([ADR-0091](adr/0091-stage1-v4-loss-weights-gradient-audit.md)). This loss change requires a new Stage1 run, not resume from the earlier coefficients; existing corpus/statistics/teacher cache remain reusable. Downstream Stage2/3 must use the newly trained encoder and fresh outputs.
+
+Training automatically appends `gradient_audit.jsonl` every5,000 completed optimizer updates. Rank0 uses a fixed32-molecule validation probe and evaluation masks with dropout off; other ranks wait. It reports the seven raw encoder norms, `weighted_grad_norms` (absolute loss coefficient times norm), effective target coverage, probe IDs/hash, step and attempt. No extra CLI command is needed. The existing metrics and checkpoint selection remain unchanged.
+
+Set `training.gradient_audit_interval_steps: 0` to disable or change the positive interval; `gradient_audit_batch_size` controls probe size (default32). These diagnostics settings do not change scientific identity. Missing-label objectives are `null` with `no_valid_targets`; an absent electronic label in this small natural probe is not evidence of weak electronic gradients. Norms are from separate objectives, not the vector sum: do not automatically adjust coefficients based solely on their magnitude. Audits use one additional forward and up to seven gradient calculations; OOM is an explicit failure, not an automatic probe resize. Monitor with:
+
+```bash
+tail -f outputs/v4/stage1/base/train/gradient_audit.jsonl
+```
+
+Epoch-boundary resume appends attempt-tagged observations without deleting failed-attempt rows. Audit never uses validation derivatives to update parameters; test is not read.
+
 ### Copy an existing teacher checkpoint to another server
 
 The checkpoint can be copied without downloading it again. From the source repository root, replace `SERVER` with your SSH alias (`h100` or `szx`) and `/path/to/ILUME` with that server's repository root. Check any existing destination file first; if its hash matches, skip the copy. If it differs, retain it for inspection and use a fresh destination rather than overwriting it.

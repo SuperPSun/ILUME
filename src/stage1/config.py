@@ -135,6 +135,8 @@ class TrainingConfig:
     compile: bool = False
     validation_interval_steps: int = 5000
     quick_validation_samples_per_role: int = 256
+    gradient_audit_interval_steps: int = 0
+    gradient_audit_batch_size: int = 32
 
 
 @dataclass(frozen=True)
@@ -261,6 +263,12 @@ class PretrainConfig:
             )
         if self.training.num_workers < 0:
             raise ValueError("training.num_workers cannot be negative")
+        for name, minimum in (("gradient_audit_interval_steps", 0), ("gradient_audit_batch_size", 1)):
+            value = getattr(self.training, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+                raise ValueError(f"training.{name} must be an integer >= {minimum}")
+        if self.training.gradient_audit_interval_steps and not self.is_dual_view:
+            raise ValueError("gradient audit requires dual_view_v4")
         if self.is_dual_view:
             if (self.model.role_embedding or self.descriptor.mode != "full"
                 or self.descriptor.token_count != 1 or self.fingerprint.kind != "none"
@@ -289,6 +297,9 @@ class PretrainConfig:
             return value
 
         payload = convert(asdict(self))
+        for name, default in (("gradient_audit_interval_steps", 0), ("gradient_audit_batch_size", 32)):
+            if payload["training"][name] == default:
+                payload["training"].pop(name)
         if self.model.graph_message_mode == "shared":
             payload["model"].pop("graph_message_mode")
         if self.is_global_rdkit or self.is_dual_view:
@@ -331,6 +342,8 @@ class PretrainConfig:
         payload = self.to_dict()
         payload.pop("preparation")
         payload["training"].pop("compile")
+        for name in ("gradient_audit_interval_steps", "gradient_audit_batch_size"):
+            payload["training"].pop(name, None)
         return payload
 
 

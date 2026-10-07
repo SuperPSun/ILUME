@@ -6,6 +6,8 @@ Accepted. Replaces ADR-0039/0082 only for the new `configs/v4/` mainline represe
 
 Encoder capacity is subsequently revised by [ADR-0090](0090-stage1-v4-residual-encoder-capacity.md): twelve SMILES layers and eight independent residual graph blocks. Its architecture-only revision reuses the existing v4 corpus/statistics/teacher cache; all other decisions below remain intact.
 
+[ADR-0091](0091-stage1-v4-loss-weights-gradient-audit.md) subsequently changes the active RDKit/Uni-Mol coefficients to0.5/0.25 and adds read-only gradient audit. The original coefficient table below is historical in those two entries; objectives and normalization remain unchanged.
+
 ## Context
 
 Stage1 should learn task-agnostic molecular structure; Stage2/3 should optimize multitask HoME without changing the Stage1 encoders. This is a complete recipe comparison, not a single-mechanism attribution: architecture, auxiliary supervision, ten-epoch budget and permanent freezing change together.

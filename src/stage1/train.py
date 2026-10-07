@@ -34,6 +34,7 @@ from .data import PreparedCorpusDataset
 from .masking import MultimodalMasker, MultimodalPacker
 from .model import LossStatistics, MultimodalPretrainModel, PretrainOutput, build_stage1_model
 from .tokenizer import SmilesTokenizer
+from .gradient_audit import audit_gradient_norms, prepare_gradient_probe
 from .identity import (
     build_stage1_training_identity,
     metadata_identity,
@@ -342,6 +343,37 @@ def _quick_validation_indices(
         rng.shuffle(indices)
         selected.extend(int(value) for value in indices[:samples_per_role])
     return selected
+
+
+def _run_gradient_audit(
+    model, dataset, vocabulary, config, device, context, output_dir, *,
+    probe, epoch, global_step, attempt_id, training_identity, amp_enabled, amp_dtype,
+):
+    error = None
+    if context.is_primary:
+        try:
+            if probe is None:
+                probe = prepare_gradient_probe(dataset, vocabulary, config)
+            batch, metadata = probe
+            row = {
+                "event": "gradient_audit", "epoch": epoch, "global_step": global_step,
+                "attempt_id": attempt_id, "training_identity": training_identity["hash"],
+                "precision": config.training.amp_dtype if amp_enabled else "none",
+                **metadata,
+                **audit_gradient_norms(model, batch, config, device,
+                                       amp_enabled=amp_enabled, amp_dtype=amp_dtype),
+            }
+            with (output_dir / "gradient_audit.jsonl").open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(row, sort_keys=True, allow_nan=False) + "\n")
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+    if context.enabled:
+        errors = [error]
+        dist.broadcast_object_list(errors, src=0)
+        error = errors[0]
+    if error is not None:
+        raise RuntimeError(f"Stage 1 gradient audit failed: {error}")
+    return probe
 
 
 @torch.inference_mode()
@@ -663,6 +695,7 @@ def run_training(
     full_loader = validation_loader(list(range(len(valid_dataset))))
     raw_model.train()
     optimizer.zero_grad(set_to_none=True)
+    gradient_probe = None
     while completed_epoch < config.training.epochs:
         epoch_index = completed_epoch
         sampler.set_epoch(epoch_index)
@@ -710,6 +743,14 @@ def run_training(
                 scheduler.step()
                 global_step += 1
                 completed_epoch_steps += 1
+                audit_interval = config.training.gradient_audit_interval_steps
+                if audit_interval and global_step % audit_interval == 0:
+                    gradient_probe = _run_gradient_audit(
+                        raw_model, valid_dataset, vocabulary, config, device, context, output_dir,
+                        probe=gradient_probe, epoch=epoch_number, global_step=global_step,
+                        attempt_id=attempt_id, training_identity=training_identity,
+                        amp_enabled=amp_enabled, amp_dtype=amp_dtype,
+                    )
                 epoch_finished = completed_epoch_steps == steps_per_epoch
                 should_quick_validate = (
                     not epoch_finished

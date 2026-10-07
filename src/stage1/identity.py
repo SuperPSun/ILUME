@@ -161,6 +161,8 @@ def build_stage1_training_identity(
         "compile",
         "validation_interval_steps",
         "quick_validation_samples_per_role",
+        "gradient_audit_interval_steps",
+        "gradient_audit_batch_size",
     ):
         training.pop(name, None)
     if config.is_dual_view:

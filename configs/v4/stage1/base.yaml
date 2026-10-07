@@ -45,11 +45,11 @@ model:
   gradient_checkpointing: false
 loss:
   lambda_smiles: 1.0
-  lambda_descriptor: 1.0
+  lambda_descriptor: 0.5
   lambda_atom: 1.0
   lambda_bond: 1.0
   lambda_alignment: 0.1
-  lambda_unimol: 0.1
+  lambda_unimol: 0.25
   lambda_electronic: 0.1
   role_weights: [2.0, 2.0, 1.0]
 auxiliary:
@@ -71,3 +71,5 @@ training:
   compile: false
   validation_interval_steps: 5000
   quick_validation_samples_per_role: 256
+  gradient_audit_interval_steps: 5000
+  gradient_audit_batch_size: 32
