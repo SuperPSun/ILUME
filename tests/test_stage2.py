@@ -1139,6 +1139,12 @@ def test_typed_mapping_explicit_h_and_deterministic_automorphism(tmp_path: Path)
     alias = text.replace("@<TRIPOS>ATOM", "@<TRIPOS>MOLM")
     assert parse_mol2_text(alias) == parse_mol2_text(text)
     assert map_partial_charges("CC", parse_mol2_text(alias)) == result
+    for bond_alias in (text.replace("@<TRIPOS>BOND", "@<TRIPOS>MOLD"),
+                       alias.replace("@<TRIPOS>BOND", "@<TRIPOS>MOLD")):
+        assert parse_mol2_text(bond_alias) == parse_mol2_text(text)
+        assert map_partial_charges("CC", parse_mol2_text(bond_alias)) == result
+    with pytest.raises(ValueError, match="ATOM, and BOND sections"):
+        parse_mol2_text(text.replace("@<TRIPOS>BOND", "@<TRIPOS>UNKNOWN"))
     with pytest.raises(ValueError, match="ATOM, and BOND sections"):
         parse_mol2_text(text.replace("@<TRIPOS>ATOM", "@<TRIPOS>UNKNOWN"))
     with pytest.raises(ValueError, match="counts do not match"):

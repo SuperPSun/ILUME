@@ -46,6 +46,7 @@ def charge_source_contract(config, split="train"):
             "mapping": PARTIAL_CHARGE_MAPPING_CONTRACT["hash"],
             "observations": "all-source-rows-independent-v2",
             "mol2_atom_section_alias": "MOLM",
+            "mol2_bond_section_alias": "MOLD",
             "unmapped_policy": "skip-no-isomorphism-audit-v1"}
 
 

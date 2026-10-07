@@ -112,6 +112,8 @@ def parse_mol2_text(text: str, *, source: str = "<memory>") -> Mol2Graph:
             section = line.removeprefix("@<TRIPOS>").strip().upper()
             if section == "MOLM":
                 section = "ATOM"
+            elif section == "MOLD":
+                section = "BOND"
             seen_sections.add(section)
             continue
         stripped = line.strip()
