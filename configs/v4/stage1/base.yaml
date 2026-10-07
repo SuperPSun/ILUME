@@ -54,7 +54,7 @@ loss:
   lambda_partial_charge: 0.1
   role_weights: [2.0, 2.0, 1.0]
 auxiliary:
-  simulation_dir: data/stage2
+  simulation_dir: data/stage1/properties
   teacher_cache: outputs/v4/stage1/base/teacher
   teacher_checkpoint: assets/unimol2/modelzoo/84M/checkpoint.pt
   teacher_version: 0.1.3.post1
