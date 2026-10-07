@@ -4,6 +4,8 @@
 
 Accepted. Replaces ADR-0039/0082 only for the new `configs/v4/` mainline representation and Stage1 freeze boundary. v3, legacy and Capacity artifacts/configuration retain their original contracts; no migration or relabeling.
 
+Encoder capacity is subsequently revised by [ADR-0090](0090-stage1-v4-residual-encoder-capacity.md): twelve SMILES layers and eight independent residual graph blocks. Its architecture-only revision reuses the existing v4 corpus/statistics/teacher cache; all other decisions below remain intact.
+
 ## Context
 
 Stage1 should learn task-agnostic molecular structure; Stage2/3 should optimize multitask HoME without changing the Stage1 encoders. This is a complete recipe comparison, not a single-mechanism attribution: architecture, auxiliary supervision, ten-epoch budget and permanent freezing change together.

@@ -10,6 +10,8 @@ python -m pip install -e ".[dev,tokenizers]"
 
 ## 正式 v4 主线
 
+现役Stage1 Base为12层SMILES Transformer与8个独立residual图block，encoder-only约60.73M（2,048-token词表）；learned1024/atom512及下游冻结合同不变，见[ADR-0090](docs/adr/0090-stage1-v4-residual-encoder-capacity.md)。扩容直接复用既有v4 Stage1 corpus、统计和Uni-Mol缓存，但Stage1必须从头训练，下游Stage2/3重新生成表示并训练；旧输出不覆盖。
+
 配置位于 `configs/v4/`，输出隔离到 `outputs/v4/`；Base与三个核心消融的完整命令，以及 Uni-Mol2 独立环境的创建、依赖安装和版本核验步骤，见 [v4运行手册](docs/v4-runbook.md)。先独立进行Uni-Mol2小样本成功率/吞吐/存储审计，再生成全量分片缓存；teacher使用版本锁定的独立环境，本仓库不会自动下载权重。Stage1训练导出仅encoder/fusion的 `stage1_encoder.pt`，下游不加载teacher或辅助头。旧v3 prepared/checkpoint不可直接复用，新Stage1/2/3均需prepare/train。
 
 ## v3 历史运行手册

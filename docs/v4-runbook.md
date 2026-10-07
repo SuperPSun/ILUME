@@ -2,6 +2,8 @@
 
 Run from repository root, using fresh `outputs/v4/` paths. Do not overwrite historical v3 outputs. Science contract: [ADR-0089](adr/0089-v4-frozen-dual-view-stage1.md). CUDA examples use four devices.
 
+Current Base uses twelve SMILES Transformer layers and eight independent residual graph blocks: encoder-only approximately60.73M parameters for a2,048-token vocabulary ([ADR-0090](adr/0090-stage1-v4-residual-encoder-capacity.md)). Compared with the earlier approximately30M v4 Base, **existing Stage1 prepared corpus, statistics and completed Uni-Mol cache are reusable**; skip their generation steps below if already complete. Train the new Stage1 from scratch, then regenerate Stage2 representations/train Stage2 and prepare/train/evaluate Stage3. Do not resume the old Stage1 checkpoint into the new architecture. Output defaults have not changed: if a training/downstream directory is occupied, select fresh paths and update downstream references consistently, or explicitly arrange archival before running; these commands do not authorize replacing historical results.
+
 ## Stage1 prepare and offline teacher
 
 ```bash

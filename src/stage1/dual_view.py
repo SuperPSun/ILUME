@@ -44,7 +44,10 @@ class DualViewEncoder(nn.Module):
             recipe.d_model, recipe.n_heads, recipe.smiles_layers,
             recipe.feedforward_dim, recipe.dropout, recipe.gradient_checkpointing,
         )
-        self.graph_encoder = DirectedMessagePassingEncoder(recipe.d_model, recipe.graph_depth, recipe.dropout)
+        self.graph_encoder = DirectedMessagePassingEncoder(
+            recipe.d_model, recipe.graph_depth, recipe.dropout,
+            message_mode=recipe.graph_message_mode, feedforward_dim=recipe.feedforward_dim,
+        )
         self.fusion = ResidualFusion(self.entity_dim)
 
     def views(self, batch):

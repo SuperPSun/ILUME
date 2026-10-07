@@ -96,6 +96,7 @@ class ModelConfig:
     role_embedding: bool = True
     graph_head: str = "mlp"
     gradient_checkpointing: bool = False
+    graph_message_mode: str = "shared"
 
 
 @dataclass(frozen=True)
@@ -217,6 +218,15 @@ class PretrainConfig:
             raise ValueError("model.d_model must be divisible by model.n_heads")
         if self.model.graph_head not in {"linear", "mlp"}:
             raise ValueError("model.graph_head must be linear or mlp")
+        if self.model.graph_message_mode not in {"shared", "residual_blocks"}:
+            raise ValueError("model.graph_message_mode must be shared or residual_blocks")
+        if self.model.graph_message_mode == "residual_blocks":
+            if not self.is_dual_view:
+                raise ValueError("residual_blocks requires dual_view_v4")
+            for name in ("graph_depth", "feedforward_dim"):
+                value = getattr(self.model, name)
+                if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                    raise ValueError(f"model.{name} must be a positive integer for residual_blocks")
         if self.masking.dropout_schedule not in {"off", "static", "curriculum"}:
             raise ValueError("masking.dropout_schedule must be off, static, or curriculum")
         probability_fields = {
@@ -279,6 +289,8 @@ class PretrainConfig:
             return value
 
         payload = convert(asdict(self))
+        if self.model.graph_message_mode == "shared":
+            payload["model"].pop("graph_message_mode")
         if self.is_global_rdkit or self.is_dual_view:
             payload.pop("fingerprint")
             payload["masking"].pop("fingerprint_ratio")

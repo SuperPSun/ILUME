@@ -83,12 +83,42 @@ def _categorical_to_one_hot(
     return torch.cat(encoded, dim=-1).float()
 
 
+class DirectedResidualMessageBlock(nn.Module):
+    def __init__(self, d_model: int, feedforward_dim: int, dropout: float) -> None:
+        super().__init__()
+        self.message_norm = nn.LayerNorm(d_model)
+        self.message_projection = nn.Linear(d_model, d_model, bias=False)
+        self.message_dropout = nn.Dropout(dropout)
+        self.feedforward_norm = nn.LayerNorm(d_model)
+        self.feedforward = nn.Sequential(
+            nn.Linear(d_model, feedforward_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(feedforward_dim, d_model),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, hidden: torch.Tensor, messages: torch.Tensor) -> torch.Tensor:
+        hidden = hidden + self.message_dropout(
+            F.gelu(self.message_projection(self.message_norm(messages)))
+        )
+        return hidden + self.feedforward(self.feedforward_norm(hidden))
+
+
 class DirectedMessagePassingEncoder(nn.Module):
-    def __init__(self, d_model: int, depth: int, dropout: float) -> None:
+    def __init__(
+        self, d_model: int, depth: int, dropout: float, *,
+        message_mode: str = "shared", feedforward_dim: int | None = None,
+    ) -> None:
         super().__init__()
         if depth < 1:
             raise ValueError("D-MPNN depth must be at least 1")
+        if message_mode not in {"shared", "residual_blocks"}:
+            raise ValueError("Unsupported D-MPNN message mode")
+        if message_mode == "residual_blocks" and (feedforward_dim is None or feedforward_dim < 1):
+            raise ValueError("Residual D-MPNN requires a positive feedforward width")
         self.depth = depth
+        self.message_mode = message_mode
         self.atom_feature_dim = sum(ATOM_CARDINALITIES) + 1
         self.bond_feature_dim = sum(BOND_CARDINALITIES)
         self.atom_mask_feature = nn.Parameter(torch.zeros(self.atom_feature_dim))
@@ -101,7 +131,13 @@ class DirectedMessagePassingEncoder(nn.Module):
             d_model,
             bias=False,
         )
-        self.message_projection = nn.Linear(d_model, d_model, bias=False)
+        if message_mode == "shared":
+            self.message_projection = nn.Linear(d_model, d_model, bias=False)
+        else:
+            self.blocks = nn.ModuleList(
+                DirectedResidualMessageBlock(d_model, feedforward_dim, dropout)
+                for _ in range(depth)
+            )
         self.atom_output = nn.Linear(self.atom_feature_dim + d_model, d_model)
         self.bond_output = nn.Linear(self.bond_feature_dim + d_model, d_model)
         self.dropout = nn.Dropout(dropout)
@@ -159,13 +195,17 @@ class DirectedMessagePassingEncoder(nn.Module):
                 )
             )
             hidden = initial
-            for _ in range(self.depth - 1):
+            steps = self.depth - 1 if self.message_mode == "shared" else self.depth
+            for step in range(steps):
                 incoming = hidden.new_zeros((atom_count, hidden.shape[-1]))
                 incoming.index_add_(0, destination, hidden)
                 messages = incoming[source] - hidden[graph.reverse_edge_index]
-                hidden = self.dropout(
-                    self.activation(initial + self.message_projection(messages))
-                )
+                if self.message_mode == "shared":
+                    hidden = self.dropout(
+                        self.activation(initial + self.message_projection(messages))
+                    )
+                else:
+                    hidden = self.blocks[step](hidden, messages)
             atom_messages = hidden.new_zeros((atom_count, hidden.shape[-1]))
             atom_messages.index_add_(0, destination, hidden)
             paired_messages = hidden[0::2] + hidden[1::2]

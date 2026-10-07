@@ -12,7 +12,7 @@
 
 | 范围 | 必须保持的边界 | ADR |
 |---|---|---|
-| Stage 1 | 仅SMILES/Graph输入，独立512D encoder、CLS/atom mean、1024残差MLP；learned1024、atom512，不输入role/descriptor。结构重建、stop-gradient一致性、RDKit217、离线Uni-Mol768、13电子目标；系数1/0.1/1/0.1/0.1。各项分子均值再按角色loss权重2/2/1；自然shuffle不变。fusion-only80/10/10，10轮、batch128、完整epoch恢复；训练format4及encoder-only导出 | 0089；执行0013/0014/0015/0017；0039仅历史v3 |
+| Stage 1 | 仅SMILES/Graph输入，独立512D encoder、12层SMILES Transformer/8独立residual图block、CLS/atom mean、1024残差MLP；learned1024、atom512，不输入role/descriptor。结构重建、stop-gradient一致性、RDKit217、离线Uni-Mol768、13电子目标；系数1/0.1/1/0.1/0.1。各项分子均值再按角色loss权重2/2/1；自然shuffle不变。fusion-only80/10/10，10轮、batch128、完整epoch恢复；训练format4及encoder-only导出 | 0089/0090；执行0013/0014/0015/0017；0039仅历史v3 |
 | Stage 2 | Stage1永久eval/冻结/不进optimizer，缓存learned1024+标准化RDKit217及atom512。ObjectEncoder内部1241→1024投影属于Object优化块；原1024接口不创建投影。九task physics-only HoME，无Stage2 teacher loss；HOMO/LUMO、QM mask、Partial Charge分子等权保留 | 0089/0082；机制0019/0025 |
 | Stage 2 训练与产物 | 256 逻辑 batch、256 微批、每逻辑 batch 一次 optimizer/scheduler update；10 epochs 末轮发布完整 `stage2_final.pt`、manifest 与 `stage2_encoder.pt`，不做 refinement、best/last。不提供独立 evaluate 入口或榜单；实验任务初始化只迁移表示、GLOBAL 与匹配的 thermophysical/solvation GROUP，simulation 预测支路额外从完整产物初始化电子 GROUP、五项 PRIVATE 和 atom adapter | 0082/0083/0084/0085；配方来源 0079 |
 | Stage 3 | v4正式Stage2-HoME来源，严格SHA/owner/tensor hash；永久冻结Stage1、保存1241D slots。Phase1联合更新ObjectEncoder（含入口投影）与20-task Flat HoME；Phase2/3冻结ObjectEncoder并加入五项simulation的thermophysical/electronic GROUP/PRIVATE。共享GROUP模拟权重0.1、实验1，纯模拟电子GROUP/Phase3不降权；共同anchor、25个PRIVATE、固定末轮stitch、实验/模拟validation只读分开 | 0089/0084；机制0020/0046/0048/0067/0075 |

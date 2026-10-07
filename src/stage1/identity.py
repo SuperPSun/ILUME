@@ -289,6 +289,8 @@ def build_stage1_encoder_identity(
         }
     if config.is_dual_view:
         payload.update(contract_version=4, encoding_api="dual-view-learned-v4", representation={"kind": model.representation_kind, "learned_dim": model.entity_dim, "atom_dim": model.atom_dim, "descriptor_input": False})
+        if config.model.graph_message_mode != "shared":
+            payload["model"]["graph_message_mode"] = config.model.graph_message_mode
     return semantic_identity("stage1.encoder", payload)
 
 

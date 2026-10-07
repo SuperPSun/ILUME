@@ -32,8 +32,9 @@ masking:
 model:
   d_model: 512
   n_heads: 8
-  smiles_layers: 8
-  graph_depth: 6
+  smiles_layers: 12
+  graph_depth: 8
+  graph_message_mode: residual_blocks
   descriptor_hidden_dim: 1024
   descriptor_blocks: 2
   fusion_layers: 0

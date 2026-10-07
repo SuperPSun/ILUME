@@ -118,7 +118,82 @@ def test_global_rdkit_v2_representation_and_losses(
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_dual_view_structure_only_losses_and_downstream_freeze(tiny_config, tiny_samples, monkeypatch):
+def test_v4_residual_capacity_and_shared_compatibility(tiny_config, tiny_samples, monkeypatch):
+    from types import SimpleNamespace
+    from stage1.dual_view import DualViewEncoder, DualViewPretrainModel
+    from stage1.identity import build_stage1_corpus_identity
+
+    base = load_config(ROOT / "configs/v4/stage1/base.yaml")
+    assert (base.model.smiles_layers, base.model.graph_depth, base.model.graph_message_mode) == (12, 8, "residual_blocks")
+    assert config_from_dict(base.to_dict()).to_dict() == base.to_dict()
+    old = replace(base, model=replace(base.model, smiles_layers=8, graph_depth=6, graph_message_mode="shared"))
+    assert "graph_message_mode" not in old.to_dict()["model"]
+    with torch.device("meta"):
+        vocabulary = SimpleNamespace(tokens=tuple(range(2048)))
+        encoder = DualViewEncoder(base, vocabulary)
+        training = DualViewPretrainModel(base, vocabulary)
+        legacy = DualViewEncoder(old, vocabulary)
+    assert sum(p.numel() for p in encoder.parameters()) == 60_725_419
+    assert sum(p.numel() for p in training.parameters()) == 65_125_947
+    assert sum(p.numel() for p in legacy.parameters()) == 29_466_795
+    assert len(encoder.smiles_encoder.encoder.layers) == 12
+    assert len(encoder.graph_encoder.blocks) == 8
+    parameters = [p for block in encoder.graph_encoder.blocks for p in block.parameters()]
+    assert len({id(p) for p in parameters}) == len(parameters)
+    assert (encoder.entity_dim, encoder.atom_dim) == (1024, 512)
+    assert set(encoder.fusion.state_dict()) == set(legacy.fusion.state_dict())
+    audit = {"semantic": {"identities": {"source": semantic_identity("test.source", {"sources": {"molecules": "unchanged"}})}},
+             "locator": {"files": {"molecules": "ignored"}}, "integrity": {"files": {"molecules": "ignored"}}}
+    monkeypatch.setattr("stage1.auxiliary.electronic_source_contract", lambda _: {"train": "same electronic labels"})
+    assert build_stage1_corpus_identity(base, audit) == build_stage1_corpus_identity(old, audit)
+    invalid = base.to_dict()
+    invalid["model"]["graph_message_mode"] = "unknown"
+    with pytest.raises(ValueError, match="graph_message_mode"):
+        config_from_dict(invalid)
+    with pytest.raises(ValueError, match="v4"):
+        replace(tiny_config, model=replace(tiny_config.model, graph_message_mode="residual_blocks")).validate()
+
+    vocabulary, samples = tiny_samples
+    tiny = replace(tiny_config, architecture=ArchitectureConfig("dual_view_v4"),
+                   descriptor=DescriptorConfig(mode="full", token_count=1),
+                   fingerprint=FingerprintConfig(),
+                   model=replace(tiny_config.model, role_embedding=False),
+                   masking=replace(tiny_config.masking, fusion_only_dropout=True, descriptor_dropout=0))
+    explicit = tiny.to_dict()
+    explicit["model"]["graph_message_mode"] = "shared"
+    assert config_from_dict(explicit).to_dict() == tiny.to_dict()
+    torch.manual_seed(42)
+    implicit_model = DualViewEncoder(tiny, vocabulary).eval()
+    torch.manual_seed(42)
+    explicit_model = DualViewEncoder(config_from_dict(explicit), vocabulary).eval()
+    assert all(torch.equal(value, explicit_model.state_dict()[key]) for key, value in implicit_model.state_dict().items())
+    packed = MultimodalPacker(vocabulary)(samples)
+    assert torch.equal(implicit_model.encode(packed), explicit_model.encode(packed))
+
+
+@pytest.mark.parametrize("smiles", [("CCO",), ("[Na+]",), ("[Na+]", "CCO")])
+def test_residual_graph_bonded_and_bondless_gradients(smiles):
+    from stage1.encoders import DirectedMessagePassingEncoder
+    from stage1.graph import featurize_mol, pack_graphs
+
+    graph = pack_graphs([featurize_mol(Chem.MolFromSmiles(value)) for value in smiles])
+    encoder = DirectedMessagePassingEncoder(16, 8, 0., message_mode="residual_blocks", feedforward_dim=64)
+    atoms, bonds = encoder(graph, torch.zeros(len(graph.atom_categorical), dtype=torch.bool),
+                           torch.zeros(len(graph.bond_categorical), dtype=torch.bool))
+    assert atoms.shape == (len(graph.atom_categorical), 16)
+    assert bonds.shape == (len(graph.bond_categorical), 16)
+    assert torch.isfinite(atoms).all() and torch.isfinite(bonds).all()
+    ((atoms * torch.arange(16)).sum() + (bonds * torch.arange(16)).sum()).backward()
+    for block in encoder.blocks:
+        assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in block.parameters())
+        if len(graph.bond_categorical):
+            assert block.message_projection.weight.grad.abs().sum() > 0
+        else:
+            assert all(torch.count_nonzero(p.grad) == 0 for p in block.parameters())
+
+
+@pytest.mark.parametrize("graph_message_mode", ["shared", "residual_blocks"])
+def test_dual_view_structure_only_losses_and_downstream_freeze(tiny_config, tiny_samples, monkeypatch, graph_message_mode):
     from stage1.auxiliary import empty_auxiliary_targets
     from stage1.dual_view import DualViewPretrainModel, molecule_loss_statistics, reduce_molecule_elements
     from stage1.masking import sample_modality_dropout
@@ -128,7 +203,7 @@ def test_dual_view_structure_only_losses_and_downstream_freeze(tiny_config, tiny
         tiny_config, architecture=ArchitectureConfig("dual_view_v4"),
         descriptor=DescriptorConfig(mode="full", token_count=1),
         fingerprint=FingerprintConfig(),
-        model=replace(tiny_config.model, role_embedding=False),
+        model=replace(tiny_config.model, role_embedding=False, graph_message_mode=graph_message_mode),
         masking=replace(tiny_config.masking, fusion_only_dropout=True, descriptor_dropout=0,
                         smiles_dropout=0.1, graph_dropout=0.1),
     )
@@ -185,7 +260,8 @@ def test_dual_view_structure_only_losses_and_downstream_freeze(tiny_config, tiny
     assert not any("input_projection" in key for key in legacy.state_dict())
 
 
-def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeypatch):
+@pytest.mark.parametrize("graph_message_mode", ["shared", "residual_blocks"])
+def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeypatch, graph_message_mode):
     from stage1.config import AuxiliaryConfig, MaskingConfig
     from stage1.auxiliary import ELECTRONIC_SOURCES, TeacherCache, prepare_teacher_cache, load_electronic_labels
     from stage1.model import load_stage1_model
@@ -209,7 +285,7 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
     config = PretrainConfig(
         architecture=ArchitectureConfig("dual_view_v4"),
         data=DataConfig(stage1_dir=source, artifacts_dir=tmp_path / "prepared", valid_fraction=0.4, max_smiles_tokens=64, shard_size=3),
-        model=ModelConfig(d_model=16, n_heads=4, smiles_layers=1, graph_depth=2, feedforward_dim=32, dropout=0., role_embedding=False, fusion_layers=0),
+        model=ModelConfig(d_model=16, n_heads=4, smiles_layers=1, graph_depth=2, feedforward_dim=32, dropout=0., role_embedding=False, fusion_layers=0, graph_message_mode=graph_message_mode),
         masking=MaskingConfig(fusion_only_dropout=True, descriptor_ratio=0., descriptor_dropout=0.),
         auxiliary=AuxiliaryConfig(simulation_dir=tmp_path / "simulation", teacher_cache=tmp_path / "cache", teacher_checkpoint=checkpoint, teacher_shard_size=2),
         training=TrainingConfig(batch_size=2, epochs=2, device="cpu", amp_dtype="none", num_workers=0, validation_interval_steps=100),
@@ -298,6 +374,10 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
     assert len(load_electronic_labels(config)) == 1
     metadata = json.loads((config.data.artifacts_dir / "metadata.json").read_text())
     cache = TeacherCache(config.auxiliary.teacher_cache, metadata, require_complete=True)
+    from stage1.auxiliary import teacher_recipe
+    alternate = replace(config, model=replace(config.model, graph_message_mode="residual_blocks" if graph_message_mode == "shared" else "shared"))
+    assert teacher_recipe(alternate, metadata) == teacher_recipe(config, metadata)
+    assert resolve_stage1_training_identity(alternate) != resolve_stage1_training_identity(config)
     dataset = PreparedCorpusDataset(config.data.artifacts_dir, "train")
     dataset.teacher_cache = cache
     assert all("canonical_smiles" in dataset[index] for index in range(len(dataset)))
@@ -312,6 +392,8 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
     with pytest.raises(RuntimeError, match="planned interruption"):
         run_training(config, output_dir=output)
     monkeypatch.setattr(train_module, "_save_checkpoint", real_save)
+    with pytest.raises(ValueError, match="identity"):
+        run_training(alternate, output_dir=tmp_path / "incompatible", resume_from=output / "last.pt")
     run_training(config, output_dir=output, resume_from=output / "last.pt")
     encoder = load_stage1_model(output / "stage1_encoder.pt", config.data.artifacts_dir)
     assert encoder.model.entity_dim == 32 and encoder.model.atom_dim == 16
@@ -319,6 +401,13 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
     exported = torch.load(output / "stage1_encoder.pt", weights_only=False)
     assert exported["fixed_final_epoch"] == 2
     assert exported["training_identity"] == resolve_stage1_training_identity(config)
+    from stage1.dual_view import DualViewEncoder
+    from stage1.identity import build_stage1_encoder_identity
+    encoder_identity = build_stage1_encoder_identity(model=encoder.model, config=config,
+                                                     feature_identity=metadata["semantic"]["identities"]["feature"])
+    assert encoder_identity["payload"]["model"].get("graph_message_mode", "shared") == graph_message_mode
+    with pytest.raises(RuntimeError, match="state_dict"):
+        DualViewEncoder(alternate, encoder.vocabulary).load_state_dict(exported["model"], strict=True)
     shard = config.auxiliary.teacher_cache / manifest["shards"][0]["path"]
     shard.write_bytes(b"corrupt")
     with pytest.raises(ValueError, match="integrity mismatch"):
