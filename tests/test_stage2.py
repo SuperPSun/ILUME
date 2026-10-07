@@ -1134,7 +1134,7 @@ def test_typed_mapping_explicit_h_and_deterministic_automorphism(tmp_path: Path)
     assert result.mapping_status == "ambiguous"
     assert result.mapping_count_lower_bound == 2
     assert result.charges == pytest.approx((0.2, -0.2))
-    from common.atom_targets import parse_mol2_text
+    from common.atom_targets import MOL2_PREFIX_ALIASES, MOL2_SECTION_ALIASES, parse_mol2_text
     text = path.read_text()
     alias = text.replace("@<TRIPOS>ATOM", "@<TRIPOS>MOLM")
     assert parse_mol2_text(alias) == parse_mol2_text(text)
@@ -1143,6 +1143,23 @@ def test_typed_mapping_explicit_h_and_deterministic_automorphism(tmp_path: Path)
                        alias.replace("@<TRIPOS>BOND", "@<TRIPOS>MOLD")):
         assert parse_mol2_text(bond_alias) == parse_mol2_text(text)
         assert map_partial_charges("CC", parse_mol2_text(bond_alias)) == result
+    for typo, section in MOL2_SECTION_ALIASES.items():
+        corrected = text.replace(f"@<TRIPOS>{section}", f"@<TRIPOS>{typo}")
+        assert parse_mol2_text(corrected) == parse_mol2_text(text)
+        assert map_partial_charges("CC", parse_mol2_text(corrected)) == result
+        with pytest.raises(ValueError, match="counts do not match"):
+            parse_mol2_text(corrected.replace("3 2 1 0 0", "4 2 1 0 0"))
+    for prefix in MOL2_PREFIX_ALIASES:
+        for source in (text, alias):
+            renamed = source.replace("@<TRIPOS>", prefix)
+            assert parse_mol2_text(renamed) == parse_mol2_text(text)
+            assert map_partial_charges("CC", parse_mol2_text(renamed)) == result
+            with pytest.raises(ValueError, match="counts do not match"):
+                parse_mol2_text(renamed.replace("3 2 1 0 0", "4 2 1 0 0"))
+    with pytest.raises(ValueError, match="ATOM, and BOND sections"):
+        parse_mol2_text(text.replace("@<TRIPOS>", "@<UNKNOWN>"))
+    with pytest.raises(ValueError, match="ATOM, and BOND sections"):
+        parse_mol2_text(text.replace("@<TRIPOS>MOLECULE", "@<TRIPOS>UNKNOWN"))
     with pytest.raises(ValueError, match="ATOM, and BOND sections"):
         parse_mol2_text(text.replace("@<TRIPOS>BOND", "@<TRIPOS>UNKNOWN"))
     with pytest.raises(ValueError, match="ATOM, and BOND sections"):

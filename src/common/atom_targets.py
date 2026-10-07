@@ -23,6 +23,25 @@ _BOND_TYPES = {
     "am": "single",
 }
 
+MOL2_SECTION_ALIASES = {
+    "MOLEMOLE": "MOLECULE",
+    "MOLMOLLE": "MOLECULE",
+    "MOMOLULE": "MOLECULE",
+    "MMOLCULE": "MOLECULE",
+    "MOLECMOL": "MOLECULE",
+    "MOLM": "ATOM",
+    "AMOL": "ATOM",
+    "MOLD": "BOND",
+    "BMOL": "BOND",
+}
+
+MOL2_PREFIX_ALIASES = {
+    "@<TRMOLS>": "@<TRIPOS>",
+    "@<TRIMOL>": "@<TRIPOS>",
+    "@<TMOLOS>": "@<TRIPOS>",
+    "@<MOLPOS>": "@<TRIPOS>",
+}
+
 
 class NoAtomMappingError(ValueError):
     """Verified structures have no compatible atom-graph mapping."""
@@ -108,12 +127,9 @@ def parse_mol2_text(text: str, *, source: str = "<memory>") -> Mol2Graph:
     seen_sections: set[str] = set()
     molecule_rows: list[tuple[int, str]] = []
     for line_number, line in enumerate(text.splitlines(), start=1):
-        if line.startswith("@<TRIPOS>"):
-            section = line.removeprefix("@<TRIPOS>").strip().upper()
-            if section == "MOLM":
-                section = "ATOM"
-            elif section == "MOLD":
-                section = "BOND"
+        if line.startswith(("@<TRIPOS>", *MOL2_PREFIX_ALIASES)):
+            section = line.partition(">")[2].strip().upper()
+            section = MOL2_SECTION_ALIASES.get(section, section)
             seen_sections.add(section)
             continue
         stripped = line.strip()

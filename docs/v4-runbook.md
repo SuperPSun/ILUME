@@ -116,7 +116,7 @@ Epoch-boundary resume appends attempt-tagged observations without deleting faile
 
 ### Partial-charge sidecar on an existing corpus
 
-The parser accepts `@<TRIPOS>MOLM` as a known typo for `@<TRIPOS>ATOM` and `@<TRIPOS>MOLD` for `@<TRIPOS>BOND`; do not edit the original MOL2 or manifest SHA. All other parse/integrity checks remain strict. This compatibility policy enters Stage1 charge-source identity: retain earlier runs and use a fresh sidecar output/cache path when their identity differs.
+The parser accepts verified `@<TRIPOS>` header aliases: `MOLEMOLE/MOLMOLLE/MOMOLULE/MMOLCULE/MOLECMOL→MOLECULE`, `MOLM/AMOL→ATOM` and `MOLD/BMOL→BOND`. The verified prefix typos `@<TRMOLS>`, `@<TRIMOL>`, `@<TMOLOS>` and `@<MOLPOS>` are also accepted as `@<TRIPOS>`. It does not guess other misspellings; do not edit the original MOL2 or manifest SHA. All other parse/integrity checks remain strict. The full section/prefix alias tables enter Stage1 charge-source identity: retain earlier runs and use a fresh sidecar output/cache path when their identity differs. SUBSTRUCTURE is not consumed by the charge parser and needs no typo correction.
 
 Normal Stage1 prepare also prepares the separate atom-label sidecar. If corpus and teacher cache already exist, run only the sidecar command instead; it does not change either. Active Base reads `data/stage1/properties/partial_atomic_charge/train.csv` through `auxiliary.simulation_dir`, and verifies the MOL2 resources referenced by `auxiliary.partial_charge_manifest`. Existing electronic sources are still required for formal v4 training. The following command matches the current YAML cache path; use it only when the directory is unused or contains a compatible format2 sidecar:
 

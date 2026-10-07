@@ -10,7 +10,8 @@ import torch
 from rdkit import Chem
 
 from common.atom_targets import (
-    PARTIAL_CHARGE_MAPPING_CONTRACT, NoAtomMappingError, load_structure_manifest,
+    MOL2_PREFIX_ALIASES, MOL2_SECTION_ALIASES, PARTIAL_CHARGE_MAPPING_CONTRACT,
+    NoAtomMappingError, load_structure_manifest,
     load_verify_parse_and_map, verify_structure,
 )
 from common.identity import require_compatible_identity, semantic_identity, tensor_state_hash
@@ -47,6 +48,8 @@ def charge_source_contract(config, split="train"):
             "observations": "all-source-rows-independent-v2",
             "mol2_atom_section_alias": "MOLM",
             "mol2_bond_section_alias": "MOLD",
+            "mol2_section_aliases": dict(MOL2_SECTION_ALIASES),
+            "mol2_prefix_aliases": dict(MOL2_PREFIX_ALIASES),
             "unmapped_policy": "skip-no-isomorphism-audit-v1"}
 
 
