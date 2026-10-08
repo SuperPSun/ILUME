@@ -18,6 +18,9 @@ from common.reporting import REPORTING_SCHEMA_VERSION, sanitize_task_id
 
 
 SUMMARY_SCHEMA_VERSION = 4
+TASK_DISPLAY_NAMES = {
+    "experiment/enthalpy_of_vaporization_or_sublimation": "Enthalpy of vaporization",
+}
 RADAR_TASK_GROUPS = (
     (
         "experiment/electrical_conductivity",
@@ -1279,7 +1282,7 @@ def _radar_svg(payload: Mapping[str, Any]) -> str:
                 if math.sin(angle) > 0
                 else "end"
             )
-            label = task.rsplit("/", 1)[-1].replace("_", " ")
+            label = TASK_DISPLAY_NAMES.get(task, task.rsplit("/", 1)[-1].replace("_", " "))
             lines.extend(
                 (
                     f'<line x1="{center_x:.2f}" y1="{center_y:.2f}" '
@@ -1531,7 +1534,7 @@ def _scatter_svg(plot: ScatterPlot) -> str:
         '<svg xmlns="http://www.w3.org/2000/svg" width="740" height="720" viewBox="0 0 740 720">',
         '<rect width="740" height="720" fill="white"/>',
         '<defs><clipPath id="plot-area"><rect x="92" y="104" width="560" height="520"/></clipPath></defs>',
-        f'<text x="370" y="34" text-anchor="middle" font-family="sans-serif" font-size="22" font-weight="bold">{_svg_text(plot.task)}</text>',
+        f'<text x="370" y="34" text-anchor="middle" font-family="sans-serif" font-size="22" font-weight="bold">{_svg_text(TASK_DISPLAY_NAMES.get(plot.task, plot.task))}</text>',
         f'<text x="370" y="61" text-anchor="middle" font-family="sans-serif" font-size="13">{_svg_text(plot.model)} · {_svg_text(plot.split)} · n={len(plot.points)}</text>',
         f'<text x="370" y="82" text-anchor="middle" font-family="sans-serif" font-size="10" fill="#666">{_svg_text(plot.run)}</text>',
         '<rect x="92" y="104" width="560" height="520" fill="#fafafa" stroke="#333" stroke-width="1"/>',

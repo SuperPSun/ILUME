@@ -266,15 +266,12 @@ tasks:
     meta_group: thermophysical
     unique_systems: 137
     size_class: small
-    categorical_conditions:
-      phase:
-      - Liquid | Gas
+    condition_columns: [temperature_K]
 training:
   simulation:
     batch_size: 256
     microbatch_size: 256
     private_size_class: large
-    shared_group_task_weight: 0.1
   composite_batch_size: 2048
   microbatch_size: 1024
   sampling_mode: raw

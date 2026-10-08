@@ -71,7 +71,7 @@ class Stage3TaskConfig:
     phase2_private_epochs: int | None = None
     phase3_private_epochs: int | None = None
     model_overrides: dict[str, Any] = field(default_factory=dict)
-    categorical_conditions: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    condition_columns: tuple[str, ...] | None = None
 
 
 def _base_task_registry() -> dict[str, Stage3TaskConfig]:
@@ -438,12 +438,9 @@ class Stage3Config:
             "film_hidden_ratio", "private_dropout",
         }
         for task_id, task in self.tasks.items():
-            if task.categorical_conditions and not self.is_v5:
-                raise ValueError("Categorical conditions require v5")
-            for name, categories in task.categorical_conditions.items():
-                if (not categories or len(set(categories)) != len(categories)
-                        or any(not isinstance(value, str) or not value.strip() for value in categories)):
-                    raise ValueError(f"Invalid categorical condition: {task_id}/{name}")
+            if task.condition_columns is not None:
+                if not self.is_v5 or len(set(task.condition_columns)) != len(task.condition_columns):
+                    raise ValueError(f"Invalid v5 condition selection: {task_id}")
             if not task_id or "." in task_id:
                 raise ValueError(f"Invalid Stage 3 task id: {task_id}")
             if task.meta_group not in self.groups:
@@ -807,13 +804,15 @@ class Stage3Config:
                 "min_lr_ratio", "refinement_ratio", "refinement_lr_multiplier",
             ):
                 training.pop(name)
+        if self.is_v5 and training.get("simulation") is not None:
+            training["simulation"].pop("shared_group_task_weight")
         for group in payload["groups"].values():
             for name in ("experts", "expert_hidden_ratio", "phase1", "phase2"):
                 if group[name] is None:
                     group.pop(name)
         for task in payload["tasks"].values():
-            if not task["categorical_conditions"]:
-                task.pop("categorical_conditions")
+            if task["condition_columns"] is None:
+                task.pop("condition_columns")
             for name in (
                 "unique_systems", "size_class", "phase1_private_lr",
                 "phase1_private_epochs", "phase2_private_epochs",
@@ -917,8 +916,8 @@ def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
                     **value,
                     **{
                         name: tuple(value[name])
-                        for name in ("primary_slots", "partner_slots")
-                        if name in value
+                        for name in ("primary_slots", "partner_slots", "condition_columns")
+                        if name in value and value[name] is not None
                     },
                 },
             )

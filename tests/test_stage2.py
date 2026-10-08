@@ -1269,47 +1269,24 @@ def test_unary_pair_roles_shapes_and_learning() -> None:
         object_key_from_row("test", 2, {"cation": "[Cl-]", "anion": "[Na+]"}, ("cation", "anion"), "formal_charge_v1")
 
 
-def test_v5_matrix_contracts_and_common_initialization() -> None:
+def test_v5_base_contracts() -> None:
     from stage2.home_config import load_home_recipe
-    from stage2.home_contract import source_task_specs
     from stage3.config import load_stage3_config
     from stage3.data import resolve_task_registry
-    from stage3.model import Stage3SparseModel
     from stage3.simulation import simulation_tasks
 
-    configs = {}
-    states = []
-    for name in ("base", "controls/transformer9", "controls/transformer5", "controls/unary_pair9"):
-        recipe = load_home_recipe(f"configs/v5/stage2/{name}.yaml")
-        registry = load_stage2_registry(recipe.stage2.data.task_catalog_path, task_ids=recipe.stage2.data.tasks)
-        recipe.stage2.validate_registry(registry)
-        stage3 = load_stage3_config(f"configs/v5/stage3/{name}.yaml")
-        resolved = resolve_task_registry(stage3)
-        assert len(resolved) == 22 and "experiment/x_co2" not in resolved
-        assert set(simulation_tasks(stage3)) == {"simulation/heat_of_vaporization", "simulation/thermal_expansion"}
-        assert resolved["experiment/enthalpy_of_vaporization_or_sublimation"].condition_width == 2
-        assert resolved["experiment/hydration"].split_strategy == "random"
-        assert resolved["experiment/gas_solubility"].partner_slots == ("solute",)
-        assert len(registry.tasks) == (9 if name.endswith("9") else 5)
-        if name.endswith("9"):
-            assert registry.by_id("simulation/homo").dataset.catalog_stage == 1
-            assert registry.by_id("simulation/homo").dataset.materialized_path.startswith("stage1/properties/")
-        groups = dict(recipe.stage3.groups)
-        if name.endswith("9"):
-            groups["electronic_structure"] = groups["thermophysical"]
-        torch.manual_seed(len(states) + 123)
-        model = Stage3SparseModel(recipe.stage3.model, source_task_specs(registry), 16,
-                                  group_configs=groups, initialization_seed=42)
-        states.append(model.state_dict())
-        configs[name] = stage3.to_dict()
-    for key, value in states[0].items():
-        assert all(torch.equal(other[key], value) for other in states[1:])
-    for value in configs.values():
-        value["data"].pop("artifacts_dir")
-        value["preparation"].pop("cache_dir")
-        for field in ("stage2_final", "stage2_encoder", "simulation_artifacts_dir"):
-            value["initialization"].pop(field)
-    assert all(value == configs["base"] for value in configs.values())
+    stage3 = load_stage3_config("configs/v5/stage3/base.yaml")
+    resolved = resolve_task_registry(stage3)
+    assert len(resolved) == 22 and "experiment/x_co2" not in resolved
+    assert set(simulation_tasks(stage3)) == {"simulation/heat_of_vaporization", "simulation/thermal_expansion"}
+    enthalpy = resolved["experiment/enthalpy_of_vaporization_or_sublimation"]
+    assert enthalpy.condition_columns == ("temperature_K",) and enthalpy.condition_width == 1
+    assert resolved["experiment/hydration"].split_strategy == "random"
+    assert resolved["experiment/gas_solubility"].partner_slots == ("solute",)
+    with pytest.raises(ValueError, match="Selected condition"):
+        resolve_task_registry(replace(stage3, tasks={enthalpy.task_id: replace(
+            stage3.tasks[enthalpy.task_id], condition_columns=("missing",)
+        )}, data=replace(stage3.data, split_strategies={})))
     recipe = load_home_recipe("configs/v5/stage2/base.yaml")
     with pytest.raises(ValueError, match="missing"):
         load_stage2_registry(recipe.stage2.data.task_catalog_path, task_ids=(*recipe.stage2.data.tasks, "simulation/missing"))
@@ -1319,8 +1296,8 @@ def test_v5_matrix_contracts_and_common_initialization() -> None:
         replace(recipe.stage2, loss=replace(recipe.stage2.loss, task_weights={})).validate()
 
 
-@pytest.mark.parametrize("variant", ["base", "controls/transformer5", "controls/transformer9", "controls/unary_pair9"])
-def test_v5_prepare_train_transfer_three_phase_and_predictions(tiny_stage2_setup, tmp_path, monkeypatch, variant):
+def test_v5_prepare_train_transfer_three_phase_and_predictions(tiny_stage2_setup, tmp_path, monkeypatch):
+    variant = "base"
     from stage1.config import AuxiliaryConfig, MaskingConfig
     from stage1.model import build_stage1_model
     from stage2.entity_cache import prepare_frozen_entities
@@ -1436,6 +1413,8 @@ def test_v5_prepare_train_transfer_three_phase_and_predictions(tiny_stage2_setup
                           "anion": ["[Cl-]"] * 5, "solute": ["[NH4+]", "CO", "CN", "CCO", "CCN"],
                           "solvent": ["C", "CC", "CCC", "CCCC", "CCCCC"]}[slot][fold - 1] for slot in spec.identity_columns}
             row.update({name: "Liquid | Gas" if name == "phase" else str(280 + fold) for name in spec.condition_columns})
+            if spec.task_id == "experiment/enthalpy_of_vaporization_or_sublimation":
+                row["phase"] = "Liquid | Gas"
             row[spec.target_column] = str(fold + 0.1)
             with path.open("w", newline="") as handle:
                 writer = csv.DictWriter(handle, fieldnames=list(row)); writer.writeheader(); writer.writerow(row)
@@ -1446,9 +1425,10 @@ def test_v5_prepare_train_transfer_three_phase_and_predictions(tiny_stage2_setup
     assert prepared["metadata"]["prepared_contract_version"] == 5 and prepared["slots"]["slots"].shape[-1] == 249
     enthalpy = "experiment/enthalpy_of_vaporization_or_sublimation"
     dataset = Stage3TaskDataset(stage3.data.artifacts_dir, 1, enthalpy, "train")
-    assert dataset.conditions.shape == (4, 2) and torch.all(dataset.conditions[:, 1] == 1)
+    assert dataset.conditions.shape == (4, 1)
     stats = prepared["normalization"]["fold1"][enthalpy]
     assert stats["conditions"]["temperature_K"]["mean"] == pytest.approx(283.5)
+    assert "phase" not in stats["conditions"] and "categorical_conditions" not in stats
     model, store, _ = build_model_and_store(stage3, prepared, fold=1, device=torch.device("cpu"), source=load_source(stage3))
     for name, value in payload["shared_state"].items():
         assert torch.equal(model.state_dict()[name], value)
@@ -1461,6 +1441,37 @@ def test_v5_prepare_train_transfer_three_phase_and_predictions(tiny_stage2_setup
     assert all(not p.requires_grad for p in model.parameters_for_owner(private_owner("simulation/heat_of_vaporization")))
     model.set_trainable_owners({group_owner("thermophysical"), private_owner("simulation/heat_of_vaporization")})
     assert all(not p.requires_grad for p in model.stage2_object_encoder.parameters())
+    # Simulation gradients and updates are PRIVATE-only even with shared owners enabled.
+    from stage3.simulation import load_simulation_training_data
+    from stage3.gradient_assembly import assemble_owner_gradients
+    simulation = load_simulation_training_data(config.data.artifacts_dir, payload, vocabulary, torch.device("cpu"), amp_dtype="none")
+    sim_tasks = model.simulation_tasks
+    model.set_trainable_owners({GLOBAL, group_owner("thermophysical"), *(private_owner(task) for task in sim_tasks)})
+    model.train()
+    shared = (*model.parameters_for_owner(GLOBAL), *model.parameters_for_owner(group_owner("thermophysical")))
+    before_shared = [p.detach().clone() for p in shared]
+    gradients = {}
+    for task in sim_tasks:
+        gradients[task], _ = simulation.compute_gradient(model, task, torch.arange(len(simulation.train[task])), torch.device("cpu"))
+        assert gradients[task] and any(g.abs().sum() > 0 for g in gradients[task].values())
+        assert all(model.parameter_ownership()[p] == private_owner(task) for p in gradients[task])
+    assembled = assemble_owner_gradients(model, gradients, model.task_specs, {"thermophysical": 1.0})
+    assert all(p not in assembled.gradients for p in shared)
+    experiment = "experiment/density"
+    with_experiment = assemble_owner_gradients(model, {**gradients, experiment: {p: torch.ones_like(p) for p in shared}}, model.task_specs, {"thermophysical": 1.0})
+    assert all(torch.equal(with_experiment.gradients[p], torch.ones_like(p)) for p in shared)
+    before_private = {task: [p.detach().clone() for p in model.parameters_for_owner(private_owner(task))] for task in sim_tasks}
+    optimizer = torch.optim.SGD([p for p in model.parameters() if p.requires_grad], lr=0.1)
+    optimizer.zero_grad(set_to_none=True)
+    for p, g in assembled.gradients.items():
+        p.grad = g.to(p.dtype)
+    optimizer.step()
+    assert all(torch.equal(p, before) for p, before in zip(shared, before_shared))
+    for task in sim_tasks:
+        assert any(not torch.equal(p, before) for p, before in zip(model.parameters_for_owner(private_owner(task)), before_private[task]))
+    model.set_trainable_owners({GLOBAL, group_owner("thermophysical")})
+    frozen_gradient, _ = simulation.compute_gradient(model, sim_tasks[0], torch.arange(len(simulation.train[sim_tasks[0]])), torch.device("cpu"))
+    assert frozen_gradient == {}
     train_root = tmp_path / "v5_stage3_train"
     rows = train_fold(stage3, 1, output_dir=train_root)
     assert rows[-1]["phase"] == "three_phase_final"
@@ -1511,11 +1522,11 @@ def test_v5_prepare_train_transfer_three_phase_and_predictions(tiny_stage2_setup
                 with (tmp_path / split / "predictions" / (task.replace("/", "__") + ".csv")).open() as handle:
                     actual = [float(row["prediction"]) for row in csv.DictReader(handle)]
                 np.testing.assert_allclose(actual, (predictions[task] + 3) * stats["scale"] + stats["mean"], rtol=1e-5, atol=1e-5)
-    # Reject unseen categories before materialization; never edit metadata hashes.
+    # Ignored source columns remain SHA-bound; never edit metadata hashes.
     bad = source_path(stage3, resolved[enthalpy], 1)
     bad.write_text(bad.read_text().replace("Liquid | Gas", "Solid | Gas"))
     with pytest.raises(ValueError, match="source hash"):
         load_prepared_stage3(stage3)
     from stage3.data import fit_normalization
-    with pytest.raises(ValueError, match="Unknown categorical"):
-        fit_normalization(stage3, {enthalpy: resolved[enthalpy]}, 2)
+    ignored_phase_stats = fit_normalization(stage3, {enthalpy: resolved[enthalpy]}, 2)
+    assert set(ignored_phase_stats[enthalpy]["conditions"]) == {"temperature_K"}

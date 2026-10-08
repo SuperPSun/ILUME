@@ -304,11 +304,12 @@ def test_formal_home_source_rejects_old_kind(
         load_home_source(config)
 
 
-def test_simulation_phase2_phase3_plan_and_identity() -> None:
+@pytest.mark.parametrize("private_only", [False, True])
+def test_simulation_phase2_phase3_plan_and_identity(private_only: bool) -> None:
     from stage3.simulation import SIMULATION_TASKS, extend_simulation_plan
     from stage3.three_phase import _final_kind, _scope_kind
 
-    config = load_stage3_config("configs/v3/stage3/base.yaml")
+    config = load_stage3_config("configs/v5/stage3/base.yaml" if private_only else "configs/v3/stage3/base.yaml")
     plan = {
         "data": {
             "N_t": {"experiment/density": 3}, "B_t": {"experiment/density": 2},
@@ -327,24 +328,37 @@ def test_simulation_phase2_phase3_plan_and_identity() -> None:
             "phase3": {"branches": {}},
         },
     }
+    tasks = SIMULATION_TASKS[:2] if private_only else SIMULATION_TASKS
+    if private_only:
+        plan["representation_contract"] = "dual_view_object_v5"
     model = SimpleNamespace(
-        task_specs={task: SimpleNamespace(meta_group=SOURCE_GROUPS[task]) for task in SIMULATION_TASKS},
+        task_specs={task: SimpleNamespace(meta_group=SOURCE_GROUPS[task]) for task in tasks},
         resolved_capacity_recipe=lambda: {
             "groups": {group: {} for group in ("thermophysical", "electronic_structure")},
             "tasks": {task: {} for task in SIMULATION_TASKS},
         },
     )
-    data = SimpleNamespace(train={task: range(300 if task == "simulation/homo" else 2) for task in SIMULATION_TASKS}, data_identity="data-hash")
+    data = SimpleNamespace(train={task: range(1025 if private_only else 300 if task == "simulation/homo" else 2) for task in tasks}, data_identity="data-hash")
     extend_simulation_plan(plan, config, model, data, {"full_model_state_hash": "source-hash"})
     assert plan["phases"]["phase1"]["owners"]["GLOBAL"]["actual_update_budget"] == 30
-    assert plan["phases"]["phase2"]["branches"]["electronic_structure"]["epochs"] == 4
-    assert plan["phases"]["phase2"]["branches"]["electronic_structure"]["owners"]["GROUP:electronic_structure"]["nominal_lr"] == 7.5e-5
-    assert plan["data"]["task_steps"]["simulation/homo"] == 2
-    assert all(plan["phases"]["phase3"]["branches"][task]["epochs"] == 8 for task in SIMULATION_TASKS)
-    assert plan["format_version"] == 10
-    assert plan["simulation_training"]["recipe"]["shared_group_task_weight"] == 0.1
-    assert _final_kind(plan) == "ilume_stage3_home_simulation_three_phase_final_v2"
-    assert _scope_kind(plan, "owner_delta") == "ilume_stage3_home_simulation_three_phase_v2_owner_delta"
+    if private_only:
+        branch = plan["phases"]["phase2"]["branches"]["thermophysical"]
+        assert branch["steps_per_epoch"] == 5
+        assert branch["owners"]["GROUP:thermophysical"]["updates_per_epoch"] == 2
+        assert branch["owners"]["GROUP:thermophysical"]["actual_update_budget"] == 8
+        assert "shared_group_task_weight" not in plan["simulation_training"]["recipe"]
+        assert plan["simulation_training"]["phase2_gradient_policy"] == "simulation_private_only_v1"
+        assert plan["format_version"] == 13
+        assert _final_kind(plan) == "ilume_stage3_object_three_phase_final_v5"
+    else:
+        assert plan["phases"]["phase2"]["branches"]["electronic_structure"]["epochs"] == 4
+        assert plan["phases"]["phase2"]["branches"]["electronic_structure"]["owners"]["GROUP:electronic_structure"]["nominal_lr"] == 7.5e-5
+        assert plan["data"]["task_steps"]["simulation/homo"] == 2
+        assert plan["format_version"] == 10
+        assert plan["simulation_training"]["recipe"]["shared_group_task_weight"] == 0.1
+        assert _final_kind(plan) == "ilume_stage3_home_simulation_three_phase_final_v2"
+        assert _scope_kind(plan, "owner_delta") == "ilume_stage3_home_simulation_three_phase_v2_owner_delta"
+    assert all(plan["phases"]["phase3"]["branches"][task]["epochs"] == 8 for task in tasks)
 
 
 def test_core_home_ablation_source_isolation(monkeypatch: pytest.MonkeyPatch) -> None:

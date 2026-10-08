@@ -4,7 +4,7 @@ import csv
 import hashlib
 import json
 import math
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
@@ -72,18 +72,14 @@ class ResolvedTaskSpec:
     task_weight: float
     catalog_schema_version: int
     provenance: dict[str, str]
-    categorical_conditions: dict[str, tuple[str, ...]] = field(default_factory=dict)
     role_policy: str = "legacy_slot_v1"
 
     @property
     def condition_width(self) -> int:
-        return sum(len(self.categorical_conditions[name]) if name in self.categorical_conditions else 1
-                   for name in self.condition_columns)
+        return len(self.condition_columns)
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
-        if not self.categorical_conditions:
-            payload.pop("categorical_conditions")
         if self.role_policy == "legacy_slot_v1":
             payload.pop("role_policy")
         else:
@@ -268,8 +264,9 @@ def resolve_task_registry(config: Stage3Config) -> dict[str, ResolvedTaskSpec]:
         strategy = strategy.replace("-", "_")
         if strategy not in fact.split_strategies:
             raise ValueError(f"Illegal split strategy for {task_id}: {strategy}")
-        if set(task.categorical_conditions) - set(fact.condition_columns):
-            raise ValueError(f"Categorical condition absent from catalog: {task_id}")
+        condition_columns = fact.condition_columns if task.condition_columns is None else tuple(task.condition_columns)
+        if set(condition_columns) - set(fact.condition_columns):
+            raise ValueError(f"Selected condition absent from catalog: {task_id}")
         configured_slots = task.primary_slots + task.partner_slots
         if configured_slots != fact.identity_columns:
             raise ValueError(
@@ -284,7 +281,7 @@ def resolve_task_registry(config: Stage3Config) -> dict[str, ResolvedTaskSpec]:
             task_id=task_id,
             target_column=fact.target_column,
             identity_columns=fact.identity_columns,
-            condition_columns=fact.condition_columns,
+            condition_columns=condition_columns,
             system_type=fact.system_type,
             materialized_path=fact.materialized_path,
             split_strategy=strategy,
@@ -297,7 +294,6 @@ def resolve_task_registry(config: Stage3Config) -> dict[str, ResolvedTaskSpec]:
             task_weight=task.task_weight,
             catalog_schema_version=fact.catalog_schema_version,
             provenance=fact.provenance,
-            categorical_conditions={key: tuple(value) for key, value in task.categorical_conditions.items()},
             role_policy="formal_charge_v1" if config.is_v5 else "legacy_slot_v1",
         )
     return resolved
@@ -414,12 +410,9 @@ def fit_normalization(
     train_folds = tuple(fold for fold in range(1, 6) if fold != held_out_fold)
     result: dict[str, Any] = {}
     for task_id, spec in registry.items():
-        conditions = {name: RunningStats() for name in spec.condition_columns if name not in spec.categorical_conditions}
+        conditions = {name: RunningStats() for name in spec.condition_columns}
         target = RunningStats()
         for fold, row_number, row in iter_rows(config, spec, train_folds):
-            for name, categories in spec.categorical_conditions.items():
-                if row.get(name, "").strip() not in categories:
-                    raise ValueError(f"Unknown categorical condition {task_id}:{row_number}/{name}")
             for name, stats in conditions.items():
                 stats.update(finite_float(row.get(name), f"{task_id}/fold{fold}:{row_number}/{name}"))
             target.update(
@@ -429,7 +422,6 @@ def fit_normalization(
                 )
             )
         result[task_id] = {
-            **({"categorical_conditions": {key: list(value) for key, value in spec.categorical_conditions.items()}} if spec.categorical_conditions else {}),
             "conditions": {
                 name: stats.finish(target=False, context=f"{task_id}/{name}")
                 for name, stats in conditions.items()
@@ -512,16 +504,9 @@ def build_task_payload(
         )
         conditions = []
         for name in spec.condition_columns:
-            if name in spec.categorical_conditions:
-                categories = spec.categorical_conditions[name]
-                value = row.get(name, "").strip()
-                if value not in categories:
-                    raise ValueError(f"Unknown categorical condition {spec.task_id}/{name}: {value}")
-                conditions.extend(float(value == category) for category in categories)
-            else:
-                value = finite_float(row.get(name), f"{spec.task_id}:{row_number}/{name}")
-                condition_stats = stats["conditions"][name]
-                conditions.append((value - condition_stats["mean"]) / condition_stats["scale"])
+            value = finite_float(row.get(name), f"{spec.task_id}:{row_number}/{name}")
+            condition_stats = stats["conditions"][name]
+            conditions.append((value - condition_stats["mean"]) / condition_stats["scale"])
         raw_target = finite_float(
             row.get(spec.target_column),
             f"{spec.task_id}/fold{source_fold}:{row_number}/{spec.target_column}",

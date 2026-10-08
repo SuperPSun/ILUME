@@ -44,7 +44,7 @@ def resolve_simulation_specs(source_registry: Any, experimental_specs: Mapping[s
         task: replace(
             specs[task],
             task_weight=(recipe.shared_group_task_weight
-                         if specs[task].meta_group in shared_groups else 1.0),
+                         if tasks != V5_SIMULATION_TASKS and specs[task].meta_group in shared_groups else 1.0),
         )
         for task in tasks
     }
@@ -178,7 +178,12 @@ class SimulationTrainingData:
     ) -> tuple[dict[torch.nn.Parameter, torch.Tensor], float]:
         if task not in self.train:
             raise ValueError(f"Unknown Stage 3 simulation task: {task}")
-        parameters = tuple(parameter for parameter in model.parameters() if parameter.requires_grad)
+        parameters = tuple(
+            parameter for parameter, owner in model.parameter_ownership().items()
+            if parameter.requires_grad and (
+                model.simulation_tasks != V5_SIMULATION_TASKS or owner == private_owner(task)
+            )
+        )
         full_indices = indices.to(device)
         gradients: dict[torch.nn.Parameter, torch.Tensor] = {}
         total = 0.0
@@ -198,7 +203,8 @@ class SimulationTrainingData:
                 loss = simulation_loss(task, prediction, packed, self.train_device[task], full_indices)
             for parameter, gradient in zip(
                 parameters,
-                torch.autograd.grad(loss, parameters, allow_unused=True, materialize_grads=False),
+                (torch.autograd.grad(loss, parameters, allow_unused=True, materialize_grads=False)
+                 if parameters else ()),
                 strict=True,
             ):
                 if gradient is not None:
@@ -304,8 +310,9 @@ def extend_simulation_plan(
             branch = branches[group]
             branch["steps_per_epoch"] = steps
             group_recipe = branch["owners"][group_owner(group).label]
-            group_recipe["updates_per_epoch"] = steps
-            group_recipe["actual_update_budget"] = budget.epochs * steps
+            if not config.is_v5:
+                group_recipe["updates_per_epoch"] = steps
+                group_recipe["actual_update_budget"] = budget.epochs * steps
         for task in group_tasks:
             effective = min(class_recipe.phase2_epochs, budget.epochs)
             lr = class_recipe.phase1.lr * training.phase1_min_lr_ratio
@@ -343,12 +350,13 @@ def extend_simulation_plan(
         "feature_source": "stage2_final_backbone_with_phase1_object_encoder_v1",
         "loss": "stage2_physics_scalar_smooth_l1_v5" if config.is_v5 else "stage2_physics_smooth_l1_molecule_equal_charge_v1",
         "sampling": "raw_without_replacement_256_per_task_v1",
+        **({"phase2_gradient_policy": "simulation_private_only_v1"} if config.is_v5 else {}),
         "phase1": "simulation_private_frozen_v5" if config.is_v5 else "simulation_private_and_electronic_group_frozen_v1",
         "recipe": {
             "batch_size": simulation_recipe.batch_size,
             "microbatch_size": simulation_recipe.microbatch_size,
             "private_size_class": size_class,
-            "shared_group_task_weight": simulation_recipe.shared_group_task_weight,
+            **({"shared_group_task_weight": simulation_recipe.shared_group_task_weight} if not config.is_v5 else {}),
         },
     }
-    plan["format_version"] = 12 if config.is_v5 else 11 if config.initialization.representation_contract == "dual_view_v4" else 10
+    plan["format_version"] = 13 if config.is_v5 else 11 if config.initialization.representation_contract == "dual_view_v4" else 10

@@ -255,7 +255,7 @@ def _load_model(
     if not isinstance(plan, dict):
         raise ValueError("Stage 3 checkpoint lacks its resolved training plan")
     if config.training.simulation is not None and (
-        plan.get("simulation_training", {}).get("recipe") != asdict(config.training.simulation)
+        plan.get("simulation_training", {}).get("recipe") != config.to_dict()["training"]["simulation"]
         or plan.get("simulation_training", {}).get("tasks") != list(simulation_tasks(config))
     ):
         raise ValueError("Stage 3 simulation training recipe mismatch")
@@ -269,9 +269,9 @@ def _load_model(
     )
     if three_phase_final:
         if (
-            plan.get("format_version") != (12 if config.is_v5 else 11 if config.initialization.representation_contract == "dual_view_v4" else 10 if config.initialization.simulation_artifacts_dir is not None else 9 if config.initialization.home_mode is not None else 7 if config.training.object_encoder_phase1 is not None else 5 if config.transfer_knowledge is not None else 4)
+            plan.get("format_version") != (13 if config.is_v5 else 11 if config.initialization.representation_contract == "dual_view_v4" else 10 if config.initialization.simulation_artifacts_dir is not None else 9 if config.initialization.home_mode is not None else 7 if config.training.object_encoder_phase1 is not None else 5 if config.transfer_knowledge is not None else 4)
             or plan.get("math", {}).get("gradient_aggregation") != "weighted_owner_raw_v1"
-            or training_identity.get("payload", {}).get("contract_version") != (16 if config.is_v5 else 15 if config.initialization.representation_contract == "dual_view_v4" else 14 if config.initialization.simulation_artifacts_dir is not None else 13 if config.initialization.home_mode is not None else 9 if config.training.object_encoder_phase1 is not None else 7 if config.transfer_knowledge is not None else 6)
+            or training_identity.get("payload", {}).get("contract_version") != (17 if config.is_v5 else 15 if config.initialization.representation_contract == "dual_view_v4" else 14 if config.initialization.simulation_artifacts_dir is not None else 13 if config.initialization.home_mode is not None else 9 if config.training.object_encoder_phase1 is not None else 7 if config.transfer_knowledge is not None else 6)
         ):
             raise ValueError("Stage 3 evaluation requires weighted_owner_raw_v1 artifacts")
     if plan.get("prepared_identity") != metadata_identity(

@@ -226,7 +226,7 @@ def train_fold(
     if simulation_data is not None:
         extend_simulation_plan(plan, config, model, simulation_data, source)
     else:
-        plan["format_version"] = 12 if config.is_v5 else 11 if config.initialization.representation_contract == "dual_view_v4" else 9
+        plan["format_version"] = 13 if config.is_v5 else 11 if config.initialization.representation_contract == "dual_view_v4" else 9
     if expected_training_identity is not None:
         require_compatible_identity(
             expected_training_identity, build_stage3_training_identity(plan),
@@ -265,7 +265,7 @@ def resolve_training_identity(config: Stage3Config, fold: int) -> dict[str, Any]
         )
         extend_simulation_plan(plan, config, model, simulation_data, source)
     else:
-        plan["format_version"] = 12 if config.is_v5 else 11 if config.initialization.representation_contract == "dual_view_v4" else 9
+        plan["format_version"] = 13 if config.is_v5 else 11 if config.initialization.representation_contract == "dual_view_v4" else 9
     return build_stage3_training_identity(plan)
 
 

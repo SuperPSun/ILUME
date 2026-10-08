@@ -64,28 +64,34 @@ def assemble_owner_gradients(
     group_global: dict[str, GradientMap] = {}
     task_norms: dict[str, float] = {}
     groups = sorted({task_specs[task].meta_group for task in task_gradients})
+    private_only = (
+        set(getattr(model, "simulation_tasks", ()))
+        if getattr(model, "representation_contract", None) == "dual_view_object_v5" else set()
+    )
     for group in groups:
         tasks = tuple(task for task in task_gradients if task_specs[task].meta_group == group)
         group_parameters = model.parameters_for_owner(group_owner(group))
-        raw = {task: task_gradients[task] for task in tasks}
-        weight_sum = sum(task_specs[task].task_weight for task in tasks)
+        shared_tasks = tuple(task for task in tasks if task not in private_only)
+        raw = {task: task_gradients[task] for task in shared_tasks}
+        weight_sum = sum(task_specs[task].task_weight for task in shared_tasks)
         normalized = {
-            task: len(tasks) * task_specs[task].task_weight / weight_sum for task in tasks
+            task: len(shared_tasks) * task_specs[task].task_weight / weight_sum for task in shared_tasks
         }
-        group_global[group] = _weighted_mean(raw, normalized, shared_parameters)
-        final.update(_weighted_mean(raw, normalized, group_parameters))
+        if shared_tasks:
+            group_global[group] = _weighted_mean(raw, normalized, shared_parameters)
+            final.update(_weighted_mean(raw, normalized, group_parameters))
         for task in tasks:
             private_parameters = model.parameters_for_owner(private_owner(task))
             for parameter in private_parameters:
                 if parameter in task_gradients[task]:
-                    final[parameter] = task_gradients[task][parameter].float() * normalized[task]
+                    final[parameter] = task_gradients[task][parameter].float() * normalized.get(task, 1.0)
             task_norms[task] = _norm(
                 task_gradients[task], (*shared_parameters, *group_parameters, *private_parameters)
             )
-    group_weight_sum = sum(group_weights[group] for group in groups)
+    group_weight_sum = sum(group_weights[group] for group in group_global)
     for parameter in shared_parameters:
         values = [group_global[group][parameter] * group_weights[group]
-                  for group in groups if parameter in group_global[group]]
+                  for group in group_global if parameter in group_global[group]]
         if values:
             final[parameter] = torch.stack(values).sum(dim=0) / group_weight_sum
     owner_norms = {"GLOBAL": _norm(final, global_parameters)}

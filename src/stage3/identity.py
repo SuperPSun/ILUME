@@ -208,7 +208,7 @@ def build_stage3_training_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
         if plan.get("representation_contract") == "dual_view_v4":
             contract_version = 15
         if plan.get("representation_contract") == "dual_view_object_v5":
-            contract_version = 16
+            contract_version = 17
     return semantic_identity(
         "stage3.training",
         {
