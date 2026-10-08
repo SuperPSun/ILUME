@@ -20,6 +20,7 @@ summary*/
 /artifacts/
 /trash/
 /tmp/
+*.tar.gz
 
 # Heavy or transient payloads anywhere else
 *.pt
