@@ -1,6 +1,6 @@
 # ILUME
 
-ILUME 的现役流程是 **冻结 v4 Stage1 → v5 Stage2 Unary + Pair / 五任务 HoME → v5 Stage3 22实验 / 两模拟辅助 HoME**。Stage1 learned1024 与显式标准化 RDKit217 组成1241D实体输入，统一Object表示1024D；Stage2/3永久冻结Stage1。Stage3保留三阶段 owner 训练和严格来源验证。合同见 [ADR-0094](docs/adr/0094-v5-unary-pair-five-task-stage2.md)；正式命令和四组隔离对照见 [v5运行手册](docs/v5-runbook.md)。v4及更早Stage2/3配置和产物保持历史身份。
+ILUME 的现役流程是 **冻结 v4 Stage1 → v5 Stage2 Unary + Pair / 五任务 HoME → v5 Stage3 22实验 / 两模拟辅助 HoME**。Stage1 learned1024 与显式标准化 RDKit217 组成1241D实体输入，统一Object表示1024D；Stage2/3永久冻结Stage1。Stage3保留三阶段 owner 训练和严格来源验证。合同见 [ADR-0094](docs/adr/0094-v5-unary-pair-five-task-stage2.md)；正式命令见 [v5运行手册](docs/v5-runbook.md)。v4及更早Stage2/3配置和产物保持历史身份。
 
 命令从仓库根目录执行。安装依赖并准备 ILUME-Data 的 Stage1/2/3 输入；CSV 与输出不进入 Git。正式训练使用尚不存在的输出目录，旧 HoME 产物不能与新正式身份交叉加载。本页命令是运行手册，不属于自动验收。
 
@@ -10,7 +10,7 @@ python -m pip install -e ".[dev,tokenizers]"
 
 ## 正式 v5 Stage2 / Stage3
 
-`configs/v5/stage2/base.yaml` 和 `configs/v5/stage3/base.yaml` 是新 Base；`controls/transformer5`、`controls/transformer9`、`controls/unary_pair9` 提供架构/任务集对照，输出均隔离到 `outputs/v5/`。全部对照使用同样22项实验和两项模拟辅助监督。按 [v5运行手册](docs/v5-runbook.md)依次校验 Stage1、Stage2 prepare/train、配对Stage3 prepare/五折train、实验与模拟评估、独立summary。当前需先补齐配置指定的正式 Stage1 encoder；不手改旧metadata。
+`configs/v5/stage2/base.yaml` 和 `configs/v5/stage3/base.yaml` 是唯一新 Base，输出隔离到 `outputs/v5/`；新增三组对照已移除。Stage3保持22项实验任务，Phase2/3的两项模拟任务只更新各自PRIVATE，不影响共享GLOBAL/GROUP的更新。焓任务展示为 Enthalpy of vaporization，仅使用temperature_K，catalog来源标识保持不变。按 [v5运行手册](docs/v5-runbook.md)依次校验 Stage1、Stage2 prepare/train、Stage3 prepare/五折train、实验与模拟评估、独立summary。当前需先补齐配置指定的正式 Stage1 encoder；不手改旧metadata。
 
 ## 现役 v4 Stage1 与历史 v4 Stage2/3
 
@@ -24,11 +24,9 @@ Stage1现役Base另有train-only原子电荷监督，使用绑定既有corpus的
 
 ## v3 历史运行手册
 
-下列v3主线、候选与核心消融命令保留用于历史追溯，不是v4入口，不覆盖旧结果；v3/legacy数值合同与代码路径未迁移。
+下列v3主线、候选与核心消融命令保留用于历史追溯，不是现役v5入口，不覆盖旧结果；v3/legacy数值合同与代码路径未迁移。
 
-现役 Stage3 以 `experiment/hydration` 替代 `experiment/transfer`（[ADR-0088](docs/adr/0088-stage3-hydration-replaces-transfer.md)）：单 solute + temperature_K、151 个体系、solvation GROUP、small 默认 PRIVATE 配方、random 五折、无 test。旧 transfer 产物保持历史身份；更换后的任务集合需要新的 Stage3 与 baseline 产物，禁止覆写既有输出。
-
-Stage1 保持现有 v2 来源，完成 prepare 后训练：
+历史v3的 Stage1 使用 v2 来源，完成 prepare 后训练：
 
 ```bash
 python scripts/stage1/prepare.py --config configs/v2/stage1/base.yaml --output outputs/v3/stage1/base/prepare
@@ -87,7 +85,7 @@ python scripts/stage3/evaluate.py --config configs/ablations/no_stage1_stage3.ya
 
 ### w/o Stage2
 
-从同一 Stage1 checkpoint 与 Stage2 seed 导出零更新 ObjectEncoder；Stage3 Phase1 仍适配它，且不接收 Stage2-HoME owner。按当前消融合同，该对照维持 20 项实验任务，不加入五项模拟辅助训练；因此与 Full ILUME 的差异不只包含 Stage2 权重。该对照依赖已完成的正式 Stage2 encoder，仅用于验证配对来源与身份。
+从同一 Stage1 checkpoint 与 Stage2 seed 导出零更新 ObjectEncoder；Stage3 Phase1 仍适配它，且不接收 Stage2-HoME owner。按历史v3消融合同，该对照维持 20 项实验任务，不加入五项模拟辅助训练；因此与 Full ILUME 的差异不只包含 Stage2 权重。该对照依赖已完成的正式 Stage2 encoder，仅用于验证配对来源与身份。
 
 ```bash
 python scripts/stage2/zero_update.py --config configs/v3/stage2/base.yaml --trained-encoder outputs/v3/stage2/base/train/stage2_encoder.pt --output outputs/v3/ablations/no_stage2/stage2_zero_update
@@ -99,13 +97,15 @@ python scripts/stage3/evaluate.py --config configs/ablations/no_stage2_stage3.ya
 
 ### w/o Stage3-HoME
 
-独立单任务 MLP 使用新正式 Stage3 prepared 的冻结 1024D 表示，各 task/fold 独立训练 `input → 1024 → 512 → 1`，固定 10 epochs、发布末轮模型。它维持 20 项实验任务，是整个 Stage3 后端对照；与 Full ILUME 的差异还包含五项模拟辅助训练，不能将差异单独归因于 HoME routing；不做预算匹配。需有 BF16-capable CUDA。
+历史v3独立单任务 MLP 使用配对 Stage3 prepared 的冻结 1024D 表示，各 task/fold 独立训练 `input → 1024 → 512 → 1`，固定 10 epochs、发布末轮模型。它维持 20 项实验任务，是整个 Stage3 后端对照；与 Full ILUME 的差异还包含五项模拟辅助训练，不能将差异单独归因于 HoME routing；不做预算匹配。需有 BF16-capable CUDA。
 
 ```bash
 python scripts/benchmarks/sweep.py --config configs/ablations/no_stage3_home.yaml --output outputs/v3/ablations/no_stage3_home --max-workers 1
 ```
 
 ## 四项模拟性质比较
+
+本节的 Stage3/no-Stage1 命令及四任务比较属于历史v4协议；现役v5仅报告汽化热和热膨胀，命令见 [v5运行手册](docs/v5-runbook.md)。Baseline的四任务训练配方保持不变，不与v5两任务结果混排。
 
 十个正式 baseline 另训 heat of vaporization、thermal expansion、HOMO、LUMO，各任务使用 catalog 的原有 train/valid/test，独立训练一次；不训练 partial charge，也不让模拟数据更新实验任务模型。神经 baseline 沿用各自 10 epochs、XGBoost 保持 1000 trees，发布末轮状态。内部单任务 MLP 消融及历史 split 配置不加入这些作业。合同见 [ADR-0086](docs/adr/0086-scalar-simulation-baselines-and-reporting.md)。
 
@@ -130,7 +130,7 @@ no-Stage1 使用其独立配置与输出根；no-Stage2 和单任务 MLP 消融�
 
 ## Baselines and Ablations
 
-独立 baseline 的配置在 `configs/benchmarks/`，代码在 `benchmarks/`。训练预算、环境和模型合同从 [ADR 索引](docs/adr/README.md)查阅。以 D-MPNN 为例：
+独立 baseline 的配置在 `configs/benchmarks/`，代码在 `benchmarks/`。训练预算、环境和模型合同从 [ADR 索引](docs/adr/README.md)查阅。实验baseline仍为历史20任务合同，依赖包含x_co2的对应历史catalog/数据；不能直接使用当前22任务catalog或用gas_solubility替代。以 D-MPNN 为例：
 
 ```bash
 python scripts/benchmarks/sweep.py --config configs/benchmarks/dmpnn.yaml --output outputs/benchmarks/v4/dmpnn --max-workers 1
@@ -477,7 +477,7 @@ ReLU。Target 和所有 conditions 都只用当前
 fold train rows 做 population z-score。训练固定 seed 1000、batch 64、Adam `1e-3`、MSE、constant
 LR 和 10 epochs，只发布 epoch 10 final state。
 
-固定 DGL CPU golden reference 验证 prediction、representation 和 attention；当前 20-task 数据
+固定 DGL CPU golden reference 验证 prediction、representation 和 attention；历史 20-task 数据
 审计的 11,282 个唯一 view 全部 fragmentation 成功。251,297 个原子中 5,618 个进入作者定义的
 unknown motif（2.236%），不会删除样本。完整科学与审计边界见
 [ADR-0060](docs/adr/0060-aifc-stage3-baseline.md)。
@@ -487,6 +487,8 @@ unknown motif（2.236%），不会删除样本。完整科学与审计边界见
 ## 输出与结果汇总
 
 新训练和评估输出不覆盖既有目录；每个操作记录 `run_config.yaml`、`metadata.json` 与完成后的 `summary.json`。全局 summarizer 只收录显式选中的目录，并对 prediction 完整性进行验证；Stage3 experimental 与 simulation 使用独立 leaderboard，Stage2 不发布榜单。见 [ADR-0021](docs/adr/0021-identity-audit-contract-v1.md)、[ADR-0031](docs/adr/0031-stage3-summary-normalization-relaxation.md)、[ADR-0085](docs/adr/0085-retire-stage2-home-evaluation.md)与 [ADR-0086](docs/adr/0086-scalar-simulation-baselines-and-reporting.md)。
+
+下列为历史v4汇总命令；现役v5按 [v5运行手册](docs/v5-runbook.md)在独立目录汇总，不加入旧20任务或四模拟结果。
 
 ```bash
 python scripts/benchmarks/summarize.py --input outputs/v4 outputs/benchmarks/v4 --include outputs/v4/stage3/base/valid outputs/v4/stage3/base/test outputs/v4/stage3/base/simulation_valid outputs/v4/stage3/base/simulation_test outputs/benchmarks/v4 --output summary_v4

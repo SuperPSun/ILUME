@@ -6,7 +6,7 @@
 
 | 主题 | ADR（按修订顺序） | 阅读重点 |
 |---|---|---|
-| v5 Stage2/3 主线 | [0094](0094-v5-unary-pair-five-task-stage2.md) | Unary + Pair / 五任务Stage2，四组隔离对照；22实验+两模拟Stage3；formal-charge角色、类别条件、v5严格产物及两任务reporting，Stage1保持v4 |
+| v5 Stage2/3 主线 | [0094](0094-v5-unary-pair-five-task-stage2.md) | Unary + Pair / 五任务Stage2，仅Base；22实验+两模拟Stage3；formal-charge角色、数值条件、模拟PRIVATE-only更新、v5严格产物及两任务reporting，Stage1保持v4 |
 | v4 冻结双视图Stage1 | [0089](0089-v4-frozen-dual-view-stage1.md)、[0090](0090-stage1-v4-residual-encoder-capacity.md)、[0091](0091-stage1-v4-loss-weights-gradient-audit.md)、[0092](0092-stage1-atom-charge-and-frozen-regression-heads.md) | Stage1 learned1024、自然shuffle与2/2/1 loss权重；约60.73M encoder，train-only原子电荷、重复结构独立观察/sidecar format2及1000步只读audit；现役系数/batch/workers读[Base YAML](../../configs/v4/stage1/base.yaml)和[v4手册](../v4-runbook.md)，正文旧数值为历史；独立冻结回归头后训练不替换encoder；下游永久冻结Stage1 |
 | 历史 v2/v3 表示与隔离 | [0039](0039-global-rdkit-v2-mainline.md) | 三模态 Stage 1、1024D entity/Object/HoME；仅约束历史配置，现役表示由 0089 取代 |
 | Stage 1 执行 | [0013](0013-stage1-full-corpus-ddp.md)、[0014](0014-stage1-prepare-performance-and-corpus-v2.md)、[0015](0015-stage1-high-throughput-epoch-resume.md)、[0017](0017-stage1-base-runtime-profile.md) | 全量 epoch、prepare/runtime、DDP 与完整 epoch 恢复 |
@@ -35,7 +35,7 @@
 | AIonopedia | [0049](0049-aionopedia-multimodal-baseline.md) |
 | ILTransR | [0057](0057-iltransr-stage3-baseline.md) |
 | AIFC | [0060](0060-aifc-stage3-baseline.md) |
-| 核心三项消融 | [0089](0089-v4-frozen-dual-view-stage1.md)（现役 v4）、[0082](0082-home-mainline-and-core-ablations.md)、[0084](0084-stage3-simulation-phase2-phase3.md)、[0077](0077-stage3-single-task-mlp-v2-ablation.md)（历史配方来源） |
+| 核心三项消融 | [0089](0089-v4-frozen-dual-view-stage1.md)（历史 v4）、[0082](0082-home-mainline-and-core-ablations.md)、[0084](0084-stage3-simulation-phase2-phase3.md)、[0077](0077-stage3-single-task-mlp-v2-ablation.md)（历史配方来源） |
 
 ## 冻结合同与历史
 
@@ -53,6 +53,6 @@
 | PRIVATE recipe 试验 | [0051～0053 历史摘要](history.md#adr-0051)；有效机制见 0050，最终 task 设置见 0055 |
 | v2 Stage 3 HPO | [0041](0041-stage3-v2-three-phase-hpo.md)：搜索入口退役；prepared identity 的数据/训练分离修订仍需按当前实现核对，不能据此恢复搜索 |
 | Routing / gate calibration | [0056](0056-stage3-inference-only-routing-ablation.md)、[0059](0059-stage3-gate-only-post-training-calibration.md)：Retired，保留问题、负结果与不恢复边界 |
-| Stage2→Stage3 等行数迁移矩阵 | [0065](0065-stage2-stage3-balanced-transfer-matrix.md)、[0071](0071-retire-balanced-stage2-stage3-transfer.md)：Retired；旧输出只读，正式主线见 0082 |
+| Stage2→Stage3 等行数迁移矩阵 | [0065](0065-stage2-stage3-balanced-transfer-matrix.md)、[0071](0071-retire-balanced-stage2-stage3-transfer.md)：Retired；旧输出只读，现役主线见 0094 |
 
 历史文件数不代表现役方案数。需要复现旧决定时查对应 Git 版本；日常运行只从正式 YAML 和上方现役合同进入。
