@@ -71,6 +71,7 @@ class Stage3TaskConfig:
     phase2_private_epochs: int | None = None
     phase3_private_epochs: int | None = None
     model_overrides: dict[str, Any] = field(default_factory=dict)
+    categorical_conditions: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def _base_task_registry() -> dict[str, Stage3TaskConfig]:
@@ -303,6 +304,10 @@ class Stage3Config:
     training: Stage3TrainingConfig = field(default_factory=Stage3TrainingConfig)
     transfer_knowledge: Stage3TransferKnowledgeConfig | None = None
 
+    @property
+    def is_v5(self) -> bool:
+        return self.initialization.representation_contract == "dual_view_object_v5"
+
     def resolved_private_recipe(
         self, task_id: str
     ) -> ResolvedStage3PrivateRecipe:
@@ -382,9 +387,9 @@ class Stage3Config:
         if self.representation is None:
             if self.initialization.stage2_encoder is None:
                 raise ValueError("Stage 2 Object representation requires stage2_encoder")
-            if self.initialization.representation_contract not in {"object_v3", "dual_view_v4"}:
+            if self.initialization.representation_contract not in {"object_v3", "dual_view_v4", "dual_view_object_v5"}:
                 raise ValueError("Unsupported Stage3 representation contract")
-            if self.initialization.representation_contract == "dual_view_v4" and (self.training.object_encoder_phase1 is None or self.initialization.home_mode is None):
+            if self.initialization.representation_contract in {"dual_view_v4", "dual_view_object_v5"} and (self.training.object_encoder_phase1 is None or self.initialization.home_mode is None):
                 raise ValueError("v4 requires HoME and ObjectEncoder Phase1 adaptation")
             if self.initialization.home_mode not in {None, "trained", "no_stage2"}:
                 raise ValueError("Invalid Stage 3 HoME source mode")
@@ -433,6 +438,12 @@ class Stage3Config:
             "film_hidden_ratio", "private_dropout",
         }
         for task_id, task in self.tasks.items():
+            if task.categorical_conditions and not self.is_v5:
+                raise ValueError("Categorical conditions require v5")
+            for name, categories in task.categorical_conditions.items():
+                if (not categories or len(set(categories)) != len(categories)
+                        or any(not isinstance(value, str) or not value.strip() for value in categories)):
+                    raise ValueError(f"Invalid categorical condition: {task_id}/{name}")
             if not task_id or "." in task_id:
                 raise ValueError(f"Invalid Stage 3 task id: {task_id}")
             if task.meta_group not in self.groups:
@@ -801,6 +812,8 @@ class Stage3Config:
                 if group[name] is None:
                     group.pop(name)
         for task in payload["tasks"].values():
+            if not task["categorical_conditions"]:
+                task.pop("categorical_conditions")
             for name in (
                 "unique_systems", "size_class", "phase1_private_lr",
                 "phase1_private_epochs", "phase2_private_epochs",

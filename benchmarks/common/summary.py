@@ -708,7 +708,7 @@ def _current_completed(candidates: Sequence[Candidate]) -> list[Candidate]:
 
 
 def _simulation_results(candidates: Sequence[Candidate], split: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    from stage3.simulation_reporting import SCALAR_SIMULATION_TASKS
+    from stage3.simulation_reporting import SCALAR_SIMULATION_TASKS, V5_SCALAR_SIMULATION_TASKS
 
     label = "simulation_test" if split == "test" else "simulation_validation"
     leaders, rows, comparisons = [], [], {}
@@ -741,20 +741,21 @@ def _simulation_results(candidates: Sequence[Candidate], split: str) -> tuple[li
             values = summary["tasks"]
         else:
             continue
-        if tuple(section["protocol"].get("expected_tasks", ())) != SCALAR_SIMULATION_TASKS or set(values) != set(SCALAR_SIMULATION_TASKS):
-            raise ValueError("Simulation leaderboard requires all four scalar tasks")
+        expected_tasks = tuple(section["protocol"].get("expected_tasks", ()))
+        if expected_tasks not in {SCALAR_SIMULATION_TASKS, V5_SCALAR_SIMULATION_TASKS} or set(values) != set(expected_tasks):
+            raise ValueError("Simulation leaderboard requires its complete scalar task protocol")
         comparison = section["comparison_identity"]
         _validate_comparison(comparison, label)
         run = _run_id(reporting["model_id"], candidate.source_run)
         comparisons.setdefault(comparison["hash"], []).append(run)
         display = _display_name(candidate, reporting)
-        for task in SCALAR_SIMULATION_TASKS:
+        for task in expected_tasks:
             metric = values[task]
             if metric.get("count", 0) <= 0 or not _finite(metric.get("normalized_mae")):
                 raise ValueError("Simulation leaderboard has incomplete metrics")
             rows.append({"run": run, "model": display, "task": task, **metric, "source_run": candidate.source_run})
-        leaders.append({"run": run, "model": display, "macro_normalized_mae": sum(float(value["normalized_mae"]) for value in values.values()) / 4,
-                        "valid_tasks": 4, "total_tasks": 4, "source_run": candidate.source_run, "checkpoint_epoch": summary.get("checkpoint_epoch")})
+        leaders.append({"run": run, "model": display, "macro_normalized_mae": sum(float(value["normalized_mae"]) for value in values.values()) / len(expected_tasks),
+                        "valid_tasks": len(expected_tasks), "total_tasks": len(expected_tasks), "source_run": candidate.source_run, "checkpoint_epoch": summary.get("checkpoint_epoch")})
     _require_one_comparison(comparisons, label)
     return _rank(leaders, "macro_normalized_mae"), sorted(rows, key=lambda row: (row["run"], row["task"]))
 

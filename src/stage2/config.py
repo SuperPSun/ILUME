@@ -41,6 +41,7 @@ class Stage2DataConfig:
     artifacts_dir: Path = Path("outputs/v1/stage2/base/prepare/artifacts")
     entity_shard_size: int = 4096
     seed: int = 42
+    tasks: tuple[str, ...] | None = None
     target_materialization_modes: dict[str, str] = field(
         default_factory=dict
     )
@@ -78,6 +79,9 @@ class Stage2ModelConfig:
     object_layers: int = 2
     object_ffn_dim: int = 1024
     dropout: float = 0.10
+    object_encoder_kind: str = "transformer"
+    unary_hidden_dim: int = 512
+    pair_hidden_dim: int = 512
 
 
 @dataclass(frozen=True)
@@ -123,7 +127,20 @@ class Stage2Config:
     loss: Stage2LossConfig = field(default_factory=Stage2LossConfig)
     training: Stage2TrainingConfig = field(default_factory=Stage2TrainingConfig)
 
+    @property
+    def is_v5(self) -> bool:
+        return self.data.tasks is not None
+
     def validate(self) -> None:
+        if self.model.object_encoder_kind not in {"transformer", "unary_pair"}:
+            raise ValueError("Unsupported ObjectEncoder kind")
+        if self.model.unary_hidden_dim <= 0 or self.model.pair_hidden_dim <= 0:
+            raise ValueError("Unary/Pair hidden dimensions must be positive")
+        if self.model.object_encoder_kind != "transformer" and not self.is_v5:
+            raise ValueError("UnaryPair requires the explicit v5 task contract")
+        if self.is_v5 and (not self.data.tasks or len(set(self.data.tasks)) != len(self.data.tasks)
+                           or set(self.data.tasks) != set(self.loss.task_weights)):
+            raise ValueError("Explicit Stage2 tasks must be unique and match loss.task_weights")
         if not self.data.task_catalog_path.resolve().is_relative_to(self.data.data_root.resolve()):
             raise ValueError("data.task_catalog_path must be contained by data.data_root")
         if self.data.entity_shard_size <= 0:
@@ -225,6 +242,8 @@ class Stage2Config:
 
     def validate_registry(self, registry: Stage2Registry) -> None:
         expected = set(registry.task_ids)
+        if self.is_v5 and expected != set(self.data.tasks):
+            raise ValueError("Stage2 registry differs from the explicit task contract")
         if set(self.loss.task_weights) != expected:
             raise ValueError("loss.task_weights must exactly match the Stage 2 registry")
         if not set(self.loss.task_loss_modes).issubset(expected):
@@ -284,6 +303,10 @@ class Stage2Config:
                 return [convert(item) for item in value]
             return value
         payload = convert(asdict(self))
+        if not self.is_v5:
+            payload["data"].pop("tasks")
+            for name in ("object_encoder_kind", "unary_hidden_dim", "pair_hidden_dim"):
+                payload["model"].pop(name)
         for name in ("stage1_config", "random_seed"):
             if payload["initialization"].get(name) is None:
                 payload["initialization"].pop(name)
@@ -321,6 +344,10 @@ def _construct(section_type: type, values: dict[str, Any] | None) -> Any:
     if unknown:
         raise ValueError(f"Unknown {section_type.__name__} fields: " + ", ".join(sorted(unknown)))
     if section_type is Stage2DataConfig:
+        if values.get("tasks") is not None:
+            if not isinstance(values["tasks"], list):
+                raise ValueError("data.tasks must be a list")
+            values["tasks"] = tuple(values["tasks"])
         for key in ("data_root", "task_catalog_path", "pretrain_artifacts_dir", "artifacts_dir"):
             if values.get(key) is not None:
                 values[key] = Path(values[key])

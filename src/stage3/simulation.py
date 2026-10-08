@@ -27,11 +27,18 @@ SIMULATION_TASKS = (
     "simulation/lumo",
     "simulation/partial_atomic_charge",
 )
+V5_SIMULATION_TASKS = SIMULATION_TASKS[:2]
+
+
+def simulation_tasks(config: Any) -> tuple[str, ...]:
+    return V5_SIMULATION_TASKS if config.is_v5 else SIMULATION_TASKS
+
+
 SIMULATION_BACKBONE_OWNER = Ownership("SIMULATION_BACKBONE")
 
 
-def resolve_simulation_specs(source_registry: Any, experimental_specs: Mapping[str, Any], recipe: Any) -> dict[str, Any]:
-    specs = source_task_specs(source_registry)
+def resolve_simulation_specs(source_registry: Any, experimental_specs: Mapping[str, Any], recipe: Any, tasks: tuple[str, ...] = SIMULATION_TASKS) -> dict[str, Any]:
+    specs = source_task_specs(source_registry, role_policy="formal_charge_v1" if tasks == V5_SIMULATION_TASKS else "legacy_slot_v1")
     shared_groups = {spec.meta_group for spec in experimental_specs.values() if spec.enabled}
     return {
         task: replace(
@@ -39,7 +46,7 @@ def resolve_simulation_specs(source_registry: Any, experimental_specs: Mapping[s
             task_weight=(recipe.shared_group_task_weight
                          if specs[task].meta_group in shared_groups else 1.0),
         )
-        for task in SIMULATION_TASKS
+        for task in tasks
     }
 
 
@@ -47,17 +54,24 @@ class SimulationObjectPhase1Model(ObjectPhase1Model):
     def __init__(self, *args: Any, source_model: SimulationHoME, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.simulation_backbone = source_model.backbone
-        self.simulation_atom_adapter = source_model.atom_adapter
+        self.simulation_tasks = V5_SIMULATION_TASKS if source_model.stage2_config.is_v5 else SIMULATION_TASKS
+        self.simulation_atom_adapter = None if source_model.stage2_config.is_v5 else source_model.atom_adapter
         self.simulation_registry = source_model.registry
         self._own_modules(SIMULATION_BACKBONE_OWNER, self.simulation_backbone)
-        self._own_modules(
-            private_owner("simulation/partial_atomic_charge"),
-            self.simulation_atom_adapter,
-        )
+        if self.simulation_atom_adapter is not None:
+            self._own_modules(
+                private_owner("simulation/partial_atomic_charge"), self.simulation_atom_adapter,
+            )
         self._validate_ownership()
 
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if self.simulation_tasks == V5_SIMULATION_TASKS:
+            self.simulation_backbone.eval()
+        return self
+
     def predict_simulation(self, task: str, packed: Any, task_data: Any) -> torch.Tensor:
-        if task not in SIMULATION_TASKS:
+        if task not in self.simulation_tasks:
             raise ValueError(f"Unsupported Stage 3 simulation task: {task}")
         return predict_simulation_task(
             self.simulation_backbone, self.stage2_object_encoder, self,
@@ -69,16 +83,18 @@ class SimulationObjectPhase1Model(ObjectPhase1Model):
 def copy_simulation_owners(model: SimulationObjectPhase1Model, source: SimulationHoME) -> tuple[str, ...]:
     source_manifest = source.home.ownership_manifest()
     target_manifest = model.ownership_manifest()
+    tasks = model.simulation_tasks
+    electronic = "simulation/homo" in tasks
     selected = {
         name for name, owner in target_manifest.items()
-        if (owner == group_owner("electronic_structure").label
-            or owner in {private_owner(task).label for task in SIMULATION_TASKS})
+        if ((electronic and owner == group_owner("electronic_structure").label)
+            or owner in {private_owner(task).label for task in tasks})
         and not name.startswith("simulation_atom_adapter.")
     }
     expected = {
         name for name, owner in source_manifest.items()
-        if owner == group_owner("electronic_structure").label
-        or owner in {private_owner(task).label for task in SIMULATION_TASKS}
+        if (electronic and owner == group_owner("electronic_structure").label)
+        or owner in {private_owner(task).label for task in tasks}
     }
     if selected != expected:
         raise ValueError("Stage 3 simulation owner tensor set differs from Stage 2")
@@ -197,9 +213,9 @@ def load_simulation_training_data(
     device: torch.device, *, amp_dtype: str = "bf16",
 ) -> SimulationTrainingData:
     planned = load_simulation_plan_data(artifacts_dir, source_payload)
-    valid = {task: Stage2TaskDataset(artifacts_dir, task, "valid") for task in SIMULATION_TASKS}
+    valid = {task: Stage2TaskDataset(artifacts_dir, task, "valid") for task in planned.train}
     entities = Stage2EntityDataset(artifacts_dir)
-    if source_payload.get("kind") == "ilume_stage2_home_final_v4":
+    if source_payload.get("kind") in {"ilume_stage2_home_final_v4", "ilume_stage2_home_final_v5"}:
         from common.identity import tensor_state_hash
 
         manifest = entities.frozen_entity_manifest
@@ -225,7 +241,8 @@ def load_simulation_plan_data(
     if (identity["hash"] != source_payload["stage2_data_identity"]["hash"]
             or registry.registry_hash != source_payload["registry_hash"]):
         raise ValueError("Stage 3 simulation data differs from the Stage 2 source")
-    train = {task: Stage2TaskDataset(artifacts_dir, task, "train") for task in SIMULATION_TASKS}
+    tasks = V5_SIMULATION_TASKS if source_payload["kind"] == "ilume_stage2_home_final_v5" else SIMULATION_TASKS
+    train = {task: Stage2TaskDataset(artifacts_dir, task, "train") for task in tasks}
     return SimulationPlanData(train, identity["hash"])
 
 
@@ -234,6 +251,7 @@ def extend_simulation_plan(
     data: SimulationPlanData | SimulationTrainingData, source_payload: Mapping[str, Any],
 ) -> None:
     """Add raw-coverage simulation branches without changing Phase 1 exposure."""
+    tasks = simulation_tasks(config)
     phases = plan["phases"]
     simulation_recipe = config.training.simulation
     if simulation_recipe is None:
@@ -241,14 +259,14 @@ def extend_simulation_plan(
     size_class = simulation_recipe.private_size_class
     class_recipe = config.training.three_phase.private_classes[size_class]
     training = config.training.three_phase
-    counts = {task: len(data.train[task]) for task in SIMULATION_TASKS}
-    allocation = {task: simulation_recipe.batch_size for task in SIMULATION_TASKS}
+    counts = {task: len(data.train[task]) for task in tasks}
+    allocation = {task: simulation_recipe.batch_size for task in tasks}
     task_steps = {task: math.ceil(count / simulation_recipe.batch_size) for task, count in counts.items()}
     plan["data"]["N_t"].update(counts)
     plan["data"]["B_t"].update(allocation)
     plan["data"]["task_steps"].update(task_steps)
     plan["data"]["epoch_exposures"].update(counts)
-    plan["data"]["effective_composite_batch_size"] += simulation_recipe.batch_size * len(SIMULATION_TASKS)
+    plan["data"]["effective_composite_batch_size"] += simulation_recipe.batch_size * len(tasks)
 
     def owner_recipe(lr: float, epochs: int, updates: int, floor: float, **extra: Any) -> dict[str, Any]:
         return {
@@ -260,16 +278,17 @@ def extend_simulation_plan(
         }
 
     by_group = {
-        group: tuple(task for task in SIMULATION_TASKS if model.task_specs[task].meta_group == group)
+        group: tuple(task for task in tasks if model.task_specs[task].meta_group == group)
         for group in ("thermophysical", "electronic_structure")
+        if any(model.task_specs[task].meta_group == group for task in tasks)
     }
-    for group, tasks in by_group.items():
+    for group, group_tasks in by_group.items():
         budget = config.groups[group].phase2
         assert budget is not None
         branches = phases["phase2"]["branches"]
         steps = max(
             branches.get(group, {}).get("steps_per_epoch", 0),
-            *(task_steps[task] for task in tasks),
+            *(task_steps[task] for task in group_tasks),
         )
         if group not in branches:
             branches[group] = {
@@ -287,7 +306,7 @@ def extend_simulation_plan(
             group_recipe = branch["owners"][group_owner(group).label]
             group_recipe["updates_per_epoch"] = steps
             group_recipe["actual_update_budget"] = budget.epochs * steps
-        for task in tasks:
+        for task in group_tasks:
             effective = min(class_recipe.phase2_epochs, budget.epochs)
             lr = class_recipe.phase1.lr * training.phase1_min_lr_ratio
             recipe = owner_recipe(
@@ -298,7 +317,7 @@ def extend_simulation_plan(
             recipe["nominal_epochs"] = class_recipe.phase2_epochs
             branches[group]["owners"][private_owner(task).label] = recipe
 
-    for task in SIMULATION_TASKS:
+    for task in tasks:
         lr = (class_recipe.phase1.lr * training.phase1_min_lr_ratio
               * training.phase2_min_lr_ratio)
         owner = private_owner(task)
@@ -316,15 +335,15 @@ def extend_simulation_plan(
             },
         }
     plan["simulation_training"] = {
-        "tasks": list(SIMULATION_TASKS),
+        "tasks": list(tasks),
         "groups": {group: list(tasks) for group, tasks in by_group.items()},
         "stage2_data_identity": data.data_identity,
         "stage2_full_state_hash": source_payload["full_model_state_hash"],
-        "source_owner_initialization": "stage2_final_group_private_atom_adapter_v1",
+        "source_owner_initialization": "stage2_final_private_scalar_v5" if config.is_v5 else "stage2_final_group_private_atom_adapter_v1",
         "feature_source": "stage2_final_backbone_with_phase1_object_encoder_v1",
-        "loss": "stage2_physics_smooth_l1_molecule_equal_charge_v1",
+        "loss": "stage2_physics_scalar_smooth_l1_v5" if config.is_v5 else "stage2_physics_smooth_l1_molecule_equal_charge_v1",
         "sampling": "raw_without_replacement_256_per_task_v1",
-        "phase1": "simulation_private_and_electronic_group_frozen_v1",
+        "phase1": "simulation_private_frozen_v5" if config.is_v5 else "simulation_private_and_electronic_group_frozen_v1",
         "recipe": {
             "batch_size": simulation_recipe.batch_size,
             "microbatch_size": simulation_recipe.microbatch_size,
@@ -332,4 +351,4 @@ def extend_simulation_plan(
             "shared_group_task_weight": simulation_recipe.shared_group_task_weight,
         },
     }
-    plan["format_version"] = 11 if config.initialization.representation_contract == "dual_view_v4" else 10
+    plan["format_version"] = 12 if config.is_v5 else 11 if config.initialization.representation_contract == "dual_view_v4" else 10

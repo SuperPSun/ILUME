@@ -262,11 +262,12 @@ def build_stage2_encoder_identity(
     object_encoder_contract: Mapping[str, Any],
     object_encoder_state_hash: str,
     role_to_id: Mapping[str, int],
+    version: int = STAGE2_ENCODER_IDENTITY_CONTRACT_VERSION,
 ) -> dict[str, Any]:
     return semantic_identity(
-        "stage2.encoder",
+        "stage2.encoder.v5" if version == 5 else "stage2.encoder",
         {
-            "contract_version": STAGE2_ENCODER_IDENTITY_CONTRACT_VERSION,
+            "contract_version": version,
             "object_encoding_api": "ordered-object-slots-v1",
             "stage1_feature_identity": stage1_feature_identity["hash"],
             "stage1_encoding_contract": dict(stage1_encoding_contract),

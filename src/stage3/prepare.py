@@ -268,7 +268,7 @@ def _stage_artifacts(
     )
     metadata = {
         "identity_contract_version": IDENTITY_CONTRACT_VERSION,
-        "prepared_contract_version": 4 if config.initialization.representation_contract == "dual_view_v4" else 3 if slot_payload is not None else STAGE3_PREPARED_CONTRACT_VERSION,
+        "prepared_contract_version": 5 if config.is_v5 else 4 if config.initialization.representation_contract == "dual_view_v4" else 3 if slot_payload is not None else STAGE3_PREPARED_CONTRACT_VERSION,
         "format_version": prepared_artifact_version(config),
         "kind": prepared_artifact_kind(config),
         "encoding_contract_version": OBJECT_ENCODING_CONTRACT_VERSION,
@@ -399,7 +399,7 @@ def load_prepared_stage3(config: Stage3Config) -> dict[str, Any]:
         raise ValueError(
             "Stage 3 artifact predates identity contract v1; regenerate it"
         )
-    expected_contract = 4 if config.initialization.representation_contract == "dual_view_v4" else 3 if config.training.object_encoder_phase1 is not None else STAGE3_PREPARED_CONTRACT_VERSION
+    expected_contract = 5 if config.is_v5 else 4 if config.initialization.representation_contract == "dual_view_v4" else 3 if config.training.object_encoder_phase1 is not None else STAGE3_PREPARED_CONTRACT_VERSION
     if metadata.get("prepared_contract_version") != expected_contract:
         raise ValueError(
             "Stage 3 artifact predates prepared contract v2; regenerate it"
@@ -423,7 +423,7 @@ def load_prepared_stage3(config: Stage3Config) -> dict[str, Any]:
         stored_stage2_identity,
         context="Stage 3 artifact Stage 2 encoder",
     )
-    if expected_contract in {3, 4} and metadata.get("stage2_encoder_sha256") != sha256_file(encoder_path):
+    if expected_contract in {3, 4, 5} and metadata.get("stage2_encoder_sha256") != sha256_file(encoder_path):
         raise ValueError("Stage 3 ObjectEncoder Phase 1 source artifact SHA mismatch")
     for relative, digest in metadata.get("artifact_hashes", {}).items():
         path = root / relative
@@ -459,13 +459,13 @@ def load_prepared_stage3(config: Stage3Config) -> dict[str, Any]:
         context="Stage 3 prepared artifact",
     )
     slots = None
-    if expected_contract in {3, 4}:
+    if expected_contract in {3, 4, 5}:
         slots = torch.load(root / "object_slots.pt", map_location="cpu", weights_only=True)
         if (
             slots.get("kind") != "ilume_stage3_frozen_entity_slots"
             or slots.get("objects") != objects["objects"]
             or slots.get("stage2_encoder_identity") != expected_stage2_identity
-            or slots["slots"].shape != (len(objects["objects"]), 2, 1241 if expected_contract == 4 else metadata["embedding_dim"])
+            or slots["slots"].shape != (len(objects["objects"]), 2, expected_stage2_identity["payload"]["object_encoder_contract"]["input_dim"] if expected_contract == 5 else 1241 if expected_contract == 4 else metadata["embedding_dim"])
             or slots["roles"].shape != (len(objects["objects"]), 2)
             or slots["counts"].shape != (len(objects["objects"]),)
             or not torch.isfinite(slots["slots"]).all()

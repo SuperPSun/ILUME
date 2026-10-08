@@ -20,6 +20,16 @@ SOURCE_GROUPS = {
     "simulation/simulated_qm_elec_hf": "electronic_structure",
     "simulation/partial_atomic_charge": "electronic_structure",
 }
+PHYSICS_TASKS = tuple(task for task, group in SOURCE_GROUPS.items() if group != "electronic_structure")
+
+
+def source_groups(registry: Any) -> dict[str, str]:
+    tasks = set(registry.task_ids)
+    if tasks not in (set(SOURCE_GROUPS), set(PHYSICS_TASKS)):
+        raise ValueError("Stage2-HoME requires exactly the five- or nine-task registry")
+    return {task: group for task, group in SOURCE_GROUPS.items() if task in tasks}
+
+
 TRANSFER_GROUPS = ("solvation", "thermophysical")
 TRANSFER_GLOBAL_PREFIXES = ("l1_global_experts.", "l1_global_gate.", "l2_global_experts.")
 TRANSFER_GROUP_PREFIXES = (
@@ -28,13 +38,12 @@ TRANSFER_GROUP_PREFIXES = (
 )
 
 
-def source_task_specs(registry: Any) -> dict[str, ResolvedTaskSpec]:
-    if set(registry.task_ids) != set(SOURCE_GROUPS):
-        raise ValueError("Stage2-HoME requires the complete nine-task simulation registry")
+def source_task_specs(registry: Any, *, role_policy: str = "legacy_slot_v1") -> dict[str, ResolvedTaskSpec]:
+    mapping = source_groups(registry)
     result: dict[str, ResolvedTaskSpec] = {}
     for task in registry.tasks:
         task_id = task.task_id
-        group = SOURCE_GROUPS[task_id]
+        group = mapping[task_id]
         count = len(task.target_columns)
         ids = (
             tuple(f"{task_id}::target_{index}" for index in range(count))
@@ -51,6 +60,7 @@ def source_task_specs(registry: Any) -> dict[str, ResolvedTaskSpec]:
                     (("cation", "anion") if task.topology == "ionic_liquid" else ("molecule",)),
                 partner_slots=("solvent",) if task.topology == "interaction" else (),
                 enabled=True, task_weight=1.0, catalog_schema_version=0, provenance={},
+                role_policy=role_policy,
             )
     return result
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import csv
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Literal, Sequence
 
@@ -67,7 +67,9 @@ def resolve_task(
             raise ValueError("Simulation baseline forbids --fold")
         if not config.simulation.enabled or task_id not in config.simulation.tasks:
             raise ValueError(f"Unknown or disabled simulation baseline task: {task_id}")
-        spec = load_stage2_registry(config.data.task_catalog).by_id(task_id)
+        spec = load_stage2_registry(config.data.task_catalog, task_ids=(task_id,)).by_id(task_id)
+        if spec.dataset.catalog_stage == 2:
+            spec = replace(spec, dataset=replace(spec.dataset, catalog_stage=None))
         return BenchmarkTask(
             benchmark=benchmark, task_id=task_id, slots=spec.entity_columns,
             condition_columns=spec.condition_columns, target_columns=spec.target_columns,

@@ -1,0 +1,31 @@
+# ADR-0094: v5 Unary + Pair Stage2 and paired Stage3 migration
+
+## Status
+
+Accepted (2026-10-08). Supersedes Stage2/3 mainline architecture, task roster and simulation reporting in ADR-0082/0083/0084/0086/0089 only for the new v5 protocol. Stage1 v4 and independent predictors are unchanged. Earlier configurations, artifacts and baseline training recipes retain their original contracts.
+
+## Decision
+
+Stage1 remains permanently eval/frozen outside downstream optimizers. The entity input is learned1024 plus train-standardized RDKit217. The shared Unary maps 1241→1024 with LayerNorm, a three-role embedding (normal std0.02), and a pre-normalized residual MLP 1024→512→1024 with GELU/dropout0.10. Single entities return LN(Unary). Ordered cation/anion Unary states form `[Uc, Ua, abs(Uc-Ua), Uc*Ua]`; the Pair is LN4096→512→1024 with GELU/dropout0.10. IL output is LN(mean(Uc,Ua)+gamma*Pair), gamma initialized to zero. Pair weights use normal module initialization, so gamma can learn on the first update and Pair can learn after gamma changes. Pair models the IL internally; PartnerInteraction still handles different objects. At the formal dimensions, ObjectEncoder has 4,962,305 parameters versus 19,131,392 for the paired Transformer (about 74% fewer); this is a capacity comparison, not evidence of predictive improvement.
+
+The `forward(entity_inputs, entity_roles)` interface remains `[B,1|2,1241]`→`[B,1024]`. Under `formal_charge_v1`, every single entity's role follows its canonical SMILES net formal charge, including charged solutes/solvents. IL slots validate cation-positive then anion-negative. Prepare, cache and inference share this policy; historical slots retain their old semantics.
+
+Stage2 Base trains exactly density, heat_capacity, thermal_expansion and heat_of_vaporization in thermophysical, and transfer_organic in solvation. No electronic GROUP, atom adapter or electronic task parameters are constructed. Loss weights remain 1.0/0.8/0.8/1.0/0.5, SmoothL1 and train-only statistics remain unchanged. Full raw rows, batch/microbatch256, one update per logical batch, ten epochs and fixed final export remain. There is no independent Stage2 evaluator. Export uses the actual trained encoder, plus complete final HoME and a SHA-bound manifest.
+
+Four isolated, self-contained paired Stage2/3 configurations live under `configs/v5/`: Base Unary+Pair/five tasks, and `controls/transformer5`, `controls/transformer9`, `controls/unary_pair9`. Nine-task controls retain HOMO/LUMO, QM masks/macro targets and molecule-equal atom charge. Explicit task selection can consume these four catalog rows from Stage1 properties without altering their stage/path/split/resource provenance. Missing/duplicate task IDs or loss-weight mismatches fail. Shared HoME initialization uses independent SHA256(seed,owner) CPU RNG contexts; creating an electronic owner or replacing ObjectEncoder cannot change common initial tensors. Architecture comparisons within a task set have identical exposure/update budgets. Five versus nine tasks both run ten raw epochs; differing update counts and compute are reported, not claimed to be compute matched.
+
+Stage3 uses the catalog's 22 experimental tasks, replacing x_co2 with the distinct gas_solubility target, and adding water_activity_coefficient and enthalpy_of_vaporization_or_sublimation. The remaining 19 tasks preserve their PRIVATE recipes. Gas solubility is IL primary + gas partner, 487 systems, solvation/small, IL-solute/cv1; water activity is IL, 167 systems, solvation/small with water mole fraction/T/P; enthalpy is IL, 137 systems, thermophysical/small. Hydration remains random/cv1, no test. Other catalog system splits are consumed unchanged; prepare never re-splits.
+
+The enthalpy categorical condition `phase` has the declared vocabulary `["Liquid | Gas"]` and one-hot width1. Unknown categories fail; numeric conditions/targets use only the four training folds for statistics. Vocabulary, encoded width and formal-charge roles enter prepared/model identities.
+
+ObjectEncoder, complete GLOBAL, and matching thermophysical/solvation GROUP tensors transfer with strict owner/source/tensor checks. Only heat_of_vaporization and thermal_expansion simulation PRIVATE owners transfer to Stage3, including when the source has nine tasks. Phase1 adapts ObjectEncoder on 22 experimental tasks with simulation PRIVATE frozen; Phase2/3 freeze the entire ObjectEncoder, including gamma and Pair. Preserve raw owner aggregation `weighted_owner_raw_v1`, shared GROUP simulation weight0.1, large simulation PRIVATE, common anchors, owner lifetime/freezing, final stitching and strict resume.
+
+New final/encoder/checkpoint kinds and format5 identify v5. Stage3 plan12/training16 bind representation, role/category definitions, task/owner sets, source SHA and tensor hashes. v5 selection is explicit in configuration/artifact contracts, never guessed from parameter names. Cross-architecture or task-roster resume is rejected. Historical v4 identities remain readable with their original implementations.
+
+Simulation evaluation reports exactly two tasks with five final models averaged in original units. Summary explicitly validates the two-task v5 or four-task historical protocol, with equal task means and comparison identities. Different task/data protocols cannot share a leaderboard. Baseline training is unchanged; no electronic baseline expansion or task remapping is implied.
+
+## Verification and operation
+
+Use temporary CPU fixtures for Unary/Pair gradient activation, roles/order/partner paths, five/nine registries, shared initialization, full prepare/train/export/reload, 22+2 owner migration, three phases/stitch/resume, train-fold normalization, category/SHA rejection and prediction/ensemble reporting. Run the full test suite, entrypoint help, compileall and documentation checks. No formal data outputs or GPU runs are generated by implementation validation.
+
+Commands and prerequisites are in [the v5 runbook](../v5-runbook.md). Formal runs need the configured completed v4 Stage1 encoder/features, fresh identity-bound prepares and unused `outputs/v5/` paths. Existing stale metadata must be regenerated by normal prepare, never manually rehashed. Local charge resources have passed size/SHA audit; this does not replace formal prepare validation.

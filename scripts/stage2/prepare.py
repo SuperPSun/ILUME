@@ -34,7 +34,7 @@ def main() -> None:
     device = resolve_device(config.training.device)
     math_contract = configure_stage2_math(device)
     registry = config.resolved_registry(
-        load_stage2_registry(config.data.task_catalog_path)
+        load_stage2_registry(config.data.task_catalog_path, task_ids=config.data.tasks)
     )
     sources = [config.data.task_catalog_path]
     for spec in registry.tasks:

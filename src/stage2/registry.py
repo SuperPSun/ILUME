@@ -92,6 +92,7 @@ class DatasetSpec:
     simulation_method: str | None
     label_source: str
     resource_manifest: str | None
+    catalog_stage: int | None = None
 
     def split_path(self, data_root: Path, split: str) -> Path:
         if split not in {"train", "valid", "test"}:
@@ -118,7 +119,10 @@ class TaskSpec:
     dataset: DatasetSpec
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        if self.dataset.catalog_stage is None:
+            payload["dataset"].pop("catalog_stage")
+        return payload
 
 
 @dataclass(frozen=True)
@@ -166,13 +170,15 @@ _SYSTEM_SEMANTICS: dict[str, tuple[Topology, tuple[str, ...]]] = {
 }
 
 
-def _task_from_row(row: dict[str, str]) -> TaskSpec:
+def _task_from_row(row: dict[str, str], *, explicit: bool = False) -> TaskSpec:
     try:
         schema_version = int(row["catalog_schema_version"])
         stage = int(row["stage"])
     except (KeyError, ValueError) as error:
         raise ValueError("Invalid task catalog schema/stage") from error
-    if schema_version not in {1, 2} or stage != 2:
+    if schema_version not in {1, 2} or (stage != 2 and not (explicit and stage == 1 and row["task_id"] in {
+        "simulation/homo", "simulation/lumo", "simulation/simulated_qm_elec_hf", "simulation/partial_atomic_charge"
+    })):
         raise ValueError("Unsupported Stage 2 task catalog row")
     task_id = row["task_id"].strip()
     _safe_relative(task_id, field="task_id")
@@ -217,6 +223,7 @@ def _task_from_row(row: dict[str, str]) -> TaskSpec:
         target_columns=target_columns, system_type=system_type,
         simulation_method=row.get("simulation_method", "").strip() or None,
         label_source=label_source, resource_manifest=resource_manifest,
+        catalog_stage=stage if explicit else None,
     )
     return TaskSpec(
         task_id=task_id, task_kind=task_kind, target_level=target_level,  # type: ignore[arg-type]
@@ -226,7 +233,7 @@ def _task_from_row(row: dict[str, str]) -> TaskSpec:
     )
 
 
-def load_stage2_registry(path: str | Path) -> Stage2Registry:
+def load_stage2_registry(path: str | Path, *, task_ids: tuple[str, ...] | None = None) -> Stage2Registry:
     catalog_path = Path(path)
     if not catalog_path.is_file():
         raise FileNotFoundError(f"Missing task catalog: {catalog_path}")
@@ -240,7 +247,12 @@ def load_stage2_registry(path: str | Path) -> Stage2Registry:
         }
         if not required.issubset(reader.fieldnames or ()):
             raise ValueError("Task catalog is missing required Stage 2 columns")
-        tasks = [_task_from_row(row) for row in reader if row.get("stage", "").strip() == "2"]
+        if task_ids is not None and (not task_ids or len(set(task_ids)) != len(task_ids)):
+            raise ValueError("Explicit task IDs must be nonempty and unique")
+        tasks = [_task_from_row(row, explicit=task_ids is not None) for row in reader
+                 if (row["task_id"] in task_ids if task_ids is not None else row.get("stage", "").strip() == "2")]
+        if task_ids is not None and set(task_ids) != {task.task_id for task in tasks}:
+            raise ValueError("Explicit Stage2 tasks missing from catalog")
     tasks.sort(key=lambda task: task.task_id)
     task_ids = [task.task_id for task in tasks]
     if not tasks or len(task_ids) != len(set(task_ids)):

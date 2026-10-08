@@ -1226,3 +1226,296 @@ def test_loss_reductions_and_teacher_weighting() -> None:
         lambda_teacher=0.1,
         teacher_weighting="uncompensated",
     ).item() == pytest.approx(4.3)
+
+
+def test_unary_pair_roles_shapes_and_learning() -> None:
+    from stage1.features import ROLE_TO_ID
+    from stage2.model import UnaryPairObjectEncoder
+    from stage3.data import object_key_from_row
+
+    torch.manual_seed(17)
+    model = UnaryPairObjectEncoder(1024, input_dim=1241, unary_hidden_dim=512,
+                                   pair_hidden_dim=512, dropout=0.1).eval()
+    inputs = torch.randn(3, 2, 1241)
+    roles = torch.tensor([[ROLE_TO_ID["cation"], ROLE_TO_ID["anion"]]]).expand(3, 2)
+    h = model.input_projection(inputs) + model.role_embedding(roles)
+    unary = h + model.unary(h)
+    assert torch.equal(model(inputs, roles), model.output_normalization(unary.mean(1)))
+    for role in ROLE_TO_ID.values():
+        assert model(inputs[:, :1], torch.full((3, 1), role)).shape == (3, 1024)
+    with pytest.raises(ValueError, match="ordered"):
+        model(inputs, roles.flip(1))
+    with pytest.raises(ValueError, match="invalid entity role"):
+        model(inputs[:, :1], torch.full((3, 1), 9))
+    with pytest.raises(ValueError, match="tensor contract"):
+        model(inputs[:, :, :1024], roles)
+    target = torch.randn(3, 1024)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.05)
+    (model(inputs, roles) * target).mean().backward()
+    assert model.gamma.grad is not None and model.gamma.grad.abs() > 0
+    assert all(p.grad is not None and p.grad.count_nonzero() == 0 for p in model.pair.parameters())
+    optimizer.step()
+    optimizer.zero_grad(set_to_none=True)
+    before = {name: p.detach().clone() for name, p in model.pair.named_parameters()}
+    (model(inputs, roles) * target).mean().backward()
+    assert any(p.grad is not None and p.grad.count_nonzero() for p in model.pair.parameters())
+    optimizer.step()
+    assert any(not torch.equal(p, before[name]) for name, p in model.pair.named_parameters())
+    charged = object_key_from_row("test", 2, {"solute": "[NH4+]"}, ("solute",), "formal_charge_v1")
+    assert charged.slots == (("cation", "[NH4+]"),)
+    assert object_key_from_row("test", 2, {"solvent": "[Cl-]"}, ("solvent",), "formal_charge_v1").slots[0][0] == "anion"
+    assert object_key_from_row("test", 2, {"solute": "[NH4+]"}, ("solute",)).slots[0][0] == "neutral"
+    with pytest.raises(ValueError, match="role/charge"):
+        object_key_from_row("test", 2, {"cation": "[Cl-]", "anion": "[Na+]"}, ("cation", "anion"), "formal_charge_v1")
+
+
+def test_v5_matrix_contracts_and_common_initialization() -> None:
+    from stage2.home_config import load_home_recipe
+    from stage2.home_contract import source_task_specs
+    from stage3.config import load_stage3_config
+    from stage3.data import resolve_task_registry
+    from stage3.model import Stage3SparseModel
+    from stage3.simulation import simulation_tasks
+
+    configs = {}
+    states = []
+    for name in ("base", "controls/transformer9", "controls/transformer5", "controls/unary_pair9"):
+        recipe = load_home_recipe(f"configs/v5/stage2/{name}.yaml")
+        registry = load_stage2_registry(recipe.stage2.data.task_catalog_path, task_ids=recipe.stage2.data.tasks)
+        recipe.stage2.validate_registry(registry)
+        stage3 = load_stage3_config(f"configs/v5/stage3/{name}.yaml")
+        resolved = resolve_task_registry(stage3)
+        assert len(resolved) == 22 and "experiment/x_co2" not in resolved
+        assert set(simulation_tasks(stage3)) == {"simulation/heat_of_vaporization", "simulation/thermal_expansion"}
+        assert resolved["experiment/enthalpy_of_vaporization_or_sublimation"].condition_width == 2
+        assert resolved["experiment/hydration"].split_strategy == "random"
+        assert resolved["experiment/gas_solubility"].partner_slots == ("solute",)
+        assert len(registry.tasks) == (9 if name.endswith("9") else 5)
+        if name.endswith("9"):
+            assert registry.by_id("simulation/homo").dataset.catalog_stage == 1
+            assert registry.by_id("simulation/homo").dataset.materialized_path.startswith("stage1/properties/")
+        groups = dict(recipe.stage3.groups)
+        if name.endswith("9"):
+            groups["electronic_structure"] = groups["thermophysical"]
+        torch.manual_seed(len(states) + 123)
+        model = Stage3SparseModel(recipe.stage3.model, source_task_specs(registry), 16,
+                                  group_configs=groups, initialization_seed=42)
+        states.append(model.state_dict())
+        configs[name] = stage3.to_dict()
+    for key, value in states[0].items():
+        assert all(torch.equal(other[key], value) for other in states[1:])
+    for value in configs.values():
+        value["data"].pop("artifacts_dir")
+        value["preparation"].pop("cache_dir")
+        for field in ("stage2_final", "stage2_encoder", "simulation_artifacts_dir"):
+            value["initialization"].pop(field)
+    assert all(value == configs["base"] for value in configs.values())
+    recipe = load_home_recipe("configs/v5/stage2/base.yaml")
+    with pytest.raises(ValueError, match="missing"):
+        load_stage2_registry(recipe.stage2.data.task_catalog_path, task_ids=(*recipe.stage2.data.tasks, "simulation/missing"))
+    with pytest.raises(ValueError, match="unique"):
+        load_stage2_registry(recipe.stage2.data.task_catalog_path, task_ids=(recipe.stage2.data.tasks[0],) * 2)
+    with pytest.raises(ValueError, match="task"):
+        replace(recipe.stage2, loss=replace(recipe.stage2.loss, task_weights={})).validate()
+
+
+@pytest.mark.parametrize("variant", ["base", "controls/transformer5", "controls/transformer9", "controls/unary_pair9"])
+def test_v5_prepare_train_transfer_three_phase_and_predictions(tiny_stage2_setup, tmp_path, monkeypatch, variant):
+    from stage1.config import AuxiliaryConfig, MaskingConfig
+    from stage1.model import build_stage1_model
+    from stage2.entity_cache import prepare_frozen_entities
+    from stage2.home_artifact import load_home_final
+    from stage2.home_config import load_home_recipe
+    from stage2.home_train import build_model, train_stage2_home
+    from stage3.config import load_stage3_config
+    from stage3.data import Stage3TaskDataset, resolve_task_registry, source_path, test_path
+    from stage3.prepare import prepare_stage3, load_prepared_stage3
+    from stage3.home import build_model_and_store, load_source, train_fold, load_simulation_final
+    from stage3.object_phase1 import OBJECT_ENCODER_OWNER
+    from stage3.model import GLOBAL, group_owner, private_owner
+    from stage3.evaluate import evaluate_checkpoints
+
+    recipe = load_home_recipe(f"configs/v5/stage2/{variant}.yaml")
+    stage3 = load_stage3_config(f"configs/v5/stage3/{variant}.yaml")
+    stage1_root = tmp_path / "dual_features"
+    stage1 = PretrainConfig(
+        architecture=ArchitectureConfig(kind="dual_view_v4"),
+        data=replace(PretrainConfig().data, stage1_dir=tmp_path / "stage1", artifacts_dir=stage1_root,
+                     valid_fraction=0.5, max_smiles_tokens=64, shard_size=4),
+        descriptor=DescriptorConfig(mode="full", token_count=1),
+        model=ModelConfig(d_model=16, n_heads=4, smiles_layers=1, graph_depth=2,
+                          feedforward_dim=32, dropout=0., role_embedding=False),
+        masking=MaskingConfig(fusion_only_dropout=True, descriptor_dropout=0.),
+        auxiliary=AuxiliaryConfig(simulation_dir=tmp_path / "stage2"),
+    )
+    prepare_corpus(stage1)
+    vocabulary = SmilesTokenizer.load(stage1_root / "tokenizer.json")
+    backbone = build_stage1_model(stage1, vocabulary, PreparedCorpusDataset(stage1_root, "train").descriptor_schema)
+    checkpoint = tmp_path / "dual.pt"
+    stage1_metadata = json.loads((stage1_root / "metadata.json").read_text())
+    torch.save({"identity_contract_version": IDENTITY_CONTRACT_VERSION, "kind": STAGE1_CHECKPOINT_KIND,
+                "format_version": 4, "model": backbone.state_dict(), "config": stage1.to_dict(),
+                "corpus_identity": dict(metadata_identity(stage1_metadata, "corpus", context="test corpus"))}, checkpoint)
+    config = replace(recipe.stage2,
+        data=replace(recipe.stage2.data, data_root=tmp_path, task_catalog_path=tmp_path / "task_catalog.csv",
+                     pretrain_artifacts_dir=stage1_root, artifacts_dir=tmp_path / "v5_stage2"),
+        preparation=replace(recipe.stage2.preparation, workers=1),
+        initialization=replace(recipe.stage2.initialization, checkpoint=checkpoint),
+        model=replace(recipe.stage2.model, object_ffn_dim=64, unary_hidden_dim=16, pair_hidden_dim=16),
+        training=replace(recipe.stage2.training, device="cpu", amp_dtype="none", packing_workers=1),
+    )
+    recipe = replace(recipe, stage2=config, stage3=replace(recipe.stage3, groups={
+        group: replace(spec, phase1=replace(spec.phase1, epochs=1), phase2=replace(spec.phase2, epochs=1))
+        for group, spec in recipe.stage3.groups.items()}))
+    # Move only the fixture catalog provenance, exactly as the current producer does.
+    with config.data.task_catalog_path.open() as handle:
+        sim_rows = list(csv.DictReader(handle))
+    with Path("data/task_catalog.csv").open() as handle:
+        experiment_rows = [row for row in csv.DictReader(handle) if row["task_id"] in stage3.tasks]
+    for row in sim_rows:
+        if row["task_id"] not in {"simulation/density", "simulation/heat_capacity", "simulation/thermal_expansion", "simulation/heat_of_vaporization", "simulation/transfer_organic"}:
+            row["stage"] = "1"
+    for row in experiment_rows:
+        row["unique_systems"] = "5"
+    fields = sorted({key for row in sim_rows + experiment_rows for key in row})
+    with config.data.task_catalog_path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader(); writer.writerows(sim_rows + experiment_rows)
+    prepare_stage2_data(config)
+    prepare_frozen_entities(recipe)
+    registry = load_artifact_registry(config.data.artifacts_dir)
+    initial, _ = build_model(recipe, registry)
+    source_backbone = {name: value.clone() for name, value in initial.backbone.state_dict().items()}
+    output = tmp_path / "v5_stage2_train"
+    train_stage2_home(recipe, output)
+    payload, source, _ = load_home_final(output / "stage2_final.pt")
+    assert payload["kind"] == "ilume_stage2_home_final_v5" and payload["format_version"] == 5
+    assert all(torch.equal(value, source.backbone.state_dict()[name]) for name, value in source_backbone.items())
+    assert len(source.registry.tasks) == len(config.data.tasks)
+    trained_checkpoint = torch.load(output / "checkpoint_epoch_00010.pt", weights_only=False)
+    assert trained_checkpoint["owner_manifest"] == payload["owner_manifest"]
+    assert (source.atom_adapter is None) == (len(config.data.tasks) == 5)
+    if len(config.data.tasks) == 5:
+        assert not any("electronic_structure" in name or "atom_adapter" in name for name in source.state_dict())
+    frozen = load_frozen_object_encoder(output / "stage2_encoder.pt")
+    assert frozen.role_policy == "formal_charge_v1"
+    if variant == "base":
+        with pytest.raises(ValueError, match="resume identity"):
+            changed = replace(recipe, stage2=replace(config, model=replace(config.model, object_encoder_kind="transformer")))
+            train_stage2_home(changed, output, resume=True)
+        damaged = torch.load(output / "stage2_encoder.pt", weights_only=False)
+        damaged["object_encoder"]["gamma"] += 1
+        corrupt = tmp_path / "corrupt_encoder.pt"
+        torch.save(damaged, corrupt)
+        with pytest.raises(ValueError, match="integrity"):
+            load_frozen_object_encoder(corrupt)
+    assert frozen.encode([FrozenObjectSpec("molecule", (("cation", "[NH4+]"),))]).shape == (1, 32)
+    with pytest.raises(ValueError, match="role"):
+        frozen.encode([FrozenObjectSpec("molecule", (("neutral", "[NH4+]"),))])
+    for task in config.data.tasks:
+        spec = registry.by_id(task)
+        spec.dataset.split_path(tmp_path, "test").write_bytes(spec.dataset.split_path(tmp_path, "valid").read_bytes())
+    stage3 = replace(stage3,
+        data=replace(stage3.data, task_catalog=config.data.task_catalog_path, stage3_dir=tmp_path / "experiment", artifacts_dir=tmp_path / "v5_stage3"),
+        preparation=replace(stage3.preparation, cache_dir=tmp_path / "object_cache", encoding_batch_size=8),
+        initialization=replace(stage3.initialization, stage2_encoder=output / "stage2_encoder.pt", stage2_final=output / "stage2_final.pt", simulation_artifacts_dir=config.data.artifacts_dir),
+        tasks={task: replace(spec, unique_systems=5, phase1_private_epochs=1, phase2_private_epochs=1, phase3_private_epochs=1) for task, spec in stage3.tasks.items()},
+        groups={group: replace(spec, phase1=replace(spec.phase1, epochs=1), phase2=replace(spec.phase2, epochs=1)) for group, spec in stage3.groups.items()},
+        training=replace(stage3.training, device="cpu", amp_dtype="none", cpu_threads=1, cpu_interop_threads=1,
+            object_encoder_phase1=replace(stage3.training.object_encoder_phase1, epochs=1),
+            three_phase=replace(stage3.training.three_phase, global_scope=replace(stage3.training.three_phase.global_scope, epochs=1),
+                private_classes={name: replace(spec, phase1=replace(spec.phase1, epochs=1), phase2_epochs=1, phase3_epochs=1) for name, spec in stage3.training.three_phase.private_classes.items()})),
+    )
+    resolved = resolve_task_registry(stage3)
+    for spec in resolved.values():
+        for fold in range(1, 6):
+            directory = {"il": "IL", "il_solute": "IL-solute", "solute_solvent": "solute-solvent"}.get(spec.split_strategy, spec.split_strategy)
+            path = stage3.data.stage3_dir / Path(spec.materialized_path).relative_to("stage3") / directory / "cv1" / f"fold{fold}.csv"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            row = {slot: {"cation": ["[Na+]", "[K+]", "[Li+]", "[Cs+]", "[Rb+]"],
+                          "anion": ["[Cl-]"] * 5, "solute": ["[NH4+]", "CO", "CN", "CCO", "CCN"],
+                          "solvent": ["C", "CC", "CCC", "CCCC", "CCCCC"]}[slot][fold - 1] for slot in spec.identity_columns}
+            row.update({name: "Liquid | Gas" if name == "phase" else str(280 + fold) for name in spec.condition_columns})
+            row[spec.target_column] = str(fold + 0.1)
+            with path.open("w", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=list(row)); writer.writeheader(); writer.writerow(row)
+        if spec.task_id != "experiment/hydration":
+            test_path(stage3, spec).write_bytes(path.read_bytes())
+    prepare_stage3(stage3)
+    prepared = load_prepared_stage3(stage3)
+    assert prepared["metadata"]["prepared_contract_version"] == 5 and prepared["slots"]["slots"].shape[-1] == 249
+    enthalpy = "experiment/enthalpy_of_vaporization_or_sublimation"
+    dataset = Stage3TaskDataset(stage3.data.artifacts_dir, 1, enthalpy, "train")
+    assert dataset.conditions.shape == (4, 2) and torch.all(dataset.conditions[:, 1] == 1)
+    stats = prepared["normalization"]["fold1"][enthalpy]
+    assert stats["conditions"]["temperature_K"]["mean"] == pytest.approx(283.5)
+    model, store, _ = build_model_and_store(stage3, prepared, fold=1, device=torch.device("cpu"), source=load_source(stage3))
+    for name, value in payload["shared_state"].items():
+        assert torch.equal(model.state_dict()[name], value)
+    assert len(model.task_specs) == 24 and model.simulation_atom_adapter is None
+    model.set_trainable_owners({GLOBAL, OBJECT_ENCODER_OWNER})
+    model.train()
+    assert not model.simulation_backbone.training
+    assert all(not p.requires_grad for p in model.simulation_backbone.parameters())
+    assert all(p.requires_grad for p in model.stage2_object_encoder.parameters())
+    assert all(not p.requires_grad for p in model.parameters_for_owner(private_owner("simulation/heat_of_vaporization")))
+    model.set_trainable_owners({group_owner("thermophysical"), private_owner("simulation/heat_of_vaporization")})
+    assert all(not p.requires_grad for p in model.stage2_object_encoder.parameters())
+    train_root = tmp_path / "v5_stage3_train"
+    rows = train_fold(stage3, 1, output_dir=train_root)
+    assert rows[-1]["phase"] == "three_phase_final"
+    final = torch.load(train_root / "three_phase_final.pt", weights_only=False)
+    assert final["kind"] == "ilume_stage3_object_three_phase_final_v5"
+    assert len(final["private_state_hashes"]) == 24
+    phase1 = torch.load(train_root / "phase_1" / "checkpoint_epoch_00001.pt", weights_only=False)
+    assert all(torch.equal(value, phase1["model"][name]) for name, value in final["model"].items() if name.startswith("stage2_object_encoder."))
+    loaded = load_simulation_final(stage3, train_root, fold=1)
+    assert all(torch.equal(value, loaded.state_dict()[name]) for name, value in final["model"].items())
+    resumed = train_fold(stage3, 1, output_dir=train_root, resume_from=train_root)
+    assert resumed[-1]["phase"] == "three_phase_final"
+    assert torch.load(train_root / "three_phase_final.pt", weights_only=False)["model_state_hash"] == final["model_state_hash"]
+    metrics = evaluate_checkpoints(stage3, train_root, split="valid", ensemble_folds=False, fold=1, predictions_dir=tmp_path / "predictions")
+    assert len(metrics["tasks"]) == 22
+    if variant == "base":
+        from stage1.masking import MultimodalPacker
+        from stage2.data import Stage2BatchDescriptor, Stage2DeviceTaskData, Stage2EntityDataset, pack_stage2_batch
+        from stage3.simulation_evaluate import evaluate_simulation_checkpoints
+        from stage3.simulation_reporting import V5_SCALAR_SIMULATION_TASKS
+        # Isolate ensemble arithmetic with five temporary selectors and controlled model offsets.
+        ensemble_root = tmp_path / "ensemble"
+        for fold in range(1, 6):
+            root = ensemble_root / f"fold{fold}"
+            root.mkdir(parents=True)
+            for filename in ("three_phase_final.pt", "three_phase_final.json"):
+                (root / filename).write_bytes((train_root / filename).read_bytes())
+        loaded.eval()
+        predictions = {}
+        entities = Stage2EntityDataset(config.data.artifacts_dir)
+        for task in V5_SCALAR_SIMULATION_TASKS:
+            data = Stage2TaskDataset(config.data.artifacts_dir, task, "valid")
+            packed = pack_stage2_batch(Stage2BatchDescriptor(task, torch.arange(len(data))), {task: data},
+                entities, MultimodalPacker(vocabulary), needs_entities=True, include_raw_atom_targets=False, pin_memory=False)
+            with torch.no_grad():
+                predictions[task] = loaded.predict_simulation(task, packed, Stage2DeviceTaskData.from_dataset(data, torch.device("cpu"))).numpy().reshape(-1)
+        def selected_model(_config, _root, *, fold, device):
+            result = copy.deepcopy(loaded)
+            predict = result.predict_simulation
+            result.predict_simulation = lambda task, batch, data: predict(task, batch, data) + fold
+            return result
+        monkeypatch.setattr("stage3.simulation_evaluate.load_simulation_final", selected_model)
+        for split in ("valid", "test"):
+            result = evaluate_simulation_checkpoints(stage3, ensemble_root, split=split, predictions_dir=tmp_path / split / "predictions")
+            assert tuple(result["tasks"]) == V5_SCALAR_SIMULATION_TASKS
+            for task in V5_SCALAR_SIMULATION_TASKS:
+                stats = payload["scalers"][task]["targets"][registry.by_id(task).target_columns[0]]
+                with (tmp_path / split / "predictions" / (task.replace("/", "__") + ".csv")).open() as handle:
+                    actual = [float(row["prediction"]) for row in csv.DictReader(handle)]
+                np.testing.assert_allclose(actual, (predictions[task] + 3) * stats["scale"] + stats["mean"], rtol=1e-5, atol=1e-5)
+    # Reject unseen categories before materialization; never edit metadata hashes.
+    bad = source_path(stage3, resolved[enthalpy], 1)
+    bad.write_text(bad.read_text().replace("Liquid | Gas", "Solid | Gas"))
+    with pytest.raises(ValueError, match="source hash"):
+        load_prepared_stage3(stage3)
+    from stage3.data import fit_normalization
+    with pytest.raises(ValueError, match="Unknown categorical"):
+        fit_normalization(stage3, {enthalpy: resolved[enthalpy]}, 2)

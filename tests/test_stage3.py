@@ -799,7 +799,7 @@ def test_base_registry_and_config_defaults_are_explicit() -> None:
 
 
 
-def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
+def test_v2_native_split_configs_match_materialized_task_subsets(tmp_path: Path) -> None:
     expected = {
         "system": ({"il", "il_solute", "solute_solvent", "random"}, 20),
         "random": ({"random"}, 20),
@@ -808,13 +808,31 @@ def test_v2_native_split_configs_match_materialized_task_subsets() -> None:
     root = Path("configs/v2/stage3/splits")
     for name, (strategies, task_count) in expected.items():
         config = load_stage3_config(root / f"{name}.yaml")
+        # Historical task contracts use isolated fixtures, not the evolving live catalog.
+        rows = []
+        for task_id, task in config.tasks.items():
+            slots = task.primary_slots + task.partner_slots
+            system = ("il_solute" if slots == ("cation", "anion", "solute") else
+                      "il" if slots == ("cation", "anion") else
+                      "solute_solvent" if slots == ("solute", "solvent") else "solute")
+            rows.append(_catalog_row(task_id, "value", ";".join(slots), "", system,
+                                     "random;il;il_solute;solute_solvent;cation;anion;solute;solvent",
+                                     task.unique_systems or 2))
+        catalog = tmp_path / "historical_catalog.csv"
+        _write_csv(catalog, list(rows[0]), rows)
+        original_config = config
+        config = replace(config, data=replace(config.data, task_catalog=catalog, stage3_dir=tmp_path / "stage3"))
         registry = resolve_task_registry(config)
+        for spec in registry.values():
+            directory = {"il": "IL", "il_solute": "IL-solute", "solute_solvent": "solute-solvent"}.get(spec.split_strategy, spec.split_strategy)
+            for fold in range(1, 6):
+                _write_csv(config.data.stage3_dir / spec.task_id / directory / f"fold{fold}.csv", ["value"], [{"value": 1}])
         enabled = {
             task_id: spec for task_id, spec in registry.items() if spec.enabled
         }
         assert len(enabled) == task_count
         assert {spec.split_strategy for spec in enabled.values()} == set(strategies)
-        assert config.data.artifacts_dir == Path(
+        assert original_config.data.artifacts_dir == Path(
             f"outputs/v2/stage3/splits/{name}/prepare/artifacts"
         )
         assert config.preparation.cache_dir == Path(
@@ -960,7 +978,9 @@ def test_three_phase_private_capacity_ratios_follow_size_class() -> None:
     task = config.tasks[task_id]
     assert task.size_class == "tiny"
 
-    spec = resolve_task_registry(config)[task_id]
+    selected_config = replace(config, data=replace(config.data, split_strategies={}, cv_repeats={}),
+                              tasks={task_id: task, "experiment/refractive_index": config.tasks["experiment/refractive_index"]})
+    spec = resolve_task_registry(selected_config)[task_id]
     model = Stage3SparseModel(
         config.model,
         {task_id: spec},
@@ -982,7 +1002,7 @@ def test_three_phase_private_capacity_ratios_follow_size_class() -> None:
     dropout_task = "experiment/refractive_index"
     dropout_model = Stage3SparseModel(
         config.model,
-        {dropout_task: resolve_task_registry(config)[dropout_task]},
+        {dropout_task: resolve_task_registry(selected_config)[dropout_task]},
         16,
         group_configs=config.groups,
         task_configs={dropout_task: config.tasks[dropout_task]},

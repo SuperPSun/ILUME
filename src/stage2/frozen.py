@@ -14,6 +14,7 @@ from common.identity import (
     tensor_state_hash,
 )
 from common.io import sha256_file
+from common.entity_roles import molecular_role
 from common.descriptor_preprocessing import FeaturePreprocessor
 from stage1.config import config_from_dict
 from stage1.descriptors import (
@@ -29,7 +30,7 @@ from stage1.masking import MultimodalPacker
 from stage1.model import MultimodalPretrainModel, build_stage1_model
 from stage1.tokenizer import SmilesTokenizer
 from .identity import build_stage2_encoder_identity
-from .model import ObjectEncoder, RDKitDescriptorBackbone, RECONSTRUCTION_MODULES, encode_object_entities
+from .model import build_object_encoder, ObjectEncoder, RDKitDescriptorBackbone, RECONSTRUCTION_MODULES, encode_object_entities
 from .rdkit_train import (
     STAGE2_RDKIT_ENCODER_KIND,
     load_rdkit_stage2_encoder_artifact,
@@ -59,6 +60,7 @@ class FrozenStage2ObjectEncoder:
     encoder_identity: dict[str, Any]
     artifact_hash: str
     device: torch.device
+    role_policy: str = "legacy_slot_v1"
 
     @property
     def embedding_dim(self) -> int:
@@ -71,6 +73,8 @@ class FrozenStage2ObjectEncoder:
     def _sample(self, role: str, canonical_smiles: str) -> dict[str, Any]:
         if role not in ROLE_TO_ID:
             raise ValueError(f"Unsupported frozen Stage 2 role: {role}")
+        if self.role_policy == "formal_charge_v1" and molecular_role(canonical_smiles) != role:
+            raise ValueError("Frozen Stage2 entity role/formal-charge mismatch")
         record = {
             "sample_id": f"stage3:{role}:{canonical_smiles}",
             "role": role,
@@ -243,9 +247,9 @@ def _load_payload(path: Path) -> dict[str, Any]:
         payload.get("kind") not in {
             STAGE2_ENCODER_KIND, STAGE2_HOME_ENCODER_KIND,
             STAGE2_ZERO_UPDATE_HOME_ENCODER_KIND,
-            "ilume_stage2_home_encoder_v4", "ilume_stage2_home_zero_update_encoder_v4",
+            "ilume_stage2_home_encoder_v4", "ilume_stage2_home_zero_update_encoder_v4", "ilume_stage2_home_encoder_v5",
         }
-        or payload.get("format_version") != (4 if str(payload.get("kind", "")).endswith("_v4") else STAGE2_ENCODER_VERSION)
+        or payload.get("format_version") != (5 if payload.get("kind") == "ilume_stage2_home_encoder_v5" else 4 if str(payload.get("kind", "")).endswith("_v4") else STAGE2_ENCODER_VERSION)
     ):
         raise ValueError("Stage 3 requires a Stage 2 encoder artifact v1")
     if payload.get("identity_contract_version") != IDENTITY_CONTRACT_VERSION:
@@ -281,6 +285,7 @@ def _load_payload(path: Path) -> dict[str, Any]:
         stage1_encoding_contract=payload["stage1_encoding_contract"],
         stage1_state_hash=state_hashes["stage1_backbone"],
         object_encoder_contract=payload["object_encoder_config"],
+        version=5 if payload["format_version"] == 5 else 1,
         object_encoder_state_hash=state_hashes["object_encoder"],
         role_to_id=payload["role_to_id"],
     )
@@ -376,13 +381,8 @@ def load_frozen_object_encoder(
     ):
         raise ValueError("Stage 2 encoder Stage 1 state contract mismatch")
     object_config = payload["object_encoder_config"]
-    object_encoder = ObjectEncoder(
-        int(payload["model_contract"]["d_model"]),
-        config.model.n_heads,
-        num_layers=int(object_config["layers"]),
-        feedforward_dim=int(object_config["ffn_dim"]),
-        dropout=float(object_config["dropout"]),
-        input_dim=object_config.get("input_dim"),
+    object_encoder = build_object_encoder(
+        int(payload["model_contract"]["d_model"]), config.model.n_heads, object_config,
     )
     object_encoder.load_state_dict(payload["object_encoder"], strict=True)
     backbone.to(target_device).eval()
@@ -399,6 +399,7 @@ def load_frozen_object_encoder(
         encoder_identity=payload["semantic_identity"],
         artifact_hash=sha256_file(path),
         device=target_device,
+        role_policy=object_config.get("role_policy", "legacy_slot_v1"),
     )
 
 

@@ -1,6 +1,6 @@
 # ILUME
 
-ILUME 的正式 v4 流程是 **冻结双视图 Stage1 → Stage2-HoME → Stage3-HoME**。Stage1 只从 SMILES/2D graph 学习 task-agnostic1024D 表示；结构重建、双视图一致性、RDKit、离线Uni-Mol2与电子标签只在预训练中监督。角色2/2/1是 **loss权重，不是采样比例**；全量自然shuffle不变。下游拼接RDKit217，由ObjectEncoder内部投影1241→1024；Stage2/3永久冻结Stage1。Stage3保留20项实验任务与Phase2/3五项模拟辅助任务、Flat routing和固定末轮。合同见 [ADR-0089](docs/adr/0089-v4-frozen-dual-view-stage1.md)及 [ADR索引](docs/adr/README.md)。
+ILUME 的现役流程是 **冻结 v4 Stage1 → v5 Stage2 Unary + Pair / 五任务 HoME → v5 Stage3 22实验 / 两模拟辅助 HoME**。Stage1 learned1024 与显式标准化 RDKit217 组成1241D实体输入，统一Object表示1024D；Stage2/3永久冻结Stage1。Stage3保留三阶段 owner 训练和严格来源验证。合同见 [ADR-0094](docs/adr/0094-v5-unary-pair-five-task-stage2.md)；正式命令和四组隔离对照见 [v5运行手册](docs/v5-runbook.md)。v4及更早Stage2/3配置和产物保持历史身份。
 
 命令从仓库根目录执行。安装依赖并准备 ILUME-Data 的 Stage1/2/3 输入；CSV 与输出不进入 Git。正式训练使用尚不存在的输出目录，旧 HoME 产物不能与新正式身份交叉加载。本页命令是运行手册，不属于自动验收。
 
@@ -8,11 +8,15 @@ ILUME 的正式 v4 流程是 **冻结双视图 Stage1 → Stage2-HoME → Stage3
 python -m pip install -e ".[dev,tokenizers]"
 ```
 
-## 正式 v4 主线
+## 正式 v5 Stage2 / Stage3
+
+`configs/v5/stage2/base.yaml` 和 `configs/v5/stage3/base.yaml` 是新 Base；`controls/transformer5`、`controls/transformer9`、`controls/unary_pair9` 提供架构/任务集对照，输出均隔离到 `outputs/v5/`。全部对照使用同样22项实验和两项模拟辅助监督。按 [v5运行手册](docs/v5-runbook.md)依次校验 Stage1、Stage2 prepare/train、配对Stage3 prepare/五折train、实验与模拟评估、独立summary。当前需先补齐配置指定的正式 Stage1 encoder；不手改旧metadata。
+
+## 现役 v4 Stage1 与历史 v4 Stage2/3
 
 现役Stage1 Base为12层SMILES Transformer与8个独立residual图block，encoder-only约60.73M（2,048-token词表）；learned1024/atom512及下游冻结合同不变，见[ADR-0090](docs/adr/0090-stage1-v4-residual-encoder-capacity.md)。扩容直接复用既有v4 Stage1 corpus、统计和Uni-Mol缓存，但Stage1必须从头训练，下游Stage2/3重新生成表示并训练；旧输出不覆盖。
 
-配置位于 `configs/v4/`，输出隔离到 `outputs/v4/`；Base与三个核心消融的完整命令，以及 Uni-Mol2 独立环境的创建、依赖安装和版本核验步骤，见 [v4运行手册](docs/v4-runbook.md)。先独立进行Uni-Mol2小样本成功率/吞吐/存储审计，再生成全量分片缓存；teacher使用版本锁定的独立环境，本仓库不会自动下载权重。Stage1训练导出仅encoder/fusion的 `stage1_encoder.pt`，下游不加载teacher或辅助头。旧v3 prepared/checkpoint不可直接复用，新Stage1/2/3均需prepare/train。
+Stage1配置位于 `configs/v4/stage1/`；下游现役已迁移v5，以下v4 Stage2/3与核心消融只用于历史追溯。v4输出隔离到 `outputs/v4/`；Base与三个核心消融的完整命令，以及 Uni-Mol2 独立环境的创建、依赖安装和版本核验步骤，见 [v4运行手册](docs/v4-runbook.md)。先独立进行Uni-Mol2小样本成功率/吞吐/存储审计，再生成全量分片缓存；teacher使用版本锁定的独立环境，本仓库不会自动下载权重。Stage1训练导出仅encoder/fusion的 `stage1_encoder.pt`，下游不加载teacher或辅助头。旧v3 prepared/checkpoint不可直接复用，新Stage1/2/3均需prepare/train。
 
 Stage1现役Base另有train-only原子电荷监督，使用绑定既有corpus的format2标签sidecar；同结构电荷源行分别保留，不平均、不复制语料，旧sidecar不可交叉续用；不重建Uni-Mol缓存。当前loss系数、全局batch及每rank worker数以[Base YAML](configs/v4/stage1/base.yaml)和[v4手册](docs/v4-runbook.md#stage1-loss-and-gradient-audit)为准，旧ADR中的数值保留历史边界。梯度审计每1000步，可用`--gradient-audit-interval-steps 0`关闭。完整最终`last.pt`保留辅助回归头；可显式运行`scripts/stage1/regression.py`冻结encoder后独立训练13项电子目标和partial charge，不覆盖正式encoder或下游来源，见[ADR-0092](docs/adr/0092-stage1-atom-charge-and-frozen-regression-heads.md)及[v4手册](docs/v4-runbook.md#independent-frozen-regression-head-training)。
 

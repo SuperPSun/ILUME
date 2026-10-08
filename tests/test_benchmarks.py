@@ -134,6 +134,24 @@ DMPNN_ONLY = pytest.mark.skipif(
 
 # --- Shared baseline and sweep contracts ---
 
+@pytest.fixture()
+def historical_experimental_catalog(monkeypatch):
+    # Old baseline contracts require x_co2; never alias the new gas target in production.
+    import stage3.data as stage3_data
+    original = stage3_data.load_task_catalog
+    def historical(path):
+        facts = original(path)
+        if Path(path).resolve() == Path("data/task_catalog.csv").resolve():
+            facts["experiment/x_co2"] = stage3_data.CatalogTaskFact(
+                task_id="experiment/x_co2", target_column="x_CO2", identity_columns=("cation", "anion"),
+                condition_columns=("temperature_K", "pressure_kPa"), system_type="il",
+                materialized_path="stage3/experiment/x_co2", split_strategies=("il", "random", "cation", "anion"),
+                catalog_schema_version=1, unique_systems=122, provenance={"source_file": "synthetic_historical_x_co2.csv"},
+            )
+        return facts
+    monkeypatch.setattr(stage3_data, "load_task_catalog", historical)
+
+
 CATALOG_FIELDS = (
     "catalog_schema_version", "stage", "task_id", "task_kind", "target_level",
     "source_file", "target_columns", "identity_columns", "condition_columns",
@@ -296,6 +314,7 @@ def _tiny_config(tmp_path: Path, *, name: str = "mlp", targets: str = "value"):
     )
 
 
+@pytest.mark.usefixtures("historical_experimental_catalog")
 def test_formal_configs_and_registry_resolution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -458,6 +477,7 @@ def test_mlp_configs_lock_basic_feature_model_and_training_contract() -> None:
         ("aifc", 10),
     ),
 )
+@pytest.mark.usefixtures("historical_experimental_catalog")
 def test_formal_baseline_configs_use_fixed_final_state(
     name: str, fixed_budget: int | None,
 ) -> None:
@@ -531,6 +551,7 @@ def test_baseline_config_rejects_validation_driven_training() -> None:
             benchmark_config_from_dict(retired)
 
 
+@pytest.mark.usefixtures("historical_experimental_catalog")
 def test_native_split_benchmark_configs_follow_v2_authorities() -> None:
     splits = ("system", "random", "individual")
     benchmarks = ("mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm")
@@ -561,6 +582,7 @@ def test_native_split_benchmark_configs_follow_v2_authorities() -> None:
 
 
 @pytest.mark.parametrize("config_path", ("configs/ablations/no_stage3_home.yaml", "configs/v4/ablations/no_stage3_home.yaml"))
+@pytest.mark.usefixtures("historical_experimental_catalog")
 def test_stage3_single_task_mlp_config_and_ordered_concat(config_path) -> None:
     config = load_benchmark_config(config_path)
     assert config.display_name == "ILUME w/o Stage3-HoME"
@@ -614,6 +636,7 @@ def test_stage3_single_task_mlp_config_and_ordered_concat(config_path) -> None:
 
 
 @pytest.mark.parametrize("version", (3, 4))
+@pytest.mark.usefixtures("historical_experimental_catalog")
 def test_stage3_single_task_mlp_v2_config_features_and_final_state(tmp_path: Path, version) -> None:
     config = load_benchmark_config("configs/ablations/no_stage3_home.yaml" if version == 3 else "configs/v4/ablations/no_stage3_home.yaml")
     assert config.data.stage3_authority_config == Path(f"configs/v{version}/stage3/base.yaml")
@@ -2240,6 +2263,7 @@ def _iltransr_task(
     )
 
 
+@pytest.mark.usefixtures("historical_experimental_catalog")
 def test_formal_iltransr_config_recipes_and_property_weight_guard() -> None:
     config = load_benchmark_config("configs/benchmarks/iltransr.yaml")
     tasks = configured_tasks(config, "stage3")
@@ -2483,7 +2507,7 @@ def test_scalar_simulation_catalog_and_jobs(tmp_path: Path) -> None:
     # Copy only the catalog; all training/evaluation rows are tiny temporary data.
     catalog = tmp_path / "task_catalog.csv"
     catalog.write_bytes(Path("data/task_catalog.csv").read_bytes())
-    registry = load_stage2_registry(catalog)
+    registry = load_stage2_registry(catalog, task_ids=SCALAR_SIMULATION_TASKS)
     for task in SCALAR_SIMULATION_TASKS:
         spec = registry.by_id(task)
         for split in ("train", "valid", "test"):
@@ -2626,3 +2650,27 @@ def test_simulation_cli_rejects_fold_and_ensemble(tmp_path: Path, monkeypatch) -
     assert _validate_request(parser.parse_args(base + ["--ensemble-folds"])) is None
     with pytest.raises(ValueError, match="forbids"):
         _validate_request(parser.parse_args(base + ["--ensemble-folds", "--fold", "1"]))
+
+
+def test_v5_two_task_summary_rejects_mixed_historical_protocol(tmp_path: Path) -> None:
+    from stage3.simulation_reporting import SCALAR_SIMULATION_TASKS, V5_SCALAR_SIMULATION_TASKS, simulation_comparison
+
+    inputs = tmp_path / "inputs"
+    def report(tasks, root):
+        metrics, sources = {}, {}
+        for index, task in enumerate(tasks):
+            metrics[task] = {"count": 1, "mae": 0.25 + index / 2, "rmse": 1.0, "r2": None,
+                             "normalized_mae": 0.25 + index / 2, "normalized_rmse": 1.0}
+            sources.update({f"{task}:train": "train", f"{task}:evaluation": "test", f"{task}:rows": "rows"})
+        _write_run(root, {"split": "test", "tasks": metrics, "checkpoint_epoch": None,
+            "reporting": {"schema_version": 1, "model_id": "ilume", "model_display_name": "ILUME", "study_id": str(len(tasks)),
+                "benchmark": "simulation_property", "protocol": {"split": "test", "expected_tasks": list(tasks), "folds": [1, 2, 3, 4, 5], "ensemble": True},
+                "comparison_identity": simulation_comparison(split="test", tasks=tasks, sources=sources, scales={task: 1.0 for task in tasks})}}, stage="stage3")
+    report(V5_SCALAR_SIMULATION_TASKS, inputs / "v5")
+    result = publish_summary(inputs, tmp_path / "summary", tmp_path)
+    leader = result["leaderboards"]["simulation_test"][0]
+    assert leader["total_tasks"] == 2 and leader["macro_normalized_mae"] == pytest.approx(0.5)
+    assert result["leaderboards"]["stage3_test"] == []
+    report(SCALAR_SIMULATION_TASKS, inputs / "historical")
+    with pytest.raises(ValueError, match="comparison"):
+        publish_summary(inputs, tmp_path / "mixed", tmp_path)

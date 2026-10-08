@@ -12,7 +12,7 @@ from common.identity import require_compatible_identity, tensor_state_hash, vali
 from common.io import sha256_file
 from common.progress import ProgressReporter
 from common.training import resolve_device, seed_everything
-from stage2.home_contract import SOURCE_GROUPS, load_transferable_state, state_hash
+from stage2.home_contract import SOURCE_GROUPS, source_groups, load_transferable_state, state_hash
 from stage2.home_artifact import STAGE2_HOME_FINAL_KIND, STAGE2_HOME_V4_FINAL_KIND, load_home_final
 from stage2.train import load_stage2_encoder_artifact
 from stage2 import load_frozen_object_encoder
@@ -26,7 +26,7 @@ from .object_phase1 import (
 )
 from .model import GLOBAL, group_owner, private_owner
 from .simulation import (
-    SIMULATION_TASKS, SimulationObjectPhase1Model,
+    simulation_tasks, SimulationObjectPhase1Model,
     copy_simulation_owners, extend_simulation_plan,
     load_simulation_plan_data, load_simulation_training_data,
 )
@@ -56,12 +56,12 @@ def load_source(config: Stage3Config) -> dict[str, Any] | None:
     validate_semantic_identity(identity)
     encoder = load_stage2_encoder_artifact(encoder_path)
     expected_mapping = {
-        group: [task for task, mapped in SOURCE_GROUPS.items() if mapped == group]
+        group: [task for task, mapped in source_groups(loaded_model.registry).items() if mapped == group]
         for group in ("thermophysical", "solvation")
     }
     source_recipe = identity.get("payload", {})
     if (
-        payload.get("kind") != (STAGE2_HOME_V4_FINAL_KIND if config.initialization.representation_contract == "dual_view_v4" else STAGE2_HOME_FINAL_KIND)
+        payload.get("kind") != ("ilume_stage2_home_final_v5" if config.is_v5 else STAGE2_HOME_V4_FINAL_KIND if config.initialization.representation_contract == "dual_view_v4" else STAGE2_HOME_FINAL_KIND)
         or manifest.get("kind") != payload.get("kind")
         or manifest.get("artifact_sha256") != sha256_file(artifact_path)
         or manifest.get("training_identity", {}).get("hash") != identity["hash"]
@@ -81,7 +81,8 @@ def load_source(config: Stage3Config) -> dict[str, Any] | None:
         or source_recipe.get("transfer_groups") != {
             group: asdict(config.groups[group]) for group in ("thermophysical", "solvation")
         }
-        or source_recipe.get("source_groups") != SOURCE_GROUPS
+        or source_recipe.get("source_groups") != (source_groups(loaded_model.registry) if config.is_v5 else SOURCE_GROUPS)
+        or (config.is_v5 and encoder["object_encoder_config"] != loaded_model.model_contract["object_encoder"])
     ):
         raise ValueError("Formal Stage 2 HoME source identity or state is incompatible")
     require_compatible_identity(identity, manifest["training_identity"], context="Stage 2 HoME final")
@@ -106,7 +107,7 @@ def source_plan(config: Stage3Config, source: Mapping[str, Any] | None, names: t
     }
     if config.initialization.simulation_artifacts_dir is not None:
         result["simulation_training"] = {
-            "tasks": list(SIMULATION_TASKS),
+            "tasks": list(simulation_tasks(config)),
             "source_data_identity": source["stage2_data_identity"]["hash"],
             "source_full_model_state_hash": source["full_model_state_hash"],
         }
@@ -131,7 +132,7 @@ def build_model_and_store(
         specs = dict(prepared["registry"])
         from .simulation import resolve_simulation_specs
 
-        specs.update(resolve_simulation_specs(source_model.registry, specs, config.training.simulation))
+        specs.update(resolve_simulation_specs(source_model.registry, specs, config.training.simulation, simulation_tasks(config)))
         seed_everything(effective_training_seed(config) + fold)
         private_recipes = {
             task: config.resolved_private_recipe(task)
@@ -142,12 +143,14 @@ def build_model_and_store(
             group_configs=config.groups, task_configs=config.tasks,
             task_private_recipes=private_recipes,
             object_encoder=encoder.object_encoder,
+            initialization_seed=effective_training_seed(config) + fold if config.is_v5 else None,
         )
         model = SimulationObjectPhase1Model(
             config.model, specs, encoder.embedding_dim,
             group_configs=config.groups, task_configs=config.tasks,
             task_private_recipes=private_recipes,
-            object_encoder=encoder.object_encoder, source_model=source_model,
+            object_encoder=encoder.object_encoder,
+            initialization_seed=effective_training_seed(config) + fold if config.is_v5 else None, source_model=source_model,
         )
         # Extra source owners must not consume the experimental initialization RNG.
         state = model.state_dict()
@@ -160,6 +163,7 @@ def build_model_and_store(
         copy_simulation_owners(model, source_model)
     else:
         model, store = build_object_phase1_model(config, prepared, fold=fold, device=device)
+    model.representation_contract = config.initialization.representation_contract
     names: tuple[str, ...] = ()
     if config.initialization.home_mode == "trained":
         if source is None:
@@ -222,7 +226,7 @@ def train_fold(
     if simulation_data is not None:
         extend_simulation_plan(plan, config, model, simulation_data, source)
     else:
-        plan["format_version"] = 11 if config.initialization.representation_contract == "dual_view_v4" else 9
+        plan["format_version"] = 12 if config.is_v5 else 11 if config.initialization.representation_contract == "dual_view_v4" else 9
     if expected_training_identity is not None:
         require_compatible_identity(
             expected_training_identity, build_stage3_training_identity(plan),
@@ -261,7 +265,7 @@ def resolve_training_identity(config: Stage3Config, fold: int) -> dict[str, Any]
         )
         extend_simulation_plan(plan, config, model, simulation_data, source)
     else:
-        plan["format_version"] = 11 if config.initialization.representation_contract == "dual_view_v4" else 9
+        plan["format_version"] = 12 if config.is_v5 else 11 if config.initialization.representation_contract == "dual_view_v4" else 9
     return build_stage3_training_identity(plan)
 
 
@@ -269,7 +273,7 @@ def load_simulation_final(
     config: Stage3Config, checkpoint_dir: str | Path, *, fold: int,
     device: str | torch.device = "cpu",
 ) -> SimulationObjectPhase1Model:
-    """Load a validated Stage 3 final model for the five simulation tasks."""
+    """Load a validated Stage 3 final model for its simulation task protocol."""
     if config.initialization.simulation_artifacts_dir is None or fold not in range(1, 6):
         raise ValueError("Stage 3 simulation inference requires a simulation-trained fold")
     from .evaluate import _load_model, _validate_three_phase_manifest

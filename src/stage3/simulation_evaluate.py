@@ -1,4 +1,4 @@
-"""Four scalar simulation tasks evaluated from five Stage3 final models."""
+"""Protocol-specific scalar simulation ensemble from five Stage3 final models."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -13,7 +13,7 @@ from common.identity import require_compatible_identity, semantic_identity
 from common.io import sha256_file
 from common.reporting import reporting_block, sanitize_task_id, write_prediction_csv
 from stage3.simulation_reporting import (
-    SCALAR_SIMULATION_TASKS, scalar_metrics, scalar_split_rows, simulation_comparison,
+    scalar_simulation_tasks, scalar_metrics, scalar_split_rows, simulation_comparison,
     simulation_scale, simulation_task_sources,
 )
 from common.training import resolve_device
@@ -34,12 +34,13 @@ def _sources(config: Any, split: str) -> tuple[Any, dict[str, Any]]:
         raise ValueError("Simulation evaluation requires a simulation-trained Stage3 and valid/test split")
     source = load_source(config)
     assert source is not None
-    registry = load_stage2_registry(config.data.task_catalog)
+    registry = load_stage2_registry(config.data.task_catalog,
+        task_ids=tuple(source["recipe"]["data"]["tasks"]) if config.is_v5 else None)
     if registry.registry_hash != source["registry_hash"] or registry.catalog_sha256 != source["catalog_sha256"]:
         raise ValueError("Simulation evaluation catalog differs from the trained source")
     data_root = Path(source["recipe"]["data"]["data_root"])
     content = source["stage2_data_identity"]["payload"]["source_content"]
-    for task in SCALAR_SIMULATION_TASKS:
+    for task in scalar_simulation_tasks(config):
         for part in ("train", "valid"):
             path = registry.by_id(task).dataset.split_path(data_root, part)
             if sha256_file(path) != content[f"{task}:{part}"]["sha256"]:
@@ -56,10 +57,10 @@ def resolve_simulation_evaluation_identity(config: Any, checkpoint_dir: str | Pa
         checkpoints[f"fold{fold}"] = {"artifact": sha256_file(final), "manifest": sha256_file(final.with_suffix(".json"))}
     sources = {
         task: {part: sha256_file(registry.by_id(task).dataset.split_path(Path(source["recipe"]["data"]["data_root"]), part)) for part in ("train", split)}
-        for task in SCALAR_SIMULATION_TASKS
+        for task in scalar_simulation_tasks(config)
     }
     return semantic_identity("stage3.simulation-evaluation.v1", {
-        "tasks": list(SCALAR_SIMULATION_TASKS), "split": split, "checkpoints": checkpoints,
+        "tasks": list(scalar_simulation_tasks(config)), "split": split, "checkpoints": checkpoints,
         "sources": sources, "stage2_full_state_hash": source["full_model_state_hash"],
         "stage2_scalers": source["scalers"], "simulation_recipe": config.to_dict()["training"]["simulation"],
         "prepared_data_identity": source["stage2_data_identity"], "ensemble": "raw_unit_prediction_mean_v1",
@@ -134,7 +135,7 @@ def evaluate_simulation_checkpoints(config: Any, checkpoint_dir: str | Path, *, 
         prepared_entities = Stage2EntityDataset(config.initialization.simulation_artifacts_dir)
         data_identity = metadata_identity(prepared_entities.metadata, "data", context="simulation evaluation")
         require_compatible_identity(source["stage2_data_identity"], data_identity, context="simulation prepared source")
-    for task in SCALAR_SIMULATION_TASKS:
+    for task in scalar_simulation_tasks(config):
         spec = registry.by_id(task)
         train_path = spec.dataset.split_path(data_root, "train")
         path = spec.dataset.split_path(data_root, split)
@@ -154,7 +155,7 @@ def evaluate_simulation_checkpoints(config: Any, checkpoint_dir: str | Path, *, 
         scales[task] = simulation_scale(train_path, spec.target_columns[0])
         comparison_sources.update(simulation_task_sources(task, train_path, path, row_ids))
     device = resolve_device(config.training.device)
-    predictions = {task: [] for task in SCALAR_SIMULATION_TASKS}
+    predictions = {task: [] for task in scalar_simulation_tasks(config)}
     for fold in range(1, 6):
         model = load_simulation_final(config, checkpoint_dir, fold=fold, device=device).eval()
         for task, dataset in datasets.items():
@@ -171,7 +172,7 @@ def evaluate_simulation_checkpoints(config: Any, checkpoint_dir: str | Path, *, 
             predictions[task].append(np.concatenate(values).reshape(-1))
         del model
     metrics, manifests = {}, []
-    for task in SCALAR_SIMULATION_TASKS:
+    for task in scalar_simulation_tasks(config):
         prediction = np.stack(predictions[task]).mean(axis=0)
         spec = registry.by_id(task)
         targets = np.asarray([float(row[spec.target_columns[0]]) for row in raw[task]])
@@ -183,13 +184,13 @@ def evaluate_simulation_checkpoints(config: Any, checkpoint_dir: str | Path, *, 
         manifest.update({"task": task, "path": f"predictions/{path.name}"})
         manifests.append(manifest)
     require_compatible_identity(identity, resolve_simulation_evaluation_identity(config, checkpoint_dir, split=split), context="Simulation sources changed during evaluation")
-    comparison = simulation_comparison(split=split, tasks=SCALAR_SIMULATION_TASKS, sources=comparison_sources, scales=scales)
+    comparison = simulation_comparison(split=split, tasks=scalar_simulation_tasks(config), sources=comparison_sources, scales=scales)
     study = reporting_study_id or "ilume-simulation-" + identity["hash"]
     no_stage1 = source["recipe"]["home"]["initialization"] == "random_stage1"
     model_id, display = ("ilume_no_stage1", "ILUME w/o Stage1") if no_stage1 else ("ilume", "ILUME")
     return {"split": split, "domain": "simulation", "checkpoint_epoch": None, "tasks": metrics,
         "macro_normalized_mae": sum(value["normalized_mae"] for value in metrics.values()) / len(metrics),
         "reporting": reporting_block(model_id=model_id, model_display_name=display, benchmark="simulation_property",
-            protocol={"split": split, "expected_tasks": list(SCALAR_SIMULATION_TASKS), "folds": list(range(1, 6)), "ensemble": True,
+            protocol={"split": split, "expected_tasks": list(scalar_simulation_tasks(config)), "folds": list(range(1, 6)), "ensemble": True,
                       "ensemble_method": "raw_unit_prediction_mean_v1", "model_selector": "three_phase_final", "model_sources": identity["payload"]["checkpoints"]},
             comparison=comparison, study_id=study, predictions=manifests)}

@@ -16,7 +16,7 @@ from stage1.model import build_stage1_model
 from stage1.tokenizer import SmilesTokenizer
 
 from .home_config import home_recipe_from_dict
-from .home_contract import SOURCE_GROUPS, state_hash, transferable_state
+from .home_contract import source_groups, state_hash, transferable_state
 from .home_model import SimulationHoME
 from .model import RECONSTRUCTION_MODULES
 from .registry import Stage2Registry
@@ -27,11 +27,13 @@ STAGE2_HOME_V4_FINAL_KIND = "ilume_stage2_home_final_v4"
 
 
 def final_kind(recipe):
+    if recipe.stage2.is_v5:
+        return "ilume_stage2_home_final_v5"
     return STAGE2_HOME_V4_FINAL_KIND if recipe.freeze_stage1 else STAGE2_HOME_FINAL_KIND
 
 
-def full_state_hash(state: Mapping[str, torch.Tensor]) -> str:
-    return tensor_state_hash("stage2.home.full-model.v4" if any(key.startswith("object_encoder.input_projection.") for key in state) else "stage2.home.full-model.v2", state)
+def full_state_hash(state: Mapping[str, torch.Tensor], *, version: int | None = None) -> str:
+    return tensor_state_hash("stage2.home.full-model.v5" if version == 5 else "stage2.home.full-model.v4" if any(key.startswith("object_encoder.input_projection.") for key in state) else "stage2.home.full-model.v2", state)
 
 
 def full_owner_manifest(model: SimulationHoME) -> dict[str, str]:
@@ -58,9 +60,9 @@ def load_home_final(path: str | Path) -> tuple[dict[str, Any], SimulationHoME, S
     if manifest.get("artifact") != artifact.name or manifest.get("artifact_sha256") != sha256_file(artifact):
         raise ValueError("Stage 2 final artifact SHA mismatch")
     payload = torch.load(artifact, map_location="cpu", weights_only=False)
-    if (payload.get("kind") not in {STAGE2_HOME_FINAL_KIND, STAGE2_HOME_V4_FINAL_KIND}
+    if (payload.get("kind") not in {STAGE2_HOME_FINAL_KIND, STAGE2_HOME_V4_FINAL_KIND, "ilume_stage2_home_final_v5"}
             or manifest.get("kind") != payload.get("kind")
-            or payload.get("format_version") != (4 if payload.get("kind") == STAGE2_HOME_V4_FINAL_KIND else 2)):
+            or payload.get("format_version") != (5 if payload.get("kind") == "ilume_stage2_home_final_v5" else 4 if payload.get("kind") == STAGE2_HOME_V4_FINAL_KIND else 2)):
         raise ValueError("Unsupported Stage 2 full HoME artifact kind")
     identity = payload["training_identity"]
     validate_semantic_identity(identity)
@@ -81,13 +83,14 @@ def load_home_final(path: str | Path) -> tuple[dict[str, Any], SimulationHoME, S
             or manifest.get("stage2_encoder_sha256") != payload.get("stage2_encoder_sha256")):
         raise ValueError("Stage 2 final manifest identity mismatch")
     state = payload["full_model_state"]
-    if not isinstance(state, dict) or full_state_hash(state) != payload["full_model_state_hash"]:
+    if not isinstance(state, dict) or full_state_hash(state, version=payload["format_version"]) != payload["full_model_state_hash"]:
         raise ValueError("Stage 2 full model state hash mismatch")
     registry = Stage2Registry.from_snapshot(
         payload["registry"], registry_hash=payload["registry_hash"],
         catalog_sha256=payload["catalog_sha256"],
     )
-    if set(registry.task_ids) != set(SOURCE_GROUPS) or set(payload["scalers"]) != set(registry.task_ids):
+    source_groups(registry)
+    if set(payload["scalers"]) != set(registry.task_ids):
         raise ValueError("Stage 2 full model registry/scaler mismatch")
     if semantic_hash("stage2.home.scalers.v1", payload["scalers"]) != payload["scalers_hash"]:
         raise ValueError("Stage 2 full model scaler hash mismatch")
@@ -100,6 +103,7 @@ def load_home_final(path: str | Path) -> tuple[dict[str, Any], SimulationHoME, S
             if not math.isfinite(float(value["mean"])) or not math.isfinite(float(value["scale"])) or float(value["scale"]) <= 0:
                 raise ValueError("Stage 2 full model scaler values are invalid")
     recipe = home_recipe_from_dict(payload["recipe"])
+    recipe.stage2.validate_registry(registry)
     if payload["kind"] != final_kind(recipe):
         raise ValueError("Stage 2 final representation family mismatch")
     if (recipe.stage2.experiment_dict() != identity["payload"]["stage2_config"]

@@ -78,7 +78,7 @@ def build_stage3_prepared_identity(
     return semantic_identity(
         "stage3.prepared-data",
         {
-            "contract_version": 4 if config.initialization.representation_contract == "dual_view_v4" else 3 if config.training.object_encoder_phase1 is not None else STAGE3_PREPARED_IDENTITY_CONTRACT_VERSION,
+            "contract_version": 5 if config.is_v5 else 4 if config.initialization.representation_contract == "dual_view_v4" else 3 if config.training.object_encoder_phase1 is not None else STAGE3_PREPARED_IDENTITY_CONTRACT_VERSION,
             "source_content": _source_content(config, registry),
             "resolved_registry": {
                 task: spec.prepared_dict()
@@ -207,6 +207,8 @@ def build_stage3_training_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
         )
         if plan.get("representation_contract") == "dual_view_v4":
             contract_version = 15
+        if plan.get("representation_contract") == "dual_view_object_v5":
+            contract_version = 16
     return semantic_identity(
         "stage3.training",
         {

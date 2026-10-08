@@ -6,6 +6,7 @@ from typing import Iterable, Mapping
 
 import torch
 from torch import nn
+from common.training import seeded_initialization
 
 from .config import (
     ResolvedStage3PrivateRecipe,
@@ -276,6 +277,7 @@ class Stage3SparseModel(nn.Module):
         task_private_recipes: Mapping[str, ResolvedStage3PrivateRecipe] | None = None,
         descriptor_input_dims: Mapping[str, int] | None = None,
         transfer_knowledge: Stage3TransferKnowledgeConfig | None = None,
+        initialization_seed: int | None = None,
     ) -> None:
         super().__init__()
         self.model_config = model_config
@@ -308,24 +310,25 @@ class Stage3SparseModel(nn.Module):
             "dropout": model_config.dropout,
             "activation": model_config.activation,
         }
-        self.l1_global_experts = nn.ModuleList(
-            [Expert(d_model, **expert_kwargs) for _ in range(model_config.global_experts)]
-        )
-        self.l1_global_gate = (
-            nn.Linear(d_model, model_config.global_experts)
-            if model_config.global_experts
-            else None
-        )
-        self.l2_global_experts = nn.ModuleList(
-            [Expert(d_model, **expert_kwargs) for _ in range(model_config.global_experts)]
-        )
-        global_modules: list[nn.Module] = [
-            self.l1_global_experts,
-            self.l2_global_experts,
-        ]
-        if self.l1_global_gate is not None:
-            global_modules.append(self.l1_global_gate)
-        self._own_modules(GLOBAL, *global_modules)
+        with seeded_initialization(initialization_seed, "GLOBAL"):
+            self.l1_global_experts = nn.ModuleList(
+                [Expert(d_model, **expert_kwargs) for _ in range(model_config.global_experts)]
+            )
+            self.l1_global_gate = (
+                nn.Linear(d_model, model_config.global_experts)
+                if model_config.global_experts
+                else None
+            )
+            self.l2_global_experts = nn.ModuleList(
+                [Expert(d_model, **expert_kwargs) for _ in range(model_config.global_experts)]
+            )
+            global_modules: list[nn.Module] = [
+                self.l1_global_experts,
+                self.l2_global_experts,
+            ]
+            if self.l1_global_gate is not None:
+                global_modules.append(self.l1_global_gate)
+            self._own_modules(GLOBAL, *global_modules)
         if transfer_knowledge is not None:
             self.global_knowledge_mixer = KnowledgeMixer(transfer_knowledge.global_sources)
             self._own_modules(GLOBAL, self.global_knowledge_mixer)
@@ -341,44 +344,45 @@ class Stage3SparseModel(nn.Module):
             if spec.enabled and spec.partner_mode == "interaction"
         }
         for group in self.groups:
-            group_config = self.group_configs.get(group)
-            group_experts = (
-                model_config.group_experts
-                if group_config is None or group_config.experts is None
-                else group_config.experts
-            )
-            group_hidden_ratio = (
-                model_config.expert_hidden_ratio
-                if group_config is None or group_config.expert_hidden_ratio is None
-                else group_config.expert_hidden_ratio
-            )
-            group_expert_kwargs = {
-                **expert_kwargs,
-                "hidden_ratio": group_hidden_ratio,
-            }
-            self.l1_group_experts[group] = nn.ModuleList(
-                [Expert(d_model, **group_expert_kwargs) for _ in range(group_experts)]
-            )
-            self.l1_group_gates[group] = nn.Linear(d_model, group_experts)
-            self.l1_group_normalizations[group] = nn.LayerNorm(d_model)
-            self.l2_group_experts[group] = nn.ModuleList(
-                [Expert(d_model, **group_expert_kwargs) for _ in range(group_experts)]
-            )
-            modules: list[nn.Module] = [
-                self.l1_group_experts[group],
-                self.l1_group_gates[group],
-                self.l1_group_normalizations[group],
-                self.l2_group_experts[group],
-            ]
-            if group in partner_groups:
-                self.interactions[group] = PartnerInteraction(
-                    d_model,
-                    hidden_ratio=model_config.interaction_hidden_ratio,
-                    dropout=model_config.dropout,
-                    activation=model_config.activation,
+            with seeded_initialization(initialization_seed, f"GROUP:{group}"):
+                group_config = self.group_configs.get(group)
+                group_experts = (
+                    model_config.group_experts
+                    if group_config is None or group_config.experts is None
+                    else group_config.experts
                 )
-                modules.append(self.interactions[group])
-            self._own_modules(group_owner(group), *modules)
+                group_hidden_ratio = (
+                    model_config.expert_hidden_ratio
+                    if group_config is None or group_config.expert_hidden_ratio is None
+                    else group_config.expert_hidden_ratio
+                )
+                group_expert_kwargs = {
+                    **expert_kwargs,
+                    "hidden_ratio": group_hidden_ratio,
+                }
+                self.l1_group_experts[group] = nn.ModuleList(
+                    [Expert(d_model, **group_expert_kwargs) for _ in range(group_experts)]
+                )
+                self.l1_group_gates[group] = nn.Linear(d_model, group_experts)
+                self.l1_group_normalizations[group] = nn.LayerNorm(d_model)
+                self.l2_group_experts[group] = nn.ModuleList(
+                    [Expert(d_model, **group_expert_kwargs) for _ in range(group_experts)]
+                )
+                modules: list[nn.Module] = [
+                    self.l1_group_experts[group],
+                    self.l1_group_gates[group],
+                    self.l1_group_normalizations[group],
+                    self.l2_group_experts[group],
+                ]
+                if group in partner_groups:
+                    self.interactions[group] = PartnerInteraction(
+                        d_model,
+                        hidden_ratio=model_config.interaction_hidden_ratio,
+                        dropout=model_config.dropout,
+                        activation=model_config.activation,
+                    )
+                    modules.append(self.interactions[group])
+                self._own_modules(group_owner(group), *modules)
 
         self.group_knowledge_mixers = nn.ModuleDict()
         if transfer_knowledge is not None:
@@ -395,85 +399,86 @@ class Stage3SparseModel(nn.Module):
         for task_id, spec in self.task_specs.items():
             if not spec.enabled:
                 continue
-            key = sanitize_task(task_id)
-            task_config = self.task_configs.get(task_id)
-            overrides = task_config.model_overrides if task_config is not None else {}
-            private_recipe = self.task_private_recipes.get(task_id)
-            private_experts = int(
-                overrides.get("private_experts", model_config.private_experts)
-            )
-            private_hidden_ratio = float(
-                private_recipe.private_hidden_ratio
-                if private_recipe is not None
-                else overrides.get("private_hidden_ratio", model_config.expert_hidden_ratio)
-            )
-            tower_hidden_ratio = float(
-                private_recipe.tower_hidden_ratio
-                if private_recipe is not None
-                else overrides.get("tower_hidden_ratio", model_config.tower_hidden_ratio)
-            )
-            film_hidden_ratio = float(
-                private_recipe.film_hidden_ratio
-                if private_recipe is not None
-                else overrides.get("film_hidden_ratio", model_config.film_hidden_ratio)
-            )
-            private_dropout = float(
-                private_recipe.private_dropout
-                if private_recipe is not None
-                else overrides.get("private_dropout", model_config.dropout)
-            )
-            group_config = self.group_configs.get(spec.meta_group)
-            group_experts = (
-                model_config.group_experts
-                if group_config is None or group_config.experts is None
-                else group_config.experts
-            )
-            candidate_count = (
-                model_config.global_experts + group_experts + private_experts
-            )
-            self.private_experts[key] = nn.ModuleList(
-                [
-                    Expert(
+            with seeded_initialization(initialization_seed, f"PRIVATE:{task_id}"):
+                key = sanitize_task(task_id)
+                task_config = self.task_configs.get(task_id)
+                overrides = task_config.model_overrides if task_config is not None else {}
+                private_recipe = self.task_private_recipes.get(task_id)
+                private_experts = int(
+                    overrides.get("private_experts", model_config.private_experts)
+                )
+                private_hidden_ratio = float(
+                    private_recipe.private_hidden_ratio
+                    if private_recipe is not None
+                    else overrides.get("private_hidden_ratio", model_config.expert_hidden_ratio)
+                )
+                tower_hidden_ratio = float(
+                    private_recipe.tower_hidden_ratio
+                    if private_recipe is not None
+                    else overrides.get("tower_hidden_ratio", model_config.tower_hidden_ratio)
+                )
+                film_hidden_ratio = float(
+                    private_recipe.film_hidden_ratio
+                    if private_recipe is not None
+                    else overrides.get("film_hidden_ratio", model_config.film_hidden_ratio)
+                )
+                private_dropout = float(
+                    private_recipe.private_dropout
+                    if private_recipe is not None
+                    else overrides.get("private_dropout", model_config.dropout)
+                )
+                group_config = self.group_configs.get(spec.meta_group)
+                group_experts = (
+                    model_config.group_experts
+                    if group_config is None or group_config.experts is None
+                    else group_config.experts
+                )
+                candidate_count = (
+                    model_config.global_experts + group_experts + private_experts
+                )
+                self.private_experts[key] = nn.ModuleList(
+                    [
+                        Expert(
+                            d_model,
+                            hidden_ratio=private_hidden_ratio,
+                            dropout=private_dropout,
+                            activation=model_config.activation,
+                        )
+                        for _ in range(private_experts)
+                    ]
+                )
+                self.task_gates[key] = nn.Linear(2 * d_model, candidate_count)
+                if spec.condition_columns:
+                    self.condition_films[key] = ConditionFiLM(
+                        spec.condition_width,
                         d_model,
-                        hidden_ratio=private_hidden_ratio,
+                        hidden_ratio=film_hidden_ratio,
                         dropout=private_dropout,
                         activation=model_config.activation,
                     )
-                    for _ in range(private_experts)
-                ]
-            )
-            self.task_gates[key] = nn.Linear(2 * d_model, candidate_count)
-            if spec.condition_columns:
-                self.condition_films[key] = ConditionFiLM(
-                    len(spec.condition_columns),
+                self.task_normalizations[key] = (
+                    nn.LayerNorm(d_model) if model_config.l2_residual else nn.Identity()
+                )
+                self.towers[key] = TaskTower(
                     d_model,
-                    hidden_ratio=film_hidden_ratio,
+                    hidden_ratio=tower_hidden_ratio,
                     dropout=private_dropout,
                     activation=model_config.activation,
                 )
-            self.task_normalizations[key] = (
-                nn.LayerNorm(d_model) if model_config.l2_residual else nn.Identity()
-            )
-            self.towers[key] = TaskTower(
-                d_model,
-                hidden_ratio=tower_hidden_ratio,
-                dropout=private_dropout,
-                activation=model_config.activation,
-            )
-            modules = [
-                self.private_experts[key],
-                self.task_gates[key],
-                self.task_normalizations[key],
-                self.towers[key],
-            ]
-            if key in self.condition_films:
-                modules.append(self.condition_films[key])
-            self._own_modules(private_owner(task_id), *modules)
-            if transfer_knowledge is not None and task_id in transfer_knowledge.private_sources:
-                self.private_knowledge_mixers[key] = KnowledgeMixer(
-                    transfer_knowledge.private_sources[task_id]
-                )
-                self._own_modules(private_owner(task_id), self.private_knowledge_mixers[key])
+                modules = [
+                    self.private_experts[key],
+                    self.task_gates[key],
+                    self.task_normalizations[key],
+                    self.towers[key],
+                ]
+                if key in self.condition_films:
+                    modules.append(self.condition_films[key])
+                self._own_modules(private_owner(task_id), *modules)
+                if transfer_knowledge is not None and task_id in transfer_knowledge.private_sources:
+                    self.private_knowledge_mixers[key] = KnowledgeMixer(
+                        transfer_knowledge.private_sources[task_id]
+                    )
+                    self._own_modules(private_owner(task_id), self.private_knowledge_mixers[key])
         self._validate_ownership()
 
     def resolved_capacity_recipe(self) -> dict[str, object]:
@@ -709,7 +714,7 @@ class Stage3SparseModel(nn.Module):
             group_primary + z_group_delta
         )
         if spec.condition_columns:
-            if conditions.shape[-1] != len(spec.condition_columns):
+            if conditions.shape[-1] != spec.condition_width:
                 raise ValueError(f"Stage 3 condition width mismatch: {task_id}")
             local = self.condition_films[key](local, conditions)
         elif conditions.shape[-1] != 0:

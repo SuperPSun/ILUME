@@ -43,6 +43,7 @@ from common.identity import (
     semantic_identity,
     tensor_state_hash,
 )
+from common.entity_roles import molecular_role
 from common.io import atomic_json, atomic_torch_save, sha256_file
 from common.progress import ProgressReporter
 from common.training import canonical_json_sha256, resolve_device
@@ -150,7 +151,7 @@ def _role_for(
         if mol is None:
             raise ValueError(f"Invalid canonical SMILES in {context}")
         charge = sum(atom.GetFormalCharge() for atom in mol.GetAtoms())
-        inferred = "cation" if charge > 0 else ("anion" if charge < 0 else "neutral")
+        inferred = molecular_role(canonical)
         cached = (inferred, charge, mol.GetNumAtoms())
         cache[canonical] = cached
     inferred, charge, _ = cached
@@ -917,7 +918,7 @@ def prepare_stage2_data(config: Stage2Config, *, reporter: ProgressReporter | No
 
         return prepare_rdkit_stage2(config, reporter=reporter)
     config.validate()
-    registry = load_stage2_registry(config.data.task_catalog_path)
+    registry = load_stage2_registry(config.data.task_catalog_path, task_ids=config.data.tasks)
     config.validate_registry(registry)
     reporter = reporter or ProgressReporter()
     output_dir = config.data.artifacts_dir

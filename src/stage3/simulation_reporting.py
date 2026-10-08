@@ -17,6 +17,13 @@ SCALAR_SIMULATION_TASKS = (
 )
 
 
+V5_SCALAR_SIMULATION_TASKS = SCALAR_SIMULATION_TASKS[:2]
+
+
+def scalar_simulation_tasks(config: Any) -> tuple[str, ...]:
+    return V5_SCALAR_SIMULATION_TASKS if config.is_v5 else SCALAR_SIMULATION_TASKS
+
+
 def simulation_scale(train_path: Path, target_column: str) -> float:
     with train_path.open(newline="", encoding="utf-8-sig") as handle:
         values = np.asarray([float(row[target_column]) for row in csv.DictReader(handle)], dtype=np.float64)

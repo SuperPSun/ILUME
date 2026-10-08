@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import random
+from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
@@ -55,3 +56,15 @@ def cosine_warmup(step: int, total_steps: int, warmup_fraction: float) -> float:
 def canonical_json_sha256(payload: Any) -> str:
     serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(serialized.encode()).hexdigest()
+
+
+@contextmanager
+def seeded_initialization(seed: int | None, owner: str):
+    """Isolate CPU module construction without changing the caller RNG stream."""
+    if seed is None:
+        yield
+        return
+    value = int.from_bytes(hashlib.sha256(f"{seed}:{owner}".encode()).digest()[:8], "big")
+    with torch.random.fork_rng(devices=[]):
+        torch.random.default_generator.manual_seed(value)
+        yield

@@ -118,6 +118,69 @@ class ObjectEncoder(nn.Module):
         return self.output_normalization(residual + self.residual_projection(encoded[:, 0]))
 
 
+class UnaryPairObjectEncoder(nn.Module):
+    def __init__(self, d_model: int, *, input_dim: int, unary_hidden_dim: int,
+                 pair_hidden_dim: int, dropout: float) -> None:
+        super().__init__()
+        self.d_model, self.input_dim = d_model, input_dim
+        self.input_projection = nn.Sequential(nn.Linear(input_dim, d_model), nn.LayerNorm(d_model))
+        self.role_embedding = nn.Embedding(len(ROLE_TO_ID), d_model)
+        nn.init.normal_(self.role_embedding.weight, std=0.02)
+        self.unary = nn.Sequential(
+            nn.LayerNorm(d_model), nn.Linear(d_model, unary_hidden_dim), nn.GELU(),
+            nn.Dropout(dropout), nn.Linear(unary_hidden_dim, d_model),
+        )
+        self.pair = nn.Sequential(
+            nn.LayerNorm(4 * d_model), nn.Linear(4 * d_model, pair_hidden_dim),
+            nn.GELU(), nn.Dropout(dropout), nn.Linear(pair_hidden_dim, d_model),
+        )
+        self.gamma = nn.Parameter(torch.zeros(()))
+        self.output_normalization = nn.LayerNorm(d_model)
+
+    def forward(self, entity_cls: torch.Tensor, entity_roles: torch.Tensor) -> torch.Tensor:
+        if (entity_cls.ndim != 3 or entity_roles.shape != entity_cls.shape[:2]
+                or entity_cls.shape[-1] != self.input_dim or entity_cls.shape[1] not in {1, 2}):
+            raise ValueError("UnaryPair ObjectEncoder entity tensor contract mismatch")
+        if not bool(((entity_roles >= 0) & (entity_roles < len(ROLE_TO_ID))).all()):
+            raise ValueError("UnaryPair ObjectEncoder invalid entity role")
+        if entity_cls.shape[1] == 2:
+            expected = entity_roles.new_tensor([ROLE_TO_ID["cation"], ROLE_TO_ID["anion"]])
+            if not torch.equal(entity_roles, expected.expand_as(entity_roles)):
+                raise ValueError("Ionic-liquid object requires ordered cation and anion")
+        h = self.input_projection(entity_cls) + self.role_embedding(entity_roles)
+        unary = h + self.unary(h)
+        if unary.shape[1] == 1:
+            return self.output_normalization(unary[:, 0])
+        cation, anion = unary.unbind(dim=1)
+        features = torch.cat((cation, anion, (cation - anion).abs(), cation * anion), -1)
+        return self.output_normalization((cation + anion) / 2 + self.gamma * self.pair(features))
+
+
+def object_encoder_contract(config: Any, input_dim: int) -> dict[str, Any]:
+    contract = {"kind": config.object_encoder_kind, "input_dim": input_dim,
+                "dropout": config.dropout, "role_policy": "formal_charge_v1",
+                "initialization": "seed_owner_v1", "contract_version": 5,
+                "role_embedding_std": 0.02 if config.object_encoder_kind == "unary_pair" else 1.0}
+    if config.object_encoder_kind == "unary_pair":
+        contract.update(unary_hidden_dim=config.unary_hidden_dim,
+                        pair_hidden_dim=config.pair_hidden_dim, gamma_initial=0.0)
+    else:
+        contract.update(layers=config.object_layers, ffn_dim=config.object_ffn_dim)
+    return contract
+
+
+def build_object_encoder(d_model: int, n_heads: int, contract: dict[str, Any]) -> nn.Module:
+    kind = contract.get("kind", "transformer")
+    if kind == "unary_pair":
+        return UnaryPairObjectEncoder(d_model, input_dim=contract["input_dim"],
+            unary_hidden_dim=contract["unary_hidden_dim"], pair_hidden_dim=contract["pair_hidden_dim"],
+            dropout=contract["dropout"])
+    if kind != "transformer":
+        raise ValueError(f"Unsupported ObjectEncoder kind: {kind}")
+    return ObjectEncoder(d_model, n_heads, num_layers=contract["layers"],
+        feedforward_dim=contract["ffn_dim"], dropout=contract["dropout"], input_dim=contract.get("input_dim"))
+
+
 @dataclass(frozen=True)
 class ObjectEntityEncoding:
     entity_embedding: torch.Tensor

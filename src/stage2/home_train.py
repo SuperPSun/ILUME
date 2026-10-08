@@ -33,7 +33,7 @@ from stage2.runtime import configure_stage2_math
 from stage2.train import STAGE2_HOME_ENCODER_KIND, export_stage2_encoder_artifact, task_compensation_scale
 
 from .home_config import HomeRecipe
-from .home_contract import SOURCE_GROUPS, state_hash, transferable_state
+from .home_contract import SOURCE_GROUPS, source_groups, state_hash, transferable_state
 from .home_model import SimulationHoME
 from .home_artifact import final_kind, full_owner_manifest, full_state_hash, load_home_final
 
@@ -45,8 +45,15 @@ def _cpu_state(model: torch.nn.Module) -> dict[str, torch.Tensor]:
     return {name: value.detach().cpu().clone() for name, value in model.state_dict().items()}
 
 
-def _model_hash(state: Mapping[str, torch.Tensor]) -> str:
-    return tensor_state_hash("stage2.home.full-model.v4" if any(name.startswith("object_encoder.input_projection.") for name in state) else "stage2.home.full-model.v1", state)
+def _model_hash(state: Mapping[str, torch.Tensor], *, v5: bool = False) -> str:
+    return tensor_state_hash("stage2.home.full-model.v5" if v5 else "stage2.home.full-model.v4" if any(name.startswith("object_encoder.input_projection.") for name in state) else "stage2.home.full-model.v1", state)
+
+
+def model_contract_for_recipe(experiment: HomeRecipe) -> dict[str, Any]:
+    from .model import object_encoder_contract
+    manifest = json.loads((experiment.stage2.data.artifacts_dir / "frozen_entities.json").read_text())
+    return {**object_encoder_contract(experiment.stage2.model, manifest["identity"]["payload"]["entity_input_dim"]),
+            "source_tasks": sorted(experiment.stage2.data.tasks)}
 
 
 def training_identity(
@@ -54,8 +61,8 @@ def training_identity(
     math_contract: Mapping[str, Any],
 ) -> dict[str, Any]:
     config = experiment.stage2
-    return semantic_identity("stage2.home-training.v4" if experiment.freeze_stage1 else "stage2.home-training.v1", {
-        "contract_version": 4 if experiment.freeze_stage1 else 1,
+    return semantic_identity("stage2.home-training.v5" if config.is_v5 else "stage2.home-training.v4" if experiment.freeze_stage1 else "stage2.home-training.v1", {
+        "contract_version": 5 if config.is_v5 else 4 if experiment.freeze_stage1 else 1,
         "stage2_data_identity": data_identity["hash"],
         **({"frozen_entity_cache": json.loads((config.data.artifacts_dir / "frozen_entities.json").read_text())} if experiment.freeze_stage1 else {}),
         "stage1_source": (
@@ -69,12 +76,13 @@ def training_identity(
         "stage2_config": config.experiment_dict(),
         "stage3_model": asdict(experiment.stage3.model),
         "transfer_groups": {group: asdict(experiment.stage3.groups[group]) for group in ("thermophysical", "solvation")},
-        "electronic_group": {
+        **({"electronic_group": {
             "experts": experiment.stage3.groups["thermophysical"].experts,
             "expert_hidden_ratio": experiment.stage3.groups["thermophysical"].expert_hidden_ratio,
             "transferred": False,
-        },
-        "source_groups": SOURCE_GROUPS,
+        }} if (not config.is_v5 or "simulation/homo" in config.data.tasks) else {}),
+        "source_groups": ({task: group for task, group in SOURCE_GROUPS.items() if task in config.data.tasks} if config.is_v5 else SOURCE_GROUPS),
+        **({"object_encoder_contract": model_contract_for_recipe(experiment), "initialization": "seed_owner_v1"} if config.is_v5 else {}),
         "batch_size": config.training.batch_size,
         "microbatch_size": experiment.stage2_microbatch_size,
         "epochs": experiment.stage2_epochs,
@@ -297,14 +305,17 @@ def _export(
 ) -> dict[str, Any]:
     checkpoint_path = root / f"checkpoint_epoch_{experiment.stage2_epochs:05d}.pt"
     encoder_path = root / "stage2_encoder.pt"
-    # The transient compatibility scaffold is never optimized and exports only encoding state.
-    scaffold = Stage2ObjectModel(
-        model.backbone, registry,
-        object_layers=experiment.stage2.model.object_layers,
-        object_ffn_dim=experiment.stage2.model.object_ffn_dim,
-        dropout=experiment.stage2.model.dropout,
-    )
-    scaffold.object_encoder.load_state_dict(model.object_encoder.state_dict(), strict=True)
+    if experiment.stage2.is_v5:
+        scaffold = model
+    else:
+        # The transient compatibility scaffold is never optimized and exports only encoding state.
+        scaffold = Stage2ObjectModel(
+            model.backbone, registry,
+            object_layers=experiment.stage2.model.object_layers,
+            object_ffn_dim=experiment.stage2.model.object_ffn_dim,
+            dropout=experiment.stage2.model.dropout,
+        )
+        scaffold.object_encoder.load_state_dict(model.object_encoder.state_dict(), strict=True)
     export_stage2_encoder_artifact(
         encoder_path, model=scaffold, config=experiment.stage2, registry=registry,
         data_identity=dict(data_identity),
@@ -326,7 +337,7 @@ def _export(
     data_metadata = json.loads((experiment.stage2.data.artifacts_dir / "metadata.json").read_text(encoding="utf-8"))
     payload = {
         "kind": final_kind(experiment),
-        "format_version": 4 if experiment.freeze_stage1 else 2,
+        "format_version": 5 if experiment.stage2.is_v5 else 4 if experiment.freeze_stage1 else 2,
         "training_identity": dict(identity),
         "stage2_data_identity": dict(data_identity),
         "recipe": experiment.to_dict(),
@@ -341,7 +352,7 @@ def _export(
         "feature_artifacts": compatible_encoder["feature_artifacts"],
         "feature_artifacts_hash": semantic_hash("stage2.home.feature-artifacts.v1", compatible_encoder["feature_artifacts"]),
         "full_model_state": full_state,
-        "full_model_state_hash": full_state_hash(full_state),
+        "full_model_state_hash": full_state_hash(full_state, version=5 if experiment.stage2.is_v5 else None),
         "owner_manifest": owner_manifest,
         "stage2_encoder": encoder_path.name,
         "stage2_encoder_sha256": sha256_file(encoder_path),
@@ -349,13 +360,13 @@ def _export(
         "stage1_backbone": compatible_encoder["stage1_backbone"],
         "object_encoder": compatible_encoder["object_encoder"],
         "group_mapping": {
-            "thermophysical": [task for task, group in SOURCE_GROUPS.items() if group == "thermophysical"],
-            "solvation": [task for task, group in SOURCE_GROUPS.items() if group == "solvation"],
+            "thermophysical": [task for task, group in source_groups(registry).items() if group == "thermophysical"],
+            "solvation": [task for task, group in source_groups(registry).items() if group == "solvation"],
         },
         "architecture": {
             "stage3_model": asdict(experiment.stage3.model),
             "transfer_groups": ["solvation", "thermophysical"],
-            "electronic_group": identity["payload"]["electronic_group"],
+            **({"electronic_group": identity["payload"]["electronic_group"]} if "electronic_group" in identity["payload"] else {}),
         },
         "shared_state": shared,
         "shared_state_hash": shared_hash,
@@ -450,11 +461,13 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
         if checkpoint_files != [output / f"checkpoint_epoch_{index:05d}.pt" for index in range(1, epoch + 1)]:
             raise ValueError("Stage2-HoME checkpoint sequence is incomplete")
         _check_history(output, epoch)
-        if (checkpoint.get("kind") != ("ilume_stage2_home_checkpoint_v4" if experiment.freeze_stage1 else STAGE2_HOME_CHECKPOINT_KIND)
-            or checkpoint.get("format_version") != (4 if experiment.freeze_stage1 else 1)
+        if (checkpoint.get("kind") != ("ilume_stage2_home_checkpoint_v5" if config.is_v5 else "ilume_stage2_home_checkpoint_v4" if experiment.freeze_stage1 else STAGE2_HOME_CHECKPOINT_KIND)
+            or checkpoint.get("format_version") != (5 if config.is_v5 else 4 if experiment.freeze_stage1 else 1)
             or checkpoint.get("training_identity") != identity):
             raise ValueError("Stage2-HoME resume identity mismatch")
-        if checkpoint.get("model_hash") != _model_hash(checkpoint["model"]):
+        if config.is_v5 and checkpoint.get("owner_manifest") != full_owner_manifest(model):
+            raise ValueError("Stage2-HoME resume owner manifest mismatch")
+        if checkpoint.get("model_hash") != _model_hash(checkpoint["model"], v5=config.is_v5):
             raise ValueError("Stage2-HoME resume model hash mismatch")
         history_tail = json.loads((output / "metrics.jsonl").read_text(encoding="utf-8").splitlines()[-1])
         if checkpoint.get("history_tail") != history_tail:
@@ -537,10 +550,11 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
             "validation_normalized_mae": validation,
         }
         checkpoint = {
-            "kind": "ilume_stage2_home_checkpoint_v4" if experiment.freeze_stage1 else STAGE2_HOME_CHECKPOINT_KIND,
-            "format_version": 4 if experiment.freeze_stage1 else 1, "epoch": epoch, "updates": update,
+            "kind": "ilume_stage2_home_checkpoint_v5" if config.is_v5 else "ilume_stage2_home_checkpoint_v4" if experiment.freeze_stage1 else STAGE2_HOME_CHECKPOINT_KIND,
+            "format_version": 5 if config.is_v5 else 4 if experiment.freeze_stage1 else 1, "epoch": epoch, "updates": update,
             "training_identity": identity, "model": state,
-            "model_hash": _model_hash(state),
+            **({"owner_manifest": full_owner_manifest(model)} if config.is_v5 else {}),
+            "model_hash": _model_hash(state, v5=config.is_v5),
             "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(),
             "rng": capture_rng_state(), "history_tail": row,
         }
@@ -553,6 +567,9 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
             "checkpoint_seconds": time.perf_counter() - checkpoint_started,
             "epoch_seconds": time.perf_counter() - epoch_started,
             "train_peak_allocated_bytes": peak_memory, "tasks": task_timing,
+            "parameter_count": sum(p.numel() for p in model.parameters()),
+            "object_encoder_parameter_count": sum(p.numel() for p in model.object_encoder.parameters()),
+            "trainable_parameter_count": sum(p.numel() for p in model.parameters() if p.requires_grad),
         }
         with (output / "performance.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(performance, sort_keys=True) + "\n")

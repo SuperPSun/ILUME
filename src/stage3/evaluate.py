@@ -191,7 +191,7 @@ def _load_model(
     if taskwise_refined and three_phase_final:
         raise ValueError("Stage 3 checkpoint cannot have two final selectors")
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    rdkit = prepared["metadata"].get("kind") not in {STAGE3_ARTIFACT_KIND, STAGE3_V4_ARTIFACT_KIND}
+    rdkit = prepared["metadata"].get("kind") not in {STAGE3_ARTIFACT_KIND, STAGE3_V4_ARTIFACT_KIND, "ilume_stage3_object_sparse_data_v5"}
     if three_phase_final:
         from .three_phase import (
             THREE_PHASE_FINAL_FORMAT_VERSION,
@@ -201,6 +201,7 @@ def _load_model(
         )
 
         expected_kind = (
+            "ilume_stage3_object_three_phase_final_v5" if config.is_v5 else
             "ilume_stage3_dual_view_three_phase_final_v4"
             if config.initialization.representation_contract == "dual_view_v4"
             else
@@ -211,7 +212,7 @@ def _load_model(
             else THREE_PHASE_KNOWLEDGE_FINAL_KIND if config.transfer_knowledge is not None
             else THREE_PHASE_RDKIT_FINAL_KIND if rdkit else THREE_PHASE_FINAL_KIND
         )
-        expected_format = 4 if config.initialization.representation_contract == "dual_view_v4" else THREE_PHASE_FINAL_FORMAT_VERSION
+        expected_format = 5 if config.is_v5 else 4 if config.initialization.representation_contract == "dual_view_v4" else THREE_PHASE_FINAL_FORMAT_VERSION
     else:
         expected_format = 1 if taskwise_refined else STAGE3_CHECKPOINT_VERSION
         expected_kind = (
@@ -227,11 +228,11 @@ def _load_model(
     simulation_source = None
     if config.initialization.simulation_artifacts_dir is not None:
         from .home import load_source
-        from .simulation import SIMULATION_TASKS, resolve_simulation_specs
+        from .simulation import simulation_tasks, resolve_simulation_specs
 
         simulation_source = load_source(config)
         expected_registry.update(resolve_simulation_specs(
-            simulation_source["_loaded_model"].registry, prepared["registry"], config.training.simulation,
+            simulation_source["_loaded_model"].registry, prepared["registry"], config.training.simulation, simulation_tasks(config),
         ))
     expected = {
         "kind": expected_kind,
@@ -255,7 +256,7 @@ def _load_model(
         raise ValueError("Stage 3 checkpoint lacks its resolved training plan")
     if config.training.simulation is not None and (
         plan.get("simulation_training", {}).get("recipe") != asdict(config.training.simulation)
-        or plan.get("simulation_training", {}).get("tasks") != list(SIMULATION_TASKS)
+        or plan.get("simulation_training", {}).get("tasks") != list(simulation_tasks(config))
     ):
         raise ValueError("Stage 3 simulation training recipe mismatch")
     training_identity = checkpoint.get("training_identity")
@@ -268,9 +269,9 @@ def _load_model(
     )
     if three_phase_final:
         if (
-            plan.get("format_version") != (11 if config.initialization.representation_contract == "dual_view_v4" else 10 if config.initialization.simulation_artifacts_dir is not None else 9 if config.initialization.home_mode is not None else 7 if config.training.object_encoder_phase1 is not None else 5 if config.transfer_knowledge is not None else 4)
+            plan.get("format_version") != (12 if config.is_v5 else 11 if config.initialization.representation_contract == "dual_view_v4" else 10 if config.initialization.simulation_artifacts_dir is not None else 9 if config.initialization.home_mode is not None else 7 if config.training.object_encoder_phase1 is not None else 5 if config.transfer_knowledge is not None else 4)
             or plan.get("math", {}).get("gradient_aggregation") != "weighted_owner_raw_v1"
-            or training_identity.get("payload", {}).get("contract_version") != (15 if config.initialization.representation_contract == "dual_view_v4" else 14 if config.initialization.simulation_artifacts_dir is not None else 13 if config.initialization.home_mode is not None else 9 if config.training.object_encoder_phase1 is not None else 7 if config.transfer_knowledge is not None else 6)
+            or training_identity.get("payload", {}).get("contract_version") != (16 if config.is_v5 else 15 if config.initialization.representation_contract == "dual_view_v4" else 14 if config.initialization.simulation_artifacts_dir is not None else 13 if config.initialization.home_mode is not None else 9 if config.training.object_encoder_phase1 is not None else 7 if config.transfer_knowledge is not None else 6)
         ):
             raise ValueError("Stage 3 evaluation requires weighted_owner_raw_v1 artifacts")
     if plan.get("prepared_identity") != metadata_identity(
@@ -374,6 +375,7 @@ def _load_model(
     if checkpoint.get("ownership_manifest") != model.ownership_manifest():
         raise ValueError("Stage 3 checkpoint ownership mismatch")
     state_namespace = (
+        "stage3.object-model-state.v5" if config.is_v5 and three_phase_final else
         "stage3.dual-view-model-state.v4"
         if config.initialization.representation_contract == "dual_view_v4" and three_phase_final
         else
@@ -601,7 +603,7 @@ def _default_reporting_study_id(
         if metadata.get("provenance", {}).get("representation")
         == "rdkit_2d_stage2"
         else "rdkit-2d-home-stage3-"
-        if metadata.get("kind") not in {STAGE3_ARTIFACT_KIND, STAGE3_V4_ARTIFACT_KIND}
+        if metadata.get("kind") not in {STAGE3_ARTIFACT_KIND, STAGE3_V4_ARTIFACT_KIND, "ilume_stage3_object_sparse_data_v5"}
         else "ilume-stage3-"
     )
     return (
@@ -639,7 +641,7 @@ def _reporting_model(
         return "ilume_no_stage1", "ILUME w/o Stage1"
     if metadata.get("provenance", {}).get("representation") == "rdkit_2d_stage2":
         return "rdkit_2d_stage2_home", "RDKit 2D MLP + Stage2 + HoME"
-    if metadata.get("kind") not in {STAGE3_ARTIFACT_KIND, STAGE3_V4_ARTIFACT_KIND}:
+    if metadata.get("kind") not in {STAGE3_ARTIFACT_KIND, STAGE3_V4_ARTIFACT_KIND, "ilume_stage3_object_sparse_data_v5"}:
         return "rdkit_2d_home", "RDKit 2D + HoME"
     return "ilume", "ILUME"
 

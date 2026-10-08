@@ -29,7 +29,7 @@ def load_object_phase1_source(path: Any) -> Mapping[str, Any]:
     if (payload.get("kind") not in {
             STAGE2_ENCODER_KIND, STAGE2_HOME_ENCODER_KIND,
             STAGE2_ZERO_UPDATE_HOME_ENCODER_KIND, STAGE2_RDKIT_ENCODER_KIND,
-            "ilume_stage2_home_encoder_v4", "ilume_stage2_home_zero_update_encoder_v4",
+            "ilume_stage2_home_encoder_v4", "ilume_stage2_home_zero_update_encoder_v4", "ilume_stage2_home_encoder_v5",
         }
         or not isinstance(payload.get("provenance"), Mapping)
         or not isinstance(payload.get("state_hashes"), Mapping)):
@@ -43,7 +43,7 @@ def validate_encoder_source(config: Stage3Config) -> Mapping[str, Any]:
     assert path is not None and recipe is not None
     payload = load_object_phase1_source(path)
     v4 = config.initialization.representation_contract == "dual_view_v4"
-    home_kind = "ilume_stage2_home_encoder_v4" if v4 else STAGE2_HOME_ENCODER_KIND
+    home_kind = "ilume_stage2_home_encoder_v5" if config.is_v5 else "ilume_stage2_home_encoder_v4" if v4 else STAGE2_HOME_ENCODER_KIND
     zero_kind = "ilume_stage2_home_zero_update_encoder_v4" if v4 else STAGE2_ZERO_UPDATE_HOME_ENCODER_KIND
     if config.initialization.home_mode == "trained" and payload["kind"] != home_kind:
         raise ValueError("Formal Stage 3 requires a Stage 2 HoME encoder")
@@ -182,6 +182,7 @@ def build_object_phase1_model(
             for task, spec in config.tasks.items() if spec.enabled
         },
         object_encoder=source.object_encoder,
+        initialization_seed=effective_training_seed(config) + fold if config.is_v5 else None,
     ).to(device)
     model.set_trainable_owners(set(model.parameter_ownership().values()))
     return model, ObjectPhase1Representations(model, prepared["slots"])

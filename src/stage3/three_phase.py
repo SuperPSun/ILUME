@@ -34,6 +34,8 @@ THREE_PHASE_KNOWLEDGE_FINAL_KIND = "ilume_stage3_transfer_knowledge_three_phase_
 
 
 def _scope_kind(plan: Mapping[str, Any], suffix: str) -> str:
+    if plan.get("representation_contract") == "dual_view_object_v5":
+        return "ilume_stage3_object_three_phase_v5_" + suffix
     if plan.get("representation_contract") == "dual_view_v4":
         prefix = "ilume_stage3_dual_view_three_phase_v4"
     elif "simulation_training" in plan:
@@ -52,11 +54,11 @@ def _scope_kind(plan: Mapping[str, Any], suffix: str) -> str:
 
 
 def _final_format(plan: Mapping[str, Any]) -> int:
-    return 4 if plan.get("representation_contract") == "dual_view_v4" else THREE_PHASE_FINAL_FORMAT_VERSION
+    return 5 if plan.get("representation_contract") == "dual_view_object_v5" else 4 if plan.get("representation_contract") == "dual_view_v4" else THREE_PHASE_FINAL_FORMAT_VERSION
 
 
 def _checkpoint_format(plan: Mapping[str, Any]) -> int:
-    return 4 if plan.get("representation_contract") == "dual_view_v4" else THREE_PHASE_CHECKPOINT_VERSION
+    return 5 if plan.get("representation_contract") == "dual_view_object_v5" else 4 if plan.get("representation_contract") == "dual_view_v4" else THREE_PHASE_CHECKPOINT_VERSION
 
 
 def _append_jsonl(path: Path, payload: Mapping[str, Any]) -> None:
@@ -120,8 +122,9 @@ def _model_state(model: nn.Module) -> dict[str, torch.Tensor]:
     return {name: value.detach().cpu().clone() for name, value in model.state_dict().items()}
 
 
-def _model_hash(state: Mapping[str, torch.Tensor], knowledge: bool = False, object_phase1: bool = False) -> str:
+def _model_hash(state: Mapping[str, torch.Tensor], knowledge: bool = False, object_phase1: bool = False, representation_contract: str | None = None) -> str:
     namespace = (
+        "stage3.object-model-state.v5" if representation_contract == "dual_view_object_v5" else
         "stage3.dual-view-model-state.v4" if any(name.startswith("object_encoder.input_projection.") for name in state) else
         "stage3.object-phase1-model-state.v1" if object_phase1 else
         "stage3.transfer-knowledge-model-state.v1" if knowledge else
@@ -142,8 +145,9 @@ def _owner_state(
     }
 
 
-def _owner_hash(state: Mapping[str, torch.Tensor], knowledge: bool = False, object_phase1: bool = False) -> str:
+def _owner_hash(state: Mapping[str, torch.Tensor], knowledge: bool = False, object_phase1: bool = False, representation_contract: str | None = None) -> str:
     namespace = (
+        "stage3.object-owner-state.v5" if representation_contract == "dual_view_object_v5" else
         "stage3.object-phase1-owner-state.v1" if object_phase1 else
         "stage3.transfer-knowledge-owner-state.v1" if knowledge else
         "stage3.three-phase-owner-state"
@@ -166,6 +170,7 @@ def _per_owner_hashes(
             {name: value for name, value in state.items() if names[name] == owner},
             model.transfer_knowledge is not None,
             getattr(model, "object_phase1", False),
+            getattr(model, "representation_contract", None),
         )
         for owner in owners
     }
@@ -222,7 +227,7 @@ def _stitch_owner_deltas(
         labels = {owner.label for owner in owners}
         if seen & labels:
             raise RuntimeError(f"Stage 3 stitched owners overlap at scope: {scope}")
-        if _owner_hash(state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False)) != state_hash:
+        if _owner_hash(state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False), getattr(model, "representation_contract", None)) != state_hash:
             raise ValueError(f"Stage 3 owner delta hash mismatch: {scope}")
         seen.update(labels)
         _load_owner_state(model, state, owners)
@@ -236,6 +241,8 @@ def _representation_fields(plan: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _final_kind(plan: Mapping[str, Any]) -> str:
+    if plan.get("representation_contract") == "dual_view_object_v5":
+        return "ilume_stage3_object_three_phase_final_v5"
     if plan.get("representation_contract") == "dual_view_v4":
         return "ilume_stage3_dual_view_three_phase_final_v4"
     if "simulation_training" in plan:
@@ -435,7 +442,7 @@ def _phase_checkpoint(
         "completed_epoch": epoch,
         "updates": updates,
         "model": state,
-        "model_state_hash": _model_hash(state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False)),
+        "model_state_hash": _model_hash(state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False), getattr(model, "representation_contract", None)),
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict(),
         "owner_updates": dict(scheduler.updates),
@@ -488,7 +495,7 @@ def _delta_checkpoint(
         "anchor_model_state_hash": anchor_hash,
         "owners": [owner.label for owner in sorted(owners)],
         "owner_state": state,
-        "owner_state_hash": _owner_hash(state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False)),
+        "owner_state_hash": _owner_hash(state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False), getattr(model, "representation_contract", None)),
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict(),
         "owner_updates": dict(scheduler.updates),
@@ -712,7 +719,7 @@ def _run_phase1(
     from .train import validate_tasks
 
     root.mkdir(parents=True, exist_ok=True)
-    anchor_hash = _model_hash(anchor_state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
+    anchor_hash = _model_hash(anchor_state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False), getattr(model, "representation_contract", None))
     model.load_state_dict(anchor_state, strict=True)
     owners = {
         owner.label: owner
@@ -747,7 +754,7 @@ def _run_phase1(
             or checkpoint.get("completed_epoch") != completed_epoch
             or checkpoint.get("updates") != expected_updates
             or checkpoint.get("ownership_manifest") != model.ownership_manifest()
-            or checkpoint.get("model_state_hash") != _model_hash(checkpoint["model"], model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
+            or checkpoint.get("model_state_hash") != _model_hash(checkpoint["model"], model.transfer_knowledge is not None, getattr(model, "object_phase1", False), getattr(model, "representation_contract", None))
             or _history_last(root / "metrics.jsonl").get("updates")
             != expected_updates
         ):
@@ -875,7 +882,7 @@ def _run_phase1(
     if validation is None:
         raise RuntimeError(f"Stage 3 phase has no validation: {phase}")
     state = _model_state(model)
-    return state, validation, _model_hash(state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
+    return state, validation, _model_hash(state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False), getattr(model, "representation_contract", None))
 
 
 def _run_delta_branch(
@@ -945,7 +952,7 @@ def _run_delta_branch(
             or checkpoint.get("owners") != [owner.label for owner in sorted(owners)]
             or checkpoint.get("ownership_manifest") != model.ownership_manifest()
             or checkpoint.get("owner_state_hash")
-            != _owner_hash(checkpoint["owner_state"], model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
+            != _owner_hash(checkpoint["owner_state"], model.transfer_knowledge is not None, getattr(model, "object_phase1", False), getattr(model, "representation_contract", None))
             or _history_last(root / "metrics.jsonl").get("updates")
             != expected_updates
         ):
@@ -1085,7 +1092,7 @@ def _run_delta_branch(
         raise RuntimeError(f"Stage 3 branch has no validation: {phase}/{scope}")
     _require_anchor_outside_owners(model, anchor_state, owners)
     state = _owner_state(model, owners)
-    return state, validation, _owner_hash(state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
+    return state, validation, _owner_hash(state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False), getattr(model, "representation_contract", None))
 
 
 def _load_or_publish_stitched(
@@ -1121,13 +1128,13 @@ def _load_or_publish_stitched(
         artifact = torch.load(artifact_path, map_location="cpu", weights_only=False)
         manifest = json.loads(manifest_path.read_text())
         expected_identity = build_stage3_training_identity(plan)
-        expected_stitched_hash = _model_hash(_model_state(model), model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
+        expected_stitched_hash = _model_hash(_model_state(model), model.transfer_knowledge is not None, getattr(model, "object_phase1", False), getattr(model, "representation_contract", None))
         if (
             artifact.get("kind") != _scope_kind(plan, "2_stitched")
             or artifact.get("format_version") != _final_format(plan)
             or artifact.get("fold") != fold
             or manifest.get("artifact_sha256") != sha256_file(artifact_path)
-            or artifact.get("model_state_hash") != _model_hash(artifact["model"], model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
+            or artifact.get("model_state_hash") != _model_hash(artifact["model"], model.transfer_knowledge is not None, getattr(model, "object_phase1", False), getattr(model, "representation_contract", None))
             or artifact.get("model_state_hash") != expected_stitched_hash
             or artifact.get("anchor_model_state_hash") != anchor_hash
             or artifact.get("ownership_manifest") != model.ownership_manifest()
@@ -1166,7 +1173,7 @@ def _load_or_publish_stitched(
             "per_owner_state_hashes": _per_owner_hashes(model, state, owners),
         }
     state = _model_state(model)
-    state_hash = _model_hash(state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
+    state_hash = _model_hash(state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False), getattr(model, "representation_contract", None))
     atomic_torch_save(
         artifact_path,
         {
@@ -1312,7 +1319,7 @@ def run_three_phase_training(
             model.load_state_dict(phase2_state, strict=True)
             _set_trainable(model, ())
             state = _owner_state(model, (owner,))
-            state_hash = _owner_hash(state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
+            state_hash = _owner_hash(state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False), getattr(model, "representation_contract", None))
             validation = (
                 simulation_data.validate_tasks(model, (task,), device)
                 if task in simulation_tasks else validate_tasks(
@@ -1355,7 +1362,7 @@ def run_three_phase_training(
         if simulation_data is not None else None
     )
     final_state = _model_state(model)
-    final_hash = _model_hash(final_state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
+    final_hash = _model_hash(final_state, model.transfer_knowledge is not None, getattr(model, "object_phase1", False), getattr(model, "representation_contract", None))
     artifact_path = output / "three_phase_final.pt"
     manifest_path = output / "three_phase_final.json"
     if artifact_path.exists() or manifest_path.exists():
@@ -1369,7 +1376,7 @@ def run_three_phase_training(
             or artifact.get("format_version") != _final_format(plan)
             or artifact.get("fold") != fold
             or manifest.get("artifact_sha256") != sha256_file(artifact_path)
-            or artifact.get("model_state_hash") != _model_hash(artifact["model"], model.transfer_knowledge is not None, getattr(model, "object_phase1", False))
+            or artifact.get("model_state_hash") != _model_hash(artifact["model"], model.transfer_knowledge is not None, getattr(model, "object_phase1", False), getattr(model, "representation_contract", None))
             or artifact.get("model_state_hash") != final_hash
             or artifact.get("ownership_manifest") != model.ownership_manifest()
             or artifact.get("normalization_hash") != plan["normalization_hash"]
