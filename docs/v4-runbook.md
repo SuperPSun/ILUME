@@ -1,21 +1,21 @@
-# v4 execution
+# v4 运行手册
 
 本手册是现役 v4 Stage1及实体HoME Stage2/3运行入口。Stage1合同不变；Stage2/3见 [ADR-0095](adr/0095-v4-entity-home-without-object-encoder.md)，旧Object/v5运行需历史Git版本。
 
 
-Run from repository root, using fresh `outputs/v4/` paths. Do not overwrite historical v3 outputs. Science contract: [ADR-0089](adr/0089-v4-frozen-dual-view-stage1.md). CUDA examples use four devices.
+从仓库根目录执行，使用新的 `outputs/v4/` 路径，不覆盖历史v3输出。Stage1科研合同见 [ADR-0089](adr/0089-v4-frozen-dual-view-stage1.md)。CUDA示例使用四张设备。
 
-Current Base uses twelve SMILES Transformer layers and eight independent residual graph blocks: encoder-only approximately60.73M parameters for a2,048-token vocabulary ([ADR-0090](adr/0090-stage1-v4-residual-encoder-capacity.md)). Compared with the earlier approximately30M v4 Base, **existing Stage1 prepared corpus, statistics and completed Uni-Mol cache are reusable**; skip their generation steps below if already complete. Train the new Stage1 from scratch, then regenerate Stage2 representations/train Stage2 and prepare/train/evaluate Stage3. Do not resume the old Stage1 checkpoint into the new architecture. Output defaults have not changed: if a training/downstream directory is occupied, select fresh paths and update downstream references consistently, or explicitly arrange archival before running; these commands do not authorize replacing historical results.
+当前Base采用十二层SMILES Transformer和八个独立残差图块：词表2,048个token时仅编码器约60.73M参数（[ADR-0090](adr/0090-stage1-v4-residual-encoder-capacity.md)）。相较此前约30M的v4 Base，**已有Stage1 预处理语料、统计和完成的Uni-Mol缓存可复用**；已完成时跳过下方生成步骤。从头训练新Stage1，然后重新生成Stage2表示并训练Stage2，再数据准备/训练/评估 Stage3。不要将旧Stage1检查点恢复到新架构。默认输出路径未变：若训练/下游目录已占用，选择新路径并同步更新下游引用，或在运行前明确安排归档；这些命令不授权替换历史结果。
 
-## Stage1 prepare and offline teacher
+## Stage1 数据准备与离线 teacher
 
 ```bash
 python scripts/stage1/prepare.py --config configs/v4/stage1/base.yaml --output outputs/v4/stage1/base/prepare
 ```
 
-Teacher generation must run in a **separate environment**. The commands below target Linux x86-64 with a CUDA 12.8-compatible driver and use Python 3.11 to keep the teacher package's older pandas/NumPy constraints isolated from the normal training environment. For another CUDA runtime, install the matching PyTorch wheel from the [official PyTorch instructions](https://pytorch.org/get-started/previous-versions/) instead of the `cu128` wheel. Uni-Mol's installation notes also require NumPy below 2 for its RDKit stack ([official installation guide](https://github.com/deepmodeling/Uni-Mol/blob/main/docs/source/installation.md)).
+Teacher生成必须在**独立环境**执行。下方命令适用于Linux x86-64及兼容CUDA 12.8的驱动，使用Python 3.11，将teacher包的旧pandas/NumPy约束与正常训练环境隔离。其他CUDA运行时应按 [PyTorch官方说明](https://pytorch.org/get-started/previous-versions/) 安装匹配wheel，替代 `cu128`。Uni-Mol安装说明也要求其RDKit环境使用NumPy低于2（[官方安装指南](https://github.com/deepmodeling/Uni-Mol/blob/main/docs/source/installation.md)）。
 
-Create the environment and install the project plus the pinned offline teacher package. Installing `unimol-tools` with `--no-deps` prevents its resolver from replacing the selected PyTorch, NumPy or RDKit versions; the required runtime dependencies are installed explicitly:
+创建环境，安装项目及锁定版本的离线teacher包。以 `--no-deps` 安装 `unimol-tools`，防止依赖解析器替换已选PyTorch、NumPy或RDKit版本；所需运行依赖显式安装：
 
 ```bash
 conda create -n ilume-unimol2 python=3.11 pip -y
@@ -28,7 +28,7 @@ python -m pip install scipy joblib addict scikit-learn numba
 python -m pip install --no-deps unimol-tools==0.1.3.post1
 ```
 
-Download the official [Uni-Mol2 84M checkpoint](https://huggingface.co/dptech/Uni-Mol2/blob/main/modelzoo/84M/checkpoint.pt) from the repository root. The published file is about 337 MB; its SHA-256 is checked below. The project deliberately disables automatic model downloads, so the file must exist at the exact configured path:
+从仓库根目录下载官方 [Uni-Mol2 84M检查点](https://huggingface.co/dptech/Uni-Mol2/blob/main/modelzoo/84M/checkpoint.pt)。发布文件约337 MB，下方校验SHA-256。项目明确关闭自动模型下载，因此文件必须位于配置指定路径：
 
 ```bash
 mkdir -p assets/unimol2/modelzoo/84M
@@ -38,7 +38,7 @@ curl --fail --location --retry 3 --continue-at - \
 echo '5b9241630f1cf0b173fb06d1e76096e5daf5f91c3e51b066ba69524dafe60e35  assets/unimol2/modelzoo/84M/checkpoint.pt' | sha256sum --check -
 ```
 
-If the checksum fails, do not run cache generation; obtain a verified copy before continuing. Then verify the environment and local file:
+校验和失败时不要生成缓存；获得已验证副本后再继续。随后检查环境及本地文件：
 
 ```bash
 python - <<'PY'
@@ -66,23 +66,23 @@ print(f"unimol_tools={importlib.metadata.version('unimol_tools')}; checkpoint={c
 PY
 ```
 
-The validator checks the prepared corpus's `feature_generation_contract`, including RDKit runtime and tokenizer versions. Match `rdBase.rdkitVersion`, not only `pip show rdkit`: package metadata and the imported runtime can differ. If the runtime differs from the prepared contract, fix the isolated environment before continuing; do not edit artifact metadata or rebuild the prepared corpus merely to bypass the check. The installation example targets runtime `2025.09.5`; if your corpus records another version, install that exact runtime instead.
+验证器检查预处理语料的 `feature_generation_contract`，含RDKit运行时及分词器版本。须匹配 `rdBase.rdkitVersion`，不能只看 `pip show rdkit`：包元数据与实际导入运行时可能不同。若与准备产物合同不同，先修复独立环境再继续；不要修改产物元数据或仅为绕过检查重建语料。安装示例对应运行时 `2025.09.5`；若语料记录其他版本，则安装其精确版本。
 
-First generate an independent small audit and inspect `manifest.json` (attempted/valid/failed, throughput and embedding bytes); this audit is not a training cache:
+先生成独立小规模审计，检查 `manifest.json`（attempted/验证集/failed、吞吐及embedding字节数）；该审计不是训练缓存：
 
 ```bash
 python scripts/stage1/teacher.py --config configs/v4/stage1/base.yaml --device cuda:0 --batch-size 32 --limit 100 --output outputs/v4/stage1/base/teacher_audit
 ```
 
-After approving success rate, throughput and storage, generate the full cache. Rerunning the identical command resumes immutable shards, not arbitrary partial rows. OOM is a failed run, not a masked molecule. Batch size/device and `--workers` are execution settings; canonical structure order and per-molecule conformer seed are fixed.
+确认成功率、吞吐和存储后生成完整缓存。重复相同命令恢复不可变分片，不恢复任意部分行。OOM视为运行失败，不视为可mask分子。batch大小/设备和 `--workers` 是执行设置；canonical结构顺序及每分子构象种子固定。
 
 ```bash
 python scripts/stage1/teacher.py --config configs/v4/stage1/base.yaml --device cuda:0 --batch-size 32
 ```
 
-If GPU utilization is low, use `--workers` to prepare conformers and Uni-Mol features in parallel CPU processes. A bounded ordered queue prefetches inputs while the parent performs GPU inference; no worker loads the teacher model or uses CUDA. Features are computed once rather than repeated before inference. Default `--workers 1` retains serial execution. Worker processes consume additional RAM; do not exceed the job's CPU allocation.
+GPU利用率低时可通过 `--workers` 在并行CPU进程准备构象及Uni-Mol特征。有界有序队列预取输入，父进程负责GPU推理；worker不加载teacher模型或使用CUDA。特征只算一次，不在推理前重复计算。默认 `--workers 1` 保留串行执行。worker增加RAM占用，不得超过作业分配的CPU资源。
 
-For a Slurm job, start with `#SBATCH --cpus-per-task=8`, one GPU, and the following commands inside the allocated job. Keep the existing isolated teacher environment. First inspect this **new** parallel audit before running the full command:
+Slurm作业可从 `#SBATCH --cpus-per-task=8`、一张GPU开始，在已分配作业内执行下方命令，保持已有独立teacher环境。先检查这次**新的**并行审计，再运行完整生成命令：
 
 ```bash
 export OMP_NUM_THREADS=1
@@ -91,9 +91,9 @@ python -u scripts/stage1/teacher.py --config configs/v4/stage1/base.yaml --devic
 python -u scripts/stage1/teacher.py --config configs/v4/stage1/base.yaml --device cuda:0 --batch-size 64 --workers 8
 ```
 
-Stop the old job before restarting against the same cache root; concurrent writers are not supported. Completed shards are reused even if worker count changes. Redirected/Slurm output emits flushed `teacher_progress` JSON at startup, each committed shard and approximately every 30 seconds between inference batches. `processed/total` includes in-memory work; `committed` counts safely published molecules. A single slow conformer/batch can delay the next log. Monitor with `tail -f slurm-<job-id>.out`.
+重启同一缓存根前先停止旧作业；不支持并发写入。worker数变化仍可复用已完成分片。重定向/Slurm输出在启动、每个分片提交及推理batch之间约每30秒刷新 `teacher_progress` JSON。`processed/total` 包含内存中的工作；`committed` 统计安全发布的分子。单个慢构象/batch可能延迟下一条日志。可用 `tail -f slurm-<job-id>.out` 监控。
 
-After the full cache completes, return to the `ilume` training environment. Uni-Mol is required only for cache generation; Stage1 training reads the cache. Stage1 refuses partial/unbound teacher caches; losses weight roles2/2/1 while the loader remains the original natural shuffle.
+完整缓存完成后回到 `ilume` 训练环境。Uni-Mol仅用于缓存生成；Stage1训练读取缓存。Stage1拒绝部分或未绑定teacher缓存；损失按角色2/2/1加权，加载器仍为原始自然打乱。
 
 ```bash
 conda deactivate
@@ -101,75 +101,79 @@ conda activate ilume
 python scripts/stage1/train.py --config configs/v4/stage1/base.yaml --output outputs/v4/stage1/base/train
 ```
 
-Active Base uses global batch512 and8 DataLoader workers per rank. Four-rank DDP therefore uses batch128 per GPU and32 training-loader workers in total. LR remains1e-4; the earlier batch128 recipe is historical and cannot resume into this changed training identity. Corpus and teacher cache remain reusable. Worker count is execution-only; it does not itself change the scientific training identity.
+现役Base全局batch512，每rank使用8个DataLoader worker。四rank DDP因此每GPU为batch128，训练加载器共32个worker。LR保持1e-4；此前batch128配方属于历史，不能恢复到改变后的训练身份。语料及teacher缓存仍可复用。worker数量仅属执行参数，本身不改变科研训练身份。
 
-### Stage1 progress and input stalls
+### Stage1 进度与输入停顿
 
-Ordinary `python scripts/stage1/train.py ...` runs one training process; it does not automatically use all GPUs. DDP requires `torchrun`, for example inside an allocation that actually provides four GPUs:
+普通 `python scripts/stage1/train.py ...` 只启动一个训练进程，不自动使用全部GPU。DDP需用 `torchrun`，例如在实际分配四张GPU的作业内执行：
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --standalone --nproc_per_node=4 scripts/stage1/train.py --config configs/v4/stage1/base.yaml --output outputs/v4/stage1/base/train
 ```
 
-Use an unused output directory. Train, quick-validation and full-validation loaders each use the configured worker count; CUDA loaders keep workers persistent after first use and prefetch two batches per worker. Thus worker resources can grow when validation starts. Choose workers against the job's CPU allocation and storage throughput, not GPU count alone; increasing workers is not guaranteed to improve throughput.
+使用未占用输出目录。训练、快速验证和完整验证加载器各用配置的worker数；CUDA 加载器首次使用后保留worker，每worker预取两个batch，因此开始验证时worker资源可能增加。应按作业CPU配额及存储吞吐选择worker，而非仅按GPU数量；增加worker不保证吞吐提升。
 
-Expected pauses occur every1,000 updates for rank0 gradient audit (other ranks wait), every5,000 updates for audit plus quick validation, and at epoch boundaries for full validation/checkpoint exports. Audit logs are written after the audit completes, not at its start. A pause before these boundaries is not explained by those periodic operations.
+预期停顿发生在每1,000次更新的rank0梯度审计（其他rank等待）、每5,000次更新的审计加快速验证，以及轮边界的完整验证/检查点导出。审计日志在审计完成后写入，不在开始时写入。这些周期操作不能解释发生在对应边界前的停顿。
 
-If GPU utilization drops while loader workers enter `D` state at `wait_on_page_bit_common`, inspect storage/page reads. Corpus loading verifies and deserializes shards, and associates their samples with a read-only SQLite Uni-Mol index and mmap teacher shards. Many workers reading these files on NFS can stall the GPU despite ample RAM. Prefer a verified byte-identical local-SSD copy of corpus/teacher artifacts, and benchmark worker counts in a separately controlled attempt; do not regenerate labels, disable hash validation, alter sampling, or overwrite an active run. These are operational recommendations, not an implemented local-storage cache or a guarantee that8 workers resolves NFS stalls. Inspect `nvidia-smi`, `vmstat 1`, worker wait states and `metrics.jsonl` timestamps before attributing a stall to a specific cause.
+若GPU利用率下降且加载器 worker在 `wait_on_page_bit_common` 进入 `D` 状态，应检查存储/页面读取。语料加载校验并反序列化分片，将样本关联到只读SQLite Uni-Mol索引及mmap teacher 分片。多个worker在NFS读取这些文件，即使RAM充足也可能使GPU等待。优先使用已验证字节一致的本地SSD语料/teacher副本，并在独立受控尝试比较worker数量；不要重生成标签、关闭hash校验、改变采样或覆盖运行中作业。这些是运行建议，不表示已实现本地缓存，也不保证8个worker能解决NFS停顿。归因前检查 `nvidia-smi`、`vmstat 1`、worker等待状态及 `metrics.jsonl` 时间戳。
 
-Output includes resume checkpoints with auxiliary heads and encoder-only `stage1_encoder.pt`. Deployment/Stage2 do not load teacher or auxiliary heads.
+输出包含保留辅助头的恢复检查点及仅编码器 `stage1_encoder.pt`。部署/Stage2不加载teacher或辅助头。
 
-### Stage1 loss and gradient audit
+<a id="stage1-loss-and-gradient-audit"></a>
 
-Current Base uses SMILES/atom/bond reconstruction0.20/1/1, alignment0.10, RDKit0.25, Uni-Mol0.50, electronic0.25 and independent partial-charge0.25. This user-selected recipe supersedes the earlier coefficient values in [ADR-0091](adr/0091-stage1-v4-loss-weights-gradient-audit.md) and [ADR-0092](adr/0092-stage1-atom-charge-and-frozen-regression-heads.md); their loss definitions and audit isolation remain unchanged. These loss changes require a new Stage1 run, not resume from earlier coefficients; existing corpus/statistics/teacher cache remain reusable. Downstream Stage2/3 must use the newly trained encoder and fresh outputs.
+### Stage1 损失与梯度审计
 
-Training automatically appends `gradient_audit.jsonl` every1,000 completed optimizer updates. Rank0 uses a fixed32-molecule validation probe and evaluation masks with dropout off; other ranks wait. It reports the original seven raw encoder norms plus `partial_charge_grad_norm` when enabled, `weighted_grad_norms` (absolute loss coefficient times norm), effective target coverage, probe IDs/hash, step and attempt. The existing metrics and checkpoint selection remain unchanged.
+当前Base采用SMILES/原子/键重建0.20/1/1、alignment0.10、RDKit0.25、Uni-Mol0.50、electronic0.25及独立partial-charge0.25。这是用户选定配方，替代 [ADR-0091](adr/0091-stage1-v4-loss-weights-gradient-audit.md) 和 [ADR-0092](adr/0092-stage1-atom-charge-and-frozen-regression-heads.md) 的早期系数；损失定义与审计隔离不变。这些损失变化要求新的Stage1运行，不从旧系数恢复；已有语料/统计/teacher缓存仍可复用。下游Stage2/3须使用新训练编码器和新输出。
 
-Set `training.gradient_audit_interval_steps: 0` or pass `--gradient-audit-interval-steps 0` to disable; a positive CLI value overrides YAML, and an omitted value follows YAML. `gradient_audit_batch_size` controls probe size (default32). These diagnostics settings do not change scientific identity. Missing-label objectives are `null` with `no_valid_targets`; absent electronic/charge labels in this small natural probe are not evidence of weak gradients. Norms are from separate objectives, not the vector sum: do not automatically adjust coefficients based solely on their magnitude. Audits use one additional forward and up to eight gradient calculations; OOM is an explicit failure, not an automatic probe resize. Monitor with:
+训练每完成1,000次优化器更新自动追加 `gradient_audit.jsonl`。rank0使用固定32分子验证探针及评估mask，关闭dropout；其他rank等待。报告原有七项原始编码器范数，启用时增加 `partial_charge_grad_norm`，以及 `weighted_grad_norms`（损失系数绝对值乘范数）、有效目标覆盖、探针ID/hash、步及尝试。既有指标和检查点选择不变。
+
+设置 `training.gradient_audit_interval_steps: 0` 或传入 `--gradient-audit-interval-steps 0` 可关闭；正CLI值覆盖YAML，省略则按YAML。`gradient_audit_batch_size` 控制探针大小（默认32）。诊断设置不改变科研身份。缺失标签目标记录 `null` 和 `no_valid_targets`；小自然探针没有电子/电荷标签不说明梯度弱。范数来自各自目标，不是向量和：不要仅凭大小自动调整系数。审计增加一次前向及最多八次梯度计算；OOM明确失败，不自动缩小探针。监控命令：
 
 ```bash
 tail -f outputs/v4/stage1/base/train/gradient_audit.jsonl
 ```
 
-Epoch-boundary resume appends attempt-tagged observations without deleting failed-attempt rows. Audit never uses validation derivatives to update parameters; test is not read.
+轮边界恢复追加带尝试标记的观察，不删除失败尝试行。审计绝不将验证导数用于参数更新，也不读取测试集。
 
-### Partial-charge sidecar on an existing corpus
+<a id="partial-charge-sidecar-on-an-existing-corpus"></a>
 
-The parser accepts verified `@<TRIPOS>` header aliases: `MOLEMOLE/MOLMOLLE/MOMOLULE/MMOLCULE/MOLECMOL→MOLECULE`, `MOLM/AMOL→ATOM` and `MOLD/BMOL→BOND`. The verified prefix typos `@<TRMOLS>`, `@<TRIMOL>`, `@<TMOLOS>` and `@<MOLPOS>` are also accepted as `@<TRIPOS>`. It does not guess other misspellings; do not edit the original MOL2 or manifest SHA. All other parse/integrity checks remain strict. The full section/prefix alias tables enter Stage1 charge-source identity: retain earlier runs and use a fresh sidecar output/cache path when their identity differs. SUBSTRUCTURE is not consumed by the charge parser and needs no typo correction.
+### 在已有语料上准备部分电荷 sidecar
 
-Normal Stage1 prepare also prepares the separate atom-label sidecar. If corpus and teacher cache already exist, run only the sidecar command instead; it does not change either. Active Base reads `data/stage1/properties/partial_atomic_charge/train.csv` through `auxiliary.simulation_dir`, and verifies the MOL2 resources referenced by `auxiliary.partial_charge_manifest`. Existing electronic sources are still required for formal v4 training. The following command matches the current YAML cache path; use it only when the directory is unused or contains a compatible format2 sidecar:
+解析器接受已核验的 `@<TRIPOS>` 头别名：`MOLEMOLE/MOLMOLLE/MOMOLULE/MMOLCULE/MOLECMOL→MOLECULE`、`MOLM/AMOL→ATOM` 和 `MOLD/BMOL→BOND`。已核验前缀拼写 `@<TRMOLS>`、`@<TRIMOL>`、`@<TMOLOS>` 和 `@<MOLPOS>` 也按 `@<TRIPOS>` 接受。不猜测其他拼写错误；不要修改原始MOL2或清单 SHA。其他解析/完整性检查保持严格。完整段名/前缀别名表进入Stage1电荷来源身份：身份不同时保留旧运行并使用新sidecar输出/缓存路径。电荷解析器不消费SUBSTRUCTURE，无需纠正其拼写。
 
-Known display limitation: the mapping progress bar currently uses the full structure-manifest size, while processing only the selected train/valid CSV. It can finish below100% (for example22,530 train rows out of28,214 resources displays80%); this alone is not a failure. Confirm attempted/mapped/skipped audit counts and the completed run's summary/metadata. Correcting the progress total remains a separate code task.
+普通Stage1 prepare也准备独立原子标签sidecar。语料及teacher缓存已存在时只执行sidecar命令，不改变二者。现役Base通过 `auxiliary.simulation_dir` 读取 `data/stage1/properties/partial_atomic_charge/train.csv`，并验证 `auxiliary.partial_charge_manifest` 引用的MOL2资源。正式v4训练仍需现有电子来源。下方命令匹配当前YAML缓存路径；仅在目录未使用或已有兼容format2 sidecar时执行：
+
+已知显示限制：映射进度条当前使用完整结构清单大小作分母，而仅处理选定训练集/验证集 CSV。因此可能低于100%结束（例如28,214资源中的22,530训练行显示80%），这本身不算失败。检查attempted/mapped/skipped审计数量及完成运行的汇总/元数据。修正进度总数属于独立代码任务。
 
 ```bash
 python scripts/stage1/prepare.py --config configs/v4/stage1/base.yaml --partial-charge-only --output outputs/v4/stage1/base/partial_charge
 ```
 
-Only exact canonical matches are labeled; charge statistics include all source observations of matched Stage1 training structures. Same-structure charge vectors remain separate observations, never averaged or selected by first/last row. Pretraining reuses one molecular forward but evaluates each observation separately. Corpus sampling, other losses and teacher cache remain unchanged; no seed propagation or test/valid label reading occurs. Corrupt/missing resources and parsing errors still fail; no-isomorphism records follow the audited skip policy below. The format2 sidecar and observation policy change charge-supervised training identity, so old sidecars/checkpoints cannot be resumed under this recipe. Full checkpoints retain `partial_charge_head`; encoder-only export does not. To opt out scientifically, set `loss.lambda_partial_charge: 0` in a separate self-contained YAML (not an execution-only switch).
+仅精确canonical匹配获得标签；电荷统计包含匹配Stage1训练结构的全部来源观察。同结构电荷向量分别保留，不平均或按首/末行选择。预训练复用一次分子前向，但独立计算各观察。语料采样、其他损失及teacher缓存不变；不沿种子传播或读取测试集/验证集标签。资源损坏/缺失及解析错误仍失败；无同构记录按下方审计跳过策略处理。format2 sidecar及观察策略改变电荷监督训练身份，因此旧sidecar/检查点不能在此配方恢复。完整检查点保留 `partial_charge_head`；仅编码器导出不包含。若科学上关闭此目标，须在独立自包含YAML设 `loss.lambda_partial_charge: 0`（不是仅执行开关）。
 
-If the default output already contains an old or failed run, retain it and prepare into a fresh directory, for example `--output outputs/v4/stage1/base/partial_charge_observations`. Before training, set Base `auxiliary.partial_charge_cache` and regression `partial_charge_cache` to that directory's `artifacts/` subdirectory. Do not relabel hashes or delete old outputs to bypass compatibility checks.
+默认输出已有旧或失败运行时保留它，准备到新目录，例如 `--output outputs/v4/stage1/base/partial_charge_observations`。训练前将Base的 `auxiliary.partial_charge_cache` 和回归的 `partial_charge_cache` 指向该目录的 `artifacts/` 子目录。不要重标hash或删除旧输出来绕过兼容检查。
 
-No-isomorphism records are skipped and recorded in `artifacts/mapping_audit.json` (`status: skipped`, `reason: no_graph_isomorphism`, split/CSV line/mol_id/SMILES/resource filename/SHA). `artifacts/metadata.json` includes `attempted_observations`, `source_observations` (successfully mapped) and `skipped_observations`. This masks only unavailable charge supervision, not corpus molecules or other losses. Missing/corrupt resources and parsing errors still stop preparation. The skip policy changes charge identity; prepare into a fresh directory rather than reusing artifacts from the previous fail-on-mapping recipe. Independent regression writes corresponding train/valid mapping audits in its output root.
+无同构记录跳过并记录于 `artifacts/mapping_audit.json`（`status: skipped`、`reason: no_graph_isomorphism`、split/CSV行号/mol_id/SMILES/资源文件名/SHA）。`artifacts/metadata.json` 含 `attempted_observations`、`source_observations`（成功映射）及 `skipped_observations`。仅mask不可用电荷监督，不影响语料分子或其他损失。资源缺失/损坏及解析错误仍停止准备。跳过策略改变电荷身份；应准备到新目录，不能复用原映射失败即报错配方的产物。独立回归在输出根写入对应训练集/验证集映射审计。
 
-### Independent frozen regression-head training
+### 独立冻结回归头训练
 
-Partial-charge head training retains each source row as a separate sample, reusing the frozen atom representation for duplicate structures; see the [sidecar contract](#partial-charge-sidecar-on-an-existing-corpus) for pretraining and compatibility. Scalar electronic conflict and train/valid overlap checks remain unchanged. Before using the command below, verify the regression YAML's `simulation_dir`: it currently specifies `data/stage2`, while migrated local electronic/charge sources are under `data/stage1/properties`. Point a self-contained run YAML at the actual authority directory; this does not authorize moving or overwriting data.
+部分电荷头训练将来源每行保留为独立样本，重复结构复用冻结原子表示；预训练及兼容性见 [sidecar合同](#partial-charge-sidecar-on-an-existing-corpus)。标量电子冲突及训练集/验证集重叠检查不变。使用下方命令前核验回归YAML的 `simulation_dir`：当前写为 `data/stage2`，本地迁移后的电子/电荷来源在 `data/stage1/properties`。将自包含运行YAML指向实际合同目录；这不授权移动或覆盖数据。
 
-Run explicitly after the final Stage1 epoch; nothing is automatically appended to pretraining. The command needs complete final `last.pt` or the final epoch checkpoint, not `stage1_encoder.pt`. Configure data/artifact paths and budgets in `configs/v4/stage1/regression_heads.yaml`. It encodes clean structures once, freezes the encoder, and independently trains all13 scalar heads plus atom charge. The current YAML explicitly uses MLPs: entity1024→512→256→1 for each electronic target, atom512→256→128→1 for partial charge, GELU and dropout0. Each is independently initialized using its existing task-local seed (656,385 / 164,353 parameters respectively), with no weight sharing. Shared schema default remains Linear, which starts from its trained row/head when predictor is omitted. Defaults:10 epochs, LR1e-4, constant LR, batch128, AdamW/WD0.01, BF16, clip1. Validation only reports original-unit MAE/RMSE; final means epoch10, never best. Test is not read. Use a new output for this MLP recipe; existing Linear outputs remain read-only, and Stage1/2/3 need not be rerun.
+在Stage1末轮后显式执行；不会自动追加预训练。命令需完整末轮 `last.pt` 或末轮轮检查点，不能用 `stage1_encoder.pt`。在 `configs/v4/stage1/regression_heads.yaml` 配置数据/产物路径和预算。一次编码完整无mask结构，冻结编码器，独立训练13标量头加原子电荷。当前YAML显式采用MLP：各电子目标entity1024→512→256→1，partial charge为atom512→256→128→1，GELU、dropout0。各头按既有任务局部种子独立初始化（分别656,385 / 164,353参数），不共享权重。共享结构定义默认仍为Linear；省略预测器时从已训练行/头初始化。默认10轮、LR1e-4、恒定LR、batch128、AdamW/WD0.01、BF16、裁剪1。验证只报告原单位MAE/RMSE；final固定epoch10，绝不取最优。不读取测试集。此MLP配方使用新输出；已有Linear输出只读，无需重跑Stage1/2/3。
 
 ```bash
 python scripts/stage1/regression.py --config configs/v4/stage1/regression_heads.yaml --checkpoint outputs/v4/stage1/base/train/last.pt --output outputs/v4/stage1/base/regression_mlp --device cuda:0
 ```
 
-Optional subset, including use of old complete v4 checkpoints without an atom head:
+可选目标子集，也可使用没有原子头的旧完整v4检查点：
 
 ```bash
 python scripts/stage1/regression.py --config configs/v4/stage1/regression_heads.yaml --checkpoint outputs/v4/stage1/base/train/last.pt --tasks HOMO_eV LUMO_eV --output outputs/v4/stage1/base/regression_mlp_homo_lumo --device cuda:0
 ```
 
-Default tasks are HOMO_eV/LUMO_eV, ESP_max/min/std/pos_frac, Dipole, Quadrupole, q_max/min/std/pos_frac, gap_eV and partial_atomic_charge. The q_* summaries are not atom-charge prediction. Train/valid canonical overlap and conflicting scalar electronic labels fail; partial-charge observations are retained separately. New task normalization fits full train only; Linear's initialized weights/bias are converted to preserve original-unit predictions. Regression output has a source-bound `representations.pt`, per-task `metrics.jsonl` and `regression_head.pt/json`, plus summary. It is not a replacement Stage1 encoder or a Stage3 reporting artifact; no Stage2/3 rerun is needed for this head-only experiment. Source checkpoint, encoder and other heads are read-only. Existing output cannot be overwritten; a failed head run restarts in a fresh directory. No teacher execution or teacher cache is needed for scalar-only post-training; atom-head initialization additionally validates its original sidecar/scaler identity.
+默认任务为HOMO_eV/LUMO_eV、ESP_max/min/std/pos_frac、Dipole、Quadrupole、q_max/min/std/pos_frac、gap_eV及partial_atomic_charge。q_*摘要不是原子电荷预测。训练集/验证集 canonical重叠或标量电子冲突报错；partial-charge观察分别保留。新任务归一化仅拟合完整训练集；Linear初始权重/偏置经转换保留原单位预测。回归输出含来源绑定 `representations.pt`、逐任务 `metrics.jsonl`、`regression_head.pt/json` 及汇总。不是Stage1替代编码器或Stage3报告产物；仅头实验无需重跑Stage2/3。来源检查点、编码器及其他头只读。不覆盖已有输出；失败头运行在新目录重启。仅标量后训练不需要teacher执行或缓存；原子头初始化另须验证原sidecar/scaler身份。
 
-Predictor configuration is YAML-only; CLI arguments above are unchanged. Copy the self-contained regression YAML to a new file and change only the desired recipe. For example:
+预测器仅通过YAML配置；上方CLI参数不变。复制自包含回归YAML到新文件，仅修改所需配方。例如：
 
 ```yaml
 predictor:
@@ -187,13 +191,13 @@ predictor_overrides:
     dropout: 0.1
 ```
 
-Overrides replace the complete shared predictor recipe; unlisted targets use the shared default. To use one MLP recipe for all targets, set `predictor.type: mlp` and its hidden dimensions/activation/dropout instead. Types are `linear/mlp/residual_mlp`; activations are `gelu/relu/silu`, default GELU, dropout0. Electronic input is learned1024, atom input atom512, and output1 is fixed. MLP uses Linear→activation→Dropout hidden layers. Each residual block uses input→width→width with two dropouts and an Identity/projected shortcut; no normalization or post-add activation. Each hidden width is positive; nonlinear lists cannot be empty. No arbitrary module imports or input/output width overrides.
+覆盖项替换完整共享预测器配方；未列出目标使用共享默认。全部目标用同一MLP时，设置 `predictor.type: mlp` 及隐藏维度/激活/dropout。类型为 `linear/mlp/residual_mlp`；激活为 `gelu/relu/silu`，默认GELU、dropout0。电子输入learned1024、原子输入atom512、输出1固定。MLP隐藏层为Linear→激活→Dropout。残差块采用输入→宽度→宽度、两次dropout及身份/投影捷径；无归一化或相加后激活。隐藏宽度须为正，非线性列表不能为空。不允许任意模块导入或覆盖输入/输出宽度。
 
-Linear retains pretrained initialization, numerical behavior and identity. Nonlinear heads are randomly initialized with stable task-local seeds, not pretrained-linear residual calibration; their initial raw predictions need not match the source. Structure enters the selected-target regression identity and requires a new output, but does not change any Stage1/2/3 identity. All predictors keep the same training/data/frozen-encoder rules, including rejection of partial-charge requests when the source lacks its atom head. Format2 stores the resolved structure, input width, parameter count, initialization, seed and hashes; `stage1.regression.load_regression_head(task_root, checkpoint_path)` reconstructs from the artifact without YAML and still accepts old format1 Linear heads. See [ADR-0093](adr/0093-stage1-configurable-frozen-predictors.md).
+Linear保留预训练初始化、数值行为及身份。非线性头按稳定任务局部种子随机初始化，不是预训练Linear的残差校准；初始原单位预测无需匹配来源。结构进入所选目标回归身份并要求新输出，但不改变Stage1/2/3身份。所有预测器保持相同训练/数据/冻结编码器规则，含来源无原子头时拒绝partial-charge请求。format2保存解析结构、输入宽度、参数量、初始化、种子及hash；`stage1.regression.load_regression_head(task_root, checkpoint_path)` 无需YAML即可从产物重建，也接受旧format1 Linear头。见 [ADR-0093](adr/0093-stage1-configurable-frozen-predictors.md)。
 
-### Copy an existing teacher checkpoint to another server
+### 将已有 teacher 检查点复制到其他服务器
 
-The checkpoint can be copied without downloading it again. From the source repository root, replace `SERVER` with your SSH alias (`h100` or `szx`) and `/path/to/ILUME` with that server's repository root. Check any existing destination file first; if its hash matches, skip the copy. If it differs, retain it for inspection and use a fresh destination rather than overwriting it.
+无需再次下载，可直接复制检查点。从来源仓库根执行，将 `SERVER` 替换为SSH别名（`h100` 或 `szx`），将 `/path/to/ILUME` 替换为该服务器仓库根。先检查目标已有文件；hash一致则跳过复制，不一致则保留检查并使用新目标，不覆盖。
 
 ```bash
 sha256sum assets/unimol2/modelzoo/84M/checkpoint.pt
@@ -204,7 +208,7 @@ rsync -avP --partial --append-verify \
 ssh SERVER 'sha256sum /path/to/ILUME/assets/unimol2/modelzoo/84M/checkpoint.pt'
 ```
 
-Both hashes must equal the published SHA-256 above. Repeat for the second server. Create the isolated teacher environment on each server separately, then run the environment check and small audit there before full cache generation.
+两个hash必须等于上方发布SHA-256。第二台服务器重复该过程。各服务器分别创建独立teacher环境，先进行环境检查及小审计，再生成完整缓存。
 
 ## Stage2 / Stage3：实体 HoME v4
 
@@ -212,9 +216,9 @@ Both hashes must equal the published SHA-256 above. Repeat for the second server
 
 ## 运行前提
 
-使用已安装的 `ilume` 环境，不安装依赖或下载权重。需先补齐 `outputs/v4/stage1/base/train/stage1_encoder.pt` 及它对应的 `outputs/v4/stage1/base/prepare/artifacts`；当前配置指定的正式 encoder 与 feature artifacts 尚未齐备。源数据 不能在 prepare/train/evaluate 之间替换。现有过期 `data/stage*/metadata.json` 由下方正式 prepare 生成，不手改 SHA。
+使用已安装的 `ilume` 环境，不安装依赖或下载权重。需先补齐 `outputs/v4/stage1/base/train/stage1_encoder.pt` 及它对应的 `outputs/v4/stage1/base/prepare/artifacts`；当前配置指定的正式编码器与特征产物尚未齐备。源数据不能在数据准备/训练/评估之间替换。现有过期 `data/stage*/metadata.json` 由下方正式 prepare 生成，不手改 SHA。
 
-仅提供 `configs/v4/stage2/base.yaml` 和 `configs/v4/stage3/base.yaml`；新增架构/任务集对照已移除。Stage3 Phase2中的两项模拟任务只更新自身PRIVATE，不参与GLOBAL/GROUP梯度或共享梯度归一化；Phase3继续只更新PRIVATE。查看 `performance.jsonl` 的参数量、epoch耗时及 `metrics.jsonl` 的实际 optimizer_updates。
+仅提供 `configs/v4/stage2/base.yaml` 和 `configs/v4/stage3/base.yaml`；新增架构/任务集对照已移除。Stage3 Phase2中的两项模拟任务只更新自身PRIVATE，不参与GLOBAL/GROUP梯度或共享梯度归一化；Phase3继续只更新PRIVATE。查看 `performance.jsonl` 的参数量、轮耗时及 `metrics.jsonl` 的实际 optimizer_updates。
 
 ## 按顺序执行
 
@@ -288,14 +292,14 @@ test ! -e "outputs/v4/summary/entity_home"
 python scripts/benchmarks/summarize.py --input "$S3" --output "outputs/v4/summary/entity_home"
 ```
 
-只在确实需要继续中断作业时按现有入口显式使用 `--resume`；必须保留同一配置、源 SHA、fold/owner/训练状态和指标尾部。不要通过修改 metadata、kind、format、任务名称或宽松加载复用不匹配的历史产物。
+只在确实需要继续中断作业时按现有入口显式使用 `--resume`；必须保留同一配置、源 SHA、折/owner/训练状态和指标尾部。不要通过修改元数据、kind、格式、任务名称或宽松加载复用不匹配的历史产物。
 
 ## 数据核验结论与限制
 
 以下为2026-10-08本地核验快照；正式运行仍以加载和prepare的实时完整性检查为准。实现已通过临时CPU链路验证，正式训练和五折结果尚未生成。
 
-当前 catalog 的 gas_solubility 包含多种气体，不能视为旧 x_co2 的同义名称；本版本已按明确确认改变目标。新增水活度和焓任务有实际 catalog/分折来源，焓任务展示为 Enthalpy of vaporization，仅使用temperature_K；常量phase列不进入模型。catalog任务标识、目录、目标列及源SHA保持原样。hydration 继续 random/cv1 且无 test，其余使用 catalog 的 system split。Stage1电荷监督及其资源合同保持不变。参考压缩包不替代实时 catalog 和文件身份。
+当前任务目录的 gas_solubility 包含多种气体，不能视为旧 x_co2 的同义名称；本版本已按明确确认改变目标。新增水活度和焓任务有实际任务目录/分折来源，焓任务展示为汽化焓（Enthalpy of vaporization），仅使用temperature_K；常量phase列不进入模型。任务目录中的任务标识、目录、目标列及源SHA保持原样。hydration 继续 random/cv1 且无测试集，其余使用任务目录的 system split。Stage1电荷监督及其资源合同保持不变。参考压缩包不替代实时任务目录和文件身份。
 
-Stage2五任务train/valid来源齐全；两项辅助任务的train/valid/test齐全。24实验的120个分折文件存在，当前10项有test文件，其余任务保留五折validation，不生成额外test划分；catalog的实验test计数字段为空，不据此推测缺失文件的科学意图。当前正式运行的未满足前提是配置指定路径的 Stage1 encoder及配对feature artifacts；旧 metadata 也需上述新 prepare 正常重建。本次实现没有启动正式 GPU训练、正式五折或覆盖历史输出。
+Stage2五任务训练集/验证集来源齐全；两项辅助任务的训练集/验证集/测试集齐全。24实验的120个分折文件存在，当前10项有测试集文件，其余任务保留五折验证，不生成额外测试集划分；任务目录的实验测试集计数字段为空，不据此推测缺失文件的科学意图。当前正式运行的未满足前提是配置指定路径的 Stage1 编码器及配对特征产物；旧元数据也需上述新 prepare 正常重建。本次实现没有启动正式 GPU训练、正式五折或覆盖历史输出。
 
-历史baseline的20任务训练配方不扩展，模拟四任务只适配catalog现有来源位置。其旧实验authority仍要求x_co2；当前catalog缺少这一历史目标，运行旧实验baseline需要对应历史catalog/数据，不得用gas_solubility替代。两模拟实体 HoME v4与四模拟历史结果不能混入同一summary。
+历史基线的20任务训练配方不扩展，模拟四任务只适配任务目录现有来源位置。其旧实验合同依据仍要求x_co2；当前任务目录缺少这一历史目标，运行旧实验基线需要对应历史任务目录/数据，不得用gas_solubility替代。两模拟实体 HoME v4与四模拟历史结果不能混入同一汇总。

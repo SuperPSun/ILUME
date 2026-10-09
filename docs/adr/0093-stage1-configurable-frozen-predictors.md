@@ -1,36 +1,36 @@
-# ADR-0093: Configurable predictors on frozen Stage1 representations
+# ADR-0093：冻结 Stage1 表示上的可配置预测器
 
-## Status
+## 状态
 
-Accepted (2026-10-07). Extends only the independent regression command in [ADR-0092](0092-stage1-atom-charge-and-frozen-regression-heads.md). Stage1 pretraining and Stage2/3 remain unchanged.
+已接受（2026-10-07）。仅扩展 [ADR-0092](0092-stage1-atom-charge-and-frozen-regression-heads.md) 的独立回归命令。Stage1 预训练和 Stage2/3 不变。
 
-## Context
+## 背景
 
-Independent regressors previously always reconstructed a scalar Linear. Users need to specify nonlinear capacity without changing the frozen representation, data contract, optimization budget or final-epoch selection.
+此前独立回归器始终重建标量 Linear。需要允许用户指定非线性容量，同时保持冻结表示、数据合同、优化预算和末轮选择不变。
 
-## Decision
+## 决策
 
-- Regression YAML supports a shared `predictor` and complete per-target `predictor_overrides`. Default is `linear`; an override replaces, rather than merges, the shared recipe. Unknown fields, targets, types, invalid widths/dropout or nonlinear heads without hidden layers fail.
-- Supported types are `linear`, `mlp` and `residual_mlp`. Input width is derived from the frozen source (1024 entity / 512 atom at Base), output is one scalar. No configurable input/output width or dynamic Python imports.
-- MLP hidden stages are Linear, activation, Dropout; the output Linear has no activation. Each residual hidden stage uses `shortcut(x) + Dropout(Linear(Dropout(activation(Linear(x)))))`, with input→width→width projections and an Identity shortcut if widths agree, otherwise a Linear. No normalization or post-add activation. Activations are GELU/ReLU/SiLU; default GELU and dropout0.
-- Linear retains pretrained-row/atom-head initialization and the equivalent normalization-coordinate conversion. MLP and residual MLP are random predictors, not pretrained Linear plus calibration residuals; initial predictions need not match pretraining. Source eligibility and missing-atom-head/scaler checks remain unchanged.
-- Nonlinear initialization and training dropout each use a separate stream seeded by `seed + REGRESSION_TASKS.index(task)`. CPU and the active CUDA device RNG are restored afterwards. Independent task execution order cannot change head parameters. Linear's existing RNG and numerical path remain unchanged.
-- One resolver and builder serve initialization, training and loading. Encoder/Fusion stay eval/frozen, with clean cached representations; only the current predictor enters its optimizer. Preserve role/molecule normalization, raw epochs, AdamW, constant LR, clipping, BF16 and validation reporting-only. Test is never read.
-- New head artifacts use format2 with resolved predictor, input dimension, parameter count, initialization mode, seed, source and tensor hashes. Rebuild from the artifact alone, verify source width, identity/structure/manifest/state and load strictly. Existing format1 Linear artifacts remain readable.
-- Default predictor fields are omitted from serialization and scientific identity. Nondefault jobs bind the resolved recipes for the selected targets; unselected overrides do not change that job's identity. Stage1 encoder/training and downstream identities are untouched.
+- 回归 YAML 支持共享 `predictor` 和完整的逐目标 `predictor_overrides`。默认为 `linear`；覆盖项替换共享配方，不与其合并。未知字段、目标、类型、无效宽度/dropout 或无隐藏层的非线性头立即失败。
+- 支持 `linear`、`mlp` 和 `residual_mlp`。输入宽度从冻结来源推导（Base 为实体1024 / 原子512），输出一个标量。不允许配置输入/输出宽度或动态导入 Python 模块。
+- MLP 隐藏层依次为 Linear、激活、Dropout；输出 Linear 不带激活。每个残差隐藏层采用 `shortcut(x) + Dropout(Linear(Dropout(activation(Linear(x)))))`，投影为输入→宽度→宽度；宽度相同时捷径为身份，否则为 Linear。不使用归一化或相加后的激活。支持 GELU/ReLU/SiLU；默认 GELU、dropout0。
+- Linear 保留预训练行/原子头初始化和等价的归一化坐标转换。MLP 和残差 MLP 是随机预测器，不是预训练 Linear 加校准残差；初始预测无需匹配预训练。来源资格及缺失原子头/scaler 校验不变。
+- 非线性初始化和训练 dropout 分别使用以 `seed + REGRESSION_TASKS.index(task)` 为种子的独立随机流，结束后恢复 CPU 和当前 CUDA 设备 RNG。独立任务执行顺序不能改变预测头参数。Linear 现有 RNG 和数值路径不变。
+- 初始化、训练和加载共用同一个解析器与构造器。Encoder/Fusion 保持 eval/冻结，使用无训练污染的缓存表示；仅当前预测器进入其优化器。保留角色/分子归一化、原始轮、AdamW、恒定 LR、裁剪、BF16及验证仅报告。绝不读取测试集。
+- 新预测头产物采用 format2，记录解析后的预测器、输入维度、参数量、初始化方式、种子、来源与张量 hash。仅凭产物即可重建，并校验来源宽度、身份/结构/清单/状态后严格加载。现有 format1 Linear 产物仍可读取。
+- 序列化及科研身份省略默认预测器字段。非默认作业绑定所选目标的解析配方；未选目标的覆盖项不改变该作业身份。Stage1 编码器/训练及下游身份不变。
 
-## Current regression YAML recipe
+## 当前回归 YAML 配方
 
-`configs/v4/stage1/regression_heads.yaml` explicitly uses independent MLPs: each of the thirteen electronic targets has entity1024→512→256→1 (656,385 parameters); partial atomic charge has atom512→256→128→1 (164,353 parameters). Both use GELU, dropout0 and existing task-local random initialization. This is a configuration choice, not a shared schema default change: omitted predictor still resolves to Linear. Encoder/Fusion, source/data/normalization, AdamW/LR, ten epochs and fixed final selection remain unchanged. Use a fresh regression output; no Stage1/2/3 retraining is required.
+`configs/v4/stage1/regression_heads.yaml` 显式采用独立 MLP：十三个电子目标各为 entity1024→512→256→1（656,385参数）；部分原子电荷为 atom512→256→128→1（164,353参数）。均采用 GELU、dropout0及现有任务局部随机初始化。这是配置选择，不改变共享结构定义默认值：省略预测器仍解析为 Linear。Encoder/Fusion、来源/数据/归一化、AdamW/LR、10轮和固定末轮选择不变。使用新的回归输出目录；无需重新训练 Stage1/2/3。
 
-## Consequences
+## 后果
 
-Users can compare independently configured scalar and atom predictors on the same representation. Nonlinear heads add trainable parameters/dropout and cannot inherit the original Linear's raw predictions. Structure changes require a fresh regression output, not new Stage1/2/3 training. No artifact overwrite, HPO, scheduler changes, early stopping or new CLI flags.
+用户可在相同表示上比较独立配置的标量与原子预测器。非线性头增加可训练参数/dropout，不能继承原 Linear 的原单位预测。结构变化只需新的回归输出，不需要重新训练 Stage1/2/3。不覆盖产物、不新增 HPO、不改变调度器、不早停或新增 CLI 参数。
 
-## Alternatives
+## 替代方案
 
-Rejected automatic weight migration into nonlinear heads and zero-initialized calibration residuals: those would change the scientific initialization experiment. Rejected arbitrary module imports and unrestricted network graphs: the three explicit builders cover the requested scope.
+拒绝自动将权重迁入非线性头及零初始化校准残差，因为它们会改变科研初始化实验。拒绝任意模块导入及无限制网络图；三个显式构造器已覆盖所需范围。
 
-## Verification
+## 验证
 
-Cover configuration/default/override errors, Linear affine and numerical compatibility, nonlinear seed/dropout isolation, residual shortcuts, scalar/atom widths and gradients, reversed branch execution, format1 compatibility, format2 prediction round-trip and corrupted source/structure rejection. Encoder/source artifacts remain bitwise unchanged; reporting cannot select the final head. Implementation uses temporary fixtures only; missing local catalog/data is reported without relaxing contracts.
+覆盖配置/默认/覆盖项错误、Linear 仿射与数值兼容、非线性种子/dropout隔离、残差捷径、标量/原子宽度和梯度、倒序分支执行、format1兼容、format2预测往返及损坏来源/结构拒载。编码器/来源产物逐 bit 不变；报告不能选择最终预测头。实现仅用临时测试数据；本地任务目录/数据缺失明确报告，不放宽合同。

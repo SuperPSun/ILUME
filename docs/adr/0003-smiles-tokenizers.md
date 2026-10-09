@@ -1,6 +1,6 @@
-# ADR-0003：SMILES tokenizer 后端
+# ADR-0003：SMILES 分词器后端
 
-- 状态：Accepted
+- 状态：已接受
 - 日期：2026-07-23
 
 > 2026-08-13：AIS 的单遍拟合与 `min_frequency` 精确语义由 [ADR-0014](0014-stage1-prepare-performance-and-corpus-v2.md) 补充；多后端协议与版本固定继续有效。
@@ -13,8 +13,8 @@ AIS 固定 `atomInSmiles==1.0.2`；`min_frequency=1` 保留所有出现过的 AI
 
 ## 理由
 
-tokenizer 对照必须隔离训练集并具有可重现的实现版本。统一 artifact 结构让下游 encoder 不依赖后端细节；显式超长错误避免不同方法因静默截断获得不可比较输入。
+分词器对照必须隔离训练集并具有可重现的实现版本。统一产物结构让下游编码器不依赖后端细节；显式超长错误避免不同方法因静默截断获得不可比较输入。
 
 ## 后果
 
-非 AIS 后端需要安装 `tokenizers` optional extra。tokenizer 后端或训练数据变化都要求重新准备 artifact。
+非 AIS 后端需要安装 `tokenizers` optional extra。分词器后端或训练数据变化都要求重新准备产物。

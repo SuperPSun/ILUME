@@ -1,30 +1,30 @@
-# ADR-0091: Stage1-v4 loss weights and read-only gradient audit
+# ADR-0091：Stage1-v4 损失权重与只读梯度审计
 
-## Status
+## 状态
 
-Accepted (2026-10-07). Revises only the RDKit/Uni-Mol coefficients in ADR-0089 and adds execution-only diagnostics. ADR-0090 capacity and all other numerical contracts remain unchanged; no new capacity profile.
+已接受（2026-10-07）。仅修订 ADR-0089 的 RDKit/Uni-Mol 系数，并增加执行层面的诊断。ADR-0090 容量和其他数值合同不变；不新增容量配置。
 
-[ADR-0092](0092-stage1-atom-charge-and-frozen-regression-heads.md) subsequently changes the active audit interval from5,000 to1,000 and adds optional CLI override plus an atom-charge objective/diagnostic. The original interval/seven-objective table below is historical in those additions; the read-only audit isolation contract remains effective.
+[ADR-0092](0092-stage1-atom-charge-and-frozen-regression-heads.md) 后续将现役审计间隔从5,000改为1,000，并增加可选 CLI 覆盖和原子电荷目标/诊断。以下原始间隔及七目标表在这些新增范围内属于历史；只读审计隔离合同继续有效。
 
-## Decision
+## 决策
 
-The coefficient table below is historical after the subsequent 2026-10-07 Base recipe update. Current coefficients are defined in [Base YAML](../../configs/v4/stage1/base.yaml) and the [v4 runbook](../v4-runbook.md#stage1-loss-and-gradient-audit); the audit/normalization contract remains unchanged, including ADR-0092's active1,000-update interval.
+后续 2026-10-07 Base 配方更新后，以下系数表属于历史。当前系数见 [Base YAML](../../configs/v4/stage1/base.yaml) 和 [v4 运行手册](../v4-runbook.md#stage1-loss-and-gradient-audit)；审计/归一化合同不变，包括 ADR-0092 规定的现役1,000次更新间隔。
 
-The active v4 Base coefficients are SMILES/atom/bond=`1/1/1`, alignment=`0.1`, RDKit=`0.5`, Uni-Mol=`0.25`, electronic=`0.1`. Shared schema defaults and historical YAML remain unchanged. Loss normalization remains valid-element means within molecules, then role2/2/1 weighted molecule means. No sampler, encoder, modality dropout, optimizer, scheduler or fixed-final-epoch change.
+本次决定时 v4 Base 的系数为 SMILES/原子/键=`1/1/1`、alignment=`0.1`、RDKit=`0.5`、Uni-Mol=`0.25`、electronic=`0.1`。共享结构定义默认值和历史 YAML 不变。损失仍先在分子内对有效元素取均值，再按角色2/2/1对分子均值加权。不改变采样器、编码器、模态 dropout、优化器、调度器或固定末轮规则。
 
-`training.gradient_audit_interval_steps` defaults to0 (off); `gradient_audit_batch_size` defaults to32. Default values are omitted on serialization. Enabled audits require dual-view v4. Active Base explicitly enables every5,000 completed optimizer updates, using32 validation molecules. Both fields are execution-only: recorded in run/checkpoint configuration, excluded from scientific config hash, training identity and encoder identity. Audit cadence or probe size may change on epoch-boundary resume; loss changes may not.
+`training.gradient_audit_interval_steps` 默认0（关闭）；`gradient_audit_batch_size` 默认32。序列化时省略默认值。启用审计要求双视图 v4。本次 Base 显式设定每完成5,000次优化器更新，用32个验证分子审计。两字段仅属执行设置：记录在运行/检查点配置中，不进入科研配置 hash、训练身份和编码器身份。在轮边界恢复时可以改变审计频率或探针大小，不可改变损失。
 
-## Probe and gradient contract
+## 探针与梯度合同
 
-- Select `min(32, validation_size)` molecules without replacement using an independent local RNG seeded by `data.seed+400000`; no role/property/HF stratification. Reuse the existing packer, cached auxiliary targets and evaluation masker with fixed seed `data.seed+400001`. Sample order and masks remain fixed across steps, epochs, attempts and world sizes. Record IDs, corpus/feature identity, mask hash and probe hash.
-- Run after optimizer/scheduler update and gradient clearing, only at positive multiples of the interval; no additional epoch-final audit. Use eval mode and evaluation masking (ordinary and fusion modality dropout off), with the training AMP setting and FP32 squared-norm accumulation.
-- A single eager forward supplies all seven objectives. For each, use `autograd.grad` only over distinct SMILES/Graph/Fusion parameters; auxiliary heads are excluded, but their chain-rule contribution to encoder gradients remains. Do not call backward, populate `.grad`, clip or update optimizer/scheduler. Release each gradient set before the next objective.
-- Raw norm is `||∇encoder L_i||₂`: role normalization is retained; only the outer coefficient is excluded. Weighted norm is `abs(lambda_i) * raw_norm`, computed without another backward. These are objective-specific magnitudes, not the norm of their vector sum or a measurement of alignment/conflict between objectives.
-- DDP rank0 evaluates the complete probe without DDP forward or training loss collectives; other ranks wait via synchronized error/status broadcast. Preserve all module mode flags and Python/NumPy/Torch CPU/current-rank CUDA RNG; do not initialize or inspect other CUDA devices. Normal errors propagate to all ranks; no OOM resize or silent skip.
+- 使用独立本地 RNG，以 `data.seed+400000` 为种子，无放回选择 `min(32, validation_size)` 个分子；不按角色/性质/HF分层。复用现有打包器、缓存辅助目标及评估 masker，固定种子 `data.seed+400001`。样本顺序和 mask 在不同步、轮、尝试和 world size 下固定。记录 ID、语料/特征身份、mask hash 和探针 hash。
+- 在优化器/调度器更新并清空梯度之后，仅在间隔的正整数倍执行；不额外添加末轮审计。采用 eval 模式与评估 masking（关闭普通及融合模态 dropout），使用训练 AMP 设置和 FP32 平方范数累加。
+- 单次即时前向提供全部七个目标。各目标仅对互不重复的 SMILES/Graph/Fusion 参数调用 `autograd.grad`；辅助头不在求导参数内，但保留其对编码器梯度的链式贡献。不调用反向、不写入 `.grad`、不裁剪或更新优化器/调度器。下一目标计算前释放当前梯度集合。
+- 原始范数为 `||∇encoder L_i||₂`：保留角色归一化，仅排除外层系数。加权范数为 `abs(lambda_i) * raw_norm`，无需再次反传。它们是各目标的梯度大小，不是向量和的范数，也不衡量目标间的对齐或冲突。
+- DDP rank0 评估完整探针，不执行 DDP 前向或训练损失集合通信；其他 rank 通过同步错误/状态广播等待。保留所有模块模式标志及 Python/NumPy/Torch CPU/当前 rank CUDA RNG；不初始化或检查其他 CUDA 设备。正常错误传播到所有 rank；不因 OOM 缩小探针或静默跳过。
 
-## Output and recovery
+## 输出与恢复
 
-Append `gradient_audit.jsonl`, separate from unchanged training metrics. Each row contains epoch, global step, attempt ID, training identity, precision, probe metadata, current coefficients, and:
+追加写入 `gradient_audit.jsonl`，与保持不变的训练指标分开。每行包含轮、全局步、尝试 ID、训练身份、精度、探针元数据、当前系数，以及：
 
 ```text
 smiles_grad_norm
@@ -38,12 +38,12 @@ weighted_grad_norms.{smiles,atom,bond,alignment,rdkit,unimol,electronic}
 coverage.<objective>.{valid_molecules,valid_role_weight_sum,status}
 ```
 
-Missing supervision produces `null` with `no_valid_targets`, not a misleading zero. A valid objective with a zero derivative records0. Non-finite norms are an explicit audit error; they never silently change weights or budgets. In particular, a small natural probe may have no electronic labels and cannot then diagnose electronic gradient strength.
+缺失监督记录 `null` 和 `no_valid_targets`，不记录会误导的零。有有效目标但导数为零时记录0。非有限范数明确视为审计错误，绝不静默改变权重或预算。尤其是自然抽取的小探针可能没有电子标签，此时无法诊断电子梯度强度。
 
-Recovery retains complete-epoch/attempt behavior. Failed-attempt audit rows are not truncated or used to choose a checkpoint; replaying an incomplete epoch can append another observation of the same step. Audit settings do not require a checkpoint format upgrade. Validation remains reporting-only: its derivatives are never applied to parameters or used for automatic decisions.
+恢复保留完整轮/尝试行为。不截断失败尝试的审计行，也不据此选择检查点；重放未完成轮可能追加同一步的另一条观察。审计设置无需升级检查点格式。验证仍仅用于报告：其导数不用于参数更新或自动决策。
 
-## Artifact boundary and verification
+## 产物边界与验证
 
-Corpus, train-only statistics and the completed teacher cache remain reusable, including all existing failure masks. New loss weights change training identity, so new Base trains Stage1 from scratch in a fresh output directory, then regenerates/trains Stage2 and prepares/trains/evaluates Stage3. Historical outputs are read-only; no formal runs are launched during implementation.
+语料、仅训练集统计及已完成 teacher 缓存仍可复用，包括已有失败 mask。新损失权重改变训练身份，因此新 Base 必须在新输出目录从头训练 Stage1，再重新生成/训练 Stage2，并数据准备/训练/评估 Stage3。历史输出只读；实现过程不启动正式运行。
 
-Tests compare objective gradients with independent references, weighted norms and missing targets, audit-on/off model/gradient/optimizer/scheduler/RNG equality, fixed probe/masks, rank0-only DDP/error propagation, epoch resume and identity separation. Gradient audit is human-facing evidence only, not a new training objective or model-selection mechanism.
+测试将各目标梯度与独立参考比较，覆盖加权范数与缺失目标、开启/关闭审计时模型/梯度/优化器/调度器/RNG一致性、固定探针/mask、仅 rank0 的 DDP/错误传播、轮恢复和身份隔离。梯度审计仅为人工判断提供证据，不新增训练目标或选模机制。

@@ -1,17 +1,17 @@
-# ADR-0090: Stage1-v4 Base residual encoder capacity
+# ADR-0090：Stage1-v4 Base 残差编码器容量
 
-## Status
+## 状态
 
-Accepted (2026-10-07). Revises only the encoder capacity in ADR-0089. There is one active v4 Base; historical v3, legacy and Capacity contracts are unchanged.
+已接受（2026-10-07）。仅修订 ADR-0089 的编码器容量。现役 v4 只有一个 Base；历史 v3、历史实现和 Capacity 合同不变。
 
-## Decision
+## 决策
 
-The batch128 recipe referenced below is historical after the 2026-10-07 Base update to global batch512. Current execution and loss values are defined in [Base YAML](../../configs/v4/stage1/base.yaml) and the [v4 runbook](../v4-runbook.md); this ADR's architecture and parameter audit remain unchanged.
+以下 batch128 配方在 2026-10-07 Base 改为全局 batch512 后已成为历史。当前执行与损失数值由 [Base YAML](../../configs/v4/stage1/base.yaml) 和 [v4 运行手册](../v4-runbook.md) 定义；本 ADR 的架构与参数审计不变。
 
-- SMILES Transformer uses 12 layers instead of 8, with width512, 8 attention heads, FFN2048 and dropout0.10 unchanged.
-- `model.graph_message_mode` accepts `shared` or `residual_blocks`. The default is `shared`, omitted from serialized configuration and encoder identity; historical parameter names, initialization order and forward operations remain unchanged. The residual mode is allowed only for `dual_view_v4`.
-- In residual mode, `graph_depth=8` means eight complete independently parameterized directed message-passing blocks. In shared mode the original initial projection plus `depth−1` shared updates remains intact.
-- Each residual block computes, using directed source/destination and reverse-edge indices:
+- SMILES Transformer 从 8 层增加到 12 层；宽度512、8个注意力头、FFN2048 和 dropout0.10 不变。
+- `model.graph_message_mode` 接受 `shared` 或 `residual_blocks`。默认 `shared` 不写入序列化配置和编码器身份；历史参数名、初始化顺序及前向运算不变。残差模式仅允许用于 `dual_view_v4`。
+- 残差模式下，`graph_depth=8` 表示八个完整、参数独立的有向消息传递块。共享模式保留原始入口投影和 `depth−1` 次共享更新。
+- 每个残差块使用有向起点/终点及反向边索引进行以下计算：
 
 ```text
 m = sum(incoming edges at source) − reverse_edge_state
@@ -19,32 +19,32 @@ h = h + Dropout(GELU(W_message(LayerNorm(m))))
 h = h + Dropout(W₂(Dropout(GELU(W₁(LayerNorm(h))))))
 ```
 
-`W_message` is a bias-free512→512 projection; the FFN is512→2048→512. Each block has its own two LayerNorms and projections. Features, masks, input projection, atom/bond readout and atom-mean pooling do not change. No attention, virtual node or other graph mechanism is added.
-- The lightweight1024D residual fusion, learned1024, atom512, all five supervision families, coefficients, missing-label masks, role2/2/1 loss weighting, natural shuffle and fusion-only80/10/10 dropout remain unchanged. Training still uses ten epochs, global batch128, AdamW1e-4/WD0.01, existing warmup/cosine, BF16, clipping1 and complete-epoch resume. No automatic batch adjustment or gradient checkpointing is enabled.
+`W_message` 是无偏置512→512投影；FFN 为512→2048→512。每个块有独立的两个 LayerNorm 和投影。特征、mask、入口投影、原子/键读出及原子均值池化不变。不增加注意力、虚拟节点或其他图机制。
+- 轻量1024D残差融合、learned1024、atom512、五类监督、系数、缺失标签 mask、角色2/2/1损失权重、自然打乱和仅作用于融合的80/10/10模态 dropout 均不变。训练仍为10轮、全局 batch128、AdamW1e-4/WD0.01、现有预热/余弦调度、BF16、梯度裁剪1和完整轮恢复。不启用自动 batch 调整或梯度检查点。
 
-## Parameter audit
+## 参数审计
 
-With a fixed2,048-token vocabulary and the configured maximum sequence length:
+固定词表为2,048个 token，并使用配置规定的最大序列长度：
 
-| Component | Historical shared Base | Residual Base |
+| 组件 | 历史共享模式 Base | 残差模式 Base |
 |---|---:|---:|
-| SMILES encoder | 26,400,768 | 39,010,304 |
-| Graph encoder | 964,779 | 19,613,867 |
-| Fusion | 2,101,248 | 2,101,248 |
-| Encoder-only | 29,466,795 | 60,725,419 |
-| Disposable auxiliary heads | 4,400,528 | 4,400,528 |
-| Training total | 33,867,323 | 65,125,947 |
+| SMILES 编码器 | 26,400,768 | 39,010,304 |
+| 图编码器 | 964,779 | 19,613,867 |
+| 融合层 | 2,101,248 | 2,101,248 |
+| 仅编码器 | 29,466,795 | 60,725,419 |
+| 可丢弃的辅助头 | 4,400,528 | 4,400,528 |
+| 训练总计 | 33,867,323 | 65,125,947 |
 
-Actual vocabulary size can change the embedding and masked-SMILES head counts. Deployment still exports only the two encoders and fusion.
+实际词表大小会影响 embedding 和掩码 SMILES 预测头的参数量。部署仍只导出两个编码器及融合层。
 
-## Identity and artifact boundary
+## 身份与产物边界
 
-The non-default graph mode enters training and encoder identity. Existing v4 artifact kinds/formats remain unchanged; complete configuration/identity and strict state loading reject cross-structure resume. Historical approximately30M artifacts load using their embedded shared-mode configuration. No warm-start, partial loading or parameter copying is supported.
+非默认图模式进入训练与编码器身份。现有 v4 产物类型/格式不变；完整配置/身份和严格状态加载拒绝跨结构恢复。历史约30M产物按内嵌共享模式配置加载。不支持热启动、部分加载或参数复制。
 
-The prepared corpus, train-only normalization statistics, feature-generation contract and offline Uni-Mol teacher cache identities do not include this architecture change and are reusable without regeneration or changes to failure masks. New Base must train Stage1 from scratch, then regenerate Stage2 representation caches and train Stage2, then prepare/train/evaluate Stage3. The learned1024+RDKit217→1241 ObjectEncoder input and permanent Stage1 freeze in Stage2/3 remain unchanged. w/o Stage1 constructs a random frozen encoder from the current Base configuration.
+预处理语料、仅训练集归一化统计、特征生成合同和离线 Uni-Mol teacher 缓存的身份不包含本次架构变化，可直接复用，不重新生成或改变失败 mask。新 Base 必须从头训练 Stage1，再重新生成 Stage2 表示缓存并训练 Stage2，之后数据准备/训练/评估 Stage3。learned1024+RDKit217→1241 的 ObjectEncoder 输入及 Stage2/3 永久冻结 Stage1 的边界不变。w/o Stage1 按当前 Base 配置构造随机冻结编码器。
 
-Default paths remain unchanged. Existing outputs are never moved, overwritten or deleted automatically; users must select fresh output paths or explicitly arrange archival and consistent downstream references.
+默认路径不变。不会自动移动、覆盖或删除已有输出；用户必须选择新输出路径，或明确安排归档并保持下游引用一致。
 
-## Verification and interpretation
+## 验证与解释
 
-Tests cover independent block parameters and counts, bonded/bondless/mixed graphs and differentiable zero gradients, legacy shared-mode configuration/state/prediction compatibility, cache identity reuse, strict epoch resume/export and downstream freezing. Implementation does not run formal prepare, cache generation or training. A future result compares the combined SMILES-depth and graph-block capacity change, not either component in isolation.
+测试覆盖独立块参数和数量、有键/无键/混合图及可微零梯度、历史共享模式配置/状态/预测兼容、缓存身份复用、严格轮恢复/导出和下游冻结。实现过程不执行正式 prepare、缓存生成或训练。未来结果比较的是 SMILES 深度与图块容量的联合变化，不能单独归因于其中一个组件。
