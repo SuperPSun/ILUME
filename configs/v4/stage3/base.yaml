@@ -1,7 +1,7 @@
 data:
   stage3_dir: data/stage3
   task_catalog: data/task_catalog.csv
-  artifacts_dir: outputs/v4/stage3/entity_home/prepare/artifacts
+  artifacts_dir: outputs/v4/stage3/base/prepare/artifacts
   split_policy: system
   split_strategies:
     experiment/hydration: random
@@ -10,13 +10,13 @@ data:
   seed: 42
 preparation:
   encoding_batch_size: 256
-  cache_dir: outputs/v4/stage3/entity_home/prepare/entity_cache
+  cache_dir: outputs/v4/stage3/base/prepare/entity_cache
 initialization:
   representation_contract: entity_home_v4
   stage2_encoder: null
   home_mode: trained
-  stage2_final: outputs/v4/stage2/train/stage2_final.pt
-  simulation_artifacts_dir: outputs/v4/stage2/prepare/artifacts
+  stage2_final: outputs/v4/stage2/base/train/stage2_final.pt
+  simulation_artifacts_dir: outputs/v4/stage2/base/prepare/artifacts
   plugin: null
   stage1_encoder: outputs/v4/stage1/base/train/stage1_encoder.pt
   stage1_artifacts_dir: outputs/v4/stage1/base/prepare/artifacts
