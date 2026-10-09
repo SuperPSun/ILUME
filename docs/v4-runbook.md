@@ -222,6 +222,8 @@ ssh SERVER 'sha256sum /path/to/ILUME/assets/unimol2/modelzoo/84M/checkpoint.pt'
 
 仅提供 `configs/v4/stage2/base.yaml` 和 `configs/v4/stage3/base.yaml`；新增架构/任务集对照已移除。Stage3 Phase2中的两项模拟任务只更新自身PRIVATE，不参与GLOBAL/GROUP梯度或共享梯度归一化；Phase3继续只更新PRIVATE。查看 `performance.jsonl` 的参数量、轮耗时及 `metrics.jsonl` 的实际 optimizer_updates。
 
+当前Stage3 Base的electrochemical GROUP采用L1/L2各2个专家、768D隐藏层、1024D输出。两项电位任务的PRIVATE/Tower/FiLM隐藏维度为512/256/128D，保留单PRIVATE专家、仅温度条件及dropout 0.1；Task Gate输入2048D、输出5个候选权重。GROUP和PRIVATE的LR、训练轮数及三阶段机制不变。容量配方进入既有训练身份；缩减前Stage3检查点不能恢复到当前Base，正式训练须使用未占用的新输出目录，Stage1/Stage2无需因本次容量调整重训。
+
 ## 按顺序执行
 
 与Stage1一样，从仓库根目录在 `ilume` 环境执行。下面各步骤成功后再执行下一步，使用未占用的输出目录。入口会自动校验来源、数据SHA和模型身份，无需另写Python校验脚本。修改prepare输出路径时，须同步修改对应YAML的 `data.artifacts_dir`；修改训练输出路径时，须同步修改下游来源配置。
@@ -240,8 +242,8 @@ python scripts/stage2/train.py --config configs/v4/stage2/base.yaml --output out
 Stage2训练完成后准备Stage3，再执行三阶段五折训练。下面使用一张已分配的GPU，五折串行执行；多GPU并行时才增加 `--max-parallel` 并扩展 `--devices`。
 
 ```bash
-python scripts/stage3/prepare.py --config configs/v4/stage3/base.yaml --output outputs/v4/stage3/base/entity_home/prepare
-python scripts/stage3/train.py --config configs/v4/stage3/base.yaml --fold 1 2 3 4 5 --output outputs/v4/stage3/base/entity_home/train --devices cuda:0
+python scripts/stage3/prepare.py --config configs/v4/stage3/base.yaml --output outputs/v4/stage3/base/prepare
+python scripts/stage3/train.py --config configs/v4/stage3/base.yaml --fold 1 2 3 4 5 --output outputs/v4/stage3/base/train --devices cuda:0
 ```
 
 ### Stage3：实验评估

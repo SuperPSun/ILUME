@@ -100,8 +100,8 @@ groups:
   electrochemical:
     enabled: true
     group_weight: 1.0
-    experts: 3
-    expert_hidden_ratio: 1.5
+    experts: 2
+    expert_hidden_ratio: 0.75
     phase1:
       lr: 0.0002
       epochs: 15
@@ -288,6 +288,10 @@ tasks:
     size_class: small
     condition_columns:
     - temperature_K
+    model_overrides:
+      private_hidden_ratio: 0.5
+      tower_hidden_ratio: 0.25
+      film_hidden_ratio: 0.125
   experiment/cathodic_potential_limit:
     enabled: true
     meta_group: electrochemical
@@ -295,6 +299,10 @@ tasks:
     size_class: small
     condition_columns:
     - temperature_K
+    model_overrides:
+      private_hidden_ratio: 0.5
+      tower_hidden_ratio: 0.25
+      film_hidden_ratio: 0.125
 training:
   simulation:
     batch_size: 256

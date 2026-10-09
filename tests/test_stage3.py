@@ -827,6 +827,52 @@ def test_three_phase_config_and_task_specific_gate_contract() -> None:
 
 
 
+def test_entity_home_electrochemical_base_capacity() -> None:
+    from common.entity_inputs import EntityInputs
+
+    config = load_stage3_config("configs/v4/stage3/base.yaml")
+    tasks = ("experiment/anodic_potential_limit", "experiment/cathodic_potential_limit")
+    registry = resolve_task_registry(config)
+    model = Stage3SparseModel(
+        config.model, {task: registry[task] for task in tasks}, 1024,
+        group_configs=config.groups, task_configs=config.tasks,
+        task_private_recipes={task: config.resolved_private_recipe(task) for task in tasks},
+        entity_inputs=True, initialization_seed=42,
+    )
+    assert len(model.l1_group_experts["electrochemical"]) == 2
+    assert len(model.l2_group_experts["electrochemical"]) == 2
+    for experts, input_dim in (
+        (model.l1_group_experts["electrochemical"], 2490),
+        (model.l2_group_experts["electrochemical"], 1024),
+    ):
+        for expert in experts:
+            assert expert.layers[0].in_features == input_dim
+            assert expert.layers[0].out_features == 768
+            assert expert.layers[3].out_features == 1024
+    assert sum(p.numel() for p in model.parameters_for_owner(group_owner("electrochemical"))) == 8_557_430
+    primary = EntityInputs.from_slots(torch.randn(2, 2, 1241), torch.tensor([[0, 1], [0, 1]]))
+    model.eval()
+    for task in tasks:
+        key = task.replace("/", "__")
+        assert registry[task].condition_columns == ("temperature_K",)
+        assert len(model.private_experts[key]) == 1
+        assert model.private_experts[key][0].layers[0].in_features == 1024
+        assert model.private_experts[key][0].layers[0].out_features == 512
+        assert model.private_experts[key][0].layers[3].out_features == 1024
+        assert model.towers[key].layers[0].out_features == 256
+        assert model.condition_films[key].network[0].in_features == 1
+        assert model.condition_films[key].network[0].out_features == 128
+        assert (model.task_gates[key].in_features, model.task_gates[key].out_features) == (2048, 5)
+        for module in (model.private_experts[key], model.towers[key], model.condition_films[key]):
+            assert all(layer.p == 0.1 for layer in module.modules() if isinstance(layer, torch.nn.Dropout))
+            assert all(model.parameter_ownership()[p] == private_owner(task) for p in module.parameters())
+        assert all(model.parameter_ownership()[p] == private_owner(task) for p in model.task_gates[key].parameters())
+        assert sum(p.numel() for p in model.parameters_for_owner(private_owner(task))) == 1_591_558
+        with torch.no_grad():
+            predictions = model(task, primary, torch.ones(2, 1)).predictions
+        assert predictions.shape == (2,) and torch.isfinite(predictions).all()
+
+
 def test_three_phase_private_capacity_ratios_follow_size_class() -> None:
     config = load_stage3_config("configs/v3/stage3/base.yaml")
     fallback_task = "experiment/dynamic_relative_permittivity"
