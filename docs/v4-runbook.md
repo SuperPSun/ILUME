@@ -224,74 +224,50 @@ ssh SERVER 'sha256sum /path/to/ILUME/assets/unimol2/modelzoo/84M/checkpoint.pt'
 
 ## 按顺序执行
 
-下面是用户正式运行的完整命令；实现验证不会自动执行。逐步检查成功后继续。默认只占一张已分配的 GPU、串行五折；若分配多张 GPU，可显式改变已有 Stage3入口的 `--max-parallel` 和 `--devices`，不超过实际资源。
+与Stage1一样，从仓库根目录在 `ilume` 环境执行。下面各步骤成功后再执行下一步，使用未占用的输出目录。入口会自动校验来源、数据SHA和模型身份，无需另写Python校验脚本。修改prepare输出路径时，须同步修改对应YAML的 `data.artifacts_dir`；修改训练输出路径时，须同步修改下游来源配置。
+
+### Stage2：prepare 与 train
+
+prepare生成五任务数据和冻结Stage1实体缓存；train固定训练10轮，发布 `stage2_final.pt` 和 `stage2_final.json`，不再导出独立编码器。
 
 ```bash
-set -euo pipefail
-cd /data/pengs/ILUME
-source /home/pengs/softwares/conda/etc/profile.d/conda.sh
-conda activate ilume
-export OMP_NUM_THREADS=1
-export MKL_NUM_THREADS=1
-export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
-S2="outputs/v4/stage2/entity_home"
-S3="outputs/v4/stage3/entity_home"
-C2="configs/v4/stage2/base.yaml"
-C3="configs/v4/stage3/base.yaml"
+python scripts/stage2/prepare.py --config configs/v4/stage2/base.yaml --output outputs/v4/stage2/prepare
+python scripts/stage2/train.py --config configs/v4/stage2/base.yaml --output outputs/v4/stage2/train
+```
 
-# 1. 完整性/运行版本校验；加载严格核对 Stage1 来源、特征和 tensor hash。
-python - <<'PY'
-from stage1.model import load_stage1_model
-loaded = load_stage1_model(
-    "outputs/v4/stage1/base/train/stage1_encoder.pt",
-    "outputs/v4/stage1/base/prepare/artifacts", device="cpu", backbone_dropout=0.0,
-)
-assert loaded.config.is_dual_view and loaded.model.entity_dim == 1024
-print("Stage1 encoder and feature contracts verified")
-PY
+### Stage3：prepare 与五折 train
 
-# 2. 新 Stage2 prepare；生成 metadata/SHA 及永久冻结 Stage1 特征缓存。
-test ! -e "$S2/prepare"
-python scripts/stage2/prepare.py --config "$C2" --output "$S2/prepare"
+Stage2训练完成后准备Stage3，再执行三阶段五折训练。下面使用一张已分配的GPU，五折串行执行；多GPU并行时才增加 `--max-parallel` 并扩展 `--devices`。
 
-# 3. 固定10轮；验证完整 final/manifest 身份及严格重载。
-test ! -e "$S2/train"
-python scripts/stage2/train.py --config "$C2" --output "$S2/train"
-python - "$S2/train" <<'PY'
-from pathlib import Path
-import sys
-from stage2.home_artifact import load_home_final
-root = Path(sys.argv[1])
-payload, model, _ = load_home_final(root / "stage2_final.pt")
-assert payload["kind"] == "ilume_stage2_entity_home_final_v4"
-assert model.home.entity_inputs and not hasattr(model, "object_encoder")
-assert len(model.registry.task_ids) == 5
-print("Stage2 final and manifest verified")
-PY
+```bash
+python scripts/stage3/prepare.py --config configs/v4/stage3/base.yaml --output outputs/v4/stage3/entity_home/prepare
+python scripts/stage3/train.py --config configs/v4/stage3/base.yaml --fold 1 2 3 4 5 --output outputs/v4/stage3/entity_home/train --devices cuda:0
+```
 
-# 4. 配对 Stage3 prepare；24任务、数值条件、train-fold统计及 Stage1槽位来源校验。
-test ! -e "$S3/prepare"
-python scripts/stage3/prepare.py --config "$C3" --output "$S3/prepare"
+### Stage3：实验评估
 
-# 5. 三阶段五折；只使用已分配的 cuda:0。
-test ! -e "$S3/train"
-python scripts/stage3/train.py --config "$C3" --fold 1 2 3 4 5 \
-  --output "$S3/train" --max-parallel 1 --devices cuda:0
+先查看五折验证，再报告测试集的五模型集成；hydration无测试集。
 
-# 6. 实验 validation 五折、test 五模型 ensemble（hydration 无 test）。
-python scripts/stage3/evaluate.py --config "$C3" --checkpoint-dir "$S3/train" \
-  --split valid --fold 1 2 3 4 5 --output "$S3/valid"
-python scripts/stage3/evaluate.py --config "$C3" --checkpoint-dir "$S3/train" \
-  --split test --ensemble-folds --output "$S3/test"
-# 两项模拟任务 valid/test 都是五模型原单位预测均值。
-python scripts/stage3/evaluate.py --config "$C3" --checkpoint-dir "$S3/train" \
-  --domain simulation --split valid --ensemble-folds --output "$S3/simulation_valid"
-python scripts/stage3/evaluate.py --config "$C3" --checkpoint-dir "$S3/train" \
-  --domain simulation --split test --ensemble-folds --output "$S3/simulation_test"
+```bash
+python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --checkpoint-dir outputs/v4/stage3/train --split valid --fold 1 2 3 4 5 --output outputs/v4/stage3/valid
+python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --checkpoint-dir outputs/v4/stage3/train --split test --ensemble-folds --output outputs/v4/stage3/test
+```
 
-# 7. 只扫描新的实体 HoME v4输出；独立发布，避免与旧20任务/四模拟榜单混排。
-test ! -e "outputs/v4/summary/entity_home"
-python scripts/benchmarks/summarize.py --input "$S3" --output "outputs/v4/summary/entity_home"
+### Stage3：两项模拟任务评估
+
+验证和测试均取五个模型的原单位预测均值。
+
+```bash
+python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --checkpoint-dir outputs/v4/stage3/train --domain simulation --split valid --ensemble-folds --output outputs/v4/stage3/simulation_valid
+python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --checkpoint-dir outputs/v4/stage3/train --domain simulation --split test --ensemble-folds --output outputs/v4/stage3/simulation_test
+```
+
+### 结果汇总
+
+只扫描新的实体HoME输出，发布到独立目录，不与旧20实验/四模拟结果混排。
+
+```bash
+python scripts/benchmarks/summarize.py --input outputs/v4/stage3 --output outputs/v4/summary
 ```
 
 只在确实需要继续中断作业时按现有入口显式使用 `--resume`；必须保留同一配置、源 SHA、折/owner/训练状态和指标尾部。不要通过修改元数据、kind、格式、任务名称或宽松加载复用不匹配的历史产物。
