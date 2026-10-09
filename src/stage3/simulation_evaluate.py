@@ -35,7 +35,7 @@ def _sources(config: Any, split: str) -> tuple[Any, dict[str, Any]]:
     source = load_source(config)
     assert source is not None
     registry = load_stage2_registry(config.data.task_catalog,
-        task_ids=tuple(source["recipe"]["data"]["tasks"]) if config.is_v5 else None)
+        task_ids=tuple(source["recipe"]["data"]["tasks"]) if config.is_entity_home else None)
     if registry.registry_hash != source["registry_hash"] or registry.catalog_sha256 != source["catalog_sha256"]:
         raise ValueError("Simulation evaluation catalog differs from the trained source")
     data_root = Path(source["recipe"]["data"]["data_root"])

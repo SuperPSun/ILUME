@@ -471,7 +471,7 @@ def test_dual_view_structure_only_losses_and_downstream_freeze(tiny_config, tiny
     from stage1.auxiliary import empty_auxiliary_targets
     from stage1.dual_view import DualViewPretrainModel, molecule_loss_statistics, reduce_molecule_elements
     from stage1.masking import sample_modality_dropout
-    from stage2.model import ObjectEncoder, encode_object_entities
+    from stage2.model import encode_object_entities
 
     config = replace(
         tiny_config, architecture=ArchitectureConfig("dual_view_v4"),
@@ -517,21 +517,18 @@ def test_dual_view_structure_only_losses_and_downstream_freeze(tiny_config, tiny
     total, _ = _global_training_losses(distributed, context, config)
     assert total.item() == pytest.approx(2 * 44 / 10)
 
-    # All Stage1 gradients and dropout are disabled even while ObjectEncoder trains.
+    # Frozen Stage1 outputs stay detached while a downstream expert learns.
     model.zero_grad(set_to_none=True)
     baseline = {key: value.clone() for key, value in model.state_dict().items()}
-    object_encoder = ObjectEncoder(64, 4, num_layers=1, feedforward_dim=64, dropout=0., input_dim=281)
     downstream = encode_object_entities(model, packed)
     assert not downstream.entity_embedding.requires_grad and not model.training
-    optimizer = torch.optim.AdamW(object_encoder.parameters(), lr=1e-3)
-    prediction = object_encoder(downstream.entity_embedding[:, None], packed.roles[:, None])
-    prediction.square().mean().backward()
-    assert object_encoder.input_projection[0].weight.grad.abs().sum() > 0
+    expert = torch.nn.Linear(281, 64)
+    optimizer = torch.optim.AdamW(expert.parameters(), lr=1e-3)
+    expert(downstream.entity_embedding).square().mean().backward()
+    assert expert.weight.grad.abs().sum() > 0
     optimizer.step()
     assert all(parameter.grad is None for parameter in model.parameters())
     assert all(torch.equal(value, model.state_dict()[key]) for key, value in baseline.items())
-    legacy = ObjectEncoder(64, 4, num_layers=1, feedforward_dim=64, dropout=0.)
-    assert not any("input_projection" in key for key in legacy.state_dict())
 
 
 @pytest.mark.parametrize("graph_message_mode", ["shared", "residual_blocks"])

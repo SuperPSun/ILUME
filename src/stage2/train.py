@@ -700,114 +700,7 @@ def _save_epoch_checkpoint(path: Path, *, model: Stage2ObjectModel, optimizer: t
 
 
 def _export_encoder(path: Path, *, model: Stage2ObjectModel, config: Stage2Config, registry: Stage2Registry, checkpoint_path: Path | None, data_identity: dict[str, Any], refinement_state: Mapping[str, Any], provenance_extra: Mapping[str, Any] | None = None, encoder_kind: str = STAGE2_ENCODER_KIND) -> None:
-    if path.exists():
-        raise FileExistsError(f"Stage 2 encoder artifact already exists: {path}")
-    stage1_state = {
-        name: tensor.detach().cpu()
-        for name, tensor in model.backbone.state_dict().items()
-        if not any(name == prefix or name.startswith(prefix + ".") for prefix in RECONSTRUCTION_MODULES)
-    }
-    object_state = {name: tensor.detach().cpu() for name, tensor in model.object_encoder.state_dict().items()}
-    feature_metadata = json.loads(
-        (config.data.pretrain_artifacts_dir / "metadata.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    feature_identity = dict(
-        stage1_metadata_identity(
-            feature_metadata, "feature", context="Stage 1 feature artifact"
-        )
-    )
-    feature_artifacts = {
-        name: json.loads(
-            (config.data.pretrain_artifacts_dir / name).read_text(encoding="utf-8")
-        )
-        for name in (
-            "tokenizer.json",
-            "descriptor_schema.json",
-            "descriptor_scaler.json",
-        )
-    }
-    stage1_state_hash = _state_hash(stage1_state)
-    object_state_hash = _state_hash(object_state)
-    stage1_model_config = model.backbone.config.to_dict()["model"]
-    stage1_contract = {
-        "encoding_api": "encode-states-v1",
-        "model": {
-            name: stage1_model_config[name]
-            for name in (
-                "d_model",
-                "n_heads",
-                "smiles_layers",
-                "graph_depth",
-                "descriptor_hidden_dim",
-                "descriptor_blocks",
-                "fusion_layers",
-                "feedforward_dim",
-                "dropout",
-                "role_embedding",
-                "gradient_checkpointing",
-            )
-        },
-        "feature_generation_contract": feature_metadata[
-            "feature_generation_contract"
-        ],
-    }
-    if model.backbone.config.is_global_rdkit or model.backbone.config.is_dual_view:
-        stage1_contract.update(
-            {
-                "encoding_api": "encode-entity-v2",
-                "representation": {
-                    "kind": model.backbone.representation_kind,
-                    "token_dim": model.backbone.token_dim,
-                    "atom_dim": model.backbone.atom_dim,
-                    "entity_dim": model.backbone.entity_dim,
-                },
-            }
-        )
-    if model.backbone.config.is_dual_view:
-        stage1_contract["encoding_api"] = "dual-view-learned-v4"
-        encoder_kind = ("ilume_stage2_home_zero_update_encoder_v4" if encoder_kind == STAGE2_ZERO_UPDATE_HOME_ENCODER_KIND else "ilume_stage2_home_encoder_v4")
-    if config.is_v5:
-        encoder_kind = "ilume_stage2_home_encoder_v5"
-    encoder_identity = build_stage2_encoder_identity(
-        stage1_feature_identity=feature_identity,
-        stage1_encoding_contract=stage1_contract,
-        stage1_state_hash=stage1_state_hash,
-        object_encoder_contract=model.model_contract["object_encoder"],
-        version=5 if config.is_v5 else 1,
-        object_encoder_state_hash=object_state_hash,
-        role_to_id=ROLE_TO_ID,
-    )
-    atomic_torch_save(path, {
-        "kind": encoder_kind, "format_version": 5 if config.is_v5 else 4 if model.backbone.config.is_dual_view else STAGE2_ENCODER_VERSION,
-        "identity_contract_version": IDENTITY_CONTRACT_VERSION,
-        "semantic_identity": encoder_identity,
-        "stage1_backbone": stage1_state, "object_encoder": object_state,
-        "stage1_config": model.backbone.config.to_dict(),
-        "stage1_feature_identity": feature_identity,
-        "stage1_encoding_contract": stage1_contract,
-        "feature_artifacts": feature_artifacts,
-        "object_encoder_config": model.model_contract["object_encoder"],
-        "role_to_id": dict(ROLE_TO_ID), "model_contract": model.model_contract,
-        "state_hashes": {"stage1_backbone": stage1_state_hash, "object_encoder": object_state_hash},
-        "provenance": {
-            "stage1_checkpoint_hash": (
-                sha256_file(config.initialization.checkpoint)
-                if config.initialization.checkpoint is not None else None
-            ),
-            "stage2_checkpoint_hash": (
-                sha256_file(checkpoint_path) if checkpoint_path is not None else None
-            ),
-            "stage2_data_identity": data_identity["hash"],
-            "task_catalog_hash": registry.catalog_sha256,
-            "registry_hash": registry.registry_hash,
-            "config_hash": _config_hash(config),
-            "refinement_boundary_epoch": refinement_state["boundary_epoch"],
-            "refinement_shared_state_hash": refinement_state["shared_state_hash"],
-            **dict(provenance_extra or {}),
-        },
-    })
+    raise ValueError("ObjectEncoder export/loading retired; use the historical Git revision")
 
 
 def export_stage2_encoder_artifact(
@@ -820,73 +713,11 @@ def export_stage2_encoder_artifact(
     provenance: Mapping[str, Any],
     encoder_kind: str = STAGE2_ENCODER_KIND,
 ) -> None:
-    """Export an initialized encoder for an isolated zero-update experiment."""
-    shared_state = {
-        **{f"backbone.{name}": value for name, value in model.backbone.state_dict().items()},
-        **{
-            f"object_encoder.{name}": value
-            for name, value in model.object_encoder.state_dict().items()
-        },
-    }
-    _export_encoder(
-        Path(path),
-        model=model,
-        config=config,
-        registry=registry,
-        checkpoint_path=None,
-        data_identity=data_identity,
-        refinement_state={
-            "boundary_epoch": 0,
-            "shared_state_hash": tensor_state_hash(
-                "stage2.transfer-initial-shared-state.v1", shared_state
-            ),
-        },
-        provenance_extra=provenance,
-        encoder_kind=encoder_kind,
-    )
+    raise ValueError("ObjectEncoder export/loading retired; use the historical Git revision")
 
 
 def load_stage2_encoder_artifact(path: str | Path) -> dict[str, Any]:
-    payload = torch.load(Path(path), map_location="cpu", weights_only=False)
-    if payload.get("kind") not in {
-        STAGE2_ENCODER_KIND, STAGE2_HOME_ENCODER_KIND,
-        STAGE2_ZERO_UPDATE_HOME_ENCODER_KIND,
-        "ilume_stage2_home_encoder_v4", "ilume_stage2_home_zero_update_encoder_v4", "ilume_stage2_home_encoder_v5",
-    } or payload.get("format_version") != (5 if payload.get("kind") == "ilume_stage2_home_encoder_v5" else 4 if str(payload.get("kind", "")).endswith("_v4") else STAGE2_ENCODER_VERSION):
-        raise ValueError("Unsupported Stage 2 encoder artifact")
-    if payload.get("identity_contract_version") != IDENTITY_CONTRACT_VERSION:
-        raise ValueError(
-            "Stage 2 encoder predates identity contract v1; retrain Stage 2"
-        )
-    stage1_state = payload.get("stage1_backbone")
-    object_state = payload.get("object_encoder")
-    if not isinstance(stage1_state, dict) or not isinstance(object_state, dict):
-        raise ValueError("Stage 2 encoder artifact is missing encoding states")
-    expected_hashes = payload.get("state_hashes", {})
-    if expected_hashes.get("stage1_backbone") != _state_hash(stage1_state):
-        raise ValueError("Stage 2 encoder Stage 1 state hash mismatch")
-    if expected_hashes.get("object_encoder") != _state_hash(object_state):
-        raise ValueError("Stage 2 encoder ObjectEncoder state hash mismatch")
-    required = {"stage1_config", "stage1_feature_identity", "stage1_encoding_contract", "feature_artifacts", "object_encoder_config", "role_to_id", "model_contract", "provenance", "semantic_identity"}
-    if not required.issubset(payload):
-        raise ValueError("Stage 2 encoder artifact contract is incomplete")
-    if payload["role_to_id"] != dict(ROLE_TO_ID):
-        raise ValueError("Stage 2 encoder role mapping mismatch")
-    expected_identity = build_stage2_encoder_identity(
-        stage1_feature_identity=payload["stage1_feature_identity"],
-        stage1_encoding_contract=payload["stage1_encoding_contract"],
-        stage1_state_hash=expected_hashes["stage1_backbone"],
-        object_encoder_contract=payload["object_encoder_config"],
-        version=5 if payload["format_version"] == 5 else 1,
-        object_encoder_state_hash=expected_hashes["object_encoder"],
-        role_to_id=payload["role_to_id"],
-    )
-    require_compatible_identity(
-        expected_identity,
-        payload["semantic_identity"],
-        context="Stage 2 encoder artifact",
-    )
-    return payload
+    raise ValueError("ObjectEncoder export/loading retired; use the historical Git revision")
 
 
 @torch.inference_mode()

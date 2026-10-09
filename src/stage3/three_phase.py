@@ -34,8 +34,8 @@ THREE_PHASE_KNOWLEDGE_FINAL_KIND = "ilume_stage3_transfer_knowledge_three_phase_
 
 
 def _scope_kind(plan: Mapping[str, Any], suffix: str) -> str:
-    if plan.get("representation_contract") == "dual_view_object_v5":
-        return "ilume_stage3_object_three_phase_v5_" + suffix
+    if plan.get("representation_contract") == "entity_home_v4":
+        return "ilume_stage3_entity_home_three_phase_v4_" + suffix
     if plan.get("representation_contract") == "dual_view_v4":
         prefix = "ilume_stage3_dual_view_three_phase_v4"
     elif "simulation_training" in plan:
@@ -54,11 +54,11 @@ def _scope_kind(plan: Mapping[str, Any], suffix: str) -> str:
 
 
 def _final_format(plan: Mapping[str, Any]) -> int:
-    return 5 if plan.get("representation_contract") == "dual_view_object_v5" else 4 if plan.get("representation_contract") == "dual_view_v4" else THREE_PHASE_FINAL_FORMAT_VERSION
+    return 4 if plan.get("representation_contract") == "entity_home_v4" else 4 if plan.get("representation_contract") == "dual_view_v4" else THREE_PHASE_FINAL_FORMAT_VERSION
 
 
 def _checkpoint_format(plan: Mapping[str, Any]) -> int:
-    return 5 if plan.get("representation_contract") == "dual_view_object_v5" else 4 if plan.get("representation_contract") == "dual_view_v4" else THREE_PHASE_CHECKPOINT_VERSION
+    return 4 if plan.get("representation_contract") == "entity_home_v4" else 4 if plan.get("representation_contract") == "dual_view_v4" else THREE_PHASE_CHECKPOINT_VERSION
 
 
 def _append_jsonl(path: Path, payload: Mapping[str, Any]) -> None:
@@ -124,7 +124,7 @@ def _model_state(model: nn.Module) -> dict[str, torch.Tensor]:
 
 def _model_hash(state: Mapping[str, torch.Tensor], knowledge: bool = False, object_phase1: bool = False, representation_contract: str | None = None) -> str:
     namespace = (
-        "stage3.object-model-state.v5" if representation_contract == "dual_view_object_v5" else
+        "stage3.entity-home-model-state.v4" if representation_contract == "entity_home_v4" else
         "stage3.dual-view-model-state.v4" if any(name.startswith("object_encoder.input_projection.") for name in state) else
         "stage3.object-phase1-model-state.v1" if object_phase1 else
         "stage3.transfer-knowledge-model-state.v1" if knowledge else
@@ -147,7 +147,7 @@ def _owner_state(
 
 def _owner_hash(state: Mapping[str, torch.Tensor], knowledge: bool = False, object_phase1: bool = False, representation_contract: str | None = None) -> str:
     namespace = (
-        "stage3.object-owner-state.v5" if representation_contract == "dual_view_object_v5" else
+        "stage3.entity-home-owner-state.v4" if representation_contract == "entity_home_v4" else
         "stage3.object-phase1-owner-state.v1" if object_phase1 else
         "stage3.transfer-knowledge-owner-state.v1" if knowledge else
         "stage3.three-phase-owner-state"
@@ -237,12 +237,14 @@ def _stitch_owner_deltas(
 def _representation_fields(plan: Mapping[str, Any]) -> dict[str, Any]:
     if "representation" in plan:
         return {"representation": dict(plan["representation"])}
+    if plan.get("representation_contract") == "entity_home_v4":
+        return {"stage1_encoder_identity": plan["stage1_encoder_identity"]}
     return {"stage2_encoder_identity": plan["stage2_encoder_identity"]}
 
 
 def _final_kind(plan: Mapping[str, Any]) -> str:
-    if plan.get("representation_contract") == "dual_view_object_v5":
-        return "ilume_stage3_object_three_phase_final_v5"
+    if plan.get("representation_contract") == "entity_home_v4":
+        return "ilume_stage3_entity_home_three_phase_final_v4"
     if plan.get("representation_contract") == "dual_view_v4":
         return "ilume_stage3_dual_view_three_phase_final_v4"
     if "simulation_training" in plan:

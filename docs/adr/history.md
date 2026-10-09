@@ -129,3 +129,5 @@ baseline 与历史结果保持不变。该历史说明不要求当前纯结构�
 - `0051-stage3-weak-task-private-regularization.md`
 - `0052-stage3-task-recipe-rollback-and-epoch-cleanup.md`
 - `0053-stage3-clean-hybrid-task-recipe.md`
+
+ADR-0094 的 v5 Unary/Pair 及旧 v4 ObjectEncoder/消融合同已由 ADR-0095 替代；历史复现使用对应 Git 版本，历史输出只读。

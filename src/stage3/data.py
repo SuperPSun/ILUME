@@ -25,14 +25,14 @@ MISSING_MARKERS = frozenset({"", "nan", "na", "n/a", "null", "none", "missing"})
 
 
 def prepared_artifact_kind(config: Stage3Config) -> str:
-    if config.is_v5:
-        return "ilume_stage3_object_sparse_data_v5"
+    if config.is_entity_home:
+        return "ilume_stage3_entity_sparse_data_v4"
     return STAGE3_V4_ARTIFACT_KIND if config.initialization.representation_contract == "dual_view_v4" else STAGE3_ARTIFACT_KIND
 
 
 def prepared_artifact_version(config: Stage3Config) -> int:
-    if config.is_v5:
-        return 5
+    if config.is_entity_home:
+        return 4
     return 4 if config.initialization.representation_contract == "dual_view_v4" else STAGE3_ARTIFACT_VERSION
 
 
@@ -294,7 +294,7 @@ def resolve_task_registry(config: Stage3Config) -> dict[str, ResolvedTaskSpec]:
             task_weight=task.task_weight,
             catalog_schema_version=fact.catalog_schema_version,
             provenance=fact.provenance,
-            role_policy="formal_charge_v1" if config.is_v5 else "legacy_slot_v1",
+            role_policy="formal_charge_v1" if config.is_entity_home else "legacy_slot_v1",
         )
     return resolved
 
@@ -559,12 +559,12 @@ class Stage3TaskDataset:
         metadata_path = self.artifact_dir / "metadata.json"
         self.metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         artifact_kind = self.metadata.get("kind")
-        version = 5 if artifact_kind == "ilume_stage3_object_sparse_data_v5" else 4 if artifact_kind == STAGE3_V4_ARTIFACT_KIND else STAGE3_ARTIFACT_VERSION
+        version = 4 if artifact_kind == "ilume_stage3_entity_sparse_data_v4" else 4 if artifact_kind == STAGE3_V4_ARTIFACT_KIND else STAGE3_ARTIFACT_VERSION
         if (
             self.metadata.get("format_version") != version
             or artifact_kind not in {
                 STAGE3_ARTIFACT_KIND,
-                STAGE3_V4_ARTIFACT_KIND, "ilume_stage3_object_sparse_data_v5",
+                STAGE3_V4_ARTIFACT_KIND, "ilume_stage3_entity_sparse_data_v4",
                 "ilume_stage3_rdkit_sparse_data",
             }
         ):
@@ -603,7 +603,7 @@ class Stage3RepresentationStore:
         self.fold = fold
         self.artifact_kind = artifact_kind
         self.knowledge_bank = None
-        if artifact_kind in {STAGE3_ARTIFACT_KIND, STAGE3_V4_ARTIFACT_KIND, "ilume_stage3_object_sparse_data_v5"}:
+        if artifact_kind in {STAGE3_ARTIFACT_KIND, STAGE3_V4_ARTIFACT_KIND, "ilume_stage3_entity_sparse_data_v4"}:
             embeddings = prepared_objects.get("embeddings")
             if not isinstance(embeddings, torch.Tensor) or embeddings.ndim != 2:
                 raise ValueError("Stage 3 Object representation matrix is malformed")

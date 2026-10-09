@@ -28,9 +28,9 @@ from stage2.data import (
     pack_stage2_batch, task_batch_counts, validate_runtime_task_contract,
 )
 from stage2.identity import metadata_identity
-from stage2.model import Stage2ObjectModel, molecule_equal_smooth_l1_loss
+from stage2.model import molecule_equal_smooth_l1_loss
 from stage2.runtime import configure_stage2_math
-from stage2.train import STAGE2_HOME_ENCODER_KIND, export_stage2_encoder_artifact, task_compensation_scale
+from stage2.train import task_compensation_scale
 
 from .home_config import HomeRecipe
 from .home_contract import SOURCE_GROUPS, source_groups, state_hash, transferable_state
@@ -45,15 +45,13 @@ def _cpu_state(model: torch.nn.Module) -> dict[str, torch.Tensor]:
     return {name: value.detach().cpu().clone() for name, value in model.state_dict().items()}
 
 
-def _model_hash(state: Mapping[str, torch.Tensor], *, v5: bool = False) -> str:
-    return tensor_state_hash("stage2.home.full-model.v5" if v5 else "stage2.home.full-model.v4" if any(name.startswith("object_encoder.input_projection.") for name in state) else "stage2.home.full-model.v1", state)
+def _model_hash(state: Mapping[str, torch.Tensor], *, entity_home: bool = False) -> str:
+    return tensor_state_hash("stage2.entity-home.full-model.v4", state)
 
 
 def model_contract_for_recipe(experiment: HomeRecipe) -> dict[str, Any]:
-    from .model import object_encoder_contract
-    manifest = json.loads((experiment.stage2.data.artifacts_dir / "frozen_entities.json").read_text())
-    return {**object_encoder_contract(experiment.stage2.model, manifest["identity"]["payload"]["entity_input_dim"]),
-            "source_tasks": sorted(experiment.stage2.data.tasks)}
+    from common.entity_inputs import ENTITY_INPUT_CONTRACT
+    return {**ENTITY_INPUT_CONTRACT, "source_tasks": sorted(experiment.stage2.data.tasks)}
 
 
 def training_identity(
@@ -61,8 +59,8 @@ def training_identity(
     math_contract: Mapping[str, Any],
 ) -> dict[str, Any]:
     config = experiment.stage2
-    return semantic_identity("stage2.home-training.v5" if config.is_v5 else "stage2.home-training.v4" if experiment.freeze_stage1 else "stage2.home-training.v1", {
-        "contract_version": 5 if config.is_v5 else 4 if experiment.freeze_stage1 else 1,
+    return semantic_identity("stage2.entity-home-training.v4" if config.is_entity_home else "stage2.home-training.v4" if experiment.freeze_stage1 else "stage2.home-training.v1", {
+        "contract_version": 4 if config.is_entity_home else 4 if experiment.freeze_stage1 else 1,
         "stage2_data_identity": data_identity["hash"],
         **({"frozen_entity_cache": json.loads((config.data.artifacts_dir / "frozen_entities.json").read_text())} if experiment.freeze_stage1 else {}),
         "stage1_source": (
@@ -80,9 +78,9 @@ def training_identity(
             "experts": experiment.stage3.groups["thermophysical"].experts,
             "expert_hidden_ratio": experiment.stage3.groups["thermophysical"].expert_hidden_ratio,
             "transferred": False,
-        }} if (not config.is_v5 or "simulation/homo" in config.data.tasks) else {}),
-        "source_groups": ({task: group for task, group in SOURCE_GROUPS.items() if task in config.data.tasks} if config.is_v5 else SOURCE_GROUPS),
-        **({"object_encoder_contract": model_contract_for_recipe(experiment), "initialization": "seed_owner_v1"} if config.is_v5 else {}),
+        }} if (not config.is_entity_home or "simulation/homo" in config.data.tasks) else {}),
+        "source_groups": ({task: group for task, group in SOURCE_GROUPS.items() if task in config.data.tasks} if config.is_entity_home else SOURCE_GROUPS),
+        **({"entity_input_contract": model_contract_for_recipe(experiment), "initialization": "seed_owner_v1"} if config.is_entity_home else {}),
         "batch_size": config.training.batch_size,
         "microbatch_size": experiment.stage2_microbatch_size,
         "epochs": experiment.stage2_epochs,
@@ -304,32 +302,13 @@ def _export(
     registry: Any, identity: Mapping[str, Any], data_identity: Mapping[str, Any],
 ) -> dict[str, Any]:
     checkpoint_path = root / f"checkpoint_epoch_{experiment.stage2_epochs:05d}.pt"
-    encoder_path = root / "stage2_encoder.pt"
-    if experiment.stage2.is_v5:
-        scaffold = model
-    else:
-        # The transient compatibility scaffold is never optimized and exports only encoding state.
-        scaffold = Stage2ObjectModel(
-            model.backbone, registry,
-            object_layers=experiment.stage2.model.object_layers,
-            object_ffn_dim=experiment.stage2.model.object_ffn_dim,
-            dropout=experiment.stage2.model.dropout,
-        )
-        scaffold.object_encoder.load_state_dict(model.object_encoder.state_dict(), strict=True)
-    export_stage2_encoder_artifact(
-        encoder_path, model=scaffold, config=experiment.stage2, registry=registry,
-        data_identity=dict(data_identity),
-        provenance={
-            "stage2_checkpoint_hash": sha256_file(checkpoint_path),
-            "refinement_boundary_epoch": experiment.stage2_epochs,
-            "home_training_identity": identity["hash"],
-            "physics_only": True,
-            **({"stage1_checkpoint_hash": None, "random_stage1_seed": experiment.random_seed}
-               if experiment.initialization == "random_stage1" else {}),
-        },
-        encoder_kind=STAGE2_HOME_ENCODER_KIND,
-    )
-    compatible_encoder = torch.load(encoder_path, map_location="cpu", weights_only=False)
+    from stage1.identity import metadata_identity as feature_metadata_identity
+    feature_root = experiment.stage2.data.pretrain_artifacts_dir
+    feature_metadata = json.loads((feature_root / "metadata.json").read_text())
+    features = {name: json.loads((feature_root / name).read_text()) for name in (
+        "tokenizer.json", "descriptor_schema.json", "descriptor_scaler.json")}
+    stage1_state = _cpu_state(model.backbone)
+    stage1_hash = tensor_state_hash("stage1.encoding-state", stage1_state)
     shared = transferable_state(model.home)
     shared_hash = state_hash(shared)
     full_state = _cpu_state(model)
@@ -337,7 +316,7 @@ def _export(
     data_metadata = json.loads((experiment.stage2.data.artifacts_dir / "metadata.json").read_text(encoding="utf-8"))
     payload = {
         "kind": final_kind(experiment),
-        "format_version": 5 if experiment.stage2.is_v5 else 4 if experiment.freeze_stage1 else 2,
+        "format_version": 4,
         "training_identity": dict(identity),
         "stage2_data_identity": dict(data_identity),
         "recipe": experiment.to_dict(),
@@ -346,19 +325,16 @@ def _export(
         "catalog_sha256": registry.catalog_sha256,
         "scalers": data_metadata["scalers"],
         "scalers_hash": semantic_hash("stage2.home.scalers.v1", data_metadata["scalers"]),
-        "stage1_config": compatible_encoder["stage1_config"],
-        "stage1_feature_identity": compatible_encoder["stage1_feature_identity"],
-        "stage1_encoding_contract": compatible_encoder["stage1_encoding_contract"],
-        "feature_artifacts": compatible_encoder["feature_artifacts"],
-        "feature_artifacts_hash": semantic_hash("stage2.home.feature-artifacts.v1", compatible_encoder["feature_artifacts"]),
+        "stage1_config": model.backbone.config.to_dict(),
+        "stage1_feature_identity": dict(feature_metadata_identity(feature_metadata, "feature", context="Stage1 features")),
+        "stage1_encoding_contract": {**model.model_contract, "feature_generation_contract": feature_metadata["feature_generation_contract"]},
+        "feature_artifacts": features,
+        "feature_artifacts_hash": semantic_hash("stage2.home.feature-artifacts.v1", features),
         "full_model_state": full_state,
-        "full_model_state_hash": full_state_hash(full_state, version=5 if experiment.stage2.is_v5 else None),
+        "full_model_state_hash": full_state_hash(full_state, version=5 if experiment.stage2.is_entity_home else None),
         "owner_manifest": owner_manifest,
-        "stage2_encoder": encoder_path.name,
-        "stage2_encoder_sha256": sha256_file(encoder_path),
         "checkpoint_sha256": sha256_file(checkpoint_path),
-        "stage1_backbone": compatible_encoder["stage1_backbone"],
-        "object_encoder": compatible_encoder["object_encoder"],
+        "stage1_backbone": stage1_state,
         "group_mapping": {
             "thermophysical": [task for task, group in source_groups(registry).items() if group == "thermophysical"],
             "solvation": [task for task, group in source_groups(registry).items() if group == "solvation"],
@@ -371,8 +347,7 @@ def _export(
         "shared_state": shared,
         "shared_state_hash": shared_hash,
         "encoder_state_hashes": {
-            "stage1": compatible_encoder["state_hashes"]["stage1_backbone"],
-            "object_encoder": compatible_encoder["state_hashes"]["object_encoder"],
+            "stage1": stage1_hash,
         },
     }
     artifact = root / "stage2_final.pt"
@@ -381,7 +356,6 @@ def _export(
         "kind": final_kind(experiment),
         "artifact": artifact.name,
         "artifact_sha256": sha256_file(artifact),
-        "stage2_encoder_sha256": sha256_file(encoder_path),
         "checkpoint_sha256": payload["checkpoint_sha256"],
         "feature_artifacts_hash": payload["feature_artifacts_hash"],
         "scalers_hash": payload["scalers_hash"],
@@ -432,7 +406,6 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
     identity = training_identity(experiment, data_identity, math_contract)
     groups = [
         {"params": model.backbone_parameters(), "lr": config.training.backbone_learning_rate},
-        {"params": tuple(model.object_encoder.parameters()), "lr": config.training.object_encoder_learning_rate},
         {"params": model.home_parameters(), "lr": config.training.task_head_learning_rate},
     ]
     if loaded.config.is_dual_view:
@@ -461,13 +434,13 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
         if checkpoint_files != [output / f"checkpoint_epoch_{index:05d}.pt" for index in range(1, epoch + 1)]:
             raise ValueError("Stage2-HoME checkpoint sequence is incomplete")
         _check_history(output, epoch)
-        if (checkpoint.get("kind") != ("ilume_stage2_home_checkpoint_v5" if config.is_v5 else "ilume_stage2_home_checkpoint_v4" if experiment.freeze_stage1 else STAGE2_HOME_CHECKPOINT_KIND)
-            or checkpoint.get("format_version") != (5 if config.is_v5 else 4 if experiment.freeze_stage1 else 1)
+        if (checkpoint.get("kind") != ("ilume_stage2_entity_home_checkpoint_v4" if config.is_entity_home else "ilume_stage2_home_checkpoint_v4" if experiment.freeze_stage1 else STAGE2_HOME_CHECKPOINT_KIND)
+            or checkpoint.get("format_version") != (4 if config.is_entity_home else 4 if experiment.freeze_stage1 else 1)
             or checkpoint.get("training_identity") != identity):
             raise ValueError("Stage2-HoME resume identity mismatch")
-        if config.is_v5 and checkpoint.get("owner_manifest") != full_owner_manifest(model):
+        if config.is_entity_home and checkpoint.get("owner_manifest") != full_owner_manifest(model):
             raise ValueError("Stage2-HoME resume owner manifest mismatch")
-        if checkpoint.get("model_hash") != _model_hash(checkpoint["model"], v5=config.is_v5):
+        if checkpoint.get("model_hash") != _model_hash(checkpoint["model"], entity_home=config.is_entity_home):
             raise ValueError("Stage2-HoME resume model hash mismatch")
         history_tail = json.loads((output / "metrics.jsonl").read_text(encoding="utf-8").splitlines()[-1])
         if checkpoint.get("history_tail") != history_tail:
@@ -487,7 +460,6 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
         payload, _, _ = load_home_final(output / "stage2_final.pt")
         if (
             payload["training_identity"]["hash"] != identity["hash"]
-            or manifest.get("stage2_encoder_sha256") != sha256_file(output / "stage2_encoder.pt")
         ):
             raise ValueError("Completed Stage2-HoME artifact is corrupt")
         return manifest
@@ -550,11 +522,11 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
             "validation_normalized_mae": validation,
         }
         checkpoint = {
-            "kind": "ilume_stage2_home_checkpoint_v5" if config.is_v5 else "ilume_stage2_home_checkpoint_v4" if experiment.freeze_stage1 else STAGE2_HOME_CHECKPOINT_KIND,
-            "format_version": 5 if config.is_v5 else 4 if experiment.freeze_stage1 else 1, "epoch": epoch, "updates": update,
+            "kind": "ilume_stage2_entity_home_checkpoint_v4" if config.is_entity_home else "ilume_stage2_home_checkpoint_v4" if experiment.freeze_stage1 else STAGE2_HOME_CHECKPOINT_KIND,
+            "format_version": 4 if config.is_entity_home else 4 if experiment.freeze_stage1 else 1, "epoch": epoch, "updates": update,
             "training_identity": identity, "model": state,
-            **({"owner_manifest": full_owner_manifest(model)} if config.is_v5 else {}),
-            "model_hash": _model_hash(state, v5=config.is_v5),
+            **({"owner_manifest": full_owner_manifest(model)} if config.is_entity_home else {}),
+            "model_hash": _model_hash(state, entity_home=config.is_entity_home),
             "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(),
             "rng": capture_rng_state(), "history_tail": row,
         }
@@ -568,7 +540,7 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
             "epoch_seconds": time.perf_counter() - epoch_started,
             "train_peak_allocated_bytes": peak_memory, "tasks": task_timing,
             "parameter_count": sum(p.numel() for p in model.parameters()),
-            "object_encoder_parameter_count": sum(p.numel() for p in model.object_encoder.parameters()),
+            "home_parameter_count": sum(p.numel() for p in model.home.parameters()),
             "trainable_parameter_count": sum(p.numel() for p in model.parameters() if p.requires_grad),
         }
         with (output / "performance.jsonl").open("a", encoding="utf-8") as handle:

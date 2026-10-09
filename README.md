@@ -1,6 +1,6 @@
 # ILUME
 
-ILUME 的现役流程是 **冻结 v4 Stage1 → v5 Stage2 Unary + Pair / 五任务 HoME → v5 Stage3 22实验 / 两模拟辅助 HoME**。Stage1 learned1024 与显式标准化 RDKit217 组成1241D实体输入，统一Object表示1024D；Stage2/3永久冻结Stage1。Stage3保留三阶段 owner 训练和严格来源验证。合同见 [ADR-0094](docs/adr/0094-v5-unary-pair-five-task-stage2.md)；正式命令见 [v5运行手册](docs/v5-runbook.md)。v4及更早Stage2/3配置和产物保持历史身份。
+ILUME 的现役流程是 **冻结 v4 Stage1 → v5 Stage2 Unary + Pair / 五任务 HoME → v5 Stage3 22实验 / 两模拟辅助 HoME**。Stage1 learned1024 与显式标准化 RDKit217 组成1241D实体输入，统一Object表示1024D；Stage2/3永久冻结Stage1。Stage3保留三阶段 owner 训练和严格来源验证。合同见 [ADR-0094](docs/adr/0094-v5-unary-pair-five-task-stage2.md)；正式命令见 [v4运行手册](docs/v4-runbook.md)。v4及更早Stage2/3配置和产物保持历史身份。
 
 命令从仓库根目录执行。安装依赖并准备 ILUME-Data 的 Stage1/2/3 输入；CSV 与输出不进入 Git。正式训练使用尚不存在的输出目录，旧 HoME 产物不能与新正式身份交叉加载。本页命令是运行手册，不属于自动验收。
 
@@ -8,23 +8,17 @@ ILUME 的现役流程是 **冻结 v4 Stage1 → v5 Stage2 Unary + Pair / 五任�
 python -m pip install -e ".[dev,tokenizers]"
 ```
 
-## 正式 v5 Stage2 / Stage3
+## 正式 v4
 
-`configs/v5/stage2/base.yaml` 和 `configs/v5/stage3/base.yaml` 是唯一新 Base，输出隔离到 `outputs/v5/`；新增三组对照已移除。Stage3保持22项实验任务，Phase2/3的两项模拟任务只更新各自PRIVATE，不影响共享GLOBAL/GROUP的更新。焓任务展示为 Enthalpy of vaporization，仅使用temperature_K，catalog来源标识保持不变。按 [v5运行手册](docs/v5-runbook.md)依次校验 Stage1、Stage2 prepare/train、Stage3 prepare/五折train、实验与模拟评估、独立summary。当前需先补齐配置指定的正式 Stage1 encoder；不手改旧metadata。
+Stage1配置和独立预测器保持不变。Stage2采用五任务实体HoME，Stage3为24实验+两项模拟辅助；独立ObjectEncoder已取消。GLOBAL/GROUP的L1并行读取冻结Stage1 learned1024+标准化RDKit217实体、角色和有效位。Phase1联合训练，Phase2冻结GLOBAL，Phase3仅PRIVATE；两个模拟任务只更新自己的PRIVATE。
 
-## 现役 v4 Stage1 与历史 v4 Stage2/3
-
-现役Stage1 Base为12层SMILES Transformer与8个独立residual图block，encoder-only约60.73M（2,048-token词表）；learned1024/atom512及下游冻结合同不变，见[ADR-0090](docs/adr/0090-stage1-v4-residual-encoder-capacity.md)。扩容直接复用既有v4 Stage1 corpus、统计和Uni-Mol缓存，但Stage1必须从头训练，下游Stage2/3重新生成表示并训练；旧输出不覆盖。
-
-Stage1配置位于 `configs/v4/stage1/`；下游现役已迁移v5，以下v4 Stage2/3与核心消融只用于历史追溯。v4输出隔离到 `outputs/v4/`；Base与三个核心消融的完整命令，以及 Uni-Mol2 独立环境的创建、依赖安装和版本核验步骤，见 [v4运行手册](docs/v4-runbook.md)。先独立进行Uni-Mol2小样本成功率/吞吐/存储审计，再生成全量分片缓存；teacher使用版本锁定的独立环境，本仓库不会自动下载权重。Stage1训练导出仅encoder/fusion的 `stage1_encoder.pt`，下游不加载teacher或辅助头。旧v3 prepared/checkpoint不可直接复用，新Stage1/2/3均需prepare/train。
-
-Stage1现役Base另有train-only原子电荷监督，使用绑定既有corpus的format2标签sidecar；同结构电荷源行分别保留，不平均、不复制语料，旧sidecar不可交叉续用；不重建Uni-Mol缓存。当前loss系数、全局batch及每rank worker数以[Base YAML](configs/v4/stage1/base.yaml)和[v4手册](docs/v4-runbook.md#stage1-loss-and-gradient-audit)为准，旧ADR中的数值保留历史边界。梯度审计每1000步，可用`--gradient-audit-interval-steps 0`关闭。完整最终`last.pt`保留辅助回归头；可显式运行`scripts/stage1/regression.py`冻结encoder后独立训练13项电子目标和partial charge，不覆盖正式encoder或下游来源，见[ADR-0092](docs/adr/0092-stage1-atom-charge-and-frozen-regression-heads.md)及[v4手册](docs/v4-runbook.md#independent-frozen-regression-head-training)。
-
-独立 regression YAML 支持 `linear/mlp/residual_mlp` 及逐目标 predictor 覆盖；默认 Linear 保持预训练初始化，非线性头以固定 seed 随机初始化。新 format2 可按内嵌结构加载，旧 Linear format1 仍兼容；encoder及下游身份不变，见[ADR-0093](docs/adr/0093-stage1-configurable-frozen-predictors.md)。
+正式配置为 `configs/v4/stage{1,2,3}/base.yaml`，新Stage2/3输出使用 `outputs/v4/stage{2,3}/entity_home/`。见 [ADR-0095](docs/adr/0095-v4-entity-home-without-object-encoder.md) 和 [运行手册](docs/v4-runbook.md)。正式Stage1 encoder/features需先齐备；不手改metadata或SHA。历史Object/v5工件只读，加载须使用历史Git版本；v5及v4消融配置已移除。
 
 ## v3 历史运行手册
 
-下列v3主线、候选与核心消融命令保留用于历史追溯，不是现役v5入口，不覆盖旧结果；v3/legacy数值合同与代码路径未迁移。
+以下历史命令须切到对应历史 Git 版本执行；本 checkout 已移除 ObjectEncoder 与 zero-update 入口。
+
+下列v3主线、候选与核心消融命令保留用于历史追溯，不是现役实体HoME v4入口，不覆盖旧结果；v3/legacy数值合同与代码路径未迁移。
 
 历史v3的 Stage1 使用 v2 来源，完成 prepare 后训练：
 
@@ -105,7 +99,7 @@ python scripts/benchmarks/sweep.py --config configs/ablations/no_stage3_home.yam
 
 ## 四项模拟性质比较
 
-本节的 Stage3/no-Stage1 命令及四任务比较属于历史v4协议；现役v5仅报告汽化热和热膨胀，命令见 [v5运行手册](docs/v5-runbook.md)。Baseline的四任务训练配方保持不变，不与v5两任务结果混排。
+本节的 Stage3/no-Stage1 命令及四任务比较属于历史v4协议；现役实体HoME v4仅报告汽化热和热膨胀，命令见 [v4运行手册](docs/v4-runbook.md)。Baseline的四任务训练配方保持不变，不与现役两任务结果混排。
 
 十个正式 baseline 另训 heat of vaporization、thermal expansion、HOMO、LUMO，各任务使用 catalog 的原有 train/valid/test，独立训练一次；不训练 partial charge，也不让模拟数据更新实验任务模型。神经 baseline 沿用各自 10 epochs、XGBoost 保持 1000 trees，发布末轮状态。内部单任务 MLP 消融及历史 split 配置不加入这些作业。合同见 [ADR-0086](docs/adr/0086-scalar-simulation-baselines-and-reporting.md)。
 
@@ -488,7 +482,7 @@ unknown motif（2.236%），不会删除样本。完整科学与审计边界见
 
 新训练和评估输出不覆盖既有目录；每个操作记录 `run_config.yaml`、`metadata.json` 与完成后的 `summary.json`。全局 summarizer 只收录显式选中的目录，并对 prediction 完整性进行验证；Stage3 experimental 与 simulation 使用独立 leaderboard，Stage2 不发布榜单。见 [ADR-0021](docs/adr/0021-identity-audit-contract-v1.md)、[ADR-0031](docs/adr/0031-stage3-summary-normalization-relaxation.md)、[ADR-0085](docs/adr/0085-retire-stage2-home-evaluation.md)与 [ADR-0086](docs/adr/0086-scalar-simulation-baselines-and-reporting.md)。
 
-下列为历史v4汇总命令；现役v5按 [v5运行手册](docs/v5-runbook.md)在独立目录汇总，不加入旧20任务或四模拟结果。
+下列为历史v4汇总命令；现役实体HoME v4按 [v4运行手册](docs/v4-runbook.md)在独立目录汇总，不加入旧20任务或四模拟结果。
 
 ```bash
 python scripts/benchmarks/summarize.py --input outputs/v4 outputs/benchmarks/v4 --include outputs/v4/stage3/base/valid outputs/v4/stage3/base/test outputs/v4/stage3/base/simulation_valid outputs/v4/stage3/base/simulation_test outputs/benchmarks/v4 --output summary_v4

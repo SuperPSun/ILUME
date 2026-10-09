@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, Iterator
+from typing import Any
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 
-from stage1.data import MultimodalBatch
 from stage1.features import ROLE_TO_ID
-from stage1.model import EncodedEntityStates, MultimodalPretrainModel
-from .registry import Stage2Registry, TaskSpec
+from .registry import Stage2Registry
 
 
 RECONSTRUCTION_MODULES = (
@@ -70,115 +68,16 @@ def build_model_contract(
     return contract
 
 
-class ObjectEncoder(nn.Module):
-    def __init__(self, d_model: int, n_heads: int, *, num_layers: int, feedforward_dim: int, dropout: float, input_dim: int | None = None) -> None:
-        super().__init__()
-        self.d_model = d_model
-        self.input_dim = d_model if input_dim is None else input_dim
-        if self.input_dim != d_model:
-            self.input_projection = nn.Sequential(nn.Linear(self.input_dim, d_model), nn.LayerNorm(d_model))
-        self.object_cls = nn.Parameter(torch.empty(d_model))
-        nn.init.normal_(self.object_cls, std=0.02)
-        self.role_embedding = nn.Embedding(len(ROLE_TO_ID), d_model)
-        layer = nn.TransformerEncoderLayer(
-            d_model=d_model, nhead=n_heads, dim_feedforward=feedforward_dim,
-            dropout=dropout, activation="gelu", batch_first=True, norm_first=True,
-        )
-        self.encoder = nn.TransformerEncoder(
-            layer, num_layers=num_layers, norm=nn.LayerNorm(d_model), enable_nested_tensor=False,
-        )
-        self.residual_projection = nn.Linear(d_model, d_model)
-        nn.init.zeros_(self.residual_projection.weight)
-        nn.init.zeros_(self.residual_projection.bias)
-        self.output_normalization = nn.LayerNorm(d_model)
-
-    def forward(self, entity_cls: torch.Tensor, entity_roles: torch.Tensor) -> torch.Tensor:
-        if entity_cls.ndim != 3 or entity_roles.shape != entity_cls.shape[:2] or entity_cls.shape[-1] != self.input_dim:
-            raise ValueError("ObjectEncoder entity tensor contract mismatch")
-        if self.input_dim != self.d_model:
-            entity_cls = self.input_projection(entity_cls)
-        slots = entity_cls.shape[1]
-        if slots == 1:
-            if entity_roles.device.type == "cpu" and not bool(
-                torch.isin(entity_roles, torch.tensor(tuple(ROLE_TO_ID.values()))).all()
-            ):
-                raise ValueError("Single object has an invalid entity role")
-            residual = entity_cls[:, 0]
-        elif slots == 2:
-            if entity_roles.device.type == "cpu" and not torch.equal(
-                entity_roles,
-                torch.tensor([ROLE_TO_ID["cation"], ROLE_TO_ID["anion"]]).expand_as(entity_roles),
-            ):
-                raise ValueError("Ionic-liquid object requires ordered cation and anion")
-            residual = entity_cls.mean(dim=1)
-        else:
-            raise ValueError("ObjectEncoder supports one entity or ordered cation/anion")
-        cls = self.object_cls.expand(entity_cls.shape[0], 1, -1)
-        encoded = self.encoder(torch.cat((cls, entity_cls + self.role_embedding(entity_roles)), dim=1))
-        return self.output_normalization(residual + self.residual_projection(encoded[:, 0]))
+def ObjectEncoder(*args, **kwargs):
+    raise ValueError("ObjectEncoder retired; use the historical Git revision for old models")
 
 
-class UnaryPairObjectEncoder(nn.Module):
-    def __init__(self, d_model: int, *, input_dim: int, unary_hidden_dim: int,
-                 pair_hidden_dim: int, dropout: float) -> None:
-        super().__init__()
-        self.d_model, self.input_dim = d_model, input_dim
-        self.input_projection = nn.Sequential(nn.Linear(input_dim, d_model), nn.LayerNorm(d_model))
-        self.role_embedding = nn.Embedding(len(ROLE_TO_ID), d_model)
-        nn.init.normal_(self.role_embedding.weight, std=0.02)
-        self.unary = nn.Sequential(
-            nn.LayerNorm(d_model), nn.Linear(d_model, unary_hidden_dim), nn.GELU(),
-            nn.Dropout(dropout), nn.Linear(unary_hidden_dim, d_model),
-        )
-        self.pair = nn.Sequential(
-            nn.LayerNorm(4 * d_model), nn.Linear(4 * d_model, pair_hidden_dim),
-            nn.GELU(), nn.Dropout(dropout), nn.Linear(pair_hidden_dim, d_model),
-        )
-        self.gamma = nn.Parameter(torch.zeros(()))
-        self.output_normalization = nn.LayerNorm(d_model)
-
-    def forward(self, entity_cls: torch.Tensor, entity_roles: torch.Tensor) -> torch.Tensor:
-        if (entity_cls.ndim != 3 or entity_roles.shape != entity_cls.shape[:2]
-                or entity_cls.shape[-1] != self.input_dim or entity_cls.shape[1] not in {1, 2}):
-            raise ValueError("UnaryPair ObjectEncoder entity tensor contract mismatch")
-        if not bool(((entity_roles >= 0) & (entity_roles < len(ROLE_TO_ID))).all()):
-            raise ValueError("UnaryPair ObjectEncoder invalid entity role")
-        if entity_cls.shape[1] == 2:
-            expected = entity_roles.new_tensor([ROLE_TO_ID["cation"], ROLE_TO_ID["anion"]])
-            if not torch.equal(entity_roles, expected.expand_as(entity_roles)):
-                raise ValueError("Ionic-liquid object requires ordered cation and anion")
-        h = self.input_projection(entity_cls) + self.role_embedding(entity_roles)
-        unary = h + self.unary(h)
-        if unary.shape[1] == 1:
-            return self.output_normalization(unary[:, 0])
-        cation, anion = unary.unbind(dim=1)
-        features = torch.cat((cation, anion, (cation - anion).abs(), cation * anion), -1)
-        return self.output_normalization((cation + anion) / 2 + self.gamma * self.pair(features))
+def build_object_encoder(*args, **kwargs):
+    raise ValueError("ObjectEncoder retired; use the historical Git revision for old models")
 
 
-def object_encoder_contract(config: Any, input_dim: int) -> dict[str, Any]:
-    contract = {"kind": config.object_encoder_kind, "input_dim": input_dim,
-                "dropout": config.dropout, "role_policy": "formal_charge_v1",
-                "initialization": "seed_owner_v1", "contract_version": 5,
-                "role_embedding_std": 0.02 if config.object_encoder_kind == "unary_pair" else 1.0}
-    if config.object_encoder_kind == "unary_pair":
-        contract.update(unary_hidden_dim=config.unary_hidden_dim,
-                        pair_hidden_dim=config.pair_hidden_dim, gamma_initial=0.0)
-    else:
-        contract.update(layers=config.object_layers, ffn_dim=config.object_ffn_dim)
-    return contract
-
-
-def build_object_encoder(d_model: int, n_heads: int, contract: dict[str, Any]) -> nn.Module:
-    kind = contract.get("kind", "transformer")
-    if kind == "unary_pair":
-        return UnaryPairObjectEncoder(d_model, input_dim=contract["input_dim"],
-            unary_hidden_dim=contract["unary_hidden_dim"], pair_hidden_dim=contract["pair_hidden_dim"],
-            dropout=contract["dropout"])
-    if kind != "transformer":
-        raise ValueError(f"Unsupported ObjectEncoder kind: {kind}")
-    return ObjectEncoder(d_model, n_heads, num_layers=contract["layers"],
-        feedforward_dim=contract["ffn_dim"], dropout=contract["dropout"], input_dim=contract.get("input_dim"))
+def object_encoder_contract(*args, **kwargs):
+    raise ValueError("ObjectEncoder retired; use the historical Git revision for old models")
 
 
 @dataclass(frozen=True)
@@ -331,168 +230,8 @@ def molecule_equal_smooth_l1_loss(
 masked_smooth_l1_loss = masked_target_macro_smooth_l1_loss
 
 
-class Stage2ObjectModel(nn.Module):
-    def __init__(self, backbone: MultimodalPretrainModel, registry: Stage2Registry, *, object_layers: int = 2, object_ffn_dim: int = 1024, dropout: float = 0.10) -> None:
-        super().__init__()
-        self.backbone = backbone
-        self.registry = registry
-        self.specs = {task.task_id: task for task in registry.tasks}
-        config = backbone.config.model
-        d_model = backbone.entity_dim
-        atom_dim = backbone.atom_dim
-        self.object_encoder = ObjectEncoder(d_model, config.n_heads, num_layers=object_layers, feedforward_dim=object_ffn_dim, dropout=dropout, input_dim=d_model + 217 if getattr(backbone.config, "is_dual_view", False) else None)
-        self.object_heads = nn.ModuleDict()
-        self.interaction_heads = nn.ModuleDict()
-        self.atom_heads = nn.ModuleDict()
-        for task in registry.tasks:
-            if task.target_level == "atom":
-                self.atom_heads[task.task_id] = AtomPropertyHead(
-                    atom_dim, d_model, dropout
-                )
-            elif task.topology == "interaction":
-                self.interaction_heads[task.task_id] = InteractionHead(d_model, len(task.condition_columns), len(task.target_columns), dropout)
-            else:
-                self.object_heads[task.task_id] = RegressionHead(d_model + len(task.condition_columns), d_model, len(task.target_columns), dropout)
-        self._object_config = {"layers": object_layers, "ffn_dim": object_ffn_dim, "dropout": dropout}
-        self.set_backbone_trainable(True)
-
-    @property
-    def model_contract(self) -> dict[str, Any]:
-        contract = build_model_contract(
-            self.backbone.entity_dim,
-            self.backbone.config.model.n_heads,
-            self.registry,
-            atom_dim=self.backbone.atom_dim,
-            representation_kind=self.backbone.representation_kind,
-            object_layers=self._object_config["layers"],
-            object_ffn_dim=self._object_config["ffn_dim"],
-            dropout=self._object_config["dropout"],
-        )
-        if getattr(self.backbone.config, "is_dual_view", False):
-            contract["object_encoder"]["input_dim"] = self.object_encoder.input_dim
-            contract.update(representation_kind="dual_view_rdkit_v4", entity_dim=self.object_encoder.input_dim, atom_dim=self.backbone.atom_dim)
-        return contract
-
-    def encode_entities(self, batch: Any) -> torch.Tensor:
-        if getattr(self.backbone.config, "is_dual_view", False):
-            return encode_object_entities(self.backbone, batch).entity_embedding
-        if getattr(self.backbone.config, "is_global_rdkit", False):
-            return self.backbone.encode_entity(batch).entity_embedding
-        return self.backbone.encode(batch)
-
-    def encode_entity_states(self, batch: MultimodalBatch) -> EncodedEntityStates:
-        if getattr(self.backbone.config, "is_dual_view", False):
-            encoded = encode_object_entities(self.backbone, batch)
-            return EncodedEntityStates(encoded.entity_embedding, encoded.atom_states, encoded.atom_batch)
-        if getattr(self.backbone.config, "is_global_rdkit", False):
-            encoded = self.backbone.encode_entity(batch)
-            return EncodedEntityStates(
-                entity_cls=encoded.entity_embedding,
-                atom_states=encoded.atom_states,
-                atom_batch=encoded.atom_batch,
-            )
-        return self.backbone.encode_states(batch)
-
-    def encode_object(self, entity_cls: torch.Tensor, roles: torch.Tensor) -> torch.Tensor:
-        return self.object_encoder(entity_cls, roles)
-
-    def set_backbone_trainable(self, trainable: bool) -> None:
-        if getattr(self.backbone.config, "is_dual_view", False):
-            trainable = False
-            self.backbone.eval()
-        for name, parameter in self.backbone.named_parameters():
-            reconstruction = any(name == prefix or name.startswith(prefix + ".") for prefix in RECONSTRUCTION_MODULES)
-            parameter.requires_grad_(trainable and not reconstruction)
-
-    def backbone_parameters(self) -> Iterator[nn.Parameter]:
-        for name, parameter in self.backbone.named_parameters():
-            if not any(name == prefix or name.startswith(prefix + ".") for prefix in RECONSTRUCTION_MODULES):
-                yield parameter
-
-    def object_encoder_parameters(self) -> Iterator[nn.Parameter]:
-        yield from self.object_encoder.parameters()
-
-    def task_head_parameters(self) -> Iterator[nn.Parameter]:
-        yield from self.object_heads.parameters()
-        yield from self.interaction_heads.parameters()
-        yield from self.atom_heads.parameters()
-
-    def task_head_module(self, task_id: str) -> nn.Module:
-        if task_id in self.object_heads:
-            return self.object_heads[task_id]
-        if task_id in self.interaction_heads:
-            return self.interaction_heads[task_id]
-        if task_id in self.atom_heads:
-            return self.atom_heads[task_id]
-        raise KeyError(f"Unknown Stage 2 task head: {task_id}")
-
-    def task_head_parameters_for(self, task_id: str) -> tuple[nn.Parameter, ...]:
-        return tuple(self.task_head_module(task_id).parameters())
-
-    def set_task_refinement_mode(self, task_id: str) -> None:
-        self.eval()
-        self.task_head_module(task_id).train()
-
-    def new_module_parameters(self) -> Iterator[nn.Parameter]:
-        yield from self.object_encoder_parameters()
-        yield from self.task_head_parameters()
-
-    def predict_object(self, spec: TaskSpec, slots: torch.Tensor, roles: torch.Tensor, conditions: torch.Tensor) -> torch.Tensor:
-        if spec.topology == "interaction":
-            if slots.shape[1] != 2:
-                raise ValueError("Interaction task requires two entity slots")
-            first = self.encode_object(slots[:, :1], roles[:, :1])
-            second = self.encode_object(slots[:, 1:], roles[:, 1:])
-            return self.interaction_heads[spec.task_id](first, second, conditions)
-        expected = 2 if spec.topology == "ionic_liquid" else 1
-        if slots.shape[1] != expected:
-            raise ValueError("Stage 2 task slot count does not match topology")
-        object_state = self.encode_object(slots, roles)
-        return self.object_heads[spec.task_id](torch.cat((object_state, conditions), dim=-1))
-
-    def forward_object_from_slots(self, task: str, student_slots: torch.Tensor, roles: torch.Tensor, conditions: torch.Tensor, targets: torch.Tensor, target_mask: torch.Tensor, teacher_slots: torch.Tensor, *, loss_mode: str, teacher_loss_is_zero: bool = False) -> Stage2ForwardOutput:
-        spec = self.specs[task]
-        predictions = self.predict_object(spec, student_slots, roles, conditions)
-        if loss_mode == "masked_target_macro":
-            physics = masked_target_macro_smooth_l1_loss(predictions, targets, target_mask)
-        elif loss_mode == "element_mean":
-            physics = element_mean_smooth_l1_loss(predictions, targets, target_mask)
-        else:
-            raise ValueError(f"Unsupported Stage 2 loss mode: {loss_mode}")
-        teacher = predictions.new_zeros(()) if teacher_loss_is_zero else torch.square(student_slots - teacher_slots).mean()
-        return Stage2ForwardOutput(predictions, physics, teacher, student_slots, teacher_slots)
-
-    def forward_atom_from_states(
-        self, task: str, states: EncodedEntityStates, entity_positions: torch.Tensor,
-        roles: torch.Tensor, object_slots: torch.Tensor, teacher_slots: torch.Tensor,
-        targets: torch.Tensor, target_mask: torch.Tensor,
-        atom_state_indices: torch.Tensor, atom_sample_indices: torch.Tensor,
-        *, teacher_loss_is_zero: bool = False,
-    ) -> Stage2ForwardOutput:
-        predictions = self.predict_atom_from_states(
-            task, states, entity_positions, roles, object_slots,
-            atom_state_indices, atom_sample_indices,
-        )
-        physics = molecule_equal_smooth_l1_loss(
-            predictions, targets, target_mask, atom_sample_indices,
-            entity_positions.shape[0],
-        )
-        teacher = predictions.new_zeros(()) if teacher_loss_is_zero else torch.square(object_slots - teacher_slots).mean()
-        return Stage2ForwardOutput(predictions, physics, teacher, object_slots, teacher_slots)
-
-    def predict_atom_from_states(
-        self, task: str, states: EncodedEntityStates,
-        entity_positions: torch.Tensor, roles: torch.Tensor,
-        object_slots: torch.Tensor, atom_state_indices: torch.Tensor,
-        atom_sample_indices: torch.Tensor,
-    ) -> torch.Tensor:
-        spec = self.specs[task]
-        if spec.target_level != "atom" or entity_positions.shape[1] != 1:
-            raise ValueError("Atom task requires one entity slot")
-        objects = self.encode_object(object_slots, roles)
-        return self.atom_heads[task](
-            states.atom_states[atom_state_indices], objects[atom_sample_indices]
-        )
+def Stage2ObjectModel(*args, **kwargs):
+    raise ValueError("ObjectEncoder retired; use the historical Git revision")
 
 
 def stage2_optimizer_groups(model: Stage2ObjectModel, *, backbone_learning_rate: float, object_encoder_learning_rate: float, task_head_learning_rate: float, weight_decay: float) -> list[dict[str, Any]]:

@@ -6,7 +6,7 @@
 
 | 主题 | ADR（按修订顺序） | 阅读重点 |
 |---|---|---|
-| v5 Stage2/3 主线 | [0094](0094-v5-unary-pair-five-task-stage2.md) | Unary + Pair / 五任务Stage2，仅Base；22实验+两模拟Stage3；formal-charge角色、数值条件、模拟PRIVATE-only更新、v5严格产物及两任务reporting，Stage1保持v4 |
+| v4 实体HoME Stage2/3 主线 | [0095](0095-v4-entity-home-without-object-encoder.md) | 无ObjectEncoder；GLOBAL/GROUP直接并行处理实体；五模拟、24实验+两模拟PRIVATE-only；旧0094及Object合同退役 |
 | v4 冻结双视图Stage1 | [0089](0089-v4-frozen-dual-view-stage1.md)、[0090](0090-stage1-v4-residual-encoder-capacity.md)、[0091](0091-stage1-v4-loss-weights-gradient-audit.md)、[0092](0092-stage1-atom-charge-and-frozen-regression-heads.md) | Stage1 learned1024、自然shuffle与2/2/1 loss权重；约60.73M encoder，train-only原子电荷、重复结构独立观察/sidecar format2及1000步只读audit；现役系数/batch/workers读[Base YAML](../../configs/v4/stage1/base.yaml)和[v4手册](../v4-runbook.md)，正文旧数值为历史；独立冻结回归头后训练不替换encoder；下游永久冻结Stage1 |
 | 历史 v2/v3 表示与隔离 | [0039](0039-global-rdkit-v2-mainline.md) | 三模态 Stage 1、1024D entity/Object/HoME；仅约束历史配置，现役表示由 0089 取代 |
 | Stage 1 执行 | [0013](0013-stage1-full-corpus-ddp.md)、[0014](0014-stage1-prepare-performance-and-corpus-v2.md)、[0015](0015-stage1-high-throughput-epoch-resume.md)、[0017](0017-stage1-base-runtime-profile.md) | 全量 epoch、prepare/runtime、DDP 与完整 epoch 恢复 |
@@ -56,3 +56,5 @@
 | Stage2→Stage3 等行数迁移矩阵 | [0065](0065-stage2-stage3-balanced-transfer-matrix.md)、[0071](0071-retire-balanced-stage2-stage3-transfer.md)：Retired；旧输出只读，现役主线见 0094 |
 
 历史文件数不代表现役方案数。需要复现旧决定时查对应 Git 版本；日常运行只从正式 YAML 和上方现役合同进入。
+
+- [ADR-0095](0095-v4-entity-home-without-object-encoder.md)：现役 v4 HoME 直接消费冻结实体、24实验与两项 PRIVATE-only 模拟。

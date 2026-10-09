@@ -4,7 +4,8 @@
 
 - 运行步骤读 [README](README.md)，科研合同按 [ADR 索引](docs/adr/README.md) 查对应主题，再读正式 YAML 与当前实现。旧设计只从 [历史摘要](docs/adr/history.md) 追溯，不作为现役入口。
 - 整理、重构不得改变数据筛选/split、tokenizer、descriptor/fingerprint、masking、模型、loss、优化顺序、验证/选模及任何 Stage 数值行为。科研问题单独记录，不顺手修改。
-- 现役为 `configs/v4/stage1` 与 `configs/v5/stage2`、`configs/v5/stage3`（[ADR-0094](docs/adr/0094-v5-unary-pair-five-task-stage2.md)）；v4 Stage2/3及 `configs/v4/ablations` 保留历史身份（ADR-0089）。v5仅保留Base，22实验+两模拟辅助，输出 `outputs/v5/`。v2 Stage1 与 v3 HoME 配置/产物保持历史身份；`configs/v1` 与 `configs/experiments_v1` 冻结 legacy 合同。禁止跨合同加载 artifact/checkpoint。
+- 现役为 `configs/v4/stage1`、`configs/v4/stage2`、`configs/v4/stage3`（ADR-0095）；Stage1合同不变。Stage2/3取消ObjectEncoder，24实验+两模拟。新输出使用 `outputs/v4/stage{2,3}/entity_home/`；旧Object/v5加载需历史Git版本，历史产物只读，禁止跨合同加载。
+
 
 ## 科学红线
 
@@ -13,9 +14,9 @@
 | 范围 | 必须保持的边界 | ADR |
 |---|---|---|
 | Stage 1 | 仅SMILES/Graph输入，独立512D encoder、12层SMILES Transformer/8独立residual图block、CLS/atom mean、1024残差MLP；learned1024、atom512，不输入role/descriptor。结构重建、stop-gradient一致性、RDKit217、离线Uni-Mol768、13电子目标及train-only原子电荷Linear512→1；现役系数和执行配置只读Base YAML及v4手册，sidecar不改语料/teacher。各项分子均值再按角色loss权重2/2/1；自然shuffle不变。fusion-only80/10/10，10轮、完整epoch恢复；训练format4及encoder-only导出。每1000步rank0固定32分子gradient audit只报告，可CLI覆盖，不更新/调权/选模，不进入科研身份；独立14任务后训练只更新回归头，不替换encoder | 0089/0090/0091/0092；执行0013/0014/0015/0017；0039仅历史v3 |
-| Stage 2 | Stage1永久eval/冻结/不进optimizer，learned1024+标准化RDKit217。统一共享Unary+有序Pair，1241→1024、γ初始化0、Pair正常初始化；formal-charge角色贯穿prepare/cache/inference，solute/solvent为位置语义。Base仅五项physics任务、thermophysical/solvation，无电子GROUP/atom adapter；历史九任务保持原QM mask与电荷分子等权 | 0094；表示0089、机制0019/0025 |
-| Stage 2 训练与产物 | 256逻辑/微批、每逻辑batch一次update，10轮末轮完整final/manifest/encoder，无refinement/best/last/evaluator。显式五/九任务严格registry与loss权重校验；直接导出实际编码器；seed+owner隔离共同HoME初始化。迁移Object、完整GLOBAL、thermophysical/solvation GROUP；仅两项模拟PRIVATE迁入Stage3 | 0094；历史0082/0083/0084/0085 |
-| Stage 3 | v5正式Stage2来源，严格SHA/owner/tensor hash；Stage1永久冻结、1241D slots。22实验：gas_solubility替代x_co2、新增water_activity_coefficient及enthalpy_of_vaporization_or_sublimation；焓展示名为Enthalpy of vaporization、仅temperature_K，保留catalog来源标识；数值仅训练折统计。Phase1适配整个ObjectEncoder，模拟PRIVATE冻结；Phase2/3冻结含Pair/γ的ObjectEncoder，仅汽化热/热膨胀模拟辅助。模拟仅更新自身PRIVATE，不参与GLOBAL/GROUP共享梯度或其归一化，24个PRIVATE、共同anchor/末轮stitch | 0094；机制0020/0046/0048/0050/0070/0075 |
+| Stage 2 | Stage1永久冻结/eval；缓存1241D实体、形式电荷角色及有效位。GLOBAL/GROUP L1并行读取2490D有序槽位拼接，各专家内部投影，无独立ObjectEncoder。仅五项模拟、thermophysical/solvation GROUP，无电子GROUP/atom adapter | 0095；Stage1表示0089 |
+| Stage 2 训练与产物 | 256逻辑/微批、10轮末轮、完整stage2_final.pt/json；无encoder-only导出、refinement/best/last/evaluator。迁移GLOBAL、匹配GROUP及两模拟PRIVATE，严格身份和tensor hash | 0095；历史0082/0083/0085 |
+| Stage 3 | 24实验+两模拟；electrochemical继承phase_stability预算，两电位限small/仅温度。Phase1实验GLOBAL/GROUP/PRIVATE；Phase2冻结GLOBAL；Phase3仅PRIVATE。模拟Phase1冻结，Phase2/3仅自身PRIVATE，不进共享梯度/分母/调度预算。共同anchor与末轮stitch | 0095；机制0050/0070 |
 | Stage 3 owner | Phase 1/2 使用原始梯度的 task/group 加权聚合，Phase 3 单任务更新；`weighted_owner_raw_v1` 进入训练身份。owner LR/lifetime 与 size-class 默认、task override 的 width/dropout 进入 identity；提前结束用 `requires_grad=False`，不删除 task；零预算 PRIVATE 逐 bit 继承 anchor。Base train/valid microbatch 上限 1024 | 0050/0055/0070；诊断 0054 |
 | Stage 3 diagnostics | 只读 gate mass、normalized entropy、PRIVATE mass 分位数；test aggregate 合并 fold-sample。不得新增 forward、进入 loss/selection 或改 prediction CSV；legacy 不输出。pEC50 Phase 3 为 3 epochs | 0054/0055 |
 
@@ -28,7 +29,7 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 ### Legacy、消融与 baseline
 
 - legacy/Capacity 保持五模态 format v2、Stage 2 仅补偿 physics 的 loss 与既有 refinement；Stage 3 保持整模 clipping、`max(N_t,1000)` virtual oversampling、80/20 refinement 和 `taskwise_refined`（ADR-0026/0027）。Capacity 是端到端预注册研究，不是正式多容量主线、strict scaling law 或 encoder-only effect；只用 Stage 1 Base prepare 一次，共享 `outputs/experiments_v1/stage1/prepare/artifacts`。Stage 3 正式输入只用 `formal/*.yaml`，选择只读 stitched validation，不读末轮均值或 test。
-- 历史v4核心消融为w/o Stage1、w/o Stage2、w/o Stage3-HoME（0089/0082/0084），v4版本隔离：w/o Stage1固定seed随机、永久冻结的同结构encoder并保留显式RDKit；w/o Stage2配对零更新ObjectEncoder，20实验任务；MLP用v4正式prepared冻结表示，20任务、1024→512、10轮末轮。后两项还缺少模拟辅助训练，不能单独解释routing/Stage2权重。
+- v4消融配置和旧ObjectEncoder实现/加载已移除；历史消融与legacy/Capacity复现须使用对应Git版本，输出保留。
 - ADR-0034/0036/0062/0068/0072/0073/0079/0080/0081 及 Stage3 候选仅作历史追溯，不作为活跃入口；旧输出只读，不跨身份加载。v1/Capacity 冻结合同仍有效。
 - ADR-0086：十个正式 baseline 对 heat of vaporization、thermal expansion、HOMO、LUMO 独立单次训练，catalog 原 train/valid/test；不训练 partial charge，不更新实验任务模型。神经模型 10 epochs、XGBoost 1000 trees 保持各自末轮配方。单任务 MLP 消融和历史 split 配置不扩展。Stage3 simulation valid/test 使用五个 final 原单位预测均值，比较身份绑定完整行集合、来源 SHA 与原始 train population std（零方差为 1）；模拟榜单不得进入实验 wins/radar/scatter。
 - Baseline 只复用 registry、split、canonical SMILES、condition/target 与评估口径，不改变 Stage 数值合同。按 ADR 索引读取各模型合同，不能把一个模型的预算推及其他模型。
@@ -46,16 +47,16 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 
 ## 数据、身份、输出与恢复
 
-v5 Stage3 沿用 `experiment/hydration` 替代 `experiment/transfer` 的合同（[ADR-0088](docs/adr/0088-stage3-hydration-replaces-transfer.md)）：单 solute + temperature_K、151 个体系、solvation GROUP、small 默认 PRIVATE 配方、random 五折、无 test。旧 transfer 产物保持历史身份；v5任务集合需要新的 Stage3 产物；baseline保持历史20任务，依赖对应含x_co2的catalog/数据，不扩展到v5。禁止覆写既有输出。运行见 [v5手册](docs/v5-runbook.md)。
+现役hydration仍使用random/cv1五折、无test；gas_solubility不是旧x_co2的同义任务。焓保留catalog原标识，展示Enthalpy of vaporization，仅温度。baseline历史20实验/四模拟配方不扩展。运行见 [v4手册](docs/v4-runbook.md)。
 
 - 数据不进 Git；prepare 写 `data/stage*/metadata.json`。每次操作冻结 `run_config.yaml`、公开安全的 `metadata.json`，成功后写 `summary.json`；禁止用户名、hostname、私有绝对路径。
-- 新 train/evaluate 输出不可覆盖。reusable Stage 1/2 prepare 只在数据身份不变时刷新允许忽略的执行/模型字段（ADR-0019）。Stage 2 prepared data 不绑定 HoME model；正式 HoME 不生成 teacher cache，模型合同属于训练 checkpoint/encoder。
-- 保留 prepared SHA 和完整性检查；跨 Stage 保留 ADR-0021 semantic identity、必要 state hash；正式 HoME transfer 还绑定 Stage2 final artifact 与 encoder SHA。
+- 新 train/evaluate 输出不可覆盖。reusable Stage 1/2 prepare 只在数据身份不变时刷新允许忽略的执行/模型字段（ADR-0019）。Stage 2 prepared data 不绑定 HoME model；正式 HoME 不生成 teacher cache，模型合同属于训练checkpoint/final。
+- 保留 prepared SHA 和完整性检查；跨 Stage 保留 ADR-0021 semantic identity、必要state hash；正式 HoME transfer 还绑定 Stage2 final artifact及Stage1源SHA。
 - 显式 resume 严格校验阶段、fold、配置、step/epoch、optimizer/scheduler/AMP。Stage 1 只从完整 epoch 恢复，可改变 world size；Stage 2 HoME 另校验 owner、registry/model、RNG、数据/任务规模、数学精度及 optimizer implementation；旧 Object v2/v3、实验 HoME 不迁移到正式身份。
 - Stage 3 另校验 resolved plan、ownership、Stage 2 SHA、数据/normalization；raw permutation 与 branch RNG 由 seed/fold/phase/scope/epoch 重建，legacy 重建 virtual sampler。布尔 `--resume` 仅 skip identity 一致且 summary/final artifact/manifest 完整的 fold；恢复必须匹配 checkpoint、metrics/diagnostics 尾部、owner update/freeze state，legacy 匹配两份根 history，不截断、不猜测。
-- 周期checkpoint不可覆盖。Stage1 `last.pt`/encoder-only合同不变；v5 Stage2完整五任务`stage2_final.pt/json`与`stage2_encoder.pt`；Stage3 Phase1全量/Phase2/3 anchor-owner delta，最终`three_phase_final.pt/json`。v5独立kind/format5、Stage3 plan13/training17，绑定架构/任务集/角色/条件与来源；禁止跨架构/任务集恢复。v4 kind/format4、plan11/training15保持历史，不跨版本加载。Stage2/3无best/last。
-- Stage2独立evaluator/reporting退役（0085/0094）；完整模型与 `SimulationHoME.predict` 保留。v5 Stage3 final只预测两项模拟辅助，simulation validation独立记录；电子监督保留于Stage1及历史九任务Stage2。
-- Reporting 发布 Stage 3 experimental 与独立 scalar simulation validation/test（ADR-0031/0061/0085/0086），不读取或发布 Stage 2 结果；summary snapshot schema 为 v4。榜首 Stage 3 ILUME 的 validation 五折与 test ensemble SVG 只由 summarizer 从完整性验证通过的 prediction 生成，不改 schema、指标或模型选择。 v5两任务/历史四任务模拟协议按显式任务集校验并算等权均值，不同协议/数据身份不混排；baseline训练配方不扩展（0094）。
+- 周期checkpoint不可覆盖。Stage1合同不变；Stage2完整五任务final/manifest；Stage3三阶段anchor/owner delta及末轮final。新entity_home kind/format4、plan14/training18；绑定架构、数据、Stage1来源、owner与tensor hash，旧Object/v5明确拒载。
+- Stage2独立evaluator/reporting继续退役；完整模型与SimulationHoME.predict保留。Stage3只预测两模拟辅助，simulation validation独立记录；Stage1电子和电荷功能不变。
+- Reporting 发布 Stage 3 experimental 与独立 scalar simulation validation/test（ADR-0031/0061/0085/0086），不读取或发布 Stage 2 结果；summary snapshot schema 为 v4。榜首 Stage 3 ILUME 的 validation 五折与 test ensemble SVG 只由 summarizer 从完整性验证通过的 prediction 生成，不改 schema、指标或模型选择。 现役两任务/历史四任务模拟协议按显式任务集校验并算等权均值，不同协议/数据身份不混排；baseline训练配方不扩展（0095）。
 
 ## 验证与清理
 

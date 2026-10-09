@@ -17,11 +17,11 @@ SCALAR_SIMULATION_TASKS = (
 )
 
 
-V5_SCALAR_SIMULATION_TASKS = SCALAR_SIMULATION_TASKS[:2]
+ENTITY_SCALAR_SIMULATION_TASKS = SCALAR_SIMULATION_TASKS[:2]
 
 
 def scalar_simulation_tasks(config: Any) -> tuple[str, ...]:
-    return V5_SCALAR_SIMULATION_TASKS if config.is_v5 else SCALAR_SIMULATION_TASKS
+    return ENTITY_SCALAR_SIMULATION_TASKS if config.is_entity_home else SCALAR_SIMULATION_TASKS
 
 
 def simulation_scale(train_path: Path, target_column: str) -> float:

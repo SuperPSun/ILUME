@@ -544,8 +544,11 @@ def build_resolved_training_plan(
         },
     }
     if three_phase:
-        if config.initialization.representation_contract in {"dual_view_v4", "dual_view_object_v5"}:
+        if config.initialization.representation_contract in {"dual_view_v4", "entity_home_v4"}:
             plan["representation_contract"] = config.initialization.representation_contract
+            if config.is_entity_home:
+                from common.entity_inputs import ENTITY_INPUT_CONTRACT
+                plan["model"]["entity_input_contract"] = dict(ENTITY_INPUT_CONTRACT)
         plan["model"].pop("group_experts")
         plan["schedule_mode"] = "three_phase"
         plan["phases"] = phase_plan
@@ -614,10 +617,10 @@ def build_resolved_training_plan(
         plan["math"]["joint_gradient_clip_mode"] = (
             config.training.joint_gradient_clip_mode
         )
-    if prepared["metadata"].get("kind") in {STAGE3_ARTIFACT_KIND, STAGE3_V4_ARTIFACT_KIND, "ilume_stage3_object_sparse_data_v5"}:
-        plan["stage2_encoder_identity"] = metadata_identity(
+    if prepared["metadata"].get("kind") in {STAGE3_ARTIFACT_KIND, STAGE3_V4_ARTIFACT_KIND, "ilume_stage3_entity_sparse_data_v4"}:
+        plan["stage1_encoder_identity" if config.is_entity_home else "stage2_encoder_identity"] = metadata_identity(
             prepared["metadata"],
-            "stage2_encoder",
+            "stage1_encoder" if config.is_entity_home else "stage2_encoder",
             context="Stage 3 prepared artifact",
         )["hash"]
     else:
@@ -1029,10 +1032,10 @@ def run_stage3_training(
     representation_source_identity = (
         metadata_identity(
             prepared["metadata"],
-            "stage2_encoder",
+            "stage1_encoder" if config.is_entity_home else "stage2_encoder",
             context="Stage 3 prepared artifact",
         )["hash"]
-        if prepared["metadata"].get("kind") in {STAGE3_ARTIFACT_KIND, STAGE3_V4_ARTIFACT_KIND, "ilume_stage3_object_sparse_data_v5"}
+        if prepared["metadata"].get("kind") in {STAGE3_ARTIFACT_KIND, STAGE3_V4_ARTIFACT_KIND, "ilume_stage3_entity_sparse_data_v4"}
         else metadata_identity(
             prepared["metadata"], "prepared", context="RDKit Stage 3 artifact"
         )["hash"]
@@ -1114,10 +1117,10 @@ def resolve_stage3_training_identity(
     encoder_identity = (
         metadata_identity(
             prepared["metadata"],
-            "stage2_encoder",
+            "stage1_encoder" if config.is_entity_home else "stage2_encoder",
             context="Stage 3 prepared artifact",
         )["hash"]
-        if prepared["metadata"].get("kind") in {STAGE3_ARTIFACT_KIND, STAGE3_V4_ARTIFACT_KIND, "ilume_stage3_object_sparse_data_v5"}
+        if prepared["metadata"].get("kind") in {STAGE3_ARTIFACT_KIND, STAGE3_V4_ARTIFACT_KIND, "ilume_stage3_entity_sparse_data_v4"}
         else metadata_identity(
             prepared["metadata"], "prepared", context="RDKit Stage 3 artifact"
         )["hash"]

@@ -143,18 +143,6 @@ def test_stage2_home_source_mapping_and_state_boundary() -> None:
     assert state
     assert all("electronic_structure" not in name for name in state)
     assert all(not name.startswith(("private_experts.", "task_gates.", "towers.")) for name in state)
-    from stage2.home_config import load_home_recipe
-    from stage2.home_model import SimulationHoME
-
-    experiment = load_home_recipe("configs/v3/stage2/base.yaml")
-    fake_backbone = torch.nn.Module()
-    fake_backbone.entity_dim = 16
-    fake_backbone.atom_dim = 8
-    fake_backbone.config = SimpleNamespace(model=SimpleNamespace(n_heads=8))
-    simulation = SimulationHoME(fake_backbone, registry, config, experiment.stage2)
-    assert not hasattr(simulation, "object_heads")
-    assert not hasattr(simulation, "interaction_heads")
-    assert not hasattr(simulation, "atom_heads")
     target = Stage3SparseModel(
         config.model,
         {**specs, "experiment/new": replace(next(iter(specs.values())), task_id="experiment/new", meta_group="transport")},
@@ -175,33 +163,6 @@ def test_stage2_home_source_mapping_and_state_boundary() -> None:
     with pytest.raises(ValueError, match="incomplete"):
         load_transferable_state(target, incomplete, state_hash(incomplete))
 
-    from stage3.simulation import (
-        SIMULATION_TASKS, SimulationObjectPhase1Model, copy_simulation_owners,
-    )
-
-    combined = SimulationObjectPhase1Model(
-        config.model,
-        {**{task: specs[task] for task in SIMULATION_TASKS},
-         "experiment/transport": replace(specs["simulation/homo"], task_id="experiment/transport", meta_group="transport"),
-         "experiment/solvation": replace(
-             specs["simulation/homo"], task_id="experiment/solvation",
-             meta_group="solvation", partner_mode="interaction",
-             primary_slots=("cation", "anion"), partner_slots=("solute",),
-         )},
-        16, group_configs=config.groups,
-        object_encoder=simulation.object_encoder, source_model=simulation,
-    )
-    copied = copy_simulation_owners(combined, simulation)
-    load_transferable_state(combined, state, state_hash(state))
-    source_state = simulation.home.state_dict()
-    combined_state = combined.state_dict()
-    assert copied
-    assert all(torch.equal(combined_state[name], source_state[name]) for name in copied)
-    assert all(torch.equal(combined_state[name], state[name]) for name in state)
-    assert all(
-        torch.equal(combined_state["simulation_atom_adapter." + name], value)
-        for name, value in simulation.atom_adapter.state_dict().items()
-    )
 
 
 @pytest.mark.parametrize("number", [1, 2, 3, 4])
@@ -222,8 +183,8 @@ def test_home_candidate_transfer_shapes(number: int) -> None:
     backbone.entity_dim = 16
     backbone.atom_dim = 8
     backbone.config = SimpleNamespace(model=SimpleNamespace(n_heads=8))
-    source = SimulationHoME(backbone, registry, stage3, stage2.stage2)
-    state = transferable_state(source.home)
+    source = Stage3SparseModel(stage3.model, source_task_specs(registry), 16, group_configs={**stage3.groups, "electronic_structure":stage3.groups["thermophysical"]})
+    state = transferable_state(source)
     target = Stage3SparseModel(stage3.model, source_task_specs(registry), 16,
                                group_configs=stage3.groups)
     names = load_transferable_state(target, state, state_hash(state))
@@ -231,85 +192,20 @@ def test_home_candidate_transfer_shapes(number: int) -> None:
     assert all(torch.equal(target.state_dict()[key], value) for key, value in state.items())
 
 
-def test_formal_home_source_rejects_old_kind(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config = load_stage3_config("configs/v3/stage3/base.yaml")
-    root = tmp_path / "train"
-    root.mkdir()
-    artifact = root / "stage2_final.pt"
-    encoder = root / "stage2_encoder.pt"
-    checkpoint = root / "checkpoint_epoch_00010.pt"
-    encoder.write_bytes(b"encoder")
-    checkpoint.write_bytes(b"checkpoint")
-    config = replace(config, initialization=replace(
-        config.initialization, stage2_final=artifact, stage2_encoder=encoder,
-    ))
-    stage1_state = {"w": torch.tensor([1.0])}
-    object_state = {"w": torch.tensor([2.0])}
-    shared = {"l1_global_gate.w": torch.tensor([3.0])}
-    identity = semantic_identity("stage2.home-training.v1", {
-        "stage3_model": asdict(config.model),
-        "transfer_groups": {
-            name: asdict(config.groups[name]) for name in ("thermophysical", "solvation")
-        },
-        "source_groups": SOURCE_GROUPS,
-    })
-    encoder_hashes = {
-        "stage1_backbone": tensor_state_hash("stage2.encoder-state", stage1_state),
-        "object_encoder": tensor_state_hash("stage2.encoder-state", object_state),
-    }
-    monkeypatch.setattr("stage3.home.load_stage2_encoder_artifact", lambda _path: {
-        "provenance": {"home_training_identity": identity["hash"]},
-        "state_hashes": encoder_hashes,
-    })
-    payload = {
-        "kind": "ilume_stage2_home_final_v1",
-        "training_identity": identity,
-        "shared_state": shared,
-        "shared_state_hash": state_hash(shared),
-        "stage2_encoder_sha256": sha256_file(encoder),
-        "checkpoint_sha256": sha256_file(checkpoint),
-        "group_mapping": {
-            name: [task for task, group in SOURCE_GROUPS.items() if group == name]
-            for name in ("thermophysical", "solvation")
-        },
-        "encoder_state_hashes": {
-            "stage1": encoder_hashes["stage1_backbone"],
-            "object_encoder": encoder_hashes["object_encoder"],
-        },
-        "stage1_backbone": stage1_state,
-        "object_encoder": object_state,
-        "architecture": {"stage3_model": asdict(config.model)},
-    }
-
-    def publish() -> None:
-        torch.save(payload, artifact)
-        (root / "stage2_final.json").write_text(json.dumps({
-            "kind": payload["kind"],
-            "artifact": artifact.name,
-            "artifact_sha256": sha256_file(artifact),
-            "training_identity": identity,
-            "shared_state_hash": payload["shared_state_hash"],
-            "stage2_encoder_sha256": payload["stage2_encoder_sha256"],
-            "fixed_final_epoch": 10,
-        }))
-
-    publish()
-    with pytest.raises(ValueError, match="kind"):
-        load_home_source(config)
-    payload["kind"] = "ilume_stage2_stage2_home_transfer_final"
-    publish()
-    with pytest.raises(ValueError, match="kind"):
-        load_home_source(config)
+def test_formal_home_source_rejects_old_kind(tmp_path):
+    from stage2.home_artifact import load_home_final
+    artifact=tmp_path / 'stage2_final.pt'
+    torch.save({'kind':'ilume_stage2_home_final_v5','format_version':5},artifact)
+    artifact.with_suffix('.json').write_text(json.dumps({'artifact':artifact.name,'artifact_sha256':sha256_file(artifact),'kind':'ilume_stage2_home_final_v5'}))
+    with pytest.raises(ValueError,match='kind'): load_home_final(artifact)
 
 
-@pytest.mark.parametrize("private_only", [False, True])
+@pytest.mark.parametrize("private_only", [True])
 def test_simulation_phase2_phase3_plan_and_identity(private_only: bool) -> None:
     from stage3.simulation import SIMULATION_TASKS, extend_simulation_plan
     from stage3.three_phase import _final_kind, _scope_kind
 
-    config = load_stage3_config("configs/v5/stage3/base.yaml" if private_only else "configs/v3/stage3/base.yaml")
+    config = load_stage3_config("configs/v4/stage3/base.yaml" if private_only else "configs/v3/stage3/base.yaml")
     plan = {
         "data": {
             "N_t": {"experiment/density": 3}, "B_t": {"experiment/density": 2},
@@ -330,7 +226,7 @@ def test_simulation_phase2_phase3_plan_and_identity(private_only: bool) -> None:
     }
     tasks = SIMULATION_TASKS[:2] if private_only else SIMULATION_TASKS
     if private_only:
-        plan["representation_contract"] = "dual_view_object_v5"
+        plan["representation_contract"] = "entity_home_v4"
     model = SimpleNamespace(
         task_specs={task: SimpleNamespace(meta_group=SOURCE_GROUPS[task]) for task in tasks},
         resolved_capacity_recipe=lambda: {
@@ -348,8 +244,8 @@ def test_simulation_phase2_phase3_plan_and_identity(private_only: bool) -> None:
         assert branch["owners"]["GROUP:thermophysical"]["actual_update_budget"] == 8
         assert "shared_group_task_weight" not in plan["simulation_training"]["recipe"]
         assert plan["simulation_training"]["phase2_gradient_policy"] == "simulation_private_only_v1"
-        assert plan["format_version"] == 13
-        assert _final_kind(plan) == "ilume_stage3_object_three_phase_final_v5"
+        assert plan["format_version"] == 14
+        assert _final_kind(plan) == "ilume_stage3_entity_home_three_phase_final_v4"
     else:
         assert plan["phases"]["phase2"]["branches"]["electronic_structure"]["epochs"] == 4
         assert plan["phases"]["phase2"]["branches"]["electronic_structure"]["owners"]["GROUP:electronic_structure"]["nominal_lr"] == 7.5e-5
@@ -361,41 +257,6 @@ def test_simulation_phase2_phase3_plan_and_identity(private_only: bool) -> None:
     assert all(plan["phases"]["phase3"]["branches"][task]["epochs"] == 8 for task in tasks)
 
 
-def test_core_home_ablation_source_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
-    from stage2.home_config import load_home_recipe
-
-    formal = load_home_recipe("configs/v3/stage2/base.yaml")
-    random_stage1 = load_home_recipe("configs/ablations/no_stage1_stage2.yaml")
-    assert random_stage1.initialization == "random_stage1"
-    assert random_stage1.random_seed == 42
-    assert random_stage1.stage2.initialization.checkpoint is None
-    assert random_stage1.stage3 == formal.stage3
-    assert random_stage1.stage2.loss == formal.stage2.loss
-    assert random_stage1.stage2.training == formal.stage2.training
-
-    no_stage2 = load_stage3_config("configs/ablations/no_stage2_stage3.yaml")
-    assert no_stage2.initialization.home_mode == "no_stage2"
-    assert load_home_source(no_stage2) is None
-    monkeypatch.setattr("stage3.object_phase1.load_object_phase1_source", lambda _path: {
-        "kind": "ilume_stage2_home_encoder_v1",
-        "provenance": {}, "state_hashes": {},
-    })
-    with pytest.raises(ValueError, match="zero-update"):
-        validate_encoder_source(no_stage2)
-
-    formal_config = load_stage3_config("configs/v3/stage3/base.yaml")
-    no_stage1 = load_stage3_config("configs/ablations/no_stage1_stage3.yaml")
-    metadata = {
-        "kind": STAGE3_ARTIFACT_KIND,
-        "source_stage1_checkpoint_sha256": "source",
-        "semantic": {"identities": {"prepared": semantic_identity("prepared", {})}},
-    }
-    # The display identity follows the declared source, not the output directory.
-    assert _reporting_model(formal_config, metadata) == ("ilume", "ILUME")
-    assert _reporting_model(no_stage2, metadata) == ("ilume_no_stage2", "ILUME w/o Stage2")
-    random_metadata = {**metadata, "source_stage1_checkpoint_sha256": None}
-    assert _reporting_model(no_stage1, random_metadata) == ("ilume_no_stage1", "ILUME w/o Stage1")
-    assert "no-stage1" in _configured_study_id(no_stage1, random_metadata, "three-phase-final")
 
 
 def test_stage2_home_masked_micro_loss_and_identity() -> None:
@@ -1178,8 +1039,8 @@ def test_simulation_branches_stitch_and_resume(tiny_prepared: Stage3Config) -> N
     final = torch.load(output / "three_phase_final.pt", map_location="cpu", weights_only=False)
     assert final["kind"] == "ilume_stage3_home_simulation_three_phase_final_v2"
     assert set(final["private_state_hashes"]) == set(experimental) | set(SIMULATION_TASKS)
-    assert (output / "phase_2/electronic_structure/metrics.jsonl").is_file()
-    assert (output / "phase_3/simulation__partial_atomic_charge/metrics.jsonl").is_file()
+    assert (output / "phase_2/g1/metrics.jsonl").is_file()
+    assert (output / "phase_3/simulation__heat_of_vaporization/metrics.jsonl").is_file()
     model.load_state_dict(initial_state)
     resumed = run_three_phase_training(
         config=config, fold=1, output_dir=output, resume_from=output,
@@ -2562,103 +2423,8 @@ def _write_transfer_job(
 
 
 
-def test_object_phase1_prepared_slots_preserve_object_order(tmp_path: Path) -> None:
-    config = _tiny_config(tmp_path)
-    objects = collect_object_keys(config, resolve_task_registry(config))
-    order = {(item.topology, item.slots): index for index, item in enumerate(objects)}
-
-    def encode(specs):
-        width = len(specs[0].slots)
-        values = torch.stack([
-            torch.full((width, 4), float(order[(spec.topology, spec.slots)])) for spec in specs
-        ])
-        roles = torch.tensor([
-            [ROLE_TO_ID[role] for role, _ in spec.slots] for spec in specs
-        ])
-        return values, roles
-
-    encoder = SimpleNamespace(
-        embedding_dim=4, encoder_identity={"hash": "encoder"}, encode_slots=encode,
-    )
-    with patch("stage3.prepare.load_frozen_object_encoder", return_value=encoder):
-        slots = materialize_object_slots(config, objects)
-    assert slots["objects"] == [item.to_dict() for item in objects]
-    for index, item in enumerate(objects):
-        width = len(item.slots)
-        assert slots["counts"][index] == width
-        assert torch.equal(slots["slots"][index, :width], torch.full((width, 4), float(index)))
-        assert slots["roles"][index, :width].tolist() == [
-            ROLE_TO_ID[role] for role, _ in item.slots
-        ]
 
 
-@pytest.mark.parametrize("dual_view", [False, True])
-def test_object_phase1_prepared_contract_rejects_old_and_corrupt_slots(
-    tmp_path: Path, dual_view: bool,
-) -> None:
-    base = _tiny_three_phase(_tiny_config(tmp_path))
-    config = replace(
-        base,
-        training=replace(
-            base.training,
-            object_encoder_phase1=Stage3ObjectEncoderPhase1Config(1.5e-5, 2, 0.05, 0.1),
-        ),
-    )
-    if dual_view:
-        config = replace(config, initialization=replace(
-            config.initialization, representation_contract="dual_view_v4",
-            home_mode="trained", stage2_final=tmp_path / "source-final.pt",
-        ))
-    width = 1241 if dual_view else 4
-    objects = collect_object_keys(config, resolve_task_registry(config))
-    slots = {
-        "kind": "ilume_stage3_frozen_entity_slots",
-        "format_version": 1,
-        "objects": [key.to_dict() for key in objects],
-        "stage2_encoder_identity": TEST_ENCODER_IDENTITY,
-        "slots": torch.zeros(len(objects), 2, width),
-        "roles": torch.zeros(len(objects), 2, dtype=torch.long),
-        "counts": torch.tensor([len(key.slots) for key in objects]),
-    }
-    for index, key in enumerate(objects):
-        slots["roles"][index, :len(key.slots)] = torch.tensor([
-            ROLE_TO_ID[role] for role, _ in key.slots
-        ])
-    source = {
-        "state_hashes": {"stage1_backbone": "stage1", "object_encoder": "object"},
-        "provenance": {"stage1_checkpoint_hash": "stage1-checkpoint"},
-    }
-    with patch("stage3.object_phase1.validate_encoder_source", return_value=source), patch(
-        "stage3.prepare.load_stage2_encoder_identity", return_value=TEST_ENCODER_IDENTITY,
-    ), patch(
-        "stage3.identity.load_stage2_encoder_identity", return_value=TEST_ENCODER_IDENTITY,
-    ), patch(
-        "stage3.prepare.materialize_object_embeddings",
-        return_value=(torch.zeros(len(objects), 1024 if dual_view else 4), TEST_ENCODER_IDENTITY, {"hits": 0, "misses": len(objects)}),
-    ), patch(
-        "stage3.prepare.materialize_object_slots", return_value=slots,
-    ):
-        expected_identity = resolve_stage3_prepared_identity(
-            config, resolve_task_registry(config), objects,
-        )
-        prepare_stage3(config)
-        prepared = load_prepared_stage3(config)
-        assert prepared["metadata"]["prepared_contract_version"] == (4 if dual_view else 3)
-        assert metadata_identity(prepared["metadata"], "prepared", context="test")["hash"] == expected_identity["hash"]
-        assert prepared["slots"]["objects"] == slots["objects"]
-        if dual_view:
-            from stage3.data import STAGE3_V4_ARTIFACT_KIND
-            assert prepared["metadata"]["kind"] == STAGE3_V4_ARTIFACT_KIND
-            assert prepared["metadata"]["format_version"] == 4
-            assert Stage3TaskDataset(config.data.artifacts_dir, 1, next(iter(prepared["registry"])), "train").targets.numel() > 0
-            with pytest.raises(ValueError, match="Unsupported Stage 3"):
-                load_prepared_stage3(replace(config, initialization=replace(config.initialization, representation_contract="object_v3")))
-        else:
-            with pytest.raises(ValueError, match="prepared contract"):
-                load_prepared_stage3(replace(config, training=replace(config.training, object_encoder_phase1=None)))
-        (config.data.artifacts_dir / "object_slots.pt").write_bytes(b"corrupt")
-        with pytest.raises(ValueError, match="artifact hash mismatch"):
-            load_prepared_stage3(config)
 
 
 def test_hydration_single_solute_preparation_and_train_only_scaler(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

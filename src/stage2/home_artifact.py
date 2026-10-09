@@ -27,13 +27,13 @@ STAGE2_HOME_V4_FINAL_KIND = "ilume_stage2_home_final_v4"
 
 
 def final_kind(recipe):
-    if recipe.stage2.is_v5:
-        return "ilume_stage2_home_final_v5"
+    if recipe.stage2.is_entity_home:
+        return "ilume_stage2_entity_home_final_v4"
     return STAGE2_HOME_V4_FINAL_KIND if recipe.freeze_stage1 else STAGE2_HOME_FINAL_KIND
 
 
 def full_state_hash(state: Mapping[str, torch.Tensor], *, version: int | None = None) -> str:
-    return tensor_state_hash("stage2.home.full-model.v5" if version == 5 else "stage2.home.full-model.v4" if any(key.startswith("object_encoder.input_projection.") for key in state) else "stage2.home.full-model.v2", state)
+    return tensor_state_hash("stage2.entity-home.full-model.v4", state)
 
 
 def full_owner_manifest(model: SimulationHoME) -> dict[str, str]:
@@ -60,9 +60,8 @@ def load_home_final(path: str | Path) -> tuple[dict[str, Any], SimulationHoME, S
     if manifest.get("artifact") != artifact.name or manifest.get("artifact_sha256") != sha256_file(artifact):
         raise ValueError("Stage 2 final artifact SHA mismatch")
     payload = torch.load(artifact, map_location="cpu", weights_only=False)
-    if (payload.get("kind") not in {STAGE2_HOME_FINAL_KIND, STAGE2_HOME_V4_FINAL_KIND, "ilume_stage2_home_final_v5"}
-            or manifest.get("kind") != payload.get("kind")
-            or payload.get("format_version") != (5 if payload.get("kind") == "ilume_stage2_home_final_v5" else 4 if payload.get("kind") == STAGE2_HOME_V4_FINAL_KIND else 2)):
+    if (payload.get("kind") != "ilume_stage2_entity_home_final_v4"
+            or manifest.get("kind") != payload.get("kind") or payload.get("format_version") != 4):
         raise ValueError("Unsupported Stage 2 full HoME artifact kind")
     identity = payload["training_identity"]
     validate_semantic_identity(identity)
@@ -79,8 +78,7 @@ def load_home_final(path: str | Path) -> tuple[dict[str, Any], SimulationHoME, S
             or manifest.get("shared_state_hash") != payload.get("shared_state_hash")
             or manifest.get("checkpoint_sha256") != payload.get("checkpoint_sha256")
             or manifest.get("feature_artifacts_hash") != payload.get("feature_artifacts_hash")
-            or manifest.get("scalers_hash") != payload.get("scalers_hash")
-            or manifest.get("stage2_encoder_sha256") != payload.get("stage2_encoder_sha256")):
+            or manifest.get("scalers_hash") != payload.get("scalers_hash")):
         raise ValueError("Stage 2 final manifest identity mismatch")
     state = payload["full_model_state"]
     if not isinstance(state, dict) or full_state_hash(state, version=payload["format_version"]) != payload["full_model_state_hash"]:
@@ -136,13 +134,12 @@ def load_home_final(path: str | Path) -> tuple[dict[str, Any], SimulationHoME, S
             for prefix in RECONSTRUCTION_MODULES
         )
     }
-    object_state = {
-        name.removeprefix("object_encoder."): value for name, value in state.items()
-        if name.startswith("object_encoder.")
-    }
     hashes = payload["encoder_state_hashes"]
-    if (tensor_state_hash("stage2.encoder-state", stage1_state) != hashes["stage1"]
-            or tensor_state_hash("stage2.encoder-state", object_state) != hashes["object_encoder"]):
-        raise ValueError("Stage 2 full model encoder state mismatch")
+    if (tensor_state_hash("stage1.encoding-state", stage1_state) != hashes["stage1"]
+            or set(stage1_state) != set(payload["stage1_backbone"])
+            or any(not torch.equal(value, payload["stage1_backbone"][name]) for name, value in stage1_state.items())):
+        raise ValueError("Stage2 frozen Stage1 state mismatch")
+    if {k:v for k,v in payload["stage1_encoding_contract"].items() if k != "feature_generation_contract"} != model.model_contract:
+        raise ValueError("Stage2 entity input contract mismatch")
     model.eval()
     return payload, model, vocabulary

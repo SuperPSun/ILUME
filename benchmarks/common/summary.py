@@ -711,7 +711,7 @@ def _current_completed(candidates: Sequence[Candidate]) -> list[Candidate]:
 
 
 def _simulation_results(candidates: Sequence[Candidate], split: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    from stage3.simulation_reporting import SCALAR_SIMULATION_TASKS, V5_SCALAR_SIMULATION_TASKS
+    from stage3.simulation_reporting import SCALAR_SIMULATION_TASKS, ENTITY_SCALAR_SIMULATION_TASKS
 
     label = "simulation_test" if split == "test" else "simulation_validation"
     leaders, rows, comparisons = [], [], {}
@@ -745,7 +745,7 @@ def _simulation_results(candidates: Sequence[Candidate], split: str) -> tuple[li
         else:
             continue
         expected_tasks = tuple(section["protocol"].get("expected_tasks", ()))
-        if expected_tasks not in {SCALAR_SIMULATION_TASKS, V5_SCALAR_SIMULATION_TASKS} or set(values) != set(expected_tasks):
+        if expected_tasks not in {SCALAR_SIMULATION_TASKS, ENTITY_SCALAR_SIMULATION_TASKS} or set(values) != set(expected_tasks):
             raise ValueError("Simulation leaderboard requires its complete scalar task protocol")
         comparison = section["comparison_identity"]
         _validate_comparison(comparison, label)

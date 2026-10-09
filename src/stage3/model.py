@@ -7,6 +7,7 @@ from typing import Iterable, Mapping
 import torch
 from torch import nn
 from common.training import seeded_initialization
+from common.entity_inputs import EntityInputs, ENTITY_INPUT_CONTRACT
 
 from .config import (
     ResolvedStage3PrivateRecipe,
@@ -59,11 +60,12 @@ class Expert(nn.Module):
         hidden_ratio: float,
         dropout: float,
         activation: str,
+        input_dim: int | None = None,
     ) -> None:
         super().__init__()
         hidden = _width(d_model, hidden_ratio)
         self.layers = nn.Sequential(
-            nn.Linear(d_model, hidden),
+            nn.Linear(input_dim or d_model, hidden),
             _activation(activation),
             nn.Dropout(dropout),
             nn.Linear(hidden, d_model),
@@ -278,6 +280,7 @@ class Stage3SparseModel(nn.Module):
         descriptor_input_dims: Mapping[str, int] | None = None,
         transfer_knowledge: Stage3TransferKnowledgeConfig | None = None,
         initialization_seed: int | None = None,
+        entity_inputs: bool = False,
     ) -> None:
         super().__init__()
         self.model_config = model_config
@@ -286,6 +289,10 @@ class Stage3SparseModel(nn.Module):
         self.task_configs = dict(task_configs or {})
         self.task_private_recipes = dict(task_private_recipes or {})
         self.d_model = d_model
+        if entity_inputs and (d_model != 1024 or descriptor_input_dims is not None or transfer_knowledge is not None):
+            raise ValueError("Entity HoME requires 1024D experts without legacy adapters")
+        self.entity_inputs = entity_inputs
+        l1_input_dim = ENTITY_INPUT_CONTRACT["packed_dim"] if entity_inputs else d_model
         self.transfer_knowledge = transfer_knowledge
         self.groups = tuple(
             sorted({spec.meta_group for spec in self.task_specs.values() if spec.enabled})
@@ -312,10 +319,10 @@ class Stage3SparseModel(nn.Module):
         }
         with seeded_initialization(initialization_seed, "GLOBAL"):
             self.l1_global_experts = nn.ModuleList(
-                [Expert(d_model, **expert_kwargs) for _ in range(model_config.global_experts)]
+                [Expert(d_model, input_dim=l1_input_dim, **expert_kwargs) for _ in range(model_config.global_experts)]
             )
             self.l1_global_gate = (
-                nn.Linear(d_model, model_config.global_experts)
+                nn.Linear(l1_input_dim, model_config.global_experts)
                 if model_config.global_experts
                 else None
             )
@@ -361,9 +368,9 @@ class Stage3SparseModel(nn.Module):
                     "hidden_ratio": group_hidden_ratio,
                 }
                 self.l1_group_experts[group] = nn.ModuleList(
-                    [Expert(d_model, **group_expert_kwargs) for _ in range(group_experts)]
+                    [Expert(d_model, input_dim=l1_input_dim, **group_expert_kwargs) for _ in range(group_experts)]
                 )
-                self.l1_group_gates[group] = nn.Linear(d_model, group_experts)
+                self.l1_group_gates[group] = nn.Linear(l1_input_dim, group_experts)
                 self.l1_group_normalizations[group] = nn.LayerNorm(d_model)
                 self.l2_group_experts[group] = nn.ModuleList(
                     [Expert(d_model, **group_expert_kwargs) for _ in range(group_experts)]
@@ -659,6 +666,16 @@ class Stage3SparseModel(nn.Module):
                 partner_embedding = self.descriptor_adapters["molecule"](
                     partner_embedding
                 )
+        if self.entity_inputs:
+            if not isinstance(primary_embedding, EntityInputs):
+                raise ValueError("HoME requires raw frozen entity slots")
+            primary_embedding, anchor = primary_embedding.pack()
+            if partner_embedding is not None:
+                if not isinstance(partner_embedding, EntityInputs):
+                    raise ValueError("HoME partner requires raw frozen entity slots")
+                partner_embedding, partner_anchor = partner_embedding.pack()
+        else:
+            anchor = primary_embedding
         key = sanitize_task(task_id)
         group = spec.meta_group
         if self.transfer_knowledge is not None:
@@ -695,7 +712,7 @@ class Stage3SparseModel(nn.Module):
             global_primary = group_primary = private_primary = primary_embedding
             group_partner = private_partner = partner_embedding
         if self.l1_global_gate is None:
-            z_global = global_primary
+            z_global = anchor if self.entity_inputs else global_primary
             l1_global_weights = primary_embedding.new_empty(
                 (primary_embedding.shape[0], 0)
             )
@@ -711,7 +728,7 @@ class Stage3SparseModel(nn.Module):
             self.l1_group_gates[spec.meta_group](group_primary),
         )
         local = self.l1_group_normalizations[spec.meta_group](
-            group_primary + z_group_delta
+            (anchor if self.entity_inputs else group_primary) + z_group_delta
         )
         if spec.condition_columns:
             if conditions.shape[-1] != spec.condition_width:
@@ -722,6 +739,10 @@ class Stage3SparseModel(nn.Module):
         if spec.partner_mode == "interaction":
             if partner_embedding is None:
                 raise ValueError(f"Stage 3 task requires partner embedding: {task_id}")
+            if self.entity_inputs:
+                partner_delta, _ = _mixture(self.l1_group_experts[group], group_partner,
+                                           self.l1_group_gates[group](group_partner))
+                group_partner = self.l1_group_normalizations[group](partner_anchor + partner_delta)
             local = self.interactions[spec.meta_group](local, group_partner)
         elif partner_embedding is not None:
             raise ValueError(f"Stage 3 task must not receive partner embedding: {task_id}")

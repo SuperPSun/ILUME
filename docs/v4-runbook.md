@@ -1,6 +1,6 @@
 # v4 execution
 
-Stage1部分保持现役；本手册的Stage2/3与消融属于历史v4合同。新的Stage2/3配置、任务及命令见[v5运行手册](v5-runbook.md)和[ADR-0094](adr/0094-v5-unary-pair-five-task-stage2.md)。
+本手册是现役 v4 Stage1及实体HoME Stage2/3运行入口。Stage1合同不变；Stage2/3见 [ADR-0095](adr/0095-v4-entity-home-without-object-encoder.md)，旧Object/v5运行需历史Git版本。
 
 
 Run from repository root, using fresh `outputs/v4/` paths. Do not overwrite historical v3 outputs. Science contract: [ADR-0089](adr/0089-v4-frozen-dual-view-stage1.md). CUDA examples use four devices.
@@ -206,36 +206,96 @@ ssh SERVER 'sha256sum /path/to/ILUME/assets/unimol2/modelzoo/84M/checkpoint.pt'
 
 Both hashes must equal the published SHA-256 above. Repeat for the second server. Create the isolated teacher environment on each server separately, then run the environment check and small audit there before full cache generation.
 
-## Stage2 and Stage3 Base
+## Stage2 / Stage3：实体 HoME v4
+
+合同见 [ADR-0095](adr/0095-v4-entity-home-without-object-encoder.md)。Stage1保持本手册前述配方，GLOBAL/GROUP直接处理实体，没有ObjectEncoder。
+
+## 运行前提
+
+使用已安装的 `ilume` 环境，不安装依赖或下载权重。需先补齐 `outputs/v4/stage1/base/train/stage1_encoder.pt` 及它对应的 `outputs/v4/stage1/base/prepare/artifacts`；当前配置指定的正式 encoder 与 feature artifacts 尚未齐备。源数据 不能在 prepare/train/evaluate 之间替换。现有过期 `data/stage*/metadata.json` 由下方正式 prepare 生成，不手改 SHA。
+
+仅提供 `configs/v4/stage2/base.yaml` 和 `configs/v4/stage3/base.yaml`；新增架构/任务集对照已移除。Stage3 Phase2中的两项模拟任务只更新自身PRIVATE，不参与GLOBAL/GROUP梯度或共享梯度归一化；Phase3继续只更新PRIVATE。查看 `performance.jsonl` 的参数量、epoch耗时及 `metrics.jsonl` 的实际 optimizer_updates。
+
+## 按顺序执行
+
+下面是用户正式运行的完整命令；实现验证不会自动执行。逐步检查成功后继续。默认只占一张已分配的 GPU、串行五折；若分配多张 GPU，可显式改变已有 Stage3入口的 `--max-parallel` 和 `--devices`，不超过实际资源。
 
 ```bash
-python scripts/stage2/prepare.py --config configs/v4/stage2/base.yaml --output outputs/v4/stage2/base/prepare
-python scripts/stage2/train.py --config configs/v4/stage2/base.yaml --output outputs/v4/stage2/base/train
-python scripts/stage3/prepare.py --config configs/v4/stage3/base.yaml --output outputs/v4/stage3/base/prepare
-python scripts/stage3/train.py --config configs/v4/stage3/base.yaml --fold 1 2 3 4 5 --output outputs/v4/stage3/base/train --max-parallel 4 --devices cuda:0,cuda:1,cuda:2,cuda:3
-python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --checkpoint-dir outputs/v4/stage3/base/train --split valid --fold 1 2 3 4 5 --output outputs/v4/stage3/base/valid
-python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --checkpoint-dir outputs/v4/stage3/base/train --split test --ensemble-folds --output outputs/v4/stage3/base/test
+set -euo pipefail
+cd /data/pengs/ILUME
+source /home/pengs/softwares/conda/etc/profile.d/conda.sh
+conda activate ilume
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+S2="outputs/v4/stage2/entity_home"
+S3="outputs/v4/stage3/entity_home"
+C2="configs/v4/stage2/base.yaml"
+C3="configs/v4/stage3/base.yaml"
+
+# 1. 完整性/运行版本校验；加载严格核对 Stage1 来源、特征和 tensor hash。
+python - <<'PY'
+from stage1.model import load_stage1_model
+loaded = load_stage1_model(
+    "outputs/v4/stage1/base/train/stage1_encoder.pt",
+    "outputs/v4/stage1/base/prepare/artifacts", device="cpu", backbone_dropout=0.0,
+)
+assert loaded.config.is_dual_view and loaded.model.entity_dim == 1024
+print("Stage1 encoder and feature contracts verified")
+PY
+
+# 2. 新 Stage2 prepare；生成 metadata/SHA 及永久冻结 Stage1 特征缓存。
+test ! -e "$S2/prepare"
+python scripts/stage2/prepare.py --config "$C2" --output "$S2/prepare"
+
+# 3. 固定10轮；验证完整 final/manifest 身份及严格重载。
+test ! -e "$S2/train"
+python scripts/stage2/train.py --config "$C2" --output "$S2/train"
+python - "$S2/train" <<'PY'
+from pathlib import Path
+import sys
+from stage2.home_artifact import load_home_final
+root = Path(sys.argv[1])
+payload, model, _ = load_home_final(root / "stage2_final.pt")
+assert payload["kind"] == "ilume_stage2_entity_home_final_v4"
+assert model.home.entity_inputs and not hasattr(model, "object_encoder")
+assert len(model.registry.task_ids) == 5
+print("Stage2 final and manifest verified")
+PY
+
+# 4. 配对 Stage3 prepare；24任务、数值条件、train-fold统计及 Stage1槽位来源校验。
+test ! -e "$S3/prepare"
+python scripts/stage3/prepare.py --config "$C3" --output "$S3/prepare"
+
+# 5. 三阶段五折；只使用已分配的 cuda:0。
+test ! -e "$S3/train"
+python scripts/stage3/train.py --config "$C3" --fold 1 2 3 4 5 \
+  --output "$S3/train" --max-parallel 1 --devices cuda:0
+
+# 6. 实验 validation 五折、test 五模型 ensemble（hydration 无 test）。
+python scripts/stage3/evaluate.py --config "$C3" --checkpoint-dir "$S3/train" \
+  --split valid --fold 1 2 3 4 5 --output "$S3/valid"
+python scripts/stage3/evaluate.py --config "$C3" --checkpoint-dir "$S3/train" \
+  --split test --ensemble-folds --output "$S3/test"
+# 两项模拟任务 valid/test 都是五模型原单位预测均值。
+python scripts/stage3/evaluate.py --config "$C3" --checkpoint-dir "$S3/train" \
+  --domain simulation --split valid --ensemble-folds --output "$S3/simulation_valid"
+python scripts/stage3/evaluate.py --config "$C3" --checkpoint-dir "$S3/train" \
+  --domain simulation --split test --ensemble-folds --output "$S3/simulation_test"
+
+# 7. 只扫描新的实体 HoME v4输出；独立发布，避免与旧20任务/四模拟榜单混排。
+test ! -e "outputs/v4/summary/entity_home"
+python scripts/benchmarks/summarize.py --input "$S3" --output "outputs/v4/summary/entity_home"
 ```
 
-Stop on any failure; downstream stages require final artifacts and intact manifests. Stage1 is permanently frozen, not merely LR=0; ObjectEncoder owns the1241→1024 input projection. Stage3 final file name, prediction CSV and gate diagnostics remain unchanged, but kinds/identities are v4. Hydration has no test. Simulation scalar evaluation uses the existing `--domain simulation --ensemble-folds` interface with v4 config and separate output.
+只在确实需要继续中断作业时按现有入口显式使用 `--resume`；必须保留同一配置、源 SHA、fold/owner/训练状态和指标尾部。不要通过修改 metadata、kind、format、任务名称或宽松加载复用不匹配的历史产物。
 
-## Core ablations
+## 数据核验结论与限制
 
-Complete Base first for paired authority/source checks. w/o Stage1 uses the same feature statistics, random frozen structure encoders and explicit descriptors:
+以下为2026-10-08本地核验快照；正式运行仍以加载和prepare的实时完整性检查为准。实现已通过临时CPU链路验证，正式训练和五折结果尚未生成。
 
-```bash
-python scripts/stage2/prepare.py --config configs/v4/ablations/no_stage1_stage2.yaml --output outputs/v4/ablations/no_stage1/stage2/prepare
-python scripts/stage2/train.py --config configs/v4/ablations/no_stage1_stage2.yaml --output outputs/v4/ablations/no_stage1/stage2/train
-python scripts/stage3/prepare.py --config configs/v4/ablations/no_stage1_stage3.yaml --output outputs/v4/ablations/no_stage1/stage3/prepare
-python scripts/stage3/train.py --config configs/v4/ablations/no_stage1_stage3.yaml --fold 1 2 3 4 5 --output outputs/v4/ablations/no_stage1/stage3/train --max-parallel 4 --devices cuda:0,cuda:1,cuda:2,cuda:3
-python scripts/stage3/evaluate.py --config configs/v4/ablations/no_stage1_stage3.yaml --checkpoint-dir outputs/v4/ablations/no_stage1/stage3/train --split valid --fold 1 2 3 4 5 --output outputs/v4/ablations/no_stage1/stage3/valid
-python scripts/stage3/evaluate.py --config configs/v4/ablations/no_stage1_stage3.yaml --checkpoint-dir outputs/v4/ablations/no_stage1/stage3/train --split test --ensemble-folds --output outputs/v4/ablations/no_stage1/stage3/test
-python scripts/stage2/zero_update.py --config configs/v4/stage2/base.yaml --trained-encoder outputs/v4/stage2/base/train/stage2_encoder.pt --output outputs/v4/ablations/no_stage2/stage2_zero_update
-python scripts/stage3/prepare.py --config configs/v4/ablations/no_stage2_stage3.yaml --output outputs/v4/ablations/no_stage2/stage3/prepare
-python scripts/stage3/train.py --config configs/v4/ablations/no_stage2_stage3.yaml --fold 1 2 3 4 5 --output outputs/v4/ablations/no_stage2/stage3/train --max-parallel 4 --devices cuda:0,cuda:1,cuda:2,cuda:3
-python scripts/stage3/evaluate.py --config configs/v4/ablations/no_stage2_stage3.yaml --checkpoint-dir outputs/v4/ablations/no_stage2/stage3/train --split valid --fold 1 2 3 4 5 --output outputs/v4/ablations/no_stage2/stage3/valid
-python scripts/stage3/evaluate.py --config configs/v4/ablations/no_stage2_stage3.yaml --checkpoint-dir outputs/v4/ablations/no_stage2/stage3/train --split test --ensemble-folds --output outputs/v4/ablations/no_stage2/stage3/test
-python scripts/benchmarks/sweep.py --config configs/v4/ablations/no_stage3_home.yaml --output outputs/v4/ablations/no_stage3_home --max-workers 1
-```
+当前 catalog 的 gas_solubility 包含多种气体，不能视为旧 x_co2 的同义名称；本版本已按明确确认改变目标。新增水活度和焓任务有实际 catalog/分折来源，焓任务展示为 Enthalpy of vaporization，仅使用temperature_K；常量phase列不进入模型。catalog任务标识、目录、目标列及源SHA保持原样。hydration 继续 random/cv1 且无 test，其余使用 catalog 的 system split。Stage1电荷监督及其资源合同保持不变。参考压缩包不替代实时 catalog 和文件身份。
 
-The last two controls retain their twenty-experimental-task boundary and no simulation auxiliary training. Compare five-fold task-equal validation first; test reports never select epochs/configuration. Existing baseline results need comparison-identity checks, not automatic reruns/relabeling.
+Stage2五任务train/valid来源齐全；两项辅助任务的train/valid/test齐全。24实验的120个分折文件存在，当前10项有test文件，其余任务保留五折validation，不生成额外test划分；catalog的实验test计数字段为空，不据此推测缺失文件的科学意图。当前正式运行的未满足前提是配置指定路径的 Stage1 encoder及配对feature artifacts；旧 metadata 也需上述新 prepare 正常重建。本次实现没有启动正式 GPU训练、正式五折或覆盖历史输出。
+
+历史baseline的20任务训练配方不扩展，模拟四任务只适配catalog现有来源位置。其旧实验authority仍要求x_co2；当前catalog缺少这一历史目标，运行旧实验baseline需要对应历史catalog/数据，不得用gas_solubility替代。两模拟实体 HoME v4与四模拟历史结果不能混入同一summary。

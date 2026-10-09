@@ -4,8 +4,9 @@ import csv
 from typing import Any, Mapping, Sequence
 
 from common.identity import semantic_identity
+from common.entity_inputs import ENTITY_INPUT_CONTRACT
 from common.io import sha256_file
-from stage2 import load_stage2_encoder_identity
+from stage2 import load_frozen_stage1_entities, load_stage2_encoder_identity
 from .config import Stage3Config
 from .data import (
     OBJECT_ENCODING_CONTRACT_VERSION,
@@ -78,7 +79,7 @@ def build_stage3_prepared_identity(
     return semantic_identity(
         "stage3.prepared-data",
         {
-            "contract_version": 5 if config.is_v5 else 4 if config.initialization.representation_contract == "dual_view_v4" else 3 if config.training.object_encoder_phase1 is not None else STAGE3_PREPARED_IDENTITY_CONTRACT_VERSION,
+            "contract_version": 4 if config.is_entity_home else 4 if config.initialization.representation_contract == "dual_view_v4" else 3 if config.training.object_encoder_phase1 is not None else STAGE3_PREPARED_IDENTITY_CONTRACT_VERSION,
             "source_content": _source_content(config, registry),
             "resolved_registry": {
                 task: spec.prepared_dict()
@@ -94,8 +95,8 @@ def build_stage3_prepared_identity(
             "normalization": dict(normalization),
             "objects": [key.to_dict() for key in objects],
             "object_encoding_contract_version": OBJECT_ENCODING_CONTRACT_VERSION,
-            "stage2_encoder_identity": stage2_encoder_identity["hash"],
-            **({"object_slots": "frozen_stage1_entity_slots_v1"} if config.training.object_encoder_phase1 is not None else {}),
+            ("stage1_encoder_identity" if config.is_entity_home else "stage2_encoder_identity"): stage2_encoder_identity["hash"],
+            **({"entity_input_contract": ENTITY_INPUT_CONTRACT} if config.is_entity_home else {}),
         },
     )
 
@@ -144,9 +145,10 @@ def resolve_stage3_prepared_identity(
         f"fold{fold}": fit_normalization(config, registry, fold)
         for fold in range(1, 6)
     }
-    encoder_path = config.initialization.stage2_encoder
+    encoder_path = config.initialization.stage1_encoder if config.is_entity_home else config.initialization.stage2_encoder
     assert encoder_path is not None
-    encoder_identity = load_stage2_encoder_identity(encoder_path)
+    encoder_identity = (load_frozen_stage1_entities(encoder_path, config.initialization.stage1_artifacts_dir).encoder_identity
+        if config.is_entity_home else load_stage2_encoder_identity(encoder_path))
     return build_stage3_prepared_identity(
         config, registry, objects, normalization, encoder_identity
     )
@@ -181,7 +183,8 @@ def build_stage3_training_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
     if "representation" in plan:
         semantic_plan["representation"] = plan["representation"]
     else:
-        semantic_plan["stage2_encoder_identity"] = plan["stage2_encoder_identity"]
+        key = "stage1_encoder_identity" if plan.get("representation_contract") == "entity_home_v4" else "stage2_encoder_identity"
+        semantic_plan[key] = plan[key]
     if "training_seed" in plan:
         semantic_plan["training_seed"] = plan["training_seed"]
     if "transfer_knowledge" in plan:
@@ -207,8 +210,8 @@ def build_stage3_training_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
         )
         if plan.get("representation_contract") == "dual_view_v4":
             contract_version = 15
-        if plan.get("representation_contract") == "dual_view_object_v5":
-            contract_version = 17
+        if plan.get("representation_contract") == "entity_home_v4":
+            contract_version = 18
     return semantic_identity(
         "stage3.training",
         {

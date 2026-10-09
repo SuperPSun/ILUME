@@ -191,7 +191,7 @@ def _load_model(
     if taskwise_refined and three_phase_final:
         raise ValueError("Stage 3 checkpoint cannot have two final selectors")
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    rdkit = prepared["metadata"].get("kind") not in {STAGE3_ARTIFACT_KIND, STAGE3_V4_ARTIFACT_KIND, "ilume_stage3_object_sparse_data_v5"}
+    rdkit = prepared["metadata"].get("kind") not in {STAGE3_ARTIFACT_KIND, STAGE3_V4_ARTIFACT_KIND, "ilume_stage3_entity_sparse_data_v4"}
     if three_phase_final:
         from .three_phase import (
             THREE_PHASE_FINAL_FORMAT_VERSION,
@@ -201,7 +201,7 @@ def _load_model(
         )
 
         expected_kind = (
-            "ilume_stage3_object_three_phase_final_v5" if config.is_v5 else
+            "ilume_stage3_entity_home_three_phase_final_v4" if config.is_entity_home else
             "ilume_stage3_dual_view_three_phase_final_v4"
             if config.initialization.representation_contract == "dual_view_v4"
             else
@@ -212,7 +212,7 @@ def _load_model(
             else THREE_PHASE_KNOWLEDGE_FINAL_KIND if config.transfer_knowledge is not None
             else THREE_PHASE_RDKIT_FINAL_KIND if rdkit else THREE_PHASE_FINAL_KIND
         )
-        expected_format = 5 if config.is_v5 else 4 if config.initialization.representation_contract == "dual_view_v4" else THREE_PHASE_FINAL_FORMAT_VERSION
+        expected_format = 4 if config.is_entity_home else 4 if config.initialization.representation_contract == "dual_view_v4" else THREE_PHASE_FINAL_FORMAT_VERSION
     else:
         expected_format = 1 if taskwise_refined else STAGE3_CHECKPOINT_VERSION
         expected_kind = (
@@ -269,9 +269,9 @@ def _load_model(
     )
     if three_phase_final:
         if (
-            plan.get("format_version") != (13 if config.is_v5 else 11 if config.initialization.representation_contract == "dual_view_v4" else 10 if config.initialization.simulation_artifacts_dir is not None else 9 if config.initialization.home_mode is not None else 7 if config.training.object_encoder_phase1 is not None else 5 if config.transfer_knowledge is not None else 4)
+            plan.get("format_version") != (14 if config.is_entity_home else 11 if config.initialization.representation_contract == "dual_view_v4" else 10 if config.initialization.simulation_artifacts_dir is not None else 9 if config.initialization.home_mode is not None else 7 if config.training.object_encoder_phase1 is not None else 5 if config.transfer_knowledge is not None else 4)
             or plan.get("math", {}).get("gradient_aggregation") != "weighted_owner_raw_v1"
-            or training_identity.get("payload", {}).get("contract_version") != (17 if config.is_v5 else 15 if config.initialization.representation_contract == "dual_view_v4" else 14 if config.initialization.simulation_artifacts_dir is not None else 13 if config.initialization.home_mode is not None else 9 if config.training.object_encoder_phase1 is not None else 7 if config.transfer_knowledge is not None else 6)
+            or training_identity.get("payload", {}).get("contract_version") != (18 if config.is_entity_home else 15 if config.initialization.representation_contract == "dual_view_v4" else 14 if config.initialization.simulation_artifacts_dir is not None else 13 if config.initialization.home_mode is not None else 9 if config.training.object_encoder_phase1 is not None else 7 if config.transfer_knowledge is not None else 6)
         ):
             raise ValueError("Stage 3 evaluation requires weighted_owner_raw_v1 artifacts")
     if plan.get("prepared_identity") != metadata_identity(
@@ -288,12 +288,19 @@ def _load_model(
     else:
         expected_encoder = metadata_identity(
             prepared["metadata"],
-            "stage2_encoder",
+            "stage1_encoder" if config.is_entity_home else "stage2_encoder",
             context="Stage 3 prepared artifact",
         )["hash"]
-        if checkpoint.get("stage2_encoder_identity") != expected_encoder:
+        if checkpoint.get("stage1_encoder_identity" if config.is_entity_home else "stage2_encoder_identity") != expected_encoder:
             raise ValueError("Stage 3 evaluation checkpoint mismatch: stage2_encoder_identity")
-    if config.training.object_encoder_phase1 is not None:
+    if config.is_entity_home:
+        from .home import build_model_and_store, load_source, source_plan
+        source = simulation_source if simulation_source is not None else load_source(config)
+        model, representations, loaded_names = build_model_and_store(config, prepared, fold=fold, device=device, source=source)
+        expected_source = source_plan(config, source, loaded_names)
+        if plan.get("stage2_pretraining") != expected_source or checkpoint.get("stage2_pretraining") != expected_source:
+            raise ValueError("Stage3 full Stage2 source identity mismatch")
+    elif config.training.object_encoder_phase1 is not None:
         from .object_phase1 import build_object_phase1_model
 
         source_plan = dict(plan.get("object_encoder_phase1") or {})
@@ -353,7 +360,7 @@ def _load_model(
         }
     ):
         raise ValueError("Stage 3 transfer knowledge checkpoint/bank mismatch")
-    if config.training.object_encoder_phase1 is None:
+    if config.training.object_encoder_phase1 is None and not config.is_entity_home:
         model = Stage3SparseModel(
             config.model,
             prepared["registry"],
@@ -375,7 +382,7 @@ def _load_model(
     if checkpoint.get("ownership_manifest") != model.ownership_manifest():
         raise ValueError("Stage 3 checkpoint ownership mismatch")
     state_namespace = (
-        "stage3.object-model-state.v5" if config.is_v5 and three_phase_final else
+        "stage3.entity-home-model-state.v4" if config.is_entity_home and three_phase_final else
         "stage3.dual-view-model-state.v4"
         if config.initialization.representation_contract == "dual_view_v4" and three_phase_final
         else
@@ -603,7 +610,7 @@ def _default_reporting_study_id(
         if metadata.get("provenance", {}).get("representation")
         == "rdkit_2d_stage2"
         else "rdkit-2d-home-stage3-"
-        if metadata.get("kind") not in {STAGE3_ARTIFACT_KIND, STAGE3_V4_ARTIFACT_KIND, "ilume_stage3_object_sparse_data_v5"}
+        if metadata.get("kind") not in {STAGE3_ARTIFACT_KIND, STAGE3_V4_ARTIFACT_KIND, "ilume_stage3_entity_sparse_data_v4"}
         else "ilume-stage3-"
     )
     return (
@@ -623,6 +630,7 @@ def _configured_study_id(
         study = study.replace("ilume-stage3-", "ilume-no-stage2-", 1)
     elif (
         config.initialization.home_mode == "trained"
+        and not config.is_entity_home
         and metadata.get("source_stage1_checkpoint_sha256") is None
     ):
         study = study.replace("ilume-stage3-", "ilume-no-stage1-", 1)
@@ -636,12 +644,13 @@ def _reporting_model(
         return "ilume_no_stage2", "ILUME w/o Stage2"
     if (
         config.initialization.home_mode == "trained"
+        and not config.is_entity_home
         and metadata.get("source_stage1_checkpoint_sha256") is None
     ):
         return "ilume_no_stage1", "ILUME w/o Stage1"
     if metadata.get("provenance", {}).get("representation") == "rdkit_2d_stage2":
         return "rdkit_2d_stage2_home", "RDKit 2D MLP + Stage2 + HoME"
-    if metadata.get("kind") not in {STAGE3_ARTIFACT_KIND, STAGE3_V4_ARTIFACT_KIND, "ilume_stage3_object_sparse_data_v5"}:
+    if metadata.get("kind") not in {STAGE3_ARTIFACT_KIND, STAGE3_V4_ARTIFACT_KIND, "ilume_stage3_entity_sparse_data_v4"}:
         return "rdkit_2d_home", "RDKit 2D + HoME"
     return "ilume", "ILUME"
 

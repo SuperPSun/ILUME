@@ -151,6 +151,8 @@ class Stage3InitializationConfig:
     stage2_final: Path | None = None
     simulation_artifacts_dir: Path | None = None
     representation_contract: str = "object_v3"
+    stage1_encoder: Path | None = None
+    stage1_artifacts_dir: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -305,8 +307,8 @@ class Stage3Config:
     transfer_knowledge: Stage3TransferKnowledgeConfig | None = None
 
     @property
-    def is_v5(self) -> bool:
-        return self.initialization.representation_contract == "dual_view_object_v5"
+    def is_entity_home(self) -> bool:
+        return self.initialization.representation_contract == "entity_home_v4"
 
     def resolved_private_recipe(
         self, task_id: str
@@ -385,12 +387,17 @@ class Stage3Config:
         if self.preparation.encoding_batch_size <= 0:
             raise ValueError("preparation.encoding_batch_size must be positive")
         if self.representation is None:
-            if self.initialization.stage2_encoder is None:
-                raise ValueError("Stage 2 Object representation requires stage2_encoder")
-            if self.initialization.representation_contract not in {"object_v3", "dual_view_v4", "dual_view_object_v5"}:
-                raise ValueError("Unsupported Stage3 representation contract")
-            if self.initialization.representation_contract in {"dual_view_v4", "dual_view_object_v5"} and (self.training.object_encoder_phase1 is None or self.initialization.home_mode is None):
-                raise ValueError("v4 requires HoME and ObjectEncoder Phase1 adaptation")
+            if self.is_entity_home:
+                if (self.initialization.stage2_encoder is not None or self.training.object_encoder_phase1 is not None
+                        or self.initialization.stage1_encoder is None or self.initialization.stage1_artifacts_dir is None):
+                    raise ValueError("Entity HoME requires only frozen Stage1, not ObjectEncoder")
+            else:
+                if self.initialization.stage2_encoder is None:
+                    raise ValueError("Stage 2 Object representation requires stage2_encoder")
+                if self.initialization.representation_contract not in {"object_v3", "dual_view_v4", "dual_view_object_v5"}:
+                    raise ValueError("Unsupported Stage3 representation contract")
+                if self.initialization.representation_contract in {"dual_view_v4", "dual_view_object_v5"} and (self.training.object_encoder_phase1 is None or self.initialization.home_mode is None):
+                    raise ValueError("v4 requires HoME and ObjectEncoder Phase1 adaptation")
             if self.initialization.home_mode not in {None, "trained", "no_stage2"}:
                 raise ValueError("Invalid Stage 3 HoME source mode")
             if self.initialization.home_mode == "trained" and self.initialization.stage2_final is None:
@@ -439,8 +446,8 @@ class Stage3Config:
         }
         for task_id, task in self.tasks.items():
             if task.condition_columns is not None:
-                if not self.is_v5 or len(set(task.condition_columns)) != len(task.condition_columns):
-                    raise ValueError(f"Invalid v5 condition selection: {task_id}")
+                if not self.is_entity_home or len(set(task.condition_columns)) != len(task.condition_columns):
+                    raise ValueError(f"Invalid entity-HoME condition selection: {task_id}")
             if not task_id or "." in task_id:
                 raise ValueError(f"Invalid Stage 3 task id: {task_id}")
             if task.meta_group not in self.groups:
@@ -545,7 +552,7 @@ class Stage3Config:
                 raise ValueError(f"model.{name} must be positive")
         training = self.training
         encoder_phase1 = training.object_encoder_phase1
-        if self.initialization.home_mode is not None:
+        if self.initialization.home_mode is not None and not self.is_entity_home:
             if encoder_phase1 is None or encoder_phase1.source_variant != (
                 "trained" if self.initialization.home_mode == "trained" else "zero_update"
             ):
@@ -804,7 +811,7 @@ class Stage3Config:
                 "min_lr_ratio", "refinement_ratio", "refinement_lr_multiplier",
             ):
                 training.pop(name)
-        if self.is_v5 and training.get("simulation") is not None:
+        if self.is_entity_home and training.get("simulation") is not None:
             training["simulation"].pop("shared_group_task_weight")
         for group in payload["groups"].values():
             for name in ("experts", "expert_hidden_ratio", "phase1", "phase2"):
@@ -855,6 +862,9 @@ def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
     if "cache_dir" in preparation_raw:
         preparation_raw["cache_dir"] = Path(preparation_raw["cache_dir"])
     initialization_raw = dict(raw.get("initialization") or {})
+    for name in ("stage1_encoder", "stage1_artifacts_dir"):
+        if initialization_raw.get(name) is not None:
+            initialization_raw[name] = Path(initialization_raw[name])
     if initialization_raw.get("stage2_encoder") is not None:
         initialization_raw["stage2_encoder"] = Path(
             initialization_raw["stage2_encoder"]

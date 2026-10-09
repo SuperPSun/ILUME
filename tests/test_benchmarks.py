@@ -581,7 +581,7 @@ def test_native_split_benchmark_configs_follow_v2_authorities() -> None:
                 assert config.model["multicomponent_shared"] is True
 
 
-@pytest.mark.parametrize("config_path", ("configs/ablations/no_stage3_home.yaml", "configs/v4/ablations/no_stage3_home.yaml"))
+@pytest.mark.parametrize("config_path", ("configs/ablations/no_stage3_home.yaml",))
 @pytest.mark.usefixtures("historical_experimental_catalog")
 def test_stage3_single_task_mlp_config_and_ordered_concat(config_path) -> None:
     config = load_benchmark_config(config_path)
@@ -635,7 +635,7 @@ def test_stage3_single_task_mlp_config_and_ordered_concat(config_path) -> None:
     assert build_input_features(dataset, embeddings, ordinary).shape == (2, 1024)
 
 
-@pytest.mark.parametrize("version", (3, 4))
+@pytest.mark.parametrize("version", (3,))
 @pytest.mark.usefixtures("historical_experimental_catalog")
 def test_stage3_single_task_mlp_v2_config_features_and_final_state(tmp_path: Path, version) -> None:
     config = load_benchmark_config("configs/ablations/no_stage3_home.yaml" if version == 3 else "configs/v4/ablations/no_stage3_home.yaml")
@@ -2653,7 +2653,7 @@ def test_simulation_cli_rejects_fold_and_ensemble(tmp_path: Path, monkeypatch) -
 
 
 def test_v5_two_task_summary_rejects_mixed_historical_protocol(tmp_path: Path) -> None:
-    from stage3.simulation_reporting import SCALAR_SIMULATION_TASKS, V5_SCALAR_SIMULATION_TASKS, simulation_comparison
+    from stage3.simulation_reporting import SCALAR_SIMULATION_TASKS, ENTITY_SCALAR_SIMULATION_TASKS, simulation_comparison
 
     inputs = tmp_path / "inputs"
     def report(tasks, root):
@@ -2666,7 +2666,7 @@ def test_v5_two_task_summary_rejects_mixed_historical_protocol(tmp_path: Path) -
             "reporting": {"schema_version": 1, "model_id": "ilume", "model_display_name": "ILUME", "study_id": str(len(tasks)),
                 "benchmark": "simulation_property", "protocol": {"split": "test", "expected_tasks": list(tasks), "folds": [1, 2, 3, 4, 5], "ensemble": True},
                 "comparison_identity": simulation_comparison(split="test", tasks=tasks, sources=sources, scales={task: 1.0 for task in tasks})}}, stage="stage3")
-    report(V5_SCALAR_SIMULATION_TASKS, inputs / "v5")
+    report(ENTITY_SCALAR_SIMULATION_TASKS, inputs / "v5")
     result = publish_summary(inputs, tmp_path / "summary", tmp_path)
     leader = result["leaderboards"]["simulation_test"][0]
     assert leader["total_tasks"] == 2 and leader["macro_normalized_mae"] == pytest.approx(0.5)

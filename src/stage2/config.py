@@ -79,6 +79,7 @@ class Stage2ModelConfig:
     object_layers: int = 2
     object_ffn_dim: int = 1024
     dropout: float = 0.10
+    architecture_kind: str = "historical_object"
     object_encoder_kind: str = "transformer"
     unary_hidden_dim: int = 512
     pair_hidden_dim: int = 512
@@ -128,17 +129,14 @@ class Stage2Config:
     training: Stage2TrainingConfig = field(default_factory=Stage2TrainingConfig)
 
     @property
-    def is_v5(self) -> bool:
-        return self.data.tasks is not None
+    def is_entity_home(self) -> bool:
+        return self.model.architecture_kind == "entity_home_v1"
 
     def validate(self) -> None:
-        if self.model.object_encoder_kind not in {"transformer", "unary_pair"}:
-            raise ValueError("Unsupported ObjectEncoder kind")
-        if self.model.unary_hidden_dim <= 0 or self.model.pair_hidden_dim <= 0:
-            raise ValueError("Unary/Pair hidden dimensions must be positive")
-        if self.model.object_encoder_kind != "transformer" and not self.is_v5:
-            raise ValueError("UnaryPair requires the explicit v5 task contract")
-        if self.is_v5 and (not self.data.tasks or len(set(self.data.tasks)) != len(self.data.tasks)
+        if self.model.architecture_kind not in {"entity_home_v1", "historical_object"}:
+            raise ValueError("Unsupported Stage2 architecture contract")
+        if self.is_entity_home and (set(self.data.tasks or ()) != {"simulation/density", "simulation/heat_capacity", "simulation/thermal_expansion", "simulation/heat_of_vaporization", "simulation/transfer_organic"}
+                           or not self.data.tasks or len(set(self.data.tasks)) != len(self.data.tasks)
                            or set(self.data.tasks) != set(self.loss.task_weights)):
             raise ValueError("Explicit Stage2 tasks must be unique and match loss.task_weights")
         if not self.data.task_catalog_path.resolve().is_relative_to(self.data.data_root.resolve()):
@@ -152,8 +150,6 @@ class Stage2Config:
             raise ValueError("Unsupported Stage 2 target materialization mode")
         if self.preparation.workers <= 0:
             raise ValueError("Stage 2 preparation sizes must be positive")
-        if self.model.object_layers <= 0 or self.model.object_ffn_dim <= 0:
-            raise ValueError("Stage 2 ObjectEncoder dimensions must be positive")
         if not 0.0 <= self.model.dropout <= 1.0:
             raise ValueError("model.dropout must be between 0 and 1")
         if self.loss.lambda_teacher < 0.0:
@@ -242,7 +238,7 @@ class Stage2Config:
 
     def validate_registry(self, registry: Stage2Registry) -> None:
         expected = set(registry.task_ids)
-        if self.is_v5 and expected != set(self.data.tasks):
+        if self.is_entity_home and expected != set(self.data.tasks):
             raise ValueError("Stage2 registry differs from the explicit task contract")
         if set(self.loss.task_weights) != expected:
             raise ValueError("loss.task_weights must exactly match the Stage 2 registry")
@@ -303,7 +299,11 @@ class Stage2Config:
                 return [convert(item) for item in value]
             return value
         payload = convert(asdict(self))
-        if not self.is_v5:
+        if self.is_entity_home:
+            for name in ("object_layers", "object_ffn_dim", "object_encoder_kind", "unary_hidden_dim", "pair_hidden_dim"):
+                payload["model"].pop(name)
+            payload["training"].pop("object_encoder_learning_rate")
+        else:
             payload["data"].pop("tasks")
             for name in ("object_encoder_kind", "unary_hidden_dim", "pair_hidden_dim"):
                 payload["model"].pop(name)

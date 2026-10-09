@@ -66,7 +66,7 @@ def assemble_owner_gradients(
     groups = sorted({task_specs[task].meta_group for task in task_gradients})
     private_only = (
         set(getattr(model, "simulation_tasks", ()))
-        if getattr(model, "representation_contract", None) == "dual_view_object_v5" else set()
+        if getattr(model, "representation_contract", None) == "entity_home_v4" else set()
     )
     for group in groups:
         tasks = tuple(task for task in task_gradients if task_specs[task].meta_group == group)

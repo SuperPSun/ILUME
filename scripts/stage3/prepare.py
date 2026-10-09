@@ -51,8 +51,8 @@ def main() -> None:
             {"representation": "rdkit_2d_adapter"}
             if config.representation is not None
             else {
-                "stage2_encoder": repository_relative(
-                    config.initialization.stage2_encoder
+                "stage1_encoder": repository_relative(
+                    config.initialization.stage1_encoder if config.is_entity_home else config.initialization.stage2_encoder
                 )
             }
         ),
