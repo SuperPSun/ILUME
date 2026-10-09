@@ -231,8 +231,8 @@ ssh SERVER 'sha256sum /path/to/ILUME/assets/unimol2/modelzoo/84M/checkpoint.pt'
 prepare生成五任务数据和冻结Stage1实体缓存；train固定训练10轮，发布 `stage2_final.pt` 和 `stage2_final.json`，不再导出独立编码器。
 
 ```bash
-python scripts/stage2/prepare.py --config configs/v4/stage2/base.yaml --output outputs/v4/stage2/prepare
-python scripts/stage2/train.py --config configs/v4/stage2/base.yaml --output outputs/v4/stage2/train
+python scripts/stage2/prepare.py --config configs/v4/stage2/base.yaml --output outputs/v4/stage2/base/prepare
+python scripts/stage2/train.py --config configs/v4/stage2/base.yaml --output outputs/v4/stage2/base/train
 ```
 
 ### Stage3：prepare 与五折 train
@@ -240,8 +240,8 @@ python scripts/stage2/train.py --config configs/v4/stage2/base.yaml --output out
 Stage2训练完成后准备Stage3，再执行三阶段五折训练。下面使用一张已分配的GPU，五折串行执行；多GPU并行时才增加 `--max-parallel` 并扩展 `--devices`。
 
 ```bash
-python scripts/stage3/prepare.py --config configs/v4/stage3/base.yaml --output outputs/v4/stage3/entity_home/prepare
-python scripts/stage3/train.py --config configs/v4/stage3/base.yaml --fold 1 2 3 4 5 --output outputs/v4/stage3/entity_home/train --devices cuda:0
+python scripts/stage3/prepare.py --config configs/v4/stage3/base.yaml --output outputs/v4/stage3/base/entity_home/prepare
+python scripts/stage3/train.py --config configs/v4/stage3/base.yaml --fold 1 2 3 4 5 --output outputs/v4/stage3/base/entity_home/train --devices cuda:0
 ```
 
 ### Stage3：实验评估
@@ -249,8 +249,8 @@ python scripts/stage3/train.py --config configs/v4/stage3/base.yaml --fold 1 2 3
 先查看五折验证，再报告测试集的五模型集成；hydration无测试集。
 
 ```bash
-python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --checkpoint-dir outputs/v4/stage3/train --split valid --fold 1 2 3 4 5 --output outputs/v4/stage3/valid
-python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --checkpoint-dir outputs/v4/stage3/train --split test --ensemble-folds --output outputs/v4/stage3/test
+python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --checkpoint-dir outputs/v4/stage3/base/train --split valid --fold 1 2 3 4 5 --output outputs/v4/stage3/base/valid
+python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --checkpoint-dir outputs/v4/stage3/base/train --split test --ensemble-folds --output outputs/v4/stage3/base/test
 ```
 
 ### Stage3：两项模拟任务评估
@@ -258,8 +258,8 @@ python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --checkpo
 验证和测试均取五个模型的原单位预测均值。
 
 ```bash
-python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --checkpoint-dir outputs/v4/stage3/train --domain simulation --split valid --ensemble-folds --output outputs/v4/stage3/simulation_valid
-python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --checkpoint-dir outputs/v4/stage3/train --domain simulation --split test --ensemble-folds --output outputs/v4/stage3/simulation_test
+python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --checkpoint-dir outputs/v4/stage3/base/train --domain simulation --split valid --ensemble-folds --output outputs/v4/stage3/base/simulation_valid
+python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --checkpoint-dir outputs/v4/stage3/base/train --domain simulation --split test --ensemble-folds --output outputs/v4/stage3/base/simulation_test
 ```
 
 ### 结果汇总
