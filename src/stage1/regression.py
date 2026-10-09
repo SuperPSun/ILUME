@@ -156,7 +156,33 @@ def regression_identity(config, checkpoint_path, tasks=None):
         "feature_identity": metadata["semantic"]["identities"]["feature"]["hash"],
         "data": data, "tasks": list(tasks), "recipe": recipe,
         "selection": "fixed-final-epoch", "inputs": "unmasked-frozen-learned1024-or-atom512",
+        "input_filter": "skip-checkpoint-token-overlength-v1",
     })
+
+
+def filter_regression_inputs(data, vocabulary, max_length):
+    counts = {row["canonical_smiles"]: None for splits in data.values()
+              for rows in splits.values() for row in rows}
+    for key in counts:
+        counts[key] = vocabulary.token_count(key)
+    filtered, audit = {}, {"max_smiles_tokens": max_length, "tasks": {}, "excluded": []}
+    for task, splits in data.items():
+        filtered[task], audit["tasks"][task] = {}, {}
+        for split, rows in splits.items():
+            kept = []
+            for row in rows:
+                key = row["canonical_smiles"]
+                if counts[key] > max_length:
+                    audit["excluded"].append({"task": task, "split": split,
+                        "canonical_smiles": key, "token_count": counts[key],
+                        "reason": "smiles_overlength",
+                        **({"mol_id": row["mol_id"]} if "mol_id" in row else {})})
+                else:
+                    kept.append(row)
+            filtered[task][split] = kept
+            audit["tasks"][task][split] = {"before": len(rows), "retained": len(kept),
+                                           "excluded": len(rows) - len(kept)}
+    return filtered, audit
 
 
 def load_regression_rows(config, source_config, task, split, *, audit_dir=None):
@@ -270,6 +296,11 @@ def run_regression(config, checkpoint_path, output_dir, tasks=None):
             raise ValueError(f"Regression task has no training labels: {task}")
         if {r["canonical_smiles"] for r in data[task]["train"]} & {r["canonical_smiles"] for r in data[task]["valid"]}:
             raise ValueError(f"Regression train/valid canonical overlap: {task}")
+    data, input_audit = filter_regression_inputs(data, vocabulary, source_config.data.max_smiles_tokens)
+    atomic_json(root / "input_filter_audit.json", input_audit)
+    for task in tasks:
+        if not data[task]["train"]:
+            raise ValueError(f"Regression task has no encodable training labels after length filtering: {task}")
         for split in ("train", "valid"):
             for row in data[task][split]:
                 molecules[row["canonical_smiles"]] = row
@@ -360,6 +391,7 @@ def run_regression(config, checkpoint_path, output_dir, tasks=None):
                     "base_encoder_hash": encoder_hash, "base_training_identity": source["training_identity"],
                     "fixed_final_epoch": config.epochs, "updates": updates, "seed": seed,
                     "state_hash": state_hash, "initial_validation": initial, "validation": metrics["validation"]}
+        manifest["input_filter_counts"] = input_audit["tasks"][task]
         atomic_torch_save(task_root / "regression_head.pt", {**manifest, "model": state})
         manifest["artifact_sha256"] = sha256_file(task_root / "regression_head.pt")
         atomic_json(task_root / "regression_head.json", manifest)
@@ -369,7 +401,8 @@ def run_regression(config, checkpoint_path, output_dir, tasks=None):
     if regression_identity(config, checkpoint_path, tasks) != identity:
         raise ValueError("Regression source changed during training")
     summary = {"kind": "ilume_stage1_regression_summary_v4", "identity": identity,
-               "encoder_hash": encoder_hash, "representation_hash": bank_hash, "tasks": results}
+               "encoder_hash": encoder_hash, "representation_hash": bank_hash, "tasks": results,
+               "input_filter_counts": input_audit["tasks"]}
     atomic_json(root / "summary.json", summary)
     return summary
 

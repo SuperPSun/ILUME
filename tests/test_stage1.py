@@ -857,6 +857,23 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
         assert all(not p.requires_grad for p in head.parameters())
     if charge_valid is None:
         import stage1.regression as regression_module
+        real_rows = regression_module.load_regression_rows
+        long_key = "C" * 300
+        def rows_with_overlength(*args, **kwargs):
+            key = long_key if args[3] == "train" else long_key + "O"
+            return real_rows(*args, **kwargs) + [{"canonical_smiles": key,
+                "role_id": 2, "targets": np.asarray([1.e9])}]
+        with monkeypatch.context() as patch:
+            patch.setattr(regression_module, "load_regression_rows", rows_with_overlength)
+            filtered = run_regression(regression_config, output / "last.pt", tmp_path / "filtered", selected)
+        bank = torch.load(tmp_path / "filtered/representations.pt", weights_only=False)["representations"]
+        assert long_key not in bank and long_key + "O" not in bank
+        audit = json.loads((tmp_path / "filtered/input_filter_audit.json").read_text())
+        assert len(audit["excluded"]) == 2 * len(selected)
+        for task in selected:
+            assert filtered["tasks"][task]["scaler"] == heads["tasks"][task]["scaler"]
+            assert filtered["tasks"][task]["state_hash"] == heads["tasks"][task]["state_hash"]
+            assert filtered["input_filter_counts"][task]["train"]["excluded"] == 1
         calls = []
         def worse_validation(*args, **kwargs):
             calls.append(1)
@@ -1898,3 +1915,29 @@ def test_all_five_modalities_use_element_role_weights_and_component_means(
         model.fingerprint_heads["morgan"].weight,
     ]
     assert all(parameter.grad is not None for parameter in required_parameters)
+def test_regression_overlength_filter_keeps_observations_and_audits():
+    from stage1.regression import filter_regression_inputs
+
+    class Vocabulary:
+        def token_count(self, key):
+            if key == "invalid":
+                raise ValueError("tokenization failed")
+            return {"short": 255, "boundary": 256, "long": 259}[key]
+
+    data = {"HOMO_eV": {"train": [{"canonical_smiles": "short"},
+                                    {"canonical_smiles": "long"}],
+                         "valid": [{"canonical_smiles": "boundary"}]},
+            "partial_atomic_charge": {"train": [{"canonical_smiles": "long", "mol_id": "a"},
+                                                  {"canonical_smiles": "long", "mol_id": "b"}],
+                                      "valid": []}}
+    filtered, audit = filter_regression_inputs(data, Vocabulary(), 256)
+    assert filtered["HOMO_eV"]["train"] == [{"canonical_smiles": "short"}]
+    assert filtered["HOMO_eV"]["valid"] == [{"canonical_smiles": "boundary"}]
+    assert filtered["partial_atomic_charge"]["train"] == []
+    assert audit["tasks"]["HOMO_eV"]["train"] == {"before": 2, "retained": 1, "excluded": 1}
+    assert audit["tasks"]["partial_atomic_charge"]["train"] == {"before": 2, "retained": 0, "excluded": 2}
+    assert [row.get("mol_id") for row in audit["excluded"]] == [None, "a", "b"]
+    assert all(row["token_count"] == 259 and row["reason"] == "smiles_overlength"
+               for row in audit["excluded"])
+    with pytest.raises(ValueError, match="tokenization failed"):
+        filter_regression_inputs({"HOMO_eV": {"train": [{"canonical_smiles": "invalid"}]}}, Vocabulary(), 256)

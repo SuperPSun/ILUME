@@ -25,6 +25,8 @@
 
 ## 后果
 
+独立回归输入按来源检查点的 `max_smiles_tokens` 过滤：超长结构不截断、不扩展位置编码，在生成冻结表示及拟合任务标准化之前从 train/valid 排除。其他分词、结构、来源异常仍失败；原始 canonical train/valid 重叠在过滤前检查，不因过滤放宽。输出 `input_filter_audit.json` 记录目标、split、canonical SMILES、token 数、排除原因及电荷观察 mol_id；每任务清单和汇总记录过滤前/后数量。过滤后训练集为空则失败，验证集为空沿用空指标行为。策略 `skip-checkpoint-token-overlength-v1` 进入独立回归身份，历史头仍可读取；Stage1/2/3身份不变。这里使用可编码的监督子集，不再承诺使用完整来源训练集。
+
 用户可在相同表示上比较独立配置的标量与原子预测器。非线性头增加可训练参数/dropout，不能继承原 Linear 的原单位预测。结构变化只需新的回归输出，不需要重新训练 Stage1/2/3。不覆盖产物、不新增 HPO、不改变调度器、不早停或新增 CLI 参数。
 
 ## 替代方案

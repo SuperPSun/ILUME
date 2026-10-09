@@ -157,6 +157,8 @@ python scripts/stage1/prepare.py --config configs/v4/stage1/base.yaml --partial-
 
 ### 独立冻结回归头训练
 
+回归输入不能超过冻结来源检查点的 `max_smiles_tokens`。超长分子在表示生成与标准化拟合前跳过，不截断、不修改编码器；其他错误仍失败。输出根的 `input_filter_audit.json` 记录各目标/split过滤前、保留、排除样本数及逐条原因、token数和电荷mol_id；任务清单与summary也记录数量。相同电荷结构的源观察分别计数。过滤后训练集为空会报错；训练/验证结构重叠仍在过滤前拒绝。结果仅代表可编码的样本子集。失败尝试保留，修复后换用新输出目录重跑，无需重新训练Stage1/2/3。
+
 部分电荷头训练将来源每行保留为独立样本，重复结构复用冻结原子表示；预训练及兼容性见 [sidecar合同](#partial-charge-sidecar-on-an-existing-corpus)。标量电子冲突及训练集/验证集重叠检查不变。使用下方命令前核验回归YAML的 `simulation_dir`：当前写为 `data/stage2`，本地迁移后的电子/电荷来源在 `data/stage1/properties`。将自包含运行YAML指向实际合同目录；这不授权移动或覆盖数据。
 
 在Stage1末轮后显式执行；不会自动追加预训练。命令需完整末轮 `last.pt` 或末轮轮检查点，不能用 `stage1_encoder.pt`。在 `configs/v4/stage1/regression_heads.yaml` 配置数据/产物路径和预算。一次编码完整无mask结构，冻结编码器，独立训练13标量头加原子电荷。当前YAML显式采用MLP：各电子目标entity1024→512→256→1，partial charge为atom512→256→128→1，GELU、dropout0。各头按既有任务局部种子独立初始化（分别656,385 / 164,353参数），不共享权重。共享结构定义默认仍为Linear；省略预测器时从已训练行/头初始化。默认10轮、LR1e-4、恒定LR、batch128、AdamW/WD0.01、BF16、裁剪1。验证只报告原单位MAE/RMSE；final固定epoch10，绝不取最优。不读取测试集。此MLP配方使用新输出；已有Linear输出只读，无需重跑Stage1/2/3。
