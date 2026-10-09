@@ -15,8 +15,8 @@ initialization:
   representation_contract: entity_home_v4
   stage2_encoder: null
   home_mode: trained
-  stage2_final: outputs/v4/stage2/entity_home/train/stage2_final.pt
-  simulation_artifacts_dir: outputs/v4/stage2/entity_home/prepare/artifacts
+  stage2_final: outputs/v4/stage2/train/stage2_final.pt
+  simulation_artifacts_dir: outputs/v4/stage2/prepare/artifacts
   plugin: null
   stage1_encoder: outputs/v4/stage1/base/train/stage1_encoder.pt
   stage1_artifacts_dir: outputs/v4/stage1/base/prepare/artifacts
