@@ -2335,6 +2335,131 @@ def test_scheduler_binds_slots_for_successful_folds(
 
 EVALUATION_IDENTITY = semantic_identity("stage3.evaluation", {"contract_version": 1})
 
+
+@pytest.mark.parametrize("split", ("valid", "test"))
+@pytest.mark.parametrize("domain", ("all", "experimental", "simulation"))
+def test_evaluation_launcher_domains_and_protocols(monkeypatch, tmp_path, split, domain) -> None:
+    import stage3.evaluate as experimental
+    import stage3.simulation_evaluate as simulation
+
+    output = tmp_path / "evaluation"
+    argv = ["evaluate.py", "--config", "configs/v4/stage3/base.yaml",
+            "--checkpoint-dir", "train", "--split", split, "--output", str(output)]
+    if domain != "all":
+        argv += ["--domain", domain]
+    argv += ["--fold", "1", "2", "3", "4", "5"] if split == "valid" and domain != "simulation" else ["--ensemble-folds"]
+    calls, runs, resolutions = [], [], []
+    simulation_identity = semantic_identity("test.simulation-evaluation", {})
+
+    def resolve_simulation(*args, **kwargs):
+        resolutions.append(kwargs["split"])
+        return simulation_identity
+
+    def evaluate_experimental(*args, **kwargs):
+        if domain == "all":
+            assert resolutions == [split]
+        calls.append(("experimental", kwargs))
+        return {"split": split}
+
+    def evaluate_simulation(*args, **kwargs):
+        calls.append(("simulation", kwargs))
+        return {"split": split}
+
+    def open_run(**kwargs):
+        run = _Run(Path(kwargs["output"]))
+        runs.append((kwargs, run))
+        return run
+
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(evaluate_launcher, "repository_path", Path)
+    monkeypatch.setattr(evaluate_launcher, "configure_process_runtime", lambda config: None)
+    monkeypatch.setattr(evaluate_launcher, "open_run_directory", open_run)
+    monkeypatch.setattr(experimental, "resolve_stage3_evaluation_identity", lambda *a, **k: EVALUATION_IDENTITY)
+    monkeypatch.setattr(experimental, "resolve_stage3_reporting_study_id", lambda *a, **k: "test-study")
+    monkeypatch.setattr(experimental, "evaluate_checkpoints", evaluate_experimental)
+    monkeypatch.setattr(simulation, "resolve_simulation_evaluation_identity", resolve_simulation)
+    monkeypatch.setattr(simulation, "evaluate_simulation_checkpoints", evaluate_simulation)
+    assert evaluate_launcher.main() == 0
+    experimental_calls = [kwargs for name, kwargs in calls if name == "experimental"]
+    simulation_calls = [kwargs for name, kwargs in calls if name == "simulation"]
+    assert len(experimental_calls) == (0 if domain == "simulation" else 5 if split == "valid" else 1)
+    for index, kwargs in enumerate(experimental_calls, 1):
+        assert kwargs["ensemble_folds"] == (split == "test")
+        assert kwargs["fold"] == (index if split == "valid" else None)
+        root = output / f"fold{index}" if split == "valid" else output
+        assert kwargs["predictions_dir"] == root / "predictions"
+    assert len(simulation_calls) == (0 if domain == "experimental" else 1)
+    if simulation_calls:
+        kwargs = simulation_calls[0]
+        root = output / "simulation" if domain == "all" else output
+        assert kwargs["predictions_dir"] == root / "predictions"
+        assert kwargs["expected_evaluation_identity"] == simulation_identity
+        assert "fold" not in kwargs and "task_subset" not in kwargs
+        assert runs[-1][0]["details"]["ensemble_folds"] is True
+    assert all(run.completed == {"split": split} and not run.failed for _, run in runs)
+
+
+def test_combined_evaluation_rejects_epoch_selector() -> None:
+    args = evaluate_launcher._build_parser().parse_args([
+        "--config", "base.yaml", "--checkpoint-dir", "train", "--split", "valid",
+        "--fold", "1", "--checkpoint-epoch", "10", "--output", "evaluate",
+    ])
+    with pytest.raises(ValueError, match="final models"):
+        evaluate_launcher._validate_request(args)
+
+
+@pytest.mark.parametrize("failure", ("missing_final", "existing_output", "experimental_failed"))
+def test_combined_evaluation_stops_before_simulation_on_failure(monkeypatch, tmp_path, failure) -> None:
+    import stage3.simulation_evaluate as simulation
+
+    output = tmp_path / "evaluation"
+    if failure == "existing_output":
+        output.mkdir()
+    monkeypatch.setattr(sys, "argv", [
+        "evaluate.py", "--config", "base.yaml", "--checkpoint-dir", "train",
+        "--split", "test", "--ensemble-folds", "--output", str(output),
+    ])
+    monkeypatch.setattr(evaluate_launcher, "repository_path", Path)
+    monkeypatch.setattr(evaluate_launcher, "repository_relative", str)
+    monkeypatch.setattr(evaluate_launcher, "load_stage3_config", lambda path: Stage3Config())
+    monkeypatch.setattr(evaluate_launcher, "configure_process_runtime", lambda config: None)
+    calls = []
+    def resolve(*args, **kwargs):
+        calls.append("resolve")
+        if failure == "missing_final":
+            raise FileNotFoundError("missing fold5 final")
+        return EVALUATION_IDENTITY
+    def experimental(*args):
+        calls.append("experimental")
+        return 1
+    monkeypatch.setattr(simulation, "resolve_simulation_evaluation_identity", resolve)
+    monkeypatch.setattr(evaluate_launcher, "_run_experimental", experimental)
+    monkeypatch.setattr(evaluate_launcher, "_run_simulation", lambda **kwargs: pytest.fail("simulation ran"))
+    if failure == "experimental_failed":
+        assert evaluate_launcher.main() == 1
+        assert calls == ["resolve", "experimental"]
+    else:
+        with pytest.raises(FileNotFoundError if failure == "missing_final" else FileExistsError):
+            evaluate_launcher.main()
+        assert calls == (["resolve"] if failure == "missing_final" else [])
+
+
+def test_simulation_evaluation_failure_marks_run_failed(monkeypatch, tmp_path) -> None:
+    import stage3.simulation_evaluate as simulation
+
+    run = _Run(tmp_path)
+    monkeypatch.setattr(evaluate_launcher, "open_run_directory", lambda **kwargs: run)
+    def fail(*args, **kwargs):
+        raise ValueError("simulation identity mismatch")
+    monkeypatch.setattr(simulation, "evaluate_simulation_checkpoints", fail)
+    args = SimpleNamespace(config="base.yaml", output=tmp_path, split="test", study_id=None)
+    with pytest.raises(ValueError, match="identity mismatch"):
+        evaluate_launcher._run_simulation(
+            args=args, config=Stage3Config(), checkpoint_dir=tmp_path,
+            identity=EVALUATION_IDENTITY,
+        )
+    assert run.failed and run.completed is None
+
 class _Progress:
     class _Status:
         def __enter__(self) -> None:

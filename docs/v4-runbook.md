@@ -246,23 +246,18 @@ python scripts/stage3/prepare.py --config configs/v4/stage3/base.yaml --output o
 python scripts/stage3/train.py --config configs/v4/stage3/base.yaml --fold 1 2 3 4 5 --output outputs/v4/stage3/base/train --devices cuda:0
 ```
 
-### Stage3：实验评估
+### Stage3：实验与模拟联合评估
 
-先查看五折验证，再报告测试集的五模型集成；hydration无测试集。
+默认 `--domain all`，每次调用完成同一split的实验与两项模拟评估。实验验证仍逐折评估，模拟验证仍使用全部五个final的原单位预测均值；测试集两类均按各自协议使用五模型集成。先查看验证结果，再报告测试集；hydration无测试集。
 
 ```bash
 python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --checkpoint-dir outputs/v4/stage3/base/train --split valid --fold 1 2 3 4 5 --output outputs/v4/stage3/base/valid
 python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --checkpoint-dir outputs/v4/stage3/base/train --split test --ensemble-folds --output outputs/v4/stage3/base/test
 ```
 
-### Stage3：两项模拟任务评估
+联合评估使用未占用的输出根；实验验证写入 `foldN/`，实验测试写入根目录，模拟结果写入同根的 `simulation/`。每个运行仍独立记录身份、metadata、summary和预测清单，汇总器递归读取，实验与模拟榜单继续独立。入口先核对模拟所需的全部五折final来源；实验评估失败时返回非零并停止后续模拟评估，模拟失败时保留已完成实验结果且返回非零，不覆盖已有产物。
 
-验证和测试均取五个模型的原单位预测均值。
-
-```bash
-python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --checkpoint-dir outputs/v4/stage3/base/train --domain simulation --split valid --ensemble-folds --output outputs/v4/stage3/base/simulation_valid
-python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --checkpoint-dir outputs/v4/stage3/base/train --domain simulation --split test --ensemble-folds --output outputs/v4/stage3/base/simulation_test
-```
+只评估实验时显式使用 `--domain experimental`，其余参数沿用上方命令；只评估模拟时使用 `--domain simulation --ensemble-folds`，不传 `--fold`、`--tasks` 或 `--checkpoint-epoch`。联合评估中 `--fold`（验证）和 `--tasks` 仅选择实验任务/折，模拟始终评估全部两项任务及五模型集成；联合评估不接受 `--checkpoint-epoch`。
 
 ### 结果汇总
 

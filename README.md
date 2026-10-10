@@ -1,6 +1,6 @@
 # ILUME
 
-ILUME 的现役流程是 **冻结 v4 Stage1 → v4 五任务实体 HoME Stage2 → v4 Stage3 24实验 / 两模拟辅助 HoME**。冻结Stage1的learned1024与标准化RDKit217组成1241D实体输入；GLOBAL和GROUP的L1并行学习实体组合，不再经过独立ObjectEncoder。Stage3保留三阶段owner训练、模拟仅PRIVATE更新及严格来源验证。合同见 [ADR-0095](docs/adr/0095-v4-entity-home-without-object-encoder.md)；正式命令见 [v4运行手册](docs/v4-runbook.md)。历史Object/v5及更早产物保持原身份，只能用对应历史Git版本加载。
+ILUME 的现役流程是 **冻结 v4 Stage1 → v4 五任务实体 HoME Stage2 → v4 Stage3 24实验 / 两模拟辅助 HoME**。冻结Stage1的learned1024与标准化RDKit217组成1241D实体输入；GLOBAL和GROUP的L1并行学习实体组合，不再经过独立ObjectEncoder。Stage3保留三阶段owner训练、模拟仅PRIVATE更新及严格来源验证。合同见 [ADR-0095](docs/adr/0095-v4-entity-home-without-object-encoder.md)；正式命令见 [v4运行手册](docs/v4-runbook.md)。Stage3评估默认在同一次调用中完成实验与两项模拟评估，保留各自的折/集成协议和独立榜单；可用 `--domain experimental|simulation` 单独评估。历史Object/v5及更早产物保持原身份，只能用对应历史Git版本加载。
 
 命令从仓库根目录执行。安装依赖并准备 ILUME-Data 的 Stage1/2/3 输入；CSV 与输出不进入 Git。正式训练使用尚不存在的输出目录，旧 HoME 产物不能与新正式身份交叉加载。本页命令是运行手册，不属于自动验收。
 

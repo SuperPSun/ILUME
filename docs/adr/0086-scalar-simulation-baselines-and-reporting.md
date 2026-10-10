@@ -12,7 +12,7 @@
 
 两项 thermophysical 使用阳离子/阴离子和 temperature，HOMO/LUMO 使用单个 SMILES、无条件。ILTransR/AIFC 新增单分子视图，沿用现有共享编码器/预测头。AIonopedia 沿用完整图文模型，将单分子放入 solute graph 槽位，其余图为现有 empty graph，temperature 输入为 0，使用现有 7-行拓扑 embedding 的 id 4 和 `molecule <SMILES>` prompt；该输入合同进入身份，不新增参数或伪造另一种离子。既有实验拓扑路径不变，不改为 pure-Qwen。
 
-Stage3 evaluate 增加 `--domain experimental|simulation`，默认实验。模拟仅加载完整或 no-Stage1 的五个 `three_phase_final.pt`，验证集/测试集均要求集成：同一 split 上每折先用来源 scaler 还原到原单位，再平均预测，最后计算指标。拒绝折/轮/任务-subset selector 和无模拟 owner 的产物。验证集复用 Stage2 准备产物特征，测试集按任务目录原始数据与完整产物特征快照构建输入；QC 失败或缺失行硬失败，不静默筛选或取交集。
+Stage3 evaluate 现支持 `--domain all|experimental|simulation`，默认all：同一次调用评估同一split的实验与模拟，保留单域选择。联合模式实验验证仍逐折、模拟验证仍五模型集成；实验输出位置保持原约定，模拟输出位于同根simulation子目录。各域独立身份、预测与报告结构不变，任务集按ADR-0095的现役两任务或显式历史协议校验。模拟仅加载完整或 no-Stage1 的五个 `three_phase_final.pt`，验证集/测试集均要求集成：同一 split 上每折先用来源 scaler 还原到原单位，再平均预测，最后计算指标。单独模拟评估拒绝折/轮/任务-subset selector 和无模拟 owner 的产物；联合模式的折/任务selector仅作用于实验，模拟始终完整五模型集成，轮selector被拒绝。验证集复用 Stage2 准备产物特征，测试集按任务目录原始数据与完整产物特征快照构建输入；QC 失败或缺失行硬失败，不静默筛选或取交集。
 
 ## 比较与产物
 
