@@ -14,7 +14,9 @@ GLOBAL 为专家混合输出；GROUP对有效实体learned1024均值与专家混
 
 ## 任务和训练
 
-Stage2仅五项模拟：density、heat_capacity、thermal_expansion、heat_of_vaporization 属于 thermophysical，transfer_organic 属于 solvation。保留权重1/.8/.8/1/.5、SmoothL1、训练统计、完整行覆盖、256逻辑/微批及10轮末轮。全部 HoME 参数用原 HoME LR1e-4。Stage1永久冻结/eval。
+现役 Stage3 的共享梯度按当前真实 batch 样本数加权，GLOBAL跨实验任务、GROUP组内聚合，PRIVATE保持原始平均Loss梯度；合同见 [ADR-0096](0096-stage3-batch-sample-weighted-gradients.md)。
+
+Stage2仅五项模拟：density、heat_capacity、thermal_expansion、heat_of_vaporization 属于 thermophysical，transfer_organic 属于 solvation。共享梯度改为当前真实batch样本加权，PRIVATE保持原始平均梯度，不再使用任务权重补偿；联合更新及身份见 [ADR-0097](0097-stage2-batch-sample-weighted-gradients.md)。保留SmoothL1、训练统计、完整行覆盖、256逻辑/微批及10轮末轮。全部 HoME 参数用原 HoME LR1e-4。Stage1永久冻结/eval。
 
 Stage3为24实验+两模拟辅助。原22任务 PRIVATE 配方不变；anodic_potential_limit、cathodic_potential_limit 使用 electrochemical GROUP，L1/L2各2个专家、隐藏比例0.75（768D）、输出1024D，Phase1仍为LR2e-4/15轮，Phase2为LR1e-4/4轮。两任务22体系、small预算、仅温度；任务局部覆盖PRIVATE/Tower/FiLM隐藏比例0.5/0.25/0.125（512/256/128D），单PRIVATE专家、dropout 0.1。Task Gate算法、2048D输入与PRIVATE归属不变，候选输出数随GROUP缩减由6变为5。电极及扫描条件为常量，保留来源但不输入。焓展示名为汽化焓（Enthalpy of vaporization），任务目录标识不变，仅温度，phase 不输入。
 

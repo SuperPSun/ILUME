@@ -575,6 +575,7 @@ def _joint_epoch(
         order = list(tasks)
         task_order_rng.shuffle(order)
         gradients = {}
+        task_batch_sizes = {}
         for task in order:
             begin = step * allocation[task]
             indices = sequences[task][begin : begin + allocation[task]]
@@ -590,11 +591,14 @@ def _joint_epoch(
                     normalizations[task], config, device,
                 )
             gradients[task] = gradient
+            task_batch_sizes[task] = len(indices)
             loss_sums[task] += loss * len(indices)
             sample_counts[task] += len(indices)
         if not gradients:
             raise RuntimeError("Stage 3 three-phase joint step has no tasks")
-        latest = assemble_owner_gradients(model, gradients, registry, group_weights)
+        latest = assemble_owner_gradients(
+            model, gradients, registry, group_weights, task_batch_sizes=task_batch_sizes,
+        )
         if phase1_extension is not None:
             phase1_extension.add_gradients(
                 model, latest.gradients, (epoch - 1) * steps_per_epoch + step + 1,

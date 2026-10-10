@@ -708,14 +708,89 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     with config.data.task_catalog_path.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader(); writer.writerows(sim_rows + experiment_rows)
+    # More than one logical batch exercises tail/exhaustion without changing the fixed recipe.
+    density_path = tmp_path / "stage2/density/train.csv"
+    with density_path.open() as handle:
+        density_rows = list(csv.DictReader(handle))
+    _write_csv(density_path, list(density_rows[0]), [density_rows[index % 2] for index in range(257)])
     prepare_stage2_data(config)
     prepare_frozen_entities(recipe)
     registry = load_artifact_registry(config.data.artifacts_dir)
     initial, _ = build_model(recipe, registry)
     source_backbone = {name: value.clone() for name, value in initial.backbone.state_dict().items()}
     output = tmp_path / "v5_stage2_train"
+    import stage2.home_train as home_training
+    from stage2.home_contract import BATCH_SAMPLE_AGGREGATION, BATCH_SAMPLE_WEIGHTING
+    from stage2.data import task_batch_counts
+    original_assemble = home_training.assemble_owner_gradients
+    observed_sizes = []
+
+    def record_assembly(*args, **kwargs):
+        observed_sizes.append(dict(kwargs["task_batch_sizes"]))
+        return original_assemble(*args, **kwargs)
+
+    monkeypatch.setattr(home_training, "assemble_owner_gradients", record_assembly)
     train_stage2_home(recipe, output)
     payload, source, _ = load_home_final(output / "stage2_final.pt")
+    counts = task_batch_counts({
+        task: Stage2TaskDataset(config.data.artifacts_dir, task, "train")
+        for task in config.data.tasks
+    }, config.training.batch_size)
+    assert len(observed_sizes) == max(counts.values()) * recipe.stage2_epochs
+    assert all(sizes == {
+        task: min(config.training.batch_size, len(Stage2TaskDataset(
+            config.data.artifacts_dir, task, "train")) - step * config.training.batch_size)
+        for task, count in counts.items() if step < count
+    } for epoch in range(recipe.stage2_epochs)
+        for step, sizes in enumerate(observed_sizes[
+            epoch * max(counts.values()):(epoch + 1) * max(counts.values())]))
+    assert payload["training_identity"]["payload"]["math_contract"]["gradient_aggregation"] == BATCH_SAMPLE_AGGREGATION
+    assert payload["training_identity"]["payload"]["math_contract"]["gradient_weighting"] == BATCH_SAMPLE_WEIGHTING
+    train_stage2_home(recipe, output, resume=True)
+
+    # A real epoch-boundary interruption resumes to the identical final state.
+    original_validate = home_training._validate
+    validation_calls = 0
+
+    def interrupt_second_epoch(*args, **kwargs):
+        nonlocal validation_calls
+        validation_calls += 1
+        if validation_calls == 2:
+            raise RuntimeError("test Stage2 interruption")
+        return original_validate(*args, **kwargs)
+
+    interrupted = tmp_path / "stage2_interrupted"
+    monkeypatch.setattr(home_training, "_validate", interrupt_second_epoch)
+    with pytest.raises(RuntimeError, match="test Stage2 interruption"):
+        train_stage2_home(recipe, interrupted)
+    monkeypatch.setattr(home_training, "_validate", original_validate)
+    train_stage2_home(recipe, interrupted, resume=True)
+    resumed_payload, _, _ = load_home_final(interrupted / "stage2_final.pt")
+    assert resumed_payload["full_model_state_hash"] == payload["full_model_state_hash"]
+
+    from common.identity import semantic_identity
+    from common.io import sha256_file
+    import copy
+    old_final = copy.deepcopy(payload)
+    old_identity_payload = old_final["training_identity"]["payload"]
+    old_identity_payload["math_contract"].pop("gradient_aggregation")
+    old_identity_payload["math_contract"].pop("gradient_weighting")
+    old_identity = semantic_identity(payload["training_identity"]["type"], old_identity_payload)
+    old_final["training_identity"] = old_identity
+    old_path = tmp_path / "old_stage2_final.pt"
+    torch.save(old_final, old_path)
+    old_manifest = json.loads((output / "stage2_final.json").read_text())
+    old_manifest.update(artifact=old_path.name, artifact_sha256=sha256_file(old_path), training_identity=old_identity)
+    old_path.with_suffix(".json").write_text(json.dumps(old_manifest))
+    with pytest.raises(ValueError, match="batch_sample_weighted"):
+        load_home_final(old_path)
+    checkpoint_path = interrupted / "checkpoint_epoch_00010.pt"
+    checkpoint_payload = torch.load(checkpoint_path, weights_only=False)
+    checkpoint_payload["training_identity"] = old_identity
+    torch.save(checkpoint_payload, checkpoint_path)
+    with pytest.raises(ValueError, match="resume identity mismatch"):
+        train_stage2_home(recipe, interrupted, resume=True)
+
     assert payload["kind"] == "ilume_stage2_entity_home_final_v4" and payload["format_version"] == 4
     assert all(torch.equal(value, source.backbone.state_dict()[name]) for name, value in source_backbone.items())
     assert len(source.registry.tasks) == len(config.data.tasks)
@@ -726,6 +801,8 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
         load_home_final(corrupt)
     trained_checkpoint = torch.load(output / "checkpoint_epoch_00010.pt", weights_only=False)
     assert trained_checkpoint["owner_manifest"] == payload["owner_manifest"]
+    assert trained_checkpoint["updates"] == max(counts.values()) * recipe.stage2_epochs
+    assert trained_checkpoint["scheduler"]["last_epoch"] == trained_checkpoint["updates"]
     assert not any("object_encoder" in name or "electronic_structure" in name or "atom_adapter" in name for name in source.state_dict())
     assert not (output / "stage2_encoder.pt").exists()
     from stage2 import load_frozen_stage1_entities
@@ -806,10 +883,12 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
         gradients[task], _ = simulation.compute_gradient(model, task, torch.arange(len(simulation.train[task])), torch.device("cpu"))
         assert gradients[task] and any(g.abs().sum() > 0 for g in gradients[task].values())
         assert all(model.parameter_ownership()[p] == private_owner(task) for p in gradients[task])
-    assembled = assemble_owner_gradients(model, gradients, model.task_specs, {"thermophysical": 1.0})
+    batch_sizes = {task: len(simulation.train[task]) for task in sim_tasks}
+    assembled = assemble_owner_gradients(model, gradients, model.task_specs, {"thermophysical": 1.0}, task_batch_sizes=batch_sizes)
     assert all(p not in assembled.gradients for p in shared)
+    assert all(torch.equal(assembled.gradients[p], value) for raw in gradients.values() for p, value in raw.items())
     experiment = "experiment/density"
-    with_experiment = assemble_owner_gradients(model, {**gradients, experiment: {p: torch.ones_like(p) for p in shared}}, model.task_specs, {"thermophysical": 1.0})
+    with_experiment = assemble_owner_gradients(model, {**gradients, experiment: {p: torch.ones_like(p) for p in shared}}, model.task_specs, {"thermophysical": 1.0}, task_batch_sizes={**batch_sizes, experiment: 1})
     assert all(torch.equal(with_experiment.gradients[p], torch.ones_like(p)) for p in shared)
     before_private = {task: [p.detach().clone() for p in model.parameters_for_owner(private_owner(task))] for task in sim_tasks}
     optimizer = torch.optim.SGD([p for p in model.parameters() if p.requires_grad], lr=0.1)
@@ -839,6 +918,32 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     resumed = train_fold(stage3, 1, output_dir=train_root, resume_from=train_root)
     assert resumed[-1]["phase"] == "three_phase_final"
     assert torch.load(train_root / "three_phase_final.pt", weights_only=False)["model_state_hash"] == final["model_state_hash"]
+    from stage3 import three_phase
+    original_joint_epoch = three_phase._joint_epoch
+    calls = 0
+    def interrupt_after_phase1(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("temporary training interruption")
+        return original_joint_epoch(**kwargs)
+    resume_root = tmp_path / "entity_stage3_interrupted"
+    monkeypatch.setattr(three_phase, "_joint_epoch", interrupt_after_phase1)
+    with pytest.raises(RuntimeError, match="temporary training interruption"):
+        train_fold(stage3, 1, output_dir=resume_root)
+    monkeypatch.setattr(three_phase, "_joint_epoch", original_joint_epoch)
+    train_fold(stage3, 1, output_dir=resume_root, resume_from=resume_root)
+    assert torch.load(resume_root / "three_phase_final.pt", weights_only=False)["model_state_hash"] == final["model_state_hash"]
+    from stage3.evaluate import _load_model
+    from stage3.identity import build_stage3_training_identity
+    historical = copy.deepcopy(final)
+    historical["resolved_training_plan"]["math"]["gradient_aggregation"] = "weighted_owner_raw_v1"
+    historical["resolved_training_plan"]["math"].pop("gradient_weighting")
+    historical["training_identity"] = build_stage3_training_identity(historical["resolved_training_plan"])
+    historical_path = tmp_path / "old_aggregation_final.pt"
+    torch.save(historical, historical_path)
+    with pytest.raises(ValueError, match="batch_sample_weighted_owner_raw_v1"):
+        _load_model(stage3, prepared, historical_path, 1, 0, torch.device("cpu"), three_phase_final=True)
     metrics = evaluate_checkpoints(stage3, train_root, split="valid", ensemble_folds=False, fold=1, predictions_dir=tmp_path / "predictions")
     assert len(metrics["tasks"]) == 24
     from stage3.evaluate import _reporting_model
@@ -886,3 +991,64 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     from stage3.data import fit_normalization
     ignored_phase_stats = fit_normalization(stage3, {enthalpy: resolved[enthalpy]}, 2)
     assert set(ignored_phase_stats[enthalpy]["conditions"]) == {"temperature_K"}
+
+
+@pytest.mark.parametrize("microbatch_size", [1, 4])
+def test_stage2_shared_gradients_are_record_means_with_raw_private(microbatch_size):
+    from types import SimpleNamespace
+    from stage2.home_train import _task_gradients
+    from stage3.gradient_assembly import assemble_owner_gradients
+    from stage3.model import GLOBAL, group_owner, private_owner
+
+    tasks = {"simulation/density": "thermophysical", "simulation/transfer_organic": "solvation"}
+
+    class Home(torch.nn.Module):
+        entity_inputs = True
+
+        def __init__(self):
+            super().__init__()
+            self.values = torch.nn.ParameterList([torch.nn.Parameter(torch.zeros(())) for _ in range(5)])
+            self.task_specs = {task: SimpleNamespace(meta_group=group) for task, group in tasks.items()}
+            self.owners = {
+                GLOBAL: (self.values[0],),
+                group_owner("thermophysical"): (self.values[1],),
+                group_owner("solvation"): (self.values[2],),
+                private_owner("simulation/density"): (self.values[3],),
+                private_owner("simulation/transfer_organic"): (self.values[4],),
+            }
+
+        def parameters_for_owner(self, owner):
+            return self.owners[owner]
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.home = Home()
+
+        def predict(self, task, packed, task_data):
+            index = list(tasks).index(task)
+            return (self.home.values[0] + self.home.values[index + 1]
+                    + self.home.values[index + 3]) * task_data.x[packed.row_indices]
+
+    class Packed:
+        def __init__(self, indices):
+            self.row_indices = indices
+
+        def to(self, *args, **kwargs):
+            return self
+
+    model = Model()
+    gradients = {}
+    sizes = {"simulation/density": 3, "simulation/transfer_organic": 1}
+    for task, size in sizes.items():
+        indices = torch.arange(size)
+        x = 1.0 if task == "simulation/density" else 3.0
+        data = SimpleNamespace(targets=-torch.ones(size, 1), target_mask=torch.ones(size, 1, dtype=torch.bool), x=torch.full((size, 1), x))
+        value, gradients[task] = _task_gradients(
+            model, SimpleNamespace(task=task, indices=indices),
+            [Packed(part) for part in indices.split(microbatch_size)], data,
+            torch.device("cpu"), SimpleNamespace(training=SimpleNamespace(amp_dtype="none")),
+        )
+        assert value == pytest.approx(0.5)
+    result = assemble_owner_gradients(model.home, gradients, model.home.task_specs, {}, task_batch_sizes=sizes)
+    assert [float(result.gradients[p]) for p in model.home.values] == pytest.approx([1.5, 1., 3., 1., 3.])

@@ -6,7 +6,9 @@
 
 | 主题 | ADR（按修订顺序） | 阅读重点 |
 |---|---|---|
+| Stage2 共享梯度聚合 | [0097](0097-stage2-batch-sample-weighted-gradients.md) | 五模拟联合step，GLOBAL/GROUP按真实batch样本加权，PRIVATE原始梯度；新训练身份及严格恢复/迁移 |
 | v4 实体HoME Stage2/3 主线 | [0095](0095-v4-entity-home-without-object-encoder.md) | 无ObjectEncoder；GLOBAL/GROUP直接并行处理实体；五模拟、24实验+两模拟仅PRIVATE更新；旧0094及Object合同退役 |
+| 现役 Stage3 共享梯度聚合 | [0096](0096-stage3-batch-sample-weighted-gradients.md) | GLOBAL跨实验任务、GROUP组内按当前真实batch样本数加权；PRIVATE原始平均梯度；尾batch/耗尽任务/模拟隔离；替代Entity-HoME的0070聚合规定 |
 | v4 冻结双视图Stage1 | [0089](0089-v4-frozen-dual-view-stage1.md)、[0090](0090-stage1-v4-residual-encoder-capacity.md)、[0091](0091-stage1-v4-loss-weights-gradient-audit.md)、[0092](0092-stage1-atom-charge-and-frozen-regression-heads.md) | Stage1 learned1024、自然shuffle与2/2/1 loss权重；约60.73M 编码器，仅训练集原子电荷、重复结构独立观察/sidecar format2及1000步只读审计；现役系数/batch/workers读[Base YAML](../../configs/v4/stage1/base.yaml)和[v4手册](../v4-runbook.md)，正文旧数值为历史；独立冻结回归头后训练不替换编码器；下游永久冻结Stage1 |
 | 历史 v2/v3 表示与隔离 | [0039](0039-global-rdkit-v2-mainline.md) | 三模态 Stage 1、1024D 实体/Object/HoME；仅约束历史配置，现役表示由 0089 取代 |
 | Stage 1 执行 | [0013](0013-stage1-full-corpus-ddp.md)、[0014](0014-stage1-prepare-performance-and-corpus-v2.md)、[0015](0015-stage1-high-throughput-epoch-resume.md)、[0017](0017-stage1-base-runtime-profile.md) | 全量轮、prepare/运行时、DDP 与完整轮恢复 |

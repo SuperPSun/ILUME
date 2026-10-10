@@ -9,6 +9,18 @@ from stage3.data import ResolvedTaskSpec
 from stage3.model import Stage3SparseModel
 
 
+BATCH_SAMPLE_AGGREGATION = "batch_sample_weighted_owner_raw_v1"
+BATCH_SAMPLE_WEIGHTING = {
+    "weight_source": "actual_task_batch_size",
+    "normalization": "participating_simulation_samples",
+    "global": "cross_task_sample_mean",
+    "group": "within_group_sample_mean",
+    "private": "raw_task_mean_gradient",
+    "simulation": "shared_pretraining",
+    "step": "one_batch_per_active_task",
+}
+
+
 SOURCE_GROUPS = {
     "simulation/density": "thermophysical",
     "simulation/heat_capacity": "thermophysical",

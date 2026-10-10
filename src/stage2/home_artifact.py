@@ -16,7 +16,10 @@ from stage1.model import build_stage1_model
 from stage1.tokenizer import SmilesTokenizer
 
 from .home_config import home_recipe_from_dict
-from .home_contract import source_groups, state_hash, transferable_state
+from .home_contract import (
+    BATCH_SAMPLE_AGGREGATION, BATCH_SAMPLE_WEIGHTING,
+    source_groups, state_hash, transferable_state,
+)
 from .home_model import SimulationHoME
 from .model import RECONSTRUCTION_MODULES
 from .registry import Stage2Registry
@@ -65,6 +68,10 @@ def load_home_final(path: str | Path) -> tuple[dict[str, Any], SimulationHoME, S
         raise ValueError("Unsupported Stage 2 full HoME artifact kind")
     identity = payload["training_identity"]
     validate_semantic_identity(identity)
+    math_contract = identity["payload"].get("math_contract", {})
+    if (math_contract.get("gradient_aggregation") != BATCH_SAMPLE_AGGREGATION
+            or math_contract.get("gradient_weighting") != BATCH_SAMPLE_WEIGHTING):
+        raise ValueError("Stage 2 final requires batch_sample_weighted_owner_raw_v1 artifacts")
     validate_semantic_identity(payload["stage2_data_identity"])
     validate_semantic_identity(payload["stage1_feature_identity"])
     validate_semantic_identity(manifest["training_identity"])

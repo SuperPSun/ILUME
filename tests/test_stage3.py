@@ -318,8 +318,8 @@ def test_home_microbatch_config_and_identity(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("task", ["simulation/density", "simulation/simulated_qm_elec_hf", "simulation/partial_atomic_charge"])
-def test_home_logical_batch_updates_once(task: str) -> None:
-    from stage2.home_train import _train_batch
+def test_home_logical_batch_gradients_do_not_update(task: str) -> None:
+    from stage2.home_train import _task_gradients
     from stage2.data import Stage2BatchDescriptor
 
     class Packed:
@@ -337,7 +337,12 @@ def test_home_logical_batch_updates_once(task: str) -> None:
     class Model(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            self.weight = torch.nn.Parameter(torch.tensor(0.5))
+            self.home = torch.nn.Module()
+            self.home.weight = torch.nn.Parameter(torch.tensor(0.5))
+
+        @property
+        def weight(self):
+            return self.home.weight
 
         def predict(self, task_id, packed, data):
             result = self.weight * (packed.row_indices.float() + 1)
@@ -352,26 +357,21 @@ def test_home_logical_batch_updates_once(task: str) -> None:
     losses = []
     for size in (1, 2, 5):
         model = Model()
-        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1)
         descriptor = Stage2BatchDescriptor(task, torch.arange(5))
-        losses.append(_train_batch(
+        loss, gradients = _task_gradients(
             model, descriptor, tuple(Packed(part) for part in descriptor.indices.split(size)),
-            data, torch.device("cpu"), optimizer, scheduler, tuple(model.parameters()), config, 0.7,
-        ))
-        assert scheduler.last_epoch == 1
-        assert optimizer.state[model.weight]["step"].item() == 1
-        states.append(model.weight.detach().clone())
+            data, torch.device("cpu"), config,
+        )
+        losses.append(loss)
+        assert float(model.weight.detach()) == 0.5
+        states.append(gradients[model.weight])
     assert losses == pytest.approx([losses[0]] * 3, abs=1e-6)
     assert all(torch.allclose(states[0], value, atol=1e-7) for value in states)
     model = Model()
     model.weight.data.fill_(float("nan"))
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1)
     with pytest.raises(RuntimeError, match="Non-finite"):
-        _train_batch(model, descriptor, (Packed(descriptor.indices),), data, torch.device("cpu"),
-                     optimizer, scheduler, tuple(model.parameters()), config, 0.7)
-    assert not optimizer.state and scheduler.last_epoch == 0
+        _task_gradients(model, descriptor, (Packed(descriptor.indices),), data,
+                        torch.device("cpu"), config)
 
 
 def test_home_prefetch_preserves_order_and_propagates_packing_errors(monkeypatch) -> None:
@@ -871,6 +871,13 @@ def test_entity_home_electrochemical_base_capacity() -> None:
         "training_identity": build_stage3_training_identity(plans[0]),
     }
     _validate_checkpoint_common(checkpoint, phase="phase2", fold=1, plan=plans[0])
+    with pytest.raises(ValueError, match="training_identity"):
+        _validate_checkpoint_common(checkpoint, phase="phase2", fold=1, plan=plans[1])
+    assert plans[1]["math"]["gradient_aggregation"] == "batch_sample_weighted_owner_raw_v1"
+    historical_plan = json.loads(json.dumps(plans[1]))
+    historical_plan["math"]["gradient_aggregation"] = "weighted_owner_raw_v1"
+    historical_plan["math"].pop("gradient_weighting")
+    checkpoint["training_identity"] = build_stage3_training_identity(historical_plan)
     with pytest.raises(ValueError, match="training_identity"):
         _validate_checkpoint_common(checkpoint, phase="phase2", fold=1, plan=plans[1])
     assert len(model.l1_group_experts["electrochemical"]) == 2
@@ -1877,6 +1884,135 @@ def test_microbatch_accumulation_matches_full_task_batch(tiny_prepared: Stage3Co
         assert (left is None) == (right is None)
         if left is not None:
             assert torch.allclose(left, right, atol=1e-6, rtol=1e-5)
+
+    micro_gradients, full_gradients, sizes = {}, {}, {}
+    normalizations = json.loads((tiny_prepared.data.artifacts_dir / "normalization.json").read_text())["fold1"]
+    for task in registry:
+        current = Stage3TaskDataset(tiny_prepared.data.artifacts_dir, 1, task, "train")
+        sizes[task] = len(current)
+        indices = torch.arange(len(current))
+        micro_gradients[task], _ = compute_task_gradient(
+            first, task, current, indices, embeddings, normalizations[task], micro, torch.device("cpu"),
+        )
+        whole = replace(full, training=replace(full.training, microbatch_size=len(current)))
+        full_gradients[task], _ = compute_task_gradient(
+            second, task, current, indices, embeddings, normalizations[task], whole, torch.device("cpu"),
+        )
+    first.entity_inputs = second.entity_inputs = True
+    micro_assembled = assemble_owner_gradients(first, micro_gradients, registry, {}, task_batch_sizes=sizes)
+    full_assembled = assemble_owner_gradients(second, full_gradients, registry, {}, task_batch_sizes=sizes)
+    for name in first_named:
+        left = micro_assembled.gradients.get(first_named[name])
+        right = full_assembled.gradients.get(second_named[name])
+        assert (left is None) == (right is None)
+        if left is not None:
+            torch.testing.assert_close(left, right, atol=1e-6, rtol=1e-5)
+
+@pytest.mark.parametrize("tasks, frozen_global, missing", (
+    (("experiment/a", "experiment/c"), False, False),
+    (("experiment/a", "experiment/b", "experiment/c"), False, False),
+    (("experiment/a",), False, False),
+    (("experiment/a", "experiment/b", "experiment/c"), True, False),
+    (("experiment/a", "experiment/b", "experiment/c"), False, True),
+))
+def test_entity_batch_sample_weighted_gradients(tiny_prepared, tasks, frozen_global, missing) -> None:
+    registry = {task: replace(spec, task_weight=7.0) for task, spec in resolve_task_registry(tiny_prepared).items()}
+    model = Stage3SparseModel(tiny_prepared.model, registry, 4)
+    # Exercise aggregation independently of the fixed 1024D entity forward contract.
+    model.entity_inputs = True
+    sizes = {task: {"experiment/a": 3, "experiment/b": 1, "experiment/c": 1}[task] for task in tasks}
+    values = {"experiment/a": 1.0, "experiment/b": 3.0, "experiment/c": 3.0}
+    gradients = {}
+    for task in tasks:
+        owners = (group_owner(registry[task].meta_group), private_owner(task))
+        if not frozen_global:
+            owners = (GLOBAL, *owners)
+        gradients[task] = {p: torch.full_like(p, values[task]) for owner in owners for p in model.parameters_for_owner(owner)}
+    if missing:
+        gradients["experiment/b"].pop(model.parameters_for_owner(GLOBAL)[0])
+        gradients["experiment/b"].pop(model.parameters_for_owner(group_owner("g1"))[0])
+    result = assemble_owner_gradients(model, gradients, registry, {"g1": 99.0, "g2": 1.0}, task_batch_sizes=sizes)
+    for owner in (GLOBAL, *(group_owner(registry[t].meta_group) for t in tasks)):
+        members = tasks if owner == GLOBAL else tuple(t for t in tasks if registry[t].meta_group == owner.owner_id)
+        for parameter in model.parameters_for_owner(owner):
+            present = [t for t in members if parameter in gradients[t]]
+            if not present:
+                assert parameter not in result.gradients
+            else:
+                expected = sum(sizes[t] * values[t] for t in present) / sum(sizes[t] for t in members)
+                torch.testing.assert_close(result.gradients[parameter], torch.full_like(parameter, expected))
+    for task in tasks:
+        for parameter in model.parameters_for_owner(private_owner(task)):
+            assert torch.equal(result.gradients[parameter], gradients[task][parameter])
+    with pytest.raises(ValueError, match="actual task batch sizes"):
+        assemble_owner_gradients(model, gradients, registry, {})
+    with pytest.raises(ValueError, match="actual task batch sizes"):
+        assemble_owner_gradients(model, gradients, registry, {}, task_batch_sizes={t: 0 for t in tasks})
+
+
+def test_entity_shared_gradients_equal_record_loss_mean(tiny_prepared) -> None:
+    registry = resolve_task_registry(tiny_prepared)
+    model = Stage3SparseModel(tiny_prepared.model, registry, 4)
+    model.entity_inputs = True
+    global_parameter = model.parameters_for_owner(GLOBAL)[0]
+    losses, gradients, sizes = {}, {}, {}
+    for task, count in zip(registry, (3, 1, 2), strict=True):
+        group_parameter = model.parameters_for_owner(group_owner(registry[task].meta_group))[0]
+        private_parameter = model.parameters_for_owner(private_owner(task))[0]
+        parameters = (global_parameter, group_parameter, private_parameter)
+        prediction = sum(p.flatten()[0] for p in parameters).expand(count)
+        losses[task] = torch.nn.functional.smooth_l1_loss(prediction, torch.arange(count).float(), reduction="none")
+        derivatives = torch.autograd.grad(losses[task].mean(), parameters, retain_graph=True)
+        gradients[task] = dict(zip(parameters, derivatives, strict=True))
+        sizes[task] = count
+    result = assemble_owner_gradients(model, gradients, registry, {}, task_batch_sizes=sizes)
+    expected = torch.autograd.grad(torch.cat(tuple(losses.values())).mean(), global_parameter, retain_graph=True)[0]
+    torch.testing.assert_close(result.gradients[global_parameter], expected)
+    for group in model.groups:
+        parameter = model.parameters_for_owner(group_owner(group))[0]
+        loss = torch.cat(tuple(losses[t] for t in registry if registry[t].meta_group == group)).mean()
+        expected = torch.autograd.grad(loss, parameter, retain_graph=True)[0]
+        torch.testing.assert_close(result.gradients[parameter], expected)
+    for task in registry:
+        parameter = model.parameters_for_owner(private_owner(task))[0]
+        assert torch.equal(result.gradients[parameter], gradients[task][parameter])
+
+
+def test_joint_epoch_passes_actual_tail_batches_without_repetition(tiny_prepared, monkeypatch) -> None:
+    import random
+    from stage3 import three_phase, train
+
+    config = _tiny_three_phase(tiny_prepared)
+    registry = resolve_task_registry(config)
+    model = Stage3SparseModel(config.model, registry, 4)
+    model.entity_inputs = True
+    tasks = ("experiment/a", "experiment/b")
+    owners = (GLOBAL, group_owner("g1"), *(private_owner(t) for t in tasks))
+    model.set_trainable_owners(owners)
+    optimizer = _three_phase_optimizer(model, config, {owner: 1e-4 for owner in owners})
+    seen = {t: [] for t in tasks}
+    batches = []
+    def compute(model, task, dataset, indices, *args):
+        seen[task].extend(indices.tolist())
+        raw = {p: torch.ones_like(p) for owner in (GLOBAL, group_owner("g1"), private_owner(task)) for p in model.parameters_for_owner(owner)}
+        return raw, 1.0
+    def assemble(model, gradients, specs, weights, *, task_batch_sizes):
+        batches.append(dict(task_batch_sizes))
+        return assemble_owner_gradients(model, gradients, specs, weights, task_batch_sizes=task_batch_sizes)
+    monkeypatch.setattr(train, "compute_task_gradient", compute)
+    monkeypatch.setattr(three_phase, "assemble_owner_gradients", assemble)
+    three_phase._joint_epoch(
+        model=model, tasks=tasks, epoch=1, phase_seed=42, steps_per_epoch=3,
+        allocation={tasks[0]: 2, tasks[1]: 1}, counts={tasks[0]: 5, tasks[1]: 2},
+        train_data={t: [] for t in tasks}, representations=torch.empty(0), normalizations={t: {} for t in tasks},
+        config=config, device=torch.device("cpu"), optimizer=optimizer,
+        scheduler=SimpleNamespace(step=lambda owners: None), registry=registry,
+        group_weights={"g1": 1.0}, task_order_rng=random.Random(42),
+    )
+    assert batches == [{tasks[0]: 2, tasks[1]: 1}, {tasks[0]: 2, tasks[1]: 1}, {tasks[0]: 1}]
+    assert sorted(seen[tasks[0]]) == list(range(5))
+    assert sorted(seen[tasks[1]]) == list(range(2))
+
 
 def test_raw_gradient_config_and_identity(tiny_prepared: Stage3Config) -> None:
     base = load_stage3_config("configs/v3/stage3/base.yaml")

@@ -16,9 +16,9 @@
 |---|---|---|
 | Stage 1 | 仅SMILES/Graph输入，独立512D 编码器、12层SMILES Transformer/8独立残差图block、CLS/原子均值、1024残差MLP；learned1024、atom512，不输入角色/描述符。结构重建、停止梯度一致性、RDKit217、离线Uni-Mol768、13电子目标及仅训练集原子电荷Linear512→1；现役系数和执行配置只读Base YAML及v4手册，sidecar不改语料/teacher。各项分子均值再按角色loss权重2/2/1；自然shuffle不变。fusion-only80/10/10，10轮、完整轮恢复；训练format4及仅编码器导出。每1000步rank0固定32分子梯度审计只报告，可CLI覆盖，不更新/调权/选模，不进入科研身份；独立14任务后训练只更新回归头，不替换编码器 | 0089/0090/0091/0092；执行0013/0014/0015/0017；0039仅历史v3 |
 | Stage 2 | Stage1永久冻结/eval；缓存1241D实体、形式电荷角色及有效位。GLOBAL/GROUP L1并行读取2490D有序槽位拼接，各专家内部投影，无独立ObjectEncoder。仅五项模拟、thermophysical/solvation GROUP，无电子GROUP/原子 adapter | 0095；Stage1表示0089 |
-| Stage 2 训练与产物 | 256逻辑/微批、10轮末轮、完整stage2_final.pt/json；无仅编码器导出、精调/最优/last/evaluator。迁移GLOBAL、匹配GROUP及两模拟PRIVATE，严格身份和张量 hash | 0095；历史0082/0083/0085 |
+| Stage 2 训练与产物 | 五模拟每联合step各取一个未耗尽batch，GLOBAL跨任务/GROUP组内按真实batch样本数加权，PRIVATE原始平均梯度，不乘任务补偿；`batch_sample_weighted_owner_raw_v1`及联合步调度进入身份，旧final拒绝迁移。256逻辑/微批、10轮末轮、完整stage2_final.pt/json；无仅编码器导出、精调/最优/last/evaluator。迁移GLOBAL、匹配GROUP及两模拟PRIVATE，严格身份和张量 hash | 0095/0097；历史0082/0083/0085 |
 | Stage 3 | 24实验+两模拟；electrochemical继承phase_stability预算，两电位限small/仅温度。Phase1实验GLOBAL/GROUP/PRIVATE；Phase2冻结GLOBAL；Phase3仅PRIVATE。模拟Phase1冻结，Phase2/3仅自身PRIVATE，不进共享梯度/分母/调度预算。共同锚点与末轮拼接 | 0095；机制0050/0070 |
-| Stage 3 owner | Phase 1/2 使用原始梯度的任务/组加权聚合，Phase 3 单任务更新；`weighted_owner_raw_v1` 进入训练身份。owner LR/存续期与规模类别默认、任务覆盖项的宽度/dropout 进入身份；提前结束用 `requires_grad=False`，不删除任务；零预算 PRIVATE 逐 bit 继承锚点。Base 训练集/验证集 microbatch 上限 1024 | 0050/0055/0070；诊断 0054 |
+| Stage 3 owner | 现役Entity-HoME Phase1/2的GLOBAL跨实验任务、GROUP组内按当前真实batch样本数加权平均；PRIVATE保持原始平均Loss梯度，模拟不进共享分母。Phase3单任务更新；`batch_sample_weighted_owner_raw_v1`及权重规则进入训练身份。历史非Entity保留0070合同。owner LR/存续期与规模类别默认、任务覆盖项的宽度/dropout进入身份；提前结束用`requires_grad=False`，不删除任务；零预算PRIVATE逐bit继承锚点。Base训练集/验证集microbatch上限1024 | 0096；预算0050/0055；诊断0054 |
 | Stage 3 诊断 | 只读门控权重占比、归一化熵、PRIVATE 权重占比分位数；测试集 aggregate 合并折-样本。不得新增前向、进入 loss/选择或改预测 CSV；历史实现不输出。pEC50 Phase 3 为 3 轮 | 0054/0055 |
 
 禁止恢复：Stage1 描述符/角色输入、重型token融合、指纹、角色平衡/重复采样、扩增倍率、多容量正式配置、轮中途恢复；Stage2/3不得反传Stage1，禁止Stage2渐进解冻、早停、最优/last、PCGrad或累加窗口；Stage3 四阶段、路由干预、门控校准或HPO/Optuna。v4 alignment/RDKit/Uni-Mol/electronic辅助头只用于预训练，不进入仅编码器部署。ADR-0087候选保持历史v3身份，不增加正式Base数量。

@@ -46,6 +46,7 @@ from .train import (
     knowledge_batch,
     _load_knowledge_bank,
 )
+from .gradient_assembly import BATCH_SAMPLE_AGGREGATION, BATCH_SAMPLE_WEIGHTING
 from .identity import (
     build_stage3_evaluation_identity,
     build_stage3_training_identity,
@@ -268,12 +269,14 @@ def _load_model(
         context="Stage 3 evaluation checkpoint training identity",
     )
     if three_phase_final:
+        aggregation = BATCH_SAMPLE_AGGREGATION if config.is_entity_home else "weighted_owner_raw_v1"
         if (
             plan.get("format_version") != (14 if config.is_entity_home else 11 if config.initialization.representation_contract == "dual_view_v4" else 10 if config.initialization.simulation_artifacts_dir is not None else 9 if config.initialization.home_mode is not None else 7 if config.training.object_encoder_phase1 is not None else 5 if config.transfer_knowledge is not None else 4)
-            or plan.get("math", {}).get("gradient_aggregation") != "weighted_owner_raw_v1"
+            or plan.get("math", {}).get("gradient_aggregation") != aggregation
+            or (config.is_entity_home and plan.get("math", {}).get("gradient_weighting") != BATCH_SAMPLE_WEIGHTING)
             or training_identity.get("payload", {}).get("contract_version") != (18 if config.is_entity_home else 15 if config.initialization.representation_contract == "dual_view_v4" else 14 if config.initialization.simulation_artifacts_dir is not None else 13 if config.initialization.home_mode is not None else 9 if config.training.object_encoder_phase1 is not None else 7 if config.transfer_knowledge is not None else 6)
         ):
-            raise ValueError("Stage 3 evaluation requires weighted_owner_raw_v1 artifacts")
+            raise ValueError(f"Stage 3 evaluation requires {aggregation} artifacts")
     if plan.get("prepared_identity") != metadata_identity(
         prepared["metadata"], "prepared", context="Stage 3 prepared artifact"
     )["hash"]:

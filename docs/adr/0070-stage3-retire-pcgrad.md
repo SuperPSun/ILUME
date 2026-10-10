@@ -1,5 +1,7 @@
 # ADR-0070：Stage 3 主线退役 PCGrad
 
+现役 Entity-HoME Stage3 的共享聚合和 PRIVATE 缩放规定已由 [ADR-0096](0096-stage3-batch-sample-weighted-gradients.md) 替代；退役 PCGrad 的决定及历史非 Entity-HoME 合同保持不变。
+
 状态：现役。覆盖 ADR-0020、0048、0050 中关于现役 Stage 3 梯度投影的规定；其余模型、数据、预算及 owner 生命周期保持各自 YAML 合同。ADR-0069 作为切换前的消融记录保留。
 
 ## 决定

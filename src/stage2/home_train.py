@@ -30,10 +30,13 @@ from stage2.data import (
 from stage2.identity import metadata_identity
 from stage2.model import molecule_equal_smooth_l1_loss
 from stage2.runtime import configure_stage2_math
-from stage2.train import task_compensation_scale
+from stage3.gradient_assembly import assemble_owner_gradients
 
 from .home_config import HomeRecipe
-from .home_contract import SOURCE_GROUPS, source_groups, state_hash, transferable_state
+from .home_contract import (
+    BATCH_SAMPLE_AGGREGATION, BATCH_SAMPLE_WEIGHTING,
+    SOURCE_GROUPS, source_groups, state_hash, transferable_state,
+)
 from .home_model import SimulationHoME
 from .home_artifact import final_kind, full_owner_manifest, full_state_hash, load_home_final
 
@@ -87,7 +90,11 @@ def training_identity(
         "loss": "physics_only_homemodel_v1",
         "backbone_frozen_epochs": "permanent" if experiment.freeze_stage1 else 0,
         "scheduler": "stage2_cosine_warmup_v1",
-        "math_contract": dict(math_contract),
+        "math_contract": {
+            **dict(math_contract),
+            **({"gradient_aggregation": BATCH_SAMPLE_AGGREGATION,
+                "gradient_weighting": dict(BATCH_SAMPLE_WEIGHTING)} if config.is_entity_home else {}),
+        },
     })
 
 
@@ -209,10 +216,9 @@ def _prefetched_batches(schedule, datasets, entities, packer, microbatch_size, *
         executor.shutdown(wait=True, cancel_futures=True)
 
 
-def _train_batch(model, descriptor, packed_batches, task_data, device, optimizer,
-                 scheduler, parameters, config, compensation):
+def _task_gradients(model, descriptor, packed_batches, task_data, device, config):
     full_indices = descriptor.indices.to(device)
-    optimizer.zero_grad(set_to_none=True)
+    model.zero_grad(set_to_none=True)
     batch_loss = torch.zeros((), dtype=torch.float64, device=device)
     for cpu_batch in packed_batches:
         packed = cpu_batch.to(device, non_blocking=device.type == "cuda")
@@ -221,7 +227,7 @@ def _train_batch(model, descriptor, packed_batches, task_data, device, optimizer
             enabled=config.training.amp_dtype == "bf16",
         ):
             predictions = model.predict(descriptor.task, packed, task_data)
-            loss = compensation * _loss_for_micro(
+            loss = _loss_for_micro(
                 descriptor.task, predictions, packed, task_data, full_indices,
             )
         loss.backward()
@@ -230,10 +236,11 @@ def _train_batch(model, descriptor, packed_batches, task_data, device, optimizer
     value = float(batch_loss)
     if not math.isfinite(value):
         raise RuntimeError(f"Non-finite Stage2-HoME loss: {descriptor.task}")
-    torch.nn.utils.clip_grad_norm_(parameters, config.training.max_grad_norm, error_if_nonfinite=True)
-    optimizer.step()
-    scheduler.step()
-    return value
+    gradients = {
+        parameter: parameter.grad.detach().float().clone()
+        for parameter in model.home.parameters() if parameter.grad is not None
+    }
+    return value, gradients
 
 
 def _check_history(root: Path, completed_epoch: int) -> None:
@@ -399,7 +406,7 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
     train_device = {task: Stage2DeviceTaskData.from_dataset(data, device) for task, data in train.items()}
     valid_device = {task: Stage2DeviceTaskData.from_dataset(data, device) for task, data in valid.items()}
     batches = task_batch_counts(train, config.training.batch_size)
-    steps_per_epoch = sum(batches.values())
+    steps_per_epoch = max(batches.values())
     total_steps = steps_per_epoch * experiment.stage2_epochs
     metadata = json.loads((config.data.artifacts_dir / "metadata.json").read_text(encoding="utf-8"))
     data_identity = dict(metadata_identity(metadata, "data", context="Stage2-HoME data"))
@@ -418,7 +425,6 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
         optimizer,
         lambda step: cosine_warmup(step, total_steps, config.training.warmup_fraction),
     )
-    weights = config.normalized_task_weights(registry)
     output = Path(output_dir)
     if output.exists() and not resume and any(output.glob("checkpoint_epoch_*.pt")):
         raise FileExistsError(f"Stage2-HoME output already exists: {output}")
@@ -485,26 +491,41 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
                 schedule, train, entities, packer, experiment.stage2_microbatch_size,
                 pin_memory=device.type == "cuda",
             ) as prepared_batches:
-                for descriptor, packed_batches, packing_seconds, wait_seconds in prepared_batches:
-                    task = descriptor.task
-                    started = time.perf_counter()
-                    compensation = task_compensation_scale(
-                        weights[task], steps_per_epoch, len(descriptor.indices), len(train[task]),
+                prepared = iter(prepared_batches)
+                for step in range(steps_per_epoch):
+                    task_gradients = {}
+                    task_batch_sizes = {}
+                    for _ in range(sum(count > step for count in batches.values())):
+                        descriptor, packed_batches, packing_seconds, wait_seconds = next(prepared)
+                        task = descriptor.task
+                        started = time.perf_counter()
+                        batch_loss, gradients = _task_gradients(
+                            model, descriptor, packed_batches, train_device[task], device, config,
+                        )
+                        task_gradients[task] = gradients
+                        task_batch_sizes[task] = len(descriptor.indices)
+                        total_loss += batch_loss
+                        timing = task_timing[task]
+                        timing["packing_seconds"] += packing_seconds
+                        timing["packing_wait_seconds"] += wait_seconds
+                        timing["train_seconds"] += time.perf_counter() - started
+                        timing["batches"] += 1
+                        timing["rows"] += len(descriptor.indices)
+                        progress.set_postfix_str(f"task={task.rsplit('/', 1)[-1]} loss={batch_loss:.4f}")
+                        progress.update(1)
+                    assembled = assemble_owner_gradients(
+                        model.home, task_gradients, model.home.task_specs, {},
+                        task_batch_sizes=task_batch_sizes,
                     )
-                    batch_loss = _train_batch(
-                        model, descriptor, packed_batches, train_device[task], device,
-                        optimizer, scheduler, parameters, config, compensation,
+                    optimizer.zero_grad(set_to_none=True)
+                    for parameter, gradient in assembled.gradients.items():
+                        parameter.grad = gradient.to(parameter.dtype)
+                    torch.nn.utils.clip_grad_norm_(
+                        parameters, config.training.max_grad_norm, error_if_nonfinite=True,
                     )
+                    optimizer.step()
+                    scheduler.step()
                     update += 1
-                    total_loss += batch_loss
-                    timing = task_timing[task]
-                    timing["packing_seconds"] += packing_seconds
-                    timing["packing_wait_seconds"] += wait_seconds
-                    timing["train_seconds"] += time.perf_counter() - started
-                    timing["batches"] += 1
-                    timing["rows"] += len(descriptor.indices)
-                    progress.set_postfix_str(f"task={task.rsplit('/', 1)[-1]} loss={batch_loss:.4f}")
-                    progress.update(1)
         finally:
             progress.close()
         if device.type == "cuda":
@@ -518,7 +539,7 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
         state = _cpu_state(model)
         row = {
             "epoch": epoch, "optimizer_updates": update,
-            "train_weighted_loss": total_loss / steps_per_epoch,
+            "train_weighted_loss": total_loss / sum(batches.values()),
             "validation_normalized_mae": validation,
         }
         checkpoint = {

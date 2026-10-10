@@ -216,6 +216,10 @@ ssh SERVER 'sha256sum /path/to/ILUME/assets/unimol2/modelzoo/84M/checkpoint.pt'
 
 合同见 [ADR-0095](adr/0095-v4-entity-home-without-object-encoder.md)。Stage1保持本手册前述配方，GLOBAL/GROUP直接处理实体，没有ObjectEncoder。
 
+当前Stage3 Base采用 [ADR-0096](adr/0096-stage3-batch-sample-weighted-gradients.md)：Phase1/2共享梯度按本step各实验任务真实batch长度计算样本加权均值，GLOBAL直接跨任务聚合、GROUP在组内聚合，PRIVATE不额外缩放。尾batch按实际长度计权，任务耗尽后不进分母；模拟仍仅更新自身PRIVATE。Raw Sampling、loss、owner预算及评估口径不变。新聚合标识及权重规则进入训练身份，旧等权Entity-HoME检查点不可跨合同恢复或加载，后续训练须使用新目录；身份一致的准备产物及Stage1可复用。
+
+当前Stage2 Base也采用 [ADR-0097](adr/0097-stage2-batch-sample-weighted-gradients.md)：五项模拟全部参与共享预训练，每个联合step取各未耗尽任务一个真实batch，GLOBAL直接跨任务、GROUP组内按记录数加权，PRIVATE原始平均梯度；不使用旧任务权重补偿。原shuffle、完整行覆盖、256逻辑/微批、10轮、LR1e-4及整模裁剪不变。每轮optimizer/scheduler更新次数改为任务batch数最大值。旧Stage2 checkpoint不能恢复、旧final不能迁移到当前Stage3；需要用新目录从头训练Stage2，再以新final训练Stage3。数据/Stage1身份一致的Stage2/3 prepare可复用，历史产物只读。
+
 ## 运行前提
 
 使用已安装的 `ilume` 环境，不安装依赖或下载权重。需先补齐 `outputs/v4/stage1/base/train/stage1_encoder.pt` 及它对应的 `outputs/v4/stage1/base/prepare/artifacts`；当前配置指定的正式编码器与特征产物尚未齐备。源数据不能在数据准备/训练/评估之间替换。现有过期 `data/stage*/metadata.json` 由下方正式 prepare 生成，不手改 SHA。

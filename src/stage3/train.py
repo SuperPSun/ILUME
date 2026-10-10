@@ -46,7 +46,7 @@ from .model import (
     group_owner,
     private_owner,
 )
-from .gradient_assembly import GradientMap
+from .gradient_assembly import BATCH_SAMPLE_AGGREGATION, BATCH_SAMPLE_WEIGHTING, GradientMap
 from .prepare import load_prepared_stage3
 from .transfer_knowledge import TransferKnowledgeBank
 from .identity import (
@@ -582,6 +582,9 @@ def build_resolved_training_plan(
         plan["model"]["capacity_recipe"] = model.resolved_capacity_recipe()
         plan["optimizer"]["parameter_groups"] = "ownership_decay_split"
         plan["math"]["gradient_aggregation"] = "weighted_owner_raw_v1"
+        if config.is_entity_home:
+            plan["math"]["gradient_aggregation"] = BATCH_SAMPLE_AGGREGATION
+            plan["math"]["gradient_weighting"] = dict(BATCH_SAMPLE_WEIGHTING)
         if config.transfer_knowledge is not None:
             bank = getattr(model, "_knowledge_bank", None)
             if bank is None:
