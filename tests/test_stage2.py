@@ -822,8 +822,8 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
         model=recipe.stage3.model,
         tasks={task: replace(spec, unique_systems=5, phase1_private_epochs=1, phase2_private_epochs=1, phase3_private_epochs=1) for task, spec in stage3.tasks.items()},
         groups={group: replace(spec, expert_hidden_ratio=.015625, phase1=replace(spec.phase1, epochs=1), phase2=replace(spec.phase2, epochs=1)) for group, spec in stage3.groups.items()},
-        training=replace(stage3.training, device="cpu", amp_dtype="none", cpu_threads=1, cpu_interop_threads=1,
-            three_phase=replace(stage3.training.three_phase, global_scope=replace(stage3.training.three_phase.global_scope, epochs=1),
+        training=replace(stage3.training, device="cpu", amp_dtype="none", cpu_threads=1, cpu_interop_threads=1, checkpoint_interval_epochs=1,
+            three_phase=replace(stage3.training.three_phase, global_scope=replace(stage3.training.three_phase.global_scope, epochs=2),
                 private_classes={name: replace(spec, width_ratio=.015625, phase1=replace(spec.phase1, epochs=1), phase2_epochs=1, phase3_epochs=1) for name, spec in stage3.training.three_phase.private_classes.items()})),
     )
     resolved = resolve_task_registry(stage3)
@@ -908,7 +908,7 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     final = torch.load(train_root / "three_phase_final.pt", weights_only=False)
     assert final["kind"] == "ilume_stage3_entity_home_three_phase_final_v4"
     assert len(final["private_state_hashes"]) == 26
-    phase1 = torch.load(train_root / "phase_1" / "checkpoint_epoch_00001.pt", weights_only=False)
+    phase1 = torch.load(train_root / "phase_1" / "checkpoint_epoch_00002.pt", weights_only=False)
     assert all(torch.equal(value, phase1["model"][name]) for name, value in final["model"].items() if name.startswith("simulation_backbone."))
     manifest = model.ownership_manifest()
     assert all(torch.equal(value, phase1["model"][name]) for name, value in final["model"].items()
@@ -919,6 +919,57 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     assert resumed[-1]["phase"] == "three_phase_final"
     assert torch.load(train_root / "three_phase_final.pt", weights_only=False)["model_state_hash"] == final["model_state_hash"]
     from stage3 import three_phase
+    original_diagnostics = three_phase.EpochDiagnostics
+    monkeypatch.setattr(three_phase, "EpochDiagnostics", lambda *args: None)
+    baseline_root = tmp_path / "stage3_without_epoch_diagnostics"
+    train_fold(stage3, 1, output_dir=baseline_root)
+    monkeypatch.setattr(three_phase, "EpochDiagnostics", original_diagnostics)
+    baseline_final = torch.load(baseline_root / "three_phase_final.pt", weights_only=False)
+    assert baseline_final["model_state_hash"] == final["model_state_hash"]
+    assert baseline_final["training_identity"] == final["training_identity"]
+
+    def assert_same_state(left, right):
+        if isinstance(left, torch.Tensor):
+            assert torch.equal(left, right)
+        elif isinstance(left, np.ndarray):
+            np.testing.assert_array_equal(left, right)
+        elif isinstance(left, dict):
+            assert left.keys() == right.keys()
+            for key in left:
+                assert_same_state(left[key], right[key])
+        elif isinstance(left, (tuple, list)):
+            assert len(left) == len(right)
+            for first, second in zip(left, right):
+                assert_same_state(first, second)
+        else:
+            assert left == right
+
+    for checkpoint_path in train_root.rglob("checkpoint_epoch_*.pt"):
+        observed = torch.load(checkpoint_path, weights_only=False)
+        baseline = torch.load(baseline_root / checkpoint_path.relative_to(train_root), weights_only=False)
+        for field in ("optimizer", "scheduler", "rng"):
+            assert_same_state(observed[field], baseline[field])
+        assert_same_state(observed.get("task_order_rng"), baseline.get("task_order_rng"))
+    for diagnostic_path in train_root.rglob("diagnostics.jsonl"):
+        for line in diagnostic_path.read_text().splitlines():
+            diagnostic = json.loads(line)
+            assert diagnostic["diagnostics_version"] == 2
+            assert not {"gradient_norm", "clip_post_norm", "task_gradient_norms", "assembled_owner_norms",
+                        "clip_pre_norm", "clip_owner_pre_norms", "clip_owner_post_norms"} & diagnostic.keys()
+            stats = diagnostic["epoch_gradient_stats"]
+            assert len(stats["owners"]) == len(set(manifest.values()))
+            if diagnostic["phase"] == "phase_1":
+                assert stats["owners"]["GLOBAL"]["gradient_steps"] > 0
+                assert all(stats["owners"][private_owner(task).label]["trainable_steps"] == 0 for task in sim_tasks)
+                if diagnostic["epoch"] == 2:
+                    assert stats["owners"]["PRIVATE:experiment/density"]["trainable_steps"] == 0
+                    assert stats["owners"]["GROUP:thermophysical"]["gradient_steps"] == 0
+            else:
+                assert stats["owners"]["GLOBAL"]["trainable_steps"] == 0
+                assert diagnostic["shared_sample_contributions"]["GLOBAL"]["samples"] == 0
+            if diagnostic["phase"] == "phase_3" or "simulation__" in str(diagnostic_path):
+                assert all(value["samples"] == 0 for value in diagnostic["shared_sample_contributions"].values())
+
     original_joint_epoch = three_phase._joint_epoch
     calls = 0
     def interrupt_after_phase1(**kwargs):
@@ -932,7 +983,19 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     with pytest.raises(RuntimeError, match="temporary training interruption"):
         train_fold(stage3, 1, output_dir=resume_root)
     monkeypatch.setattr(three_phase, "_joint_epoch", original_joint_epoch)
+    # Represent an existing unversioned last-step log; resume must leave its bytes intact.
+    historical_log = resume_root / "phase_1/diagnostics.jsonl"
+    historical_row = json.loads(historical_log.read_text().splitlines()[0])
+    historical_row.pop("diagnostics_version")
+    historical_row.pop("epoch_gradient_stats")
+    historical_row.pop("shared_sample_contributions")
+    historical_row["clip_pre_norm"] = 1.0
+    historical_bytes = (json.dumps(historical_row) + "\n").encode()
+    historical_log.write_bytes(historical_bytes)
     train_fold(stage3, 1, output_dir=resume_root, resume_from=resume_root)
+    assert historical_log.read_bytes().startswith(historical_bytes)
+    mixed_rows = [json.loads(line) for line in historical_log.read_text().splitlines()]
+    assert len(mixed_rows) == 2 and mixed_rows[1]["diagnostics_version"] == 2
     assert torch.load(resume_root / "three_phase_final.pt", weights_only=False)["model_state_hash"] == final["model_state_hash"]
     from stage3.evaluate import _load_model
     from stage3.identity import build_stage3_training_identity

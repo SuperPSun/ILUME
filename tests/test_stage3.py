@@ -1983,6 +1983,7 @@ def test_joint_epoch_passes_actual_tail_batches_without_repetition(tiny_prepared
     from stage3 import three_phase, train
 
     config = _tiny_three_phase(tiny_prepared)
+    config = replace(config, training=replace(config.training, max_grad_norm=1.0))
     registry = resolve_task_registry(config)
     model = Stage3SparseModel(config.model, registry, 4)
     model.entity_inputs = True
@@ -1993,15 +1994,20 @@ def test_joint_epoch_passes_actual_tail_batches_without_repetition(tiny_prepared
     seen = {t: [] for t in tasks}
     batches = []
     def compute(model, task, dataset, indices, *args):
+        value = ((0., 1., 4.) if task == tasks[0] else (3., 1.))[len(seen[task]) // (2 if task == tasks[0] else 1)]
         seen[task].extend(indices.tolist())
-        raw = {p: torch.ones_like(p) for owner in (GLOBAL, group_owner("g1"), private_owner(task)) for p in model.parameters_for_owner(owner)}
+        raw = {}
+        for owner in (GLOBAL, group_owner("g1"), private_owner(task)):
+            parameter = model.parameters_for_owner(owner)[0]
+            raw[parameter] = torch.zeros_like(parameter)
+            raw[parameter].view(-1)[0] = value
         return raw, 1.0
     def assemble(model, gradients, specs, weights, *, task_batch_sizes):
         batches.append(dict(task_batch_sizes))
         return assemble_owner_gradients(model, gradients, specs, weights, task_batch_sizes=task_batch_sizes)
     monkeypatch.setattr(train, "compute_task_gradient", compute)
     monkeypatch.setattr(three_phase, "assemble_owner_gradients", assemble)
-    three_phase._joint_epoch(
+    losses, diagnostics = three_phase._joint_epoch(
         model=model, tasks=tasks, epoch=1, phase_seed=42, steps_per_epoch=3,
         allocation={tasks[0]: 2, tasks[1]: 1}, counts={tasks[0]: 5, tasks[1]: 2},
         train_data={t: [] for t in tasks}, representations=torch.empty(0), normalizations={t: {} for t in tasks},
@@ -2012,6 +2018,38 @@ def test_joint_epoch_passes_actual_tail_batches_without_repetition(tiny_prepared
     assert batches == [{tasks[0]: 2, tasks[1]: 1}, {tasks[0]: 2, tasks[1]: 1}, {tasks[0]: 1}]
     assert sorted(seen[tasks[0]]) == list(range(5))
     assert sorted(seen[tasks[1]]) == list(range(2))
+
+    assert losses == {task: 1.0 for task in tasks}
+    assert diagnostics["diagnostics_version"] == 2
+    assert "clip_owner_pre_norms" not in diagnostics
+    stats = diagnostics["epoch_gradient_stats"]
+    assert stats["steps"] == 3
+    global_stats = stats["owners"]["GLOBAL"]
+    assert global_stats["pre_norm"] == pytest.approx({"mean": 2.0, "max": 4.0})
+    assert global_stats["post_norm"] == pytest.approx({"mean": 1.0, "max": 1.0}, abs=1e-6)
+    assert global_stats["clip_count"] == 3  # Norm == threshold also uses the epsilon coefficient.
+    private_a = stats["owners"][private_owner(tasks[0]).label]
+    private_b = stats["owners"][private_owner(tasks[1]).label]
+    assert private_a["gradient_steps"] == 3  # The zero tensor is an observation.
+    assert private_a["pre_norm"] == pytest.approx({"mean": 5 / 3, "max": 4.0})
+    assert private_a["clip_rate"] == pytest.approx(2 / 3)
+    assert private_b["trainable_steps"] == 3 and private_b["gradient_steps"] == 2
+    assert private_b["clip_rate"] == 1.0
+    assert stats["owners"]["GROUP:g2"] == {
+        "trainable_steps": 0, "gradient_steps": 0, "pre_norm": {"mean": None, "max": None},
+        "post_norm": {"mean": None, "max": None}, "clip_count": 0, "clip_rate": None,
+    }
+    assert stats["tasks"][tasks[0]]["samples"] == 5
+    assert stats["tasks"][tasks[1]]["steps"] == 2
+    global_samples = diagnostics["shared_sample_contributions"]["GLOBAL"]
+    assert global_samples["steps"] == 3 and global_samples["samples"] == 7
+    contribution = global_samples["tasks"][tasks[0]]
+    assert contribution == pytest.approx({"samples": 5, "sample_fraction": 5 / 7,
+                                        "weight_sum": 7 / 3, "weight_mean": 7 / 9})
+    assert contribution["sample_fraction"] != contribution["weight_mean"]
+    assert sum(value["weight_sum"] for value in global_samples["tasks"].values()) == pytest.approx(3)
+    assert global_samples["groups"]["g1"]["weight_mean"] == 1.0
+    assert diagnostics["shared_sample_contributions"]["GROUP:g1"]["tasks"] == global_samples["tasks"]
 
 
 def test_raw_gradient_config_and_identity(tiny_prepared: Stage3Config) -> None:
@@ -2798,3 +2836,123 @@ def test_hydration_single_solute_preparation_and_train_only_scaler(tmp_path: Pat
     formal = load_stage3_config("configs/v3/stage3/base.yaml")
     assert formal.tasks[task].size_class == "small"
     assert formal.resolved_private_recipe(task).phase3_epochs == formal.training.three_phase.private_classes["small"].phase3_epochs
+
+
+@pytest.mark.parametrize("max_norm", [0.0, 1.0])
+@pytest.mark.parametrize("missing_middle", [False, True])
+def test_entity_phase3_epoch_diagnostics_cover_zero_and_missing_gradients(tiny_prepared, monkeypatch, max_norm, missing_middle):
+    from stage3 import three_phase, train
+
+    config = _tiny_three_phase(tiny_prepared)
+    config = replace(config, training=replace(config.training, max_grad_norm=max_norm))
+    registry = resolve_task_registry(config)
+    model = Stage3SparseModel(config.model, registry, 4)
+    model.entity_inputs = True
+    task = "experiment/a"
+    owner = private_owner(task)
+    model.set_trainable_owners((owner,))
+    optimizer = _three_phase_optimizer(model, config, {owner: 1e-4})
+    calls = 0
+
+    def compute(*args):
+        nonlocal calls
+        value = (0., 1., 3.)[calls]
+        calls += 1
+        if missing_middle and calls == 2:
+            return {}, 1.0
+        parameter = model.parameters_for_owner(owner)[0]
+        gradient = torch.zeros_like(parameter)
+        gradient.view(-1)[0] = value
+        return {parameter: gradient}, 1.0
+
+    monkeypatch.setattr(train, "compute_task_gradient", compute)
+    loss, diagnostics = three_phase._task_epoch(
+        model=model, task=task, epoch=1, phase_seed=42, allocation=2, count=5,
+        dataset=[], representations=torch.empty(0), normalization={}, config=config,
+        device=torch.device("cpu"), optimizer=optimizer,
+        scheduler=SimpleNamespace(step=lambda owners: None),
+    )
+    assert loss == 1.0
+    stats = diagnostics["epoch_gradient_stats"]
+    private = stats["owners"][owner.label]
+    assert private["trainable_steps"] == 3
+    assert private["gradient_steps"] == (2 if missing_middle else 3)
+    assert private["pre_norm"] == pytest.approx({"mean": 1.5 if missing_middle else 4 / 3, "max": 3.0})
+    assert private["clip_rate"] == pytest.approx((0.5 if missing_middle else 2 / 3) if max_norm else 0.0)
+    assert stats["clip_enabled"] == bool(max_norm)
+    assert private["post_norm"]["max"] == pytest.approx(1.0 if max_norm else 3.0, abs=1e-6)
+    assert stats["owners"]["GLOBAL"]["trainable_steps"] == 0
+    assert stats["tasks"][task]["samples"] == 5
+    assert stats["tasks"][task]["steps"] == 3
+    assert all(value["steps"] == value["samples"] == 0
+               for value in diagnostics["shared_sample_contributions"].values())
+    assert "gradient_norm" not in diagnostics and "clip_post_norm" not in diagnostics
+
+
+@pytest.mark.parametrize("experimental, global_active, group2_active", [
+    (True, True, True), (True, False, True), (True, True, False), (False, True, True),
+])
+def test_entity_joint_epoch_sample_contributions_respect_frozen_and_simulation_owners(
+    tiny_prepared, monkeypatch, experimental, global_active, group2_active,
+):
+    import random
+    from stage3 import three_phase, train
+
+    config = _tiny_three_phase(tiny_prepared)
+    registry = resolve_task_registry(config)
+    simulation = "simulation/test"
+    registry[simulation] = replace(registry["experiment/a"], task_id=simulation)
+    model = Stage3SparseModel(config.model, registry, 4)
+    model.entity_inputs = True
+    model.simulation_tasks = (simulation,)
+    tasks = (("experiment/a", "experiment/b", "experiment/c") if experimental else ()) + (simulation,)
+    owners = [group_owner("g1"), *(private_owner(task) for task in tasks)]
+    if global_active:
+        owners.append(GLOBAL)
+    if group2_active:
+        owners.append(group_owner("g2"))
+    model.set_trainable_owners(owners)
+    optimizer = _three_phase_optimizer(model, config, {owner: 1e-4 for owner in owners})
+
+    def compute(model, task, *args):
+        selected = (private_owner(task),) if task == simulation else (GLOBAL, group_owner(registry[task].meta_group), private_owner(task))
+        gradient = {}
+        for owner in selected:
+            parameter = model.parameters_for_owner(owner)[0]
+            if parameter.requires_grad:
+                value = torch.zeros_like(parameter)
+                value.view(-1)[0] = 1.0
+                gradient[parameter] = value
+        return gradient, 1.0
+
+    monkeypatch.setattr(train, "compute_task_gradient", compute)
+    counts = {task: {"experiment/a": 3, simulation: 4}.get(task, 1) for task in tasks}
+    allocations = {task: 2 if task in ("experiment/a", simulation) else 1 for task in tasks}
+    _, diagnostics = three_phase._joint_epoch(
+        model=model, tasks=tasks, epoch=1, phase_seed=42, steps_per_epoch=2,
+        allocation=allocations, counts=counts, train_data={task: [] for task in tasks},
+        representations=torch.empty(0), normalizations={task: {} for task in tasks},
+        config=config, device=torch.device("cpu"), optimizer=optimizer,
+        scheduler=SimpleNamespace(step=lambda owners: None), registry=registry,
+        group_weights={}, task_order_rng=random.Random(42),
+        simulation_data=SimpleNamespace(compute_gradient=compute),
+    )
+    stats = diagnostics["epoch_gradient_stats"]
+    assert stats["tasks"][simulation]["samples"] == 4
+    assert stats["owners"][private_owner(simulation).label]["gradient_steps"] == 2
+    shared = diagnostics["shared_sample_contributions"]
+    assert all(simulation not in value["tasks"] for value in shared.values())
+    assert shared["GLOBAL"]["samples"] == (5 if experimental and global_active else 0)
+    assert shared["GROUP:g1"]["samples"] == (4 if experimental else 0)
+    assert shared["GROUP:g2"]["samples"] == (1 if experimental and group2_active else 0)
+    if experimental and global_active:
+        assert shared["GLOBAL"]["groups"]["g1"]["sample_fraction"] == pytest.approx(4 / 5)
+        assert shared["GLOBAL"]["groups"]["g1"]["weight_mean"] == pytest.approx(7 / 8)
+        assert shared["GLOBAL"]["tasks"]["experiment/a"]["weight_mean"] == pytest.approx(3 / 4)
+        assert sum(v["weight_mean"] for v in shared["GLOBAL"]["tasks"].values()) == pytest.approx(1.)
+    if experimental:
+        assert shared["GROUP:g1"]["tasks"]["experiment/a"]["weight_mean"] == pytest.approx(5 / 6)
+    else:
+        assert stats["owners"]["GLOBAL"]["trainable_steps"] == (2 if global_active else 0)
+        assert stats["owners"]["GLOBAL"]["gradient_steps"] == 0
+        assert stats["owners"]["GLOBAL"]["pre_norm"] == {"mean": None, "max": None}

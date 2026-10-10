@@ -24,6 +24,7 @@ from .data import (
 from .identity import build_stage3_training_identity
 from .model import GLOBAL, Ownership, Stage3SparseModel, group_owner, private_owner
 from .gradient_assembly import OwnerGradientResult, assemble_owner_gradients
+from .epoch_diagnostics import EpochDiagnostics
 
 
 THREE_PHASE_CHECKPOINT_VERSION = 2
@@ -566,6 +567,7 @@ def _joint_epoch(
     }
     loss_sums = {task: 0.0 for task in tasks}
     sample_counts = {task: 0 for task in tasks}
+    epoch_diagnostics = EpochDiagnostics(model, tasks, config.training.max_grad_norm) if model.entity_inputs else None
     latest: OwnerGradientResult | None = None
     clip_values: tuple[float, float, dict[str, float], dict[str, float]] = (
         0.0, 0.0, {}, {}
@@ -606,6 +608,8 @@ def _joint_epoch(
         optimizer.zero_grad(set_to_none=True)
         _assign_gradients(model, latest.gradients)
         clip_values = _clip(model, config)
+        if epoch_diagnostics is not None:
+            epoch_diagnostics.record(task_batch_sizes, latest.task_norms, clip_values, shared=True)
         scheduler.step(_gradient_owners(optimizer))
         if bar is not None:
             bar.update(1)
@@ -615,18 +619,17 @@ def _joint_epoch(
         raise RuntimeError("Stage 3 three-phase raw epoch coverage is incomplete")
     assert latest is not None
     pre, post, owner_pre, owner_post = clip_values
-    return (
-        {task: loss_sums[task] / counts[task] for task in tasks},
-        {
-            "task_gradient_norms": latest.task_norms,
-            "assembled_owner_norms": latest.assembled_owner_norms,
-            "clip_pre_norm": pre,
-            **({"replay": phase1_extension.diagnostics()} if phase1_extension is not None else {}),
-            "clip_post_norm": post,
-            "clip_owner_pre_norms": owner_pre,
-            "clip_owner_post_norms": owner_post,
-        },
-    )
+    diagnostics = epoch_diagnostics.result() if epoch_diagnostics is not None else {
+        "task_gradient_norms": latest.task_norms,
+        "assembled_owner_norms": latest.assembled_owner_norms,
+        "clip_pre_norm": pre,
+        "clip_post_norm": post,
+        "clip_owner_pre_norms": owner_pre,
+        "clip_owner_post_norms": owner_post,
+    }
+    if phase1_extension is not None:
+        diagnostics["replay"] = phase1_extension.diagnostics()
+    return {task: loss_sums[task] / counts[task] for task in tasks}, diagnostics
 
 
 def _task_epoch(
@@ -656,6 +659,7 @@ def _task_epoch(
     loss_sum = 0.0
     samples = 0
     pre_norm = post_norm = 0.0
+    epoch_diagnostics = EpochDiagnostics(model, (task,), config.training.max_grad_norm) if model.entity_inputs else None
     parameters = tuple(parameter for parameter in model.parameters() if parameter.requires_grad)
     bar = progress.bar(total=(count + allocation - 1) // allocation, desc=progress_desc, unit="step") if progress else None
     for begin in range(0, count, allocation):
@@ -685,7 +689,17 @@ def _task_epoch(
                 parameters, float("inf"), error_if_nonfinite=True
             )
         )
-        scheduler.step(_gradient_owners(optimizer))
+        active_owners = _gradient_owners(optimizer)
+        if epoch_diagnostics is not None:
+            owner = private_owner(task).label
+            epoch_diagnostics.record(
+                {task: len(indices)}, {task: pre_norm},
+                (pre_norm, post_norm,
+                 {owner: pre_norm} if owner in active_owners else {},
+                 {owner: post_norm} if owner in active_owners else {}),
+                shared=False,
+            )
+        scheduler.step(active_owners)
         loss_sum += loss * len(indices)
         samples += len(indices)
         if bar is not None:
@@ -694,7 +708,7 @@ def _task_epoch(
         bar.close()
     if samples != count:
         raise RuntimeError("Stage 3 Phase 3 raw epoch coverage is incomplete")
-    return loss_sum / count, {
+    return loss_sum / count, epoch_diagnostics.result() if epoch_diagnostics is not None else {
         "gradient_norm": pre_norm,
         "clip_post_norm": post_norm,
     }

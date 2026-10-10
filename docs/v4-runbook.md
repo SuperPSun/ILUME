@@ -220,6 +220,8 @@ ssh SERVER 'sha256sum /path/to/ILUME/assets/unimol2/modelzoo/84M/checkpoint.pt'
 
 当前Stage2 Base也采用 [ADR-0097](adr/0097-stage2-batch-sample-weighted-gradients.md)：五项模拟全部参与共享预训练，每个联合step取各未耗尽任务一个真实batch，GLOBAL直接跨任务、GROUP组内按记录数加权，PRIVATE原始平均梯度；不使用旧任务权重补偿。原shuffle、完整行覆盖、256逻辑/微批、10轮、LR1e-4及整模裁剪不变。每轮optimizer/scheduler更新次数改为任务batch数最大值。旧Stage2 checkpoint不能恢复、旧final不能迁移到当前Stage3；需要用新目录从头训练Stage2，再以新final训练Stage3。数据/Stage1身份一致的Stage2/3 prepare可复用，历史产物只读。
 
+训练诊断见 [ADR-0098](adr/0098-stage3-epoch-training-diagnostics.md)。各fold的 `phase_1/diagnostics.jsonl`、`phase_2/<scope>/diagnostics.jsonl` 和 `phase_3/<task>/diagnostics.jsonl` 每轮写一行：`diagnostics_version: 2` 的 `epoch_gradient_stats` 记录各owner实际梯度step数、裁剪前后范数mean/max及裁剪率；`shared_sample_contributions` 记录GLOBAL/GROUP的实际记录数、记录占比和逐step归一化权重累计/均值。任务耗尽及冻结不混入梯度均值分母，模拟只计PRIVATE。记录占比与权重均值含义不同，不能混用；无观测/分母时为null。新版替换原顶层最后一步范数字段，历史行不重写，恢复后可在同一日志追加新版行。诊断完全只读，不进入科研身份，本次诊断变更无需重训Stage2/3，不解除此前聚合算法变更的身份限制。
+
 ## 运行前提
 
 使用已安装的 `ilume` 环境，不安装依赖或下载权重。需先补齐 `outputs/v4/stage1/base/train/stage1_encoder.pt` 及它对应的 `outputs/v4/stage1/base/prepare/artifacts`；当前配置指定的正式编码器与特征产物尚未齐备。源数据不能在数据准备/训练/评估之间替换。现有过期 `data/stage*/metadata.json` 由下方正式 prepare 生成，不手改 SHA。
