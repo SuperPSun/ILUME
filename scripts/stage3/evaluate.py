@@ -352,7 +352,7 @@ def main() -> int:
     if args.domain in {"all", "simulation"}:
         simulation_args = copy(args)
         if args.domain == "all":
-            simulation_args.output = output / "simulation"
+            simulation_args.output = Path(args.output) / "simulation"
         assert identity is not None
         print("Stage3 simulation evaluation started", flush=True)
         _run_simulation(args=simulation_args, config=config, checkpoint_dir=checkpoint_dir, identity=identity)

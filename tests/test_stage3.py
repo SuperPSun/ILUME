@@ -2513,12 +2513,13 @@ EVALUATION_IDENTITY = semantic_identity("stage3.evaluation", {"contract_version"
 @pytest.mark.parametrize("split", ("valid", "test"))
 @pytest.mark.parametrize("domain", ("all", "experimental", "simulation"))
 def test_evaluation_launcher_domains_and_protocols(monkeypatch, tmp_path, split, domain) -> None:
+    import common.outputs as outputs
     import stage3.evaluate as experimental
     import stage3.simulation_evaluate as simulation
 
     output = tmp_path / "evaluation"
     argv = ["evaluate.py", "--config", "configs/v4/stage3/base.yaml",
-            "--checkpoint-dir", "train", "--split", split, "--output", str(output)]
+            "--checkpoint-dir", "train", "--split", split, "--output", "evaluation"]
     if domain != "all":
         argv += ["--domain", domain]
     argv += ["--fold", "1", "2", "3", "4", "5"] if split == "valid" and domain != "simulation" else ["--ensemble-folds"]
@@ -2540,12 +2541,12 @@ def test_evaluation_launcher_domains_and_protocols(monkeypatch, tmp_path, split,
         return {"split": split}
 
     def open_run(**kwargs):
-        run = _Run(Path(kwargs["output"]))
+        run = _Run(outputs.repository_path(kwargs["output"]))
         runs.append((kwargs, run))
         return run
 
     monkeypatch.setattr(sys, "argv", argv)
-    monkeypatch.setattr(evaluate_launcher, "repository_path", Path)
+    monkeypatch.setattr(outputs, "REPOSITORY_ROOT", tmp_path)
     monkeypatch.setattr(evaluate_launcher, "configure_process_runtime", lambda config: None)
     monkeypatch.setattr(evaluate_launcher, "open_run_directory", open_run)
     monkeypatch.setattr(experimental, "resolve_stage3_evaluation_identity", lambda *a, **k: EVALUATION_IDENTITY)
