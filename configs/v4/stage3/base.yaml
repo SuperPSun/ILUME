@@ -107,7 +107,7 @@ groups:
       epochs: 15
     phase2:
       lr: 0.0001
-      epochs: 20
+      epochs: 4
 tasks:
   experiment/electrical_conductivity:
     meta_group: transport

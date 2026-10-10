@@ -222,7 +222,7 @@ ssh SERVER 'sha256sum /path/to/ILUME/assets/unimol2/modelzoo/84M/checkpoint.pt'
 
 仅提供 `configs/v4/stage2/base.yaml` 和 `configs/v4/stage3/base.yaml`；新增架构/任务集对照已移除。Stage3 Phase2中的两项模拟任务只更新自身PRIVATE，不参与GLOBAL/GROUP梯度或共享梯度归一化；Phase3继续只更新PRIVATE。查看 `performance.jsonl` 的参数量、轮耗时及 `metrics.jsonl` 的实际 optimizer_updates。
 
-当前Stage3 Base的electrochemical GROUP采用L1/L2各2个专家、768D隐藏层、1024D输出。两项电位任务的PRIVATE/Tower/FiLM隐藏维度为512/256/128D，保留单PRIVATE专家、仅温度条件及dropout 0.1；Task Gate输入2048D、输出5个候选权重。GROUP和PRIVATE的LR、训练轮数及三阶段机制不变。容量配方进入既有训练身份；缩减前Stage3检查点不能恢复到当前Base，正式训练须使用未占用的新输出目录，Stage1/Stage2无需因本次容量调整重训。
+当前Stage3 Base的electrochemical GROUP采用L1/L2各2个专家、768D隐藏层、1024D输出。两项电位任务的PRIVATE/Tower/FiLM隐藏维度为512/256/128D，保留单PRIVATE专家、仅温度条件及dropout 0.1；Task Gate输入2048D、输出5个候选权重。electrochemical GROUP的Phase1保持2e-4/15轮，Phase2采用1e-4/4轮（原20轮）；两任务PRIVATE的Phase1/2/3预算仍为8/4/3轮，LR及三阶段机制不变。容量配方进入既有训练身份；容量或Phase2预算调整前的Stage3检查点不能恢复到当前Base，正式训练须使用未占用的新输出目录，Stage1/Stage2无需因本次容量调整重训。
 
 ## 按顺序执行
 

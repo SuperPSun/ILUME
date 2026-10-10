@@ -16,9 +16,11 @@ GLOBAL 为专家混合输出；GROUP对有效实体learned1024均值与专家混
 
 Stage2仅五项模拟：density、heat_capacity、thermal_expansion、heat_of_vaporization 属于 thermophysical，transfer_organic 属于 solvation。保留权重1/.8/.8/1/.5、SmoothL1、训练统计、完整行覆盖、256逻辑/微批及10轮末轮。全部 HoME 参数用原 HoME LR1e-4。Stage1永久冻结/eval。
 
-Stage3为24实验+两模拟辅助。原22任务 PRIVATE 配方不变；anodic_potential_limit、cathodic_potential_limit 使用 electrochemical GROUP，L1/L2各2个专家、隐藏比例0.75（768D）、输出1024D，仍继承 phase_stability 的Phase1 LR2e-4/15轮和Phase2 LR1e-4/20轮。两任务22体系、small预算、仅温度；任务局部覆盖PRIVATE/Tower/FiLM隐藏比例0.5/0.25/0.125（512/256/128D），单PRIVATE专家、dropout 0.1。Task Gate算法、2048D输入与PRIVATE归属不变，候选输出数随GROUP缩减由6变为5。电极及扫描条件为常量，保留来源但不输入。焓展示名为汽化焓（Enthalpy of vaporization），任务目录标识不变，仅温度，phase 不输入。
+Stage3为24实验+两模拟辅助。原22任务 PRIVATE 配方不变；anodic_potential_limit、cathodic_potential_limit 使用 electrochemical GROUP，L1/L2各2个专家、隐藏比例0.75（768D）、输出1024D，Phase1仍为LR2e-4/15轮，Phase2为LR1e-4/4轮。两任务22体系、small预算、仅温度；任务局部覆盖PRIVATE/Tower/FiLM隐藏比例0.5/0.25/0.125（512/256/128D），单PRIVATE专家、dropout 0.1。Task Gate算法、2048D输入与PRIVATE归属不变，候选输出数随GROUP缩减由6变为5。电极及扫描条件为常量，保留来源但不输入。焓展示名为汽化焓（Enthalpy of vaporization），任务目录标识不变，仅温度，phase 不输入。
 
 2026-10-09直接缩减正式Base电化学容量，不建立候选或消融。容量配方继续进入既有训练身份，格式版本不变；缩减前Stage3检查点不可恢复到新配方，后续训练使用新输出目录。Stage1/Stage2及数据、训练三阶段、LR、loss和评估协议不变。
+
+2026-10-10仅将electrochemical GROUP的Phase2预算从20轮降为4轮，LR保持1e-4。两项电位任务的PRIVATE仍按small预算训练：Phase1为6e-5/8轮、Phase2为3e-5/4轮、Phase3为1.5e-5/3轮；GROUP缩短不改变其实际预算。架构、容量、其他owner预算及五折评估协议不变。新预算进入既有训练身份，旧20轮配方检查点不可跨配方恢复，不升级格式版本、不覆盖历史产物。缩短预算旨在降低计算开销及潜在过拟合风险，泛化效果仍需正式实验验证。
 
 Phase1实验联合训练GLOBAL/GROUP/PRIVATE，模拟PRIVATE冻结。Phase2 GLOBAL冻结，GROUP/PRIVATE按原owner预算训练；Phase3仅PRIVATE。两个模拟任务Phase2/3仅更新自身PRIVATE，不参与共享梯度、聚合分母和共享调度器预算。保留原始样本采样、按owner裁剪、共同锚点、独立分支、末轮拼接和严格恢复。
 

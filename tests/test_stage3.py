@@ -829,6 +829,7 @@ def test_three_phase_config_and_task_specific_gate_contract() -> None:
 
 def test_entity_home_electrochemical_base_capacity() -> None:
     from common.entity_inputs import EntityInputs
+    from stage3.three_phase import _checkpoint_format, _validate_checkpoint_common
 
     config = load_stage3_config("configs/v4/stage3/base.yaml")
     tasks = ("experiment/anodic_potential_limit", "experiment/cathodic_potential_limit")
@@ -839,6 +840,39 @@ def test_entity_home_electrochemical_base_capacity() -> None:
         task_private_recipes={task: config.resolved_private_recipe(task) for task in tasks},
         entity_inputs=True, initialization_seed=42,
     )
+    group = config.groups["electrochemical"]
+    assert (group.phase1.epochs, group.phase1.lr) == (15, 2e-4)
+    assert (group.phase2.epochs, group.phase2.lr) == (4, 1e-4)
+    previous = replace(config, groups={**config.groups, "electrochemical": replace(
+        group, phase2=replace(group.phase2, epochs=20),
+    )})
+    prepared = {"metadata": {
+        "kind": "ilume_stage3_entity_sparse_data_v4",
+        "semantic": {"identities": {
+            "prepared": semantic_identity("test.prepared", {}),
+            "stage1_encoder": semantic_identity("test.encoder", {}),
+        }},
+    }}
+    plans = [build_resolved_training_plan(
+        recipe, 1, model, {task: range(2) for task in tasks}, tasks, prepared, {}, {},
+    ) for recipe in (previous, config)]
+    before, after = [plan["phases"]["phase2"]["branches"]["electrochemical"] for plan in plans]
+    assert before["epochs"] == 20 and after["epochs"] == 4
+    for task in tasks:
+        assert config.resolved_private_recipe(task) == previous.resolved_private_recipe(task)
+        owner = f"PRIVATE:{task}"
+        assert before["owners"][owner] == after["owners"][owner]
+        assert after["owners"][owner]["effective_epochs"] == 4
+    assert plans[0]["phases"]["phase1"] == plans[1]["phases"]["phase1"]
+    assert plans[0]["phases"]["phase3"] == plans[1]["phases"]["phase3"]
+    checkpoint = {
+        "format_version": _checkpoint_format(plans[0]), "stage": "stage3",
+        "fold": 1, "phase": "phase2",
+        "training_identity": build_stage3_training_identity(plans[0]),
+    }
+    _validate_checkpoint_common(checkpoint, phase="phase2", fold=1, plan=plans[0])
+    with pytest.raises(ValueError, match="training_identity"):
+        _validate_checkpoint_common(checkpoint, phase="phase2", fold=1, plan=plans[1])
     assert len(model.l1_group_experts["electrochemical"]) == 2
     assert len(model.l2_group_experts["electrochemical"]) == 2
     for experts, input_dim in (
