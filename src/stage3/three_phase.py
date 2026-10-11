@@ -35,6 +35,8 @@ THREE_PHASE_KNOWLEDGE_FINAL_KIND = "ilume_stage3_transfer_knowledge_three_phase_
 
 
 def _scope_kind(plan: Mapping[str, Any], suffix: str) -> str:
+    if plan.get("research_protocol") == "hpo_v4":
+        return "ilume_stage3_entity_home_hpo_v4_" + suffix
     if plan.get("representation_contract") == "entity_home_v4":
         return "ilume_stage3_entity_home_three_phase_v4_" + suffix
     if plan.get("representation_contract") == "dual_view_v4":
@@ -244,6 +246,8 @@ def _representation_fields(plan: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _final_kind(plan: Mapping[str, Any]) -> str:
+    if plan.get("research_protocol") == "hpo_v4":
+        return "ilume_stage3_entity_home_hpo_v4_final"
     if plan.get("representation_contract") == "entity_home_v4":
         return "ilume_stage3_entity_home_three_phase_final_v4"
     if plan.get("representation_contract") == "dual_view_v4":
@@ -310,7 +314,7 @@ def _optimizer(
                     {
                         "params": selected,
                         "lr": owner_lrs[owner],
-                        "weight_decay": config.training.weight_decay if decay else 0.0,
+                        "weight_decay": config.training.owner_weight_decay.get(owner.scope, config.training.weight_decay) if decay else 0.0,
                         "owner": owner.label,
                         "decay": decay,
                     }

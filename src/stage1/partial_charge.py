@@ -27,6 +27,14 @@ PARTIAL_CHARGE_KIND = "ilume_stage1_partial_charge_targets_v4"
 def charge_source_contract(config, split="train"):
     if split not in {"train", "valid"}:
         raise ValueError("Partial-charge supervision accepts train/valid only")
+    return _charge_source_contract(config, split)
+
+
+def charge_test_source_contract(config):
+    return _charge_source_contract(config, "test")
+
+
+def _charge_source_contract(config, split):
     path = config.auxiliary.simulation_dir / "partial_atomic_charge" / f"{split}.csv"
     manifest = config.auxiliary.partial_charge_manifest
     entries = load_structure_manifest(manifest)
@@ -54,9 +62,18 @@ def charge_source_contract(config, split="train"):
 
 
 def load_charge_rows(config, split="train"):
-    """Retain mapped observations; audit and skip only absent graph isomorphism."""
+    """Retain mapped train/valid observations without test access."""
     if split not in {"train", "valid"}:
         raise ValueError("Partial-charge supervision accepts train/valid only")
+    return _mapped_charge_rows(config, split)
+
+
+def load_charge_test_rows(config):
+    """Evaluation-only API; never used for fitting a scaler or training."""
+    return _mapped_charge_rows(config, "test")
+
+
+def _mapped_charge_rows(config, split):
     entries = load_structure_manifest(config.auxiliary.partial_charge_manifest)
     path = config.auxiliary.simulation_dir / "partial_atomic_charge" / f"{split}.csv"
     rows, audit = {}, []

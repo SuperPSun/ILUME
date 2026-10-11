@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from common.hpo_protocol import recipe_dict
 
 from stage3.config import Stage3GroupConfig, Stage3ModelConfig, Stage3OwnerBudgetConfig
 
@@ -35,8 +37,8 @@ class HomeRecipe:
                 "microbatch_size": self.stage2_microbatch_size,
                 "initialization": self.initialization,
                 "random_seed": self.random_seed,
-                "model": asdict(self.stage3.model),
-                "groups": {name: asdict(group) for name, group in self.stage3.groups.items()},
+                "model": recipe_dict(self.stage3.model),
+                "groups": {name: recipe_dict(group) for name, group in self.stage3.groups.items()},
                 **({"freeze_stage1": True} if self.freeze_stage1 else {}),
             },
         }
@@ -72,6 +74,20 @@ def home_recipe_from_dict(raw: Any) -> HomeRecipe:
             if details.get(phase) is not None:
                 details[phase] = Stage3OwnerBudgetConfig(**details[phase])
         groups[name] = Stage3GroupConfig(**details)
+    additions = model.global_dropout is not None or model.private_hidden_ratio is not None or any(group.dropout is not None for group in groups.values())
+    if additions and config.training.protocol != "hpo_v4":
+        raise ValueError("HPO model fields require hpo_v4")
+    if config.training.protocol == "hpo_v4":
+        import math
+        if any(type(value) is not int or value < 1 for value in (model.global_experts, model.private_experts, *(group.experts for group in groups.values()))):
+            raise ValueError("HPO expert counts must be positive integers")
+        for value in (model.dropout, model.global_dropout, *(group.dropout for group in groups.values())):
+            if value is not None and (not math.isfinite(value) or not 0 <= value <= .3):
+                raise ValueError("HPO dropout must be in [0, .3]")
+        for value in (model.expert_hidden_ratio, model.private_hidden_ratio, model.film_hidden_ratio,
+                      model.tower_hidden_ratio, *(group.expert_hidden_ratio for group in groups.values())):
+            if value is not None and (not math.isfinite(value) or value <= 0):
+                raise ValueError("HPO hidden capacity must be finite and positive")
     microbatch = home["microbatch_size"]
     initialization = home["initialization"]
     random_seed = home["random_seed"]
@@ -85,10 +101,10 @@ def home_recipe_from_dict(raw: Any) -> HomeRecipe:
         or config.loss.lambda_teacher != 0.0
         or config.training.backbone_frozen_epochs != 0
         or config.training.batch_size != 256
-        or config.training.epochs not in {8, 10, 12}
+        or (config.training.protocol != "hpo_v4" and config.training.epochs not in {8, 10, 12})
         or config.training.refinement_epochs != 0
         or (set(config.loss.task_weights) not in (set(SOURCE_GROUPS), set(PHYSICS_TASKS)) if config.is_entity_home else set(config.loss.task_weights) != set(SOURCE_GROUPS))
-        or (config.is_entity_home and (not freeze_stage1 or microbatch != 256 or config.training.epochs != 10
+        or (config.is_entity_home and (not freeze_stage1 or microbatch != 256 or (config.training.protocol != "hpo_v4" and config.training.epochs != 10)
             or config.loss.task_weights != {task: DEFAULT_TASK_WEIGHTS[task] for task in config.data.tasks}))
     ):
         raise ValueError("Stage 2 HoME requires the fixed physics-only task and training recipe" if config.is_entity_home

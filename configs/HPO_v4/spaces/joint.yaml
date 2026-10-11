@@ -1,0 +1,178 @@
+parameters:
+  global_count:
+    kind: categorical
+    low: 1
+    high: 4
+    base: 2
+    choices:
+    - 1
+    - 2
+    - 4
+  group_count:
+    kind: categorical
+    low: 0.5
+    high: 2
+    base: 1
+    choices:
+    - 0.5
+    - 1
+    - 2
+  private_count:
+    kind: categorical
+    low: 1
+    high: 2
+    base: 1
+    choices:
+    - 1
+    - 2
+  global_width:
+    kind: float
+    low: 0.5
+    high: 2
+    base: 1
+  global_dropout:
+    kind: float
+    low: 0
+    high: 0.3
+    base: 0.1
+  group_width:
+    kind: float
+    low: 0.5
+    high: 2
+    base: 1
+  group_dropout:
+    kind: float
+    low: 0
+    high: 0.3
+    base: 0.1
+  private_width:
+    kind: float
+    low: 0.5
+    high: 2
+    base: 1
+  private_dropout:
+    kind: float
+    low: 0
+    high: 0.3
+    base: 0.1
+  s2_global_lr:
+    kind: float
+    low: 3.0e-05
+    high: 0.0003
+    base: 0.0001
+    log: true
+  s2_global_epochs:
+    kind: int
+    low: 5
+    high: 30
+    base: 10
+  s2_group_lr:
+    kind: float
+    low: 3.0e-05
+    high: 0.0003
+    base: 0.0001
+    log: true
+  s2_group_epochs:
+    kind: int
+    low: 5
+    high: 30
+    base: 10
+  s2_private_lr:
+    kind: float
+    low: 3.0e-05
+    high: 0.0003
+    base: 0.0001
+    log: true
+  s2_private_epochs:
+    kind: int
+    low: 5
+    high: 30
+    base: 10
+  s3_global_lr:
+    kind: float
+    low: 0.0001
+    high: 0.0008
+    base: 0.00025
+    log: true
+  s3_global_epochs:
+    kind: int
+    low: 8
+    high: 30
+    base: 15
+  s3_group_lr:
+    kind: float
+    low: 0.5
+    high: 2
+    base: 1
+    log: true
+  s3_group_epochs:
+    kind: float
+    low: 0.5
+    high: 2
+    base: 1
+  s3_private_lr:
+    kind: float
+    low: 0.5
+    high: 2
+    base: 1
+    log: true
+  s3_private_epochs:
+    kind: float
+    low: 0.5
+    high: 2
+    base: 1
+secondary:
+  s2_global_wd:
+    kind: categorical
+    choices:
+    - 0
+    - 0.001
+    - 0.01
+    - 0.03
+    - 0.1
+    base: 0.01
+  s2_group_wd:
+    kind: categorical
+    choices:
+    - 0
+    - 0.001
+    - 0.01
+    - 0.03
+    - 0.1
+    base: 0.01
+  s2_private_wd:
+    kind: categorical
+    choices:
+    - 0
+    - 0.001
+    - 0.01
+    - 0.03
+    - 0.1
+    base: 0.01
+  s3_global_wd:
+    kind: categorical
+    choices:
+    - 0
+    - 0.001
+    - 0.01
+    - 0.03
+    - 0.1
+    base: 0.01
+  s3_group_wd:
+    kind: categorical
+    choices:
+    - 0
+    - 0.001
+    - 0.01
+    - 0.03
+    - 0.1
+    base: 0.01
+  s3_private_wd:
+    kind: categorical
+    choices:
+    - 0
+    - 0.001
+    - 0.01
+    - 0.03
+    - 0.1
+    base: 0.01

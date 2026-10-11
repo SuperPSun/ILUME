@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from common.hpo_protocol import recipe_dict
+
 import json
 import math
 import os
@@ -160,7 +162,7 @@ def _load_plugin(
     source_model_config = source_plan.get("model")
     if not isinstance(source_model_config, dict) or any(
         source_model_config.get(name) != value
-        for name, value in asdict(config.model).items()
+        for name, value in recipe_dict(config.model).items()
     ):
         raise ValueError("Plugin model structure signature mismatch")
     source_registry = source.get("resolved_registry")
@@ -492,6 +494,7 @@ def build_resolved_training_plan(
         warmup_steps = math.ceil(config.training.warmup_ratio * total_steps)
     plan = {
         "format_version": (5 if config.transfer_knowledge is not None else 4) if three_phase else 1,
+        **({"research_protocol": config.training.protocol} if config.training.protocol is not None else {}),
         "fold": fold,
         "active_tasks": list(active_tasks),
         "resolved_registry": {
@@ -502,10 +505,11 @@ def build_resolved_training_plan(
             for group, spec in resolve_group_registry(config).items()
         },
         "data": data_plan,
-        "model": {**asdict(config.model), "resolved_widths": _resolved_widths(model.d_model, config)},
+        "model": {**recipe_dict(config.model), "resolved_widths": _resolved_widths(model.d_model, config)},
         "optimizer": {
             "name": "AdamW", "implementation": config.training.optimizer_implementation,
             "weight_decay": config.training.weight_decay,
+            **({"owner_weight_decay": config.training.owner_weight_decay} if config.training.owner_weight_decay else {}),
             "betas": list(config.training.betas), "eps": config.training.eps,
         },
         "math": {

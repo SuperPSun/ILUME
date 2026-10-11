@@ -307,7 +307,7 @@ def _run_fold(
         output=fold_output,
         seed=effective_training_seed(config),
         semantic_identity=training_identity,
-        data_metadata=repository_relative(config.data.stage3_dir / "metadata.json"),
+        data_metadata=repository_relative(config.preparation.data_metadata_path or config.data.stage3_dir / "metadata.json"),
         resume=resume_from,
         details={
             "fold": fold,
@@ -529,6 +529,9 @@ def main() -> int:
 
     from common.outputs import repository_path
     config = load_stage3_config(args.config)
+    if config.training.protocol == "hpo_v4":
+        from common.hpo_protocol import validate_hpo_paths
+        validate_hpo_paths(args.config, args.output)
     if config.training.schedule_mode != "three_phase":
         parser.error("Legacy Stage 3 training and resume are retired; historical final artifacts remain read-only")
     output = repository_path(args.output)

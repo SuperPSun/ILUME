@@ -55,6 +55,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--tasks", nargs="+")
     parser.add_argument("--study-id")
+    parser.add_argument("--lock-manifest", help="HPO test requires the immutable selection lock.")
     parser.add_argument("--output", required=True)
     return parser
 
@@ -113,7 +114,7 @@ def _run_fold(
         output=output,
         seed=config.data.seed,
         semantic_identity=evaluation_identity,
-        data_metadata=repository_relative(config.data.stage3_dir / "metadata.json"),
+        data_metadata=repository_relative(config.preparation.data_metadata_path or config.data.stage3_dir / "metadata.json"),
         details={
             "reporting_schema_version": REPORTING_SCHEMA_VERSION,
             "checkpoint_dir": repository_relative(checkpoint_dir),
@@ -217,7 +218,7 @@ def _run_test(
         output=args.output,
         seed=config.data.seed,
         semantic_identity=evaluation_identity,
-        data_metadata=repository_relative(config.data.stage3_dir / "metadata.json"),
+        data_metadata=repository_relative(config.preparation.data_metadata_path or config.data.stage3_dir / "metadata.json"),
         details={
             "reporting_schema_version": REPORTING_SCHEMA_VERSION,
             "checkpoint_dir": repository_relative(checkpoint_dir),
@@ -259,7 +260,7 @@ def _run_simulation(
         stage="stage3", operation="evaluate", config_path=args.config,
         config_payload=config.to_dict(), output=args.output, seed=config.data.seed,
         semantic_identity=identity,
-        data_metadata=repository_relative(config.data.stage3_dir / "metadata.json"),
+        data_metadata=repository_relative(config.preparation.data_metadata_path or config.data.stage3_dir / "metadata.json"),
         details={"reporting_schema_version": REPORTING_SCHEMA_VERSION, "domain": "simulation",
                  "split": args.split, "ensemble_folds": True, "model_selector": "three_phase_final"},
     )
@@ -337,6 +338,16 @@ def main() -> int:
         parser.error(str(error))
 
     config = load_stage3_config(args.config)
+    if config.training.protocol == "hpo_v4":
+        from common.hpo_protocol import validate_hpo_paths
+        validate_hpo_paths(args.config, args.output)
+    if config.training.protocol == "hpo_v4" and args.split == "test":
+        if not args.lock_manifest:
+            raise ValueError("HPO test evaluation requires --lock-manifest")
+        from stage3.hpo.contracts import validate_lock
+        lock = validate_lock(args.lock_manifest)
+        if Path(args.config) != Path(lock["joint"]["config"]) or Path(args.checkpoint_dir) != Path(lock["joint"]["checkpoint_dir"]):
+            raise ValueError("HPO test model is outside the locked manifest")
     configure_process_runtime(config)
     checkpoint_dir = repository_path(args.checkpoint_dir)
     output = repository_path(args.output)

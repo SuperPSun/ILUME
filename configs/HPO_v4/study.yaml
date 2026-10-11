@@ -1,0 +1,86 @@
+protocol: hpo_v4
+study_id: default
+source:
+  stage1_checkpoint: outputs/v4/stage1/base/train/last.pt
+  stage1_encoder: outputs/v4/stage1/base/train/stage1_encoder.pt
+  stage1_artifacts: outputs/v4/stage1/base/prepare/artifacts
+bases:
+  stage2: configs/HPO_v4/controls/stage2.yaml
+  stage3: configs/HPO_v4/controls/stage3.yaml
+  posttraining: configs/HPO_v4/controls/posttraining.yaml
+spaces:
+  joint: configs/HPO_v4/spaces/joint.yaml
+  posttraining: configs/HPO_v4/spaces/posttraining.yaml
+split_seeds:
+- 42
+- 123
+- 1234
+- 3407
+- 90756
+training_seeds:
+- 11
+- 23
+- 42
+- 71
+- 101
+repeat_seeds:
+- 2027
+- 2029
+- 2039
+- 2053
+sampler_seed: 42
+screen_folds:
+- 1
+- 3
+confirm_folds:
+- 1
+- 2
+- 3
+- 4
+- 5
+budgets:
+  post_controls: 18
+  post_structures: 2
+  post_tpe_per_structure: 32
+  post_top_recipes: 3
+  joint_controls: 48
+  joint_structures: 2
+  joint_tpe_per_structure: 80
+  joint_startup: 16
+  joint_local: 32
+  joint_max_dimensions: 8
+  joint_local_dimensions: 6
+  confirm_top: 8
+  seed_top: 3
+  joint_candidates: 240
+selection:
+  objective: mean24(mean_fold(normalized_mae))
+  post_objective: per_target_final_validation_mae
+  ties:
+  - parameters_count
+  - gpu_seconds
+  - ordinal
+  simulation_in_objective: false
+  early_stopping: false
+execution:
+  devices:
+  - cuda:0
+  - cuda:1
+  - cuda:2
+  - cuda:3
+  jobs_per_gpu: 1
+  max_parallel: 4
+  gpu_memory_reserve_gb: 6
+  max_gpu_hours: null
+optuna_version: 4.7.0
+calibration:
+  jobs_per_gpu:
+  - 1
+  - 2
+  - 4
+  candidate_parameters:
+  - {}
+  - global_width: 2
+    group_width: 2
+    private_width: 2
+  mandatory_before_search: true

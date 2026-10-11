@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from common.hpo_protocol import recipe_dict
+
 import json
 import math
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -30,6 +31,8 @@ STAGE2_HOME_V4_FINAL_KIND = "ilume_stage2_home_final_v4"
 
 
 def final_kind(recipe):
+    if recipe.stage2.training.protocol == "hpo_v4":
+        return "ilume_stage2_entity_home_hpo_v4_final"
     if recipe.stage2.is_entity_home:
         return "ilume_stage2_entity_home_final_v4"
     return STAGE2_HOME_V4_FINAL_KIND if recipe.freeze_stage1 else STAGE2_HOME_FINAL_KIND
@@ -63,7 +66,7 @@ def load_home_final(path: str | Path) -> tuple[dict[str, Any], SimulationHoME, S
     if manifest.get("artifact") != artifact.name or manifest.get("artifact_sha256") != sha256_file(artifact):
         raise ValueError("Stage 2 final artifact SHA mismatch")
     payload = torch.load(artifact, map_location="cpu", weights_only=False)
-    if (payload.get("kind") != "ilume_stage2_entity_home_final_v4"
+    if (payload.get("kind") not in {"ilume_stage2_entity_home_final_v4", "ilume_stage2_entity_home_hpo_v4_final"}
             or manifest.get("kind") != payload.get("kind") or payload.get("format_version") != 4):
         raise ValueError("Unsupported Stage 2 full HoME artifact kind")
     identity = payload["training_identity"]
@@ -112,7 +115,7 @@ def load_home_final(path: str | Path) -> tuple[dict[str, Any], SimulationHoME, S
     if payload["kind"] != final_kind(recipe):
         raise ValueError("Stage 2 final representation family mismatch")
     if (recipe.stage2.experiment_dict() != identity["payload"]["stage2_config"]
-            or asdict(recipe.stage3.model) != identity["payload"]["stage3_model"]
+            or recipe_dict(recipe.stage3.model) != identity["payload"]["stage3_model"]
             or identity["payload"].get("epochs") != recipe.stage2_epochs
             or manifest.get("fixed_final_epoch") != recipe.stage2_epochs):
         raise ValueError("Stage 2 full model recipe mismatch")

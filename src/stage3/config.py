@@ -115,6 +115,7 @@ class Stage3DataConfig:
 class Stage3PreparationConfig:
     encoding_batch_size: int = 256
     cache_dir: Path = Path("outputs/v1/stage3/base/prepare/object_cache")
+    data_metadata_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -157,6 +158,8 @@ class Stage3InitializationConfig:
 
 @dataclass(frozen=True)
 class Stage3ModelConfig:
+    global_dropout: float | None = None
+    private_hidden_ratio: float | None = None
     global_experts: int = 2
     group_experts: int = 2
     private_experts: int = 1
@@ -171,6 +174,7 @@ class Stage3ModelConfig:
 
 @dataclass(frozen=True)
 class Stage3GroupConfig:
+    dropout: float | None = None
     enabled: bool = True
     group_weight: float = 1.0
     experts: int | None = None
@@ -248,6 +252,8 @@ class Stage3SimulationTrainingConfig:
 
 @dataclass(frozen=True)
 class Stage3TrainingConfig:
+    protocol: str | None = None
+    owner_weight_decay: dict[str, float] = field(default_factory=dict)
     seed: int | None = None
     composite_batch_size: int = 2048
     microbatch_size: int = 1024
@@ -365,6 +371,23 @@ class Stage3Config:
         )
 
     def validate(self) -> None:
+        from common.hpo_protocol import HPO_PROTOCOL, validate_protocol
+        validate_protocol(self.training.protocol)
+        additions = (self.model.global_dropout is not None or any(group.dropout is not None for group in self.groups.values())
+                     or bool(self.training.owner_weight_decay))
+        if self.training.protocol != HPO_PROTOCOL and additions:
+            raise ValueError("Owner dropout/weight decay require hpo_v4")
+        if self.training.protocol == HPO_PROTOCOL:
+            if not self.is_entity_home:
+                raise ValueError("HPO requires entity HoME")
+            if set(self.training.owner_weight_decay) != {"GLOBAL", "GROUP", "PRIVATE"}:
+                raise ValueError("HPO owner weight decay requires three scopes")
+            for value in self.training.owner_weight_decay.values():
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+                    raise ValueError("Invalid HPO owner weight decay")
+        for value in (self.model.global_dropout, *(group.dropout for group in self.groups.values())):
+            if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value < 1):
+                raise ValueError("Invalid owner dropout")
         simulation = self.training.simulation
         if (self.initialization.simulation_artifacts_dir is not None) != (simulation is not None):
             raise ValueError("Stage 3 simulation data and training recipe must be declared together")
@@ -525,7 +548,7 @@ class Stage3Config:
                 if (
                     isinstance(value, bool)
                     or not isinstance(value, (int, float))
-                    or not 0.0 <= value <= 0.15
+                    or not 0.0 <= value <= (0.3 if self.training.protocol == "hpo_v4" else 0.15)
                 ):
                     raise ValueError(
                         f"Stage 3 private_dropout must be in [0, 0.15]: {task_id}"
@@ -550,6 +573,8 @@ class Stage3Config:
         ):
             if getattr(model, name) <= 0:
                 raise ValueError(f"model.{name} must be positive")
+        if model.private_hidden_ratio is not None and (self.training.protocol != "hpo_v4" or not math.isfinite(model.private_hidden_ratio) or model.private_hidden_ratio <= 0):
+            raise ValueError("HPO private_hidden_ratio must be positive")
         training = self.training
         encoder_phase1 = training.object_encoder_phase1
         if self.initialization.home_mode is not None and not self.is_entity_home:
@@ -672,10 +697,10 @@ class Stage3Config:
                     raise ValueError(
                         f"Three-phase {name} min_lr_ratio must be in (0, 1]"
                     )
-            if model.private_experts != 1 or any(
+            if self.training.protocol != "hpo_v4" and (model.private_experts != 1 or any(
                 task.model_overrides.get("private_experts", 1) != 1
                 for task in enabled_tasks
-            ):
+            )):
                 raise ValueError("Three-phase Stage 3 requires one PRIVATE expert")
             for group_id, group in self.groups.items():
                 if not group.enabled:
@@ -778,6 +803,19 @@ class Stage3Config:
             return value
 
         payload = convert(asdict(self))
+        if self.preparation.data_metadata_path is None:
+            payload["preparation"].pop("data_metadata_path")
+        if self.model.private_hidden_ratio is None:
+            payload["model"].pop("private_hidden_ratio")
+        if self.model.global_dropout is None:
+            payload["model"].pop("global_dropout")
+        for group in payload["groups"].values():
+            if group["dropout"] is None:
+                group.pop("dropout")
+        if self.training.protocol is None:
+            payload["training"].pop("protocol")
+        if not self.training.owner_weight_decay:
+            payload["training"].pop("owner_weight_decay")
         if self.initialization.representation_contract == "object_v3":
             payload["initialization"].pop("representation_contract")
         if self.transfer_knowledge is None:
@@ -859,6 +897,8 @@ def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
         if name in data_raw:
             data_raw[name] = Path(data_raw[name])
     preparation_raw = dict(raw.get("preparation") or {})
+    if preparation_raw.get("data_metadata_path") is not None:
+        preparation_raw["data_metadata_path"] = Path(preparation_raw["data_metadata_path"])
     if "cache_dir" in preparation_raw:
         preparation_raw["cache_dir"] = Path(preparation_raw["cache_dir"])
     initialization_raw = dict(raw.get("initialization") or {})

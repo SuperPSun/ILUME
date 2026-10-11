@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +51,7 @@ class Stage2DataConfig:
 class Stage2PreparationConfig:
     workers: int = 8
     teacher_batch_size: int | None = 512
+    data_metadata_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,9 @@ class Stage2LossConfig:
 
 @dataclass(frozen=True)
 class Stage2TrainingConfig:
+    protocol: str | None = None
+    seed: int | None = None
+    owner_training: dict[str, dict[str, float | int]] = field(default_factory=dict)
     batch_size: int = 256
     gradient_accumulation_steps: int = 1
     epochs: int = 5
@@ -148,6 +152,18 @@ class Stage2Config:
             for mode in self.data.target_materialization_modes.values()
         ):
             raise ValueError("Unsupported Stage 2 target materialization mode")
+        from common.hpo_protocol import HPO_PROTOCOL, validate_protocol, validate_owner_training
+        validate_protocol(self.training.protocol)
+        if self.training.seed is not None and (type(self.training.seed) is not int or self.training.seed < 0):
+            raise ValueError("Stage2 training.seed must be a nonnegative integer")
+        if self.training.protocol == HPO_PROTOCOL:
+            if not self.is_entity_home:
+                raise ValueError("HPO requires entity HoME")
+            validate_owner_training(self.training.owner_training)
+            if self.training.epochs != max(value["epochs"] for value in self.training.owner_training.values()):
+                raise ValueError("HPO Stage2 epochs must equal the longest owner budget")
+        elif self.training.owner_training or self.training.seed is not None:
+            raise ValueError("Stage2 owner training and independent seed require hpo_v4")
         if self.preparation.workers <= 0:
             raise ValueError("Stage 2 preparation sizes must be positive")
         if not 0.0 <= self.model.dropout <= 1.0:
@@ -299,6 +315,11 @@ class Stage2Config:
                 return [convert(item) for item in value]
             return value
         payload = convert(asdict(self))
+        if self.preparation.data_metadata_path is None:
+            payload["preparation"].pop("data_metadata_path")
+        for name, empty in (("protocol", None), ("seed", None), ("owner_training", {})):
+            if payload["training"][name] == empty:
+                payload["training"].pop(name)
         if self.is_entity_home:
             for name in ("object_layers", "object_ffn_dim", "object_encoder_kind", "unary_hidden_dim", "pair_hidden_dim"):
                 payload["model"].pop(name)
@@ -374,6 +395,8 @@ def stage2_config_from_dict(raw: dict[str, Any]) -> Stage2Config:
         name: (None if name == "representation" and raw.get(name) is None else _construct(section, raw.get(name)))
         for name, section in _SECTIONS.items()
     }
+    if sections["preparation"].data_metadata_path is not None:
+        sections["preparation"] = replace(sections["preparation"], data_metadata_path=Path(sections["preparation"].data_metadata_path))
     config = Stage2Config(**sections)
     config.validate()
     return config

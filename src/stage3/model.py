@@ -314,7 +314,7 @@ class Stage3SparseModel(nn.Module):
 
         expert_kwargs = {
             "hidden_ratio": model_config.expert_hidden_ratio,
-            "dropout": model_config.dropout,
+            "dropout": model_config.dropout if model_config.global_dropout is None else model_config.global_dropout,
             "activation": model_config.activation,
         }
         with seeded_initialization(initialization_seed, "GLOBAL"):
@@ -366,6 +366,7 @@ class Stage3SparseModel(nn.Module):
                 group_expert_kwargs = {
                     **expert_kwargs,
                     "hidden_ratio": group_hidden_ratio,
+                    "dropout": model_config.dropout if group_config is None or group_config.dropout is None else group_config.dropout,
                 }
                 self.l1_group_experts[group] = nn.ModuleList(
                     [Expert(d_model, input_dim=l1_input_dim, **group_expert_kwargs) for _ in range(group_experts)]
@@ -385,7 +386,7 @@ class Stage3SparseModel(nn.Module):
                     self.interactions[group] = PartnerInteraction(
                         d_model,
                         hidden_ratio=model_config.interaction_hidden_ratio,
-                        dropout=model_config.dropout,
+                        dropout=group_expert_kwargs["dropout"],
                         activation=model_config.activation,
                     )
                     modules.append(self.interactions[group])
@@ -417,7 +418,7 @@ class Stage3SparseModel(nn.Module):
                 private_hidden_ratio = float(
                     private_recipe.private_hidden_ratio
                     if private_recipe is not None
-                    else overrides.get("private_hidden_ratio", model_config.expert_hidden_ratio)
+                    else overrides.get("private_hidden_ratio", model_config.private_hidden_ratio or model_config.expert_hidden_ratio)
                 )
                 tower_hidden_ratio = float(
                     private_recipe.tower_hidden_ratio
@@ -506,6 +507,7 @@ class Stage3SparseModel(nn.Module):
                 "experts": experts,
                 "expert_hidden_ratio": ratio,
                 "expert_hidden": _width(self.d_model, ratio),
+                **({"dropout": config.dropout} if config is not None and config.dropout is not None else {}),
             }
         tasks: dict[str, object] = {}
         for task_id, spec in self.task_specs.items():
@@ -521,7 +523,7 @@ class Stage3SparseModel(nn.Module):
                 private_recipe.private_hidden_ratio
                 if private_recipe is not None
                 else overrides.get(
-                    "private_hidden_ratio", self.model_config.expert_hidden_ratio
+                    "private_hidden_ratio", self.model_config.private_hidden_ratio or self.model_config.expert_hidden_ratio
                 )
             )
             tower_ratio = float(

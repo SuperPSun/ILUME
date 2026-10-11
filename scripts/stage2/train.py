@@ -36,6 +36,9 @@ def main() -> None:
     if is_home:
         recipe = load_home_recipe(args.config)
         config = recipe.stage2
+        if config.training.protocol == "hpo_v4":
+            from common.hpo_protocol import validate_hpo_paths
+            validate_hpo_paths(args.config, args.output)
         device = resolve_device(config.training.device)
         math_contract = configure_stage2_math(device)
         identity = resolve_home_training_identity(recipe, math_contract)
@@ -45,7 +48,7 @@ def main() -> None:
             stage="stage2", operation="train", config_path=args.config,
             config_payload=recipe.to_dict(), semantic_identity=identity,
             output=args.output, seed=config.data.seed, resume=args.resume,
-            data_metadata=repository_relative(config.data.data_root / "stage2" / "metadata.json"),
+            data_metadata=repository_relative(config.preparation.data_metadata_path or config.data.data_root / "stage2" / "metadata.json"),
             details={"math_contract": math_contract, "optimizer_implementation":
                      "fused" if device.type == "cuda" else "single_tensor"},
         )
@@ -64,7 +67,7 @@ def main() -> None:
         stage="stage2", operation="train", config_path=args.config,
         config_payload=config.to_dict(), semantic_identity=training_identity,
         output=args.output, seed=config.data.seed,
-        data_metadata=repository_relative(config.data.data_root / "stage2" / "metadata.json"),
+        data_metadata=repository_relative(config.preparation.data_metadata_path or config.data.data_root / "stage2" / "metadata.json"),
         resume=args.resume,
         details={
             **(
