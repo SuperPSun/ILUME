@@ -2555,6 +2555,7 @@ def test_evaluation_launcher_domains_and_protocols(monkeypatch, tmp_path, split,
     monkeypatch.setattr(simulation, "resolve_simulation_evaluation_identity", resolve_simulation)
     monkeypatch.setattr(simulation, "evaluate_simulation_checkpoints", evaluate_simulation)
     assert evaluate_launcher.main() == 0
+    assert all(kwargs["data_metadata"] == "data/42/stage3/metadata.json" for kwargs, _ in runs)
     experimental_calls = [kwargs for name, kwargs in calls if name == "experimental"]
     simulation_calls = [kwargs for name, kwargs in calls if name == "simulation"]
     assert len(experimental_calls) == (0 if domain == "simulation" else 5 if split == "valid" else 1)

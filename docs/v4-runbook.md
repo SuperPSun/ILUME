@@ -5,7 +5,17 @@
 
 从仓库根目录执行，使用新的 `outputs/v4/` 路径，不覆盖历史v3输出。Stage1科研合同见 [ADR-0089](adr/0089-v4-frozen-dual-view-stage1.md)。CUDA示例使用四张设备。
 
-当前Base采用十二层SMILES Transformer和八个独立残差图块：词表2,048个token时仅编码器约60.73M参数（[ADR-0090](adr/0090-stage1-v4-residual-encoder-capacity.md)）。相较此前约30M的v4 Base，**已有Stage1 预处理语料、统计和完成的Uni-Mol缓存可复用**；已完成时跳过下方生成步骤。从头训练新Stage1，然后重新生成Stage2表示并训练Stage2，再数据准备/训练/评估 Stage3。不要将旧Stage1检查点恢复到新架构。默认输出路径未变：若训练/下游目录已占用，选择新路径并同步更新下游引用，或在运行前明确安排归档；这些命令不授权替换历史结果。
+## 数据 split 与路径
+
+现役 Stage1 输入仍为 `data/stage1`；Stage2/3 输入分别为 `data/42/stage2`、`data/42/stage3`，共用 `data/42/task_catalog.csv`。Stage2 YAML 的 `data.data_root` 为 `data/42`，catalog 内的 `stage2/...` 路径相对此根解析；Stage3 YAML 的 `data.stage3_dir` 为 `data/42/stage3`。prepare 的数据审计 `metadata.json` 写入各自的数据目录。
+
+测试其他数据 split 时，使用独立的自包含 YAML，将 Stage2 的 `data_root/task_catalog_path` 与 Stage3 的 `stage3_dir/task_catalog` 同步指向对应 split，并为 prepare、训练和评估指定独立输出及对应的下游引用。目录名 `42` 只定位数据，不自动改变训练随机种子、split policy 或 cv repeat。不同内容的 split 必须重新 prepare，不能共用数据身份不一致的准备产物或检查点；Stage1 来源保持不变。历史配置及基线保留各自的数据合同，不由本次目录调整迁移。
+
+五套数据目录为 `42`、`123`、`1234`、`3407`、`90756`，仓库正式 Base YAML 默认仅选择42。各套的 Stage3 `stage2_final/simulation_artifacts_dir` 必须配对到对应 split 的 Stage2 来源。并行 prepare 使用各自的 `preparation.cache_dir`：冻结 Stage1 表示可按身份串行复用，但当前缓存写入不支持多个进程共同写入。prepare、train、evaluate 的运行元数据 `data_metadata` 引用所选 split 的数据审计文件。
+
+各 split 分别汇总，用 `--input` 或 `--include` 限定到该 split 的结果，再写入独立汇总目录；现有 summarizer 不合并不同来源身份的 split。根目录 `data/task_catalog.csv` 保留旧42副本，其他 split 使用各自目录内的 catalog。`1234`、`90756` 附带的 `stage1/properties` 不属于现役共享 Stage1 输入；Stage1 仍显式读取 `data/stage1`。
+
+当前Base采用十二层SMILES Transformer和八个独立残差图块：词表2,048个token时仅编码器约60.73M参数（[ADR-0090](adr/0090-stage1-v4-residual-encoder-capacity.md)）。身份一致的 Stage1 编码器、预处理语料、统计和完整 Uni-Mol 缓存可复用；切换 Stage2/3 数据 split 不要求重新训练 Stage1。旧架构检查点不得恢复到当前架构。若训练/下游目录已占用，选择新路径并同步更新下游引用，或在运行前明确安排归档；这些命令不授权替换历史结果。
 
 ## Stage1 数据准备与离线 teacher
 
@@ -159,7 +169,7 @@ python scripts/stage1/prepare.py --config configs/v4/stage1/base.yaml --partial-
 
 回归输入不能超过冻结来源检查点的 `max_smiles_tokens`。超长分子在表示生成与标准化拟合前跳过，不截断、不修改编码器；其他错误仍失败。输出根的 `input_filter_audit.json` 记录各目标/split过滤前、保留、排除样本数及逐条原因、token数和电荷mol_id；任务清单与summary也记录数量。相同电荷结构的源观察分别计数。过滤后训练集为空会报错；训练/验证结构重叠仍在过滤前拒绝。结果仅代表可编码的样本子集。失败尝试保留，修复后换用新输出目录重跑，无需重新训练Stage1/2/3。
 
-部分电荷头训练将来源每行保留为独立样本，重复结构复用冻结原子表示；预训练及兼容性见 [sidecar合同](#partial-charge-sidecar-on-an-existing-corpus)。标量电子冲突及训练集/验证集重叠检查不变。使用下方命令前核验回归YAML的 `simulation_dir`：当前写为 `data/stage2`，本地迁移后的电子/电荷来源在 `data/stage1/properties`。将自包含运行YAML指向实际合同目录；这不授权移动或覆盖数据。
+部分电荷头训练将来源每行保留为独立样本，重复结构复用冻结原子表示；预训练及兼容性见 [sidecar合同](#partial-charge-sidecar-on-an-existing-corpus)。标量电子冲突及训练集/验证集重叠检查不变。现役回归 YAML 的 `simulation_dir` 为 `data/stage1/properties`，与 Stage2/3 的数据 split 目录独立。运行前核验来源路径和合同；这不授权移动或覆盖数据。
 
 在Stage1末轮后显式执行；不会自动追加预训练。命令需完整末轮 `last.pt` 或末轮轮检查点，不能用 `stage1_encoder.pt`。在 `configs/v4/stage1/regression_heads.yaml` 配置数据/产物路径和预算。一次编码完整无mask结构，冻结编码器，独立训练13标量头加原子电荷。当前YAML显式采用MLP：各电子目标entity1024→512→256→1，partial charge为atom512→256→128→1，GELU、dropout0。各头按既有任务局部种子独立初始化（分别656,385 / 164,353参数），不共享权重。共享结构定义默认仍为Linear；省略预测器时从已训练行/头初始化。默认10轮、LR1e-4、恒定LR、batch128、AdamW/WD0.01、BF16、裁剪1。验证只报告原单位MAE/RMSE；final固定epoch10，绝不取最优。不读取测试集。此MLP配方使用新输出；已有Linear输出只读，无需重跑Stage1/2/3。
 
@@ -224,7 +234,9 @@ ssh SERVER 'sha256sum /path/to/ILUME/assets/unimol2/modelzoo/84M/checkpoint.pt'
 
 ## 运行前提
 
-使用已安装的 `ilume` 环境，不安装依赖或下载权重。需先补齐 `outputs/v4/stage1/base/train/stage1_encoder.pt` 及它对应的 `outputs/v4/stage1/base/prepare/artifacts`；当前配置指定的正式编码器与特征产物尚未齐备。源数据不能在数据准备/训练/评估之间替换。现有过期 `data/stage*/metadata.json` 由下方正式 prepare 生成，不手改 SHA。
+使用已安装的 `ilume` 环境，不安装依赖或下载权重。运行前核验 `outputs/v4/stage1/base/train/stage1_encoder.pt` 与配对的 `outputs/v4/stage1/base/prepare/artifacts`；文件存在不代表身份兼容，仍以入口完整性检查为准。源数据不能在数据准备/训练/评估之间替换。数据审计元数据由正式 prepare 写入配置的数据目录，不手改 SHA。
+
+截至2026-10-11，本地上述 Stage1 编码器及特征元数据已存在；默认 Stage2 `base/prepare`、`base/train` 已有旧运行，而配置指定的 `base/train/stage2_final.pt` 不存在。新运行需使用未占用的目录，并同步 prepare 产物和 Stage3 来源引用；本次仅核对文件状态，没有验证这些正式产物的完整加载兼容性或执行正式作业。其他数据 split 的正式运行仍由用户显式安排。
 
 仅提供 `configs/v4/stage2/base.yaml` 和 `configs/v4/stage3/base.yaml`；新增架构/任务集对照已移除。Stage3 Phase2中的两项模拟任务只更新自身PRIVATE，不参与GLOBAL/GROUP梯度或共享梯度归一化；Phase3继续只更新PRIVATE。查看 `performance.jsonl` 的参数量、轮耗时及 `metrics.jsonl` 的实际 optimizer_updates。
 

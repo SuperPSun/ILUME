@@ -45,6 +45,7 @@ def main() -> None:
             stage="stage2", operation="train", config_path=args.config,
             config_payload=recipe.to_dict(), semantic_identity=identity,
             output=args.output, seed=config.data.seed, resume=args.resume,
+            data_metadata=repository_relative(config.data.data_root / "stage2" / "metadata.json"),
             details={"math_contract": math_contract, "optimizer_implementation":
                      "fused" if device.type == "cuda" else "single_tensor"},
         )
@@ -63,6 +64,7 @@ def main() -> None:
         stage="stage2", operation="train", config_path=args.config,
         config_payload=config.to_dict(), semantic_identity=training_identity,
         output=args.output, seed=config.data.seed,
+        data_metadata=repository_relative(config.data.data_root / "stage2" / "metadata.json"),
         resume=args.resume,
         details={
             **(

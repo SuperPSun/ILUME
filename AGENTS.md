@@ -5,7 +5,7 @@
 - 仓库维护的说明、手册和 ADR 统一使用中文；命令、路径、配置键、API、模型名称及科研身份标识保留原文。第三方原始文档和历史生成报告不随文档翻译改写。
 - 运行步骤读 [README](README.md)，科研合同按 [ADR 索引](docs/adr/README.md) 查对应主题，再读正式 YAML 与当前实现。旧设计只从 [历史摘要](docs/adr/history.md) 追溯，不作为现役入口。
 - 整理、重构不得改变数据筛选/split、分词器、描述符/指纹、masking、模型、loss、优化顺序、验证/选模及任何 Stage 数值行为。科研问题单独记录，不顺手修改。
-- 现役为 `configs/v4/stage1`、`configs/v4/stage2`、`configs/v4/stage3`（ADR-0095）；Stage1合同不变。Stage2/3取消ObjectEncoder，24实验+两模拟。新输出使用 `outputs/v4/stage{2,3}/entity_home/`；旧Object/v5加载需历史Git版本，历史产物只读，禁止跨合同加载。
+- 现役为 `configs/v4/stage1`、`configs/v4/stage2`、`configs/v4/stage3`（ADR-0095）；Stage1合同不变。Stage2/3取消ObjectEncoder，24实验+两模拟。运行路径以正式 YAML 和 [v4手册](docs/v4-runbook.md) 为准；旧Object/v5加载需历史Git版本，历史产物只读，禁止跨合同加载。
 
 
 ## 科学红线
@@ -50,7 +50,7 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 
 现役hydration仍使用random/cv1五折、无测试集；gas_solubility不是旧x_co2的同义任务。焓保留任务目录原标识，展示汽化焓，仅温度。基线历史20实验/四模拟配方不扩展。运行见 [v4手册](docs/v4-runbook.md)。
 
-- 数据不进 Git；prepare 写 `data/stage*/metadata.json`。每次操作冻结 `run_config.yaml`、公开安全的 `metadata.json`，成功后写 `summary.json`；禁止用户名、hostname、私有绝对路径。
+- 数据不进 Git；Stage1 共用 `data/stage1`，Stage2/3 默认选择 `data/42`，其他 split 的路径配对、缓存和汇总见 [v4手册](docs/v4-runbook.md#数据-split-与路径)。prepare 将数据审计 `metadata.json` 写入配置的数据目录，运行元数据引用同一位置；不同 split 使用独立 YAML 与输出，并保持身份校验。每次操作冻结 `run_config.yaml`、公开安全的 `metadata.json`，成功后写 `summary.json`；禁止用户名、hostname、私有绝对路径。
 - 新训练/评估输出不可覆盖。可复用 Stage 1/2 prepare 只在数据身份不变时刷新允许忽略的执行/模型字段（ADR-0019）。Stage 2 准备产物数据不绑定 HoME 模型；正式 HoME 不生成 teacher 缓存，模型合同属于训练检查点/final。
 - 保留准备产物 SHA 和完整性检查；跨 Stage 保留 ADR-0021 语义身份、必要状态hash；正式 HoME transfer 还绑定 Stage2 final 产物及Stage1源SHA。
 - 显式恢复严格校验阶段、折、配置、步/轮、优化器/调度器/AMP。Stage 1 只从完整轮恢复，可改变 world size；Stage 2 HoME 另校验 owner、注册表/模型、RNG、数据/任务规模、数学精度及优化器实现；旧 Object v2/v3、实验 HoME 不迁移到正式身份。

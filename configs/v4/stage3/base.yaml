@@ -1,6 +1,6 @@
 data:
-  stage3_dir: data/stage3
-  task_catalog: data/task_catalog.csv
+  stage3_dir: data/42/stage3
+  task_catalog: data/42/task_catalog.csv
   artifacts_dir: outputs/v4/stage3/base/prepare/artifacts
   split_policy: system
   split_strategies:

@@ -32,7 +32,7 @@ Phase1实验联合训练GLOBAL/GROUP/PRIVATE，模拟PRIVATE冻结。Phase2 GLOB
 
 显式 architecture_kind=entity_home_v1、representation_contract=entity_home_v4、slot_contract=ordered_entity_slots_v1。Stage2 final kind=ilume_stage2_entity_home_final_v4；Stage3 final kind=ilume_stage3_entity_home_three_phase_final_v4，format4、plan14/training18。严格绑定架构/任务/owner/Stage1来源/条件/数据SHA/张量 hash，不依据参数名猜测版本。旧Object工件明确拒载。
 
-只保留configs/v4的Stage1/2/3 Base，删除v5和v4消融配置。新输出根outputs/v4/stage2/entity_home及outputs/v4/stage3/entity_home，旧输出只读。基线历史训练配方不扩展，二模拟/四模拟汇总按明确协议隔离。
+只保留configs/v4的Stage1/2/3 Base，删除v5和v4消融配置。数据及产物位置以正式 YAML 和 [v4手册](../v4-runbook.md#数据-split-与路径) 为准；不同数据 split 使用独立运行 YAML 和输出，目录名不替代架构/来源身份校验，旧输出只读。基线历史训练配方不扩展，二模拟/四模拟汇总按明确协议隔离。
 
 ## 验证与取舍
 

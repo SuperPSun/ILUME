@@ -639,6 +639,10 @@ def test_entity_home_base_contracts() -> None:
             stage3.tasks[enthalpy.task_id], condition_columns=("missing",)
         )}, data=replace(stage3.data, split_strategies={})))
     recipe = load_home_recipe("configs/v4/stage2/base.yaml")
+    assert recipe.stage2.data.data_root == Path("data/42")
+    assert recipe.stage2.data.task_catalog_path == Path("data/42/task_catalog.csv")
+    assert stage3.data.stage3_dir == Path("data/42/stage3")
+    assert stage3.data.task_catalog == recipe.stage2.data.task_catalog_path
     with pytest.raises(ValueError, match="missing"):
         load_stage2_registry(recipe.stage2.data.task_catalog_path, task_ids=(*recipe.stage2.data.tasks, "simulation/missing"))
     with pytest.raises(ValueError, match="unique"):
@@ -697,7 +701,7 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     # Move only the fixture catalog provenance, exactly as the current producer does.
     with config.data.task_catalog_path.open() as handle:
         sim_rows = list(csv.DictReader(handle))
-    with Path("data/task_catalog.csv").open() as handle:
+    with stage3.data.task_catalog.open() as handle:
         experiment_rows = [row for row in csv.DictReader(handle) if row["task_id"] in stage3.tasks]
     for row in sim_rows:
         if row["task_id"] not in {"simulation/density", "simulation/heat_capacity", "simulation/thermal_expansion", "simulation/heat_of_vaporization", "simulation/transfer_organic"}:

@@ -46,6 +46,7 @@ def main() -> None:
         stage="stage3", operation="prepare", config_path=args.config,
         config_payload=config.to_dict(), output=args.output, seed=config.data.seed,
         semantic_identity=prepared_identity,
+        data_metadata=repository_relative(config.data.stage3_dir / "metadata.json"),
         reusable=False,
         details=(
             {"representation": "rdkit_2d_adapter"}
@@ -61,7 +62,7 @@ def main() -> None:
     registry = resolve_task_registry(effective)
     sources = [Path(path) for path in source_hashes(effective, registry)]
     try:
-        write_data_identity(ROOT, "stage3", sources)
+        write_data_identity(ROOT, "stage3", sources, data_dir=config.data.stage3_dir)
         result = prepare_stage3(
             effective, rdkit_materialization=rdkit_materialization
         )

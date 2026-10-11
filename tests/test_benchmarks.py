@@ -319,6 +319,14 @@ def test_formal_configs_and_registry_resolution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = load_benchmark_config("configs/benchmarks/mlp.yaml")
+    stage3_dir = load_stage3_config("configs/v4/stage3/base.yaml").data.stage3_dir
+    authority = load_stage3_config(config.data.stage3_authority_config)
+    authority = replace(authority, data=replace(authority.data, stage3_dir=stage3_dir))
+    authority_path = tmp_path / "stage3.yaml"
+    authority_path.write_text(yaml.safe_dump(authority.to_dict()))
+    config = replace(config, data=replace(
+        config.data, data_root=stage3_dir.parent, stage3_authority_config=authority_path,
+    ))
     assert len(configured_tasks(config, "stage3")) == 20
     retired = config.to_dict()
     retired["stage2_physics"] = {"enabled": True, "tasks": ["simulation/homo"]}

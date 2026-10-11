@@ -41,6 +41,8 @@ def write_data_identity(
     repository_root: Path,
     stage: str,
     paths: Iterable[Path] | Mapping[str, Path],
+    *,
+    data_dir: Path | None = None,
 ) -> dict[str, object]:
     if isinstance(paths, Mapping):
         entries = [(str(logical_id), path.resolve()) for logical_id, path in paths.items()]
@@ -90,7 +92,8 @@ def write_data_identity(
             "source_repository_dirty": dirty,
         },
     }
-    output = repository_root / "data" / stage / "metadata.json"
+    output_dir = data_dir if data_dir is not None else repository_root / "data" / stage
+    output = output_dir / "metadata.json"
     output.parent.mkdir(parents=True, exist_ok=True)
     atomic_json(output, payload)
     return payload

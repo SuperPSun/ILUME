@@ -49,6 +49,7 @@ def main() -> None:
         ROOT,
         "stage2",
         {f"source_{index:05d}": path for index, path in enumerate(sources)},
+        data_dir=config.data.data_root / "stage2",
     )
     rdkit_materialization = None
     if config.representation is not None:
@@ -72,6 +73,7 @@ def main() -> None:
         config_payload=recipe.to_dict() if recipe else config.to_dict(),
         semantic_identity=data_identity,
         output=args.output, seed=config.data.seed, reusable=True,
+        data_metadata=repository_relative(config.data.data_root / "stage2" / "metadata.json"),
         details=(
             {"representation": "rdkit_2d_mlp", "math_contract": math_contract}
             if config.representation is not None

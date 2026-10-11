@@ -12,7 +12,9 @@ python -m pip install -e ".[dev,tokenizers]"
 
 Stage1配置和独立预测器保持不变。Stage2采用五任务实体HoME，Stage3为24实验+两项模拟辅助；独立ObjectEncoder已取消。GLOBAL/GROUP的L1并行读取冻结Stage1 learned1024+标准化RDKit217实体、角色和有效位。Phase1联合训练，Phase2冻结GLOBAL，Phase3仅PRIVATE；两个模拟任务只更新自己的PRIVATE。
 
-正式配置为 `configs/v4/stage{1,2,3}/base.yaml`，新Stage2/3输出使用 `outputs/v4/stage{2,3}/entity_home/`。见 [ADR-0095](docs/adr/0095-v4-entity-home-without-object-encoder.md) 和 [运行手册](docs/v4-runbook.md)。正式Stage1 编码器/特征需先齐备；不手改元数据或SHA。历史Object/v5工件只读，加载须使用历史Git版本；v5及v4消融配置已移除。
+正式配置为 `configs/v4/stage{1,2,3}/base.yaml`，准备产物和下游引用按 YAML 定位，运行输出由 `--output` 指定。见 [ADR-0095](docs/adr/0095-v4-entity-home-without-object-encoder.md) 和 [运行手册](docs/v4-runbook.md)。正式Stage1 编码器/特征需先齐备；不手改元数据或SHA。历史Object/v5工件只读，加载须使用历史Git版本；v5及v4消融配置已移除。
+
+Stage1 共用 `data/stage1`；Stage2/3 默认选择 `data/42` 下的数据及 catalog。五套数据 split 的配置、输出隔离和运行前提统一见 [v4运行手册](docs/v4-runbook.md#数据-split-与路径)。
 
 ## v3 历史运行手册
 
