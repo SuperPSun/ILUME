@@ -60,3 +60,5 @@
 历史文件数不代表现役方案数。需要复现旧决定时查对应 Git 版本；日常运行只从正式 YAML 和上方现役合同进入。
 
 - [ADR-0095](0095-v4-entity-home-without-object-encoder.md)：现役 v4 HoME 直接消费冻结实体、24实验与两项仅PRIVATE更新模拟。
+
+- [ADR-0099：独立静态配置HPO与人工选型](0099-simple-static-hpo.md)：仅独立研究入口；缓存复用、seed分离和严格迁移，正式Base配方不变。

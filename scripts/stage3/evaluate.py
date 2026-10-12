@@ -113,7 +113,7 @@ def _run_fold(
         output=output,
         seed=config.data.seed,
         semantic_identity=evaluation_identity,
-        data_metadata=repository_relative(config.data.stage3_dir / "metadata.json"),
+        data_metadata=repository_relative(config.preparation.data_metadata_path or config.data.stage3_dir / "metadata.json"),
         details={
             "reporting_schema_version": REPORTING_SCHEMA_VERSION,
             "checkpoint_dir": repository_relative(checkpoint_dir),
@@ -217,7 +217,7 @@ def _run_test(
         output=args.output,
         seed=config.data.seed,
         semantic_identity=evaluation_identity,
-        data_metadata=repository_relative(config.data.stage3_dir / "metadata.json"),
+        data_metadata=repository_relative(config.preparation.data_metadata_path or config.data.stage3_dir / "metadata.json"),
         details={
             "reporting_schema_version": REPORTING_SCHEMA_VERSION,
             "checkpoint_dir": repository_relative(checkpoint_dir),
@@ -259,7 +259,7 @@ def _run_simulation(
         stage="stage3", operation="evaluate", config_path=args.config,
         config_payload=config.to_dict(), output=args.output, seed=config.data.seed,
         semantic_identity=identity,
-        data_metadata=repository_relative(config.data.stage3_dir / "metadata.json"),
+        data_metadata=repository_relative(config.preparation.data_metadata_path or config.data.stage3_dir / "metadata.json"),
         details={"reporting_schema_version": REPORTING_SCHEMA_VERSION, "domain": "simulation",
                  "split": args.split, "ensemble_folds": True, "model_selector": "three_phase_final"},
     )

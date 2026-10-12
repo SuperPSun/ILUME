@@ -296,3 +296,7 @@ python scripts/benchmarks/summarize.py --input outputs/v4/stage3 --output output
 Stage2五任务训练集/验证集来源齐全；两项辅助任务的训练集/验证集/测试集齐全。24实验的120个分折文件存在，当前10项有测试集文件，其余任务保留五折验证，不生成额外测试集划分；任务目录的实验测试集计数字段为空，不据此推测缺失文件的科学意图。当前正式运行的未满足前提是配置指定路径的 Stage1 编码器及配对特征产物；旧元数据也需上述新 prepare 正常重建。本次实现没有启动正式 GPU训练、正式五折或覆盖历史输出。
 
 历史基线的20任务训练配方不扩展，模拟四任务只适配任务目录现有来源位置。其旧实验合同依据仍要求x_co2；当前任务目录缺少这一历史目标，运行旧实验基线需要对应历史任务目录/数据，不得用gas_solubility替代。两模拟实体 HoME v4与四模拟历史结果不能混入同一汇总。
+
+## 独立静态 HPO
+
+正式运行保持本手册原配方。独立调参使用 [HPO手册](hpo-simple-runbook.md) 和 [ADR-0099](adr/0099-simple-static-hpo.md)，配置与输出分别位于 `configs/HPO`、`outputs/HPO`，人工选型后分轮生成完整YAML。Stage2支持正整数Epoch及可选training.seed；默认10轮和data.seed沿用行为保留。HPO显式固定训练seed42，Prepare审计写入独立输出，不改写数据目录metadata或正式产物。

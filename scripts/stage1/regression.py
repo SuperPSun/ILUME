@@ -19,6 +19,7 @@ def main():
     parser.add_argument("--output", required=True)
     parser.add_argument("--tasks", nargs="+", choices=REGRESSION_TASKS)
     parser.add_argument("--device", help="Execution-only override of YAML device.")
+    parser.add_argument("--representation-cache", help="Optional shared immutable frozen-input cache.")
     args = parser.parse_args()
     config = load_regression_config(args.config)
     if args.device is not None:
@@ -28,7 +29,7 @@ def main():
                              config_payload=config.to_dict(), semantic_identity=identity,
                              output=args.output, seed=config.seed)
     try:
-        run.complete(run_regression(config, args.checkpoint, run.root, args.tasks))
+        run.complete(run_regression(config, args.checkpoint, run.root, args.tasks, representation_cache=args.representation_cache))
     except BaseException:
         run.fail()
         raise

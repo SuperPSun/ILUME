@@ -49,6 +49,7 @@ class Stage2DataConfig:
 
 @dataclass(frozen=True)
 class Stage2PreparationConfig:
+    data_metadata_path: Path | None = None
     workers: int = 8
     teacher_batch_size: int | None = 512
 
@@ -97,6 +98,7 @@ class Stage2LossConfig:
 
 @dataclass(frozen=True)
 class Stage2TrainingConfig:
+    seed: int | None = None
     batch_size: int = 256
     gradient_accumulation_steps: int = 1
     epochs: int = 5
@@ -133,6 +135,10 @@ class Stage2Config:
         return self.model.architecture_kind == "entity_home_v1"
 
     def validate(self) -> None:
+        if self.training.seed is not None and (type(self.training.seed) is not int or self.training.seed < 0):
+            raise ValueError("training.seed must be a non-negative integer or null")
+        if self.training.seed is not None and not self.is_entity_home:
+            raise ValueError("Independent training.seed requires Entity-HoME")
         if self.model.architecture_kind not in {"entity_home_v1", "historical_object"}:
             raise ValueError("Unsupported Stage2 architecture contract")
         if self.is_entity_home and (set(self.data.tasks or ()) != {"simulation/density", "simulation/heat_capacity", "simulation/thermal_expansion", "simulation/heat_of_vaporization", "simulation/transfer_organic"}
@@ -299,6 +305,10 @@ class Stage2Config:
                 return [convert(item) for item in value]
             return value
         payload = convert(asdict(self))
+        if self.preparation.data_metadata_path is None:
+            payload["preparation"].pop("data_metadata_path")
+        if self.training.seed is None:
+            payload["training"].pop("seed")
         if self.is_entity_home:
             for name in ("object_layers", "object_ffn_dim", "object_encoder_kind", "unary_hidden_dim", "pair_hidden_dim"):
                 payload["model"].pop(name)
@@ -351,6 +361,8 @@ def _construct(section_type: type, values: dict[str, Any] | None) -> Any:
         for key in ("data_root", "task_catalog_path", "pretrain_artifacts_dir", "artifacts_dir"):
             if values.get(key) is not None:
                 values[key] = Path(values[key])
+    elif section_type is Stage2PreparationConfig and values.get("data_metadata_path") is not None:
+        values["data_metadata_path"] = Path(values["data_metadata_path"])
     elif section_type is Stage2InitializationConfig:
         for key in ("checkpoint", "stage1_config"):
             if values.get(key) is not None:

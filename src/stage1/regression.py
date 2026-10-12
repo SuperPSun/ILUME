@@ -265,13 +265,23 @@ def evaluate_regression_head(head, rows, bank, atom_level, scaler, device, batch
     return {"mae": mae / len(rows), "rmse": math.sqrt(mse / len(rows)), "molecules": len(rows)}
 
 
-def run_regression(config, checkpoint_path, output_dir, tasks=None):
-    tasks = regression_tasks(tasks)
-    identity = regression_identity(config, checkpoint_path, tasks)
-    root = Path(output_dir)
-    if (root / "representations.pt").exists() or (root / "tasks").exists():
-        raise FileExistsError("Regression output already contains artifacts; use a new output directory")
-    root.mkdir(parents=True, exist_ok=True)
+def regression_representation_identity(config, checkpoint_path, tasks=None):
+    from .features import validate_stage1_feature_files
+    training = regression_identity(config, checkpoint_path, tasks)
+    payload = {key: value for key, value in training["payload"].items() if key not in {"recipe", "selection"}}
+    payload["encoding_batch_size"] = config.batch_size
+    payload["feature_files"] = validate_stage1_feature_files(config.stage1_artifacts)
+    if "partial_atomic_charge" in payload["tasks"]:
+        root = config.partial_charge_cache
+        metadata = json.loads((root / "metadata.json").read_text())
+        hashes = {name: sha256_file(root / name) for name in ("targets.pt", "mapping_audit.json")}
+        if any(metadata["artifact_hashes"].get(name) != digest for name, digest in hashes.items()):
+            raise ValueError("Partial-charge artifact hash mismatch")
+        payload["charge_sidecar"] = {**hashes, "metadata.json": sha256_file(root / "metadata.json")}
+    return semantic_identity("stage1.regression.representations.v1", payload)
+
+
+def prepare_regression_inputs(config, checkpoint_path, root, tasks):
     device = resolve_device(config.device)
     source = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     loaded = load_stage1_model(checkpoint_path, config.stage1_artifacts, device=device)
@@ -324,10 +334,56 @@ def run_regression(config, checkpoint_path, output_dir, tasks=None):
                 offset += count
             progress.update(len(selected))
     bank_hash = tensor_state_hash("stage1.regression.frozen-representations.v4", bank)
-    atomic_torch_save(root / "representations.pt", {"identity": identity, "encoder_hash": encoder_hash,
-                                                   "state_hash": bank_hash, "representations": bank})
+    if encoding_state_hash(encoder) != encoder_hash or any(p.grad is not None or p.requires_grad for p in encoder.parameters()):
+        raise RuntimeError("Frozen regression modified the Stage1 encoder")
+    return {"data": data, "bank": bank, "encoder_hash": encoder_hash,
+            "bank_hash": bank_hash, "input_audit": input_audit,
+            "electronic_scaler": electronic_scaler, "charge_scaler": charge_scaler}
+
+
+def load_regression_representations(config, checkpoint_path, root, tasks, cache_dir):
+    from common.artifact_cache import artifact_cache
+    identity = regression_representation_identity(config, checkpoint_path, tasks)
+    cache = Path(cache_dir) / identity["hash"]
+    def build(staging):
+        payload = prepare_regression_inputs(config, checkpoint_path, staging, tasks)
+        if regression_representation_identity(config, checkpoint_path, tasks) != identity:
+            raise ValueError("Regression representation sources changed during preparation")
+        atomic_torch_save(staging / "inputs.pt", payload)
+    artifact_cache(cache, identity, build)
+    payload = torch.load(cache / "inputs.pt", map_location="cpu", weights_only=False)
+    if tensor_state_hash("stage1.regression.frozen-representations.v4", payload["bank"]) != payload["bank_hash"]:
+        raise ValueError("Regression representation tensor hash mismatch")
+    for audit in cache.glob("*audit.json"):
+        atomic_json(root / audit.name, json.loads(audit.read_text()))
+    return payload, cache
+
+
+def run_regression(config, checkpoint_path, output_dir, tasks=None, *, representation_cache=None):
+    tasks = regression_tasks(tasks)
+    identity = regression_identity(config, checkpoint_path, tasks)
+    root = Path(output_dir)
+    if (root / "representations.pt").exists() or (root / "tasks").exists():
+        raise FileExistsError("Regression output already contains artifacts; use a new output directory")
+    root.mkdir(parents=True, exist_ok=True)
+    cache = None
+    if representation_cache is None:
+        inputs = prepare_regression_inputs(config, checkpoint_path, root, tasks)
+    else:
+        inputs, cache = load_regression_representations(config, checkpoint_path, root, tasks, representation_cache)
+    source = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    device = resolve_device(config.device)
+    data, bank, encoder_hash, bank_hash, input_audit, electronic_scaler, charge_scaler = (
+        inputs[name] for name in ("data", "bank", "encoder_hash", "bank_hash", "input_audit", "electronic_scaler", "charge_scaler"))
+    reporter = ProgressReporter()
+    amp_enabled = device.type == "cuda" and config.amp_dtype != "none"
+    amp_dtype = torch.float16 if config.amp_dtype == "fp16" else torch.bfloat16
+    if cache is None:
+        atomic_torch_save(root / "representations.pt", {"identity": identity, "encoder_hash": encoder_hash,
+                         "state_hash": bank_hash, "representations": bank})
     atomic_json(root / "representation_manifest.json", {"identity": identity, "encoder_hash": encoder_hash,
-                "state_hash": bank_hash, "artifact_sha256": sha256_file(root / "representations.pt")})
+                "state_hash": bank_hash, **({"cache": str(cache), "artifact_sha256": sha256_file(cache / "inputs.pt")}
+                  if cache is not None else {"artifact_sha256": sha256_file(root / "representations.pt")})})
     results = {}
     for task in tasks:
         train, valid = data[task]["train"], data[task]["valid"]
@@ -396,8 +452,6 @@ def run_regression(config, checkpoint_path, output_dir, tasks=None):
         manifest["artifact_sha256"] = sha256_file(task_root / "regression_head.pt")
         atomic_json(task_root / "regression_head.json", manifest)
         results[task] = manifest
-    if encoding_state_hash(encoder) != encoder_hash or any(p.grad is not None or p.requires_grad for p in encoder.parameters()):
-        raise RuntimeError("Frozen regression modified the Stage1 encoder")
     if regression_identity(config, checkpoint_path, tasks) != identity:
         raise ValueError("Regression source changed during training")
     summary = {"kind": "ilume_stage1_regression_summary_v4", "identity": identity,

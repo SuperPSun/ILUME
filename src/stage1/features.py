@@ -183,10 +183,25 @@ def load_stage1_feature_inputs(
     return config, vocabulary, schema, standardizer, str(feature_identity["hash"])
 
 
+def validate_stage1_feature_files(artifact_dir):
+    """Verify the small feature assets consumed by frozen representation caches."""
+    from common.io import sha256_file
+    root = Path(artifact_dir)
+    metadata = json.loads((root / "metadata.json").read_text())
+    names = ["tokenizer.json", "descriptor_schema.json", "descriptor_scaler.json"]
+    if "electronic_scaler.json" in metadata.get("artifact_hashes", {}):
+        names.append("electronic_scaler.json")
+    hashes = {name: sha256_file(root / name) for name in names}
+    if any(metadata.get("artifact_hashes", {}).get(name) != digest for name, digest in hashes.items()):
+        raise ValueError("Frozen Stage1 feature asset hash mismatch")
+    return hashes
+
+
 __all__ = [
     "ROLE_TO_ID",
     "EntityQC",
     "inspect_entity_qc",
     "build_entity_sample",
     "load_stage1_feature_inputs",
+    "validate_stage1_feature_files",
 ]

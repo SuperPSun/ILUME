@@ -830,6 +830,26 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
             three_phase=replace(stage3.training.three_phase, global_scope=replace(stage3.training.three_phase.global_scope, epochs=2),
                 private_classes={name: replace(spec, width_ratio=.015625, phase1=replace(spec.phase1, epochs=1), phase2_epochs=1, phase3_epochs=1) for name, spec in stage3.training.three_phase.private_classes.items()})),
     )
+    # Training seed controls initialization and raw batch order independently of split seed.
+    seeded_hashes = []
+    for split_seed in (42, 123):
+        seeded_config = replace(config, data=replace(config.data, seed=split_seed),
+                                training=replace(config.training, seed=17, epochs=1))
+        seeded_recipe = replace(recipe, stage2=seeded_config, stage2_epochs=1)
+        seeded_output = tmp_path / f"seeded_{split_seed}"
+        train_stage2_home(seeded_recipe, seeded_output)
+        seeded_payload, _, _ = load_home_final(seeded_output / "stage2_final.pt")
+        seeded_hashes.append(seeded_payload["full_model_state_hash"])
+        assert seeded_payload["recipe"]["training"]["seed"] == 17
+        assert seeded_payload["training_identity"]["payload"]["epochs"] == 1
+    assert seeded_hashes[0] == seeded_hashes[1]
+    # A downstream budget/private change must leave transferred tensors exact.
+    changed = replace(stage3, groups={**stage3.groups, "solvation": replace(stage3.groups["solvation"],
+                      phase2=replace(stage3.groups["solvation"].phase2, epochs=2))},
+                      tasks={**stage3.tasks, "experiment/pec50": replace(stage3.tasks["experiment/pec50"],
+                            model_overrides={**stage3.tasks["experiment/pec50"].model_overrides,
+                                             "private_hidden_ratio": .03125, "private_dropout": .05})})
+    load_source(changed)
     resolved = resolve_task_registry(stage3)
     for spec in resolved.values():
         for fold in range(1, 6):
@@ -850,6 +870,12 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     prepare_stage3(stage3)
     prepared = load_prepared_stage3(stage3)
     assert prepared["metadata"]["prepared_contract_version"] == 4 and prepared["slots"]["slots"].shape[-1] == 1241
+    changed_model, _, names = build_model_and_store(changed, prepared, fold=1, device=torch.device("cpu"))
+    assert names
+    assert all(torch.equal(changed_model.state_dict()[name], payload["shared_state"][name]) for name in names)
+    regrouped = replace(stage3, tasks={**stage3.tasks, "experiment/refractive_index": replace(
+        stage3.tasks["experiment/refractive_index"], meta_group="thermophysical")})
+    assert load_prepared_stage3(regrouped)["metadata"]["semantic"]["identities"]["prepared"] == prepared["metadata"]["semantic"]["identities"]["prepared"]
     slot_path = stage3.data.artifacts_dir / "object_slots.pt"
     original_slots = slot_path.read_bytes()
     slot_path.write_bytes(original_slots + b"tamper")

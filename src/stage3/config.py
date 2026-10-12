@@ -113,6 +113,7 @@ class Stage3DataConfig:
 
 @dataclass(frozen=True)
 class Stage3PreparationConfig:
+    data_metadata_path: Path | None = None
     encoding_batch_size: int = 256
     cache_dir: Path = Path("outputs/v1/stage3/base/prepare/object_cache")
 
@@ -833,6 +834,8 @@ class Stage3Config:
             training.pop("virtual_min_size", None)
         if training["joint_gradient_clip_mode"] == "global":
             training.pop("joint_gradient_clip_mode")
+        if self.preparation.data_metadata_path is None:
+            payload["preparation"].pop("data_metadata_path")
         return payload
 
 
@@ -861,6 +864,8 @@ def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
     preparation_raw = dict(raw.get("preparation") or {})
     if "cache_dir" in preparation_raw:
         preparation_raw["cache_dir"] = Path(preparation_raw["cache_dir"])
+    if preparation_raw.get("data_metadata_path") is not None:
+        preparation_raw["data_metadata_path"] = Path(preparation_raw["data_metadata_path"])
     initialization_raw = dict(raw.get("initialization") or {})
     for name in ("stage1_encoder", "stage1_artifacts_dir"):
         if initialization_raw.get(name) is not None:

@@ -499,3 +499,7 @@ pytest -q
 ```
 
 测试只使用临时小数据，不启动正式 prepare、训练或五折评估。旧实验设计只从 [历史 ADR](docs/adr/README.md#冻结合同与历史) 与 Git 历史记录追溯。
+
+## 独立静态 HPO
+
+[扁平化 HPO 手册](docs/hpo-simple-runbook.md)：100组冻结预测头、100对HoME，人工选型后生成20组Stage2和50组Stage3，最后五套split固定五折复验。数据准备按身份共享，训练seed固定42；不自动选模、不使用Optuna、不自动终测。正式v4配方不变。

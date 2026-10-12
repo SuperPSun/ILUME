@@ -307,7 +307,7 @@ def _run_fold(
         output=fold_output,
         seed=effective_training_seed(config),
         semantic_identity=training_identity,
-        data_metadata=repository_relative(config.data.stage3_dir / "metadata.json"),
+        data_metadata=repository_relative(config.preparation.data_metadata_path or config.data.stage3_dir / "metadata.json"),
         resume=resume_from,
         details={
             "fold": fold,

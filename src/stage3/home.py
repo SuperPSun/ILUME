@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -35,18 +34,31 @@ from .train import build_resolved_training_plan
 FINAL_KIND = "ilume_stage3_home_simulation_three_phase_final_v2"
 
 
+def validate_transfer_architecture(source_model, target_model, source_groups, target_groups):
+    """Keep shared and simulation structure fixed; owner training budgets may differ."""
+    if source_model != target_model:
+        raise ValueError("Stage2 source architecture mismatch: shared/simulation model")
+    for name in ("thermophysical", "solvation"):
+        source, target = source_groups[name], target_groups[name]
+        def structure(group, model):
+            return (group.enabled,
+                    model.group_experts if group.experts is None else group.experts,
+                    model.expert_hidden_ratio if group.expert_hidden_ratio is None else group.expert_hidden_ratio)
+        if structure(source, source_model) != structure(target, target_model):
+            raise ValueError(f"Stage2 source architecture mismatch: GROUP {name}")
+
+
 def load_source(config: Stage3Config) -> dict[str, Any]:
     if not config.is_entity_home or config.initialization.home_mode != "trained":
         raise ValueError("Entity HoME requires the new Stage2 full artifact")
     artifact_path = config.initialization.stage2_final
     payload, loaded_model, vocabulary = load_home_final(artifact_path)
-    source_recipe = payload["training_identity"]["payload"]
+    validate_transfer_architecture(loaded_model.home.model_config, config.model,
+                                   loaded_model.home.group_configs, config.groups)
     frozen = load_frozen_stage1_entities(config.initialization.stage1_encoder,
                                        config.initialization.stage1_artifacts_dir)
     if (encoding_state_hash(loaded_model.backbone) != frozen.encoder_identity["payload"]["stage1_state_hash"]
-            or payload["stage1_feature_identity"]["hash"] != frozen.encoder_identity["payload"]["feature_identity"]
-            or source_recipe["stage3_model"] != asdict(config.model)
-            or source_recipe["transfer_groups"] != {group: asdict(config.groups[group]) for group in ("thermophysical", "solvation")}):
+            or payload["stage1_feature_identity"]["hash"] != frozen.encoder_identity["payload"]["feature_identity"]):
         raise ValueError("Stage2 source architecture or frozen Stage1 identity mismatch")
     payload["_loaded_model"], payload["_vocabulary"] = loaded_model, vocabulary
     return payload

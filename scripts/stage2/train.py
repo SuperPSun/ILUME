@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from common.outputs import open_run_directory, repository_path, repository_relative
 from common.training import resolve_device
 from stage2.config import load_stage2_config
-from stage2.home_config import load_home_recipe
+from stage2.home_config import load_home_recipe, effective_training_seed
 from stage2.home_train import resolve_training_identity as resolve_home_training_identity, train_stage2_home
 from stage2.runtime import configure_stage2_math
 from stage2.train import resolve_stage2_training_identity, run_stage2_training
@@ -27,6 +27,7 @@ def main() -> None:
     parser.add_argument("--output", required=True)
     parser.add_argument("--resume")
     parser.add_argument("--device", help="single GPU such as cuda:0")
+    parser.add_argument("--data-metadata-output", help="Optional repository-relative data audit path.")
     args = parser.parse_args()
     if args.device is not None:
         if not re.fullmatch(r"cuda:\d+", args.device):
@@ -44,8 +45,8 @@ def main() -> None:
         run = open_run_directory(
             stage="stage2", operation="train", config_path=args.config,
             config_payload=recipe.to_dict(), semantic_identity=identity,
-            output=args.output, seed=config.data.seed, resume=args.resume,
-            data_metadata=repository_relative(config.data.data_root / "stage2" / "metadata.json"),
+            output=args.output, seed=effective_training_seed(config), resume=args.resume,
+            data_metadata=repository_relative(args.data_metadata_output or config.preparation.data_metadata_path or config.data.data_root / "stage2" / "metadata.json"),
             details={"math_contract": math_contract, "optimizer_implementation":
                      "fused" if device.type == "cuda" else "single_tensor"},
         )

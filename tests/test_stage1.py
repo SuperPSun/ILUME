@@ -855,6 +855,28 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
         assert all(row["learning_rate"] == 1e-4 for row in history)
         assert head_manifest["updates"] > 0 and head_manifest["input_dim"] == (16 if task == "partial_atomic_charge" else 32)
         assert all(not p.requires_grad for p in head.parameters())
+    # Shared frozen-input cache must preserve actual predictions and charge observations.
+    from common.artifact_cache import validate_artifact_cache
+    from stage1.regression import regression_representation_identity
+    shared = tmp_path / "shared_regression_inputs"
+    cached = run_regression(regression_config, output / "last.pt", tmp_path / "cached", selected,
+                            representation_cache=shared)
+    assert cached["representation_hash"] == heads["representation_hash"]
+    for task in selected:
+        assert cached["tasks"][task]["state_hash"] == heads["tasks"][task]["state_hash"]
+        assert cached["tasks"][task]["validation"] == heads["tasks"][task]["validation"]
+    cache_identity = regression_representation_identity(regression_config, output / "last.pt", selected)
+    validate_artifact_cache(shared / cache_identity["hash"], cache_identity)
+    with monkeypatch.context() as patch:
+        import stage1.regression as regression_module
+        def forbidden_encoding(*args, **kwargs):
+            raise AssertionError("Compatible cache must not encode or remap labels again")
+        patch.setattr(regression_module, "prepare_regression_inputs", forbidden_encoding)
+        repeated = run_regression(regression_config, output / "last.pt", tmp_path / "cached_again", selected,
+                                  representation_cache=shared)
+        assert repeated["representation_hash"] == heads["representation_hash"]
+    assert (output / "last.pt").read_bytes() == source_bytes
+    assert (output / "stage1_encoder.pt").read_bytes() == final_encoder
     if charge_valid is None:
         import stage1.regression as regression_module
         real_rows = regression_module.load_regression_rows

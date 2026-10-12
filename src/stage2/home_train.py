@@ -32,7 +32,7 @@ from stage2.model import molecule_equal_smooth_l1_loss
 from stage2.runtime import configure_stage2_math
 from stage3.gradient_assembly import assemble_owner_gradients
 
-from .home_config import HomeRecipe
+from .home_config import HomeRecipe, effective_training_seed
 from .home_contract import (
     BATCH_SAMPLE_AGGREGATION, BATCH_SAMPLE_WEIGHTING,
     SOURCE_GROUPS, source_groups, state_hash, transferable_state,
@@ -108,7 +108,7 @@ def resolve_training_identity(recipe: HomeRecipe, math_contract: Mapping[str, An
 
 def load_backbone(experiment: HomeRecipe):
     config = experiment.stage2
-    seed_everything(config.data.seed if experiment.random_seed is None else experiment.random_seed)
+    seed_everything(effective_training_seed(config) if experiment.random_seed is None else experiment.random_seed)
     if experiment.initialization == "pretrained":
         loaded = load_stage1_model(
             config.initialization.checkpoint, config.data.pretrain_artifacts_dir,
@@ -482,7 +482,7 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
                    "train_seconds": 0.0, "batches": 0, "rows": 0}
             for task in train
         }
-        schedule = epoch_batch_schedule(train, config.training.batch_size, seed=config.data.seed, epoch=epoch)
+        schedule = epoch_batch_schedule(train, config.training.batch_size, seed=effective_training_seed(config), epoch=epoch)
         progress = reporter.bar(
             total=len(schedule), desc=f"Stage2-HoME epoch {epoch}", unit="batch"
         )

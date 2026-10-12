@@ -17,8 +17,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Prepare Stage 3 data.")
     parser.add_argument("--config", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--data-metadata-output", help="Optional repository-relative data audit path.")
     args = parser.parse_args()
     config = load_stage3_config(args.config)
+    data_metadata = Path(args.data_metadata_output) if args.data_metadata_output else config.preparation.data_metadata_path or config.data.stage3_dir / "metadata.json"
     configure_process_runtime(config)
     if config.initialization.home_mode is not None:
         from stage3.home import load_source
@@ -46,7 +48,7 @@ def main() -> None:
         stage="stage3", operation="prepare", config_path=args.config,
         config_payload=config.to_dict(), output=args.output, seed=config.data.seed,
         semantic_identity=prepared_identity,
-        data_metadata=repository_relative(config.data.stage3_dir / "metadata.json"),
+        data_metadata=repository_relative(data_metadata),
         reusable=False,
         details=(
             {"representation": "rdkit_2d_adapter"}
@@ -62,7 +64,7 @@ def main() -> None:
     registry = resolve_task_registry(effective)
     sources = [Path(path) for path in source_hashes(effective, registry)]
     try:
-        write_data_identity(ROOT, "stage3", sources, data_dir=config.data.stage3_dir)
+        write_data_identity(ROOT, "stage3", sources, data_dir=config.data.stage3_dir, output_path=data_metadata)
         result = prepare_stage3(
             effective, rdkit_materialization=rdkit_materialization
         )

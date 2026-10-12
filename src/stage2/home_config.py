@@ -85,12 +85,17 @@ def home_recipe_from_dict(raw: Any) -> HomeRecipe:
         or config.loss.lambda_teacher != 0.0
         or config.training.backbone_frozen_epochs != 0
         or config.training.batch_size != 256
-        or config.training.epochs not in {8, 10, 12}
+        or type(config.training.epochs) is not int or config.training.epochs < 1
+        or (not config.is_entity_home and config.training.epochs not in {8, 10, 12})
         or config.training.refinement_epochs != 0
         or (set(config.loss.task_weights) not in (set(SOURCE_GROUPS), set(PHYSICS_TASKS)) if config.is_entity_home else set(config.loss.task_weights) != set(SOURCE_GROUPS))
-        or (config.is_entity_home and (not freeze_stage1 or microbatch != 256 or config.training.epochs != 10
+        or (config.is_entity_home and (not freeze_stage1 or microbatch != 256
             or config.loss.task_weights != {task: DEFAULT_TASK_WEIGHTS[task] for task in config.data.tasks}))
     ):
         raise ValueError("Stage 2 HoME requires the fixed physics-only task and training recipe" if config.is_entity_home
                          else "Stage 2 HoME requires the fixed nine-task physics-only recipe")
     return HomeRecipe(config, HomeArchitecture(model, groups), microbatch, config.training.epochs, initialization, random_seed, freeze_stage1)
+
+
+def effective_training_seed(config: Stage2Config) -> int:
+    return config.data.seed if config.training.seed is None else config.training.seed

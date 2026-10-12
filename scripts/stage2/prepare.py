@@ -27,10 +27,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Prepare Stage 2 representation data.")
     parser.add_argument("--config", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--data-metadata-output", help="Optional repository-relative data audit path.")
     args = parser.parse_args()
+    data_metadata = Path(args.data_metadata_output) if args.data_metadata_output else None
     is_home = "home" in (yaml.safe_load(Path(args.config).read_text(encoding="utf-8")) or {})
     recipe = load_home_recipe(args.config) if is_home else None
     config = load_stage2_config(args.config)
+    data_metadata = data_metadata or config.preparation.data_metadata_path
     device = resolve_device(config.training.device)
     math_contract = configure_stage2_math(device)
     registry = config.resolved_registry(
@@ -45,12 +48,6 @@ def main() -> None:
         manifest = spec.dataset.resource_manifest_path(config.data.data_root)
         if manifest is not None:
             sources.append(manifest)
-    write_data_identity(
-        ROOT,
-        "stage2",
-        {f"source_{index:05d}": path for index, path in enumerate(sources)},
-        data_dir=config.data.data_root / "stage2",
-    )
     rdkit_materialization = None
     if config.representation is not None:
         from stage2.rdkit import resolve_rdkit_stage2_materialization
@@ -73,7 +70,7 @@ def main() -> None:
         config_payload=recipe.to_dict() if recipe else config.to_dict(),
         semantic_identity=data_identity,
         output=args.output, seed=config.data.seed, reusable=True,
-        data_metadata=repository_relative(config.data.data_root / "stage2" / "metadata.json"),
+        data_metadata=repository_relative(data_metadata or config.data.data_root / "stage2" / "metadata.json"),
         details=(
             {"representation": "rdkit_2d_mlp", "math_contract": math_contract}
             if config.representation is not None
@@ -90,6 +87,13 @@ def main() -> None:
     )
     effective = replace(config, data=replace(config.data, artifacts_dir=run.artifacts))
     try:
+        write_data_identity(
+            ROOT,
+            "stage2",
+            {f"source_{index:05d}": path for index, path in enumerate(sources)},
+            data_dir=config.data.data_root / "stage2",
+            output_path=data_metadata,
+        )
         result = (prepare_stage2_data(effective) if recipe else
                   prepare_teacher_cache(effective, rdkit_materialization=rdkit_materialization))
         if recipe is not None:

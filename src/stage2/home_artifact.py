@@ -113,6 +113,7 @@ def load_home_final(path: str | Path) -> tuple[dict[str, Any], SimulationHoME, S
         raise ValueError("Stage 2 final representation family mismatch")
     if (recipe.stage2.experiment_dict() != identity["payload"]["stage2_config"]
             or asdict(recipe.stage3.model) != identity["payload"]["stage3_model"]
+            or {name: asdict(group) for name, group in recipe.stage3.groups.items()} != identity["payload"]["transfer_groups"]
             or identity["payload"].get("epochs") != recipe.stage2_epochs
             or manifest.get("fixed_final_epoch") != recipe.stage2_epochs):
         raise ValueError("Stage 2 full model recipe mismatch")
