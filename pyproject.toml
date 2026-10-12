@@ -19,7 +19,6 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
-hpo = ["optuna==4.7.0"]
 tokenizers = [
     "tokenizers==0.22.2",
     "SmilesPE==0.0.3",

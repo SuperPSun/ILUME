@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from common.hpo_protocol import recipe_dict
-
 import json
 import math
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -76,8 +75,8 @@ def training_identity(
             }
         ),
         "stage2_config": config.experiment_dict(),
-        "stage3_model": recipe_dict(experiment.stage3.model),
-        "transfer_groups": {group: recipe_dict(experiment.stage3.groups[group]) for group in ("thermophysical", "solvation")},
+        "stage3_model": asdict(experiment.stage3.model),
+        "transfer_groups": {group: asdict(experiment.stage3.groups[group]) for group in ("thermophysical", "solvation")},
         **({"electronic_group": {
             "experts": experiment.stage3.groups["thermophysical"].experts,
             "expert_hidden_ratio": experiment.stage3.groups["thermophysical"].expert_hidden_ratio,
@@ -109,7 +108,7 @@ def resolve_training_identity(recipe: HomeRecipe, math_contract: Mapping[str, An
 
 def load_backbone(experiment: HomeRecipe):
     config = experiment.stage2
-    seed_everything((config.data.seed if config.training.seed is None else config.training.seed) if experiment.random_seed is None else experiment.random_seed)
+    seed_everything(config.data.seed if experiment.random_seed is None else experiment.random_seed)
     if experiment.initialization == "pretrained":
         loaded = load_stage1_model(
             config.initialization.checkpoint, config.data.pretrain_artifacts_dir,
@@ -231,8 +230,7 @@ def _task_gradients(model, descriptor, packed_batches, task_data, device, config
             loss = _loss_for_micro(
                 descriptor.task, predictions, packed, task_data, full_indices,
             )
-        if loss.requires_grad:
-            loss.backward()
+        loss.backward()
         batch_loss += loss.detach().double()
     # Read the device only at the logical-batch boundary, before any update.
     value = float(batch_loss)
@@ -349,7 +347,7 @@ def _export(
             "solvation": [task for task, group in source_groups(registry).items() if group == "solvation"],
         },
         "architecture": {
-            "stage3_model": recipe_dict(experiment.stage3.model),
+            "stage3_model": asdict(experiment.stage3.model),
             "transfer_groups": ["solvation", "thermophysical"],
             **({"electronic_group": identity["payload"]["electronic_group"]} if "electronic_group" in identity["payload"] else {}),
         },
@@ -359,12 +357,6 @@ def _export(
             "stage1": stage1_hash,
         },
     }
-    if experiment.stage2.training.protocol == "hpo_v4":
-        tail = json.loads((root / "metrics.jsonl").read_text().splitlines()[-1])
-        payload["owner_execution"] = {
-            "budgets": experiment.stage2.training.owner_training,
-            "optimizer_updates": tail["owner_optimizer_updates"],
-        }
     artifact = root / "stage2_final.pt"
     atomic_torch_save(artifact, payload)
     manifest = {
@@ -382,7 +374,6 @@ def _export(
         "shared_state_hash": shared_hash,
         "encoder_state_hashes": payload["encoder_state_hashes"],
         "fixed_final_epoch": experiment.stage2_epochs,
-        **({"owner_execution": payload["owner_execution"]} if "owner_execution" in payload else {}),
     }
     atomic_json(root / "stage2_final.json", manifest)
     return manifest
@@ -426,23 +417,13 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
     ]
     if loaded.config.is_dual_view:
         groups = [group for group in groups if len(group["params"])]
-    if config.training.protocol == "hpo_v4":
-        owners = model.home.parameter_ownership()
-        groups = [{"params": [p for p, owner in owners.items() if owner.label == label],
-                   "lr": config.training.owner_training[label.split(":")[0]]["lr"],
-                   "weight_decay": config.training.owner_training[label.split(":")[0]]["weight_decay"],
-                   "owner": label}
-                  for label in sorted({owner.label for owner in owners.values()})]
     optimizer = torch.optim.AdamW(
         groups, weight_decay=config.training.weight_decay,
         fused=device.type == "cuda", foreach=False if device.type != "cuda" else None,
     )
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
-        ([lambda step, budget=config.training.owner_training[group["owner"].split(":")[0]]["epochs"]:
-          cosine_warmup(min(step, steps_per_epoch * budget), steps_per_epoch * budget, config.training.warmup_fraction)
-          for group in groups] if config.training.protocol == "hpo_v4" else
-         lambda step: cosine_warmup(step, total_steps, config.training.warmup_fraction)),
+        lambda step: cosine_warmup(step, total_steps, config.training.warmup_fraction),
     )
     output = Path(output_dir)
     if output.exists() and not resume and any(output.glob("checkpoint_epoch_*.pt")):
@@ -451,7 +432,6 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
     checkpoint_files = sorted(output.glob("checkpoint_epoch_*.pt"))
     start_epoch = 1
     update = 0
-    owner_updates = {owner.label: 0 for owner in model.home.parameter_ownership().values()} if config.training.protocol == "hpo_v4" else {}
     if resume:
         if not checkpoint_files:
             raise ValueError("Stage2-HoME resume has no epoch checkpoint")
@@ -460,7 +440,7 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
         if checkpoint_files != [output / f"checkpoint_epoch_{index:05d}.pt" for index in range(1, epoch + 1)]:
             raise ValueError("Stage2-HoME checkpoint sequence is incomplete")
         _check_history(output, epoch)
-        if (checkpoint.get("kind") != ("ilume_stage2_entity_home_hpo_v4_checkpoint" if config.training.protocol == "hpo_v4" else "ilume_stage2_entity_home_checkpoint_v4" if config.is_entity_home else "ilume_stage2_home_checkpoint_v4" if experiment.freeze_stage1 else STAGE2_HOME_CHECKPOINT_KIND)
+        if (checkpoint.get("kind") != ("ilume_stage2_entity_home_checkpoint_v4" if config.is_entity_home else "ilume_stage2_home_checkpoint_v4" if experiment.freeze_stage1 else STAGE2_HOME_CHECKPOINT_KIND)
             or checkpoint.get("format_version") != (4 if config.is_entity_home else 4 if experiment.freeze_stage1 else 1)
             or checkpoint.get("training_identity") != identity):
             raise ValueError("Stage2-HoME resume identity mismatch")
@@ -471,20 +451,6 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
         history_tail = json.loads((output / "metrics.jsonl").read_text(encoding="utf-8").splitlines()[-1])
         if checkpoint.get("history_tail") != history_tail:
             raise ValueError("Stage2-HoME resume history tail mismatch")
-        if config.training.protocol == "hpo_v4":
-            expected = sorted({owner.label for owner in model.home.parameter_ownership().values()
-                               if epoch <= config.training.owner_training[owner.scope]["epochs"]})
-            if history_tail.get("active_owners") != expected:
-                raise ValueError("HPO resume owner lifetime mismatch")
-            expected_updates = {}
-            for owner in set(model.home.parameter_ownership().values()):
-                tasks = [task for task, spec in model.home.task_specs.items()
-                         if owner.scope == "GLOBAL" or (owner.scope == "GROUP" and spec.meta_group == owner.owner_id)
-                         or (owner.scope == "PRIVATE" and task == owner.owner_id)]
-                expected_updates[owner.label] = min(epoch, config.training.owner_training[owner.scope]["epochs"]) * max(batches[task] for task in tasks)
-            if history_tail.get("owner_optimizer_updates") != expected_updates:
-                raise ValueError("HPO resume owner update count mismatch")
-            owner_updates = dict(expected_updates)
         model.load_state_dict(checkpoint["model"], strict=True)
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])
@@ -507,10 +473,6 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
     parameters = tuple(parameter for group in groups for parameter in group["params"])
     for epoch in range(start_epoch, experiment.stage2_epochs + 1):
         model.train()
-        if config.training.protocol == "hpo_v4":
-            active = {owner for owner in model.home.parameter_ownership().values()
-                      if epoch <= config.training.owner_training[owner.scope]["epochs"]}
-            model.home.set_trainable_owners(active)
         total_loss = 0.0
         epoch_started = time.perf_counter()
         if device.type == "cuda":
@@ -520,7 +482,7 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
                    "train_seconds": 0.0, "batches": 0, "rows": 0}
             for task in train
         }
-        schedule = epoch_batch_schedule(train, config.training.batch_size, seed=config.data.seed if config.training.seed is None else config.training.seed, epoch=epoch)
+        schedule = epoch_batch_schedule(train, config.training.batch_size, seed=config.data.seed, epoch=epoch)
         progress = reporter.bar(
             total=len(schedule), desc=f"Stage2-HoME epoch {epoch}", unit="batch"
         )
@@ -562,9 +524,6 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
                         parameters, config.training.max_grad_norm, error_if_nonfinite=True,
                     )
                     optimizer.step()
-                    if config.training.protocol == "hpo_v4":
-                        for owner in {owners[parameter] for parameter in assembled.gradients}:
-                            owner_updates[owner.label] += 1
                     scheduler.step()
                     update += 1
         finally:
@@ -580,13 +539,11 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
         state = _cpu_state(model)
         row = {
             "epoch": epoch, "optimizer_updates": update,
-            **({"active_owners": sorted(owner.label for owner in active),
-                "owner_optimizer_updates": dict(owner_updates)} if config.training.protocol == "hpo_v4" else {}),
             "train_weighted_loss": total_loss / sum(batches.values()),
             "validation_normalized_mae": validation,
         }
         checkpoint = {
-            "kind": "ilume_stage2_entity_home_hpo_v4_checkpoint" if config.training.protocol == "hpo_v4" else "ilume_stage2_entity_home_checkpoint_v4" if config.is_entity_home else "ilume_stage2_home_checkpoint_v4" if experiment.freeze_stage1 else STAGE2_HOME_CHECKPOINT_KIND,
+            "kind": "ilume_stage2_entity_home_checkpoint_v4" if config.is_entity_home else "ilume_stage2_home_checkpoint_v4" if experiment.freeze_stage1 else STAGE2_HOME_CHECKPOINT_KIND,
             "format_version": 4 if config.is_entity_home else 4 if experiment.freeze_stage1 else 1, "epoch": epoch, "updates": update,
             "training_identity": identity, "model": state,
             **({"owner_manifest": full_owner_manifest(model)} if config.is_entity_home else {}),

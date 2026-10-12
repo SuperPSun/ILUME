@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from common.hpo_protocol import recipe_dict
-
 import os
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -44,24 +43,11 @@ def load_source(config: Stage3Config) -> dict[str, Any]:
     source_recipe = payload["training_identity"]["payload"]
     frozen = load_frozen_stage1_entities(config.initialization.stage1_encoder,
                                        config.initialization.stage1_artifacts_dir)
-    hpo = config.training.protocol == "hpo_v4"
-    expected_kind = "ilume_stage2_entity_home_hpo_v4_final" if hpo else "ilume_stage2_entity_home_final_v4"
-    def architecture(group):
-        return {key: value for key, value in group.items() if key not in {"phase1", "phase2", "group_weight"}}
-    target_groups = {group: recipe_dict(config.groups[group]) for group in ("thermophysical", "solvation")}
-    source_groups = source_recipe["transfer_groups"]
-    if (payload["kind"] != expected_kind
-            or encoding_state_hash(loaded_model.backbone) != frozen.encoder_identity["payload"]["stage1_state_hash"]
+    if (encoding_state_hash(loaded_model.backbone) != frozen.encoder_identity["payload"]["stage1_state_hash"]
             or payload["stage1_feature_identity"]["hash"] != frozen.encoder_identity["payload"]["feature_identity"]
-            or source_recipe["stage3_model"] != recipe_dict(config.model)
-            or ( {key: architecture(value) for key, value in source_groups.items()}
-                 != {key: architecture(value) for key, value in target_groups.items()} if hpo else source_groups != target_groups)):
+            or source_recipe["stage3_model"] != asdict(config.model)
+            or source_recipe["transfer_groups"] != {group: asdict(config.groups[group]) for group in ("thermophysical", "solvation")}):
         raise ValueError("Stage2 source architecture or frozen Stage1 identity mismatch")
-    if hpo:
-        recipe = loaded_model.stage2_config
-        if (recipe.data.seed != config.data.seed or recipe.training.seed != effective_training_seed(config)
-                or source_recipe["stage1_source"]["checkpoint_sha256"] != frozen.encoder_identity["payload"]["checkpoint_sha256"]):
-            raise ValueError("HPO Stage2/Stage3 split, seed or source SHA mismatch")
     payload["_loaded_model"], payload["_vocabulary"] = loaded_model, vocabulary
     return payload
 

@@ -214,7 +214,7 @@ def load_simulation_training_data(
     planned = load_simulation_plan_data(artifacts_dir, source_payload)
     valid = {task: Stage2TaskDataset(artifacts_dir, task, "valid") for task in planned.train}
     entities = Stage2EntityDataset(artifacts_dir)
-    if source_payload.get("kind") in {"ilume_stage2_home_final_v4", "ilume_stage2_entity_home_final_v4", "ilume_stage2_entity_home_hpo_v4_final"}:
+    if source_payload.get("kind") in {"ilume_stage2_home_final_v4", "ilume_stage2_entity_home_final_v4"}:
         from common.identity import tensor_state_hash
 
         manifest = entities.frozen_entity_manifest
@@ -240,7 +240,7 @@ def load_simulation_plan_data(
     if (identity["hash"] != source_payload["stage2_data_identity"]["hash"]
             or registry.registry_hash != source_payload["registry_hash"]):
         raise ValueError("Stage 3 simulation data differs from the Stage 2 source")
-    tasks = AUXILIARY_SIMULATION_TASKS if source_payload["kind"] in {"ilume_stage2_entity_home_final_v4", "ilume_stage2_entity_home_hpo_v4_final"} else SIMULATION_TASKS
+    tasks = AUXILIARY_SIMULATION_TASKS if source_payload["kind"] == "ilume_stage2_entity_home_final_v4" else SIMULATION_TASKS
     train = {task: Stage2TaskDataset(artifacts_dir, task, "train") for task in tasks}
     return SimulationPlanData(train, identity["hash"])
 

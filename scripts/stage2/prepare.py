@@ -31,9 +31,6 @@ def main() -> None:
     is_home = "home" in (yaml.safe_load(Path(args.config).read_text(encoding="utf-8")) or {})
     recipe = load_home_recipe(args.config) if is_home else None
     config = load_stage2_config(args.config)
-    if config.training.protocol == "hpo_v4":
-        from common.hpo_protocol import validate_hpo_paths
-        validate_hpo_paths(args.config, args.output)
     device = resolve_device(config.training.device)
     math_contract = configure_stage2_math(device)
     registry = config.resolved_registry(
@@ -52,7 +49,7 @@ def main() -> None:
         ROOT,
         "stage2",
         {f"source_{index:05d}": path for index, path in enumerate(sources)},
-        data_dir=config.preparation.data_metadata_path.parent if config.preparation.data_metadata_path else config.data.data_root / "stage2",
+        data_dir=config.data.data_root / "stage2",
     )
     rdkit_materialization = None
     if config.representation is not None:
@@ -76,7 +73,7 @@ def main() -> None:
         config_payload=recipe.to_dict() if recipe else config.to_dict(),
         semantic_identity=data_identity,
         output=args.output, seed=config.data.seed, reusable=True,
-        data_metadata=repository_relative(config.preparation.data_metadata_path or config.data.data_root / "stage2" / "metadata.json"),
+        data_metadata=repository_relative(config.data.data_root / "stage2" / "metadata.json"),
         details=(
             {"representation": "rdkit_2d_mlp", "math_contract": math_contract}
             if config.representation is not None

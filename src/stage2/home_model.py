@@ -18,7 +18,7 @@ class SimulationHoME(nn.Module):
         self.registry = registry
         self.home = Stage3SparseModel(base_config.model,
             source_task_specs(registry, role_policy="formal_charge_v1"), 1024,
-            group_configs=base_config.groups, initialization_seed=stage2_config.data.seed if stage2_config.training.seed is None else stage2_config.training.seed,
+            group_configs=base_config.groups, initialization_seed=stage2_config.data.seed,
             entity_inputs=True)
 
     @property

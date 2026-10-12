@@ -21,7 +21,7 @@
 | Stage 3 owner | 现役Entity-HoME Phase1/2的GLOBAL跨实验任务、GROUP组内按当前真实batch样本数加权平均；PRIVATE保持原始平均Loss梯度，模拟不进共享分母。Phase3单任务更新；`batch_sample_weighted_owner_raw_v1`及权重规则进入训练身份。历史非Entity保留0070合同。owner LR/存续期与规模类别默认、任务覆盖项的宽度/dropout进入身份；提前结束用`requires_grad=False`，不删除任务；零预算PRIVATE逐bit继承锚点。Base训练集/验证集microbatch上限1024 | 0096；预算0050/0055；诊断0054 |
 | Stage 3 诊断 | Entity-HoME在diagnostics.jsonl按整轮记录owner梯度前后范数mean/max、实际梯度step分母的裁剪率及真实共享样本贡献，冻结/缺失不混入均值、模拟不进共享分母；仅累计既有CPU标量/batch长度，不改训练身份，旧行保留。只读门控权重占比、归一化熵、PRIVATE 权重占比分位数；测试集 aggregate 合并折-样本。不得新增前向、进入 loss/选择或改预测 CSV；历史实现不输出。pEC50 Phase 3 为 3 轮 | 0054/0055/0098 |
 
-禁止恢复：Stage1 描述符/角色输入、重型token融合、指纹、角色平衡/重复采样、扩增倍率、多容量正式配置、轮中途恢复；Stage2/3不得反传Stage1，禁止Stage2渐进解冻、早停、最优/last、PCGrad或累加窗口；Stage3 四阶段、路由干预、门控校准；正式 Base 不启用 HPO/Optuna。独立 `hpo_v4` 研究流程按 [ADR-0099](docs/adr/0099-hpo-v4-isolated-search-and-locked-test.md) 和 [HPO手册](docs/hpo-v4-runbook.md) 执行，不跨协议恢复。v4 alignment/RDKit/Uni-Mol/electronic辅助头只用于预训练，不进入仅编码器部署。ADR-0087候选保持历史v3身份，不增加正式Base数量。
+禁止恢复：Stage1 描述符/角色输入、重型token融合、指纹、角色平衡/重复采样、扩增倍率、多容量正式配置、轮中途恢复；Stage2/3不得反传Stage1，禁止Stage2渐进解冻、早停、最优/last、PCGrad或累加窗口；Stage3 四阶段、路由干预、门控校准或HPO/Optuna。v4 alignment/RDKit/Uni-Mol/electronic辅助头只用于预训练，不进入仅编码器部署。ADR-0087候选保持历史v3身份，不增加正式Base数量。
 
 ADR-0093仅扩展独立回归头后训练：YAML支持默认Linear及逐目标MLP/残差 MLP；Linear继承预训练头并做等价标准化换算，非线性采用任务局部随机初始化/dropout。编码器/Fusion永久冻结、entity1024/atom512输入不变，验证只报告；format2内嵌结构并兼容旧Linear format1，不改变Stage1/2/3身份或正式训练。
 
@@ -42,7 +42,7 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 
 - Stage 实现仅在 `src/common`、`src/stage1`～`src/stage3`；基线在 `benchmarks/`，消融在 `ablations/`，二者禁止被 Stage 导入。消融代码不得放回 `benchmarks/`。
 - `common` 只收至少两个 Stage 实际复用的原子功能；不建 `utils.py`。跨 Stage 只导入公开合同，禁止 `_private_symbol` 或 `import *`。
-- 运行入口仅 `scripts/stage{1,2,3}/*.py`、`scripts/benchmarks/*.py`，不恢复 console CLI、shell/smoke/matrix/折 runner 或通用搜索入口；仅允许 ADR-0099 的独立 `scripts/stage3/hpo.py` 控制器，Optuna 不进入 Stage 数值实现。
+- 运行入口仅 `scripts/stage{1,2,3}/*.py`、`scripts/benchmarks/*.py`，不恢复 console CLI、shell/smoke/matrix/折 runner 或搜索入口。
 - 科研与 prepare 参数写完整自包含 YAML；`preparation` 不进入实验身份。`--output`、`--resume`、Stage 3 折/评估 selector 是运行参数。
 - Stage 3 训练入口必填 `--fold`，可多折；`--output` 是共同根目录，运行位于 `foldN/`。并发只在该入口用 spawn worker 和显式设备槽调度，不下沉到 `src/stage3`。
 
@@ -50,7 +50,7 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 
 现役hydration仍使用random/cv1五折、无测试集；gas_solubility不是旧x_co2的同义任务。焓保留任务目录原标识，展示汽化焓，仅温度。基线历史20实验/四模拟配方不扩展。运行见 [v4手册](docs/v4-runbook.md)。
 
-- 数据不进 Git；Stage1 共用 `data/stage1`，Stage2/3 默认选择 `data/42`，其他 split 的路径配对、缓存和汇总见 [v4手册](docs/v4-runbook.md#数据-split-与路径)。正式 prepare 将数据审计 `metadata.json` 写入配置的数据目录；HPO 使用显式 `preparation.data_metadata_path` 写入独立输出审计目录，运行元数据引用同一位置；不同 split 使用独立 YAML 与输出，并保持身份校验。每次操作冻结 `run_config.yaml`、公开安全的 `metadata.json`，成功后写 `summary.json`；禁止用户名、hostname、私有绝对路径。
+- 数据不进 Git；Stage1 共用 `data/stage1`，Stage2/3 默认选择 `data/42`，其他 split 的路径配对、缓存和汇总见 [v4手册](docs/v4-runbook.md#数据-split-与路径)。prepare 将数据审计 `metadata.json` 写入配置的数据目录，运行元数据引用同一位置；不同 split 使用独立 YAML 与输出，并保持身份校验。每次操作冻结 `run_config.yaml`、公开安全的 `metadata.json`，成功后写 `summary.json`；禁止用户名、hostname、私有绝对路径。
 - 新训练/评估输出不可覆盖。可复用 Stage 1/2 prepare 只在数据身份不变时刷新允许忽略的执行/模型字段（ADR-0019）。Stage 2 准备产物数据不绑定 HoME 模型；正式 HoME 不生成 teacher 缓存，模型合同属于训练检查点/final。
 - 保留准备产物 SHA 和完整性检查；跨 Stage 保留 ADR-0021 语义身份、必要状态hash；正式 HoME transfer 还绑定 Stage2 final 产物及Stage1源SHA。
 - 显式恢复严格校验阶段、折、配置、步/轮、优化器/调度器/AMP。Stage 1 只从完整轮恢复，可改变 world size；Stage 2 HoME 另校验 owner、注册表/模型、RNG、数据/任务规模、数学精度及优化器实现；旧 Object v2/v3、实验 HoME 不迁移到正式身份。

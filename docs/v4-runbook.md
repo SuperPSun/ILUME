@@ -5,8 +5,6 @@
 
 从仓库根目录执行，使用新的 `outputs/v4/` 路径，不覆盖历史v3输出。Stage1科研合同见 [ADR-0089](adr/0089-v4-frozen-dual-view-stage1.md)。CUDA示例使用四张设备。
 
-独立 `hpo_v4` 调参、五 split 比较及锁定终测见 [HPO手册](hpo-v4-runbook.md)；该协议不改本页正式 Base 默认行为。
-
 ## 数据 split 与路径
 
 现役 Stage1 输入仍为 `data/stage1`；Stage2/3 输入分别为 `data/42/stage2`、`data/42/stage3`，共用 `data/42/task_catalog.csv`。Stage2 YAML 的 `data.data_root` 为 `data/42`，catalog 内的 `stage2/...` 路径相对此根解析；Stage3 YAML 的 `data.stage3_dir` 为 `data/42/stage3`。prepare 的数据审计 `metadata.json` 写入各自的数据目录。

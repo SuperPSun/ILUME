@@ -6,7 +6,6 @@
 
 | 主题 | ADR（按修订顺序） | 阅读重点 |
 |---|---|---|
-| 独立 HPO v4 | [0099](0099-hpo-v4-isolated-search-and-locked-test.md) | 人工对照/TPE、owner预算与容量、五折和seed/split选择、冻结表示缓存、锁定终测；正式Base不变 |
 | Stage2 共享梯度聚合 | [0097](0097-stage2-batch-sample-weighted-gradients.md) | 五模拟联合step，GLOBAL/GROUP按真实batch样本加权，PRIVATE原始梯度；新训练身份及严格恢复/迁移 |
 | v4 实体HoME Stage2/3 主线 | [0095](0095-v4-entity-home-without-object-encoder.md) | 无ObjectEncoder；GLOBAL/GROUP直接并行处理实体；五模拟、24实验+两模拟仅PRIVATE更新；旧0094及Object合同退役 |
 | 现役 Stage3 共享梯度聚合 | [0096](0096-stage3-batch-sample-weighted-gradients.md) | GLOBAL跨实验任务、GROUP组内按当前真实batch样本数加权；PRIVATE原始平均梯度；尾batch/耗尽任务/模拟隔离；替代Entity-HoME的0070聚合规定 |

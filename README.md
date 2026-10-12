@@ -16,8 +16,6 @@ Stage1配置和独立预测器保持不变。Stage2采用五任务实体HoME，S
 
 Stage1 共用 `data/stage1`；Stage2/3 默认选择 `data/42` 下的数据及 catalog。五套数据 split 的配置、输出隔离和运行前提统一见 [v4运行手册](docs/v4-runbook.md#数据-split-与路径)。
 
-独立 HPO v4 使用 `configs/HPO_v4/study.yaml` 和 `scripts/stage3/hpo.py`，保持正式 Base 的默认身份；完整步骤与锁定终测见 [HPO运行手册](docs/hpo-v4-runbook.md) 和 [ADR-0099](docs/adr/0099-hpo-v4-isolated-search-and-locked-test.md)。
-
 ## v3 历史运行手册
 
 以下历史命令须切到对应历史 Git 版本执行；本 checkout 已移除 ObjectEncoder 与零更新入口。

@@ -185,13 +185,9 @@ def evaluate_simulation_checkpoints(config: Any, checkpoint_dir: str | Path, *, 
         manifests.append(manifest)
     require_compatible_identity(identity, resolve_simulation_evaluation_identity(config, checkpoint_dir, split=split), context="Simulation sources changed during evaluation")
     comparison = simulation_comparison(split=split, tasks=scalar_simulation_tasks(config), sources=comparison_sources, scales=scales)
-    if config.training.protocol == "hpo_v4":
-        comparison = semantic_identity(comparison["type"], {**comparison["payload"], "research_protocol": "hpo_v4"})
     study = reporting_study_id or "ilume-simulation-" + identity["hash"]
     no_stage1 = source["recipe"]["home"]["initialization"] == "random_stage1"
     model_id, display = ("ilume_no_stage1", "ILUME w/o Stage1") if no_stage1 else ("ilume", "ILUME")
-    if config.training.protocol == "hpo_v4":
-        model_id, display = "ilume_hpo_v4", "ILUME HPO v4"
     return {"split": split, "domain": "simulation", "checkpoint_epoch": None, "tasks": metrics,
         "macro_normalized_mae": sum(value["normalized_mae"] for value in metrics.values()) / len(metrics),
         "reporting": reporting_block(model_id=model_id, model_display_name=display, benchmark="simulation_property",

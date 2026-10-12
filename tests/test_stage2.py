@@ -651,8 +651,7 @@ def test_entity_home_base_contracts() -> None:
         replace(recipe.stage2, loss=replace(recipe.stage2.loss, task_weights={})).validate()
 
 
-@pytest.mark.parametrize("hpo", [False, True])
-def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_stage2_setup, tmp_path, monkeypatch, hpo):
+def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_stage2_setup, tmp_path, monkeypatch):
     variant = "base"
     from stage1.config import AuxiliaryConfig, MaskingConfig
     from stage1.model import build_stage1_model
@@ -699,15 +698,6 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     recipe = replace(recipe, stage2=config, stage3=replace(recipe.stage3, model=replace(recipe.stage3.model, expert_hidden_ratio=.015625, interaction_hidden_ratio=.015625, film_hidden_ratio=.015625, tower_hidden_ratio=.015625), groups={
         group: replace(spec, expert_hidden_ratio=.015625, phase1=replace(spec.phase1, epochs=1), phase2=replace(spec.phase2, epochs=1))
         for group, spec in recipe.stage3.groups.items()}))
-    if hpo:
-        config = replace(config, training=replace(config.training, protocol="hpo_v4", seed=23,
-            owner_training={"GLOBAL": {"lr": 3e-4, "epochs": 2, "weight_decay": .03},
-                            "GROUP": {"lr": 2e-4, "epochs": 1, "weight_decay": .001},
-                            "PRIVATE": {"lr": 1e-4, "epochs": 10, "weight_decay": .1}}))
-        recipe = replace(recipe, stage2=config, stage3=replace(recipe.stage3,
-            model=replace(recipe.stage3.model, global_experts=4, private_experts=2, global_dropout=.05,
-                          private_hidden_ratio=.015625, dropout=.07),
-            groups={name: replace(group, dropout=.08) for name, group in recipe.stage3.groups.items()}))
     # Move only the fixture catalog provenance, exactly as the current producer does.
     with config.data.task_catalog_path.open() as handle:
         sim_rows = list(csv.DictReader(handle))
@@ -805,7 +795,7 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     with pytest.raises(ValueError, match="resume identity mismatch"):
         train_stage2_home(recipe, interrupted, resume=True)
 
-    assert payload["kind"] == ("ilume_stage2_entity_home_hpo_v4_final" if hpo else "ilume_stage2_entity_home_final_v4") and payload["format_version"] == 4
+    assert payload["kind"] == "ilume_stage2_entity_home_final_v4" and payload["format_version"] == 4
     assert all(torch.equal(value, source.backbone.state_dict()[name]) for name, value in source_backbone.items())
     assert len(source.registry.tasks) == len(config.data.tasks)
     corrupt = tmp_path / "corrupt_final.pt"
@@ -814,16 +804,6 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     with pytest.raises(ValueError, match="SHA"):
         load_home_final(corrupt)
     trained_checkpoint = torch.load(output / "checkpoint_epoch_00010.pt", weights_only=False)
-    if hpo:
-        before_freeze = torch.load(output / "checkpoint_epoch_00002.pt", weights_only=False)
-        for name, owner in payload["owner_manifest"].items():
-            if owner == "GLOBAL":
-                assert torch.equal(before_freeze["model"][name], trained_checkpoint["model"][name])
-        assert {group["owner"].split(":")[0]: group["weight_decay"] for group in trained_checkpoint["optimizer"]["param_groups"]} == {"GLOBAL": .03, "GROUP": .001, "PRIVATE": .1}
-        owner_updates = trained_checkpoint["history_tail"]["owner_optimizer_updates"]
-        assert owner_updates["GLOBAL"] == 2 * max(counts.values())
-        assert owner_updates["PRIVATE:simulation/density"] == 10 * counts["simulation/density"]
-        assert payload["owner_execution"]["optimizer_updates"] == owner_updates
     assert trained_checkpoint["owner_manifest"] == payload["owner_manifest"]
     assert trained_checkpoint["updates"] == max(counts.values()) * recipe.stage2_epochs
     assert trained_checkpoint["scheduler"]["last_epoch"] == trained_checkpoint["updates"]
@@ -850,10 +830,6 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
             three_phase=replace(stage3.training.three_phase, global_scope=replace(stage3.training.three_phase.global_scope, epochs=2),
                 private_classes={name: replace(spec, width_ratio=.015625, phase1=replace(spec.phase1, epochs=1), phase2_epochs=1, phase3_epochs=1) for name, spec in stage3.training.three_phase.private_classes.items()})),
     )
-    if hpo:
-        stage3 = replace(stage3, groups={name: replace(group, dropout=.08, phase1=replace(group.phase1, epochs=2)) for name, group in stage3.groups.items()},
-                       training=replace(stage3.training, protocol="hpo_v4", seed=23,
-                       owner_weight_decay={"GLOBAL": .03, "GROUP": .001, "PRIVATE": .1}))
     resolved = resolve_task_registry(stage3)
     for spec in resolved.values():
         for fold in range(1, 6):
@@ -934,7 +910,7 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     rows = train_fold(stage3, 1, output_dir=train_root)
     assert rows[-1]["phase"] == "three_phase_final"
     final = torch.load(train_root / "three_phase_final.pt", weights_only=False)
-    assert final["kind"] == ("ilume_stage3_entity_home_hpo_v4_final" if hpo else "ilume_stage3_entity_home_three_phase_final_v4")
+    assert final["kind"] == "ilume_stage3_entity_home_three_phase_final_v4"
     assert len(final["private_state_hashes"]) == 26
     phase1 = torch.load(train_root / "phase_1" / "checkpoint_epoch_00002.pt", weights_only=False)
     assert all(torch.equal(value, phase1["model"][name]) for name, value in final["model"].items() if name.startswith("simulation_backbone."))
@@ -991,7 +967,7 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
                 assert all(stats["owners"][private_owner(task).label]["trainable_steps"] == 0 for task in sim_tasks)
                 if diagnostic["epoch"] == 2:
                     assert stats["owners"]["PRIVATE:experiment/density"]["trainable_steps"] == 0
-                    assert (stats["owners"]["GROUP:thermophysical"]["gradient_steps"] > 0) == hpo
+                    assert stats["owners"]["GROUP:thermophysical"]["gradient_steps"] == 0
             else:
                 assert stats["owners"]["GLOBAL"]["trainable_steps"] == 0
                 assert diagnostic["shared_sample_contributions"]["GLOBAL"]["samples"] == 0
@@ -1038,7 +1014,7 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     metrics = evaluate_checkpoints(stage3, train_root, split="valid", ensemble_folds=False, fold=1, predictions_dir=tmp_path / "predictions")
     assert len(metrics["tasks"]) == 24
     from stage3.evaluate import _reporting_model
-    assert _reporting_model(stage3, prepared["metadata"]) == (("ilume_hpo_v4", "ILUME HPO v4") if hpo else ("ilume", "ILUME"))
+    assert _reporting_model(stage3, prepared["metadata"]) == ("ilume", "ILUME")
     if variant == "base":
         from stage1.masking import MultimodalPacker
         from stage2.data import Stage2BatchDescriptor, Stage2DeviceTaskData, Stage2EntityDataset, pack_stage2_batch

@@ -839,31 +839,6 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
     source_bytes = (output / "last.pt").read_bytes()
     final_encoder = (output / "stage1_encoder.pt").read_bytes()
     heads = run_regression(regression_config, output / "last.pt", tmp_path / "regression", selected)
-    from stage1.regression import prepare_regression_cache
-    cache_dir = tmp_path / "shared_regression_inputs"
-    prepare_regression_cache(regression_config, output / "last.pt", cache_dir, selected)
-    cached = run_regression(replace(regression_config, representations_cache=cache_dir), output / "last.pt",
-                            tmp_path / "cached_regression", selected)
-    assert cached["representation_hash"] == heads["representation_hash"]
-    for task in selected:
-        assert cached["tasks"][task]["state_hash"] == heads["tasks"][task]["state_hash"]
-    from stage1.regression_test import evaluate_locked_head
-    hpo_config = replace(regression_config, protocol="hpo_v4", representations_cache=cache_dir)
-    hpo_output = tmp_path / "hpo_head"
-    hpo_head = run_regression(hpo_config, output / "last.pt", hpo_output, ["HOMO_eV"])
-    test_file = config.auxiliary.simulation_dir / "homo" / "test.csv"
-    test_file.write_text("SMILES,HOMO_eV\nCCCCCC,99\n")
-    test_output = tmp_path / "hpo_head_test"
-    test_output.mkdir()
-    tested = evaluate_locked_head(hpo_config, output / "last.pt", hpo_output / "tasks/HOMO_eV", test_output)
-    assert tested["metrics"]["molecules"] == 1
-    assert hpo_head["tasks"]["HOMO_eV"]["scaler"] == cached["tasks"]["HOMO_eV"]["scaler"]
-    assert (output / "last.pt").read_bytes() == source_bytes
-    cache_bytes = (cache_dir / "representations.pt").read_bytes()
-    (cache_dir / "representations.pt").write_bytes(cache_bytes + b"tamper")
-    with pytest.raises(ValueError, match="cache SHA"):
-        run_regression(hpo_config, output / "last.pt", tmp_path / "corrupt_cache_head", ["HOMO_eV"])
-    (cache_dir / "representations.pt").write_bytes(cache_bytes)
     from stage1.predictors import PredictorConfig
     assert "predictor" not in regression_config.to_dict()
     assert regression_identity(replace(regression_config, predictor=PredictorConfig()), output / "last.pt", selected) == heads["identity"]

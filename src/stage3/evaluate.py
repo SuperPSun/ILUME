@@ -10,7 +10,6 @@ import torch
 
 from common.progress import ProgressReporter
 from common.identity import (
-    semantic_identity,
     IDENTITY_CONTRACT_VERSION,
     require_compatible_identity,
     tensor_state_hash,
@@ -203,7 +202,6 @@ def _load_model(
         )
 
         expected_kind = (
-            "ilume_stage3_entity_home_hpo_v4_final" if config.training.protocol == "hpo_v4" else
             "ilume_stage3_entity_home_three_phase_final_v4" if config.is_entity_home else
             "ilume_stage3_dual_view_three_phase_final_v4"
             if config.initialization.representation_contract == "dual_view_v4"
@@ -596,7 +594,7 @@ def _reporting_comparison(
             normalization[f"{task}:fold{fold}"] = {
                 "scale": float(stats["scale"]),
             }
-    identity = comparison_identity(
+    return comparison_identity(
         "stage3_property",
         split=split,
         expected=expected_tasks,
@@ -605,9 +603,6 @@ def _reporting_comparison(
         folds=tuple(range(1, 6)),
         ensemble=split == "test",
     )
-    if config.training.protocol == "hpo_v4":
-        return semantic_identity(identity["type"], {**identity["payload"], "research_protocol": "hpo_v4"})
-    return identity
 
 
 def _default_reporting_study_id(
@@ -634,8 +629,6 @@ def _configured_study_id(
     config: Stage3Config, metadata: Mapping[str, Any], selector: str
 ) -> str:
     study = _default_reporting_study_id(metadata, selector)
-    if config.training.protocol == "hpo_v4":
-        study = study.replace("ilume-stage3-", "ilume-hpo-v4-stage3-", 1)
     if config.initialization.home_mode == "no_stage2":
         study = study.replace("ilume-stage3-", "ilume-no-stage2-", 1)
     elif (
@@ -650,8 +643,6 @@ def _configured_study_id(
 def _reporting_model(
     config: Stage3Config, metadata: Mapping[str, Any]
 ) -> tuple[str, str]:
-    if config.training.protocol == "hpo_v4":
-        return "ilume_hpo_v4", "ILUME HPO v4"
     if config.initialization.home_mode == "no_stage2":
         return "ilume_no_stage2", "ILUME w/o Stage2"
     if (
