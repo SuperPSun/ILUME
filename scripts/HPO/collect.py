@@ -89,8 +89,9 @@ def collect_jobs(jobs):
                     checkpoint=relative(train / f'fold{fold}' / 'three_phase_final.pt'),
                     gate_diagnostics=validation.get('gate_diagnostics', {}).get(task),
                     parameter_counts=plan.get('parameter_counts')))
+            simulation = (final.get('simulation_validation') or {}).get('simulation_tasks', {})
             for task in ('simulation/heat_of_vaporization', 'simulation/thermal_expansion'):
-                rows.append(metric_row(base, task, (final.get('simulation_validation') or {}).get(task, {}),
+                rows.append(metric_row(base, task, simulation.get(task, {}),
                     domain='simulation_fold', fold=fold, actual_seed=base['training_seed']+fold,
                     checkpoint=relative(train / f'fold{fold}' / 'three_phase_final.pt')))
     return results, rows

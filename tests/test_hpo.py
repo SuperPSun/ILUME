@@ -162,6 +162,31 @@ def test_collection_does_not_hide_missing_or_choose_split():
     assert result['cross_split_mae'] is None
 
 
+def test_collection_reads_nested_simulation_validation(tmp_path, monkeypatch):
+    import collect
+    monkeypatch.setattr(collect, 'ROOT', tmp_path)
+    monkeypatch.setattr(collect, 'relative', lambda path: str(path))
+    config = tmp_path / 'stage3.yaml'
+    write_yaml(config, {'data': {'seed': 42}, 'training': {'seed': 42}, 'tasks': {}})
+    output = tmp_path / 'trial'
+    fold = output / 'train/fold1'
+    fold.mkdir(parents=True)
+    tasks = {
+        'simulation/heat_of_vaporization': {'count': 12, 'normalized_mae': .25},
+        'simulation/thermal_expansion': {'count': 8, 'normalized_mae': .5},
+    }
+    (fold / 'three_phase_final.json').write_text(json.dumps({
+        'simulation_validation': {'simulation_tasks': tasks},
+    }))
+    job = Job('000', 'stage3', output, config3=config, folds=(1,))
+    _, rows = collect.collect_jobs([job])
+    assert len(rows) == 2
+    for row in rows:
+        assert row['domain'] == 'simulation_fold'
+        assert row['metric_status'] == 'available'
+        assert row['normalized_mae'] == tasks[row['task']]['normalized_mae']
+
+
 def test_controller_dependency_order_resume_and_failed_stage2(tmp_path, monkeypatch):
     import _common as runner
     import stage3.home
