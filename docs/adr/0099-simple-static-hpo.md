@@ -16,7 +16,7 @@ Entity-HoME Stage2 Epoch可为任意正整数（历史非Entity枚举合同保�
 
 复用原生Prepare身份：Stage2模型不绑定数据准备；Stage3prepared身份已排除meta_group，不新增身份拆分平台。单写入者、临时目录、SHA与原子完成标记保障缓存；损坏与不匹配拒绝复用。HPO使用preparation.data_metadata_path，将数据审计写入独立输出；默认正式prepare路径不变。所有配置静态固定，生成记录绑定人工选择，禁止覆盖已固定不同配置。
 
-单机固定设备队列，每卡一任务，不嵌套折并行。Stage2/3保留原生恢复；Stage1失败trial在新attempt重跑并复用表示。无数据库、自动采样、自动重要性或动态显存调度。五套split只报告固定训练seed的验证统计；不挑最佳split，不自动终测，披露样本重叠。
+单机固定设备队列，max-parallel决定全局任务槽数，按设备列表轮流分配，允许每卡多个任务；默认槽数等于设备数。不嵌套折并行。Stage2/3保留原生恢复；Stage1失败trial在新attempt重跑并复用表示。无数据库、自动采样、自动重要性或动态显存调度。五套split只报告固定训练seed的验证统计；不挑最佳split，不自动终测，披露样本重叠。
 
 ## 验证
 

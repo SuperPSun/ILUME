@@ -146,6 +146,31 @@ def test_queue_device_slots_global_limit_and_failures(tmp_path):
         assert events.index((job.trial,'stage2'))<events.index((job.trial,'stage3'))
 
 
+@pytest.mark.parametrize('maximum', [1, 7, 8])
+def test_queue_shares_gpus_with_balanced_slots(tmp_path, maximum):
+    devices = ('cuda:0', 'cuda:1', 'cuda:2', 'cuda:3')
+    jobs = [Job(str(i), 'test', tmp_path / str(i)) for i in range(maximum * 2)]
+    barrier = threading.Barrier(maximum)
+    lock = threading.Lock()
+    active = {device: 0 for device in devices}
+    snapshots = []
+    def work(job, device):
+        with lock:
+            active[device] += 1
+            if sum(active.values()) == maximum:
+                snapshots.append(dict(active))
+        barrier.wait(timeout=10)
+        with lock:
+            active[device] -= 1
+        barrier.wait(timeout=10)
+    assert run_queue(jobs, devices, maximum, work, record_failures=False) == []
+    assert len(snapshots) == 2
+    for snapshot in snapshots:
+        assert sum(snapshot.values()) == maximum
+        assert max(snapshot.values()) - min(snapshot.values()) <= 1
+    assert not any(active.values())
+
+
 def test_collection_does_not_hide_missing_or_choose_split():
     assert metric_row({},'task',{})['metric_status']=='missing'
     assert metric_row({},'task',{'mae':float('nan')})['metric_status']=='nonfinite'

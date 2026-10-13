@@ -359,8 +359,8 @@ def run_job(job, device, resume=False, dry_run=False, checkpoint=None):
 def run_queue(jobs, devices, max_parallel, worker, *, record_failures=True):
     STOP.clear()
     slots = queue.Queue()
-    for device in devices[:max_parallel]:
-        slots.put(device)
+    for index in range(max_parallel):
+        slots.put(devices[index % len(devices)])
     def assigned(job):
         if STOP.is_set():
             raise RuntimeError('HPO interrupted')
@@ -370,7 +370,7 @@ def run_queue(jobs, devices, max_parallel, worker, *, record_failures=True):
         finally:
             slots.put(device)
     failed = []
-    pool = ThreadPoolExecutor(max_workers=min(max_parallel, len(devices)))
+    pool = ThreadPoolExecutor(max_workers=max_parallel)
     futures = {}
     try:
         futures = {pool.submit(assigned, job): job for job in jobs}
@@ -483,7 +483,7 @@ def main(branch):
         jobs = [j for j in jobs if j.trial in requested]
     if not jobs:
         parser.error('No static configurations; generate the round after manual selection')
-    print(f'{branch}: {len(jobs)} jobs, devices={devices}, max_parallel={min(maximum,len(devices))}', flush=True)
+    print(f'{branch}: {len(jobs)} jobs, devices={devices}, max_parallel={maximum}', flush=True)
     try:
         failed = run_queue(jobs, devices, maximum,
                            lambda job, device: run_job(job, device, args.resume, args.dry_run,

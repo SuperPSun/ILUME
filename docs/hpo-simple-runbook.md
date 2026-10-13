@@ -14,7 +14,7 @@ python scripts/HPO/stage1.py --ids 000 --dry-run
 python scripts/HPO/home.py --ids G0_C05 --dry-run
 ```
 
-正式运行由研究者显式启动。例如四卡，每卡一个任务；省略设备参数时仅使用 `cuda:0`。
+正式运行由研究者显式启动。以下示例为四卡、总并发4；设为8则每卡两个任务，设为7则四卡分别分配2/2/2/1个任务槽。省略设备参数时仅使用 `cuda:0`；省略并发参数时默认每卡一个任务。
 
 ```bash
 python scripts/HPO/stage1.py --devices cuda:0,cuda:1,cuda:2,cuda:3 --max-parallel 4
@@ -86,7 +86,7 @@ Stage2/3 Prepare 分别按 split 使用独立目录。数据身份相同且 Stag
 
 日志/Dry Run 显示 `CREATE/REUSE/INVALID`。`INVALID` 保留现场并拒绝运行，由研究者指定新的配置根和缓存路径；不能改写身份来伪装合法。没有 Stage2 结果时，Dry Run 显示 `PENDING` 来源检查，实际训练前仍严格加载并检查来源、owner、shape、dtype、state hash。Dry Run 不创建缓存、锁、配置或训练输出。
 
-所有运行器支持 `--device`、`--devices`、`--max-parallel`（别名 `--max_parallel`）、`--ids`、`--resume`、`--dry-run`。编号可以空格或逗号分隔。每个设备槽只运行一个作业，底层折并行固定1，因此整体上限是设备数与 max-parallel 的较小值。作业依次进行其 Stage2→Stage3→验证，完成后打印 `Progress N/M`；子命令详细进度写入作业日志。不会自动开始下一轮。
+所有运行器支持 `--device`、`--devices`、`--max-parallel`（别名 `--max_parallel`）、`--ids`、`--resume`、`--dry-run`。编号可以空格或逗号分隔。max-parallel 是全局并发上限，任务槽按设备列表轮流分配，允许一卡多任务；每个槽只运行一个作业，空槽供后续作业复用。底层折并行固定1，不放大外层并发。作业依次进行其 Stage2→Stage3→验证，完成后打印 `Progress N/M`；子命令详细进度写入作业日志。不会自动开始下一轮。
 
 ```bash
 python scripts/HPO/home.py --ids G0_C05 G2_C05 --devices cuda:0,cuda:1 --max_parallel 2 --resume
