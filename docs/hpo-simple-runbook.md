@@ -18,7 +18,7 @@ python scripts/HPO/home.py --ids G0_C05 --dry-run
 
 ```bash
 python scripts/HPO/stage1.py --devices cuda:0,cuda:1,cuda:2,cuda:3 --max-parallel 4
-python scripts/HPO/home.py --devices cuda:0,cuda:1,cuda:2,cuda:3 --max-parallel 4
+python scripts/HPO/home.py --devices cuda:0,cuda:1,cuda:2,cuda:3 --max-parallel 4 &&
 python scripts/HPO/collect.py --branch HoME
 ```
 
@@ -82,7 +82,7 @@ python scripts/HPO/collect.py --branch final
 
 Stage1 缓存绑定完整末轮检查点、特征、源数据、任务集合与过滤合同；保存映射后的每条观察、原始训练标签、审计及冻结实体/原子表示。各头自行拟合训练 scaler 并独立初始化，结构/LR/Epoch/Dropout/WD 不重复编码。
 
-Stage2/3 Prepare 分别按 split 使用独立目录。数据身份相同且 Stage1 来源不变时，模型容量、训练参数与分组变动复用 Prepare；Stage3现有prepared身份已排除meta_group。缓存单写入者持文件锁，在临时目录生成，完整文件SHA核验后原子发布；失败临时目录和日志保留，不覆盖。共享 Stage3 entity bank 也只有一个写入者。HPO审计写在缓存的 `data_metadata.json`，不修改数据目录审计或正式产物。
+Stage2/3 Prepare 分别按 split 使用独立目录。数据身份相同且 Stage1 来源不变时，模型容量、训练参数与分组变动复用 Prepare；Stage3现有prepared身份已排除meta_group。缓存单写入者持文件锁，在临时目录生成，完整文件SHA核验后原子发布；失败临时目录和日志保留，不覆盖。缓存和 trial 身份按 JSON 表示比较，tuple/list 序列统一，不改变语义 hash 或文件 SHA 校验。共享 Stage3 entity bank 也只有一个写入者。HPO审计写在缓存的 `data_metadata.json`，不修改数据目录审计或正式产物。
 
 日志/Dry Run 显示 `CREATE/REUSE/INVALID`。`INVALID` 保留现场并拒绝运行，由研究者指定新的配置根和缓存路径；不能改写身份来伪装合法。没有 Stage2 结果时，Dry Run 显示 `PENDING` 来源检查，实际训练前仍严格加载并检查来源、owner、shape、dtype、state hash。Dry Run 不创建缓存、锁、配置或训练输出。
 
@@ -94,8 +94,21 @@ python scripts/HPO/home.py --ids G0_C05 G2_C05 --devices cuda:0,cuda:1 --max_par
 
 Stage2/3 使用原生严格完整轮恢复；完成的正确产物校验后跳过或复用。Stage1 无中途恢复，中断 trial 在新的 `attemptN` 目录重跑，复用表示库并保留现场。原生评价无中途恢复，失败评价使用新 attempt 输出。身份不符直接报错；不覆盖完成检查点，不截断训练历史。失败作业保留记录，入口返回非零；其他独立作业可以完成。Ctrl+C取消尚未启动的任务，并终止本次控制器启动的子进程组，保留恢复现场。
 
+### 继续失败任务与从头重跑
+
+已有输出时，用同一配置加 `--resume` 继续；Prepare和完整Stage2 final经过身份与完整性校验后复用。修改调度器后，正在运行的控制器需要停止并重新启动才能使用新逻辑。
+
+```bash
+python scripts/HPO/home.py --devices cuda:0,cuda:1,cuda:2,cuda:3 --max-parallel 4 --resume &&
+python scripts/HPO/collect.py --branch HoME
+```
+
+若要从头重跑HoME训练，先停止相关进程，再在确认准确文件数、大小、备份目标和无覆盖冲突后，将 `outputs/HPO/HoME` 与存在的 `outputs/HPO/failures/HoME` 备份到独立位置。保持配置不变，保留已校验的 `outputs/HPO/cache` 和Stage1结果，然后不加 `--resume` 运行 `home.py`。这会重新训练Stage2及Stage3；只备份Stage3子目录仍会复用Stage2。若HoME输出目录已经不存在，直接按首次运行启动即可。
+
+`outputs/HPO/failures` 只保存失败摘要，不包含模型、缓存或恢复检查点。误删后不影响训练/恢复，后续失败会自动重建；没有 `hpo_run.json` 的旧失败可能在汇总时显示为 `not_run`。日志和对应trial运行记录仍是排查依据。
+
 ## 报告与验证
 
-`collect.py` 输出 `results.csv/json`、`task_metrics.csv`、`home_grid.csv`。缺任务、失败、非有限值明确标记；没有原生指标标为不可用。Stage2仅提供原生normalized MAE，Stage3提供原生实验指标及可用门控诊断；不重定义指标、不按测试筛选、不自动排序或选择赢家。报告目录默认按时间新建。
+`collect.py` 输出 `results.csv/json`、`task_metrics.csv`、`home_grid.csv`。缺任务、失败、非有限值明确标记；没有原生指标标为不可用。Stage2仅提供原生normalized MAE，Stage3提供原生实验指标及可用门控诊断；模拟逐折指标读取final清单中的 `simulation_validation.simulation_tasks`。不重定义指标、不按测试筛选、不自动排序或选择赢家。报告目录默认按时间新建；生成报告不代表训练成功，应先检查运行状态和任务完整性。旧报告保留生成时的快照，修复或重跑后重新汇总。
 
 实现验收只使用临时小数据、pytest、各入口help、compileall与Dry Run。正式GPU搜索由研究者自行启动。历史Capacity配置缺失造成的既有测试失败单列，不恢复无关配置。
