@@ -114,6 +114,9 @@ def _validate_three_phase_histories(root: Path, plan: Mapping[str, Any]) -> None
         for task, recipe in phases["phase3"]["branches"].items()
     )
     for scope, epochs in scopes:
+        # Zero-budget branches inherit the anchor and never create a training scope.
+        if epochs == 0:
+            continue
         metrics = _history_epochs(
             scope / "metrics.jsonl", context="Stage 3 three-phase metrics history"
         )

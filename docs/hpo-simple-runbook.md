@@ -98,6 +98,8 @@ Stage2/3 使用原生严格完整轮恢复；完成的正确产物校验后跳�
 
 已有输出时，用同一配置加 `--resume` 继续；Prepare和完整Stage2 final经过身份与完整性校验后复用。修改调度器后，正在运行的控制器需要停止并重新启动才能使用新逻辑。
 
+已完成Stage3折的零轮分支继承锚点，不要求该分支的训练目录、历史或epoch0检查点；正轮数分支仍须具有完整metrics/diagnostics和末轮检查点，final及拼接产物SHA校验不变。
+
 ```bash
 python scripts/HPO/home.py --devices cuda:0,cuda:1,cuda:2,cuda:3 --max-parallel 4 --resume &&
 python scripts/HPO/collect.py --branch HoME

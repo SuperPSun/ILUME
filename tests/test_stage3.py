@@ -2402,6 +2402,32 @@ def test_completed_run_is_skipped_after_identity_and_history_checks(
         root, fold=2, total_epochs=2, training_identity=TRAINING_IDENTITY
     ) == ("skipped", None)
 
+def test_three_phase_resume_histories_allow_zero_budget_branches(tmp_path: Path) -> None:
+    plan = {"phases": {
+        "phase1": {"epochs": 1},
+        "phase2": {"branches": {"solvation": {"epochs": 1}}},
+        "phase3": {"branches": {
+            "experiment/speed_of_sound": {"epochs": 0},
+            "experiment/static_relative_permittivity": {"epochs": 0},
+            "experiment/density": {"epochs": 1},
+        }},
+    }}
+    for scope in ("phase_1", "phase_2/solvation", "phase_3/experiment__density"):
+        root = tmp_path / scope
+        root.mkdir(parents=True)
+        _write_history(root / "metrics.jsonl", [1])
+        _write_history(root / "diagnostics.jsonl", [1])
+        (root / "checkpoint_epoch_00001.pt").write_bytes(b"checkpoint")
+    train_launcher._validate_three_phase_histories(tmp_path, plan)
+    metrics = tmp_path / "phase_3/experiment__density/metrics.jsonl"
+    metrics.unlink()
+    with pytest.raises(FileNotFoundError, match="metrics history is missing"):
+        train_launcher._validate_three_phase_histories(tmp_path, plan)
+    _write_history(metrics, [1])
+    (metrics.parent / "checkpoint_epoch_00001.pt").unlink()
+    with pytest.raises(FileNotFoundError, match="final checkpoint is missing"):
+        train_launcher._validate_three_phase_histories(tmp_path, plan)
+
 def test_resume_uses_latest_complete_checkpoint_and_matching_history(
     tmp_path: Path,
 ) -> None:
