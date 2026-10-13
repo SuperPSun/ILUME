@@ -127,7 +127,8 @@ def cache_identity(stage, config_path):
             'stage1_feature_identity': features['semantic']['identities']['feature']['hash'],
             'stage1_sha256': sha256_file(config.initialization.stage1_encoder),
             'feature_files': validate_stage1_feature_files(config.initialization.stage1_artifacts_dir)})
-    return config, identity
+    # Match the JSON representation used by cache and trial manifests (tuple -> list).
+    return config, json.loads(json.dumps(identity))
 
 
 def prepare(stage, config_path, device, *, dry_run=False):

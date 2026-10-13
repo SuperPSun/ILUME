@@ -22,6 +22,7 @@ def artifact_lock(path):
 
 def validate_artifact_cache(root, identity):
     root = Path(root)
+    identity = json.loads(json.dumps(identity))
     manifest = json.loads((root / "complete.json").read_text())
     if manifest.get("identity") != identity or not manifest.get("files"):
         raise ValueError(f"Cache identity or completion mismatch: {root}")

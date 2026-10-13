@@ -108,7 +108,8 @@ def test_seed_epoch_defaults_and_private_overrides():
 
 
 def test_cache_single_writer_integrity_and_dry_run(tmp_path):
-    identity=semantic_identity('test.prepare', {'split':42,'source':'frozen'})
+    identity=semantic_identity('test.prepare', {'split':42,'source':'frozen',
+        'registry': {'task': {'primary_slots': ('solute',), 'condition_columns': ('temperature',)}}})
     path=tmp_path/'cache'
     calls=[]
     def build(staging):
@@ -121,6 +122,11 @@ def test_cache_single_writer_integrity_and_dry_run(tmp_path):
         decisions=list(pool.map(lambda _: artifact_cache(path,identity,build),range(10)))
     assert len(calls)==1 and decisions.count('CREATE')==1
     assert artifact_cache(path,identity,None,dry_run=True)=='REUSE'
+    saved_identity = json.loads((path/'complete.json').read_text())['identity']
+    assert artifact_cache(path,saved_identity,None,dry_run=True)=='REUSE'
+    changed=semantic_identity('test.prepare', {'split':42,'source':'frozen',
+        'registry': {'task': {'primary_slots': ('solvent',), 'condition_columns': ('temperature',)}}})
+    assert artifact_cache(path,changed,None,dry_run=True)=='INVALID'
     other=semantic_identity('test.prepare',{'split':123,'source':'frozen'})
     assert artifact_cache(path,other,None,dry_run=True)=='INVALID'
     with pytest.raises(ValueError): artifact_cache(path,other,build)
