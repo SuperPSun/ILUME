@@ -2,6 +2,8 @@
 
 本流程使用静态 YAML 和人工选型，不使用 Optuna，不自动晋级，不读取测试指标。正式 Base 入口与配方保持不变。合同见 [ADR-0099](adr/0099-simple-static-hpo.md)。所有训练、缓存、日志和报告位于 `outputs/HPO`，配置位于 `configs/HPO`。
 
+HPO无论在哪台设备运行，训练结果与完整模型权重都须回传到4090的对应 `outputs/HPO`，保留配置、身份、日志和恢复产物；不得仅同步CSV/JSON或排除 `.pt`。共享缓存及来源按身份核验后复用或回传，具体遵循 [跨设备训练产物回传](v4-runbook.md#跨设备训练产物回传)。
+
 使用安装项目依赖的 `ilume` 环境，从仓库根目录运行。需要完整末轮 `outputs/v4/stage1/base/train/last.pt`、配对的 `stage1_encoder.pt`、Stage1 Prepare 和电荷 sidecar。五套数据为42、123、1234、3407、90756，Stage1 仍共用 `data/stage1`。
 
 ## 四轮实验与人工选择

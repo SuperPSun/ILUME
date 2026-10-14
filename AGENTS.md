@@ -48,6 +48,8 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 
 ## 数据、身份、输出与恢复
 
+- 4090是统一训练产物归档设备。无论在3090、其他服务器或本机训练，训练结果和完整模型权重都必须回传至4090对应项目目录；保留运行配置、日志、身份清单及恢复所需检查点，禁止仅同步报告或排除权重。回传与完整性核验遵循 [v4手册](docs/v4-runbook.md#跨设备训练产物回传)。
+
 现役hydration仍使用random/cv1五折、无测试集；gas_solubility不是旧x_co2的同义任务。焓保留任务目录原标识，展示汽化焓，仅温度。基线历史20实验/四模拟配方不扩展。运行见 [v4手册](docs/v4-runbook.md)。
 
 - 数据不进 Git；Stage1 共用 `data/stage1`，Stage2/3 默认选择 `data/42`，其他 split 的路径配对、缓存和汇总见 [v4手册](docs/v4-runbook.md#数据-split-与路径)。默认prepare将数据审计 `metadata.json` 写入配置的数据目录；独立HPO通过 `preparation.data_metadata_path` 写入输出审计目录，运行元数据引用同一位置；不同 split 使用独立 YAML 与输出，并保持身份校验。每次操作冻结 `run_config.yaml`、公开安全的 `metadata.json`，成功后写 `summary.json`；禁止用户名、hostname、私有绝对路径。

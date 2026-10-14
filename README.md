@@ -4,6 +4,8 @@ ILUME 的现役流程是 **冻结 v4 Stage1 → v4 五任务实体 HoME Stage2 �
 
 命令从仓库根目录执行。安装依赖并准备 ILUME-Data 的 Stage1/2/3 输入；CSV 与输出不进入 Git。正式训练使用尚不存在的输出目录，旧 HoME 产物不能与新正式身份交叉加载。本页命令是运行手册，不属于自动验收。
 
+**4090统一归档**：任何设备上的训练结果与完整模型权重均须回传到4090，包括正式Stage、HPO、基线和独立后训练；完整产物范围及核验要求见 [跨设备回传规则](docs/v4-runbook.md#跨设备训练产物回传)。
+
 ```bash
 python -m pip install -e ".[dev,tokenizers]"
 ```
