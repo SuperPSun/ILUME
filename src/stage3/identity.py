@@ -199,6 +199,8 @@ def build_stage3_training_identity(plan: Mapping[str, Any]) -> dict[str, Any]:
         semantic_plan["simulation_training"] = plan["simulation_training"]
     if "representation_contract" in plan:
         semantic_plan["representation_contract"] = plan["representation_contract"]
+    if "ablation" in plan:
+        semantic_plan["ablation"] = plan["ablation"]
     contract_version = STAGE3_TRAINING_IDENTITY_CONTRACT_VERSION
     if three_phase:
         contract_version = (

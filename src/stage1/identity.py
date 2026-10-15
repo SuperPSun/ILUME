@@ -176,6 +176,8 @@ def build_stage1_training_identity(
             "index_sha256": teacher.manifest["index_sha256"],
         })["hash"]
         training["architecture"] = config.architecture.kind
+        if "ablation" in raw:
+            training["ablation"] = raw["ablation"]
         if config.loss.lambda_partial_charge > 0:
             from .partial_charge import PartialChargeCache
             training["partial_charge_identity"] = PartialChargeCache(config, metadata).manifest["identity"]["hash"]
@@ -294,6 +296,8 @@ def build_stage1_encoder_identity(
         }
     if config.is_dual_view:
         payload.update(contract_version=4, encoding_api="dual-view-learned-v4", representation={"kind": model.representation_kind, "learned_dim": model.entity_dim, "atom_dim": model.atom_dim, "descriptor_input": False})
+        if "ablation" in raw:
+            payload["ablation"] = raw["ablation"]
         if config.model.graph_message_mode != "shared":
             payload["model"]["graph_message_mode"] = config.model.graph_message_mode
     return semantic_identity("stage1.encoder", payload)

@@ -32,15 +32,26 @@ def main() -> None:
         help="Optional repository-relative directories inside an input to exclude recursively.",
     )
     parser.add_argument("--output", default="summary")
+    parser.add_argument("--ablation-analysis-output", help="Write a separate v4 ablation comparison; neither output may already exist.")
+    parser.add_argument("--ablation-bootstrap", action="store_true", help="Add fixed-seed 10000-repeat paired system bootstrap intervals.")
     args = parser.parse_args()
+    if args.ablation_bootstrap and not args.ablation_analysis_output:
+        parser.error("--ablation-bootstrap requires --ablation-analysis-output")
     input_roots = [repository_path(path) for path in args.input]
     include_roots = [repository_path(path) for path in (args.include or ())]
     exclude_roots = [repository_path(path) for path in (args.exclude or ())]
     output = repository_path(args.output)
-    publish_summary(
+    analysis_output = repository_path(args.ablation_analysis_output) if args.ablation_analysis_output else None
+    if analysis_output is not None and (output.exists() or analysis_output.exists()):
+        raise FileExistsError("New ablation reports cannot overwrite existing output")
+    payload = publish_summary(
         input_roots, output, ROOT,
         include_roots=include_roots, exclude_roots=exclude_roots,
     )
+    if analysis_output is not None:
+        from ablations.entity_home.report import write_analysis
+        write_analysis(payload, ROOT / 'configs/v4/stage3/base.yaml', analysis_output,
+                       input_roots=input_roots, repository_root=ROOT, bootstrap=args.ablation_bootstrap)
 
 
 if __name__ == "__main__":

@@ -27,7 +27,7 @@ from benchmarks.common.environment import (
 )
 from benchmarks.common.metrics import macro_normalized_mae, mean_sample_std
 from common.identity import semantic_identity
-from common.io import atomic_json
+from common.io import atomic_json, sha256_file
 from common.outputs import open_run_directory, repository_path, repository_relative
 from common.progress import ProgressReporter
 from common.reporting import (
@@ -104,6 +104,7 @@ class _SweepState:
     progress_counts: dict[str, int] = field(default_factory=lambda: {"done": 0, "failed": 0})
     lock: threading.Lock = field(default_factory=threading.Lock)
     reserved_roots: set[Path] = field(default_factory=set)
+    catalog_config: Any | None = None
 
     def reserve(
         self, *, root: Path, required: str, operation: str, benchmark: str,
@@ -115,6 +116,9 @@ class _SweepState:
                 required,
             )
             if completed is not None:
+                if self.catalog_config is not None:
+                    from benchmarks.common.reuse import validate_completed_run
+                    validate_completed_run(self.catalog_config, completed, required)
                 self._record_locked(
                     operation=operation, benchmark=benchmark, task=task, fold=fold,
                     attempt=completed.name, status="SKIPPED_COMPLETED", exit_code=0,
@@ -167,7 +171,7 @@ class _SweepState:
         )
         _write_status(self.status_path, self.rows)
         if training_job and self.progress is not None:
-            if status in {"OK", "SKIPPED_COMPLETED"}:
+            if status in {"OK", "SKIPPED_COMPLETED", "REUSED"}:
                 self.progress_counts["done"] += 1
             else:
                 self.progress_counts["failed"] += 1
@@ -626,6 +630,7 @@ def _aggregate(root: Path, config: Any, *, benchmark: str = "all") -> dict[str, 
             "macro_normalized_mae": macro_normalized_mae(stage3_test),
         },
         "reporting": {
+            **({"data_protocol": config.protocol} if getattr(config, "protocol", "legacy") != "legacy" else {}),
             "schema_version": REPORTING_SCHEMA_VERSION,
             "model_id": config.name,
             "model_display_name": config.display_name,
@@ -667,6 +672,9 @@ def main() -> None:
     )
     parser.add_argument("--config", required=True)
     parser.add_argument("--output", required=True)
+    reuse = parser.add_mutually_exclusive_group()
+    reuse.add_argument("--prepare-reuse-from", help="Audit and copy catalog_v4 source artifacts only; never train.")
+    reuse.add_argument("--reuse-manifest", help="Validate an audited catalog_v4 reuse manifest before scheduling.")
     parser.add_argument("--benchmark", choices=("all", "stage3", "simulation"), default="all")
     parser.add_argument(
         "--max-workers", type=_positive_int, default=1,
@@ -681,6 +689,19 @@ def main() -> None:
     )
     args = parser.parse_args()
     config = load_benchmark_config(args.config)
+    if args.prepare_reuse_from:
+        from benchmarks.common.reuse import prepare_reuse
+        manifest = prepare_reuse(config, args.config, repository_path(args.prepare_reuse_from), repository_path(args.output))
+        print(repository_relative(manifest), flush=True)
+        return
+    reuse_payload = None
+    if args.reuse_manifest:
+        if args.benchmark != "all":
+            parser.error("--reuse-manifest requires --benchmark all")
+        from benchmarks.common.reuse import validate_reuse
+        reuse_payload = validate_reuse(config, repository_path(args.reuse_manifest), repository_path(args.output))
+    elif config.protocol == "catalog_v4" and (repository_path(args.output) / "imported").exists():
+        parser.error("Imported catalog_v4 artifacts require --reuse-manifest")
     stage3_tasks = configured_tasks(config, "stage3") if args.benchmark != "simulation" else ()
     simulation_tasks = configured_tasks(config, "simulation") if args.benchmark != "stage3" else ()
     if not stage3_tasks and not simulation_tasks:
@@ -707,8 +728,9 @@ def main() -> None:
         stage="benchmark", operation="sweep", config_path=args.config,
         config_payload=config.to_dict(), semantic_identity=identity,
         output=args.output, seed=config.seed, reusable=True,
-        data_metadata=f"data/{'stage2' if args.benchmark == 'simulation' else 'stage3'}/metadata.json",
+        data_metadata=str(config.data.data_root / ("stage2" if args.benchmark == "simulation" else "stage3") / "metadata.json"),
         details={
+            **({"reuse_manifest": args.reuse_manifest, "reuse_manifest_sha256": sha256_file(repository_path(args.reuse_manifest))} if args.reuse_manifest else {}),
             "reporting_schema_version": REPORTING_SCHEMA_VERSION,
             **environment_run_details(environment_snapshot),
         },
@@ -725,9 +747,16 @@ def main() -> None:
     state = _SweepState(
         rows=rows, status_path=root / "status.tsv", progress=sweep_progress,
         model_name=config.name,
+        catalog_config=config if config.protocol == "catalog_v4" else None,
     )
+    reused_tasks = {task for task, plan in (reuse_payload or {}).get("tasks", {}).items() if plan["action"] == "reuse"}
+    for task in sorted(reused_tasks):
+        for fold in config.stage3.folds:
+            state._record_locked(operation="reuse", benchmark="stage3", task=task, fold=fold,
+                attempt="imported", status="REUSED", exit_code=0,
+                output=root / "imported" / "stage3" / _sanitize(task), training_job=True)
     jobs, ensembles = _build_jobs(
-        root=root, stage3_tasks=stage3_tasks, folds=config.stage3.folds,
+        root=root, stage3_tasks=tuple(task for task in stage3_tasks if task not in reused_tasks), folds=config.stage3.folds,
         devices=devices, simulation_tasks=simulation_tasks,
     )
     try:

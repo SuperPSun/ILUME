@@ -43,7 +43,7 @@ def main() -> None:
         semantic_identity=bundle.training_identity,
         output=args.output,
         seed=config.seed,
-        data_metadata=f"data/{'stage2' if args.benchmark == 'simulation' else 'stage3'}/metadata.json",
+        data_metadata=str(config.data.data_root / ("stage2" if args.benchmark == "simulation" else "stage3") / "metadata.json"),
         details={
             "benchmark": args.benchmark,
             "task": args.task,

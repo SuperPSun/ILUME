@@ -22,7 +22,7 @@ from common.reporting import (
     sanitize_task_id,
     write_prediction_csv,
 )
-from .config import Stage3Config
+from .config import Stage3Config, effective_training_seed
 from .data import (
     STAGE3_ARTIFACT_KIND,
     STAGE3_V4_ARTIFACT_KIND,
@@ -65,7 +65,9 @@ def _refined_path(root: Path, fold: int) -> Path:
     return nested if nested.is_file() else root / "taskwise_refined.pt"
 
 
-def _three_phase_final_path(root: Path, fold: int) -> Path:
+def _three_phase_final_path(root: Path, fold: int, config=None) -> Path:
+    if config is not None and config.runtime_backend is not None:
+        return config.runtime_backend.artifact_path(root, fold, config)
     nested = root / f"fold{fold}" / "three_phase_final.pt"
     direct = root / "three_phase_final.pt"
     if nested.is_file():
@@ -118,8 +120,10 @@ def _validate_refinement_manifest(
 
 
 def _validate_three_phase_manifest(
-    artifact_path: Path, artifact: Mapping[str, Any]
+    artifact_path: Path, artifact: Mapping[str, Any], config=None
 ) -> str:
+    if config is not None and config.runtime_backend is not None and config.runtime_backend.spec.selector != 'final':
+        return config.runtime_backend.validate_phase_manifest(config, artifact_path, artifact)
     manifest_path = artifact_path.with_name("three_phase_final.json")
     if not manifest_path.is_file():
         raise FileNotFoundError(
@@ -169,6 +173,14 @@ def _validate_three_phase_manifest(
             or manifest.get("simulation_validation") != artifact.get("simulation_validation")
         ):
             raise ValueError("Stage 3 simulation training manifest mismatch")
+    if artifact.get('kind') == 'ilume_stage3_entity_home_ablation_final_v1':
+        plan = artifact['resolved_training_plan']
+        if (manifest.get('stage2_pretraining') != plan.get('stage2_pretraining')
+                or artifact.get('stage2_pretraining') != plan.get('stage2_pretraining')
+                or manifest.get('simulation_training') != plan.get('simulation_training')
+                or artifact.get('simulation_training') != plan.get('simulation_training')
+                or manifest.get('simulation_validation') != artifact.get('simulation_validation')):
+            raise ValueError('Stage3 ablation source/simulation manifest mismatch')
     require_compatible_identity(
         artifact["training_identity"],
         manifest.get("training_identity", {}),
@@ -191,6 +203,8 @@ def _load_model(
 ) -> tuple[Stage3SparseModel, dict[str, Any], Stage3RepresentationStore]:
     if taskwise_refined and three_phase_final:
         raise ValueError("Stage 3 checkpoint cannot have two final selectors")
+    if config.runtime_backend is not None and config.runtime_backend.spec.selector != 'final':
+        return config.runtime_backend.load_phase_model(config, prepared, checkpoint_path, fold, device)
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     rdkit = prepared["metadata"].get("kind") not in {STAGE3_ARTIFACT_KIND, STAGE3_V4_ARTIFACT_KIND, "ilume_stage3_entity_sparse_data_v4"}
     if three_phase_final:
@@ -225,6 +239,8 @@ def _load_model(
             if taskwise_refined
             else STAGE3_CHECKPOINT_KIND
         )
+    if config.runtime_backend is not None:
+        expected_kind = config.runtime_backend.final_kind
     expected_registry = dict(prepared["registry"])
     simulation_source = None
     if config.initialization.simulation_artifacts_dir is not None:
@@ -252,6 +268,8 @@ def _load_model(
     for key, value in expected.items():
         if checkpoint.get(key) != value:
             raise ValueError(f"Stage 3 evaluation checkpoint mismatch: {key}")
+    if config.runtime_backend is not None and checkpoint.get('kind') != config.runtime_backend.final_kind:
+        raise ValueError('Stage3 ablation checkpoint kind mismatch')
     plan = checkpoint.get("resolved_training_plan")
     if not isinstance(plan, dict):
         raise ValueError("Stage 3 checkpoint lacks its resolved training plan")
@@ -348,6 +366,8 @@ def _load_model(
             prepared["objects"],
             str(prepared["metadata"]["kind"]),
         )
+    if config.runtime_backend is not None:
+        config.runtime_backend.validate_plan(config, model, plan)
     knowledge_bank = _load_knowledge_bank(config, prepared, representations)
     if config.transfer_knowledge is not None and (
         not isinstance(plan.get("transfer_knowledge"), Mapping)
@@ -629,6 +649,8 @@ def _configured_study_id(
     config: Stage3Config, metadata: Mapping[str, Any], selector: str
 ) -> str:
     study = _default_reporting_study_id(metadata, selector)
+    if config.runtime_backend is not None:
+        return config.runtime_backend.spec.model_id + '-seed' + str(effective_training_seed(config)) + '-' + study
     if config.initialization.home_mode == "no_stage2":
         study = study.replace("ilume-stage3-", "ilume-no-stage2-", 1)
     elif (
@@ -637,12 +659,16 @@ def _configured_study_id(
         and metadata.get("source_stage1_checkpoint_sha256") is None
     ):
         study = study.replace("ilume-stage3-", "ilume-no-stage1-", 1)
+    if config.training.seed is not None:
+        study += "-seed" + str(config.training.seed)
     return study + "-transfer-knowledge" if config.transfer_knowledge is not None else study
 
 
 def _reporting_model(
     config: Stage3Config, metadata: Mapping[str, Any]
 ) -> tuple[str, str]:
+    if config.runtime_backend is not None:
+        return config.runtime_backend.spec.model_id, config.runtime_backend.spec.display_name
     if config.initialization.home_mode == "no_stage2":
         return "ilume_no_stage2", "ILUME w/o Stage2"
     if (
@@ -861,6 +887,8 @@ def evaluate_checkpoints(
         if taskwise_refined
         else "epoch_checkpoint"
     )
+    if config.runtime_backend is not None:
+        model_selector = config.runtime_backend.model_selector
     selector_label = (
         "three-phase-final"
         if three_phase_final
@@ -895,7 +923,7 @@ def evaluate_checkpoints(
         for current_fold in folds:
             assert current_fold is not None
             path = (
-                _three_phase_final_path(root, current_fold)
+                _three_phase_final_path(root, current_fold, config)
                 if three_phase_final
                 else _refined_path(root, current_fold)
                 if taskwise_refined
@@ -918,7 +946,7 @@ def evaluate_checkpoints(
                 )
             elif three_phase_final:
                 selection_manifest_hashes.append(
-                    _validate_three_phase_manifest(path, checkpoint)
+                    _validate_three_phase_manifest(path, checkpoint, config)
                 )
             per_task: dict[str, Any] = {}
             raw_fold_predictions[current_fold] = {}
@@ -1150,6 +1178,8 @@ def resolve_stage3_evaluation_identity(
         if taskwise_refined
         else "epoch_checkpoint"
     )
+    if config.runtime_backend is not None:
+        model_selector = config.runtime_backend.model_selector
     epoch = config.training.epochs if checkpoint_epoch is None else checkpoint_epoch
     if epoch <= 0:
         raise ValueError("Stage 3 checkpoint epoch must be positive")
@@ -1160,7 +1190,7 @@ def resolve_stage3_evaluation_identity(
     for current_fold in folds:
         assert current_fold is not None
         path = (
-            _three_phase_final_path(Path(checkpoint_dir), current_fold)
+            _three_phase_final_path(Path(checkpoint_dir), current_fold, config)
             if three_phase_final
             else _refined_path(Path(checkpoint_dir), current_fold)
             if taskwise_refined
@@ -1186,7 +1216,7 @@ def resolve_stage3_evaluation_identity(
             )
         elif three_phase_final:
             selection_manifest_hashes.append(
-                _validate_three_phase_manifest(path, checkpoint)
+                _validate_three_phase_manifest(path, checkpoint, config)
             )
     return build_stage3_evaluation_identity(
         prepared_identity=metadata_identity(

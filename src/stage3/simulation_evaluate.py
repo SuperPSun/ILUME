@@ -53,8 +53,10 @@ def resolve_simulation_evaluation_identity(config: Any, checkpoint_dir: str | Pa
     root = Path(checkpoint_dir)
     checkpoints = {}
     for fold in range(1, 6):
-        final = root / f"fold{fold}" / "three_phase_final.pt"
-        checkpoints[f"fold{fold}"] = {"artifact": sha256_file(final), "manifest": sha256_file(final.with_suffix(".json"))}
+        final = (config.runtime_backend.artifact_path(root, fold, config) if config.runtime_backend is not None
+                 else root / f"fold{fold}" / "three_phase_final.pt")
+        checkpoints[f"fold{fold}"] = {"artifact": sha256_file(final), "manifest": sha256_file(
+            final if config.runtime_backend is not None and config.runtime_backend.spec.selector == 'phase1' else final.with_suffix(".json"))}
     sources = {
         task: {part: sha256_file(registry.by_id(task).dataset.split_path(Path(source["recipe"]["data"]["data_root"]), part)) for part in ("train", split)}
         for task in scalar_simulation_tasks(config)
@@ -188,9 +190,11 @@ def evaluate_simulation_checkpoints(config: Any, checkpoint_dir: str | Path, *, 
     study = reporting_study_id or "ilume-simulation-" + identity["hash"]
     no_stage1 = source["recipe"]["home"]["initialization"] == "random_stage1"
     model_id, display = ("ilume_no_stage1", "ILUME w/o Stage1") if no_stage1 else ("ilume", "ILUME")
+    if config.runtime_backend is not None:
+        model_id, display = config.runtime_backend.spec.model_id, config.runtime_backend.spec.display_name
     return {"split": split, "domain": "simulation", "checkpoint_epoch": None, "tasks": metrics,
         "macro_normalized_mae": sum(value["normalized_mae"] for value in metrics.values()) / len(metrics),
         "reporting": reporting_block(model_id=model_id, model_display_name=display, benchmark="simulation_property",
             protocol={"split": split, "expected_tasks": list(scalar_simulation_tasks(config)), "folds": list(range(1, 6)), "ensemble": True,
-                      "ensemble_method": "raw_unit_prediction_mean_v1", "model_selector": "three_phase_final", "model_sources": identity["payload"]["checkpoints"]},
+                      "ensemble_method": "raw_unit_prediction_mean_v1", "model_selector": config.runtime_backend.model_selector if config.runtime_backend is not None else "three_phase_final", "model_sources": identity["payload"]["checkpoints"]},
             comparison=comparison, study_id=study, predictions=manifests)}

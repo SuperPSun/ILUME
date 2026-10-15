@@ -146,10 +146,13 @@ def load_frozen_stage1_entities(checkpoint, artifacts_dir, *, device="cpu"):
     metadata = json.loads((root / "metadata.json").read_text())
     features = {name: sha256_file(root / name) for name in (
         "tokenizer.json", "descriptor_schema.json", "descriptor_scaler.json")}
-    identity = semantic_identity("stage3.frozen-stage1-entities.v4", {
+    payload = {
         "checkpoint_sha256": sha256_file(checkpoint), "stage1_state_hash": encoding_state_hash(loaded.model),
         "feature_identity": metadata_identity(metadata, "feature", context="Stage1 features")["hash"],
-        "feature_files": features, "slot_contract": "ordered_entity_slots_v1", "role_policy": "formal_charge_v1"})
+        "feature_files": features, "slot_contract": "ordered_entity_slots_v1", "role_policy": "formal_charge_v1"}
+    if "ablation" in loaded.config.to_dict():
+        payload["stage1_ablation"] = loaded.config.to_dict()["ablation"]
+    identity = semantic_identity("stage3.frozen-stage1-entities.v4", payload)
     target = torch.device(device)
     loaded.model.requires_grad_(False).to(target).eval()
     schema = DescriptorSchema.from_payload(json.loads((root / "descriptor_schema.json").read_text()), expected_raw_names=rdkit_descriptor_names())

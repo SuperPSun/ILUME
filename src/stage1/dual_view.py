@@ -118,19 +118,27 @@ class DualViewPretrainModel(DualViewEncoder):
         if config.loss.lambda_partial_charge > 0:
             self.partial_charge_head = nn.Linear(self.atom_dim, 1)
 
+    def alignment_loss(self, h_s, h_g):
+        p_s, p_g = self.smiles_projector(h_s), self.graph_projector(h_g)
+        return -F.cosine_similarity(self.smiles_predictor(p_s).float(), p_g.detach().float()) - F.cosine_similarity(self.graph_predictor(p_g).float(), p_s.detach().float())
+
+    def reconstruction_logits(self, smiles, atoms, bonds):
+        atom_features, bond_features = self.atom_trunk(atoms), self.bond_trunk(bonds)
+        return {
+            "smiles": self.smiles_head(smiles),
+            "atom": {name: head(atom_features) for name, head in self.atom_heads.items()},
+            "bond": {name: head(bond_features) for name, head in self.bond_heads.items()},
+        }
+
     def forward(self, batch) -> PretrainOutput:
         if batch.masks is None:
             raise ValueError("Dual-view training requires masked inputs")
         smiles, atoms, bonds, h_s, h_g = self.views(batch)
         dropped = batch.masks.modality_dropped[:, :2]
         z = self.fusion(torch.cat((h_s.masked_fill(dropped[:, :1], 0), h_g.masked_fill(dropped[:, 1:2], 0)), -1))
-        p_s, p_g = self.smiles_projector(h_s), self.graph_projector(h_g)
-        alignment = -F.cosine_similarity(self.smiles_predictor(p_s).float(), p_g.detach().float()) - F.cosine_similarity(self.graph_predictor(p_g).float(), p_s.detach().float())
-        atom_features, bond_features = self.atom_trunk(atoms), self.bond_trunk(bonds)
+        alignment = self.alignment_loss(h_s, h_g)
         logits = {
-            "smiles": self.smiles_head(smiles),
-            "atom": {name: head(atom_features) for name, head in self.atom_heads.items()},
-            "bond": {name: head(bond_features) for name, head in self.bond_heads.items()},
+            **self.reconstruction_logits(smiles, atoms, bonds),
             "descriptor": self.descriptor_decoder(z),
             "unimol": self.unimol_projector(z),
             "electronic": self.electronic_head(z),
@@ -145,15 +153,19 @@ class DualViewPretrainModel(DualViewEncoder):
             statistics[name] = molecule_loss_statistics(reduced, valid, batch.roles, weights)
 
         labels = batch.masks.smiles_labels
-        record("smiles", F.cross_entropy(logits["smiles"].transpose(1, 2).float(), labels, reduction="none").flatten(), (labels != -100).flatten(), ids[:, None].expand_as(labels).flatten())
+        if "smiles" in logits:
+            record("smiles", F.cross_entropy(logits["smiles"].transpose(1, 2).float(), labels, reduction="none").flatten(), (labels != -100).flatten(), ids[:, None].expand_as(labels).flatten())
         for name, targets, mask, feature_names, molecule_ids in (
             ("atom", batch.graphs.atom_categorical, batch.masks.atom_mask, ATOM_FEATURE_NAMES, batch.graphs.atom_batch),
             ("bond", batch.graphs.bond_categorical, batch.masks.bond_mask, BOND_FEATURE_NAMES, batch.graphs.bond_batch),
         ):
+            if name not in logits:
+                continue
             losses = torch.stack([F.cross_entropy(logits[name][feature].float(), targets[:, column], reduction="none") for column, feature in enumerate(feature_names)], -1)
             record(name, losses, mask[:, None].expand_as(losses), molecule_ids)
         record("descriptor", F.mse_loss(logits["descriptor"].float(), batch.descriptors.float(), reduction="none"), batch.descriptor_valid, ids)
-        statistics["alignment"] = molecule_loss_statistics(alignment, torch.ones(size, device=z.device, dtype=torch.bool), batch.roles, weights)
+        if alignment is not None:
+            statistics["alignment"] = molecule_loss_statistics(alignment, torch.ones(size, device=z.device, dtype=torch.bool), batch.roles, weights)
         aux = batch.auxiliary_targets
         if aux is None:
             raise ValueError("Dual-view training requires audited auxiliary targets")

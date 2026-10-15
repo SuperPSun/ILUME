@@ -525,6 +525,10 @@ def build_resolved_training_plan(
         ),
         "parameter_counts": {
             "total": sum(parameter.numel() for parameter in model.parameters()),
+            "by_owner": {
+                owner.label: sum(parameter.numel() for parameter, candidate in model.parameter_ownership().items() if candidate == owner)
+                for owner in set(model.parameter_ownership().values())
+            },
             "trainable": sum(
                 parameter.numel()
                 for parameter in model.parameters()
@@ -838,9 +842,9 @@ def compute_task_gradient(
                 predictions, targets, beta=config.training.smooth_l1_beta, reduction="sum"
             )
             loss = loss_sum / task_batch_size
-        gradients = torch.autograd.grad(
+        gradients = (torch.autograd.grad(
             loss, parameters, allow_unused=True, materialize_grads=False
-        )
+        ) if loss.requires_grad else (None,) * len(parameters))
         for parameter, gradient in zip(parameters, gradients, strict=True):
             if gradient is not None:
                 value = gradient.detach().float()

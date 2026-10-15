@@ -28,7 +28,10 @@ def prepare_frozen_entities(recipe):
     entities = Stage2EntityDataset(root)
     data_identity = entities.metadata["semantic"]["identities"]["data"]["hash"]
     source_hash = encoding_state_hash(loaded.model)
-    identity = semantic_identity("stage2.frozen-entities.v4", {"data_identity": data_identity, "stage1_state_hash": source_hash, "feature_identity": loaded.artifact_hash, "entity_input_dim": loaded.model.entity_dim + 217, "atom_dim": loaded.model.atom_dim})
+    payload = {"data_identity": data_identity, "stage1_state_hash": source_hash, "feature_identity": loaded.artifact_hash, "entity_input_dim": loaded.model.entity_dim + 217, "atom_dim": loaded.model.atom_dim}
+    if "ablation" in loaded.config.to_dict():
+        payload["stage1_ablation"] = loaded.config.to_dict()["ablation"]
+    identity = semantic_identity("stage2.frozen-entities.v4", payload)
     path = root / "frozen_entities.pt"
     manifest_path = root / "frozen_entities.json"
     if path.exists():
@@ -57,5 +60,6 @@ def prepare_frozen_entities(recipe):
 
 def validate_frozen_entity_source(entities, backbone):
     manifest = entities.frozen_entity_manifest
-    if manifest is None or manifest["identity"]["payload"]["stage1_state_hash"] != encoding_state_hash(backbone):
+    if (manifest is None or manifest["identity"]["payload"]["stage1_state_hash"] != encoding_state_hash(backbone)
+            or manifest["identity"]["payload"].get("stage1_ablation") != backbone.config.to_dict().get("ablation")):
         raise ValueError("Frozen Stage1 entity cache source mismatch; run v4 Stage2 prepare")

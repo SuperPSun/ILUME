@@ -28,6 +28,7 @@
 
 | 模型/实验 | ADR |
 |---|---|
+| 当前基线数据升级与复用 | [0101](0101-baseline-catalog-v4-reuse.md)：24实验、三模拟、v3只读/v4完整归档 |
 | MLP / ECFP-XGBoost | [0022](0022-mlp-ecfp-xgboost-baselines.md) |
 | D-MPNN | [0028](0028-chemprop-dmpnn-baseline.md)、[0042](0042-dmpnn-shared-component-encoder.md) |
 | MoLFormer | [0029](0029-molformer-baseline.md)、[0030](0030-molformer-throughput-contract.md) |
@@ -37,7 +38,8 @@
 | AIonopedia | [0049](0049-aionopedia-multimodal-baseline.md) |
 | ILTransR | [0057](0057-iltransr-stage3-baseline.md) |
 | AIFC | [0060](0060-aifc-stage3-baseline.md) |
-| 核心三项消融 | [0089](0089-v4-frozen-dual-view-stage1.md)（历史 v4）、[0082](0082-home-mainline-and-core-ablations.md)、[0084](0084-stage3-simulation-phase2-phase3.md)、[0077](0077-stage3-single-task-mlp-v2-ablation.md)（历史配方来源） |
+| 现役 v4 独立消融 | [0100](0100-v4-entity-home-ablations.md)：核心十一行（含两项单视图）、五监督与容量对照；固定训练seed42；正式Base不变 |
+| 历史核心三项消融 | [0089](0089-v4-frozen-dual-view-stage1.md)（历史 v4）、[0082](0082-home-mainline-and-core-ablations.md)、[0084](0084-stage3-simulation-phase2-phase3.md)、[0077](0077-stage3-single-task-mlp-v2-ablation.md)（历史配方来源） |
 
 ## 冻结合同与历史
 

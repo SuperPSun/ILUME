@@ -640,6 +640,24 @@ class Stage3SparseModel(nn.Module):
         sources.extend(config.private_sources.get(task_id, ()))
         return tuple(dict.fromkeys(sources))
 
+    def group_delta(self, group: str, values: torch.Tensor):
+        return _mixture(self.l1_group_experts[group], values, self.l1_group_gates[group](values))
+
+    def task_gate_weights(self, key: str, values: torch.Tensor):
+        return torch.softmax(self.task_gates[key](values), dim=-1)
+
+    def register_owner_modules(self, owner, *modules):
+        """Register replacement research modules under an existing owner."""
+        self._own_modules(owner, *modules)
+
+    def refresh_ownership(self):
+        """Remove ownership entries for explicitly removed research modules."""
+        parameters = set(self.parameters())
+        modules = set(self.modules())
+        self._ownership_by_parameter = {p: o for p, o in self._ownership_by_parameter.items() if p in parameters}
+        self._modules_by_owner = {o: [m for m in owned if m in modules] for o, owned in self._modules_by_owner.items()}
+        self._validate_ownership()
+
     def forward(
         self,
         task_id: str,
@@ -722,11 +740,7 @@ class Stage3SparseModel(nn.Module):
                 global_primary,
                 self.l1_global_gate(global_primary),
             )
-        z_group_delta, l1_group_weights = _mixture(
-            self.l1_group_experts[spec.meta_group],
-            group_primary,
-            self.l1_group_gates[spec.meta_group](group_primary),
-        )
+        z_group_delta, l1_group_weights = self.group_delta(spec.meta_group, group_primary)
         local = self.l1_group_normalizations[spec.meta_group](
             (anchor if self.entity_inputs else group_primary) + z_group_delta
         )
@@ -740,8 +754,7 @@ class Stage3SparseModel(nn.Module):
             if partner_embedding is None:
                 raise ValueError(f"Stage 3 task requires partner embedding: {task_id}")
             if self.entity_inputs:
-                partner_delta, _ = _mixture(self.l1_group_experts[group], group_partner,
-                                           self.l1_group_gates[group](group_partner))
+                partner_delta, _ = self.group_delta(group, group_partner)
                 group_partner = self.l1_group_normalizations[group](partner_anchor + partner_delta)
             local = self.interactions[spec.meta_group](local, group_partner)
         elif partner_embedding is not None:
@@ -763,9 +776,7 @@ class Stage3SparseModel(nn.Module):
             if spec.partner_mode == "interaction":
                 private_local = self.interactions[group](private_local, private_partner)
         private_outputs = _expert_outputs(self.private_experts[key], private_local)
-        task_gate = torch.softmax(
-            self.task_gates[key](torch.cat((z_global, local), dim=-1)), dim=-1
-        )
+        task_gate = self.task_gate_weights(key, torch.cat((z_global, local), dim=-1))
         candidates = torch.cat((global_outputs, group_outputs, private_outputs), dim=1)
         mixed = (task_gate.unsqueeze(-1) * candidates).sum(dim=1)
         representation = (

@@ -271,7 +271,7 @@ def main() -> None:
         stage="benchmark", operation="evaluate", config_path=args.config,
         config_payload=config.to_dict(), semantic_identity=evaluation_identity,
         output=args.output, seed=config.seed,
-        data_metadata=f"data/{'stage2' if args.benchmark == 'simulation' else 'stage3'}/metadata.json",
+        data_metadata=str(config.data.data_root / ("stage2" if args.benchmark == "simulation" else "stage3") / "metadata.json"),
         details={
             "reporting_schema_version": REPORTING_SCHEMA_VERSION,
             "benchmark": args.benchmark, "task": args.task, "split": args.split,

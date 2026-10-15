@@ -310,3 +310,7 @@ Stage2五任务训练集/验证集来源齐全；两项辅助任务的训练集/
 ## 独立静态 HPO
 
 正式运行保持本手册原配方。独立调参使用 [HPO手册](hpo-simple-runbook.md) 和 [ADR-0099](adr/0099-simple-static-hpo.md)，配置与输出分别位于 `configs/HPO`、`outputs/HPO`，人工选型后分轮生成完整YAML。Stage2支持正整数Epoch及可选training.seed；默认10轮和data.seed沿用行为保留。HPO显式固定训练seed42，Prepare审计写入独立输出，不改写数据目录metadata或正式产物。
+
+## 当前数据版本的基线
+
+基线的新catalog_v4协议按[基线手册](baseline-catalog-v4-runbook.md)及[ADR-0101](adr/0101-baseline-catalog-v4-reuse.md)运行：data/42、24实验、三模拟；历史20实验/四模拟保持只读和独立协议，不再作为当前比较入口。Stage1/2/3合同不变。

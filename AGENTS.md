@@ -30,9 +30,9 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 ### 历史合同、消融与基线
 
 - 历史实现/Capacity 保持五模态格式 v2、Stage 2 仅补偿 physics 的 loss 与既有精调；Stage 3 保持整模裁剪、`max(N_t,1000)` 虚拟过采样、80/20 精调和 `taskwise_refined`（ADR-0026/0027）。Capacity 是端到端预注册研究，不是正式多容量主线、严格缩放定律或仅编码器效应；只用 Stage 1 Base prepare 一次，共享 `outputs/experiments_v1/stage1/prepare/artifacts`。Stage 3 正式输入只用 `formal/*.yaml`，选择只读拼接后的验证，不读末轮均值或测试集。
-- v4消融配置和旧ObjectEncoder实现/加载已移除；历史消融与历史实现/Capacity复现须使用对应Git版本，输出保留。
+- 旧Object消融配置和旧ObjectEncoder实现/加载已移除；现役独立Entity-HoME消融按 [ADR-0100](docs/adr/0100-v4-entity-home-ablations.md) 与 [消融手册](docs/v4-ablation-runbook.md) 执行，正式Base不变；现役核心包含移除SMILES/分子图的完整重训，固定训练seed42、不追加seed稳定性测试。历史消融与历史实现/Capacity复现须使用对应Git版本，输出保留。
 - ADR-0034/0036/0062/0068/0072/0073/0079/0080/0081 及 Stage3 候选仅作历史追溯，不作为活跃入口；旧输出只读，不跨身份加载。v1/Capacity 冻结合同仍有效。
-- ADR-0086：十个正式基线对汽化热、热膨胀、HOMO、LUMO 独立单次训练，任务目录原训练集/验证集/测试集；不训练 partial charge，不更新实验任务模型。神经模型 10 轮、XGBoost 1000 trees 保持各自末轮配方。单任务 MLP 消融和历史 split 配置不扩展。Stage3 模拟验证集/测试集使用五个 final 原单位预测均值，比较身份绑定完整行集合、来源 SHA 与原始训练集总体标准差（零方差为 1）；模拟榜单不得进入实验 wins/radar/scatter。
+- ADR-0086：十个正式基线对汽化热、热膨胀、HOMO、LUMO 独立单次训练，任务目录原训练集/验证集/测试集；不训练 partial charge，不更新实验任务模型。神经模型 10 轮、XGBoost 1000 trees 保持各自末轮配方。历史单任务 MLP 消融和历史 split 配置不扩展；现役实体 MLP 按 ADR-0100 独立注册。Stage3 模拟验证集/测试集使用五个 final 原单位预测均值，比较身份绑定完整行集合、来源 SHA 与原始训练集总体标准差（零方差为 1）；模拟榜单不得进入实验 wins/radar/scatter。
 - 基线只复用注册表、split、canonical SMILES、条件/目标与评估口径，不改变 Stage 数值合同。按 ADR 索引读取各模型合同，不能把一个模型的预算推及其他模型。
 - ADR-0045：MLP/D-MPNN/MoLFormer/ILBERT/SPMM/LlaSMol 均为 10 轮，XGBoost 为 1000 trees；全部发布末轮状态。AIonopedia、ILTransR 与 AIFC 也使用各自现役的 10轮配方。除模型 ADR 明定外，验证不驱动早停、选检查点、调度器或训练决策。
 - AIonopedia（0049）只用通用已发布多模态检查点、完整官方下游拓扑和独立条件路径，禁止 property-specific 资源或 pure-Qwen。ILTransR（0057）只用通过一致性验证的通用预训练转换与共享全量微调编码器/TextCNN，禁止监督训练 property 检查点；条件使用全量 Stage 3 协变量的传导式总体z-score。
@@ -67,3 +67,7 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 - 修改后运行 `pytest -q`；按风险检查十个Stage入口（含离线`stage1/teacher.py`和独立`stage1/regression.py`）与四个基准比较脚本的`--help`、compileall、diff/Markdown链接检查。只用临时小数据；不自动下载teacher权重、生成全量3D缓存或执行正式prepare/训练/评估/回归头后训练。先用独立审计输出验证teacher成功率、吞吐、存储，再由用户正式运行。
 - 优先复用/修改现有测试。只有此前未覆盖且会造成实质损失的科研、恢复、产物/身份、CLI/报告或高风险调度合同，才新增最小行为测试；不为私有辅助函数、搬家、简单重构或覆盖率扩测试。`tests/` 按 Stage/基准比较/common/architecture 集中组织，`conftest.py` 只放跨文件复用的小测试数据。
 - `trash/` 不进 Git。移动旧产物/YAML/未消费数据或删除机器缓存前，报告精确文件数、大小、目标和冲突策略，等用户明确确认。不得覆盖、重排或删除既有 `trash/`。
+
+## 当前基线数据协议
+
+ADR-0101仅扩展基线：`configs/benchmarks/catalog_v4`使用data/42的24实验和HOMO/LUMO/热膨胀三模拟，各模型原配方与种子不变。九模型严格审计后完整复制至outputs/benchmarks/v4，旧产物只读保留；AIonopedia全部重训。不得改写旧训练身份；正式训练仍由用户启动。历史20实验/四模拟约束保留为历史协议。

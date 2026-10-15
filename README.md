@@ -14,7 +14,7 @@ python -m pip install -e ".[dev,tokenizers]"
 
 Stage1配置和独立预测器保持不变。Stage2采用五任务实体HoME，Stage3为24实验+两项模拟辅助；独立ObjectEncoder已取消。GLOBAL/GROUP的L1并行读取冻结Stage1 learned1024+标准化RDKit217实体、角色和有效位。Phase1联合训练，Phase2冻结GLOBAL，Phase3仅PRIVATE；两个模拟任务只更新自己的PRIVATE。
 
-正式配置为 `configs/v4/stage{1,2,3}/base.yaml`，准备产物和下游引用按 YAML 定位，运行输出由 `--output` 指定。见 [ADR-0095](docs/adr/0095-v4-entity-home-without-object-encoder.md) 和 [运行手册](docs/v4-runbook.md)。正式Stage1 编码器/特征需先齐备；不手改元数据或SHA。历史Object/v5工件只读，加载须使用历史Git版本；v5及v4消融配置已移除。
+正式配置为 `configs/v4/stage{1,2,3}/base.yaml`，准备产物和下游引用按 YAML 定位，运行输出由 `--output` 指定。见 [ADR-0095](docs/adr/0095-v4-entity-home-without-object-encoder.md) 和 [运行手册](docs/v4-runbook.md)。正式Stage1 编码器/特征需先齐备；不手改元数据或SHA。历史Object/v5工件只读，加载须使用历史Git版本；旧v5及Object消融配置已移除；现役独立消融见 [v4消融手册](docs/v4-ablation-runbook.md) 与 [ADR-0100](docs/adr/0100-v4-entity-home-ablations.md)。核心含移除SMILES/分子图的完整重训，固定训练seed42；配置共36份，不追加seed稳定性测试。
 
 Stage1 共用 `data/stage1`；Stage2/3 默认选择 `data/42` 下的数据及 catalog。五套数据 split 的配置、输出隔离和运行前提统一见 [v4运行手册](docs/v4-runbook.md#数据-split-与路径)。
 
@@ -129,6 +129,8 @@ no-Stage1 使用其独立配置与输出根；no-Stage2 和单任务 MLP 消融�
 <a id="baselines-and-ablations"></a>
 
 ## 基线与消融
+
+当前数据版本基线使用 `configs/benchmarks/catalog_v4/` 与 `outputs/benchmarks/v4/<model>/`，覆盖24实验及HOMO/LUMO/热膨胀三模拟。九模型可审计复制旧结果；AIonopedia权重丢失，全部重训。审计、补训和新报告按[当前基线手册](docs/baseline-catalog-v4-runbook.md)及[ADR-0101](docs/adr/0101-baseline-catalog-v4-reuse.md)执行。下方旧配置与四模拟命令仅保留历史协议说明。
 
 独立基线的配置在 `configs/benchmarks/`，代码在 `benchmarks/`。训练预算、环境和模型合同从 [ADR 索引](docs/adr/README.md)查阅。实验基线仍为历史20任务合同，依赖包含x_co2的对应历史任务目录/数据；不能直接使用当前24任务目录或用gas_solubility替代。以 D-MPNN 为例：
 

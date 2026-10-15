@@ -115,7 +115,7 @@ class EpochDiagnostics:
         if shared:
             experimental = {task: size for task, size in sizes.items() if task in self.task_groups}
             for owner, values in self.shared.items():
-                if self.trainable[owner]:
+                if self.trainable.get(owner, False):
                     values.add({task: size for task, size in experimental.items() if task in values.tasks})
 
     def result(self) -> dict[str, Any]:

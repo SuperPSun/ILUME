@@ -49,6 +49,8 @@ def validate_transfer_architecture(source_model, target_model, source_groups, ta
 
 
 def load_source(config: Stage3Config) -> dict[str, Any]:
+    if config.runtime_backend is not None:
+        return config.runtime_backend.load_source(config)
     if not config.is_entity_home or config.initialization.home_mode != "trained":
         raise ValueError("Entity HoME requires the new Stage2 full artifact")
     artifact_path = config.initialization.stage2_final
@@ -65,6 +67,8 @@ def load_source(config: Stage3Config) -> dict[str, Any]:
 
 
 def source_plan(config: Stage3Config, source: Mapping[str, Any] | None, names: tuple[str, ...]) -> dict[str, Any]:
+    if config.runtime_backend is not None:
+        return config.runtime_backend.source_plan(config, source, names)
     if source is None:
         return {"mode": "no_stage2", "transferred_parameters": []}
     artifact_path = config.initialization.stage2_final
@@ -114,6 +118,8 @@ def build_model_and_store(
         model.simulation_vocabulary = source["_vocabulary"]
         copy_simulation_owners(model, source_model)
     names = load_transferable_state(model, source["shared_state"], source["shared_state_hash"])
+    if config.runtime_backend is not None:
+        model, names = config.runtime_backend.transform_model(config, model, names)
     store = EntityRepresentations(prepared["slots"])
     experimental = [task for task, spec in prepared["registry"].items() if spec.enabled]
     owners = {GLOBAL, *(group_owner(specs[task].meta_group) for task in experimental),
@@ -165,6 +171,8 @@ def train_fold(
         extend_simulation_plan(plan, config, model, simulation_data, source)
     else:
         plan["format_version"] = 14 if config.is_entity_home else 11 if config.initialization.representation_contract == "dual_view_v4" else 9
+    if config.runtime_backend is not None:
+        config.runtime_backend.finalize_plan(config, model, plan)
     if expected_training_identity is not None:
         require_compatible_identity(
             expected_training_identity, build_stage3_training_identity(plan),
@@ -204,6 +212,8 @@ def resolve_training_identity(config: Stage3Config, fold: int) -> dict[str, Any]
         extend_simulation_plan(plan, config, model, simulation_data, source)
     else:
         plan["format_version"] = 14 if config.is_entity_home else 11 if config.initialization.representation_contract == "dual_view_v4" else 9
+    if config.runtime_backend is not None:
+        config.runtime_backend.finalize_plan(config, model, plan)
     return build_stage3_training_identity(plan)
 
 
@@ -218,13 +228,14 @@ def load_simulation_final(
 
     root = Path(checkpoint_dir)
     nested = root / f"fold{fold}" / "three_phase_final.pt"
-    artifact = nested if nested.is_file() else root / "three_phase_final.pt"
+    artifact = (config.runtime_backend.artifact_path(root, fold, config) if config.runtime_backend is not None
+        else nested if nested.is_file() else root / "three_phase_final.pt")
     prepared = load_prepared_stage3(config)
     model, checkpoint, _ = _load_model(
         config, prepared, artifact, fold, 0, torch.device(device),
         three_phase_final=True,
     )
-    _validate_three_phase_manifest(artifact, checkpoint)
+    _validate_three_phase_manifest(artifact, checkpoint, config)
     if not isinstance(model, SimulationEntityModel):
         raise ValueError("Stage 3 final artifact lacks simulation prediction owners")
     return model

@@ -12,6 +12,15 @@ GLOBAL_RDKIT_STAGE1_CHECKPOINT_VERSION = 3
 DUAL_VIEW_STAGE1_CHECKPOINT_VERSION = 4
 STAGE1_CHECKPOINT_KIND = "ilume_stage1_pretraining"
 
+_CONFIG_EXTENSIONS: dict[str, Any] = {}
+
+
+def register_config_extension(section: str, parser: Any) -> None:
+    """Register an entrypoint-owned research config without importing its package."""
+    if section in _SECTIONS or section in _CONFIG_EXTENSIONS:
+        raise ValueError(f"Stage1 config extension already registered: {section}")
+    _CONFIG_EXTENSIONS[section] = parser
+
 
 @dataclass(frozen=True)
 class ArchitectureConfig:
@@ -155,6 +164,18 @@ class PretrainConfig:
     loss: LossConfig = field(default_factory=LossConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     auxiliary: AuxiliaryConfig = field(default_factory=AuxiliaryConfig)
+
+    @property
+    def model_factory(self):
+        return None
+
+    @property
+    def encoder_checkpoint_kind(self):
+        return "ilume_stage1_dual_view_encoder_v4"
+
+    @property
+    def training_checkpoint_kind(self):
+        return STAGE1_CHECKPOINT_KIND
 
     def validate(self) -> None:
         if self.architecture.kind not in {
@@ -397,6 +418,11 @@ def _construct(section_type: type, values: dict[str, Any] | None) -> Any:
 
 def config_from_dict(raw: dict[str, Any]) -> PretrainConfig:
     raw = dict(raw)
+    extensions = set(raw) & _CONFIG_EXTENSIONS.keys()
+    if extensions:
+        if len(extensions) != 1:
+            raise ValueError("Only one Stage1 research config extension is supported")
+        return _CONFIG_EXTENSIONS[extensions.pop()](raw)
     unknown = set(raw) - set(_SECTIONS)
     if unknown:
         raise ValueError(f"Unknown config sections: {', '.join(sorted(unknown))}")

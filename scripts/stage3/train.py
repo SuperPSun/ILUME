@@ -16,6 +16,7 @@ import hashlib
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT))
 
 
 def _positive_int(value: str) -> int:
@@ -265,8 +266,9 @@ def _run_fold(
     from stage3.config import (
         configure_process_runtime,
         effective_training_seed,
-        load_stage3_config,
     )
+
+    from ablations.entity_home.config import load_research_config as load_stage3_config
 
     config = load_stage3_config(config_path)
     configure_process_runtime(config)
@@ -523,7 +525,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = _build_parser()
     args = parser.parse_args()
-    from stage3.config import load_stage3_config, validate_stage3_folds
+    from stage3.config import validate_stage3_folds
 
     try:
         devices = _parse_devices(args.devices)
@@ -531,6 +533,8 @@ def main() -> int:
         parser.error(str(error))
 
     from common.outputs import repository_path
+    from ablations.entity_home.config import load_research_config as load_stage3_config
+
     config = load_stage3_config(args.config)
     if config.training.schedule_mode != "three_phase":
         parser.error("Legacy Stage 3 training and resume are retired; historical final artifacts remain read-only")

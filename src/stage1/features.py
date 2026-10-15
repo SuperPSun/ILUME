@@ -14,7 +14,6 @@ from common.identity import require_compatible_identity
 from .config import (
     GLOBAL_RDKIT_STAGE1_CHECKPOINT_VERSION,
     DUAL_VIEW_STAGE1_CHECKPOINT_VERSION,
-    STAGE1_CHECKPOINT_KIND,
     STAGE1_CHECKPOINT_VERSION,
     PretrainConfig,
     config_from_dict,
@@ -139,7 +138,8 @@ def load_stage1_feature_inputs(
     )
     config = config_from_dict(checkpoint["config"])
     if (
-        checkpoint.get("kind") not in {STAGE1_CHECKPOINT_KIND, "ilume_stage1_dual_view_encoder_v4"}
+        checkpoint.get("kind") not in {config.training_checkpoint_kind, config.encoder_checkpoint_kind, "ilume_stage1_random_encoder_v4"}
+        or (checkpoint.get("kind") == "ilume_stage1_random_encoder_v4" and config.model_factory is not None)
         or checkpoint.get("format_version") != config.checkpoint_version
         or checkpoint.get("format_version")
         not in {

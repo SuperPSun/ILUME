@@ -46,7 +46,8 @@ def prepare_gradient_probe(dataset, vocabulary, config):
 def audit_gradient_norms(model, probe, config, device, *, amp_enabled, amp_dtype):
     """No backward/optimizer/collective; leave state, .grad and RNG untouched."""
     parameters = tuple(dict.fromkeys(
-        p for encoder in (model.smiles_encoder, model.graph_encoder, model.fusion)
+        p for encoder in (getattr(model, "smiles_encoder", None), getattr(model, "graph_encoder", None), model.fusion)
+        if encoder is not None
         for p in encoder.parameters() if p.requires_grad
     ))
     modes = [(module, module.training) for module in model.modules()]
@@ -64,6 +65,7 @@ def audit_gradient_norms(model, probe, config, device, *, amp_enabled, amp_dtype
             objectives = dict(AUDIT_LOSSES)
             if config.loss.lambda_partial_charge > 0:
                 objectives["partial_charge"] = "partial_charge"
+            objectives = {name: loss for name, loss in objectives.items() if loss in output.loss_statistics}
             active = [name for name, loss in objectives.items()
                       if output.loss_statistics[loss].denominators.sum().item() > 0]
             for name, loss in objectives.items():

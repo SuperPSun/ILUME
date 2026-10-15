@@ -11,6 +11,9 @@ import torch.distributed as dist
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT))
+
+import ablations.entity_home.stage1  # 注册独立 Stage1 消融配置与模型。
 
 from common.outputs import open_run_directory, repository_path
 from stage1.config import load_config
@@ -25,12 +28,19 @@ def main() -> None:
     parser.add_argument("--resume")
     parser.add_argument("--gradient-audit-interval-steps", type=int,
                         help="Override YAML audit interval; 0 disables gradient audit.")
+    parser.add_argument("--export-random-encoder", action="store_true", help="Export the isolated zero-training v4 ablation encoder.")
     args = parser.parse_args()
     config = load_config(args.config)
     if args.gradient_audit_interval_steps is not None:
         config = replace(config, training=replace(config.training,
                          gradient_audit_interval_steps=args.gradient_audit_interval_steps))
         config.validate()
+    if args.export_random_encoder:
+        if args.resume or args.gradient_audit_interval_steps is not None or int(os.environ.get("WORLD_SIZE", "1")) != 1:
+            parser.error("Random encoder export forbids resume, audit overrides and DDP")
+        from ablations.entity_home.random_encoder import export_random_encoder
+        export_random_encoder(config, args.config, args.output)
+        return
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     use_cuda = config.training.device == "cuda" or (

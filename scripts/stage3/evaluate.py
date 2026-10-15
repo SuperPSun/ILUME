@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT))
 
 from common.outputs import open_run_directory, repository_path, repository_relative
 from common.progress import ProgressReporter
@@ -15,16 +16,18 @@ from common.reporting import REPORTING_SCHEMA_VERSION
 from stage3.config import (
     Stage3Config,
     configure_process_runtime,
-    load_stage3_config,
     validate_stage3_folds,
 )
 
+from ablations.entity_home.config import load_research_config as load_stage3_config
 
 ResolveIdentity = Callable[..., dict[str, Any]]
 EvaluateCheckpoints = Callable[..., dict[str, Any]]
 
 
 def _model_selector(config: Stage3Config, checkpoint_epoch: int | None) -> str:
+    if config.runtime_backend is not None:
+        return config.runtime_backend.model_selector
     if checkpoint_epoch is not None:
         return "epoch_checkpoint"
     return (
@@ -261,7 +264,7 @@ def _run_simulation(
         semantic_identity=identity,
         data_metadata=repository_relative(config.preparation.data_metadata_path or config.data.stage3_dir / "metadata.json"),
         details={"reporting_schema_version": REPORTING_SCHEMA_VERSION, "domain": "simulation",
-                 "split": args.split, "ensemble_folds": True, "model_selector": "three_phase_final"},
+                 "split": args.split, "ensemble_folds": True, "model_selector": _model_selector(config, None)},
     )
     try:
         run.complete(evaluate_simulation_checkpoints(

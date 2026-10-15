@@ -7,6 +7,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT))
+
+import ablations.entity_home.stage1  # 注册独立 Stage1 消融配置与模型。
 
 from stage1.auxiliary import prepare_teacher_cache
 from stage1.config import load_config

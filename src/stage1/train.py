@@ -26,7 +26,6 @@ from common.training import (
     seed_everything,
 )
 from .config import (
-    STAGE1_CHECKPOINT_KIND,
     PretrainConfig,
     config_from_dict,
 )
@@ -430,7 +429,7 @@ def _checkpoint_payload(
     source_hashes: dict[str, str],
 ) -> dict[str, Any]:
     return {
-        "kind": STAGE1_CHECKPOINT_KIND,
+        "kind": config.training_checkpoint_kind,
         "format_version": config.checkpoint_version,
         "identity_contract_version": IDENTITY_CONTRACT_VERSION,
         "model": model.state_dict(),
@@ -502,7 +501,7 @@ def _load_checkpoint(
 ) -> dict[str, Any]:
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     if (
-        checkpoint.get("kind") != STAGE1_CHECKPOINT_KIND
+        checkpoint.get("kind") != config.training_checkpoint_kind
         or checkpoint.get("format_version") != config.checkpoint_version
     ):
         raise ValueError("Unsupported Stage 1 pretraining checkpoint")
@@ -864,7 +863,7 @@ def run_training(
         from common.identity import tensor_state_hash
         state = {name: value.detach().cpu().clone() for name, value in raw_model.state_dict().items() if name.startswith(("smiles_encoder.", "graph_encoder.", "fusion."))}
         atomic_torch_save(output_dir / "stage1_encoder.pt", {
-            "kind": "ilume_stage1_dual_view_encoder_v4", "format_version": 4,
+            "kind": config.encoder_checkpoint_kind, "format_version": 4,
             "config": config.to_dict(), "model": state,
             "state_hash": tensor_state_hash("stage1.dual-view.encoder.v4", state),
             "training_identity": training_identity, "corpus_identity": corpus_identity,

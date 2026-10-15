@@ -12,7 +12,6 @@ from common.identity import require_compatible_identity
 from .config import (
     GLOBAL_RDKIT_STAGE1_CHECKPOINT_VERSION,
     DUAL_VIEW_STAGE1_CHECKPOINT_VERSION,
-    STAGE1_CHECKPOINT_KIND,
     STAGE1_CHECKPOINT_VERSION,
     PretrainConfig,
     config_from_dict,
@@ -620,6 +619,8 @@ class MultimodalPretrainModel(nn.Module):
 
 
 def build_stage1_model(config, vocabulary, descriptor_schema=None, *, encoder_only=False):
+    if config.model_factory is not None:
+        return config.model_factory(config, vocabulary, descriptor_schema, encoder_only=encoder_only)
     if config.is_dual_view:
         from .dual_view import DualViewEncoder, DualViewPretrainModel
         return (DualViewEncoder if encoder_only else DualViewPretrainModel)(config, vocabulary, descriptor_schema)
@@ -642,8 +643,9 @@ def load_stage1_model(
     )
     config = config_from_dict(checkpoint["config"])
     if (
-        checkpoint.get("kind") not in {STAGE1_CHECKPOINT_KIND, "ilume_stage1_dual_view_encoder_v4"}
-        or (checkpoint.get("kind") == "ilume_stage1_dual_view_encoder_v4" and not config.is_dual_view)
+        checkpoint.get("kind") not in {config.training_checkpoint_kind, config.encoder_checkpoint_kind, "ilume_stage1_random_encoder_v4"}
+        or (checkpoint.get("kind") == "ilume_stage1_random_encoder_v4" and config.model_factory is not None)
+        or (checkpoint.get("kind") in {"ilume_stage1_dual_view_encoder_v4", "ilume_stage1_random_encoder_v4"} and not config.is_dual_view)
         or checkpoint.get("format_version") != config.checkpoint_version
         or checkpoint.get("format_version")
         not in {
@@ -653,6 +655,13 @@ def load_stage1_model(
         }
     ):
         raise ValueError("Stage 1 checkpoint architecture/version mismatch")
+    if config.model_factory is not None:
+        from common.identity import validate_semantic_identity
+        identity = checkpoint.get("training_identity", {})
+        validate_semantic_identity(identity)
+        if (identity.get("type") != "stage1.training"
+                or identity["payload"].get("training", {}).get("ablation") != checkpoint["config"]["ablation"]):
+            raise ValueError("Stage 1 single-view training identity mismatch")
     metadata = json.loads(
         (artifact_dir / "metadata.json").read_text(encoding="utf-8")
     )
@@ -691,12 +700,25 @@ def load_stage1_model(
         encoder_only=config.is_dual_view,
     )
     state = checkpoint["model"]
-    if config.is_dual_view and checkpoint["kind"] == STAGE1_CHECKPOINT_KIND:
+    if config.is_dual_view and checkpoint["kind"] == config.training_checkpoint_kind:
         state = {key: value for key, value in state.items() if key.startswith(("smiles_encoder.", "graph_encoder.", "fusion."))}
-    if config.is_dual_view and checkpoint["kind"] == "ilume_stage1_dual_view_encoder_v4":
+    if config.is_dual_view and checkpoint["kind"] in {config.encoder_checkpoint_kind, "ilume_stage1_random_encoder_v4"}:
         from common.identity import tensor_state_hash
         if tensor_state_hash("stage1.dual-view.encoder.v4", state) != checkpoint.get("state_hash"):
             raise ValueError("Stage 1 encoder state hash mismatch")
+    if checkpoint["kind"] == "ilume_stage1_random_encoder_v4":
+        from common.identity import validate_semantic_identity
+        identity = checkpoint.get("training_identity", {})
+        validate_semantic_identity(identity)
+        if (identity.get("type") != "ablation.stage1.random-encoder.v1"
+                or checkpoint.get("fixed_final_epoch") != 0
+                or identity["payload"].get("state_hash") != checkpoint.get("state_hash")
+                or identity["payload"].get("corpus_identity") != corpus_identity["hash"]
+                or identity["payload"].get("feature_identity") != artifact_hash
+                or identity["payload"].get("config") != checkpoint["config"]
+                or identity["payload"].get("random_seed") != config.data.seed
+                or identity["payload"].get("optimizer_updates") != 0):
+            raise ValueError("Random Stage1 encoder identity mismatch")
     model.load_state_dict(state, strict=True)
     if config.is_dual_view:
         model.requires_grad_(False).eval()

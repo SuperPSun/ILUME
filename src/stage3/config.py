@@ -308,6 +308,11 @@ class Stage3Config:
     transfer_knowledge: Stage3TransferKnowledgeConfig | None = None
 
     @property
+    def runtime_backend(self):
+        """Optional research backend supplied by an external entrypoint."""
+        return None
+
+    @property
     def is_entity_home(self) -> bool:
         return self.initialization.representation_contract == "entity_home_v4"
 
@@ -405,7 +410,7 @@ class Stage3Config:
                 raise ValueError("Trained Stage 3 HoME requires Stage 2 final artifact")
             if self.initialization.home_mode != "trained" and self.initialization.stage2_final is not None:
                 raise ValueError("Stage 2 final artifact requires trained HoME mode")
-            if self.initialization.simulation_artifacts_dir is not None and self.initialization.home_mode != "trained":
+            if self.initialization.simulation_artifacts_dir is not None and self.initialization.home_mode != "trained" and self.runtime_backend is None:
                 raise ValueError("Stage 3 simulation training requires a trained Stage 2 HoME source")
         else:
             expected = {

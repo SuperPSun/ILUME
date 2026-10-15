@@ -7,10 +7,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT))
 
 from common.data_identity import write_data_identity
 from common.outputs import open_run_directory, repository_relative
-from stage3.config import configure_process_runtime, load_stage3_config
+from stage3.config import configure_process_runtime
+
+from ablations.entity_home.config import load_research_config as load_stage3_config
 
 
 def main() -> None:

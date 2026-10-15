@@ -23,7 +23,11 @@ class SimulationHoME(nn.Module):
 
     @property
     def model_contract(self):
-        return {**ENTITY_INPUT_CONTRACT, "source_tasks": sorted(self.registry.task_ids)}
+        contract = {**ENTITY_INPUT_CONTRACT, "source_tasks": sorted(self.registry.task_ids)}
+        ablation = self.backbone.config.to_dict().get("ablation")
+        if ablation is not None:
+            contract["stage1_ablation"] = ablation
+        return contract
 
     def train(self, mode=True):
         super().train(mode)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -45,23 +46,48 @@ INPUT_CONTRACT = {
 }
 
 
+def _is_entity(config):
+    return config.name == "ilume_stage3_single_task_mlp_entity_v4"
+
+
+def _encoder_key(config):
+    return "stage1_encoder" if _is_entity(config) else "stage2_encoder"
+
+
+def _prepared_embeddings(config, prepared):
+    if not _is_entity(config):
+        return prepared["objects"]["embeddings"].float()
+    from common.entity_inputs import EntityInputs
+    slots = prepared["slots"]
+    mask = torch.arange(2)[None, :].expand(len(slots["counts"]), -1) < slots["counts"][:, None]
+    return EntityInputs(slots["slots"], slots["roles"], mask).pack()[0].float()
+
+
 def _is_v4(config: BenchmarkConfig) -> bool:
     return load_stage3_config(config.data.stage3_authority_config).initialization.representation_contract == "dual_view_v4"
 
 
 def _checkpoint_kind(config: BenchmarkConfig) -> str:
+    if _is_entity(config):
+        return "ilume_stage3_single_task_mlp_model_entity_v4"
     return "ilume_stage3_single_task_mlp_model_home_v4" if _is_v4(config) else CHECKPOINT_KIND
 
 
 def _checkpoint_version(config: BenchmarkConfig) -> int:
-    return 4 if _is_v4(config) else CHECKPOINT_VERSION
+    return 4 if _is_entity(config) or _is_v4(config) else CHECKPOINT_VERSION
 
 
 def _state_namespace(config: BenchmarkConfig) -> str:
+    if _is_entity(config):
+        return "ablation.ilume-stage3-single-task-mlp-entity-state.v4"
     return "ablation.ilume-stage3-single-task-mlp-home-state.v4" if _is_v4(config) else STATE_NAMESPACE
 
 
 def _input_contract(config: BenchmarkConfig) -> dict[str, Any]:
+    if _is_entity(config):
+        from common.entity_inputs import ENTITY_INPUT_CONTRACT
+        return {**INPUT_CONTRACT, "embedding_source": "frozen_entity_slots_v4",
+                "embedding_dim": 2490, "embedding_transform": "ordered_slot_pack", "slot_contract": dict(ENTITY_INPUT_CONTRACT)}
     return {**INPUT_CONTRACT, "embedding_source": "stage3_prepared_home_object_v4"} if _is_v4(config) else INPUT_CONTRACT
 
 
@@ -98,9 +124,11 @@ def _load_prepared(config: BenchmarkConfig) -> tuple[Stage3Config, dict[str, Any
     prepared = load_prepared_stage3(authority)
     metadata = prepared["metadata"]
     embedding_dim = _input_contract(config)["embedding_dim"]
-    if metadata.get("embedding_dim") != embedding_dim:
+    if authority.is_entity_home != _is_entity(config):
+        raise ValueError("Single-task MLP authority/input family mismatch")
+    if metadata.get("embedding_dim") != (1024 if _is_entity(config) else embedding_dim):
         raise ValueError(f"Stage3 Single-task MLP requires {embedding_dim}-dimensional embeddings")
-    embeddings = prepared["objects"].get("embeddings")
+    embeddings = _prepared_embeddings(config, prepared)
     if (
         not isinstance(embeddings, torch.Tensor)
         or embeddings.ndim != 2
@@ -215,8 +243,8 @@ def _identity_payload(
         "prepared_identity": metadata_identity(
             prepared["metadata"], "prepared", context="Stage3 Single-task MLP artifact"
         )["hash"],
-        "stage2_encoder_identity": metadata_identity(
-            prepared["metadata"], "stage2_encoder", context="Stage3 Single-task MLP artifact"
+        (_encoder_key(config) + "_identity"): metadata_identity(
+            prepared["metadata"], _encoder_key(config), context="Stage3 Single-task MLP artifact"
         )["hash"],
         "artifact_hashes": prepared["metadata"]["artifact_hashes"],
         "input_contract": _input_contract(config),
@@ -258,7 +286,7 @@ def prepare_stage3_single_task_mlp_training(
         spec.condition_columns,
         context=f"{task_id}/fold{fold}/valid",
     )
-    embeddings = prepared["objects"]["embeddings"].float()
+    embeddings = _prepared_embeddings(config, prepared)
     input_dim = int(build_input_features(train, embeddings, spec).shape[1])
     if int(build_input_features(valid, embeddings, spec).shape[1]) != input_dim:
         raise ValueError(f"Stage3 Single-task MLP train/valid input mismatch: {task_id}")
@@ -293,7 +321,7 @@ def prepare_stage3_single_task_mlp_training(
         stage2_encoder_identity=dict(
             metadata_identity(
                 prepared["metadata"],
-                "stage2_encoder",
+                _encoder_key(config),
                 context="Stage3 Single-task MLP artifact",
             )
         ),
@@ -473,6 +501,10 @@ def train_stage3_single_task_mlp_bundle(
         raise RuntimeError("Stage3 Single-task MLP requires CUDA; no silent CPU fallback")
     if config.training["precision"] != "bf16" or not torch.cuda.is_bf16_supported():
         raise RuntimeError("Stage3 Single-task MLP requires BF16-capable CUDA")
+    if _is_entity(config):
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+        started = time.perf_counter()
     train_features = build_input_features(bundle.train, bundle.embeddings, bundle.spec)
     valid_features = build_input_features(bundle.valid, bundle.embeddings, bundle.spec)
     model = Stage3SingleTaskMLP(
@@ -505,7 +537,7 @@ def train_stage3_single_task_mlp_bundle(
         "model_kind": config.name,
         "training_identity": bundle.training_identity,
         "prepared_identity": bundle.prepared_identity,
-        "stage2_encoder_identity": bundle.stage2_encoder_identity,
+        (_encoder_key(config) + "_identity"): bundle.stage2_encoder_identity,
         "input_contract": _input_contract(config),
         "input_dim": bundle.input_dim,
         "hidden_dims": list(config.model["hidden_dims"]),
@@ -533,8 +565,20 @@ def train_stage3_single_task_mlp_bundle(
             },
         },
     }
+    training_cost = {}
+    if _is_entity(config):
+        torch.cuda.synchronize()
+        wall_seconds = time.perf_counter() - started
+        training_cost = {"wall_seconds": wall_seconds, "gpu_seconds": wall_seconds,
+                         "peak_allocated_bytes": int(torch.cuda.max_memory_allocated()),
+                         "total_parameters": sum(p.numel() for p in model.parameters()),
+                         "trainable_parameters": sum(p.numel() for p in model.parameters() if p.requires_grad),
+                         "optimizer_updates": math.ceil(len(bundle.train) / int(config.training["batch_size"])) * len(history),
+                         "sample_exposures": len(bundle.train) * len(history)}
+        manifest["training_cost"] = training_cost
     atomic_json(root / "checkpoint.json", manifest)
     return {
+        **({"training_cost": training_cost} if training_cost else {}),
         "final_epoch": best_epoch,
         "final_valid_normalized_mae": best_score,
         "epochs_ran": len(history),
@@ -585,7 +629,7 @@ def evaluate_stage3_single_task_mlp_checkpoint(
     expected_manifest = {
         "model_kind": config.name,
         "prepared_identity": bundle.prepared_identity,
-        "stage2_encoder_identity": bundle.stage2_encoder_identity,
+        (_encoder_key(config) + "_identity"): bundle.stage2_encoder_identity,
         "input_contract": _input_contract(config),
         "input_dim": bundle.input_dim,
         "hidden_dims": list(config.model["hidden_dims"]),
