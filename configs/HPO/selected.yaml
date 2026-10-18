@@ -1,4 +1,4 @@
 home: G2_C05
-stage2_config: null
-stage2_checkpoint: null
+stage2_config: configs/HPO/stage2/007.yaml
+stage2_checkpoint: outputs/HPO/stage2/007/train/stage2_final.pt
 stage3_config: null
