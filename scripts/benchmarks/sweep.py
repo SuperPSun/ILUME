@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-from benchmarks.common.config import load_benchmark_config
+from benchmarks.common.config import CATALOG_V4_PROTOCOLS, load_benchmark_config
 from benchmarks.common.data import configured_tasks, has_test_rows, resolve_task
 from benchmarks.common.environment import (
     ensure_benchmark_environment,
@@ -747,7 +747,7 @@ def main() -> None:
     state = _SweepState(
         rows=rows, status_path=root / "status.tsv", progress=sweep_progress,
         model_name=config.name,
-        catalog_config=config if config.protocol == "catalog_v4" else None,
+        catalog_config=config if config.protocol in CATALOG_V4_PROTOCOLS else None,
     )
     reused_tasks = {task for task, plan in (reuse_payload or {}).get("tasks", {}).items() if plan["action"] == "reuse"}
     for task in sorted(reused_tasks):

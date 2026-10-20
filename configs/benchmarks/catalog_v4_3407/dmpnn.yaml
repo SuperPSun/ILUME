@@ -1,0 +1,44 @@
+protocol: catalog_v4_3407
+name: dmpnn
+display_name: D-MPNN
+seed: 42
+environment:
+  name: ilume-dmpnn
+  definition: benchmarks/dmpnn/environment.yml
+  lock: benchmarks/dmpnn/requirements-linux-x86_64-cu128.lock
+data:
+  data_root: data/3407
+  task_catalog: data/3407/task_catalog.csv
+  stage3_authority_config: configs/v4/stage3/optimized_3407.yaml
+model:
+  message_hidden_dim: 300
+  depth: 3
+  dropout: 0.0
+  activation: relu
+  aggregation: norm
+  aggregation_norm: 100.0
+  ffn_hidden_dim: 300
+  ffn_hidden_layers: 1
+  batch_norm: false
+  multicomponent_shared: true
+training:
+  optimizer: adam
+  scheduler: noam
+  warmup_epochs: 2
+  initial_learning_rate: 1.0e-4
+  max_learning_rate: 1.0e-3
+  final_learning_rate: 1.0e-4
+  batch_size: 64
+  max_epochs: 10
+  loss: mse
+  model_selection: final_training_state
+  device: cuda
+  precision: fp32
+stage3:
+  enabled: true
+  tasks: all
+  folds: [1, 2, 3, 4, 5]
+
+simulation:
+  enabled: true
+  tasks: [simulation/thermal_expansion, simulation/homo, simulation/lumo]

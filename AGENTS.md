@@ -70,4 +70,4 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 
 ## 当前基线数据协议
 
-ADR-0101仅扩展基线：`configs/benchmarks/catalog_v4`使用data/42的24实验和HOMO/LUMO/热膨胀三模拟，各模型原配方与种子不变。九模型严格审计后完整复制至outputs/benchmarks/v4，旧产物只读保留；AIonopedia全部重训。不得改写旧训练身份；正式训练仍由用户启动。历史20实验/四模拟约束保留为历史协议。
+ADR-0102为现役基线入口：`configs/benchmarks/catalog_v4_3407`使用data/3407的24实验和HOMO/LUMO/热膨胀三模拟，十模型全量重训共1,230作业，输出outputs/benchmarks/v4_3407；各模型原配方与训练种子不变，不复用split42结果或清单。旧outputs/benchmarks按先报告精确数量/字节/目标并确认的规则在4090归档trash、szx删除，预训练资产和环境保留。ADR-0101及catalog_v4配置保留split42历史合同；旧训练身份不改写，正式训练仍由用户启动。

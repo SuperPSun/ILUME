@@ -132,7 +132,7 @@ no-Stage1 使用其独立配置与输出根；no-Stage2 和单任务 MLP 消融�
 
 ## 基线与消融
 
-当前数据版本基线使用 `configs/benchmarks/catalog_v4/` 与 `outputs/benchmarks/v4/<model>/`，覆盖24实验及HOMO/LUMO/热膨胀三模拟。九模型可审计复制旧结果；AIonopedia权重丢失，全部重训。审计、补训和新报告按[当前基线手册](docs/baseline-catalog-v4-runbook.md)及[ADR-0101](docs/adr/0101-baseline-catalog-v4-reuse.md)执行。下方旧配置与四模拟命令仅保留历史协议说明。
+当前数据版本基线使用 `configs/benchmarks/catalog_v4_3407/` 与 `outputs/benchmarks/v4_3407/<model>/`，覆盖24实验及HOMO/LUMO/热膨胀三模拟。十模型在data/3407全部重训，共1,230个训练作业，不复用split42结果；训练种子和各模型原配方不变。清理、szx的gpu05调度和新报告按[当前基线手册](docs/baseline-catalog-v4-runbook.md)及[ADR-0102](docs/adr/0102-baseline-split3407-full-retraining.md)执行。0101的split42复用安排及下方旧配置/四模拟命令保留历史协议说明。
 
 独立基线的配置在 `configs/benchmarks/`，代码在 `benchmarks/`。训练预算、环境和模型合同从 [ADR 索引](docs/adr/README.md)查阅。实验基线仍为历史20任务合同，依赖包含x_co2的对应历史任务目录/数据；不能直接使用当前24任务目录或用gas_solubility替代。以 D-MPNN 为例：
 

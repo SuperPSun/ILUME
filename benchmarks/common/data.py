@@ -15,7 +15,7 @@ from stage3.data import (
     test_path,
 )
 
-from .config import BenchmarkConfig, BenchmarkName
+from .config import BenchmarkConfig, BenchmarkName, CATALOG_V4_PROTOCOLS
 
 
 @dataclass(frozen=True)
@@ -70,13 +70,16 @@ def resolve_task(
         spec = load_stage2_registry(config.data.task_catalog, task_ids=(task_id,)).by_id(task_id)
         if spec.dataset.catalog_stage == 2:
             spec = replace(spec, dataset=replace(spec.dataset, catalog_stage=None))
+        dataset_root = config.data.data_root
+        if config.protocol == "catalog_v4_3407" and spec.dataset.catalog_stage == 1:
+            dataset_root = dataset_root.parent
         return BenchmarkTask(
             benchmark=benchmark, task_id=task_id, slots=spec.entity_columns,
             condition_columns=spec.condition_columns, target_columns=spec.target_columns,
             audit_columns=orbital_audit_columns(task_id),
-            train_paths=(spec.dataset.split_path(config.data.data_root, "train"),),
-            valid_paths=(spec.dataset.split_path(config.data.data_root, "valid"),),
-            test_path=spec.dataset.split_path(config.data.data_root, "test"),
+            train_paths=(spec.dataset.split_path(dataset_root, "train"),),
+            valid_paths=(spec.dataset.split_path(dataset_root, "valid"),),
+            test_path=spec.dataset.split_path(dataset_root, "test"),
             fold=None, meta_group=("thermophysical" if len(spec.entity_columns) == 2 else "electronic_structure"),
             registry_payload={"contract": "simulation.scalar-baseline.v1", **spec.to_dict(), **({"baseline_protocol": config.protocol} if config.protocol != "legacy" else {})},
         )
@@ -127,7 +130,7 @@ def configured_tasks(config: BenchmarkConfig, benchmark: BenchmarkName) -> tuple
     registry = resolve_task_registry(authority)
     if config.stage3.tasks == "all":
         tasks = tuple(task_id for task_id, spec in registry.items() if spec.enabled)
-        if config.protocol == "catalog_v4" and len(tasks) != 24:
+        if config.protocol in CATALOG_V4_PROTOCOLS and len(tasks) != 24:
             raise ValueError("catalog_v4 requires exactly 24 experimental tasks")
         return tasks
     unknown = set(config.stage3.tasks) - set(registry)

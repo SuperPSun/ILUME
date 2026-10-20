@@ -12,6 +12,7 @@ BenchmarkName = Literal["stage3", "simulation"]
 CATALOG_V4_SIMULATION_TASKS = (
     "simulation/thermal_expansion", "simulation/homo", "simulation/lumo",
 )
+CATALOG_V4_PROTOCOLS = {"catalog_v4", "catalog_v4_3407"}
 
 
 @dataclass(frozen=True)
@@ -72,13 +73,18 @@ class BenchmarkConfig:
     def validate(self) -> None:
         from stage3.simulation_reporting import SCALAR_SIMULATION_TASKS
 
-        if self.protocol not in {"legacy", "catalog_v4"}:
+        if self.protocol not in {"legacy", *CATALOG_V4_PROTOCOLS}:
             raise ValueError("Unknown baseline protocol")
-        expected_simulation = CATALOG_V4_SIMULATION_TASKS if self.protocol == "catalog_v4" else SCALAR_SIMULATION_TASKS
-        if self.protocol == "catalog_v4" and (not self.stage3.enabled or self.stage3.tasks != "all" or self.stage3.folds != (1, 2, 3, 4, 5)):
+        expected_simulation = CATALOG_V4_SIMULATION_TASKS if self.protocol in CATALOG_V4_PROTOCOLS else SCALAR_SIMULATION_TASKS
+        if self.protocol in CATALOG_V4_PROTOCOLS and (not self.stage3.enabled or self.stage3.tasks != "all" or self.stage3.folds != (1, 2, 3, 4, 5)):
             raise ValueError("catalog_v4 requires all experimental tasks and five folds")
-        if self.protocol == "catalog_v4" and not self.simulation.enabled:
+        if self.protocol in CATALOG_V4_PROTOCOLS and not self.simulation.enabled:
             raise ValueError("catalog_v4 requires its three simulation tasks")
+        if self.protocol == "catalog_v4_3407" and (
+            self.data.data_root != Path("data/3407")
+            or self.data.task_catalog != Path("data/3407/task_catalog.csv")
+        ):
+            raise ValueError("catalog_v4_3407 requires data/3407 and its task catalog")
         if self.simulation.enabled and (self.name in {"ilume_stage3_single_task_mlp_home_v1", "ilume_stage3_single_task_mlp_entity_v4"} or self.simulation.tasks != expected_simulation):
             raise ValueError("Simulation baselines require the protocol's scalar tasks and exclude ablations")
         if self.name not in {

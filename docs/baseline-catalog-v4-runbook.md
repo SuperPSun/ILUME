@@ -1,77 +1,86 @@
 # 当前数据版本基线运行手册
 
-合同见[ADR-0101](adr/0101-baseline-catalog-v4-reuse.md)。全部命令在仓库根执行；主环境为`ilume`，高级模型训练仍由入口切换至各自hash-lock环境，环境和资产按[README](../README.md#baselines-and-ablations)验证，不自动下载或安装。
+现役合同见[ADR-0102](adr/0102-baseline-split3407-full-retraining.md)。全部命令在仓库根执行；主环境为`ilume`，高级模型由入口进入已有hash-lock环境，环境和资产按[README](../README.md#baselines-and-ablations)验证，不自动下载或安装。
 
-## 配置和结果
+## 3407配置、任务与结果
 
-使用`configs/benchmarks/catalog_v4/<model>.yaml`，默认data/42、24实验五折以及thermal_expansion/homo/lumo三模拟。AIFC保留模型合同seed1000，其他模型保留各自原种子；data/42不替换模型种子。
+使用`configs/benchmarks/catalog_v4_3407/<model>.yaml`，显式`protocol: catalog_v4_3407`，数据根和catalog配对为`data/3407`。注册表authority为`configs/v4/stage3/optimized_3407.yaml`，只采用其任务与划分；各基线自己的模型、资产和训练配方保持原样。
 
-本节配置及下列命令保留ADR-0101的split42合同。2026-10-20起后续新实验采用3407，须另建配置与输出，不能复用split42的迁移清单或已训练任务；决定及身份边界见[HPO手册](hpo-simple-runbook.md#当前选型与报告入口)。
+24实验、cv1五折，hydration使用random/cv1且无测试集，其余按当前system规则；10项实验有测试集。模拟为thermal_expansion、homo、lumo，各独立一次训练。热膨胀来自data/3407/stage2；HOMO/LUMO按Stage1共用合同读取data/stage1/properties的固定原划分，不伪造3407电子数据，模型同样重训。AIFC保留seed1000，其他模型保留各自原种子；3407不替换训练种子。神经模型10轮、XGBoost 1000 trees，末轮发布，验证只报告。
 
-v3结果保留。新结果根为`outputs/benchmarks/v4/<model>/`；`imported/`保存完整旧任务，普通stage3目录保存新训练/派生评估，simulation目录保存新模拟作业。不要将旧根summary复制成新根summary。
+所有十模型全部重训，每模型`24×5+3=123`个作业，总计**1,230个**。不传复用参数，不复制旧预测；新协议拒绝旧迁移清单。新输出为`outputs/benchmarks/v4_3407/<model>/`，MLP/XGBoost特征缓存独立使用该根的cache。
 
-## 审计与复制（不训练）
+## 旧结果清理
 
-九个可复用模型逐一执行以下命令；AIonopedia不执行此步骤。此模式不加载大模型或启动GPU训练，会核验来源、预训练资产、权重和预测SHA，可能持续数分钟。
+2026-10-20，经用户确认后已完成：4090旧`outputs/benchmarks/`整体移至`trash/outputs/benchmarks-split42-20261020/`，25,370个文件、98,291,585,453字节，归档前后清单一致；szx旧`/home/sunp/ILUME/outputs/benchmarks/`已删除，32,602个文件、247,456,697,332字节，包含用户明确确认删除的历史v2结果。执行记录和逐文件清单位于`outputs/audits/baseline_3407/attempt-001/`的`cleanup_result.json`及`cleanup_{4090,szx}.tsv`。
 
-```bash
-conda activate ilume
-python scripts/benchmarks/sweep.py \
-  --config configs/benchmarks/catalog_v4/mlp.yaml \
-  --output outputs/benchmarks/v4/mlp \
-  --prepare-reuse-from outputs/benchmarks/v3/mlp
-```
+此类清理须先报告逐文件清单、精确数量和字节数，按工作区规则确认后执行；trash目标冲突则停止，不能覆盖或合并。历史v2在4090当前目录中没有副本，此次也已纳入明确确认的删除范围。
 
-其余模型为ecfp_xgboost、dmpnn、molformer、ilbert、spmm、llasmol、iltransr、aifc，各自替换模型名。命令返回`migrations/attempt-NNN/manifest.json`。查看同目录summary.json和manifest中的任务action：reuse可复用、train需要补训；源产物缺失或SHA异常会记录`audit_status: integrity_error`并将整个任务加入补训，绝不复制或复用。重复审计生成新attempt；目标已存在文件只有SHA相同才复用，目标冲突或清单篡改直接停止。
+预训练`artifacts/benchmarks/`、模型环境、原始数据、Stage/HPO/消融产物和Slurm脚本/日志继续保留。清理完成后不再向szx同步旧`outputs/benchmarks/v4/`或split42迁移清单。
 
-## 用户正式启动补训
+## 数据与资产迁移
 
-先检查审计清单中的补训原因，并使用命令实际返回的清单路径。初次从一个GPU任务开始，确认主机内存和显存后再增加并发。
+代码先通过Git更新；本次新增配置和入口必须在目标机就位。以下命令从4090执行，仅同步3407原始数据和预训练资产，不同步旧训练结果：
 
 ```bash
-python scripts/benchmarks/sweep.py \
-  --config configs/benchmarks/catalog_v4/mlp.yaml \
-  --output outputs/benchmarks/v4/mlp \
-  --reuse-manifest outputs/benchmarks/v4/mlp/migrations/attempt-004/manifest.json \
-  --max-workers 1 --devices cuda:0
+cd /data/pengs/ILUME
+rsync -aHcR --partial --info=progress2 \
+  ./data/3407 ./data/stage1/properties/homo ./data/stage1/properties/lumo \
+  ./artifacts/benchmarks \
+  szx:/home/sunp/ILUME/
+rsync -acniR ./data/3407 ./data/stage1/properties/homo \
+  ./data/stage1/properties/lumo ./artifacts/benchmarks szx:/home/sunp/ILUME/
 ```
 
-XGBoost不传`--devices`；其他高级模型使用对应模型配置/清单。包含imported目录时必须提供清单，不能只根据summary存在跳过训练。基线没有训练恢复，失败训练在新attempt从头重跑，已有成功作业在严格验证后跳过。
+MoLFormer还要求固定HF快照`ibm-research/MoLFormer-XL-both-10pct@361063d0ad524ef77cf39b08469f6be770dc550f`位于目标用户HF缓存，完整目录包括blobs和snapshots；szx已有缓存时仍由入口核验。其余资产使用YAML固定的仓库相对路径和SHA。不要修改hash以迁就不匹配的副本。
 
-AIonopedia旧权重已确认丢失，直接训练完整24实验和三模拟：
+## szx：gpu05提交
+
+两份sbatch位于`/home/sunp/slurm/baseline/`：
+
+| 文件 | 资源与范围 |
+|---|---|
+| `baseline-catalog-v4-gpu.sbatch` | gpu_6000D、gpu05；9项数组、每项1卡/8 CPU/64G、最多4项并发、7天 |
+| `baseline-catalog-v4-xgboost.sbatch` | 同节点8 CPU/32G，不占GPU；单独运行XGBoost |
+
+GPU数组索引依次为`0 llasmol / 1 aionopedia / 2 spmm / 3 molformer / 4 ilbert / 5 iltransr / 6 aifc / 7 dmpnn / 8 mlp`。每个模型内部max-workers1；脚本不传`--devices`，保留Slurm设置的CUDA_VISIBLE_DEVICES。资源空闲数量会变化，Slurm负责排队。配置和数据同步、旧产物清理完成后在szx执行：
+
+```bash
+cd /home/sunp/slurm/baseline
+sbatch baseline-catalog-v4-gpu.sbatch
+sbatch baseline-catalog-v4-xgboost.sbatch
+squeue -u sunp
+```
+
+日志在`/home/sunp/slurm/logs/baseline-v4-3407-*`，作业状态在`/home/sunp/ILUME/outputs/benchmarks/v4_3407/<model>/status.tsv`。单独重交某个GPU模型可用`sbatch --array=索引 baseline-catalog-v4-gpu.sbatch`，需先确认此前同模型作业已结束；不要并发运行同一模型的两个sweep。没有训练恢复，中断作业在新attempt完整重跑，已完成作业经严格核验后跳过。
+
+直接运行示例（在已分配GPU的节点）：
 
 ```bash
 python scripts/benchmarks/sweep.py \
-  --config configs/benchmarks/catalog_v4/aionopedia.yaml \
-  --output outputs/benchmarks/v4/aionopedia \
-  --max-workers 1 --devices cuda:0
+  --config configs/benchmarks/catalog_v4_3407/aionopedia.yaml \
+  --output outputs/benchmarks/v4_3407/aionopedia \
+  --max-workers 1
 ```
 
-不对完整sweep根混用`--benchmark all/stage3/simulation`；单任务调试使用独立输出。所有新训练和评估的数据审计路径从data_root派生，不使用旧的data/stage3元数据。
+其他模型只替换模型名，XGBoost同样使用max-workers1且YAML固定n_jobs8。不对同一完整sweep根混用`--benchmark all/stage3/simulation`；单任务调试使用独立输出。数据审计位置从data_root派生。
 
-## 本次交付审计（2026-10-15）
+## 汇总和回传
 
-九模型的九个候选任务全部通过，共81个完整任务、405个实验折次；复制6,093个原任务文件，共30,269,911,719字节，v3原件保留。最新清单为MLP的`attempt-004`、其余八模型的`attempt-003`，均位于各模型的`migrations/`下。
-
-本次总索引在`outputs/benchmarks/v4/migrations/attempt-001/`：
-
-- `summary.json`及`manifest.json`：九模型最新清单路径、SHA及复制统计。
-- `reused_folds.tsv`：405折原训练身份和来源。
-- `training_jobs.tsv`：795个实验折次和30个模拟作业，共825个待训练作业；AIonopedia占123个。
-- `commands.md`：十模型可直接运行的命令，已填写对应最新复用清单。正式训练及评估尚未启动。
-
-适配及基线测试118项通过、1项因主环境没有chemprop跳过。全套`pytest -q`为296项通过、1项跳过、4项失败；失败均是历史Capacity测试引用的`configs/experiments_v1/stage3/formal/{s,base,l,xl}.yaml`已不存在。四个基线入口帮助、编译、Markdown链接及diff检查通过。
-
-## 汇总
-
-仅当模型的24实验及三模拟完成后发布完整榜单。下面的输出目录单独保存本协议快照，不把v3根作为输入。
+模型24实验及三模拟完整后再发布完整榜单。只扫描新的3407输出及相同split的Stage3评估，不读取trash或旧split42报告：
 
 ```bash
 python scripts/benchmarks/summarize.py \
-  --input outputs/benchmarks/v4 outputs/v4/stage3/base/valid outputs/v4/stage3/base/test \
-  --output outputs/reports/baseline-catalog-v4
+  --input outputs/benchmarks/v4_3407 \
+    outputs/v4/stage3/optimized_3407/valid \
+    outputs/v4/stage3/optimized_3407/test \
+  --output outputs/reports/baseline-catalog-v4-3407
 ```
 
-Stage3输入替换为实际完成的现役评估目录；只汇总基线时仅传`outputs/benchmarks/v4`。实验榜单要求完整相同的24任务/五折或对应10测试任务。simulation榜单比较三任务基线均值；`thermal_expansion_{validation,test}_*.csv`只比较热膨胀，包括完整现役Stage3两任务报告中的对应任务。不同来源或归一尺度拒绝混排。HOMO/LUMO保留逐任务表，不伪造Stage3电子预测。
+Stage3路径替换为实际已完成目录；只汇总基线时仅传`outputs/benchmarks/v4_3407`。实验为24任务五折验证、10任务五模型测试集成；模拟为三任务等权汇总，Stage3仅参加独立thermal_expansion比较，来源、完整行集合和尺度必须一致。HOMO/LUMO独立报告。
 
-任意设备运行后的完整模型、配置、日志、清单和预测均须回传4090同相对目录，遵循[v4产物归档规则](v4-runbook.md#跨设备训练产物回传)。
+结束写入后将完整`outputs/benchmarks/v4_3407/`回传4090相同相对目录，包含全部权重、配置、清单、日志与预测，并核验大小和SHA；冲突不得覆盖不同身份产物。遵循[v4回传规则](v4-runbook.md#跨设备训练产物回传)。
+
+## 历史split42安排
+
+[ADR-0101](adr/0101-baseline-catalog-v4-reuse.md)及`configs/benchmarks/catalog_v4/`保留历史身份。2026-10-15曾审计81个任务、405个候选折次，计划补训825个作业；此计划已被本次3407全量重训替代。旧迁移清单不再作为现役入口，历史产物按上述已确认的清理范围归档/删除，历史报告不改写。

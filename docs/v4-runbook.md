@@ -347,4 +347,4 @@ Stage2五任务训练集/验证集来源齐全；两项辅助任务的训练集/
 
 ## 当前数据版本的基线
 
-基线的新catalog_v4协议按[基线手册](baseline-catalog-v4-runbook.md)及[ADR-0101](adr/0101-baseline-catalog-v4-reuse.md)运行：data/42、24实验、三模拟；历史20实验/四模拟保持只读和独立协议，不再作为当前比较入口。Stage1/2/3合同不变。
+基线现役catalog_v4_3407协议按[基线手册](baseline-catalog-v4-runbook.md)及[ADR-0102](adr/0102-baseline-split3407-full-retraining.md)运行：data/3407、24实验、三模拟，十模型全部重训共1,230作业，输出outputs/benchmarks/v4_3407。0101的split42复用安排及历史20实验/四模拟不再作为当前入口；旧baseline按用户确认范围归档/删除。Stage1/2/3数值合同不变。

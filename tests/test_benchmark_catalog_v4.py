@@ -23,8 +23,10 @@ from common.reporting import comparison_identity
 
 
 @pytest.mark.parametrize('model', ('mlp', 'ecfp_xgboost', 'dmpnn', 'molformer', 'ilbert', 'spmm', 'llasmol', 'aionopedia', 'iltransr', 'aifc'))
-def test_catalog_v4_keeps_model_recipe_and_binds_tasks(model):
-    current = load_benchmark_config(f'configs/benchmarks/catalog_v4/{model}.yaml')
+@pytest.mark.parametrize('split', ('42', '3407'))
+def test_catalog_v4_keeps_model_recipe_and_binds_tasks(model, split):
+    protocol = 'catalog_v4' if split == '42' else 'catalog_v4_3407'
+    current = load_benchmark_config(f'configs/benchmarks/{protocol}/{model}.yaml')
     legacy = load_benchmark_config(f'configs/benchmarks/{model}.yaml')
     assert current.model == legacy.model
     assert current.training == legacy.training
@@ -33,11 +35,26 @@ def test_catalog_v4_keeps_model_recipe_and_binds_tasks(model):
     assert current.simulation.tasks == ('simulation/thermal_expansion', 'simulation/homo', 'simulation/lumo')
     assert 'protocol' not in legacy.to_dict()
     assert resolve_task(current, 'stage3', 'experiment/hydration', 1).slots == ('solute',)
-    assert resolve_task(current, 'stage3', 'experiment/hydration', 1).registry_payload['baseline_protocol'] == 'catalog_v4'
+    assert current.protocol == protocol
+    assert current.data.data_root == Path(f'data/{split}')
+    assert current.data.task_catalog == Path(f'data/{split}/task_catalog.csv')
+    hydration = resolve_task(current, 'stage3', 'experiment/hydration', 1)
+    assert hydration.registry_payload['baseline_protocol'] == protocol
+    assert hydration.valid_paths[0] == Path(f'data/{split}/stage3/experiment/hydration/random/cv1/fold1.csv')
     invalid = current.to_dict()
     invalid['simulation']['tasks'] = list(legacy.simulation.tasks)
     with pytest.raises(ValueError):
         benchmark_config_from_dict(invalid)
+    if split == '3407':
+        for name in ('homo', 'lumo'):
+            task = resolve_task(current, 'simulation', f'simulation/{name}', None)
+            assert task.train_paths == (Path(f'data/stage1/properties/{name}/train.csv'),)
+        thermal = resolve_task(current, 'simulation', 'simulation/thermal_expansion', None)
+        assert thermal.train_paths == (Path('data/3407/stage2/thermal_expansion/train.csv'),)
+        invalid = current.to_dict()
+        invalid['data']['data_root'] = 'data/42'
+        with pytest.raises(ValueError, match='data/3407'):
+            benchmark_config_from_dict(invalid)
 
 
 def test_hydration_views_and_water_activity_are_complete():
@@ -73,6 +90,30 @@ def test_hydration_views_and_water_activity_are_complete():
     plain = MultiModalRegressor(torch.nn.Identity())
     assert 'water_activity' not in plain.condition_projectors
     assert all(torch.equal(value, model.state_dict()[key]) for key, value in plain.state_dict().items())
+
+
+def test_3407_orbitals_read_shared_stage1_rows(tmp_path, monkeypatch):
+    from benchmarks.common.data import load_split
+    config = load_benchmark_config('configs/benchmarks/catalog_v4_3407/mlp.yaml')
+    catalog = config.data.task_catalog.read_bytes()
+    monkeypatch.chdir(tmp_path)
+    config.data.task_catalog.parent.mkdir(parents=True)
+    config.data.task_catalog.write_bytes(catalog)
+    for name in ('homo', 'lumo'):
+        task = resolve_task(config, 'simulation', f'simulation/{name}', None)
+        fields = (*task.slots, *task.target_columns, *task.audit_columns)
+        for source in (*task.train_paths, *task.valid_paths, task.test_path):
+            source.parent.mkdir(parents=True, exist_ok=True)
+            with source.open('w', newline='') as handle:
+                writer = csv.DictWriter(handle, fieldnames=fields)
+                writer.writeheader()
+                for value in (1., 3.):
+                    writer.writerow({'SMILES':'C[NH3+]', task.target_columns[0]:value,
+                        'ion_role':'cation', 'provenance_source_file':'simulation/simulated_HOMO+LUMO_PBE_TZVP_cations_structured.csv',
+                        'provenance_source_row':'2'})
+        assert task.train_paths[0].parts[:4] == ('data', 'stage1', 'properties', name)
+        assert load_split(task, 'train').targets.tolist() == [[1.], [3.]]
+    assert not Path('data/3407/stage1').exists()
 
 
 @pytest.fixture
@@ -219,6 +260,56 @@ def test_catalog_evaluation_rejects_legacy_checkpoint(reuse_source, monkeypatch)
         engine.evaluate_checkpoint(config, 'stage3', reuse.REUSE_TASKS[0], 1, checkpoint.parent, 'valid')
     with pytest.raises(ValueError, match='禁止复用'):
         reuse.validate_reuse(replace(config, protocol='legacy'), Path('unused'), output)
+
+
+@pytest.mark.parametrize('domain', ('stage3', 'simulation'))
+def test_3407_identity_rejects_42_even_with_identical_source_bytes(reuse_source, monkeypatch, domain):
+    from benchmarks.common import engine
+    from common.identity import require_compatible_identity
+    config, source, output, scope = reuse_source
+    task_id = reuse.REUSE_TASKS[0]
+    def task(config, benchmark, task_id, fold):
+        spec = reuse.resolve_task(config, 'stage3', task_id, 1)
+        return replace(spec, benchmark=benchmark, fold=fold,
+            registry_payload={**spec.registry_payload, 'baseline_protocol': config.protocol})
+    monkeypatch.setattr(engine, 'resolve_task', task)
+    fold = 1 if domain == 'stage3' else None
+    old = engine.prepare_training(config, domain, task_id, fold)
+    current = replace(config, protocol='catalog_v4_3407', data=replace(config.data,
+        data_root=Path('data/3407'), task_catalog=Path('data/3407/task_catalog.csv')))
+    new = engine.prepare_training(current, domain, task_id, fold)
+    assert np.array_equal(new.train_features, old.train_features)
+    assert new.source_hashes == old.source_hashes
+    with pytest.raises(ValueError, match='identity'):
+        require_compatible_identity(new.training_identity, old.training_identity, context='split')
+    with pytest.raises(ValueError, match='catalog_v4'):
+        reuse.prepare_reuse(current, 'config.yaml', source, output)
+    with pytest.raises(ValueError, match='禁止复用'):
+        reuse.validate_reuse(current, Path('unused'), output)
+
+
+def test_3407_sweep_schedules_every_task_without_reuse(reuse_source, monkeypatch):
+    from scripts.benchmarks import sweep
+    config, source, output, scope = reuse_source
+    config = replace(config, protocol='catalog_v4_3407', data=replace(config.data,
+        data_root=Path('data/3407'), task_catalog=Path('data/3407/task_catalog.csv')))
+    Path('config.yaml').write_text(yaml.safe_dump(config.to_dict()))
+    simulations = config.simulation.tasks
+    experimental_tasks = reuse.configured_tasks(config, 'stage3')
+    monkeypatch.setattr(sweep, 'configured_tasks', lambda c, domain: experimental_tasks if domain == 'stage3' else simulations)
+    monkeypatch.setattr(sweep, 'resolve_task', reuse.resolve_task)
+    def schedule(**kwargs):
+        assert len(kwargs['jobs']) == 123
+        assert len(kwargs['ensembles']) == 24
+        assert len({j.key for j in kwargs['jobs']}) == 123
+        assert len([j for j in kwargs['jobs'] if j.kind == 'simulation']) == 3
+        assert kwargs['state'].rows == []
+        assert kwargs['state'].catalog_config.protocol == 'catalog_v4_3407'
+    monkeypatch.setattr(sweep, '_schedule', schedule)
+    monkeypatch.setattr('sys.argv', ['sweep.py','--config','config.yaml','--output','target'])
+    sweep.main()
+    summary = json.loads((output / 'summary.json').read_text())
+    assert summary['reporting']['data_protocol'] == 'catalog_v4_3407'
 
 
 def test_catalog_sweep_assembles_imported_and_new_tasks(reuse_source, monkeypatch):

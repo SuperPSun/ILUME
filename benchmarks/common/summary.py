@@ -1604,8 +1604,10 @@ def _scatter_svg(plot: ScatterPlot) -> str:
     return "\n".join(lines) + "\n"
 
 def _build_summary(candidates: Sequence[Candidate]) -> dict[str, Any]:
+    from .config import CATALOG_V4_PROTOCOLS
+
     health = _health(candidates)
-    catalog = any(c.summary and c.summary.get("reporting", {}).get("data_protocol") == "catalog_v4" for c in _current_completed(candidates))
+    catalog = any(c.summary and c.summary.get("reporting", {}).get("data_protocol") in CATALOG_V4_PROTOCOLS for c in _current_completed(candidates))
     simulation_test, simulation_test_metrics = _simulation_results(candidates, "test", catalog_only=catalog)
     simulation_validation, simulation_validation_metrics = _simulation_results(candidates, "valid", catalog_only=catalog)
     thermal_test, thermal_test_metrics = _simulation_results(candidates, "test", thermal_only=True) if catalog else ([], [])

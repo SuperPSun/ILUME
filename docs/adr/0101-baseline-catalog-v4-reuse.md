@@ -4,6 +4,8 @@
 - 日期：2026-10-15
 - 范围：十个正式基线的新 `catalog_v4` 协议；历史20实验/四模拟配置和产物保持原合同。
 
+2026-10-20：现役运行改为[ADR-0102](0102-baseline-split3407-full-retraining.md)的3407十模型全量重训。本篇保留split42配置与复用审计的历史合同，825项补训安排不再执行；旧产物清理以0102及用户确认的精确清单为准。
+
 ## 数据与训练
 
 新配置在 `configs/benchmarks/catalog_v4/`，使用 `data/42` 和正式Stage3 Base的任务注册表，24实验、五折；hydration为单solute加温度、random/cv1，其余按system/cv1。模拟仅thermal_expansion、homo、lumo，各一次独立训练，沿用原始训练/验证/测试集。模拟汽化热退出新协议，实验汽化焓不改名、不与模拟混合。新协议不改变Stage1/2/3主线。

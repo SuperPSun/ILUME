@@ -19,7 +19,7 @@
 | Stage 3 诊断 | [0054](0054-stage3-task-gate-diagnostics-and-weak-task-tuning.md)、[0098](0098-stage3-epoch-training-diagnostics.md) | 只读门控统计、整轮owner范数/裁剪率及真实共享样本贡献；不改变训练身份 |
 | 历史 Stage3 二十任务目录 | [0088](0088-stage3-hydration-replaces-transfer.md)、[0067](0067-stage3-twenty-task-catalog.md) | hydration 替换 transfer、移除 volume expansion；主线/核心消融/基线的任务合同依据与产物边界 |
 | 身份与历史实现精调 | [0021](0021-identity-audit-contract-v1.md)、[0027](0027-late-taskwise-refinement.md) | 语义身份/审计；0027 精调只约束历史实现/Capacity |
-| 模拟性质基线/评估 | [0101](0101-baseline-catalog-v4-reuse.md)、[0095](0095-v4-entity-home-without-object-encoder.md)、[0086](0086-scalar-simulation-baselines-and-reporting.md) | catalog_v4基线三项、现役v4 Stage3两项、历史四项按协议隔离；Stage3五模型原单位集成，基线单次训练，独立验证集/测试集榜单；Stage2 evaluate 保持退役 |
+| 模拟性质基线/评估 | [0102](0102-baseline-split3407-full-retraining.md)、[0101](0101-baseline-catalog-v4-reuse.md)、[0095](0095-v4-entity-home-without-object-encoder.md)、[0086](0086-scalar-simulation-baselines-and-reporting.md) | 3407基线三项全部重训、现役v4 Stage3两项、历史四项按协议隔离；Stage3五模型原单位集成，基线单次训练，独立验证集/测试集榜单；Stage2 evaluate 保持退役 |
 | 结果报告 | [0023](0023-unified-evaluation-reporting.md)、[0031](0031-stage3-summary-normalization-relaxation.md)、[0043](0043-retire-stage2-evaluation-and-v2-refinement.md)（历史）、[0061](0061-ilume-task-scatter-summary.md)、[0085](0085-retire-stage2-home-evaluation.md) | Stage3 实验与 0086 独立模拟榜单；Stage2 evaluator/报告由 0085 退役 |
 
 ## 基线与内部消融
@@ -28,7 +28,8 @@
 
 | 模型/实验 | ADR |
 |---|---|
-| 当前基线数据升级与复用 | [0101](0101-baseline-catalog-v4-reuse.md)：24实验、三模拟、v3只读/v4完整归档 |
+| 当前3407基线全量重训 | [0102](0102-baseline-split3407-full-retraining.md)：24实验、三模拟、十模型共1,230作业；split42旧结果不复用 |
+| 历史split42基线数据升级与复用 | [0101](0101-baseline-catalog-v4-reuse.md)：24实验、三模拟；复用安排由0102替代 |
 | MLP / ECFP-XGBoost | [0022](0022-mlp-ecfp-xgboost-baselines.md) |
 | D-MPNN | [0028](0028-chemprop-dmpnn-baseline.md)、[0042](0042-dmpnn-shared-component-encoder.md) |
 | MoLFormer | [0029](0029-molformer-baseline.md)、[0030](0030-molformer-throughput-contract.md) |
