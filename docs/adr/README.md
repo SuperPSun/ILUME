@@ -19,7 +19,7 @@
 | Stage 3 诊断 | [0054](0054-stage3-task-gate-diagnostics-and-weak-task-tuning.md)、[0098](0098-stage3-epoch-training-diagnostics.md) | 只读门控统计、整轮owner范数/裁剪率及真实共享样本贡献；不改变训练身份 |
 | 历史 Stage3 二十任务目录 | [0088](0088-stage3-hydration-replaces-transfer.md)、[0067](0067-stage3-twenty-task-catalog.md) | hydration 替换 transfer、移除 volume expansion；主线/核心消融/基线的任务合同依据与产物边界 |
 | 身份与历史实现精调 | [0021](0021-identity-audit-contract-v1.md)、[0027](0027-late-taskwise-refinement.md) | 语义身份/审计；0027 精调只约束历史实现/Capacity |
-| 模拟性质基线/评估 | [0095](0095-v4-entity-home-without-object-encoder.md)、[0094](0094-v5-unary-pair-five-task-stage2.md)、[0086](0086-scalar-simulation-baselines-and-reporting.md) | 基线维持历史四项；现役v4 Stage3两项/历史四项五模型原单位集成按协议隔离，独立验证集/测试集榜单；Stage2 evaluate 保持退役 |
+| 模拟性质基线/评估 | [0101](0101-baseline-catalog-v4-reuse.md)、[0095](0095-v4-entity-home-without-object-encoder.md)、[0086](0086-scalar-simulation-baselines-and-reporting.md) | catalog_v4基线三项、现役v4 Stage3两项、历史四项按协议隔离；Stage3五模型原单位集成，基线单次训练，独立验证集/测试集榜单；Stage2 evaluate 保持退役 |
 | 结果报告 | [0023](0023-unified-evaluation-reporting.md)、[0031](0031-stage3-summary-normalization-relaxation.md)、[0043](0043-retire-stage2-evaluation-and-v2-refinement.md)（历史）、[0061](0061-ilume-task-scatter-summary.md)、[0085](0085-retire-stage2-home-evaluation.md) | Stage3 实验与 0086 独立模拟榜单；Stage2 evaluator/报告由 0085 退役 |
 
 ## 基线与内部消融
@@ -63,4 +63,4 @@
 
 - [ADR-0095](0095-v4-entity-home-without-object-encoder.md)：现役 v4 HoME 直接消费冻结实体、24实验与两项仅PRIVATE更新模拟。
 
-- [ADR-0099：独立静态配置HPO与人工选型](0099-simple-static-hpo.md)：仅独立研究入口；缓存复用、seed分离和严格迁移，正式Base配方不变。
+- [ADR-0099：独立静态配置HPO与人工选型](0099-simple-static-hpo.md)：仅独立研究入口；缓存复用、seed分离和严格迁移；2026-10-20起后续新实验采用3407，历史配置及产物保留。

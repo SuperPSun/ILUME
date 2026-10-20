@@ -6,6 +6,16 @@ HPO无论在哪台设备运行，训练结果与完整模型权重都须回传�
 
 使用安装项目依赖的 `ilume` 环境，从仓库根目录运行。需要完整末轮 `outputs/v4/stage1/base/train/last.pt`、配对的 `stage1_encoder.pt`、Stage1 Prepare 和电荷 sidecar。五套数据为42、123、1234、3407、90756，Stage1 仍共用 `data/stage1`。
 
+## 当前选型与报告入口
+
+2026-10-20，固定配方HoME `G2_C05` + Stage2 `007` + Stage3 `032`已完成五套split的Stage2与Stage3五折验证。研究者据验证结果决定：**后续新实验统一采用数据划分3407**；共同训练seed仍为42，Stage3实际按42+fold派生。已有正式Base、基线、消融配置及训练产物保留原split与身份，不批量迁移、不覆盖旧输出。Stage1输入及冻结来源不变。
+
+报告总入口为 `outputs/HPO/reports/README.md`，最终汇总为 `outputs/HPO/reports/selection-split-20261020/selection.md`。其中按阶段链接HoME、Stage2、Stage3的选型记录及完整排名，并保留五套split的总分、逐折/逐任务指标、模拟独立指标和跨split统计。旧时间戳报告、资源审计和启动前状态仅作历史快照，不代表当前进度；报告归档不代表模型权重已全部回传。
+
+最终报告按24项实验等权的五折normalized MAE比较，保留完整排名与逐任务结果；两模拟不进入该总分。五套数据有重叠，3407称为“验证选出的最佳划分”，不能把后续测试解读为完全独立于跨划分选择的泛化估计。
+
+五套配置已在训练设备生成，3407参考为 `configs/HPO/final/3407/stage2.yaml`、`stage3.yaml`，完成模型为 `outputs/HPO/final/3407/stage2/` 与 `stage3/train/fold1/`～`fold5/`。新实验从配套配置派生到独立YAML及输出，重新绑定同split的Stage2来源和prepare身份；不得只替换 `data/42` 字符串后沿用旧缓存、generation绑定或恢复目录。下文保留完整HPO复现步骤，不需要重新启动已完成的搜索。
+
 ## 四轮实验与人工选择
 
 首轮已提供100份 Stage1 配置和100对 HoME 配置。可用以下命令再次核对并生成缺失的相同配置；已固定且不同的 YAML 不会被覆盖。
@@ -78,7 +88,7 @@ python scripts/HPO/final.py --devices cuda:0,cuda:1,cuda:2,cuda:3 --max-parallel
 python scripts/HPO/collect.py --branch final
 ```
 
-五套 split 各训练相同配方的 Stage2 和 Stage3 Fold1～5。Stage2/3训练 seed 都为42；Stage3实际使用42+fold。先逐 split/任务统计五折，再报告五个 split 均值的均值、样本标准差、范围；缺折/非有限/失败不产生完整统计。不挑最佳 split，不再次搜索，不自动执行正式测试，不机械重复 Stage1 后训练。模拟只收集原生逐折验证，不能把逐折统计称为原单位五模型集成评估。不同 split 有样本重叠，不是五次独立外部验证/测试。
+五套 split 各训练相同配方的 Stage2 和 Stage3 Fold1～5。Stage2/3训练 seed 都为42；Stage3实际使用42+fold。先逐 split/任务统计五折，再报告五个 split 均值的均值、样本标准差、范围；缺折/非有限/失败不产生完整统计。程序不挑最佳 split，不再次搜索，不自动执行正式测试，不机械重复 Stage1 后训练；研究者在完成全部复验后采用3407的后续决定见上节。模拟只收集原生逐折验证，不能把逐折统计称为原单位五模型集成评估。不同 split 有样本重叠，不是五次独立外部验证/测试。
 
 ## 缓存、设备与恢复
 

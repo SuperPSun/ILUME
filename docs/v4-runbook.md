@@ -7,7 +7,9 @@
 
 ## 数据 split 与路径
 
-现役 Stage1 输入仍为 `data/stage1`；Stage2/3 输入分别为 `data/42/stage2`、`data/42/stage3`，共用 `data/42/task_catalog.csv`。Stage2 YAML 的 `data.data_root` 为 `data/42`，catalog 内的 `stage2/...` 路径相对此根解析；Stage3 YAML 的 `data.stage3_dir` 为 `data/42/stage3`。prepare 的数据审计 `metadata.json` 写入各自的数据目录。
+2026-10-20起，后续新实验统一采用 `data/3407`。固定配方为HoME `G2_C05`、Stage2 `007`、Stage3 `032`，共同训练seed42，Stage3实际按42+fold派生；数据划分seed与训练seed不得混淆。已有正式Base、基线、消融配置及产物保留原split，不改写历史身份。最终五套划分结果与后续使用边界见 [HPO手册](hpo-simple-runbook.md#当前选型与报告入口)。
+
+已有正式Base YAML的Stage1 输入仍为 `data/stage1`；Stage2/3 输入分别为 `data/42/stage2`、`data/42/stage3`，共用 `data/42/task_catalog.csv`。以下原Base命令仍复现split42；新实验须使用独立的3407 YAML与输出。Stage2 YAML 的 `data.data_root` 为 split 根目录，catalog 内的 `stage2/...` 路径相对此根解析；Stage3 YAML 的 `data.stage3_dir` 指向同一split的 `stage3`。prepare 的数据审计 `metadata.json` 写入各自的数据目录。
 
 测试其他数据 split 时，使用独立的自包含 YAML，将 Stage2 的 `data_root/task_catalog_path` 与 Stage3 的 `stage3_dir/task_catalog` 同步指向对应 split，并为 prepare、训练和评估指定独立输出及对应的下游引用。目录名 `42` 只定位数据，不自动改变训练随机种子、split policy 或 cv repeat。不同内容的 split 必须重新 prepare，不能共用数据身份不一致的准备产物或检查点；Stage1 来源保持不变。历史配置及基线保留各自的数据合同，不由本次目录调整迁移。
 
@@ -303,7 +305,7 @@ python scripts/benchmarks/summarize.py --input outputs/v4/stage3 --output output
 
 当前任务目录的 gas_solubility 包含多种气体，不能视为旧 x_co2 的同义名称；本版本已按明确确认改变目标。新增水活度和焓任务有实际任务目录/分折来源，焓任务展示为汽化焓（Enthalpy of vaporization），仅使用temperature_K；常量phase列不进入模型。任务目录中的任务标识、目录、目标列及源SHA保持原样。hydration 继续 random/cv1 且无测试集，其余使用任务目录的 system split。Stage1电荷监督及其资源合同保持不变。参考压缩包不替代实时任务目录和文件身份。
 
-Stage2五任务训练集/验证集来源齐全；两项辅助任务的训练集/验证集/测试集齐全。24实验的120个分折文件存在，当前10项有测试集文件，其余任务保留五折验证，不生成额外测试集划分；任务目录的实验测试集计数字段为空，不据此推测缺失文件的科学意图。当前正式运行的未满足前提是配置指定路径的 Stage1 编码器及配对特征产物；旧元数据也需上述新 prepare 正常重建。本次实现没有启动正式 GPU训练、正式五折或覆盖历史输出。
+Stage2五任务训练集/验证集来源齐全；两项辅助任务的训练集/验证集/测试集齐全。24实验的120个分折文件存在，当时10项有测试集文件，其余任务保留五折验证，不生成额外测试集划分；任务目录的实验测试集计数字段为空，不据此推测缺失文件的科学意图。当时正式运行的未满足前提是配置指定路径的 Stage1 编码器及配对特征产物；旧元数据需上述新 prepare 正常重建。2026-10-08的实现验收没有启动正式 GPU训练、正式五折或覆盖历史输出；后续HPO进度见[当前报告入口](hpo-simple-runbook.md#当前选型与报告入口)，运行前仍须核验当前配置指定的来源产物。
 
 历史基线的20任务训练配方不扩展，模拟四任务只适配任务目录现有来源位置。其旧实验合同依据仍要求x_co2；当前任务目录缺少这一历史目标，运行旧实验基线需要对应历史任务目录/数据，不得用gas_solubility替代。两模拟实体 HoME v4与四模拟历史结果不能混入同一汇总。
 

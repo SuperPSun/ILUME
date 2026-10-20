@@ -16,7 +16,7 @@ Stage1配置和独立预测器保持不变。Stage2采用五任务实体HoME，S
 
 正式配置为 `configs/v4/stage{1,2,3}/base.yaml`，准备产物和下游引用按 YAML 定位，运行输出由 `--output` 指定。见 [ADR-0095](docs/adr/0095-v4-entity-home-without-object-encoder.md) 和 [运行手册](docs/v4-runbook.md)。正式Stage1 编码器/特征需先齐备；不手改元数据或SHA。历史Object/v5工件只读，加载须使用历史Git版本；旧v5及Object消融配置已移除；现役独立消融见 [v4消融手册](docs/v4-ablation-runbook.md) 与 [ADR-0100](docs/adr/0100-v4-entity-home-ablations.md)。核心含移除SMILES/分子图的完整重训，固定训练seed42；配置共36份，不追加seed稳定性测试。
 
-Stage1 共用 `data/stage1`；Stage2/3 默认选择 `data/42` 下的数据及 catalog。五套数据 split 的配置、输出隔离和运行前提统一见 [v4运行手册](docs/v4-runbook.md#数据-split-与路径)。
+Stage1 共用 `data/stage1`。2026-10-20起，后续新实验统一采用 `data/3407`，已有正式Base、基线和消融配置及产物保留原划分；当前Base YAML仍指向 `data/42`，不可直接作为新划分运行。最终HPO配方与报告入口见 [HPO手册](docs/hpo-simple-runbook.md#当前选型与报告入口)；五套数据 split 的配置、输出隔离和运行前提见 [v4运行手册](docs/v4-runbook.md#数据-split-与路径)。
 
 ## v3 历史运行手册
 
@@ -103,17 +103,17 @@ python scripts/benchmarks/sweep.py --config configs/ablations/no_stage3_home.yam
 
 ## 四项模拟性质比较
 
-本节的 Stage3/no-Stage1 命令及四任务比较属于历史v4协议；现役实体HoME v4仅报告汽化热和热膨胀，命令见 [v4运行手册](docs/v4-runbook.md)。基线的四任务训练配方保持不变，不与现役两任务结果混排。
+本节的 Stage3/no-Stage1 命令及四任务比较属于历史v4协议，须使用对应历史Git版本及数据；现役实体HoME v4仅报告汽化热和热膨胀，命令见 [v4运行手册](docs/v4-runbook.md)。当前基线使用[三模拟协议](docs/baseline-catalog-v4-runbook.md)。下列历史基线示例使用独立的 `outputs/benchmarks/legacy_v4`，不写入当前 `catalog_v4` 的 `outputs/benchmarks/v4`。
 
 十个正式基线另训汽化热、热膨胀、HOMO、LUMO，各任务使用任务目录的原有训练集/验证集/测试集，独立训练一次；不训练 partial charge，也不让模拟数据更新实验任务模型。神经基线沿用各自 10 轮、XGBoost 保持 1000 trees，发布末轮状态。内部单任务 MLP 消融及历史 split 配置不加入这些作业。合同见 [ADR-0086](docs/adr/0086-scalar-simulation-baselines-and-reporting.md)。
 
 正式基线的 sweep 默认运行实验任务和四项模拟任务；仅训练模拟任务时使用：
 
 ```bash
-python scripts/benchmarks/sweep.py --config configs/benchmarks/mlp.yaml --benchmark simulation --output outputs/benchmarks/v4/mlp --max-workers 1
+python scripts/benchmarks/sweep.py --config configs/benchmarks/mlp.yaml --benchmark simulation --output outputs/benchmarks/legacy_v4/mlp --max-workers 1
 ```
 
-其余九个模型使用对应 `configs/benchmarks/<model>.yaml` 和独立 `outputs/benchmarks/v4/<model>`。全部任务可省略 `--benchmark`，只跑实验任务用 `--benchmark stage3`；新运行不覆盖旧 v3 输出；同一输出根固定使用同一种 sweep selector。模拟模型位于 `simulation/<task>/train/attempt-NNN/`，验证集/测试集在同一任务 scope 下。单任务入口使用 `--benchmark simulation`，训练不传 `--fold`，评估使用 `--checkpoint .../train/attempt-NNN`（模型目录），不传折或集成参数。
+其余九个模型使用对应 `configs/benchmarks/<model>.yaml` 和独立 `outputs/benchmarks/legacy_v4/<model>`。全部任务可省略 `--benchmark`，只跑实验任务用 `--benchmark stage3`；新运行不覆盖旧 v3 输出；同一输出根固定使用同一种 sweep selector。模拟模型位于 `simulation/<task>/train/attempt-NNN/`，验证集/测试集在同一任务 scope 下。单任务入口使用 `--benchmark simulation`，训练不传 `--fold`，评估使用 `--checkpoint .../train/attempt-NNN`（模型目录），不传折或集成参数。
 
 完整 ILUME 与 no-Stage1 的模拟性质评估使用五个 Stage3 final 对同一固定 split 预测：每折先还原到原单位，再取预测均值计算指标；不对指标取均值。完整命令为：
 
@@ -135,7 +135,7 @@ no-Stage1 使用其独立配置与输出根；no-Stage2 和单任务 MLP 消融�
 独立基线的配置在 `configs/benchmarks/`，代码在 `benchmarks/`。训练预算、环境和模型合同从 [ADR 索引](docs/adr/README.md)查阅。实验基线仍为历史20任务合同，依赖包含x_co2的对应历史任务目录/数据；不能直接使用当前24任务目录或用gas_solubility替代。以 D-MPNN 为例：
 
 ```bash
-python scripts/benchmarks/sweep.py --config configs/benchmarks/dmpnn.yaml --output outputs/benchmarks/v4/dmpnn --max-workers 1
+python scripts/benchmarks/sweep.py --config configs/benchmarks/dmpnn.yaml --output outputs/benchmarks/legacy_v4/dmpnn --max-workers 1
 ```
 
 高级基线的环境与资产步骤如下；各模型不自动安装或回退。
@@ -493,7 +493,7 @@ LR和10轮，只发布轮 10末轮状态。
 下列为历史v4汇总命令；现役实体HoME v4按 [v4运行手册](docs/v4-runbook.md)在独立目录汇总，不加入旧20任务或四模拟结果。
 
 ```bash
-python scripts/benchmarks/summarize.py --input outputs/v4 outputs/benchmarks/v4 --include outputs/v4/stage3/base/valid outputs/v4/stage3/base/test outputs/v4/stage3/base/simulation_valid outputs/v4/stage3/base/simulation_test outputs/benchmarks/v4 --output summary_v4
+python scripts/benchmarks/summarize.py --input outputs/v4 outputs/benchmarks/legacy_v4 --include outputs/v4/stage3/base/valid outputs/v4/stage3/base/test outputs/v4/stage3/base/simulation_valid outputs/v4/stage3/base/simulation_test outputs/benchmarks/legacy_v4 --output summary_v4
 ```
 
 ## 验证
@@ -506,4 +506,4 @@ pytest -q
 
 ## 独立静态 HPO
 
-[扁平化 HPO 手册](docs/hpo-simple-runbook.md)：100组冻结预测头、100对HoME，人工选型后生成20组Stage2和50组Stage3，最后五套split固定五折复验。数据准备按身份共享，训练seed固定42；不自动选模、不使用Optuna、不自动终测。正式v4配方不变。
+[扁平化 HPO 手册](docs/hpo-simple-runbook.md)：100组冻结预测头、100对HoME，人工选型后生成20组Stage2和50组Stage3，最后五套split固定五折复验。数据准备按身份共享，训练seed固定42；不自动选模、不使用Optuna、不自动终测。固定配方与后续新实验采用3407的决定见[当前选型与报告入口](docs/hpo-simple-runbook.md#当前选型与报告入口)；已有正式v4配置和产物不追溯改写。

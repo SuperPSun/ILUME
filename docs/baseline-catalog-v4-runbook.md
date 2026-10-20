@@ -6,6 +6,8 @@
 
 使用`configs/benchmarks/catalog_v4/<model>.yaml`，默认data/42、24实验五折以及thermal_expansion/homo/lumo三模拟。AIFC保留模型合同seed1000，其他模型保留各自原种子；data/42不替换模型种子。
 
+本节配置及下列命令保留ADR-0101的split42合同。2026-10-20起后续新实验采用3407，须另建配置与输出，不能复用split42的迁移清单或已训练任务；决定及身份边界见[HPO手册](hpo-simple-runbook.md#当前选型与报告入口)。
+
 v3结果保留。新结果根为`outputs/benchmarks/v4/<model>/`；`imported/`保存完整旧任务，普通stage3目录保存新训练/派生评估，simulation目录保存新模拟作业。不要将旧根summary复制成新根summary。
 
 ## 审计与复制（不训练）
@@ -66,7 +68,7 @@ python scripts/benchmarks/sweep.py \
 
 ```bash
 python scripts/benchmarks/summarize.py \
-  --input outputs/benchmarks/v4 outputs/v4/stage3/base/evaluate_valid outputs/v4/stage3/base/evaluate_test \
+  --input outputs/benchmarks/v4 outputs/v4/stage3/base/valid outputs/v4/stage3/base/test \
   --output outputs/reports/baseline-catalog-v4
 ```
 
