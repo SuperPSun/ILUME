@@ -18,6 +18,8 @@ Stage1配置和独立预测器保持不变。Stage2采用五任务实体HoME，S
 
 Stage1 共用 `data/stage1`。2026-10-20起，后续新实验统一采用 `data/3407`，已有正式Base、基线和消融配置及产物保留原划分；当前Base YAML仍指向 `data/42`，不可直接作为新划分运行。最终HPO配方与报告入口见 [HPO手册](docs/hpo-simple-runbook.md#当前选型与报告入口)；五套数据 split 的配置、输出隔离和运行前提见 [v4运行手册](docs/v4-runbook.md#数据-split-与路径)。
 
+在 `outputs/v4` 重跑最终优化配方使用 `configs/v4/stage2/optimized_3407.yaml` 和 `configs/v4/stage3/optimized_3407.yaml`，复用Stage1并重新prepare、训练Stage2及Stage3五折；[完整命令与恢复方式](docs/v4-runbook.md#最终优化配方3407)。
+
 ## v3 历史运行手册
 
 以下历史命令须切到对应历史 Git 版本执行；本 checkout 已移除 ObjectEncoder 与零更新入口。

@@ -16,6 +16,8 @@ HPO无论在哪台设备运行，训练结果与完整模型权重都须回传�
 
 五套配置已在训练设备生成，3407参考为 `configs/HPO/final/3407/stage2.yaml`、`stage3.yaml`，完成模型为 `outputs/HPO/final/3407/stage2/` 与 `stage3/train/fold1/`～`fold5/`。新实验从配套配置派生到独立YAML及输出，重新绑定同split的Stage2来源和prepare身份；不得只替换 `data/42` 字符串后沿用旧缓存、generation绑定或恢复目录。下文保留完整HPO复现步骤，不需要重新启动已完成的搜索。
 
+在 `outputs/v4` 独立复跑最终配方，使用 `configs/v4/stage2/optimized_3407.yaml` 与 `configs/v4/stage3/optimized_3407.yaml`；保持HPO选定参数及Stage1来源，Stage2/3准备产物和模型均写入新的v4路径，不再依赖HPO训练输出。命令见 [v4手册](v4-runbook.md#最终优化配方3407)。
+
 ## 四轮实验与人工选择
 
 首轮已提供100份 Stage1 配置和100对 HoME 配置。可用以下命令再次核对并生成缺失的相同配置；已固定且不同的 YAML 不会被覆盖。

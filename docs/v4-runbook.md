@@ -254,7 +254,39 @@ ssh SERVER 'sha256sum /path/to/ILUME/assets/unimol2/modelzoo/84M/checkpoint.pt'
 
 当前Stage3 Base的electrochemical GROUP采用L1/L2各2个专家、768D隐藏层、1024D输出。两项电位任务的PRIVATE/Tower/FiLM隐藏维度为512/256/128D，保留单PRIVATE专家、仅温度条件及dropout 0.1；Task Gate输入2048D、输出5个候选权重。electrochemical GROUP的Phase1保持2e-4/15轮，Phase2采用1e-4/4轮（原20轮）；两任务PRIVATE的Phase1/2/3预算仍为8/4/3轮，LR及三阶段机制不变。容量配方进入既有训练身份；容量或Phase2预算调整前的Stage3检查点不能恢复到当前Base，正式训练须使用未占用的新输出目录，Stage1/Stage2无需因本次容量调整重训。
 
-## 按顺序执行
+## 最终优化配方（3407）
+
+在 `outputs/v4` 重跑已锁定的HoME `G2_C05` / Stage2 `007` / Stage3 `032`，使用独立配置 `configs/v4/stage2/optimized_3407.yaml` 与 `configs/v4/stage3/optimized_3407.yaml`。数据划分3407，训练seed42（Stage3实际42+fold）；完整模型结构、任务映射、LR、nominal Epoch及任务覆盖与完成五套复验时的配方一致。原Base YAML保留，不覆盖HPO结果。
+
+Stage1不重训，保留 `outputs/v4/stage1/base` 中的编码器、Prepare及其他来源；本节也不重新训练14个独立后训练头。Stage2/3使用新的 `optimized_3407` 输出和prepare审计，来源严格配对，不读取旧split42缓存或旧Stage2权重。下列命令从仓库根目录依次执行；正式GPU运行由研究者启动。
+
+```bash
+conda activate ilume
+
+python scripts/stage2/prepare.py --config configs/v4/stage2/optimized_3407.yaml --output outputs/v4/stage2/optimized_3407/prepare &&
+python scripts/stage2/train.py --config configs/v4/stage2/optimized_3407.yaml --output outputs/v4/stage2/optimized_3407/train --device cuda:0 &&
+python scripts/stage3/prepare.py --config configs/v4/stage3/optimized_3407.yaml --output outputs/v4/stage3/optimized_3407/prepare &&
+python scripts/stage3/train.py --config configs/v4/stage3/optimized_3407.yaml --fold 1 2 3 4 5 --output outputs/v4/stage3/optimized_3407/train --devices cuda:0,cuda:1,cuda:2,cuda:3 --max-parallel 4
+```
+
+Stage2在单卡训练；Stage3四卡并行四折，空闲后补第五折。新输出应不存在；中断时保留现场，Stage2训练追加 `--resume outputs/v4/stage2/optimized_3407/train`，Stage3训练追加布尔 `--resume`，不要删除中断产物或把整条首次运行命令当恢复入口。
+
+训练完成后执行实验和两模拟的联合验证；模拟使用五个final的原单位预测均值，与HPO报告里的模拟逐折指标均值口径不同。
+
+```bash
+python scripts/stage3/evaluate.py --config configs/v4/stage3/optimized_3407.yaml --checkpoint-dir outputs/v4/stage3/optimized_3407/train --split valid --fold 1 2 3 4 5 --output outputs/v4/stage3/optimized_3407/valid
+```
+
+需要发布锁参后的测试结果时，再由研究者执行一次完整测试批次，不据测试重新调参：
+
+```bash
+python scripts/stage3/evaluate.py --config configs/v4/stage3/optimized_3407.yaml --checkpoint-dir outputs/v4/stage3/optimized_3407/train --split test --ensemble-folds --output outputs/v4/stage3/optimized_3407/test
+python scripts/benchmarks/summarize.py --input outputs/v4/stage3/optimized_3407 --output outputs/v4/summary_optimized_3407
+```
+
+旧 `outputs/v4/stage2/base`、`outputs/v4/stage3/base` 可在报告准确文件数、大小并获确认后删除，但不能删除Stage1来源。旧split42消融配置仍引用这些Base产物，删除后须重新生成对应历史来源才能继续旧消融；3407新产物不能替代其身份。新运行使用独立路径，并不要求先删旧结果。其他设备上的代码与配置由研究者git pull；训练完成后按[回传规则](#跨设备训练产物回传)归档4090。
+
+## 原Base（split42）复现步骤
 
 与Stage1一样，从仓库根目录在 `ilume` 环境执行。下面各步骤成功后再执行下一步，使用未占用的输出目录。入口会自动校验来源、数据SHA和模型身份，无需另写Python校验脚本。修改prepare输出路径时，须同步修改对应YAML的 `data.artifacts_dir`；修改训练输出路径时，须同步修改下游来源配置。
 
