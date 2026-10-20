@@ -9,6 +9,9 @@ import yaml
 
 
 BenchmarkName = Literal["stage3", "simulation"]
+CATALOG_V4_SIMULATION_TASKS = (
+    "simulation/thermal_expansion", "simulation/homo", "simulation/lumo",
+)
 
 
 @dataclass(frozen=True)
@@ -52,7 +55,7 @@ class BenchmarkConfig:
     name: Literal[
         "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm", "llasmol",
         "aionopedia", "iltransr", "aifc",
-        "ilume_stage3_single_task_mlp_home_v1",
+        "ilume_stage3_single_task_mlp_home_v1", "ilume_stage3_single_task_mlp_entity_v4",
     ]
     data: DataConfig
     features: FeatureConfig | None
@@ -64,16 +67,24 @@ class BenchmarkConfig:
     seed: int
     display_name: str = ""
     simulation: SimulationBenchmarkConfig = SimulationBenchmarkConfig()
+    protocol: str = "legacy"
 
     def validate(self) -> None:
         from stage3.simulation_reporting import SCALAR_SIMULATION_TASKS
 
-        if self.simulation.enabled and (self.name == "ilume_stage3_single_task_mlp_home_v1" or self.simulation.tasks != SCALAR_SIMULATION_TASKS):
-            raise ValueError("Simulation baselines require the four scalar tasks and exclude ablations")
+        if self.protocol not in {"legacy", "catalog_v4"}:
+            raise ValueError("Unknown baseline protocol")
+        expected_simulation = CATALOG_V4_SIMULATION_TASKS if self.protocol == "catalog_v4" else SCALAR_SIMULATION_TASKS
+        if self.protocol == "catalog_v4" and (not self.stage3.enabled or self.stage3.tasks != "all" or self.stage3.folds != (1, 2, 3, 4, 5)):
+            raise ValueError("catalog_v4 requires all experimental tasks and five folds")
+        if self.protocol == "catalog_v4" and not self.simulation.enabled:
+            raise ValueError("catalog_v4 requires its three simulation tasks")
+        if self.simulation.enabled and (self.name in {"ilume_stage3_single_task_mlp_home_v1", "ilume_stage3_single_task_mlp_entity_v4"} or self.simulation.tasks != expected_simulation):
+            raise ValueError("Simulation baselines require the protocol's scalar tasks and exclude ablations")
         if self.name not in {
             "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm", "llasmol",
             "aionopedia", "iltransr", "aifc",
-            "ilume_stage3_single_task_mlp_home_v1",
+            "ilume_stage3_single_task_mlp_home_v1", "ilume_stage3_single_task_mlp_entity_v4",
         }:
             raise ValueError(f"Unknown benchmark model: {self.name}")
         if not self.display_name:
@@ -94,7 +105,7 @@ class BenchmarkConfig:
             or self.features.n_bits <= 0
         ):
             raise ValueError("Fingerprint radius and n_bits must be positive")
-        if self.name == "ilume_stage3_single_task_mlp_home_v1":
+        if self.name in {"ilume_stage3_single_task_mlp_home_v1", "ilume_stage3_single_task_mlp_entity_v4"}:
             self._validate_ilume_stage3_single_task_mlp()
         else:
             retired = {
@@ -114,7 +125,7 @@ class BenchmarkConfig:
                 )
         advanced = self.name in {
             "dmpnn", "molformer", "ilbert", "spmm", "llasmol", "aionopedia", "iltransr", "aifc",
-            "ilume_stage3_single_task_mlp_home_v1",
+            "ilume_stage3_single_task_mlp_home_v1", "ilume_stage3_single_task_mlp_entity_v4",
         }
         if not advanced and self.data.feature_cache is None:
             raise ValueError("Feature baselines require data.feature_cache")
@@ -815,6 +826,8 @@ class BenchmarkConfig:
             return value
 
         payload = convert(asdict(self))
+        if self.protocol == "legacy":
+            payload.pop("protocol")
         if not self.simulation.enabled:
             payload.pop("simulation")
         if payload["data"].get("stage3_prepared_artifacts") is None:
@@ -839,7 +852,7 @@ def _only(values: dict[str, Any], allowed: set[str], context: str) -> None:
 def benchmark_config_from_dict(raw: dict[str, Any]) -> BenchmarkConfig:
     _only(
         raw,
-        {"name", "display_name", "seed", "data", "features", "environment", "model", "training", "runtime", "stage3", "simulation"},
+        {"name", "display_name", "seed", "data", "features", "environment", "model", "training", "runtime", "stage3", "simulation", "protocol"},
         "benchmark config",
     )
     data = _mapping(raw.get("data"), "data")
@@ -876,6 +889,7 @@ def benchmark_config_from_dict(raw: dict[str, Any]) -> BenchmarkConfig:
     simulation = _mapping(raw.get("simulation", {}), "simulation")
     _only(simulation, {"enabled", "tasks"}, "simulation")
     config = BenchmarkConfig(
+        protocol=str(raw.get("protocol", "legacy")),
         name=str(raw.get("name")),  # type: ignore[arg-type]
         display_name=str(raw.get("display_name", str(raw.get("name", "")).upper())),
         seed=int(raw.get("seed", 42)),

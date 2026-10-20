@@ -162,7 +162,7 @@ def iltransr_model_views(
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     slots = tuple(task.slots)
     values = dict(zip(slots, components, strict=True))
-    if task.slots == ("SMILES",):
+    if task.slots in {("SMILES",), ("solute",)}:
         return ((_canonical_non_isomeric(components[0]),), ("molecule",))
     if slots == ("cation", "anion"):
         return (

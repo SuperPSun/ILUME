@@ -49,6 +49,7 @@ EXTRA_CONDITION_COLUMNS = {
     "pressure_kPa": "pressure",
     "frequency_MHz": "frequency",
     "wavelength_nm": "wavelength",
+    "x_water_unitless": "water_activity",
 }
 AIONOPEDIA_INPUT_CONTRACT = {
     "canonical_identity": "ilume_isomeric_smiles",
@@ -126,7 +127,7 @@ def _number(value: float) -> str:
 
 
 def _topology(task: BenchmarkTask) -> tuple[int, str]:
-    if task.slots == ("SMILES",) and not task.condition_columns:
+    if task.slots == ("solute",) or (task.slots == ("SMILES",) and not task.condition_columns):
         return 4, "single_molecule"
     conditions = bool(task.condition_columns)
     if task.slots == ("cation", "anion"):
@@ -148,6 +149,7 @@ def _condition_phrases(task: BenchmarkTask, row: np.ndarray) -> list[str]:
         "pressure_kPa": ("pressure", "kPa"),
         "frequency_MHz": ("frequency", "MHz"),
         "wavelength_nm": ("wavelength", "nm"),
+        "x_water_unitless": ("water_mole_fraction", ""),
     }
     for column, value in zip(task.condition_columns, row, strict=True):
         if column not in units:
@@ -181,8 +183,9 @@ def _prepare_split(
         condition = dict(zip(task.condition_columns, conditions, strict=True))
         phrases = _condition_phrases(task, conditions)
         if topology == 4:
-            prompts.append("molecule " + component["SMILES"])
-            graph_roles.append((component["SMILES"], "", ""))
+            molecule = component[task.slots[0]]
+            prompts.append(" ".join(["molecule", molecule, *phrases]))
+            graph_roles.append((molecule, "", ""))
         elif topology == 0:
             prompts.append(
                 " ".join(
@@ -219,6 +222,8 @@ def _prepare_split(
             extras["frequency"][index] = float(condition["frequency_MHz"]) / 1000.0
         if "wavelength_nm" in condition:
             extras["wavelength"][index] = float(condition["wavelength_nm"]) / 1000.0
+        if "x_water_unitless" in condition:
+            extras["water_activity"][index] = float(condition["x_water_unitless"])
     prompt_hash = hashlib.sha256("\n".join(prompts).encode()).hexdigest()
     return PreparedSplit(
         raw=raw,
@@ -286,7 +291,7 @@ def prepare_aionopedia_training(
             "source_hashes": source_hashes,
             "target_statistics": asdict(target_stats),
             "pressure_statistics": asdict(pressure_stats) if pressure_stats else None,
-            "input_contract": {**AIONOPEDIA_INPUT_CONTRACT, **({"single_molecule": {"topology_id": 4, "graph_role": "solute", "missing_roles": "empty_graph"}} if task.slots == ("SMILES",) else {})},
+            "input_contract": {**AIONOPEDIA_INPUT_CONTRACT, **({"single_molecule": {"topology_id": 4, "graph_role": "solute", "missing_roles": "empty_graph"}} if task.slots in {("SMILES",), ("solute",)} else {}), **({"water_mole_fraction": "raw_unitless_graph_and_text"} if "x_water_unitless" in task.condition_columns else {})},
             "model": config.model,
             "training": config.training,
             "effective_seed": effective_seed,
@@ -317,7 +322,7 @@ def _torch_load(path: Path) -> Any:
     return torch.load(path, map_location="cpu", weights_only=True)
 
 
-def _build_model(config: BenchmarkConfig, *, device: torch.device) -> Any:
+def _build_model(config: BenchmarkConfig, *, device: torch.device, water_activity: bool = False) -> Any:
     from peft import PeftModel
     from transformers import AutoModelForCausalLM
 
@@ -344,6 +349,7 @@ def _build_model(config: BenchmarkConfig, *, device: torch.device) -> Any:
     model = MultiModalRegressor(
         llm,
         llm_dim=1024,
+        water_activity=water_activity,
     )
     pretrained = repository_path(config.model["pretrained_snapshot"])
     for filename, attribute in OFFICIAL_MODULE_FILES.items():
@@ -508,7 +514,7 @@ def train_aionopedia_bundle(
         raise RuntimeError("AIonopedia requires CUDA; no silent CPU fallback")
     effective_seed = config.seed + int(bundle.task.fold or 1) - 1
     seed_benchmark(effective_seed)
-    model = _build_model(config, device=device)
+    model = _build_model(config, device=device, water_activity="x_water_unitless" in bundle.task.condition_columns)
     head, decoders, other = [], [], []
     for name, parameter in model.named_parameters():
         if not parameter.requires_grad:
@@ -618,11 +624,11 @@ def train_aionopedia_bundle(
             "fc_out",
             *(
                 f"condition_projectors.{name}"
-                for name in ("pressure", "frequency", "wavelength")
+                for name in model.condition_projectors
             ),
             *(
                 f"condition_segments.{name}"
-                for name in ("pressure", "frequency", "wavelength")
+                for name in model.condition_segments
             ),
         ],
         "integrity": integrity,
@@ -667,7 +673,7 @@ def evaluate_aionopedia_checkpoint(
             if smiles and smiles not in bundle.graph_cache:
                 bundle.graph_cache[smiles] = smiles_to_graph(smiles)
     device = torch.device(str(config.training["device"]))
-    model = _build_model(config, device=device)
+    model = _build_model(config, device=device, water_activity="x_water_unitless" in bundle.task.condition_columns)
     _restore_checkpoint(
         model,
         _torch_load(root / str(manifest["final_model_file"])),

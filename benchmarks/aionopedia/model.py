@@ -43,6 +43,7 @@ class MultiModalRegressor(nn.Module):
         llm: nn.Module,
         *,
         llm_dim: int = 1024,
+        water_activity: bool = False,
     ) -> None:
         super().__init__()
         encoder_layer = nn.TransformerEncoderLayer(
@@ -88,6 +89,9 @@ class MultiModalRegressor(nn.Module):
                 for name in ("pressure", "frequency", "wavelength")
             }
         )
+        if water_activity:
+            self.condition_projectors["water_activity"] = _condition_projector()
+            self.condition_segments["water_activity"] = nn.Parameter(torch.randn(1, 256))
 
     def _graph_nodes(self, graph: Any) -> list[torch.Tensor]:
         encoded = self.projector_gnn(

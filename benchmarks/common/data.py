@@ -78,7 +78,7 @@ def resolve_task(
             valid_paths=(spec.dataset.split_path(config.data.data_root, "valid"),),
             test_path=spec.dataset.split_path(config.data.data_root, "test"),
             fold=None, meta_group=("thermophysical" if len(spec.entity_columns) == 2 else "electronic_structure"),
-            registry_payload={"contract": "simulation.scalar-baseline.v1", **spec.to_dict()},
+            registry_payload={"contract": "simulation.scalar-baseline.v1", **spec.to_dict(), **({"baseline_protocol": config.protocol} if config.protocol != "legacy" else {})},
         )
     if benchmark == "stage3":
         if not config.stage3.enabled or fold not in config.stage3.folds:
@@ -111,7 +111,7 @@ def resolve_task(
             test_path=test_path(authority, spec),
             fold=fold,
             meta_group=spec.meta_group,
-            registry_payload=spec.to_dict(),
+            registry_payload={**spec.to_dict(), **({"baseline_protocol": config.protocol} if config.protocol != "legacy" else {})},
         )
     raise ValueError(f"Unknown benchmark domain: {benchmark}")
 
@@ -126,7 +126,10 @@ def configured_tasks(config: BenchmarkConfig, benchmark: BenchmarkName) -> tuple
     authority = load_stage3_config(config.data.stage3_authority_config)
     registry = resolve_task_registry(authority)
     if config.stage3.tasks == "all":
-        return tuple(task_id for task_id, spec in registry.items() if spec.enabled)
+        tasks = tuple(task_id for task_id, spec in registry.items() if spec.enabled)
+        if config.protocol == "catalog_v4" and len(tasks) != 24:
+            raise ValueError("catalog_v4 requires exactly 24 experimental tasks")
+        return tasks
     unknown = set(config.stage3.tasks) - set(registry)
     if unknown:
         raise ValueError("Configured Stage 3 benchmark tasks are unknown: " + ", ".join(sorted(unknown)))

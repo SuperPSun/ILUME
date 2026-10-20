@@ -20,17 +20,17 @@ python scripts/benchmarks/sweep.py \
   --prepare-reuse-from outputs/benchmarks/v3/mlp
 ```
 
-其余模型为ecfp_xgboost、dmpnn、molformer、ilbert、spmm、llasmol、iltransr、aifc，各自替换模型名。命令返回`migrations/attempt-NNN/manifest.json`。查看同目录summary.json和manifest中的任务action：reuse可复用、train需要补训、integrity_error需要先解决完整性异常。重复审计生成新attempt；目标已存在文件只有SHA相同才复用。
+其余模型为ecfp_xgboost、dmpnn、molformer、ilbert、spmm、llasmol、iltransr、aifc，各自替换模型名。命令返回`migrations/attempt-NNN/manifest.json`。查看同目录summary.json和manifest中的任务action：reuse可复用、train需要补训；源产物缺失或SHA异常会记录`audit_status: integrity_error`并将整个任务加入补训，绝不复制或复用。重复审计生成新attempt；目标已存在文件只有SHA相同才复用，目标冲突或清单篡改直接停止。
 
 ## 用户正式启动补训
 
-先确认审计清单没有integrity_error，并使用命令实际返回的清单路径。初次从一个GPU任务开始，确认主机内存和显存后再增加并发。
+先检查审计清单中的补训原因，并使用命令实际返回的清单路径。初次从一个GPU任务开始，确认主机内存和显存后再增加并发。
 
 ```bash
 python scripts/benchmarks/sweep.py \
   --config configs/benchmarks/catalog_v4/mlp.yaml \
   --output outputs/benchmarks/v4/mlp \
-  --reuse-manifest outputs/benchmarks/v4/mlp/migrations/attempt-001/manifest.json \
+  --reuse-manifest outputs/benchmarks/v4/mlp/migrations/attempt-004/manifest.json \
   --max-workers 1 --devices cuda:0
 ```
 
@@ -46,6 +46,19 @@ python scripts/benchmarks/sweep.py \
 ```
 
 不对完整sweep根混用`--benchmark all/stage3/simulation`；单任务调试使用独立输出。所有新训练和评估的数据审计路径从data_root派生，不使用旧的data/stage3元数据。
+
+## 本次交付审计（2026-10-15）
+
+九模型的九个候选任务全部通过，共81个完整任务、405个实验折次；复制6,093个原任务文件，共30,269,911,719字节，v3原件保留。最新清单为MLP的`attempt-004`、其余八模型的`attempt-003`，均位于各模型的`migrations/`下。
+
+本次总索引在`outputs/benchmarks/v4/migrations/attempt-001/`：
+
+- `summary.json`及`manifest.json`：九模型最新清单路径、SHA及复制统计。
+- `reused_folds.tsv`：405折原训练身份和来源。
+- `training_jobs.tsv`：795个实验折次和30个模拟作业，共825个待训练作业；AIonopedia占123个。
+- `commands.md`：十模型可直接运行的命令，已填写对应最新复用清单。正式训练及评估尚未启动。
+
+适配及基线测试118项通过、1项因主环境没有chemprop跳过。全套`pytest -q`为296项通过、1项跳过、4项失败；失败均是历史Capacity测试引用的`configs/experiments_v1/stage3/formal/{s,base,l,xl}.yaml`已不存在。四个基线入口帮助、编译、Markdown链接及diff检查通过。
 
 ## 汇总
 

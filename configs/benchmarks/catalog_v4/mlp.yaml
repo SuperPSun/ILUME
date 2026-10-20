@@ -1,0 +1,32 @@
+protocol: catalog_v4
+name: mlp
+display_name: MLP
+seed: 42
+data:
+  data_root: data/42
+  task_catalog: data/42/task_catalog.csv
+  stage3_authority_config: configs/v4/stage3/base.yaml
+  feature_cache: outputs/benchmarks/v4/cache/features.sqlite3
+features:
+  kind: basic_molecular_statistics
+model:
+  hidden_dims: [128, 64]
+  dropout: 0.2
+training:
+  optimizer: adamw
+  learning_rate: 1.0e-3
+  weight_decay: 1.0e-3
+  batch_size: 128
+  max_epochs: 10
+  loss: normalized_mse
+  model_selection: final_training_state
+  device: cuda
+  precision: fp32
+stage3:
+  enabled: true
+  tasks: all
+  folds: [1, 2, 3, 4, 5]
+
+simulation:
+  enabled: true
+  tasks: [simulation/thermal_expansion, simulation/homo, simulation/lumo]

@@ -162,7 +162,7 @@ def ilbert_model_sequences(
         return (f"{values[0]}.{values[1]}", values[2]), ("ionic_liquid", "solute")
     if slots == ("solute", "solvent"):
         return values, slots
-    if len(slots) == 1 and slots[0] in {"SMILES", "smiles", "molecule"}:
+    if len(slots) == 1 and slots[0] in {"SMILES", "smiles", "molecule", "solute"}:
         return values, (slots[0],)
     raise ValueError(f"ILBERT does not support registry topology: {slots}")
 

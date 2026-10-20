@@ -16,7 +16,7 @@
 
 九个候选任务：self_diffusion_coefficient、thermal_conductivity、heat_capacity、speed_of_sound、equilibrium_pressure、dynamic_relative_permittivity、static_relative_permittivity、transfer_organic、pec50。其他15实验从头训练。AIonopedia原权重确认丢失，24实验的120折及三模拟全部从头训练，不复用历史预测。
 
-其他九模型逐任务核验五折来源SHA、registry输入定义、顺序/重复行、条件与目标、配方/种子、预处理/scaler、独立环境锁、资产、权重及预测完整性。ILTransR还核验全量条件统计总体。仅允许路径迁移以及不参与基线计算的新增registry字段，不修改原训练身份。数据/配方不符转为补训；完整性异常必须报告并阻止该清单用于正式sweep。
+其他九模型逐任务核验五折来源SHA、registry输入定义、顺序/重复行、条件与目标、配方/种子、预处理/scaler、独立环境锁、资产、权重及预测完整性。ILTransR还核验全量条件统计总体。仅允许路径迁移以及不参与基线计算的新增registry字段，不修改原训练身份。数据/配方不符以及源产物缺失/损坏均记录原因并转为整个任务补训；目标文件冲突或迁移清单本身的完整性异常必须停止。
 
 审计通过的完整任务目录复制到 `outputs/benchmarks/v4/<model>/imported/`，v3原件只读保留。复制前报告文件数、字节数、目标和冲突策略；目标相同SHA可复用，差异立即失败，不覆盖。复制后逐文件核验。每次审计生成独立 `migrations/attempt-NNN/manifest.json`，绑定当前配置、完整数据来源和复制/派生产物SHA。
 

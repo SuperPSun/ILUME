@@ -111,7 +111,7 @@ def aifc_model_views(
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     if len(components) != len(task.slots):
         raise ValueError("AIFC components differ from registry slots")
-    if task.slots == ("SMILES",):
+    if task.slots in {("SMILES",), ("solute",)}:
         return ((canonicalize_view(components[0]),), ("molecule",))
     if task.slots == ("cation", "anion"):
         return (canonicalize_view(".".join(components)),), ("ionic_liquid",)

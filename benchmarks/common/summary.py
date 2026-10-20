@@ -54,6 +54,14 @@ RADAR_TASK_GROUPS = (
     ("experiment/pec50",),
 )
 SUMMARY_FILES = (
+    "thermal_expansion_test_leaderboard.csv",
+    "thermal_expansion_test_metrics.csv",
+    "thermal_expansion_test_task_mae.csv",
+    "thermal_expansion_test_task_rank.csv",
+    "thermal_expansion_validation_leaderboard.csv",
+    "thermal_expansion_validation_metrics.csv",
+    "thermal_expansion_validation_task_mae.csv",
+    "thermal_expansion_validation_task_rank.csv",
     "overview.md",
     "radar.svg",
     "ilume_scatter",
@@ -710,8 +718,9 @@ def _current_completed(candidates: Sequence[Candidate]) -> list[Candidate]:
     ]
 
 
-def _simulation_results(candidates: Sequence[Candidate], split: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _simulation_results(candidates: Sequence[Candidate], split: str, *, catalog_only: bool = False, thermal_only: bool = False) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     from stage3.simulation_reporting import SCALAR_SIMULATION_TASKS, ENTITY_SCALAR_SIMULATION_TASKS
+    from benchmarks.common.config import CATALOG_V4_SIMULATION_TASKS
 
     label = "simulation_test" if split == "test" else "simulation_validation"
     leaders, rows, comparisons = [], [], {}
@@ -724,7 +733,7 @@ def _simulation_results(candidates: Sequence[Candidate], split: str) -> tuple[li
                 continue
             values = summary.get("simulation_property_benchmark", {}).get(label, {})
             source_runs = reporting.get("source_runs", {}).get(label, {})
-            if set(source_runs) != set(SCALAR_SIMULATION_TASKS):
+            if set(source_runs) != set(section["protocol"]["expected_tasks"]):
                 raise ValueError("Simulation sweep source coverage mismatch")
             for task, relative in source_runs.items():
                 root = candidate.repository_root / relative
@@ -745,10 +754,23 @@ def _simulation_results(candidates: Sequence[Candidate], split: str) -> tuple[li
         else:
             continue
         expected_tasks = tuple(section["protocol"].get("expected_tasks", ()))
-        if expected_tasks not in {SCALAR_SIMULATION_TASKS, ENTITY_SCALAR_SIMULATION_TASKS} or set(values) != set(expected_tasks):
+        if expected_tasks not in {SCALAR_SIMULATION_TASKS, ENTITY_SCALAR_SIMULATION_TASKS, CATALOG_V4_SIMULATION_TASKS} or set(values) != set(expected_tasks):
             raise ValueError("Simulation leaderboard requires its complete scalar task protocol")
+        if catalog_only and expected_tasks != CATALOG_V4_SIMULATION_TASKS:
+            continue
+        if thermal_only and expected_tasks not in {CATALOG_V4_SIMULATION_TASKS, ENTITY_SCALAR_SIMULATION_TASKS}:
+            continue
         comparison = section["comparison_identity"]
         _validate_comparison(comparison, label)
+        if thermal_only:
+            from common.reporting import comparison_identity
+            task = "simulation/thermal_expansion"
+            payload = comparison["payload"]
+            comparison = comparison_identity("simulation_property", split=split, expected=(task,),
+                sources={k: v for k, v in payload["sources"].items() if k.startswith(task + ":")},
+                normalization={task: payload["normalization"][task]})
+            values = {task: values[task]}
+            expected_tasks = (task,)
         run = _run_id(reporting["model_id"], candidate.source_run)
         comparisons.setdefault(comparison["hash"], []).append(run)
         display = _display_name(candidate, reporting)
@@ -1583,8 +1605,11 @@ def _scatter_svg(plot: ScatterPlot) -> str:
 
 def _build_summary(candidates: Sequence[Candidate]) -> dict[str, Any]:
     health = _health(candidates)
-    simulation_test, simulation_test_metrics = _simulation_results(candidates, "test")
-    simulation_validation, simulation_validation_metrics = _simulation_results(candidates, "valid")
+    catalog = any(c.summary and c.summary.get("reporting", {}).get("data_protocol") == "catalog_v4" for c in _current_completed(candidates))
+    simulation_test, simulation_test_metrics = _simulation_results(candidates, "test", catalog_only=catalog)
+    simulation_validation, simulation_validation_metrics = _simulation_results(candidates, "valid", catalog_only=catalog)
+    thermal_test, thermal_test_metrics = _simulation_results(candidates, "test", thermal_only=True) if catalog else ([], [])
+    thermal_validation, thermal_validation_metrics = _simulation_results(candidates, "valid", thermal_only=True) if catalog else ([], [])
     stage3_test, stage3_test_metrics, test_wins = _stage3_test(
         candidates
     )
@@ -1606,11 +1631,13 @@ def _build_summary(candidates: Sequence[Candidate]) -> dict[str, Any]:
         ),
         "comparison_identities": _comparison_catalog(candidates),
         "leaderboards": {
+            **({"thermal_expansion_test": thermal_test, "thermal_expansion_validation": thermal_validation} if catalog else {}),
             "simulation_test": simulation_test, "simulation_validation": simulation_validation,
             "stage3_test": stage3_test,
             "stage3_validation": stage3_validation,
         },
         "metrics": {
+            **({"thermal_expansion_test": thermal_test_metrics, "thermal_expansion_validation": thermal_validation_metrics} if catalog else {}),
             "simulation_test": simulation_test_metrics, "simulation_validation": simulation_validation_metrics,
             "stage3_test": stage3_test_metrics,
             "stage3_validation": stage3_validation_metrics,
@@ -1709,10 +1736,10 @@ def write_summary_snapshot(
         path.write_text(_scatter_svg(plot), encoding="utf-8")
     leaderboards = payload["leaderboards"]
     metrics = payload["metrics"]
-    for name in ("simulation_test", "simulation_validation"):
-        fields, task_mae, task_rank = _stage3_task_tables(metrics[name], leaderboards[name], metric_key="mae", split=name)
-        _write_csv(destination / f"{name}_leaderboard.csv", leaderboards[name], ("rank", "run", "model", "macro_normalized_mae", "valid_tasks", "total_tasks", "source_run", "checkpoint_epoch"))
-        _write_csv(destination / f"{name}_metrics.csv", metrics[name], ("run", "model", "task", "count", "mae", "rmse", "r2", "normalized_mae", "normalized_rmse", "source_run"))
+    for name in ("simulation_test", "simulation_validation", "thermal_expansion_test", "thermal_expansion_validation"):
+        fields, task_mae, task_rank = _stage3_task_tables(metrics.get(name, []), leaderboards.get(name, []), metric_key="mae", split=name)
+        _write_csv(destination / f"{name}_leaderboard.csv", leaderboards.get(name, []), ("rank", "run", "model", "macro_normalized_mae", "valid_tasks", "total_tasks", "source_run", "checkpoint_epoch"))
+        _write_csv(destination / f"{name}_metrics.csv", metrics.get(name, []), ("run", "model", "task", "count", "mae", "rmse", "r2", "normalized_mae", "normalized_rmse", "source_run"))
         _write_csv(destination / f"{name}_task_mae.csv", task_mae, ("run", "model", *fields))
         _write_csv(destination / f"{name}_task_rank.csv", task_rank, ("run", "model", *fields))
     test_fields, test_mae, test_rank = _stage3_task_tables(
