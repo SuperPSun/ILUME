@@ -1,0 +1,13 @@
+{
+  "home": "G2_C05",
+  "stage2_config": "configs/HPO/stage2/007.yaml",
+  "stage2_checkpoint": "outputs/HPO/stage2/007/train/stage2_final.pt",
+  "stage3_config": "configs/HPO/stage3/032.yaml",
+  "home_recipes": [
+    "2671bebf89fcfb5bb0567fe0ac26d6fa40982ae22ff7ea6d2c60711780111f46",
+    "ab2ea7902ca4096356a76a2ce2217dad40152eb449e4721857f8210b9564d759"
+  ],
+  "stage2_config_hash": "2671bebf89fcfb5bb0567fe0ac26d6fa40982ae22ff7ea6d2c60711780111f46",
+  "stage3_config_hash": "f9387e47c6557cd803b7ce6c3a3d221b2eb99dd966b2c37a062f3bc47b4644fa",
+  "stage2_checkpoint_sha256": "9fed6b1210c9ec06773aea3aafb0027ea80d1b9edfc9f41cb3bd9c2b0bb9154e"
+}
