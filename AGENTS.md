@@ -52,7 +52,7 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 
 现役hydration仍使用random/cv1五折、无测试集；gas_solubility不是旧x_co2的同义任务。焓保留任务目录原标识，展示汽化焓，仅温度。基线历史20实验/四模拟配方不扩展。运行见 [v4手册](docs/v4-runbook.md)。
 
-- 数据不进 Git；Stage1 共用 `data/stage1`。2026-10-20起，后续新实验统一采用 `data/3407`；本次HPO的共同训练seed仍为42（Stage3按fold派生），不因此更改基线各自的训练seed合同。已有正式Base、基线、消融配置及产物保留原split与身份，不批量改写或跨split复用。新实验须新建配套YAML及输出，Stage2/3来源、catalog和缓存严格配对；决定与HPO报告入口见 [HPO手册](docs/hpo-simple-runbook.md#当前选型与报告入口)。其他 split 的路径配对、缓存和汇总见 [v4手册](docs/v4-runbook.md#数据-split-与路径)。默认prepare将数据审计 `metadata.json` 写入配置的数据目录；独立HPO通过 `preparation.data_metadata_path` 写入输出审计目录，运行元数据引用同一位置；不同 split 使用独立 YAML 与输出，并保持身份校验。每次操作冻结 `run_config.yaml`、公开安全的 `metadata.json`，成功后写 `summary.json`；禁止用户名、hostname、私有绝对路径。
+- 数据不进 Git；Stage1 共用 `data/stage1`。2026-10-20起，后续新实验统一采用 `data/3407`；本次HPO的共同训练seed仍为42（Stage3按fold派生），不因此更改基线各自的训练seed合同。已有正式Base、基线、消融配置及产物保留原split与身份，不批量改写或跨split复用。新实验须新建配套YAML及输出，Stage2/3来源、catalog和缓存严格配对；决定、关键报告保留策略及归档状态见 [HPO结果与最终配方](docs/hpo-results.md)。其他 split 的路径配对、缓存和汇总见 [v4手册](docs/v4-runbook.md#数据-split-与路径)。默认prepare将数据审计 `metadata.json` 写入配置的数据目录；独立HPO通过 `preparation.data_metadata_path` 写入输出审计目录，运行元数据引用同一位置；不同 split 使用独立 YAML 与输出，并保持身份校验。每次操作冻结 `run_config.yaml`、公开安全的 `metadata.json`，成功后写 `summary.json`；禁止用户名、hostname、私有绝对路径。
 - 新训练/评估输出不可覆盖。可复用 Stage 1/2 prepare 只在数据身份不变时刷新允许忽略的执行/模型字段（ADR-0019）。Stage 2 准备产物数据不绑定 HoME 模型；正式 HoME 不生成 teacher 缓存，模型合同属于训练检查点/final。
 - 保留准备产物 SHA 和完整性检查；跨 Stage 保留 ADR-0021 语义身份、必要状态hash；正式 HoME transfer 还绑定 Stage2 final 产物及Stage1源SHA。
 - 显式恢复严格校验阶段、折、配置、步/轮、优化器/调度器/AMP。Stage 1 只从完整轮恢复，可改变 world size；Stage 2 HoME 另校验 owner、注册表/模型、RNG、数据/任务规模、数学精度及优化器实现；旧 Object v2/v3、实验 HoME 不迁移到正式身份。

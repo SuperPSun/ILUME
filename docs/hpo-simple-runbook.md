@@ -8,13 +8,11 @@ HPO无论在哪台设备运行，训练结果与完整模型权重都须回传�
 
 ## 当前选型与报告入口
 
-2026-10-20，固定配方HoME `G2_C05` + Stage2 `007` + Stage3 `032`已完成五套split的Stage2与Stage3五折验证。研究者据验证结果决定：**后续新实验统一采用数据划分3407**；共同训练seed仍为42，Stage3实际按42+fold派生。已有正式Base、基线、消融配置及训练产物保留原split与身份，不批量迁移、不覆盖旧输出。Stage1输入及冻结来源不变。
+固定配方为HoME `G2_C05` + Stage2 `007` + Stage3 `032`，后续新实验采用3407，训练seed42（Stage3实际42+fold）。完整选择依据、五套划分结果、报告保留节点和最新归档状态统一见 [HPO结果与最终配方](hpo-results.md)，不在本手册复制排名或历史运维报告。
 
-报告总入口为 `outputs/HPO/reports/README.md`，最终汇总为 `outputs/HPO/reports/selection-split-20261020/selection.md`。其中按阶段链接HoME、Stage2、Stage3的选型记录及完整排名，并保留五套split的总分、逐折/逐任务指标、模拟独立指标和跨split统计。旧时间戳报告、资源审计和启动前状态仅作历史快照，不代表当前进度；报告归档不代表模型权重已全部回传。
+`outputs/HPO/reports/README.md`仅索引关键人工决策节点。Stage1逐目标选择依据、HoME、Stage2、Stage3及最终划分报告保留完整排名、逐任务数据、源快照和复算脚本。早期未完成快照、预览和资源/传输审计的有效结论整合入docs，必要校验凭据附最终节点；其余报告在列明文件数、大小与范围并确认后清理。训练目录内的metadata、指标、身份和检查点不属于报告精简范围。
 
-最终报告按24项实验等权的五折normalized MAE比较，保留完整排名与逐任务结果；两模拟不进入该总分。五套数据有重叠，3407称为“验证选出的最佳划分”，不能把后续测试解读为完全独立于跨划分选择的泛化估计。
-
-五套配置已在训练设备生成，3407参考为 `configs/HPO/final/3407/stage2.yaml`、`stage3.yaml`，完成模型为 `outputs/HPO/final/3407/stage2/` 与 `stage3/train/fold1/`～`fold5/`。新实验从配套配置派生到独立YAML及输出，重新绑定同split的Stage2来源和prepare身份；不得只替换 `data/42` 字符串后沿用旧缓存、generation绑定或恢复目录。下文保留完整HPO复现步骤，不需要重新启动已完成的搜索。
+3407参考配置为 `configs/HPO/final/3407/stage2.yaml`、`stage3.yaml`，归档模型为4090的 `outputs/HPO/final/3407/stage2/` 与 `stage3/train/fold1/`～`fold5/`。新实验从配套配置派生到独立YAML及输出，重新绑定同split的Stage2来源和prepare身份；不得只替换数据路径后沿用旧缓存、generation绑定或恢复目录。下文保留完整HPO复现步骤，不需要重新启动已完成的搜索。
 
 在 `outputs/v4` 独立复跑最终配方，使用 `configs/v4/stage2/optimized_3407.yaml` 与 `configs/v4/stage3/optimized_3407.yaml`；保持HPO选定参数及Stage1来源，Stage2/3准备产物和模型均写入新的v4路径，不再依赖HPO训练输出。命令见 [v4手册](v4-runbook.md#最终优化配方3407)。
 
@@ -125,6 +123,6 @@ python scripts/HPO/collect.py --branch HoME
 
 ## 报告与验证
 
-`collect.py` 输出 `results.csv/json`、`task_metrics.csv`、`home_grid.csv`。缺任务、失败、非有限值明确标记；没有原生指标标为不可用。Stage2仅提供原生normalized MAE，Stage3提供原生实验指标及可用门控诊断；模拟逐折指标读取final清单中的 `simulation_validation.simulation_tasks`。不重定义指标、不按测试筛选、不自动排序或选择赢家。报告目录默认按时间新建；生成报告不代表训练成功，应先检查运行状态和任务完整性。旧报告保留生成时的快照，修复或重跑后重新汇总。
+`collect.py` 输出 `results.csv/json`、`task_metrics.csv`、`home_grid.csv`。缺任务、失败、非有限值明确标记；没有原生指标标为不可用。Stage2仅提供原生normalized MAE，Stage3提供原生实验指标及可用门控诊断；模拟逐折指标读取final清单中的 `simulation_validation.simulation_tasks`。不重定义指标、不按测试筛选、不自动排序或选择赢家。报告目录默认按时间新建，也可通过 `--output` 指定新的报告目录；生成报告不代表训练成功，应先检查运行状态和任务完整性。阶段结束后保留人工决策所需的完整快照；修复或重跑后的中间快照不自动覆盖或清理，按上节保留策略确认精简。
 
 实现验收只使用临时小数据、pytest、各入口help、compileall与Dry Run。正式GPU搜索由研究者自行启动。历史Capacity配置缺失造成的既有测试失败单列，不恢复无关配置。
