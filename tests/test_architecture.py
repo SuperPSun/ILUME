@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 from copy import deepcopy
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 import yaml
@@ -15,6 +17,24 @@ from stage3.config import load_stage3_config
 ROOT = Path(__file__).resolve().parents[1]
 STAGES = {"stage1", "stage2", "stage3"}
 EXTERNAL_PACKAGES = {"ablations", "benchmarks"}
+
+
+def test_stage2_registry_does_not_import_stage1_graph() -> None:
+    result = subprocess.run(
+        [sys.executable, "-c", """
+import sys
+sys.path.insert(0, "src")
+sys.modules["stage1.graph"] = None
+from stage2.registry import load_stage2_registry, orbital_audit_columns
+assert callable(load_stage2_registry)
+assert orbital_audit_columns("simulation/homo") == (
+    "ion_role", "provenance_source_file", "provenance_source_row",
+)
+assert "stage2.frozen" not in sys.modules
+"""],
+        cwd=ROOT, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_global_rdkit_v2_base_configs_are_isolated() -> None:

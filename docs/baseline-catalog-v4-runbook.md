@@ -65,6 +65,12 @@ python scripts/benchmarks/sweep.py \
 
 其他模型只替换模型名，XGBoost同样使用max-workers1且YAML固定n_jobs8。不对同一完整sweep根混用`--benchmark all/stage3/simulation`；单任务调试使用独立输出。数据审计位置从data_root派生。
 
+### ILTransR三项模拟的SP2D导入错误
+
+ILTransR按合同固定RDKit 2022.03.2。旧版Stage2包入口在读取模拟任务注册表时提前导入Stage1图特征，因该环境没有`HybridizationType.SP2D`而使三项模拟在训练初始化前失败。现已将Stage2的冻结编码器公开导出改为按需加载，注册表可独立导入；环境锁、图特征映射和科研身份保持原合同。
+
+更新仓库并确认此前ILTransR作业已退出后，可重新提交`sbatch --array=5 /home/sunp/slurm/baseline/baseline-catalog-v4-gpu.sbatch`。沿用原完整sweep及输出根，严格校验并跳过已完成的120个实验训练作业，在新attempt中补训三项模拟及其评估。
+
 ## 汇总和回传
 
 模型24实验及三模拟完整后再发布完整榜单。只扫描新的3407输出及相同split的Stage3评估，不读取trash或旧split42报告：
