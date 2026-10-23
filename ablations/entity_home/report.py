@@ -140,7 +140,7 @@ def write_analysis(snapshot, authority_config, output, *, base_run=None, input_r
     costs=training_costs(input_roots, repository_root)
     intervals = bootstrap_rows(snapshot, rows, authority, Path(repository_root)) if bootstrap else []
     output.mkdir(parents=True)
-    atomic_json(output/'analysis.json',{'schema_version':1,'protocol':{'split_seed':42,'folds':[1,2,3,4,5],
+    atomic_json(output/'analysis.json',{'schema_version':1,'protocol':{'split_seed':authority.data.seed,'folds':[1,2,3,4,5],
         'selection':'fixed_final_state','fold_std':'split_variation_not_independent_repeats'},
         'tasks':rows,'strata':strata,'training_costs':costs,'paired_bootstrap':intervals})
     for name,values in [('task_differences',rows),('stratified_differences',strata)]:

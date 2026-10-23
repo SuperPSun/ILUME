@@ -30,7 +30,7 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 ### 历史合同、消融与基线
 
 - 历史实现/Capacity 保持五模态格式 v2、Stage 2 仅补偿 physics 的 loss 与既有精调；Stage 3 保持整模裁剪、`max(N_t,1000)` 虚拟过采样、80/20 精调和 `taskwise_refined`（ADR-0026/0027）。Capacity 是端到端预注册研究，不是正式多容量主线、严格缩放定律或仅编码器效应；只用 Stage 1 Base prepare 一次，共享 `outputs/experiments_v1/stage1/prepare/artifacts`。Stage 3 正式输入只用 `formal/*.yaml`，选择只读拼接后的验证，不读末轮均值或测试集。
-- 旧Object消融配置和旧ObjectEncoder实现/加载已移除；现役独立Entity-HoME消融按 [ADR-0100](docs/adr/0100-v4-entity-home-ablations.md) 与 [消融手册](docs/v4-ablation-runbook.md) 执行，正式Base不变；现役核心包含移除SMILES/分子图的完整重训，固定训练seed42、不追加seed稳定性测试。历史消融与历史实现/Capacity复现须使用对应Git版本，输出保留。
+- 旧Object消融配置和旧ObjectEncoder实现/加载已移除；现役独立Entity-HoME消融按 [ADR-0100](docs/adr/0100-v4-entity-home-ablations.md) 与 [消融手册](docs/v4-ablation-runbook.md) 执行。现役36份配置为 `configs/ablations/v4_3407/`，配对 `optimized_3407`，输出 `outputs/ablations/v4_3407/`；原split42的 `configs/ablations/v4/` 与产物保留。核心包含移除SMILES/分子图的完整重训，固定训练seed42、不追加seed稳定性测试。历史消融与历史实现/Capacity复现须使用对应Git版本，输出保留。
 - ADR-0034/0036/0062/0068/0072/0073/0079/0080/0081 及 Stage3 候选仅作历史追溯，不作为活跃入口；旧输出只读，不跨身份加载。v1/Capacity 冻结合同仍有效。
 - ADR-0086：十个正式基线对汽化热、热膨胀、HOMO、LUMO 独立单次训练，任务目录原训练集/验证集/测试集；不训练 partial charge，不更新实验任务模型。神经模型 10 轮、XGBoost 1000 trees 保持各自末轮配方。历史单任务 MLP 消融和历史 split 配置不扩展；现役实体 MLP 按 ADR-0100 独立注册。Stage3 模拟验证集/测试集使用五个 final 原单位预测均值，比较身份绑定完整行集合、来源 SHA 与原始训练集总体标准差（零方差为 1）；模拟榜单不得进入实验 wins/radar/scatter。
 - 基线只复用注册表、split、canonical SMILES、条件/目标与评估口径，不改变 Stage 数值合同。按 ADR 索引读取各模型合同，不能把一个模型的预算推及其他模型。

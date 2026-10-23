@@ -34,6 +34,7 @@ def main() -> None:
     parser.add_argument("--output", default="summary")
     parser.add_argument("--ablation-analysis-output", help="Write a separate v4 ablation comparison; neither output may already exist.")
     parser.add_argument("--ablation-bootstrap", action="store_true", help="Add fixed-seed 10000-repeat paired system bootstrap intervals.")
+    parser.add_argument("--ablation-authority-config", default="configs/v4/stage3/base.yaml", help="Paired Stage3 config for ablation groups, task sizes and bootstrap sources.")
     args = parser.parse_args()
     if args.ablation_bootstrap and not args.ablation_analysis_output:
         parser.error("--ablation-bootstrap requires --ablation-analysis-output")
@@ -50,7 +51,7 @@ def main() -> None:
     )
     if analysis_output is not None:
         from ablations.entity_home.report import write_analysis
-        write_analysis(payload, ROOT / 'configs/v4/stage3/base.yaml', analysis_output,
+        write_analysis(payload, repository_path(args.ablation_authority_config), analysis_output,
                        input_roots=input_roots, repository_root=ROOT, bootstrap=args.ablation_bootstrap)
 
 

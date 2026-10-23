@@ -2,11 +2,14 @@
 
 - 状态：已接受
 - 日期：2026-10-15
+- 更新：2026-10-23，新增配对最终优化配方的3407套件；原split42配置与产物保留。
 - 范围：独立消融研究；正式 Base、历史产物、基线预算不变。
 
 ## 科研协议
 
-以 ADR-0095/0096/0097 的现役 Base 为唯一配对参照：训练 seed42、`data/42` 五折，24实验性质，hydration 为 random/cv1、无测试集；两项模拟保持 PRIVATE 隔离并独立报告。保留原始样本覆盖、条件、目标归一化、SmoothL1、owner 裁剪、学习率和剩余 owner 预算。Stage1 在下游永久冻结；验证只报告；预先指定末轮/阶段末状态，禁止验证选模或按结果选择扩展实验。
+现役实验统一使用 `data/3407` 五折，以 `configs/v4/stage2/optimized_3407.yaml` 与 `configs/v4/stage3/optimized_3407.yaml` 的完整模型为唯一配对参照（HoME G2_C05 / Stage2 007 / Stage3 032，见[最终配方](../hpo-results.md)）。训练seed42、Stage3按42+fold派生；24实验性质，hydration为random/cv1、无测试集；两项模拟保持PRIVATE隔离并独立报告。除所声明的消融外，模型、任务归组、原始样本覆盖、条件、目标归一化、SmoothL1、owner裁剪、学习率和预算全部与优化配方一致。优化配方将两项电位任务归入phase_stability，共六个GROUP；不能混用原Base的七GROUP分层。Stage1在下游永久冻结；验证只报告；发布预先指定末轮/阶段末状态。
+
+原始 `configs/ablations/v4/` 的36份split42配置与 `outputs/ablations/v4/` 保留历史身份；新建36份 `configs/ablations/v4_3407/`，输出只写 `outputs/ablations/v4_3407/`。Stage1仍共享 `data/stage1` 和原语料prepare，不能将其语料seed误改为3407。3407 Stage2/3 prepare仅在数据、来源和完整性校验通过时复用；不存在时按配套配置重新prepare，既有不匹配产物不覆盖、不改SHA。
 
 | 核心对照 | 变化 | 解释边界 |
 |---|---|---|
@@ -36,7 +39,7 @@ C9/C10保持原1024D残差融合，缺失分支的512D槽固定填零；剩余�
 
 ## 身份、接口与隔离
 
-实现位于 `ablations/entity_home/`；Stage 包仅通过公开 Stage1 配置扩展注册/模型工厂和 `Stage3Config.runtime_backend` 调用入口提供的研究后端，禁止反向导入消融包。36份完整 YAML 位于 `configs/ablations/v4/`，不修改正式 YAML，不恢复旧 ObjectEncoder。
+实现位于 `ablations/entity_home/`；Stage包仅通过公开Stage1配置扩展注册/模型工厂和 `Stage3Config.runtime_backend` 调用入口提供的研究后端，禁止反向导入消融包。现役36份完整YAML位于 `configs/ablations/v4_3407/`，历史split42的36份位于 `configs/ablations/v4/`，不修改正式YAML，不恢复旧ObjectEncoder。MLP复用同一3407实体prepare和authority；sweep允许显式GPU设备槽。汇总通过 `--ablation-authority-config configs/v4/stage3/optimized_3407.yaml` 绑定分组及bootstrap来源，独立分析的split_seed读取authority配置，不能写死42。
 
 `ablation` 写入运行配置和训练身份 plan：变体、零更新初始化 YAML、所移除监督、完整初始模型状态 hash，以及参数量匹配的比例和计数。checkpoint/scope/final 使用独立 `ilume_stage3_entity_home_ablation_*_v1` kind；保留 format4、plan14/training18，不跨消融/正式或历史合同恢复。来源、数据、owner、SHA、完整张量校验不放宽。C1 导出独立 `ilume_stage1_random_encoder_v4`、零更新身份及固定 epoch0，不冒充预训练末轮。C2 从真正的 Stage2 初始模型构造来源，不读取已训练 Stage2 final，也不伪造正式 final。
 

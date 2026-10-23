@@ -713,7 +713,7 @@ def main() -> None:
         parser.error(str(error))
     if devices and config.name not in {
         "mlp", "dmpnn", "molformer", "ilbert", "spmm", "llasmol", "aionopedia", "iltransr", "aifc",
-        "ilume_stage3_single_task_mlp_home_v1",
+        "ilume_stage3_single_task_mlp_home_v1", "ilume_stage3_single_task_mlp_entity_v4",
     }:
         parser.error("--devices is only supported for GPU neural-network benchmarks")
     if devices and config.training.get("device") != "cuda":

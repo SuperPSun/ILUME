@@ -39,7 +39,7 @@
 | AIonopedia | [0049](0049-aionopedia-multimodal-baseline.md) |
 | ILTransR | [0057](0057-iltransr-stage3-baseline.md) |
 | AIFC | [0060](0060-aifc-stage3-baseline.md) |
-| 现役 v4 独立消融 | [0100](0100-v4-entity-home-ablations.md)：核心十一行（含两项单视图）、五监督与容量对照；固定训练seed42；正式Base不变 |
+| 现役 v4 独立消融 | [0100](0100-v4-entity-home-ablations.md)：3407套件配对optimized_3407，核心十一行（含两项单视图）、五监督与容量对照；训练seed42；原split42配置与产物保留 |
 | 历史核心三项消融 | [0089](0089-v4-frozen-dual-view-stage1.md)（历史 v4）、[0082](0082-home-mainline-and-core-ablations.md)、[0084](0084-stage3-simulation-phase2-phase3.md)、[0077](0077-stage3-single-task-mlp-v2-ablation.md)（历史配方来源） |
 
 ## 冻结合同与历史
