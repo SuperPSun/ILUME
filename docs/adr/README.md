@@ -20,7 +20,7 @@
 | 历史 Stage3 二十任务目录 | [0088](0088-stage3-hydration-replaces-transfer.md)、[0067](0067-stage3-twenty-task-catalog.md) | hydration 替换 transfer、移除 volume expansion；主线/核心消融/基线的任务合同依据与产物边界 |
 | 身份与历史实现精调 | [0021](0021-identity-audit-contract-v1.md)、[0027](0027-late-taskwise-refinement.md) | 语义身份/审计；0027 精调只约束历史实现/Capacity |
 | 模拟性质基线/评估 | [0102](0102-baseline-split3407-full-retraining.md)、[0101](0101-baseline-catalog-v4-reuse.md)、[0095](0095-v4-entity-home-without-object-encoder.md)、[0086](0086-scalar-simulation-baselines-and-reporting.md) | 3407基线三项全部重训、现役v4 Stage3两项、历史四项按协议隔离；Stage3五模型原单位集成，基线单次训练，独立验证集/测试集榜单；Stage2 evaluate 保持退役 |
-| 结果报告 | [0023](0023-unified-evaluation-reporting.md)、[0031](0031-stage3-summary-normalization-relaxation.md)、[0043](0043-retire-stage2-evaluation-and-v2-refinement.md)（历史）、[0061](0061-ilume-task-scatter-summary.md)、[0085](0085-retire-stage2-home-evaluation.md) | Stage3 实验与 0086 独立模拟榜单；Stage2 evaluator/报告由 0085 退役 |
+| 结果报告 | [0103](0103-paper-summary-common-scale.md)、[0023](0023-unified-evaluation-reporting.md)、[0031](0031-stage3-summary-normalization-relaxation.md)、[0043](0043-retire-stage2-evaluation-and-v2-refinement.md)（历史）、[0061](0061-ilume-task-scatter-summary.md)、[0085](0085-retire-stage2-home-evaluation.md) | 独立论文共同尺度报告；原Stage3实验与0086模拟榜单保留；Stage2 evaluator/报告由0085退役 |
 
 ## 基线与内部消融
 

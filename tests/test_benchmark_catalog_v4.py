@@ -407,3 +407,222 @@ def test_reuse_checks_original_fp32_ensemble(reuse_source, model):
     write_prediction(float(values.mean())+.01)
     with pytest.raises(ValueError, match='集成预测'):
         reuse._prediction(config, task, evaluation, 'test', manifests)
+
+
+@pytest.fixture
+def paper_source(tmp_path, monkeypatch):
+    from benchmarks.common import paper
+    from common.reporting import reporting_block, write_prediction_csv
+
+    monkeypatch.chdir(tmp_path)
+    tasks = ('experiment/hydration', 'experiment/speed_of_sound')
+    specs = {task: SimpleNamespace(task_id=task, enabled=True, meta_group='solvation' if i == 0 else 'thermophysical',
+                                  identity_columns=('solute',), condition_columns=('temperature_K',),
+                                  target_column='value', split_strategy='random' if i == 0 else 'system')
+             for i, task in enumerate(tasks)}
+    config = SimpleNamespace(data=SimpleNamespace(seed=3407, stage3_dir=Path('data/3407/stage3')))
+    monkeypatch.setattr(paper, 'load_stage3_config', lambda _: config)
+    monkeypatch.setattr(paper, 'resolve_task_registry', lambda _: specs)
+    def source(_config, spec, fold):
+        return Path('data/3407') / spec.task_id / f'fold{fold}.csv'
+    def test_source(_config, spec):
+        return Path('data/3407') / spec.task_id / 'test.csv'
+    def read_rows(_config, spec, folds):
+        for fold in folds if folds is not None else (0,):
+            path = source(config, spec, fold) if fold else test_source(config, spec)
+            if not path.exists():
+                continue
+            with path.open(newline='') as handle:
+                for number, row in enumerate(csv.DictReader(handle), 2):
+                    yield fold, number, row
+    monkeypatch.setattr(paper, 'source_path', source)
+    monkeypatch.setattr(paper, 'test_path', test_source)
+    monkeypatch.setattr(paper, 'iter_rows', read_rows)
+    for spec in specs.values():
+        for fold in range(0, 6):
+            if fold == 0 and spec.task_id == tasks[0]:
+                continue
+            path = source(config, spec, fold) if fold else test_source(config, spec)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f'solute,temperature_K,value\nCC,300,{fold}\nCC,300,{fold + .5}\n')
+    config_path = tmp_path / 'config.yaml'
+    config_path.write_text('data: {seed: 3407}\n')
+    ilume, baselines = tmp_path / 'ilume', tmp_path / 'baselines'
+
+    def write_run(root, summary, *, sweep=False, ilume=False):
+        root.mkdir(parents=True, exist_ok=True)
+        identity = semantic_identity('test.paper-run', {'run': root.relative_to(tmp_path).as_posix()})
+        metadata = {'status': 'completed', 'stage': 'stage3' if ilume else 'benchmark',
+                    'operation': 'sweep' if sweep else 'evaluate', 'semantic_identity': identity,
+                    'provenance': {'reporting_schema_version': 1}}
+        if ilume:
+            protocol = summary['reporting']['protocol']
+            folds = [protocol['fold']] if protocol['split'] == 'valid' else range(1, 6)
+            metadata['semantic_identity'] = semantic_identity('stage3.evaluation', {
+                'prepared_identity': 'same-prepared-data',
+                'checkpoint_training_identities': [f'ilume-training-fold{f}' for f in folds],
+                'selector': {'split': protocol['split'], 'fold': protocol['fold'], 'checkpoint_epoch': None,
+                             'model_selector': 'three_phase_final', 'tasks': protocol['expected_tasks'],
+                             'ensemble_folds': protocol['ensemble']}})
+        if not sweep and not ilume:
+            model, task = summary['reporting']['model_id'], summary['task']
+            fingerprints, originals = [], []
+            for fold in (summary['fold'],) if summary['split'] == 'valid' else range(1, 6):
+                training = semantic_identity('benchmark.training.v1', {'benchmark_model': model, 'task_id': task,
+                    'fold': fold, 'registry': {'baseline_protocol': 'catalog_v4_3407'}})
+                train = root / f'checkpoint{fold}'
+                train.mkdir()
+                path = train / 'checkpoint.json'
+                path.write_text(json.dumps({'training_identity': training}))
+                originals.append(train.relative_to(tmp_path).as_posix())
+                fingerprints.append({'training_identity': training, 'checkpoint_manifest_sha256': sha256_file(path)})
+            metadata['semantic_identity'] = semantic_identity('benchmark.evaluation.v1', {
+                'benchmark_model': model, 'domain': 'stage3', 'task': task,
+                'split': summary['split'], 'fold': summary['fold'], 'checkpoints': fingerprints,
+                'ensemble_folds': summary['split'] == 'test',
+                'evaluation_source_sha256': sha256_file(source(config, specs[task], summary['fold'])
+                    if summary['split'] == 'valid' else test_source(config, specs[task]))})
+            metadata['provenance']['checkpoints'] = originals
+        (root / 'metadata.json').write_text(json.dumps(metadata))
+        (root / 'summary.json').write_text(json.dumps(summary))
+
+    def evaluation(root, model, split, fold, expected):
+        selected = tasks if model == 'ilume' and split == 'valid' else tuple(expected['payload']['expected'])
+        manifests = []
+        for task in selected:
+            records = []
+            for _, number, row in read_rows(config, specs[task], (fold,) if fold else None):
+                actual = float(row['value'])
+                error = (.1 if task == tasks[0] else 1.2) if model == 'ilume' else .5
+                record = {'source_row': number, 'solute': 'CC', 'temperature_K': 300, 'target': actual}
+                if fold:
+                    record.update(source_fold=fold, prediction=actual + error)
+                else:
+                    record.update({f'prediction_fold{f}': actual + error for f in range(1, 6)})
+                    record['prediction_ensemble'] = actual + error
+                records.append(record)
+            name = f"predictions/{task.replace('/', '__')}.csv"
+            manifest = write_prediction_csv(root / name, records, list(records[0]))
+            manifest.update(path=name, task=task)
+            manifests.append(manifest)
+        protocol = {'split': split, 'fold': fold or None, 'folds': list(range(1, 6)),
+                    'ensemble': split == 'test', 'expected_tasks': list(selected)}
+        report = reporting_block(model_id=model, model_display_name=model.upper(), benchmark='stage3_property',
+                                 protocol=protocol, comparison=expected, study_id=model + '-study', predictions=manifests)
+        result = {'split': split, 'fold': fold or None, 'task': selected[0] if model != 'ilume' else None,
+                  'model_selector': 'three_phase_final' if model == 'ilume' else 'final_training_state',
+                  'reporting': report}
+        write_run(root, result, ilume=model == 'ilume')
+
+    for split in ('valid', 'test'):
+        references, comparison = paper._reference(config, specs, split)
+        for fold in range(1, 6) if split == 'valid' else (0,):
+            root = ilume / 'valid' / f'fold{fold}' if fold else ilume / 'test'
+            evaluation(root, 'ilume', split, fold, comparison)
+    for model in paper.BASELINE_MODELS:
+        sections, mappings = {}, {}
+        for split, label in (('valid', 'stage3_validation'), ('test', 'stage3_test')):
+            references, comparison = paper._reference(config, specs, split)
+            # 故意使用不同 scaler；共同尺度结果必须由原单位预测重算。
+            payload = comparison['payload']
+            comparison = comparison_identity('stage3_property', split=split, expected=payload['expected'],
+                                             sources=payload['sources'], normalization={k: {'scale': 999} for k in payload['normalization']},
+                                             folds=range(1, 6), ensemble=split == 'test')
+            mappings[label] = {}
+            for task in references:
+                by_fold = {}
+                for fold in range(1, 6) if split == 'valid' else (0,):
+                    root = baselines / model / task.replace('/', '__') / f'{split}{fold}'
+                    fragment = comparison_identity('stage3_property', split=split, expected=(task,),
+                                                   sources={k: v for k, v in payload['sources'].items() if k.startswith(task + ':')},
+                                                   normalization={}, folds=(fold,) if fold else range(1, 6), ensemble=split == 'test')
+                    evaluation(root, model, split, fold, fragment)
+                    by_fold[f'fold{fold}'] = root.relative_to(tmp_path).as_posix()
+                mappings[label][task] = by_fold if split == 'valid' else by_fold['fold0']
+            if split == 'test':
+                mappings[label][tasks[0]] = (baselines / model / 'no_samples').relative_to(tmp_path).as_posix()
+            sections[label] = {'protocol': {'expected_tasks': list(references)}, 'comparison_identity': comparison}
+        summary = {'jobs': {'failed': 0}, 'reporting': {'schema_version': 1, 'model_id': model,
+                   'model_display_name': model.upper(), 'study_id': model + '-study',
+                   'data_protocol': 'catalog_v4_3407', 'benchmarks': sections, 'source_runs': mappings}}
+        write_run(baselines / model, summary, sweep=True)
+    return config_path, ilume, baselines, tmp_path / 'paper', tmp_path
+
+
+def test_paper_summary_common_scales_complete_tasks_and_plots(paper_source):
+    from benchmarks.common.paper import publish_paper_summary
+    pytest.importorskip('matplotlib')
+    config, ilume, baselines, output, repository = paper_source
+    payload = publish_paper_summary(config, ilume, baselines, output, repository, with_test=True)
+    valid = payload['sections']['valid']
+    assert len(valid['overall']) == 11
+    assert len(valid['folds']) == 110
+    ilume_row = next(r for r in valid['overall'] if r['model_id'] == 'ilume')
+    assert ilume_row['wins'] == 1
+    assert ilume_row['mean_rank'] == 6
+    assert [r['mae_reduction_percent'] for r in valid['gains']] == pytest.approx([80, -140])
+    assert all(r['common_scale'] != 999 for r in valid['folds'])
+    assert len(payload['sections']['test']['gains']) == 1  # hydration 无测试集。
+    native_profile = [r for r in valid['performance_profile'] if r['model_id'] == 'ilume']
+    assert native_profile[0]['task_fraction'] == .5
+    assert native_profile[-1]['task_fraction'] == 1
+    for name in ('overall', 'task_gains', 'performance_profile'):
+        assert (output / 'valid' / f'{name}.pdf').read_bytes().startswith(b'%PDF')
+        assert '<svg' in (output / 'valid' / f'{name}.svg').read_text()
+    assert '负增益完整保留' in (output / 'overview.md').read_text()
+    manifest = json.loads((output / 'manifest.json').read_text())
+    assert all(sha256_file(output / name) == entry['sha256'] for name, entry in manifest['files'].items())
+    assert not any(repository.as_posix() in str(v) for v in payload['sources'])
+    with pytest.raises(FileExistsError):
+        publish_paper_summary(config, ilume, baselines, output, repository)
+
+
+@pytest.mark.parametrize('damage', ('sha', 'row', 'target', 'source', 'missing_fold', 'protocol', 'checkpoint', 'ensemble', 'plot'))
+def test_paper_summary_rejects_malformed_inputs_atomically(paper_source, damage, monkeypatch):
+    from benchmarks.common.paper import publish_paper_summary
+    config, ilume, baselines, output, repository = paper_source
+    summary_path = ilume / ('test' if damage == 'ensemble' else 'valid/fold1') / 'summary.json'
+    summary = json.loads(summary_path.read_text())
+    manifest = summary['reporting']['predictions'][0]
+    prediction = summary_path.parent / manifest['path']
+    if damage in {'sha', 'row', 'target', 'ensemble'}:
+        with prediction.open(newline='') as handle:
+            reader = csv.DictReader(handle)
+            fields, rows = reader.fieldnames, list(reader)
+        if damage == 'row':
+            rows[1]['source_row'] = rows[0]['source_row']  # 不允许重复来源行替代完整集合。
+        elif damage == 'target':
+            rows[0]['target'] = str(float(rows[0]['target']) + .1)
+        elif damage == 'ensemble':
+            rows[0]['prediction_ensemble'] = str(float(rows[0]['prediction_ensemble']) + .1)
+        else:
+            rows[0]['prediction'] = str(float(rows[0]['prediction']) + .1)
+        with prediction.open('w', newline='') as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader(); writer.writerows(rows)
+        if damage != 'sha':
+            manifest['sha256'] = sha256_file(prediction)
+            summary_path.write_text(json.dumps(summary))
+    elif damage == 'source':
+        path = next((repository / 'data').rglob('fold1.csv'))
+        path.write_text(path.read_text().replace('CC,300,', 'CC,301,'))
+    elif damage == 'missing_fold':
+        (ilume / 'valid/fold5/metadata.json').unlink()
+    elif damage == 'protocol':
+        path = baselines / 'aionopedia/summary.json'
+        value = json.loads(path.read_text())
+        value['reporting']['data_protocol'] = 'catalog_v4'
+        path.write_text(json.dumps(value))
+    elif damage == 'checkpoint':
+        path = next((baselines / 'aionopedia').rglob('checkpoint.json'))
+        path.write_text(path.read_text() + ' ')
+    elif damage == 'plot':
+        pytest.importorskip('matplotlib')
+        import benchmarks.common.paper_plots as plots
+        def fail(*_):
+            raise ValueError('plot failure')
+        monkeypatch.setattr(plots, 'write_paper_figures', fail)
+    with pytest.raises((ValueError, FileNotFoundError)):
+        publish_paper_summary(config, ilume, baselines, output, repository, with_test=damage == 'ensemble')
+    assert not output.exists()
+    assert not list(repository.glob('.paper-staging-*'))

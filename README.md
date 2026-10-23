@@ -490,6 +490,8 @@ LR和10轮，只发布轮 10末轮状态。
 
 ## 输出与结果汇总
 
+论文展示另用[独立论文汇总入口](docs/paper-summary-runbook.md)：共同完整训练集尺度的总体指标、全部任务相对最强基线增益、性能覆盖曲线及SVG/PDF散点图；原汇总入口与旧报告口径保留。
+
 新训练和评估输出不覆盖既有目录；每个操作记录 `run_config.yaml`、`metadata.json` 与完成后的 `summary.json`。全局 summarizer 只收录显式选中的目录，并对预测完整性进行验证；Stage3 实验与模拟使用独立榜单，Stage2 不发布榜单。见 [ADR-0021](docs/adr/0021-identity-audit-contract-v1.md)、[ADR-0031](docs/adr/0031-stage3-summary-normalization-relaxation.md)、[ADR-0085](docs/adr/0085-retire-stage2-home-evaluation.md)与 [ADR-0086](docs/adr/0086-scalar-simulation-baselines-and-reporting.md)。
 
 下列为历史v4汇总命令；现役实体HoME v4按 [v4运行手册](docs/v4-runbook.md)在独立目录汇总，不加入旧20任务或四模拟结果。

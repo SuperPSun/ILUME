@@ -85,6 +85,8 @@ python scripts/benchmarks/summarize.py \
 
 Stage3路径替换为实际已完成目录；只汇总基线时仅传`outputs/benchmarks/v4_3407`。实验为24任务五折验证、10任务五模型测试集成；模拟为三任务等权汇总，Stage3仅参加独立thermal_expansion比较，来源、完整行集合和尺度必须一致。HOMO/LUMO独立报告。
 
+论文图表另按[论文汇总手册](paper-summary-runbook.md)运行`scripts/benchmarks/summarize_paper.py`，使用共同完整训练集尺度，输出全部任务增益、性能覆盖及SVG/PDF；原入口继续承担既有实验与独立模拟榜单。
+
 结束写入后将完整`outputs/benchmarks/v4_3407/`回传4090相同相对目录，包含全部权重、配置、清单、日志与预测，并核验大小和SHA；冲突不得覆盖不同身份产物。遵循[v4回传规则](v4-runbook.md#跨设备训练产物回传)。
 
 ## 历史split42安排
