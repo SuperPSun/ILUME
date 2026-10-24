@@ -553,6 +553,10 @@ def test_paper_summary_common_scales_complete_tasks_and_plots(paper_source):
     from benchmarks.common.paper import publish_paper_summary
     pytest.importorskip('matplotlib')
     config, ilume, baselines, output, repository = paper_source
+    for split in ('valid', 'test'):
+        simulation = ilume / split / 'simulation'
+        simulation.mkdir()
+        (simulation / 'metadata.json').write_text('unrelated simulation metadata')
     payload = publish_paper_summary(config, ilume, baselines, output, repository, with_test=True)
     valid = payload['sections']['valid']
     assert len(valid['overall']) == 11

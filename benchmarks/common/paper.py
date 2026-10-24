@@ -284,7 +284,11 @@ def build_paper_summary(config_path: Path, ilume_root: Path, baseline_root: Path
     for candidate in baseline.values():
         if candidate.summary["reporting"].get("data_protocol") != "catalog_v4_3407" or candidate.summary.get("jobs", {}).get("failed") != 0:
             raise ValueError("基线协议不匹配或仍有失败作业")
-    selected = discover_candidates(ilume_root / "valid", repository_root)
+    simulation = ilume_root / "valid" / "simulation"
+    selected = discover_candidates(
+        ilume_root / "valid", repository_root,
+        exclude_roots=[simulation] if simulation.is_dir() else (),
+    )
     validation = {c.summary["reporting"]["protocol"].get("fold"): c for c in selected
                   if c.current and c.summary and c.metadata.get("status") == "completed"}
     if len(selected) != 5 or set(validation) != set(range(1, 6)):
@@ -297,7 +301,11 @@ def build_paper_summary(config_path: Path, ilume_root: Path, baseline_root: Path
         raise ValueError("ILUME 五折准备身份或训练来源不一致")
     test = None
     if with_test:
-        selected_test = discover_candidates(ilume_root / "test", repository_root)
+        simulation = ilume_root / "test" / "simulation"
+        selected_test = discover_candidates(
+            ilume_root / "test", repository_root,
+            exclude_roots=[simulation] if simulation.is_dir() else (),
+        )
         if (len(selected_test) != 1 or not selected_test[0].current
                 or selected_test[0].metadata.get("status") != "completed" or selected_test[0].summary is None):
             raise ValueError("ILUME 必须提供唯一完整的测试集成")
