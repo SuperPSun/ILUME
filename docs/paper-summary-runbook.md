@@ -15,6 +15,8 @@
 
 联合评估生成的`valid/simulation/`和`test/simulation/`在解析论文候选前排除；模拟结果继续独立汇总。
 
+AIonopedia按其原生`benchmark.aionopedia-training.v1`身份读取嵌套任务与协议，其他九模型读取通用`benchmark.training.v1`；两者都严格核对3407协议、模型、任务、折及检查点来源。运行异常使用英文消息，中文报告正文保持原样。
+
 ## 命令
 
 仅汇总全部24项实验的五折验证：

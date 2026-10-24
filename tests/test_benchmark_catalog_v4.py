@@ -189,16 +189,16 @@ def test_reuse_copy_provenance_and_tamper_rejection(reuse_source):
     unexpected.mkdir()
     (unexpected / 'metadata.json').write_text(json.dumps({'status':'completed'}))
     (unexpected / 'summary.json').write_text('{}')
-    with pytest.raises(ValueError, match='清单外'):
+    with pytest.raises(ValueError, match='outside the manifest'):
         reuse.validate_reuse(config, path, output)
     for file in unexpected.iterdir():
         file.unlink()
     unexpected.rmdir()
     weight = output / 'imported' / 'stage3' / reuse.REUSE_TASKS[0].replace('/', '__') / 'fold1/attempt-001/model.pt'
     weight.write_bytes(b'corrupt')
-    with pytest.raises(ValueError, match='完整性'):
+    with pytest.raises(ValueError, match='integrity'):
         reuse.validate_reuse(config, path, output)
-    with pytest.raises(ValueError, match='完整性'):
+    with pytest.raises(ValueError, match='integrity'):
         reuse.prepare_reuse(config, 'config.yaml', source, output)
 
 
@@ -222,7 +222,7 @@ def test_reuse_data_changes_and_missing_weights(reuse_source):
     metadata.write_text(json.dumps({'status':'completed','semantic_identity':content['training_identity']}))
     path = reuse.prepare_reuse(config, 'config.yaml', source, output)
     plan = json.loads(path.read_text())['payload']['tasks'][reuse.REUSE_TASKS[0]]
-    assert plan['action'] == 'train' and '预处理变化' in plan['reason']
+    assert plan['action'] == 'train' and 'preprocessing changed' in plan['reason']
     checkpoint.write_text(original_checkpoint)
     metadata.write_text(original_metadata)
     with Path('data/fold1.csv').open('a') as handle:
@@ -245,7 +245,7 @@ def test_reuse_rejects_unrelated_evaluation_weights(reuse_source):
     path = reuse.prepare_reuse(config, 'config.yaml', source, output)
     plan = json.loads(path.read_text())['payload']['tasks'][reuse.REUSE_TASKS[0]]
     assert plan['action'] == 'train'
-    assert '检查点不匹配' in plan['reason']
+    assert 'checkpoints do not match' in plan['reason']
 
 
 def test_catalog_evaluation_rejects_legacy_checkpoint(reuse_source, monkeypatch):
@@ -258,7 +258,7 @@ def test_catalog_evaluation_rejects_legacy_checkpoint(reuse_source, monkeypatch)
     checkpoint.write_text(json.dumps(content))
     with pytest.raises(ValueError, match='identity'):
         engine.evaluate_checkpoint(config, 'stage3', reuse.REUSE_TASKS[0], 1, checkpoint.parent, 'valid')
-    with pytest.raises(ValueError, match='禁止复用'):
+    with pytest.raises(ValueError, match='Reuse is forbidden'):
         reuse.validate_reuse(replace(config, protocol='legacy'), Path('unused'), output)
 
 
@@ -284,7 +284,7 @@ def test_3407_identity_rejects_42_even_with_identical_source_bytes(reuse_source,
         require_compatible_identity(new.training_identity, old.training_identity, context='split')
     with pytest.raises(ValueError, match='catalog_v4'):
         reuse.prepare_reuse(current, 'config.yaml', source, output)
-    with pytest.raises(ValueError, match='禁止复用'):
+    with pytest.raises(ValueError, match='Reuse is forbidden'):
         reuse.validate_reuse(current, Path('unused'), output)
 
 
@@ -405,7 +405,7 @@ def test_reuse_checks_original_fp32_ensemble(reuse_source, model):
     result, _ = reuse._prediction(config, task, evaluation, 'test', manifests)
     assert result['ensemble']['targets']['value']['count'] == 1
     write_prediction(float(values.mean())+.01)
-    with pytest.raises(ValueError, match='集成预测'):
+    with pytest.raises(ValueError, match='Ensemble prediction'):
         reuse._prediction(config, task, evaluation, 'test', manifests)
 
 
@@ -468,8 +468,13 @@ def paper_source(tmp_path, monkeypatch):
             model, task = summary['reporting']['model_id'], summary['task']
             fingerprints, originals = [], []
             for fold in (summary['fold'],) if summary['split'] == 'valid' else range(1, 6):
-                training = semantic_identity('benchmark.training.v1', {'benchmark_model': model, 'task_id': task,
-                    'fold': fold, 'registry': {'baseline_protocol': 'catalog_v4_3407'}})
+                if model == 'aionopedia':
+                    training = semantic_identity('benchmark.aionopedia-training.v1', {
+                        'benchmark_model': model, 'task': {'benchmark': 'stage3', 'task_id': task,
+                            'fold': fold, 'registry_payload': {'baseline_protocol': 'catalog_v4_3407'}}})
+                else:
+                    training = semantic_identity('benchmark.training.v1', {'benchmark_model': model, 'task_id': task,
+                        'fold': fold, 'registry': {'baseline_protocol': 'catalog_v4_3407'}})
                 train = root / f'checkpoint{fold}'
                 train.mkdir()
                 path = train / 'checkpoint.json'
@@ -630,3 +635,35 @@ def test_paper_summary_rejects_malformed_inputs_atomically(paper_source, damage,
         publish_paper_summary(config, ilume, baselines, output, repository, with_test=damage == 'ensemble')
     assert not output.exists()
     assert not list(repository.glob('.paper-staging-*'))
+
+
+@pytest.mark.parametrize('field', ('protocol', 'task', 'fold', 'model', 'type'))
+def test_paper_rejects_invalid_native_aionopedia_identity(paper_source, field):
+    from benchmarks.common.paper import build_paper_summary
+    config, ilume, baselines, output, repository = paper_source
+    run = baselines / 'aionopedia/experiment__hydration/valid1'
+    metadata = json.loads((run / 'metadata.json').read_text())
+    evaluation = metadata['semantic_identity']
+    fingerprint = evaluation['payload']['checkpoints'][0]
+    training = fingerprint['training_identity']
+    payload = training['payload']
+    if field == 'protocol':
+        payload['task']['registry_payload']['baseline_protocol'] = 'catalog_v4'
+    elif field == 'task':
+        payload['task']['task_id'] = 'experiment/other'
+    elif field == 'fold':
+        payload['task']['fold'] = 2
+    elif field == 'model':
+        payload['benchmark_model'] = 'mlp'
+    kind = 'benchmark.training.v1' if field == 'type' else training['type']
+    fingerprint['training_identity'] = semantic_identity(kind, payload)
+    manifest = repository / metadata['provenance']['checkpoints'][0] / 'checkpoint.json'
+    manifest.write_text(json.dumps({'training_identity': fingerprint['training_identity']}))
+    fingerprint['checkpoint_manifest_sha256'] = sha256_file(manifest)
+    metadata['semantic_identity'] = semantic_identity(evaluation['type'], evaluation['payload'])
+    (run / 'metadata.json').write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match='(?:training identity|checkpoint fold) mismatch') as error:
+        build_paper_summary(config, ilume, baselines, repository)
+    assert run.relative_to(repository).as_posix() in str(error.value)
+    assert str(error.value).isascii()
+    assert not output.exists()

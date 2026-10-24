@@ -49,7 +49,7 @@ def _json(path: Path) -> Any:
 
 @lru_cache(maxsize=65536)
 def _canonical_prediction(value: str) -> str:
-    return canonicalize_smiles(value, '复用预测分子身份')
+    return canonicalize_smiles(value, 'Reused prediction molecular identity')
 
 
 def _equal(left: Any, right: Any, context: str) -> None:
@@ -72,19 +72,19 @@ def _completed(root: Path, required: str) -> Path:
             if (p / required).is_file() and (p / 'metadata.json').is_file()
             and _json(p / 'metadata.json').get('status') == 'completed']
     if not runs:
-        raise ReuseMismatch('缺少已完成运行: ' + repository_relative(root))
+        raise ReuseMismatch('Completed run is missing: ' + repository_relative(root))
     return runs[-1]
 
 
 def _check_file(path: Path, expected: dict[str, Any]) -> None:
     if not path.is_file() or path.stat().st_size != int(expected['size']) or sha256_file(path) != expected['sha256']:
-        raise ValueError('产物完整性异常: ' + repository_relative(path))
+        raise ValueError('Artifact integrity mismatch: ' + repository_relative(path))
 
 
 def _within(root: Path, name: str) -> Path:
     p = (root / name).resolve()
     if not p.is_relative_to(root.resolve()) or Path(name).is_absolute():
-        raise ValueError('产物路径越界')
+        raise ValueError('Artifact path escapes its root')
     return p
 
 
@@ -130,9 +130,9 @@ def _audit_assets(config: Any, payload: dict[str, Any]) -> None:
             candidates.extend(p for root in set(roots) for p in _asset_candidates(str(root), name))
         paths = [p for p in candidates if p.is_file() and p.stat().st_size == int(expected['size'])]
         if not paths:
-            raise ValueError('预训练资产缺失或大小错误: ' + name)
+            raise ValueError('Pretrained asset is missing or has an incorrect size: ' + name)
         if not any(_asset_sha(str(p), p.stat().st_size, p.stat().st_mtime_ns) == expected['sha256'] for p in paths):
-            raise ValueError('预训练资产SHA错误: ' + name)
+            raise ValueError('Pretrained asset SHA256 mismatch: ' + name)
 
 
 def _source_map(config: Any) -> dict[str, str | None]:
@@ -151,51 +151,51 @@ def _audit_train(config: Any, task: Any, run: Path) -> dict[str, Any]:
     identity = manifest['training_identity']
     validate_semantic_identity(identity)
     metadata = _json(run / 'metadata.json')
-    _equal(metadata['semantic_identity'], identity, '训练元数据身份')
+    _equal(metadata['semantic_identity'], identity, 'Training metadata identity mismatch')
     old = identity['payload']
     for key, value in (('benchmark_model', config.name), ('task_id', task.task_id),
                        ('fold', task.fold), ('seed', config.seed),
                        ('model', config.model), ('training', config.training)):
-        _equal(old.get(key), value, '训练配方变化/' + key)
+        _equal(old.get(key), value, 'Training recipe changed/' + key)
     saved = yaml.safe_load((run / 'run_config.yaml').read_text())
     for key in ('model', 'training', 'seed', 'features', 'environment', 'runtime'):
-        _equal(saved.get(key), config.to_dict().get(key), '冻结配置变化/' + key)
+        _equal(saved.get(key), config.to_dict().get(key), 'Frozen configuration changed/' + key)
     expected_registry = dict(task.registry_payload)
     for key in ('baseline_protocol', 'condition_width', 'role_policy'):
         expected_registry.pop(key, None)
-    _equal(old['registry'], expected_registry, '任务合同变化')
+    _equal(old['registry'], expected_registry, 'Task contract changed')
     hashes = old['source_hashes']
     for label, paths in (('train', task.train_paths), ('valid', task.valid_paths)):
-        _equal(hashes[label], [sha256_file(p) for p in paths], label + '来源变化')
+        _equal(hashes[label], [sha256_file(p) for p in paths], label + ' source changed')
     if not manifest.get('integrity'):
-        raise ValueError('模型缺少完整性清单')
+        raise ValueError('Model integrity manifest is missing')
     for name, expected in manifest['integrity'].items():
         _check_file(_within(run, name), expected)
     _audit_assets(config, old)
     train = load_split(task, 'train')
-    _stats(old['target_statistics'], train.targets, '目标归一化变化')
-    _equal(manifest['target_statistics'], old['target_statistics'], 'checkpoint scaler变化')
+    _stats(old['target_statistics'], train.targets, 'Target normalization changed')
+    _equal(manifest['target_statistics'], old['target_statistics'], 'Checkpoint scaler changed')
     if config.name in {'mlp', 'ecfp_xgboost'}:
-        _equal(old['feature'], feature_schema(config.features).to_dict(), '特征合同变化')
+        _equal(old['feature'], feature_schema(config.features).to_dict(), 'Feature contract changed')
         if config.name == 'mlp':
             @lru_cache(None)
             def features(smiles: str) -> np.ndarray:
                 return basic_molecular_statistics(Chem.MolFromSmiles(smiles))
             values = np.asarray([np.concatenate([*(features(s) for s in cs), train.conditions[i]])
                                  for i, cs in enumerate(train.components)])
-            _equal(old['preprocessing'], FeaturePreprocessor.fit(values).to_dict(), '特征预处理变化')
+            _equal(old['preprocessing'], FeaturePreprocessor.fit(values).to_dict(), 'Feature preprocessing changed')
     else:
         module = importlib.import_module(f'benchmarks.{config.name}.adapter')
         key = 'graph_contract' if config.name == 'dmpnn' else 'input_contract'
         symbol = 'DMPNN_GRAPH_CONTRACT' if config.name == 'dmpnn' else config.name.upper() + '_INPUT_CONTRACT'
-        _equal(old[key], getattr(module, symbol), '输入预处理合同变化')
+        _equal(old[key], getattr(module, symbol), 'Input preprocessing contract changed')
         if config.environment:
             lock = sha256_file(config.environment.lock)
             original_lock = old.get('environment_lock_sha256', metadata.get('provenance', {}).get('environment_lock_sha256'))
             if original_lock != lock:
-                raise ReuseMismatch('独立环境锁变化')
+                raise ReuseMismatch('Dedicated environment lock changed')
         if config.name == 'ilbert':
-            _equal(old['condition_contract'], {'columns': list(task.condition_columns), 'transform': 'raw_physical_units'}, 'ILBERT条件合同变化')
+            _equal(old['condition_contract'], {'columns': list(task.condition_columns), 'transform': 'raw_physical_units'}, 'ILBERT condition contract changed')
         elif config.name == 'iltransr':
             population, digest = hashlib.sha256(), old['source_hashes']['condition_population_sha256']
             population.update('\t'.join(task.condition_columns).encode())
@@ -214,14 +214,14 @@ def _audit_train(config: Any, task: Any, run: Path) -> dict[str, Any]:
                         population.update(str(number).encode())
                         population.update(np.asarray(value, dtype=np.float64).tobytes())
             if population.hexdigest() != digest:
-                raise ReuseMismatch('ILTransR条件统计总体变化')
+                raise ReuseMismatch('ILTransR condition population changed')
             stats = module.ConditionStats.fit(task.condition_columns, np.asarray(rows).reshape(len(rows), len(task.condition_columns)), digest)
-            _equal(old['condition_statistics'], asdict(stats), 'ILTransR条件统计变化')
-            _equal(old['recipe'], module.resolve_iltransr_recipe(config, task.task_id), 'ILTransR任务配方变化')
+            _equal(old['condition_statistics'], asdict(stats), 'ILTransR condition statistics changed')
+            _equal(old['recipe'], module.resolve_iltransr_recipe(config, task.task_id), 'ILTransR task recipe changed')
         elif config.name == 'aifc':
-            _equal(old['condition_statistics'], asdict(module.ConditionStats.fit(task.condition_columns, train.conditions)), 'AIFC条件统计变化')
+            _equal(old['condition_statistics'], asdict(module.ConditionStats.fit(task.condition_columns, train.conditions)), 'AIFC condition statistics changed')
         else:
-            _stats(old['condition_statistics'], train.conditions, '条件归一化变化')
+            _stats(old['condition_statistics'], train.conditions, 'Condition normalization changed')
     return manifest
 
 
@@ -231,53 +231,53 @@ def _prediction(config: Any, task: Any, run: Path, split: str, manifests: list[d
     payload = evaluation['payload']
     for key, value in (('benchmark_model', config.name), ('domain', 'stage3'), ('task', task.task_id),
                        ('split', split), ('fold', None if split == 'test' else task.fold), ('ensemble_folds', split == 'test')):
-        _equal(payload[key], value, '原评估身份变化/' + key)
+        _equal(payload[key], value, 'Original evaluation identity changed/' + key)
     fingerprints = []
     for manifest in manifests:
         train = _completed(run.parents[1] / f"fold{manifest['training_identity']['payload']['fold']}", 'checkpoint.json')
         fingerprints.append({'training_identity': manifest['training_identity'],
                              'checkpoint_manifest_sha256': sha256_file(train / 'checkpoint.json'),
                              'model_integrity': manifest['integrity']})
-    _equal(payload['checkpoints'], fingerprints, '原评估与训练检查点不匹配')
+    _equal(payload['checkpoints'], fingerprints, 'Original evaluation and training checkpoints do not match')
     summary = _json(run / 'summary.json')
     report = summary['reporting']
     validate_semantic_identity(report['comparison_identity'])
-    _equal(report['model_id'], config.name, '预测模型变化')
-    _equal(summary['task'], task.task_id, '预测任务变化')
-    _equal(summary['split'], split, '预测split变化')
+    _equal(report['model_id'], config.name, 'Prediction model changed')
+    _equal(summary['task'], task.task_id, 'Prediction task changed')
+    _equal(summary['split'], split, 'Prediction split changed')
     if split == 'valid':
-        _equal(summary['fold'], task.fold, '预测fold变化')
+        _equal(summary['fold'], task.fold, 'Prediction fold changed')
     source = task.test_path if split == 'test' else task.valid_paths[0]
-    _equal(payload['evaluation_source_sha256'], sha256_file(source) if source.exists() else None, '原评估来源变化')
+    _equal(payload['evaluation_source_sha256'], sha256_file(source) if source.exists() else None, 'Original evaluation source changed')
     sources = report['comparison_identity']['payload']['sources']
     if split == 'test' and sources.get(task.task_id + ':test') != (sha256_file(source) if source.exists() else None):
-        raise ReuseMismatch('测试来源变化')
+        raise ReuseMismatch('Test source changed')
     for p in (*task.train_paths, *task.valid_paths):
         key = f'{task.task_id}:fold{p.stem.removeprefix("fold")}'
         if sources.get(key) != sha256_file(p):
-            raise ReuseMismatch('评估来源变化')
+            raise ReuseMismatch('Evaluation source changed')
     artifact, = report['predictions']
     pred_path = _within(run, artifact['path'])
     if sha256_file(pred_path) != artifact['sha256']:
-        raise ValueError('预测SHA异常')
+        raise ValueError('Prediction SHA256 mismatch')
     with pred_path.open(newline='') as handle:
         rows = list(csv.DictReader(handle))
     raw = load_split(task, split)
     if len(rows) != len(raw) or len(rows) != artifact['rows']:
-        raise ReuseMismatch('预测行覆盖变化')
+        raise ReuseMismatch('Prediction row coverage changed')
     preds = []
     for i, (row, cs, source_row) in enumerate(zip(rows, raw.components, raw.source_rows, strict=True)):
         if tuple(_canonical_prediction(row[k]) for k in task.slots) != cs or int(row['source_row']) != int(source_row.rsplit(':', 1)[1]):
-            raise ReuseMismatch('预测行顺序或分子身份变化')
+            raise ReuseMismatch('Prediction row order or molecular identity changed')
         if split == 'valid' and int(row['source_fold']) != task.fold:
-            raise ReuseMismatch('预测折变化')
+            raise ReuseMismatch('Prediction fold changed')
         if [float(row[k]) for k in task.condition_columns] != raw.conditions[i].tolist() or float(row['target']) != float(raw.targets[i, 0]):
-            raise ReuseMismatch('预测条件或目标变化')
+            raise ReuseMismatch('Prediction conditions or targets changed')
         if split == 'test':
             values = [float(row[f'prediction_fold{f}']) for f in config.stage3.folds]
             dtype = np.float32 if config.name in {'ecfp_xgboost', 'dmpnn'} else np.float64
             if not np.isclose(np.asarray(values, dtype=dtype).mean(), float(row['prediction_ensemble']), rtol=1e-12, atol=1e-12):
-                raise ValueError('集成预测异常')
+                raise ValueError('Ensemble prediction mismatch')
             preds.append(float(row['prediction_ensemble']))
         else:
             preds.append(float(row['prediction']))
@@ -302,14 +302,14 @@ def _prediction(config: Any, task: Any, run: Path, split: str, manifests: list[d
 def prepare_reuse(config: Any, config_path: str, source: Path, output: Path) -> Path:
     source, output = source.resolve(), output.resolve()
     if config.protocol != 'catalog_v4' or config.name == 'aionopedia':
-        raise ValueError('只允许catalog_v4的九个非AIonopedia模型复用')
+        raise ValueError('Reuse is restricted to the nine non-AIonopedia catalog_v4 baselines')
     if source.resolve() == output.resolve() or output.resolve().is_relative_to(source.resolve()) or source.resolve().is_relative_to(output.resolve()):
-        raise ValueError('复用源与目标必须独立')
+        raise ValueError('Reuse source and destination must be separate')
     if (output / 'metadata.json').exists() and _json(output / 'metadata.json').get('operation') == 'sweep':
-        raise ValueError('已启动正式sweep的根目录不能重新准备复用')
+        raise ValueError('Cannot prepare reuse in a root that already contains a formal sweep')
     tasks = configured_tasks(config, 'stage3')
     if len(tasks) != 24:
-        raise ValueError('catalog_v4必须覆盖24个实验任务')
+        raise ValueError('catalog_v4 must cover all 24 experimental tasks')
     data = _source_map(config)
     plans = {}
     verified_files = {}
@@ -337,7 +337,7 @@ def prepare_reuse(config: Any, config_path: str, source: Path, output: Path) -> 
             files = {}
             for p in sorted(task_dir.rglob('*')):
                 if p.is_symlink():
-                    raise ValueError('复用来源禁止符号链接')
+                    raise ValueError('Reuse sources must not contain symbolic links')
                 if p.is_file():
                     files[p.relative_to(task_dir).as_posix()] = {'size': p.stat().st_size, 'sha256': sha256_file(p)}
             plans[task_id] = {'action': 'reuse', 'source': repository_relative(task_dir), 'training_identities': [m['training_identity'] for m in training]}
@@ -348,21 +348,21 @@ def prepare_reuse(config: Any, config_path: str, source: Path, output: Path) -> 
         except (ValueError, KeyError, OSError) as error:
             plans[task_id] = {'action': 'train', 'audit_status': 'integrity_error', 'reason': str(error)}
     if _source_map(config) != data:
-        raise ValueError('审计过程中当前数据发生变化')
+        raise ValueError('Current data changed during the audit')
     count = sum(len(fs) for fs in verified_files.values())
     size = sum(v['size'] for fs in verified_files.values() for v in fs.values())
     print(json.dumps({'copy_files': count, 'copy_bytes': size, 'destination': repository_relative(output / 'imported'), 'conflicts': 'same SHA reuse; different SHA fail'}, ensure_ascii=False), flush=True)
     if shutil.disk_usage(output.parent if output.parent.exists() else source).free < size:
-        raise OSError('复制目标空间不足')
+        raise OSError('Insufficient space at the copy destination')
     # 先检查所有目标冲突，之后才开始复制。
     for task_id, files in verified_files.items():
         dest = output / 'imported' / 'stage3' / task_id.replace('/', '__')
         if not dest.resolve().is_relative_to(output.resolve()):
-            raise ValueError('复制目标路径越界')
+            raise ValueError('Copy destination path escapes its root')
         for name, expected in files.items():
             target = _within(dest, name)
             if (dest / name).is_symlink():
-                raise ValueError('复制目标禁止符号链接')
+                raise ValueError('Copy destinations must not contain symbolic links')
             if target.exists():
                 _check_file(target, expected)
     identity = semantic_identity('benchmark.sweep.v1', {'config': scientific_config(config), 'benchmark': 'all'})
@@ -397,8 +397,8 @@ def prepare_reuse(config: Any, config_path: str, source: Path, output: Path) -> 
                 run_root = evaluation_root / f'attempt-{int(run_root.name.split("-")[1]) + 1:03d}'
             plans[task_id].setdefault('evaluations', {})[label] = repository_relative(run_root)
             if run_root.exists():
-                _equal(_json(run_root / 'metadata.json')['semantic_identity'], ev_id, '派生评估冲突')
-                _equal(_json(run_root / 'summary.json'), {**derived, 'reuse_provenance': provenance}, '派生汇总冲突')
+                _equal(_json(run_root / 'metadata.json')['semantic_identity'], ev_id, 'Derived evaluation conflict')
+                _equal(_json(run_root / 'summary.json'), {**derived, 'reuse_provenance': provenance}, 'Derived summary conflict')
             else:
                 run = open_run_directory(stage='benchmark', operation='evaluate', config_path=config_path, config_payload=config.to_dict(), semantic_identity=ev_id, output=repository_relative(run_root), seed=config.seed, data_metadata=data_metadata, details={'reporting_schema_version': REPORTING_SCHEMA_VERSION})
                 pred_dest = run_root / derived['reporting']['predictions'][0]['path']
@@ -418,63 +418,63 @@ def prepare_reuse(config: Any, config_path: str, source: Path, output: Path) -> 
 
 def validate_reuse(config: Any, path: Path, output: Path) -> dict[str, Any]:
     if config.protocol != 'catalog_v4' or config.name == 'aionopedia':
-        raise ValueError('该协议或模型禁止复用')
+        raise ValueError('Reuse is forbidden for this protocol or model')
     manifest = _json(path)
     validate_semantic_identity(manifest)
     if manifest['type'] != 'benchmark.catalog-v4-reuse.v1':
-        raise ValueError('复用清单类型错误')
+        raise ValueError('Invalid reuse manifest type')
     payload = manifest['payload']
-    _equal(payload['config'], config_identity(config), '复用配置变化')
-    _equal(payload['output'], repository_relative(output), '复用目标变化')
-    _equal(payload['data_sources'], _source_map(config), '复用数据变化')
+    _equal(payload['config'], config_identity(config), 'Reuse configuration changed')
+    _equal(payload['output'], repository_relative(output), 'Reuse destination changed')
+    _equal(payload['data_sources'], _source_map(config), 'Reuse data changed')
     if set(payload['tasks']) != set(configured_tasks(config, 'stage3')):
-        raise ValueError('复用任务覆盖不完整')
+        raise ValueError('Reuse task coverage is incomplete')
     for task_id, plan in payload['tasks'].items():
         if plan['action'] not in {'reuse', 'train'}:
-            raise ValueError('复用清单存在完整性异常: ' + task_id)
+            raise ValueError('Reuse manifest integrity mismatch: ' + task_id)
     for name, expected in payload['files'].items():
         p = repository_path(name)
         if not p.is_relative_to(output.resolve()):
-            raise ValueError('复用文件不属于目标根目录')
+            raise ValueError('Reused file is outside the destination root')
         _check_file(p, expected)
     for task_id, plan in payload['tasks'].items():
         if plan['action'] != 'reuse':
             continue
         if task_id not in REUSE_TASKS or len(plan.get('training_identities', [])) != 5:
-            raise ValueError('复用训练身份覆盖不完整')
+            raise ValueError('Reused training identity coverage is incomplete')
         imported = output / 'imported' / 'stage3' / task_id.replace('/', '__')
         for fold, identity in zip(config.stage3.folds, plan['training_identities'], strict=True):
             validate_semantic_identity(identity)
             train = _completed(imported / f'fold{fold}', 'checkpoint.json')
             manifest = _audit_train(config, resolve_task(config, 'stage3', task_id, fold), train)
-            _equal(manifest['training_identity'], identity, '复用训练身份映射变化')
+            _equal(manifest['training_identity'], identity, 'Reused training identity mapping changed')
             required = {repository_relative(train / 'checkpoint.json'), *(repository_relative(_within(train, name)) for name in manifest['integrity'])}
             if not required <= payload['files'].keys():
-                raise ValueError('复用权重清单覆盖不完整')
+                raise ValueError('Reused weight manifest coverage is incomplete')
         expected_labels = {f'evaluate_valid_fold{f}' for f in config.stage3.folds}
         if has_test_rows(resolve_task(config, 'stage3', task_id, 1)):
             expected_labels.add('evaluate_test')
         if set(plan.get('evaluations', {})) != expected_labels:
-            raise ValueError('复用评估映射覆盖不完整')
+            raise ValueError('Reused evaluation mapping coverage is incomplete')
         for label, name in plan['evaluations'].items():
             run = repository_path(name)
             if not run.is_relative_to(output.resolve() / 'stage3' / task_id.replace('/', '__')):
-                raise ValueError('复用评估映射路径错误')
+                raise ValueError('Invalid reused evaluation mapping path')
             if repository_relative(run / 'summary.json') not in payload['files']:
-                raise ValueError('复用评估清单覆盖不完整')
+                raise ValueError('Reused evaluation manifest coverage is incomplete')
             if _completed(output / 'stage3' / task_id.replace('/', '__') / label, 'summary.json') != run:
-                raise ValueError('复用评估目录出现清单外的已完成尝试')
+                raise ValueError('Reuse evaluation directory contains a completed attempt outside the manifest')
             derived_id = _json(run / 'metadata.json')['semantic_identity']
             validate_semantic_identity(derived_id)
-            _equal(derived_id['payload']['config'], config_identity(config), '派生评估配置变化')
-            _equal(derived_id['payload']['provenance']['training_identities'], plan['training_identities'], '派生评估来源变化')
+            _equal(derived_id['payload']['config'], config_identity(config), 'Derived evaluation configuration changed')
+            _equal(derived_id['payload']['provenance']['training_identities'], plan['training_identities'], 'Derived evaluation source changed')
     return payload
 
 
 def validate_completed_run(config: Any, run: Path, required: str) -> None:
     """新协议的普通完成作业必须仍然满足配置、来源与文件完整性。"""
     saved = yaml.safe_load((run / 'run_config.yaml').read_text())
-    _equal({k: v for k, v in saved.items() if k not in {'display_name', 'runtime'}}, scientific_config(config), '已完成作业配置变化')
+    _equal({k: v for k, v in saved.items() if k not in {'display_name', 'runtime'}}, scientific_config(config), 'Completed run configuration changed')
     metadata = _json(run / 'metadata.json')
     identity = metadata['semantic_identity']
     validate_semantic_identity(identity)
@@ -482,28 +482,28 @@ def validate_completed_run(config: Any, run: Path, required: str) -> None:
     task = resolve_task(config, details['benchmark'], details['task'], details.get('fold') or (1 if details['benchmark'] == 'stage3' else None))
     if required == 'checkpoint.json':
         manifest = _json(run / required)
-        _equal(manifest['training_identity'], identity, '已完成训练身份变化')
+        _equal(manifest['training_identity'], identity, 'Completed training identity changed')
         payload = identity['payload']
         hashes = payload['source_hashes']
         for label, paths in (('train', task.train_paths), ('valid', task.valid_paths)):
-            _equal(hashes[label], [sha256_file(p) for p in paths], '已完成训练数据变化')
+            _equal(hashes[label], [sha256_file(p) for p in paths], 'Completed training data changed')
         if config.name == 'iltransr':
             from benchmarks.iltransr.adapter import _condition_population
             _, population_hash = _condition_population(task)
-            _equal(hashes['condition_population_sha256'], population_hash, '已完成ILTransR条件总体变化')
+            _equal(hashes['condition_population_sha256'], population_hash, 'Completed ILTransR condition population changed')
         for name, expected in manifest['integrity'].items():
             _check_file(_within(run, name), expected)
     else:
         payload = identity['payload']
         source = task.test_path if details['split'] == 'test' else task.valid_paths[0]
-        _equal(payload['evaluation_source_sha256'], sha256_file(source) if source.exists() else None, '已完成评估数据变化')
+        _equal(payload['evaluation_source_sha256'], sha256_file(source) if source.exists() else None, 'Completed evaluation data changed')
         for original, fingerprint in zip(details['checkpoints'], payload['checkpoints'], strict=True):
             checkpoint = repository_path(original)
             if sha256_file(checkpoint / 'checkpoint.json') != fingerprint['checkpoint_manifest_sha256']:
-                raise ValueError('已完成评估的检查点清单变化')
+                raise ValueError('Completed evaluation checkpoint manifest changed')
             for name, expected in fingerprint['model_integrity'].items():
                 _check_file(_within(checkpoint, name), expected)
         for item in _json(run / 'summary.json')['reporting']['predictions']:
             path = _within(run, item['path'])
             if sha256_file(path) != item['sha256']:
-                raise ValueError('已完成预测SHA变化')
+                raise ValueError('Completed prediction SHA256 changed')

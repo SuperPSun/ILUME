@@ -38,13 +38,13 @@ def _relative(path: Path, root: Path) -> str:
 def _within(root: Path, name: str) -> Path:
     path = (root / name).resolve()
     if Path(name).is_absolute() or not path.is_relative_to(root.resolve()):
-        raise ValueError("报告来源路径越界: " + name)
+        raise ValueError("Report source path escapes its root: " + name)
     return path
 
 
 @lru_cache(maxsize=65536)
 def _canonical(value: str) -> str:
-    return canonicalize_smiles(value, "论文预测分子身份")
+    return canonicalize_smiles(value, "Paper prediction molecular identity")
 
 
 def _validate_comparison(identity: dict[str, Any], expected: dict[str, Any], *, fragment: bool = False) -> None:
@@ -56,16 +56,16 @@ def _validate_comparison(identity: dict[str, Any], expected: dict[str, Any], *, 
     if fragment:
         tasks = actual["expected"]
         if len(tasks) != 1 or tasks[0] not in wanted["expected"]:
-            raise ValueError("评估片段任务不匹配")
+            raise ValueError("Evaluation fragment task mismatch")
         wanted["expected"] = tasks
         wanted["sources"] = {k: v for k, v in wanted["sources"].items() if k.startswith(tasks[0] + ":")}
         if wanted["split"] == "valid" and (len(actual["folds"]) != 1 or actual["folds"][0] not in range(1, 6)):
-            raise ValueError("验证片段折不匹配")
+            raise ValueError("Validation fragment fold mismatch")
         if wanted["split"] == "test" and actual["folds"] != [1, 2, 3, 4, 5]:
-            raise ValueError("测试片段缺少五折")
+            raise ValueError("Test fragment must include all five folds")
         wanted["folds"] = actual["folds"]
     if identity["type"] != "reporting.comparison.v1" or actual != wanted:
-        raise ValueError("论文比较身份不匹配：来源、任务、划分或集成协议不同")
+        raise ValueError("Paper comparison identity mismatch: sources, tasks, split, or ensemble protocol differ")
 
 
 def _run(root: Path, repository_root: Path, audit: dict[str, Any]) -> dict[str, Any]:
@@ -74,10 +74,10 @@ def _run(root: Path, repository_root: Path, audit: dict[str, Any]) -> dict[str, 
     identity = metadata["semantic_identity"]
     validate_semantic_identity(identity)
     if metadata.get("status") != "completed" or metadata.get("provenance", {}).get("reporting_schema_version") != 1:
-        raise ValueError("论文输入必须是完整的 schema-v1 评估: " + _relative(root, repository_root))
+        raise ValueError("Paper inputs must be completed schema-v1 evaluations: " + _relative(root, repository_root))
     reporting = summary.get("reporting", {})
     if reporting.get("schema_version") != 1:
-        raise ValueError("评估缺少 reporting schema-v1")
+        raise ValueError("Evaluation lacks reporting schema-v1")
     if metadata.get("stage") == "stage3":
         selector = identity["payload"].get("selector", {})
         protocol = reporting["protocol"]
@@ -85,37 +85,47 @@ def _run(root: Path, repository_root: Path, audit: dict[str, Any]) -> dict[str, 
                              "checkpoint_epoch": None, "model_selector": "three_phase_final",
                              "tasks": protocol["expected_tasks"], "ensemble_folds": bool(protocol.get("ensemble"))}
         if identity["type"] != "stage3.evaluation" or selector != expected_selector:
-            raise ValueError("ILUME 评估选择与原始身份不匹配")
+            raise ValueError("ILUME evaluation selector does not match its original identity")
     relative = _relative(root, repository_root)
     checkpoints = identity["payload"].get("checkpoints", [])
     originals = metadata.get("provenance", {}).get("checkpoints", [])
     if metadata.get("stage") == "benchmark" and metadata.get("operation") == "evaluate":
         data = identity["payload"]
         if identity["type"] != "benchmark.evaluation.v1" or not checkpoints or len(originals) != len(checkpoints):
-            raise ValueError("基线评估缺少完整检查点来源身份")
+            raise ValueError("Baseline evaluation lacks complete checkpoint provenance")
         if (data.get("domain"), data.get("benchmark_model"), data.get("task"), data.get("split"), data.get("fold")) != (
                 "stage3", reporting["model_id"], summary.get("task"), summary.get("split"), summary.get("fold")):
-            raise ValueError("基线评估身份与报告不匹配")
+            raise ValueError("Baseline evaluation identity does not match its report")
         if data.get("ensemble_folds") != (summary["split"] == "test"):
-            raise ValueError("基线原始身份的集成选择不匹配")
+            raise ValueError("Baseline ensemble selection does not match its original identity")
+        training_folds = []
         for fingerprint in checkpoints:
             training = fingerprint["training_identity"]
             validate_semantic_identity(training)
-            if (training["type"] != "benchmark.training.v1"
-                    or training["payload"].get("registry", {}).get("baseline_protocol") != "catalog_v4_3407"
-                    or training["payload"].get("benchmark_model") != reporting["model_id"]
-                    or training["payload"].get("task_id") != summary.get("task")):
-                raise ValueError("基线训练协议或任务不匹配，拒绝历史预测替代新训练")
+            payload = training["payload"]
+            if reporting["model_id"] == "aionopedia":
+                expected_type = "benchmark.aionopedia-training.v1"
+                task_identity = payload.get("task", {})
+                registry = task_identity.get("registry_payload", {})
+            else:
+                expected_type = "benchmark.training.v1"
+                task_identity = payload
+                registry = payload.get("registry", {})
+            expected = (expected_type, reporting["model_id"], summary.get("task"), "catalog_v4_3407")
+            actual = (training["type"], payload.get("benchmark_model"), task_identity.get("task_id"), registry.get("baseline_protocol"))
+            if actual != expected:
+                raise ValueError(f"Baseline training identity mismatch at {relative}: expected {expected}, got {actual}")
+            training_folds.append(task_identity.get("fold"))
         expected_folds = [summary["fold"]] if summary["split"] == "valid" else [1, 2, 3, 4, 5]
-        if [item["training_identity"]["payload"]["fold"] for item in checkpoints] != expected_folds:
-            raise ValueError("评估检查点未覆盖对应训练折")
+        if training_folds != expected_folds:
+            raise ValueError(f"Training checkpoint fold mismatch at {relative}: expected {expected_folds}, got {training_folds}")
     if originals:
         for name, fingerprint in zip(originals, checkpoints, strict=True):
             manifest = _within(repository_root, name) / "checkpoint.json"
             if sha256_file(manifest) != fingerprint["checkpoint_manifest_sha256"]:
-                raise ValueError("评估来源的检查点清单 SHA256 不匹配")
+                raise ValueError("Evaluation checkpoint manifest SHA256 mismatch")
             if _json(manifest).get("training_identity") != fingerprint["training_identity"]:
-                raise ValueError("评估来源的检查点训练身份不匹配")
+                raise ValueError("Evaluation checkpoint training identity mismatch")
     audit[relative] = {
         "semantic_identity": identity,
         "summary_sha256": sha256_file(root / "summary.json"),
@@ -135,12 +145,12 @@ def _reference(config: Any, registry: dict[str, Any], split: str) -> tuple[dict[
         targets = {f: [float(row[spec.target_column]) for _, _, row in rows] for f, rows in folds.items()}
         for fold in range(1, 6):
             if not targets[fold]:
-                raise ValueError("验证折不能为空: " + task)
+                raise ValueError("Validation folds must not be empty: " + task)
             sources[f"{task}:fold{fold}"] = sha256_file(source_path(config, spec, fold))
             train = [y for f in range(1, 6) if f != fold for y in targets[f]]
             scale = float(np.std(train, ddof=0))
             if not math.isfinite(scale):
-                raise ValueError("训练目标含非有限值: " + task)
+                raise ValueError("Training targets contain non-finite values: " + task)
             scales[f"{task}:fold{fold}"] = {"scale": scale if scale > 0 else 1.0}
         rows = list(iter_rows(config, spec, None)) if split == "test" else []
         if split == "test" and not rows:
@@ -158,7 +168,7 @@ def _reference(config: Any, registry: dict[str, Any], split: str) -> tuple[dict[
                                       for k, rows in folds.items() if k != f for _, _, row in rows}) for f in range(1, 6)},
         }
     if not references:
-        raise ValueError("所选 split 没有可比较任务")
+        raise ValueError("The selected split has no comparable tasks")
     return references, comparison_identity(
         "stage3_property", split=split, expected=tuple(references), sources=sources,
         normalization=scales, folds=(1, 2, 3, 4, 5), ensemble=split == "test",
@@ -169,11 +179,11 @@ def _predictions(run: Path, summary: dict[str, Any], spec: Any, rows: list[Any],
                  repository_root: Path, audit: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
     manifests = [m for m in summary["reporting"].get("predictions", []) if m.get("task") == spec.task_id]
     if len(manifests) != 1:
-        raise ValueError("预测清单必须完整且唯一: " + spec.task_id)
+        raise ValueError("Prediction manifests must be complete and unique: " + spec.task_id)
     manifest = manifests[0]
     path = _within(run, manifest["path"])
     if manifest["path"] != f"predictions/{sanitize_task_id(spec.task_id)}.csv" or sha256_file(path) != manifest["sha256"]:
-        raise ValueError("预测路径或 SHA256 不匹配: " + spec.task_id)
+        raise ValueError("Prediction path or SHA256 mismatch: " + spec.task_id)
     field = "prediction" if fold else "prediction_ensemble"
     with path.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
@@ -183,29 +193,29 @@ def _predictions(run: Path, summary: dict[str, Any], spec: Any, rows: list[Any],
         else:
             required.update(f"prediction_fold{f}" for f in range(1, 6))
         if not required.issubset(reader.fieldnames or ()):
-            raise ValueError("预测缺少必要列: " + spec.task_id)
+            raise ValueError("Prediction file lacks required columns: " + spec.task_id)
         predicted_rows = list(reader)
     if len(predicted_rows) != len(rows) or len(rows) != manifest["rows"]:
-        raise ValueError("预测未覆盖完整评估行集合: " + spec.task_id)
+        raise ValueError("Predictions do not cover the complete evaluation row set: " + spec.task_id)
     y, prediction = [], []
     for predicted, (source_fold, row_number, original) in zip(predicted_rows, rows, strict=True):
         if int(predicted["source_row"]) != row_number or (fold and int(predicted["source_fold"]) != source_fold):
-            raise ValueError("预测来源行或顺序不匹配: " + spec.task_id)
+            raise ValueError("Prediction source row or order mismatch: " + spec.task_id)
         if any(_canonical(predicted[name]) != _canonical(original[name]) for name in spec.identity_columns):
-            raise ValueError("预测分子身份不匹配: " + spec.task_id)
+            raise ValueError("Prediction molecular identity mismatch: " + spec.task_id)
         for name in (*spec.condition_columns, "target"):
             a = float(predicted[name])
             b = float(original[spec.target_column if name == "target" else name])
             if not math.isfinite(a) or not math.isfinite(b) or not math.isclose(a, b, rel_tol=1e-12, abs_tol=1e-12):
-                raise ValueError("预测条件或目标不匹配: " + spec.task_id)
+                raise ValueError("Prediction condition or target mismatch: " + spec.task_id)
         value = float(predicted[field])
         if not math.isfinite(value):
-            raise ValueError("预测含非有限值: " + spec.task_id)
+            raise ValueError("Predictions contain non-finite values: " + spec.task_id)
         if not fold:
             members = [float(predicted[f"prediction_fold{f}"]) for f in range(1, 6)]
             averages = (statistics.mean(members), float(np.asarray(members, dtype=np.float32).mean()))
             if not all(map(math.isfinite, members)) or not any(math.isclose(value, mean, rel_tol=1e-7, abs_tol=1e-9) for mean in averages):
-                raise ValueError("测试预测不等于五模型原单位预测均值: " + spec.task_id)
+                raise ValueError("Test prediction does not match the five-model mean in original units: " + spec.task_id)
         y.append(float(predicted["target"]))
         prediction.append(value)
     audit[_relative(run, repository_root)]["verified_predictions"] = True
@@ -274,16 +284,16 @@ def build_paper_summary(config_path: Path, ilume_root: Path, baseline_root: Path
                         repository_root: Path, *, with_test: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
     config = load_stage3_config(config_path)
     if config.data.seed != 3407 or config.data.stage3_dir != Path("data/3407/stage3"):
-        raise ValueError("论文入口要求 catalog_v4_3407 配套数据配置")
+        raise ValueError("Paper reporting requires a matching catalog_v4_3407 data configuration")
     registry = {k: v for k, v in resolve_task_registry(config).items() if v.enabled}
     candidates = discover_candidates(baseline_root, repository_root)
     baseline = {c.summary["reporting"]["model_id"]: c for c in candidates
                 if c.current and c.summary and c.metadata.get("status") == "completed"}
     if len(candidates) != len(BASELINE_MODELS) or set(baseline) != set(BASELINE_MODELS):
-        raise ValueError("论文报告要求十个唯一且完整的正式基线")
+        raise ValueError("Paper reporting requires ten unique, completed formal baselines")
     for candidate in baseline.values():
         if candidate.summary["reporting"].get("data_protocol") != "catalog_v4_3407" or candidate.summary.get("jobs", {}).get("failed") != 0:
-            raise ValueError("基线协议不匹配或仍有失败作业")
+            raise ValueError("Baseline protocol mismatch or failed jobs remain")
     simulation = ilume_root / "valid" / "simulation"
     selected = discover_candidates(
         ilume_root / "valid", repository_root,
@@ -292,13 +302,13 @@ def build_paper_summary(config_path: Path, ilume_root: Path, baseline_root: Path
     validation = {c.summary["reporting"]["protocol"].get("fold"): c for c in selected
                   if c.current and c.summary and c.metadata.get("status") == "completed"}
     if len(selected) != 5 or set(validation) != set(range(1, 6)):
-        raise ValueError("ILUME 必须显式提供五个完整验证折，不能混入多个运行")
+        raise ValueError("ILUME requires exactly five complete validation folds from one selected run")
     if len({c.summary["reporting"]["study_id"] for c in validation.values()}) != 1:
-        raise ValueError("ILUME 验证折来自不同 study")
+        raise ValueError("ILUME validation folds belong to different studies")
     prepared = {c.metadata["semantic_identity"]["payload"].get("prepared_identity") for c in validation.values()}
     training = [validation[f].metadata["semantic_identity"]["payload"].get("checkpoint_training_identities", []) for f in range(1, 6)]
     if len(prepared) != 1 or None in prepared or any(len(ids) != 1 for ids in training) or len({ids[0] for ids in training}) != 5:
-        raise ValueError("ILUME 五折准备身份或训练来源不一致")
+        raise ValueError("ILUME folds have inconsistent preparation identities or training provenance")
     test = None
     if with_test:
         simulation = ilume_root / "test" / "simulation"
@@ -308,13 +318,13 @@ def build_paper_summary(config_path: Path, ilume_root: Path, baseline_root: Path
         )
         if (len(selected_test) != 1 or not selected_test[0].current
                 or selected_test[0].metadata.get("status") != "completed" or selected_test[0].summary is None):
-            raise ValueError("ILUME 必须提供唯一完整的测试集成")
+            raise ValueError("ILUME requires exactly one completed test ensemble")
         test = selected_test[0]
         if test.summary["reporting"]["study_id"] != validation[1].summary["reporting"]["study_id"]:
-            raise ValueError("验证与测试必须来自同一 ILUME study")
+            raise ValueError("Validation and test must belong to the same ILUME study")
         data = test.metadata["semantic_identity"]["payload"]
         if data.get("prepared_identity") not in prepared or data.get("checkpoint_training_identities") != [ids[0] for ids in training]:
-            raise ValueError("测试模型必须与五个验证折的训练身份对应")
+            raise ValueError("Test models must match the training identities of all five validation folds")
     audit: dict[str, Any] = {}
     for candidate in baseline.values():
         _run(candidate.root, repository_root, audit)
@@ -331,14 +341,14 @@ def build_paper_summary(config_path: Path, ilume_root: Path, baseline_root: Path
                 report = baseline[model].summary["reporting"]
                 section = report["benchmarks"][label]
                 if section.get("status") not in {None, "complete"}:
-                    raise ValueError("基线评估尚未完整: " + model)
+                    raise ValueError("Baseline evaluation is incomplete: " + model)
                 _validate_comparison(section["comparison_identity"], expected)
                 mapping = report["source_runs"][label]
                 covered = set(mapping)
                 if (split == "valid" and covered != set(references)) or not set(references) <= covered or not covered <= set(registry):
-                    raise ValueError("基线任务覆盖不完整: " + model)
+                    raise ValueError("Baseline task coverage is incomplete: " + model)
                 if split == "valid" and any(set(v) != {f"fold{f}" for f in range(1, 6)} for v in mapping.values()):
-                    raise ValueError("基线验证来源必须恰好覆盖五折")
+                    raise ValueError("Baseline validation sources must cover exactly five folds")
             for task, reference in references.items():
                 points = []
                 for fold, source_rows in reference["rows"].items():
@@ -349,23 +359,23 @@ def build_paper_summary(config_path: Path, ilume_root: Path, baseline_root: Path
                         relative = mapping[task][f"fold{fold}"] if fold else mapping[task]
                         run = _within(repository_root, relative)
                         if not run.is_relative_to(baseline[model].root.resolve()):
-                            raise ValueError("基线评估来源不在所选模型根目录")
+                            raise ValueError("Baseline evaluation source is outside the selected model root")
                     summary = _run(run, repository_root, audit)
                     reporting = summary["reporting"]
                     if model != "ilume":
                         source_key = f"{task}:fold{fold}" if fold else f"{task}:test"
                         identity = audit[_relative(run, repository_root)]["semantic_identity"]
                         if identity["payload"].get("evaluation_source_sha256") != expected["payload"]["sources"][source_key]:
-                            raise ValueError("评估原始身份的数据来源 SHA256 不匹配")
+                            raise ValueError("Evaluation source SHA256 does not match its original identity")
                     if reporting["model_id"] != model or summary.get("split") != split:
-                        raise ValueError("评估模型或 split 不匹配")
+                        raise ValueError("Evaluation model or split mismatch")
                     if model == "ilume" and summary.get("model_selector") != "three_phase_final":
-                        raise ValueError("论文入口仅接受 ILUME three_phase_final")
+                        raise ValueError("Paper reporting only accepts ILUME three_phase_final evaluations")
                     protocol = reporting["protocol"]
                     if bool(protocol.get("ensemble")) != (split == "test") or protocol.get("fold") != (fold or None):
-                        raise ValueError("评估折或集成协议不匹配")
+                        raise ValueError("Evaluation fold or ensemble protocol mismatch")
                     if model != "ilume" and reporting["comparison_identity"]["payload"]["folds"] != ([fold] if fold else [1, 2, 3, 4, 5]):
-                        raise ValueError("基线片段比较折与所选折不匹配")
+                        raise ValueError("Baseline comparison fragment fold does not match the selected fold")
                     _validate_comparison(reporting["comparison_identity"], expected, fragment=model != "ilume")
                     y, prediction = _predictions(run, summary, registry[task], source_rows, fold, repository_root, audit)
                     scale = (expected["payload"]["normalization"][f"{task}:fold{fold}"]["scale"] if fold else
@@ -435,10 +445,10 @@ def _overview(payload: dict[str, Any]) -> str:
 def publish_paper_summary(config_path: Path, ilume_root: Path, baseline_root: Path,
                           output: Path, repository_root: Path, *, with_test: bool = False) -> dict[str, Any]:
     if output.exists():
-        raise FileExistsError("论文报告不得覆盖已有输出: " + str(output))
+        raise FileExistsError("Paper reports must not overwrite existing output: " + str(output))
     for source in (ilume_root, baseline_root):
         if output.resolve().is_relative_to(source.resolve()) or source.resolve().is_relative_to(output.resolve()):
-            raise ValueError("论文输出与输入目录不得相互包含")
+            raise ValueError("Paper input and output directories must not contain each other")
     from .paper_plots import write_paper_figures
 
     payload, scatters = build_paper_summary(config_path, ilume_root, baseline_root, repository_root, with_test=with_test)
@@ -457,7 +467,7 @@ def publish_paper_summary(config_path: Path, ilume_root: Path, baseline_root: Pa
                  for p in sorted(staging.rglob("*")) if p.is_file()}
         (staging / "manifest.json").write_text(json.dumps({"comparison_identity": payload["comparison_identity"], "files": files}, indent=2) + "\n", encoding="utf-8")
         if output.exists():
-            raise FileExistsError("论文报告目标已存在")
+            raise FileExistsError("Paper report destination already exists")
         staging.rename(output)
     finally:
         if staging.exists():

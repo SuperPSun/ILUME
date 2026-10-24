@@ -19,6 +19,25 @@ STAGES = {"stage1", "stage2", "stage3"}
 EXTERNAL_PACKAGES = {"ablations", "benchmarks"}
 
 
+def test_runtime_error_messages_are_english() -> None:
+    failures = []
+    for directory in ('scripts', 'src', 'benchmarks', 'ablations'):
+        for path in sorted((ROOT / directory).rglob('*.py')):
+            for node in ast.walk(ast.parse(path.read_text(encoding='utf-8'))):
+                message = node.exc if isinstance(node, ast.Raise) else node.msg if isinstance(node, ast.Assert) else None
+                if isinstance(node, ast.Call):
+                    name = getattr(node.func, 'attr', getattr(node.func, 'id', ''))
+                    if name in {'error', 'exception', 'exit', '_equal', '_stats', 'canonicalize_smiles'}:
+                        message = node
+                if message is None:
+                    continue
+                for value in ast.walk(message):
+                    if (isinstance(value, ast.Constant) and isinstance(value.value, str)
+                            and any('\u3400' <= char <= '\u9fff' for char in value.value)):
+                        failures.append(f'{path.relative_to(ROOT)}:{node.lineno}: {value.value}')
+    assert not failures, '\n'.join(failures)
+
+
 def test_stage2_registry_does_not_import_stage1_graph() -> None:
     result = subprocess.run(
         [sys.executable, "-c", """
