@@ -510,4 +510,6 @@ pytest -q
 
 ## 独立静态 HPO
 
+[WeakOpt手册](docs/weakopt-runbook.md)：固定3407完整模型与Stage1/2来源，定向调整Stage3 PRIVATE学习率、轮数和dropout；累计最多80组，仅使用GPU2/3，按验证第一名任务数选型，锁定后再评估测试。配置及新增产物分别在 `configs/HPO/WeakOpt`、`outputs/HPO/WeakOpt`。
+
 [扁平化 HPO 手册](docs/hpo-simple-runbook.md)：100组冻结预测头、100对HoME，人工选型后生成20组Stage2和50组Stage3，最后五套split固定五折复验。数据准备按身份共享，训练seed固定42；不自动选模、不使用Optuna、不自动终测。[HPO结果与最终配方](docs/hpo-results.md)统一记录选型依据、3407划分决定、关键报告和归档状态；已有正式v4配置和产物不追溯改写。

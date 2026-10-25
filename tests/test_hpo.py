@@ -19,8 +19,196 @@ from _common import Job, run_queue
 from collect import final_statistics, metric_row
 from common.artifact_cache import artifact_cache
 from common.identity import semantic_identity
+from common.io import sha256_file
 from stage2.home_config import load_home_recipe, home_recipe_from_dict, effective_training_seed
 from stage3.config import load_stage3_config, stage3_config_from_dict
+
+import weakopt
+
+
+@pytest.fixture
+def weakopt_campaign(tmp_path, monkeypatch):
+    raw = deepcopy(read_yaml(ROOT / 'configs/v4/stage3/optimized_3407.yaml'))
+    monkeypatch.setattr(weakopt, 'ROOT', tmp_path)
+    monkeypatch.setattr(weakopt, 'CONFIGS', tmp_path / 'configs/HPO/WeakOpt')
+    monkeypatch.setattr(weakopt, 'OUTPUT', tmp_path / 'outputs/HPO/WeakOpt')
+    monkeypatch.setattr(weakopt, 'BASE', tmp_path / 'base.yaml')
+    for name in ('stage1_encoder', 'stage2_final'):
+        raw['initialization'][name] = name + '.pt'
+        (tmp_path / raw['initialization'][name]).write_bytes(b'frozen weights')
+    raw['data']['artifacts_dir'] = 'prepared/artifacts'
+    raw['preparation']['data_metadata_path'] = 'prepared/audit.json'
+    (tmp_path / 'prepared/artifacts').mkdir(parents=True)
+    (tmp_path / 'prepared/artifacts/metadata.json').write_text('{}')
+    (tmp_path / 'prepared/audit.json').write_text('{}')
+    write_yaml(weakopt.BASE, raw)
+    snapshot = {'sources': {}, 'folds': [], 'comparison_identity': {}}
+    monkeypatch.setattr(weakopt, 'baseline_snapshot', lambda: snapshot)
+    monkeypatch.setattr(weakopt, 'validate_data_sources', lambda *a: None)
+    weakopt.generate()
+    return raw
+
+
+def test_weakopt_frozen_recipes_limit_and_tamper_rejection(weakopt_campaign, monkeypatch):
+    manifest, base = weakopt.load_campaign()
+    assert len(manifest['trials']) == 24
+    assert base == weakopt_campaign
+    assert read_yaml(weakopt.CONFIGS / 'trials/021.yaml')['tasks']['experiment/static_relative_permittivity']['phase3_private_epochs'] == 1
+    weakopt.generate()
+    assert len(weakopt.load_campaign()[0]['trials']) == 24
+    proposal = weakopt.CONFIGS / 'proposal.yaml'
+    write_yaml(proposal, [{'description': 'duplicate', 'overrides': manifest['trials'][0]['overrides']}])
+    with pytest.raises(ValueError, match='Duplicate'):
+        weakopt.generate(proposal)
+    proposal = weakopt.CONFIGS / 'new-proposal.yaml'
+    write_yaml(proposal, [{'description': 'new', 'overrides': {'experiment/viscosity': {'phase3_private_epochs': 8}}}])
+    monkeypatch.setattr(weakopt, 'LIMIT', 24)
+    with pytest.raises(ValueError, match='budget'):
+        weakopt.generate(proposal)
+    changed = deepcopy(base)
+    changed['model']['global_experts'] += 1
+    with pytest.raises(ValueError, match='whitelist'):
+        weakopt.validate_recipe(base, changed)
+    changed = deepcopy(base)
+    changed['tasks']['experiment/viscosity']['model_overrides']['private_hidden_ratio'] *= 2
+    with pytest.raises(ValueError, match='whitelist'):
+        weakopt.validate_recipe(base, changed)
+    candidate = weakopt.CONFIGS / 'trials/001.yaml'
+    candidate.write_text(candidate.read_text() + '\n# tampered\n')
+    with pytest.raises(ValueError, match='modified'):
+        weakopt.load_campaign()
+
+
+def test_weakopt_appends_new_configs_without_rebinding_folds(weakopt_campaign):
+    before = sha256_file(weakopt.CONFIGS / 'trials/001.yaml')
+    proposal = weakopt.CONFIGS / 'proposal.yaml'
+    write_yaml(proposal, [{'description': 'combined task budgets', 'overrides': {
+        'experiment/viscosity': {'phase3_private_epochs': 8},
+        'experiment/static_relative_permittivity': {'phase3_private_epochs': 2}}}])
+    weakopt.generate(proposal)
+    manifest, _ = weakopt.load_campaign()
+    assert manifest['trials'][-1]['id'] == '025'
+    assert sha256_file(weakopt.CONFIGS / 'trials/001.yaml') == before
+    (weakopt.ROOT / 'stage2_final.pt').write_bytes(b'altered')
+    with pytest.raises(ValueError, match='SHA256'):
+        weakopt.load_campaign()
+
+
+def test_weakopt_gpu_limits_resume_and_cross_trial_rejection(weakopt_campaign, monkeypatch):
+    assert weakopt.devices_and_folds('cuda:2,cuda:3', 2, [1, 3]) == ('cuda:2', 'cuda:3')
+    for devices, maximum, folds in [('cuda:0', 1, [1]), ('cuda:2', 2, [1]),
+                                    ('cuda:2,cuda:2', 2, [1]), ('cuda:2', 1, [1, 1])]:
+        with pytest.raises(ValueError):
+            weakopt.devices_and_folds(devices, maximum, folds)
+    trial = weakopt.load_campaign()[0]['trials'][0]
+    updated = []
+    evaluated = []
+    def fake_native(script, arguments, log, device):
+        assert script == 'stage3/train' and '--resume' in arguments
+        assert arguments[arguments.index('--max-parallel') + 1] == 1
+        assert arguments[arguments.index('--devices') + 1] == device == 'cuda:2'
+        requested = arguments[arguments.index('--fold') + 1:arguments.index('--output')]
+        root = weakopt.ROOT / arguments[arguments.index('--output') + 1]
+        for fold in requested:
+            artifact = root / f'fold{fold}/three_phase_final.pt'
+            if not artifact.exists():
+                artifact.parent.mkdir(parents=True)
+                artifact.write_text('complete')
+                updated.append(fold)
+    monkeypatch.setattr(weakopt, 'native', fake_native)
+    monkeypatch.setattr(weakopt, 'evaluate_fold', lambda job, fold, device, resume: evaluated.append(fold))
+    weakopt.run_trial(trial, [1, 3], 'cuda:2')
+    weakopt.run_trial(trial, [1, 2, 3, 4, 5], 'cuda:2')
+    assert updated == [1, 3, 2, 4, 5]
+    assert evaluated == [1, 3, 1, 2, 3, 4, 5]
+    altered = dict(trial, recipe_hash='another recipe')
+    with pytest.raises(ValueError, match='another frozen configuration'):
+        weakopt.run_trial(altered, [1], 'cuda:2')
+
+
+def test_weakopt_same_fold_ranking_ties_and_win_priority():
+    baseline = {'folds': [{'task': task, 'fold': fold, 'model_id': model, 'mae': value,
+                           'normalized_mae': value, 'common_scale': 1.0}
+        for task in ('a', 'b') for fold in range(1, 6)
+        for model, value in [('ilume', 1.1)] + [(f'baseline{i}', 1.0) for i in range(10)]]}
+    tied = [{'task': task, 'fold': fold, 'mae': 1.0, 'normalized_mae': 1.0}
+            for task in ('a', 'b') for fold in (1, 3)]
+    assert weakopt.score_rows(tied, baseline, [1, 3])['wins'] == 2
+    with pytest.raises(ValueError, match='coverage'):
+        weakopt.score_rows(tied, baseline, [1, 2, 3, 4, 5])
+    candidate = [dict(r, mae=0.9 if r['task'] == 'a' else 10., normalized_mae=0.9 if r['task'] == 'a' else 10.) for r in tied]
+    score = weakopt.score_rows(candidate, baseline, [1, 3])
+    assert score['wins'] == 1 and score['macro_normalized_mae'] > 1.1
+    fewer_wins = dict(score, wins=0, macro_normalized_mae=1.01, id='001')
+    ranked = sorted([fewer_wins, dict(score, id='002')], key=lambda r: (-r['wins'], r['macro_normalized_mae'], r['id']))
+    assert ranked[0]['id'] == '002'
+
+
+def test_weakopt_baseline_reader_requests_validation_only(monkeypatch):
+    import benchmarks.common.paper as paper
+    seen = []
+    def fake_reader(*args, with_test):
+        seen.append(with_test)
+        assert not with_test
+        return {'sources': {}, 'sections': {'valid': {'folds': []}}, 'comparison_identity': {}}, {}
+    monkeypatch.setattr(paper, 'build_paper_summary', fake_reader)
+    assert weakopt.baseline_snapshot()['folds'] == [] and seen == [False]
+
+
+def test_weakopt_validation_artifacts_and_identity_are_required(weakopt_campaign, monkeypatch):
+    import stage3.evaluate as evaluation
+    trial = weakopt.load_campaign()[0]['trials'][0]
+    baseline = {'folds': [{'task': task, 'fold': 1, 'model_id': 'ilume', 'count': 1, 'common_scale': 2.0,
+                           'source_run': 'reference-valid'}
+                          for task in weakopt_campaign['tasks']]}
+    assert weakopt.validation_rows(trial, [1], baseline) is None
+    root = weakopt.OUTPUT / 'trials/001/valid/fold1'
+    root.mkdir(parents=True)
+    manifests = []
+    for index, task in enumerate(weakopt_campaign['tasks']):
+        path = root / f'prediction{index}.csv'
+        path.write_text('target,prediction\n1,0.5\n')
+        manifests.append({'task': task, 'path': path.name, 'sha256': sha256_file(path)})
+    comparison = semantic_identity('reporting.comparison.v1', {'source': 'same data'})
+    summary = {'tasks': {task: {'count': 1, 'mae': .5} for task in weakopt_campaign['tasks']},
+               'reporting': {'predictions': manifests, 'comparison_identity': comparison}}
+    reference = weakopt.ROOT / 'reference-valid'
+    reference.mkdir()
+    (reference / 'summary.json').write_text(json.dumps(summary))
+    (root / 'summary.json').write_text(json.dumps(summary))
+    (root / 'metadata.json').write_text('{}')
+    identity = {'frozen': 'first configuration'}
+    marker = root / 'hpo_evaluation.json'
+    files = {p.name: sha256_file(p) for p in root.iterdir() if p.is_file()}
+    marker.write_text(json.dumps({'identity': identity, 'files': files}))
+    monkeypatch.setattr(evaluation, 'resolve_stage3_evaluation_identity', lambda *a, **kw: identity)
+    rows = weakopt.validation_rows(trial, [1], baseline)
+    assert len(rows) == 24 and all(row['normalized_mae'] == .25 for row in rows)
+    monkeypatch.setattr(evaluation, 'resolve_stage3_evaluation_identity', lambda *a, **kw: {'frozen': 'second configuration'})
+    with pytest.raises(ValueError, match='identity'):
+        weakopt.validation_rows(trial, [1], baseline)
+    monkeypatch.setattr(evaluation, 'resolve_stage3_evaluation_identity', lambda *a, **kw: identity)
+    (root / 'prediction0.csv').write_text('target,prediction\n1,0\n')
+    with pytest.raises(ValueError, match='SHA256'):
+        weakopt.validation_rows(trial, [1], baseline)
+
+
+def test_weakopt_finalize_requires_complete_validation_winner(weakopt_campaign, monkeypatch):
+    folder = weakopt.OUTPUT / 'reports/test'
+    folder.mkdir(parents=True)
+    (folder / 'ranking.json').write_text('{}')
+    seen = []
+    def fake_report(folds):
+        seen.append(tuple(folds))
+        return {'ranked': [{'id': '002', 'wins': 15}]}, folder
+    monkeypatch.setattr(weakopt, 'report', fake_report)
+    with pytest.raises(ValueError, match='highest ranked'):
+        weakopt.finalize('001')
+    weakopt.finalize('002')
+    assert seen == [(1, 2, 3, 4, 5)] * 2
+    assert json.loads((weakopt.OUTPUT / 'selection.json').read_text())['id'] == '002'
+    with pytest.raises(FileExistsError, match='locked'):
+        weakopt.finalize('002')
 
 
 def test_all_static_rounds_and_manual_binding(tmp_path):
