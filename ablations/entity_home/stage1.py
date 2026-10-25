@@ -1,4 +1,4 @@
-"""单视图消融；入口注册公开 Stage1 扩展，Stage 包不反向导入。"""
+"""Single-view ablations register public Stage1 extensions at entry points; Stage packages do not import them."""
 from dataclasses import dataclass, fields
 
 import torch

@@ -13,19 +13,19 @@ from common.outputs import repository_path
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="从完整预测生成独立的论文比较表和图。")
-    parser.add_argument("--config", default="configs/v4/stage3/optimized_3407.yaml", help="与数据匹配的 Stage3 YAML；仅读取任务与划分。")
-    parser.add_argument("--ilume", required=True, help="明确选择的 ILUME 运行根，包含 valid/fold1..5。")
-    parser.add_argument("--baselines", required=True, help="包含十个完整 catalog_v4_3407 基线的根目录。")
-    parser.add_argument("--with-test", action="store_true", help="同时要求并汇总 ILUME test/ 与基线五模型集成测试预测。")
-    parser.add_argument("--output", required=True, help="新的仓库相对输出目录，已存在则拒绝。")
+    parser = argparse.ArgumentParser(description="Build independent paper comparison tables and figures from complete predictions.")
+    parser.add_argument("--config", default="configs/v4/stage3/optimized_3407.yaml", help="Matching Stage3 YAML; only task and split definitions are used.")
+    parser.add_argument("--ilume", required=True, help="Explicitly selected ILUME run root containing valid/fold1..5.")
+    parser.add_argument("--baselines", required=True, help="Root containing all ten completed catalog_v4_3407 baselines.")
+    parser.add_argument("--with-test", action="store_true", help="Also require and summarize ILUME test/ and baseline five-model ensemble test predictions.")
+    parser.add_argument("--output", required=True, help="New repository-relative output directory; existing destinations are rejected.")
     args = parser.parse_args()
     publish_paper_summary(
         repository_path(args.config), repository_path(args.ilume),
         repository_path(args.baselines), repository_path(args.output), ROOT,
         with_test=args.with_test,
     )
-    print(f"论文报告已写入 {args.output}")
+    print(f"Paper report written to {args.output}")
 
 
 if __name__ == "__main__":

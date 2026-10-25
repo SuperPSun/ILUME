@@ -1,4 +1,4 @@
-"""现役消融的科研配置、输入身份及统计边界。"""
+"""Scientific configs, input identities, and statistical boundaries of the active ablations."""
 from copy import deepcopy
 from pathlib import Path
 

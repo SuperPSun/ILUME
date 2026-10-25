@@ -1,6 +1,6 @@
 """Catalog-driven Stage2 physics supervision."""
 
-# 注册表供基线独立环境读取，避免提前加载Stage1图特征依赖。
+# Keep the registry accessible to isolated baseline environments without eagerly loading Stage1 graph dependencies.
 __all__ = (
     "FrozenObjectSpec",
     "load_frozen_stage1_entities",

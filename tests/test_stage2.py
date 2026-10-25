@@ -1298,7 +1298,7 @@ def _verify_entity_home_ablations(stage3, recipe, prepared, train_root, tmp_path
 
 
 def _verify_single_view_ablations(stage1, stage3, recipe, tmp_path):
-    """两条单视图科研链：真实训练、来源隔离与完整权重重载。"""
+    """Exercise real training, isolated sources, and full weight reloading for both single-view research chains."""
     from copy import deepcopy
     from dataclasses import fields
     from common.training import seed_everything

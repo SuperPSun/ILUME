@@ -1,4 +1,4 @@
-"""论文图只消费已经核验的比较数据。"""
+"""Render paper figures using verified comparison data only."""
 from __future__ import annotations
 
 from pathlib import Path

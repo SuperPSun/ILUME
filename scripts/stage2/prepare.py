@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
-import ablations.entity_home.stage1  # 注册独立 Stage1 消融配置与模型。
+import ablations.entity_home.stage1  # Register independent Stage1 ablation configs and models.
 
 from common.data_identity import write_data_identity
 from common.outputs import open_run_directory, repository_relative

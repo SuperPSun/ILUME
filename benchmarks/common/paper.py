@@ -1,4 +1,4 @@
-"""独立论文报告：完整评估预测、共同训练集尺度、明确选择的 ILUME。"""
+"""Independent paper reports with complete predictions, common training scales, and an explicit ILUME run."""
 from __future__ import annotations
 
 import csv
@@ -248,7 +248,7 @@ def _tables(folds: list[dict[str, Any]], specs: dict[str, Any], split: str) -> d
             task_rows.append(row)
         current = task_rows[-len(models):]
         for row in current:
-            # 并列采用 competition rank；首位并列全部计入 wins。
+            # Use competition ranks and count all tied first-place models as winners.
             row["rank"] = 1 + sum(r["mae"] < row["mae"] for r in current)
             best = min(r["mae"] for r in current)
             row["ratio_to_best"] = row["mae"] / best if best > 0 else (1.0 if row["mae"] == 0 else None)

@@ -15,7 +15,7 @@
 
 联合评估生成的`valid/simulation/`和`test/simulation/`在解析论文候选前排除；模拟结果继续独立汇总。
 
-AIonopedia按其原生`benchmark.aionopedia-training.v1`身份读取嵌套任务与协议，其他九模型读取通用`benchmark.training.v1`；两者都严格核对3407协议、模型、任务、折及检查点来源。运行异常使用英文消息，中文报告正文保持原样。
+AIonopedia按其原生`benchmark.aionopedia-training.v1`身份读取嵌套任务与协议，其他九模型读取通用`benchmark.training.v1`；两者都严格核对3407协议、模型、任务、折及检查点来源。源码注释、文档字符串、CLI帮助、状态提示和异常消息统一使用英文，报告正文保留中文。
 
 ## 命令
 

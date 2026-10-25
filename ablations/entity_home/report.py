@@ -1,4 +1,4 @@
-"""从已校验的 v4 汇总生成独立消融分析，不改变现役快照结构。"""
+"""Build independent ablation analyses from verified v4 summaries without changing the active snapshot schema."""
 import csv
 import json
 import math
@@ -11,7 +11,7 @@ from stage3.config import load_stage3_config
 
 
 def paired_cluster_interval(base, ablated, groups, *, seed=42, repeats=10000):
-    """固定预测上的体系聚类配对区间；不把 CV 折当独立重复。"""
+    """Compute system-clustered paired intervals for fixed predictions; CV folds are not independent repetitions."""
     base, ablated = np.asarray(base, dtype=float), np.asarray(ablated, dtype=float)
     if base.shape != ablated.shape or base.shape != (len(groups),) or not np.isfinite(base).all() or not np.isfinite(ablated).all():
         raise ValueError('Paired errors/groups must have identical finite row coverage')

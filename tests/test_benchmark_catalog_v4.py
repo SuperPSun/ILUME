@@ -528,7 +528,7 @@ def paper_source(tmp_path, monkeypatch):
         sections, mappings = {}, {}
         for split, label in (('valid', 'stage3_validation'), ('test', 'stage3_test')):
             references, comparison = paper._reference(config, specs, split)
-            # 故意使用不同 scaler；共同尺度结果必须由原单位预测重算。
+            # Deliberately use a different scaler; common-scale metrics must be recomputed from original-unit predictions.
             payload = comparison['payload']
             comparison = comparison_identity('stage3_property', split=split, expected=payload['expected'],
                                              sources=payload['sources'], normalization={k: {'scale': 999} for k in payload['normalization']},
@@ -571,7 +571,7 @@ def test_paper_summary_common_scales_complete_tasks_and_plots(paper_source):
     assert ilume_row['mean_rank'] == 6
     assert [r['mae_reduction_percent'] for r in valid['gains']] == pytest.approx([80, -140])
     assert all(r['common_scale'] != 999 for r in valid['folds'])
-    assert len(payload['sections']['test']['gains']) == 1  # hydration 无测试集。
+    assert len(payload['sections']['test']['gains']) == 1  # Hydration has no test set.
     native_profile = [r for r in valid['performance_profile'] if r['model_id'] == 'ilume']
     assert native_profile[0]['task_fraction'] == .5
     assert native_profile[-1]['task_fraction'] == 1
@@ -599,7 +599,7 @@ def test_paper_summary_rejects_malformed_inputs_atomically(paper_source, damage,
             reader = csv.DictReader(handle)
             fields, rows = reader.fieldnames, list(reader)
         if damage == 'row':
-            rows[1]['source_row'] = rows[0]['source_row']  # 不允许重复来源行替代完整集合。
+            rows[1]['source_row'] = rows[0]['source_row']  # Duplicate source rows cannot replace complete row coverage.
         elif damage == 'target':
             rows[0]['target'] = str(float(rows[0]['target']) + .1)
         elif damage == 'ensemble':
@@ -623,7 +623,7 @@ def test_paper_summary_rejects_malformed_inputs_atomically(paper_source, damage,
         value['reporting']['data_protocol'] = 'catalog_v4'
         path.write_text(json.dumps(value))
     elif damage == 'checkpoint':
-        path = next((baselines / 'aionopedia').rglob('checkpoint.json'))
+        path = baselines / 'aionopedia/experiment__hydration/valid1/checkpoint1/checkpoint.json'
         path.write_text(path.read_text() + ' ')
     elif damage == 'plot':
         pytest.importorskip('matplotlib')

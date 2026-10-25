@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import ast
+import io
 from copy import deepcopy
 from pathlib import Path
 import subprocess
 import sys
+import tokenize
 
 import pytest
 import yaml
@@ -19,15 +21,24 @@ STAGES = {"stage1", "stage2", "stage3"}
 EXTERNAL_PACKAGES = {"ablations", "benchmarks"}
 
 
-def test_runtime_error_messages_are_english() -> None:
+def test_source_annotations_and_cli_messages_are_english() -> None:
     failures = []
-    for directory in ('scripts', 'src', 'benchmarks', 'ablations'):
+    for directory in ('scripts', 'src', 'benchmarks', 'ablations', 'tests'):
         for path in sorted((ROOT / directory).rglob('*.py')):
-            for node in ast.walk(ast.parse(path.read_text(encoding='utf-8'))):
+            source = path.read_text(encoding='utf-8')
+            for token in tokenize.generate_tokens(io.StringIO(source).readline):
+                if token.type == tokenize.COMMENT and any('\u3400' <= char <= '\u9fff' for char in token.string):
+                    failures.append(f'{path.relative_to(ROOT)}:{token.start[0]}: {token.string}')
+            for node in ast.walk(ast.parse(source)):
+                if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                    docstring = ast.get_docstring(node, clean=False)
+                    if docstring and any('\u3400' <= char <= '\u9fff' for char in docstring):
+                        failures.append(f'{path.relative_to(ROOT)}:{node.body[0].lineno}: {docstring}')
                 message = node.exc if isinstance(node, ast.Raise) else node.msg if isinstance(node, ast.Assert) else None
                 if isinstance(node, ast.Call):
                     name = getattr(node.func, 'attr', getattr(node.func, 'id', ''))
-                    if name in {'error', 'exception', 'exit', '_equal', '_stats', 'canonicalize_smiles'}:
+                    if name in {'error', 'exception', 'exit', '_equal', '_stats', 'canonicalize_smiles',
+                                'ArgumentParser', 'add_argument', 'print'}:
                         message = node
                 if message is None:
                     continue

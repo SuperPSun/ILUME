@@ -1,4 +1,4 @@
-from . import stage1  # 注册单视图来源的严格重载。
+from . import stage1  # Register strict reloading of single-view sources.
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
 

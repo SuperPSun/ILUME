@@ -1,4 +1,4 @@
-"""catalog_v4 的只读来源审计、完整复制及可追溯评估派生。"""
+"""Read-only source audits, complete copies, and traceable evaluation derivation for catalog_v4."""
 from __future__ import annotations
 
 import csv
@@ -32,7 +32,7 @@ REUSE_TASKS = tuple('experiment/' + name for name in (
 
 
 class ReuseMismatch(ValueError):
-    """输入或配方变化，需要新训练。"""
+    """Inputs or recipes have changed and require a new training run."""
 
 
 def scientific_config(config: Any) -> dict[str, Any]:
@@ -354,7 +354,7 @@ def prepare_reuse(config: Any, config_path: str, source: Path, output: Path) -> 
     print(json.dumps({'copy_files': count, 'copy_bytes': size, 'destination': repository_relative(output / 'imported'), 'conflicts': 'same SHA reuse; different SHA fail'}, ensure_ascii=False), flush=True)
     if shutil.disk_usage(output.parent if output.parent.exists() else source).free < size:
         raise OSError('Insufficient space at the copy destination')
-    # 先检查所有目标冲突，之后才开始复制。
+    # Check all destination conflicts before copying any files.
     for task_id, files in verified_files.items():
         dest = output / 'imported' / 'stage3' / task_id.replace('/', '__')
         if not dest.resolve().is_relative_to(output.resolve()):
@@ -472,7 +472,7 @@ def validate_reuse(config: Any, path: Path, output: Path) -> dict[str, Any]:
 
 
 def validate_completed_run(config: Any, run: Path, required: str) -> None:
-    """新协议的普通完成作业必须仍然满足配置、来源与文件完整性。"""
+    """Require completed runs under the new protocol to retain valid configs, sources, and file integrity."""
     saved = yaml.safe_load((run / 'run_config.yaml').read_text())
     _equal({k: v for k, v in saved.items() if k not in {'display_name', 'runtime'}}, scientific_config(config), 'Completed run configuration changed')
     metadata = _json(run / 'metadata.json')

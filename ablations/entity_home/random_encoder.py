@@ -1,4 +1,4 @@
-"""固定种子的零训练编码器导出，不冒充预训练末轮产物。"""
+"""Export fixed-seed, untrained encoders without presenting them as final pretrained artifacts."""
 import json
 from common.identity import semantic_identity, tensor_state_hash
 from common.io import atomic_torch_save

@@ -1,1 +1,1 @@
-"""独立的现役 Entity-HoME 消融；Stage 包不导入本包。"""
+"""Independent active Entity-HoME ablations; Stage packages do not import this package."""
