@@ -67,6 +67,8 @@ class AblationConfig(Stage3Config):
         if self.ablation is None or not self.is_entity_home:
             raise ValueError('Research config requires an Entity-HoME ablation')
         self.ablation.validate()
+        if self.data.seed == 3407 and self.ablation.variant.startswith('capacity_'):
+            raise ValueError('Capacity controls for data/3407 were cancelled; compare fixed Base phase states instead')
         if self.ablation.zero_update:
             if self.initialization.home_mode != 'no_stage2' or self.initialization.stage2_final is not None:
                 raise ValueError('Zero-update ablations forbid a trained Stage2 final')

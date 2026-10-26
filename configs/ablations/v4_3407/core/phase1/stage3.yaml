@@ -1,4 +1,5 @@
 # 3407消融：配对 optimized_3407；训练seed42，Stage1沿用原语料与准备合同。
+# C11：仅Phase1固定末轮评估；复用Base阶段权重，无新增训练。
 data:
   stage3_dir: data/3407/stage3
   task_catalog: data/3407/task_catalog.csv

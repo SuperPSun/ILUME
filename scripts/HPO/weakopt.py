@@ -1,4 +1,4 @@
-"""Frozen Stage3 parameter trials with validation-only selection on four GPUs."""
+"""Frozen Stage3 parameter trials with validation-only selection on GPU2/3."""
 from __future__ import annotations
 
 import argparse
@@ -248,10 +248,10 @@ def generate(proposal_path=None):
 
 def devices_and_folds(devices, maximum, folds):
     slots = tuple(devices.split(","))
-    if not slots or len(set(slots)) != len(slots) or not set(slots) <= {"cuda:0", "cuda:1", "cuda:2", "cuda:3"}:
-        raise ValueError("WeakOpt only permits physical cuda:0 through cuda:3, without duplicates")
-    if maximum < 1 or maximum > 2 * len(slots):
-        raise ValueError("Use at most two concurrent jobs per selected GPU")
+    if not slots or len(set(slots)) != len(slots) or not set(slots) <= {"cuda:2", "cuda:3"}:
+        raise ValueError("WeakOpt only permits physical cuda:2 and cuda:3, without duplicates")
+    if maximum < 1 or maximum > 3 * len(slots):
+        raise ValueError("Use at most three concurrent jobs per selected GPU")
     if not folds or len(set(folds)) != len(folds) or not set(folds) <= set(range(1, 6)):
         raise ValueError("Specify unique folds between 1 and 5")
     return slots
@@ -266,12 +266,12 @@ def selected_trials(manifest, ids):
 
 @contextmanager
 def gpu_slot(device):
-    """Reserve one of two slots, retaining the original GPU lock as slot one."""
+    """Reserve one of three slots, retaining both previous GPU lock names."""
     directory = OUTPUT / "locks"
     directory.mkdir(parents=True, exist_ok=True)
     name = device.replace(":", "-")
     while True:
-        for filename in (f"{name}.lock", f"{name}-slot2.lock"):
+        for filename in (f"{name}.lock", f"{name}-slot2.lock", f"{name}-slot3.lock"):
             handle = (directory / filename).open("a")
             try:
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -441,11 +441,11 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     generate_parser = sub.add_parser("generate", help="Freeze the reference and append static candidate configurations.")
     generate_parser.add_argument("--proposal", type=Path, help="A YAML list of described task-parameter overrides.")
-    run = sub.add_parser("run", help="Train and validate requested folds on physical GPU0/1/2/3 or a subset.")
+    run = sub.add_parser("run", help="Train and validate requested folds on physical GPU2/3 or a subset.")
     run.add_argument("--ids", nargs="+")
     run.add_argument("--fold", type=int, nargs="+", default=[1, 3])
-    run.add_argument("--devices", default="cuda:0,cuda:1,cuda:2,cuda:3")
-    run.add_argument("--max-parallel", type=int, default=8)
+    run.add_argument("--devices", default="cuda:2,cuda:3")
+    run.add_argument("--max-parallel", type=int, default=6)
     run.add_argument("--resume", action="store_true", help="Accepted for explicitness; native strict resume is always used.")
     run.add_argument("--dry-run", action="store_true")
     summary = sub.add_parser("report", help="Rank complete validation trials; never read test metrics.")

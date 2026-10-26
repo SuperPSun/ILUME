@@ -1,0 +1,372 @@
+- description: Combine validation-supported local changes
+  overrides:
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.05
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.05
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.05
+    experiment/density:
+      phase3_private_epochs: 8
+    experiment/surface_tension:
+      phase3_private_epochs: 6
+    experiment/pec50:
+      phase1_private_lr: 3.7800000000000004e-05
+- description: Combine lower viscosity LR and longer density/surface refinement
+  overrides:
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.05
+    experiment/viscosity:
+      phase1_private_lr: 6.3e-05
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.05
+    experiment/density:
+      phase3_private_epochs: 10
+    experiment/surface_tension:
+      phase3_private_epochs: 8
+    experiment/pec50:
+      phase1_private_lr: 3.7800000000000004e-05
+- description: Near-winning tasks PRIVATE Phase1/2 budget x1.5
+  overrides:
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.05
+      phase1_private_epochs: 14
+      phase2_private_epochs: 9
+    experiment/viscosity:
+      phase1_private_epochs: 15
+      phase2_private_epochs: 14
+    experiment/density:
+      phase1_private_epochs: 15
+      phase2_private_epochs: 14
+    experiment/refractive_index:
+      phase1_private_epochs: 14
+      phase2_private_epochs: 9
+    experiment/surface_tension:
+      phase1_private_epochs: 14
+      phase2_private_epochs: 9
+    experiment/melting_point:
+      phase1_private_epochs: 15
+      phase2_private_epochs: 14
+- description: Near-winning tasks PRIVATE Phase1/2 budget x0.5
+  overrides:
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.05
+      phase1_private_epochs: 4
+      phase2_private_epochs: 3
+    experiment/viscosity:
+      phase1_private_epochs: 6
+      phase2_private_epochs: 4
+    experiment/density:
+      phase1_private_epochs: 6
+      phase2_private_epochs: 4
+    experiment/refractive_index:
+      phase1_private_epochs: 4
+      phase2_private_epochs: 3
+    experiment/surface_tension:
+      phase1_private_epochs: 4
+      phase2_private_epochs: 3
+    experiment/melting_point:
+      phase1_private_epochs: 6
+      phase2_private_epochs: 4
+- description: Near-winning tasks PRIVATE LR x1.2 within owner ordering
+  overrides:
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.05
+      phase1_private_lr: 0.0001296
+    experiment/viscosity:
+      phase1_private_lr: 0.00010800000000000001
+    experiment/density:
+      phase1_private_lr: 0.000135
+    experiment/refractive_index:
+      phase1_private_lr: 8.64e-05
+    experiment/surface_tension:
+      phase1_private_lr: 8.64e-05
+    experiment/melting_point:
+      phase1_private_lr: 0.000162
+- description: Small weak tasks PRIVATE LR x1.5 within owner ordering
+  overrides:
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.05
+    experiment/equilibrium_pressure:
+      phase1_private_lr: 5.4e-05
+    experiment/gas_solubility:
+      phase1_private_lr: 8.1e-05
+    experiment/water_activity_coefficient:
+      phase1_private_lr: 8.1e-05
+    experiment/pec50:
+      phase1_private_lr: 6.75e-05
+    experiment/dynamic_relative_permittivity:
+      phase1_private_lr: 5.4e-05
+    experiment/static_relative_permittivity:
+      phase1_private_lr: 5.4e-05
+    experiment/anodic_potential_limit:
+      phase1_private_lr: 8.1e-05
+    experiment/cathodic_potential_limit:
+      phase1_private_lr: 8.1e-05
+- description: Small weak tasks shorter PRIVATE training without later updates
+  overrides:
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.05
+    experiment/equilibrium_pressure:
+      phase1_private_epochs: 2
+      phase2_private_epochs: 0
+      phase3_private_epochs: 0
+    experiment/gas_solubility:
+      phase1_private_epochs: 3
+      phase2_private_epochs: 0
+      phase3_private_epochs: 0
+    experiment/water_activity_coefficient:
+      phase1_private_epochs: 3
+      phase2_private_epochs: 0
+      phase3_private_epochs: 0
+    experiment/pec50:
+      phase1_private_epochs: 3
+      phase2_private_epochs: 0
+      phase3_private_epochs: 0
+    experiment/dynamic_relative_permittivity:
+      phase1_private_epochs: 2
+      phase2_private_epochs: 0
+      phase3_private_epochs: 0
+    experiment/static_relative_permittivity:
+      phase1_private_epochs: 2
+      phase2_private_epochs: 0
+      phase3_private_epochs: 0
+    experiment/anodic_potential_limit:
+      phase1_private_epochs: 3
+      phase2_private_epochs: 0
+      phase3_private_epochs: 0
+    experiment/cathodic_potential_limit:
+      phase1_private_epochs: 3
+      phase2_private_epochs: 0
+      phase3_private_epochs: 0
+- description: Small weak tasks PRIVATE Phase1/2 budgets x2
+  overrides:
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.05
+    experiment/equilibrium_pressure:
+      phase1_private_epochs: 8
+      phase2_private_epochs: 4
+    experiment/gas_solubility:
+      phase1_private_epochs: 12
+      phase2_private_epochs: 6
+    experiment/water_activity_coefficient:
+      phase1_private_epochs: 12
+      phase2_private_epochs: 6
+    experiment/pec50:
+      phase1_private_epochs: 12
+      phase2_private_epochs: 6
+    experiment/dynamic_relative_permittivity:
+      phase1_private_epochs: 8
+      phase2_private_epochs: 4
+    experiment/static_relative_permittivity:
+      phase1_private_epochs: 6
+      phase2_private_epochs: 2
+    experiment/anodic_potential_limit:
+      phase1_private_epochs: 12
+      phase2_private_epochs: 6
+    experiment/cathodic_potential_limit:
+      phase1_private_epochs: 12
+      phase2_private_epochs: 6
+- description: Glass transition PRIVATE dropout 0.0
+  overrides:
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.0
+- description: Glass transition PRIVATE dropout 0.025
+  overrides:
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.025
+- description: Near-winning tasks PRIVATE Phase3 plus six epochs
+  overrides:
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.05
+      phase3_private_epochs: 8
+    experiment/viscosity:
+      phase3_private_epochs: 10
+    experiment/density:
+      phase3_private_epochs: 12
+    experiment/refractive_index:
+      phase3_private_epochs: 8
+    experiment/surface_tension:
+      phase3_private_epochs: 10
+    experiment/melting_point:
+      phase3_private_epochs: 10
+- description: Near-winning tasks no PRIVATE Phase3
+  overrides:
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.05
+      phase3_private_epochs: 0
+    experiment/viscosity:
+      phase3_private_epochs: 0
+    experiment/density:
+      phase3_private_epochs: 0
+    experiment/refractive_index:
+      phase3_private_epochs: 0
+    experiment/surface_tension:
+      phase3_private_epochs: 0
+    experiment/melting_point:
+      phase3_private_epochs: 0
+- description: Upper-bound PRIVATE dropout for weak tasks, retaining glass anchor
+  overrides:
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.05
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.15
+    experiment/density:
+      model_overrides:
+        private_dropout: 0.15
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.15
+    experiment/surface_tension:
+      model_overrides:
+        private_dropout: 0.15
+    experiment/melting_point:
+      model_overrides:
+        private_dropout: 0.15
+    experiment/heat_capacity:
+      model_overrides:
+        private_dropout: 0.15
+    experiment/thermal_decomposition_temperature:
+      model_overrides:
+        private_dropout: 0.15
+    experiment/equilibrium_pressure:
+      model_overrides:
+        private_dropout: 0.15
+    experiment/gas_solubility:
+      model_overrides:
+        private_dropout: 0.15
+    experiment/water_activity_coefficient:
+      model_overrides:
+        private_dropout: 0.15
+    experiment/pec50:
+      model_overrides:
+        private_dropout: 0.15
+    experiment/dynamic_relative_permittivity:
+      model_overrides:
+        private_dropout: 0.15
+    experiment/static_relative_permittivity:
+      model_overrides:
+        private_dropout: 0.15
+    experiment/anodic_potential_limit:
+      model_overrides:
+        private_dropout: 0.15
+    experiment/cathodic_potential_limit:
+      model_overrides:
+        private_dropout: 0.15
+- description: Near-winning tasks PRIVATE LR x0.5
+  overrides:
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.05
+      phase1_private_lr: 5.4000000000000005e-05
+    experiment/viscosity:
+      phase1_private_lr: 4.5e-05
+    experiment/density:
+      phase1_private_lr: 5.6250000000000005e-05
+    experiment/refractive_index:
+      phase1_private_lr: 3.6e-05
+    experiment/surface_tension:
+      phase1_private_lr: 3.6e-05
+    experiment/melting_point:
+      phase1_private_lr: 6.75e-05
+- description: Supported combination plus shorter small-task PRIVATE training
+  overrides:
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.05
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.05
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.05
+    experiment/density:
+      phase3_private_epochs: 8
+    experiment/surface_tension:
+      phase3_private_epochs: 6
+    experiment/pec50:
+      phase1_private_lr: 3.7800000000000004e-05
+    experiment/equilibrium_pressure:
+      phase1_private_epochs: 2
+      phase2_private_epochs: 0
+      phase3_private_epochs: 0
+    experiment/gas_solubility:
+      phase1_private_epochs: 3
+      phase2_private_epochs: 0
+      phase3_private_epochs: 0
+    experiment/water_activity_coefficient:
+      phase1_private_epochs: 3
+      phase2_private_epochs: 0
+      phase3_private_epochs: 0
+    experiment/dynamic_relative_permittivity:
+      phase1_private_epochs: 2
+      phase2_private_epochs: 0
+      phase3_private_epochs: 0
+    experiment/static_relative_permittivity:
+      phase1_private_epochs: 2
+      phase2_private_epochs: 0
+      phase3_private_epochs: 0
+    experiment/anodic_potential_limit:
+      phase1_private_epochs: 3
+      phase2_private_epochs: 0
+      phase3_private_epochs: 0
+    experiment/cathodic_potential_limit:
+      phase1_private_epochs: 3
+      phase2_private_epochs: 0
+      phase3_private_epochs: 0
+- description: Supported combination plus higher small-task LR and Phase2 budget
+  overrides:
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.05
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.05
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.05
+    experiment/density:
+      phase3_private_epochs: 8
+    experiment/surface_tension:
+      phase3_private_epochs: 6
+    experiment/pec50:
+      phase1_private_lr: 6.75e-05
+      phase2_private_epochs: 6
+    experiment/equilibrium_pressure:
+      phase1_private_lr: 5.4e-05
+      phase2_private_epochs: 4
+    experiment/gas_solubility:
+      phase1_private_lr: 8.1e-05
+      phase2_private_epochs: 6
+    experiment/water_activity_coefficient:
+      phase1_private_lr: 8.1e-05
+      phase2_private_epochs: 6
+    experiment/dynamic_relative_permittivity:
+      phase1_private_lr: 5.4e-05
+      phase2_private_epochs: 4
+    experiment/static_relative_permittivity:
+      phase1_private_lr: 5.4e-05
+      phase2_private_epochs: 2
+    experiment/anodic_potential_limit:
+      phase1_private_lr: 8.1e-05
+      phase2_private_epochs: 6
+    experiment/cathodic_potential_limit:
+      phase1_private_lr: 8.1e-05
+      phase2_private_epochs: 6

@@ -27,6 +27,8 @@ def test_registered_ablation_contracts_are_paired_and_fixed_final(config_root, a
     base2=load_home_recipe(ROOT/f'configs/v4/stage2/{authority}.yaml')
     base3=load_stage3_config(ROOT/f'configs/v4/stage3/{authority}.yaml')
     assert len(list(configs.rglob('*.yaml')))==36
+    cancelled=list((configs/'capacity').rglob('*.yaml')) if config_root=='v4_3407' else []
+    assert len(list(configs.rglob('*.yaml')))-len(cancelled)==(32 if config_root=='v4_3407' else 36)
     assert not (configs/'repeats').exists()
     for name,removed in {'no_smiles':('smiles','alignment'), 'no_graph':('atom','bond','partial_charge','alignment')}.items():
         config=load_stage1_config(configs/f'core/{name}/stage1.yaml')
@@ -58,6 +60,10 @@ def test_registered_ablation_contracts_are_paired_and_fixed_final(config_root, a
         assert recipe.stage2.data.artifacts_dir==downstream.initialization.simulation_artifacts_dir
         assert recipe.stage2.initialization.checkpoint==downstream.initialization.stage1_encoder
     for path in configs.rglob('stage3.yaml'):
+        if path in cancelled:
+            with pytest.raises(ValueError,match='Capacity controls for data/3407 were cancelled'):
+                load_research_config(path)
+            continue
         config=load_research_config(path)
         assert config.data.seed==base3.data.seed and config.tasks==base3.tasks and config.groups==base3.groups
         assert config.data.stage3_dir==base3.data.stage3_dir

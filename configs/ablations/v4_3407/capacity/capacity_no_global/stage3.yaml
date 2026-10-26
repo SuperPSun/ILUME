@@ -1,4 +1,5 @@
 # 3407消融：配对 optimized_3407；训练seed42，Stage1沿用原语料与准备合同。
+# 已取消（2026-10-26）：仅保留配置追溯，不再训练或评估本项容量对照。
 data:
   stage3_dir: data/3407/stage3
   task_catalog: data/3407/task_catalog.csv

@@ -283,6 +283,631 @@
           }
         }
       }
+    },
+    {
+      "id": "025",
+      "description": "Combine validation-supported local changes",
+      "recipe_hash": "ef9c2dfcfbceb15a3ac2e65ef3490643652e3fbbdf3318935eee43a9e4ae2656",
+      "sha256": "3eeaf71fb27aa654eaf382df36f76d3c71758d2243f8fb243c32cd93ff896bd3",
+      "overrides": {
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          }
+        },
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          }
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          }
+        },
+        "experiment/density": {
+          "phase3_private_epochs": 8
+        },
+        "experiment/surface_tension": {
+          "phase3_private_epochs": 6
+        },
+        "experiment/pec50": {
+          "phase1_private_lr": 3.7800000000000004e-05
+        }
+      }
+    },
+    {
+      "id": "026",
+      "description": "Combine lower viscosity LR and longer density/surface refinement",
+      "recipe_hash": "4b9c570490a5b0ae81f44d80d8b62e70a5d590ba659c7c9f9ea246894730eaef",
+      "sha256": "e83d9785fca39a81501a707f6de7b77346547089466aaa585b1303bca72cd33d",
+      "overrides": {
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          }
+        },
+        "experiment/viscosity": {
+          "phase1_private_lr": 6.3e-05
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          }
+        },
+        "experiment/density": {
+          "phase3_private_epochs": 10
+        },
+        "experiment/surface_tension": {
+          "phase3_private_epochs": 8
+        },
+        "experiment/pec50": {
+          "phase1_private_lr": 3.7800000000000004e-05
+        }
+      }
+    },
+    {
+      "id": "027",
+      "description": "Near-winning tasks PRIVATE Phase1/2 budget x1.5",
+      "recipe_hash": "a1f6d57c28c50c13242abbe9608bc0e6c77278c5b577c1d3d7ed681772dc6b4d",
+      "sha256": "ab917f257f5f48a10025f659d478ffe961b1146ec2a1a4c3dcde3972e272d0f7",
+      "overrides": {
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          },
+          "phase1_private_epochs": 14,
+          "phase2_private_epochs": 9
+        },
+        "experiment/viscosity": {
+          "phase1_private_epochs": 15,
+          "phase2_private_epochs": 14
+        },
+        "experiment/density": {
+          "phase1_private_epochs": 15,
+          "phase2_private_epochs": 14
+        },
+        "experiment/refractive_index": {
+          "phase1_private_epochs": 14,
+          "phase2_private_epochs": 9
+        },
+        "experiment/surface_tension": {
+          "phase1_private_epochs": 14,
+          "phase2_private_epochs": 9
+        },
+        "experiment/melting_point": {
+          "phase1_private_epochs": 15,
+          "phase2_private_epochs": 14
+        }
+      }
+    },
+    {
+      "id": "028",
+      "description": "Near-winning tasks PRIVATE Phase1/2 budget x0.5",
+      "recipe_hash": "29fae4ee8da9e780b0738e1fb1f3252d1e5cef5a5df5b66de2543b48b15972a2",
+      "sha256": "392201e2b15cff8863cacfee0e61b9f5b4033195b40418fccde88c220106b07b",
+      "overrides": {
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          },
+          "phase1_private_epochs": 4,
+          "phase2_private_epochs": 3
+        },
+        "experiment/viscosity": {
+          "phase1_private_epochs": 6,
+          "phase2_private_epochs": 4
+        },
+        "experiment/density": {
+          "phase1_private_epochs": 6,
+          "phase2_private_epochs": 4
+        },
+        "experiment/refractive_index": {
+          "phase1_private_epochs": 4,
+          "phase2_private_epochs": 3
+        },
+        "experiment/surface_tension": {
+          "phase1_private_epochs": 4,
+          "phase2_private_epochs": 3
+        },
+        "experiment/melting_point": {
+          "phase1_private_epochs": 6,
+          "phase2_private_epochs": 4
+        }
+      }
+    },
+    {
+      "id": "029",
+      "description": "Near-winning tasks PRIVATE LR x1.2 within owner ordering",
+      "recipe_hash": "27be61b6acf1a933c7ac7679027351d1ccaeb02c3f3233c90a7f6b9185ce26c0",
+      "sha256": "d354e8ed75909373d927115642a9ed139fa5225918de5757b70b0f9197c14f2c",
+      "overrides": {
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          },
+          "phase1_private_lr": 0.0001296
+        },
+        "experiment/viscosity": {
+          "phase1_private_lr": 0.00010800000000000001
+        },
+        "experiment/density": {
+          "phase1_private_lr": 0.000135
+        },
+        "experiment/refractive_index": {
+          "phase1_private_lr": 8.64e-05
+        },
+        "experiment/surface_tension": {
+          "phase1_private_lr": 8.64e-05
+        },
+        "experiment/melting_point": {
+          "phase1_private_lr": 0.000162
+        }
+      }
+    },
+    {
+      "id": "030",
+      "description": "Small weak tasks PRIVATE LR x1.5 within owner ordering",
+      "recipe_hash": "2577e5ba5577f3572c3cf101c5a17eace3ed80a7ec25314efc6bc335284964f5",
+      "sha256": "8c139269ead9bf27460278912042f1f8347e031901914c789b5b76ddbe2db4ca",
+      "overrides": {
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          }
+        },
+        "experiment/equilibrium_pressure": {
+          "phase1_private_lr": 5.4e-05
+        },
+        "experiment/gas_solubility": {
+          "phase1_private_lr": 8.1e-05
+        },
+        "experiment/water_activity_coefficient": {
+          "phase1_private_lr": 8.1e-05
+        },
+        "experiment/pec50": {
+          "phase1_private_lr": 6.75e-05
+        },
+        "experiment/dynamic_relative_permittivity": {
+          "phase1_private_lr": 5.4e-05
+        },
+        "experiment/static_relative_permittivity": {
+          "phase1_private_lr": 5.4e-05
+        },
+        "experiment/anodic_potential_limit": {
+          "phase1_private_lr": 8.1e-05
+        },
+        "experiment/cathodic_potential_limit": {
+          "phase1_private_lr": 8.1e-05
+        }
+      }
+    },
+    {
+      "id": "031",
+      "description": "Small weak tasks shorter PRIVATE training without later updates",
+      "recipe_hash": "1bbbd3f3fe1237750cc1e428cf6751f802607f99cd3140cb81ed81be6573dc69",
+      "sha256": "aa8e59ed3a55decc29325ad4ed879aff82e0fd3970200ca21af7ba551ca76602",
+      "overrides": {
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          }
+        },
+        "experiment/equilibrium_pressure": {
+          "phase1_private_epochs": 2,
+          "phase2_private_epochs": 0,
+          "phase3_private_epochs": 0
+        },
+        "experiment/gas_solubility": {
+          "phase1_private_epochs": 3,
+          "phase2_private_epochs": 0,
+          "phase3_private_epochs": 0
+        },
+        "experiment/water_activity_coefficient": {
+          "phase1_private_epochs": 3,
+          "phase2_private_epochs": 0,
+          "phase3_private_epochs": 0
+        },
+        "experiment/pec50": {
+          "phase1_private_epochs": 3,
+          "phase2_private_epochs": 0,
+          "phase3_private_epochs": 0
+        },
+        "experiment/dynamic_relative_permittivity": {
+          "phase1_private_epochs": 2,
+          "phase2_private_epochs": 0,
+          "phase3_private_epochs": 0
+        },
+        "experiment/static_relative_permittivity": {
+          "phase1_private_epochs": 2,
+          "phase2_private_epochs": 0,
+          "phase3_private_epochs": 0
+        },
+        "experiment/anodic_potential_limit": {
+          "phase1_private_epochs": 3,
+          "phase2_private_epochs": 0,
+          "phase3_private_epochs": 0
+        },
+        "experiment/cathodic_potential_limit": {
+          "phase1_private_epochs": 3,
+          "phase2_private_epochs": 0,
+          "phase3_private_epochs": 0
+        }
+      }
+    },
+    {
+      "id": "032",
+      "description": "Small weak tasks PRIVATE Phase1/2 budgets x2",
+      "recipe_hash": "4a5f2a34b8cca1eb4ddc0b91c8f9da9189a64540be403b5f8db9b006c8095d2a",
+      "sha256": "2dca77378ac0b7dc07dc99d2c5d6dd1b61a6959d3cb601539214d52047593869",
+      "overrides": {
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          }
+        },
+        "experiment/equilibrium_pressure": {
+          "phase1_private_epochs": 8,
+          "phase2_private_epochs": 4
+        },
+        "experiment/gas_solubility": {
+          "phase1_private_epochs": 12,
+          "phase2_private_epochs": 6
+        },
+        "experiment/water_activity_coefficient": {
+          "phase1_private_epochs": 12,
+          "phase2_private_epochs": 6
+        },
+        "experiment/pec50": {
+          "phase1_private_epochs": 12,
+          "phase2_private_epochs": 6
+        },
+        "experiment/dynamic_relative_permittivity": {
+          "phase1_private_epochs": 8,
+          "phase2_private_epochs": 4
+        },
+        "experiment/static_relative_permittivity": {
+          "phase1_private_epochs": 6,
+          "phase2_private_epochs": 2
+        },
+        "experiment/anodic_potential_limit": {
+          "phase1_private_epochs": 12,
+          "phase2_private_epochs": 6
+        },
+        "experiment/cathodic_potential_limit": {
+          "phase1_private_epochs": 12,
+          "phase2_private_epochs": 6
+        }
+      }
+    },
+    {
+      "id": "033",
+      "description": "Glass transition PRIVATE dropout 0.0",
+      "recipe_hash": "ea601103098ac7bbcba4a9edbde6d227a5af6e7f929da5b38bd86068faeca118",
+      "sha256": "d25d5faa6a177737fe2655dda87c827c93954d3c1493f97e86291f6a0a724f4c",
+      "overrides": {
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.0
+          }
+        }
+      }
+    },
+    {
+      "id": "034",
+      "description": "Glass transition PRIVATE dropout 0.025",
+      "recipe_hash": "acab87a358a479ad2c1584923452f8b7fcf7bdd3720ae05d1905e8ffe9300232",
+      "sha256": "274c29a855b2cb20bc97346c8f86f1a7d77a51e64baefb3466ffe0883285efa9",
+      "overrides": {
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          }
+        }
+      }
+    },
+    {
+      "id": "035",
+      "description": "Near-winning tasks PRIVATE Phase3 plus six epochs",
+      "recipe_hash": "0bc592f89aff6826f05da3527ddf6a5e3a0913ac09b9b3397923bcf816c02c8d",
+      "sha256": "845fe0ea9df70d3843df45d4ec2bc28408bc195f2347e46807e89a53f18fc4ed",
+      "overrides": {
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          },
+          "phase3_private_epochs": 8
+        },
+        "experiment/viscosity": {
+          "phase3_private_epochs": 10
+        },
+        "experiment/density": {
+          "phase3_private_epochs": 12
+        },
+        "experiment/refractive_index": {
+          "phase3_private_epochs": 8
+        },
+        "experiment/surface_tension": {
+          "phase3_private_epochs": 10
+        },
+        "experiment/melting_point": {
+          "phase3_private_epochs": 10
+        }
+      }
+    },
+    {
+      "id": "036",
+      "description": "Near-winning tasks no PRIVATE Phase3",
+      "recipe_hash": "3fcce185ea69268399f61b9ae3f47391c471e3f62fbf4711934a24da12b42433",
+      "sha256": "8f6213cfb8ac81d35903c1db5e7c4df2c5be215da5b23b77827bfd6bba475acb",
+      "overrides": {
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          },
+          "phase3_private_epochs": 0
+        },
+        "experiment/viscosity": {
+          "phase3_private_epochs": 0
+        },
+        "experiment/density": {
+          "phase3_private_epochs": 0
+        },
+        "experiment/refractive_index": {
+          "phase3_private_epochs": 0
+        },
+        "experiment/surface_tension": {
+          "phase3_private_epochs": 0
+        },
+        "experiment/melting_point": {
+          "phase3_private_epochs": 0
+        }
+      }
+    },
+    {
+      "id": "037",
+      "description": "Upper-bound PRIVATE dropout for weak tasks, retaining glass anchor",
+      "recipe_hash": "329a3e29e91f9cd6e6503160782aee1e358b5da04ac3e085e6cfb423bbf9db0b",
+      "sha256": "26a048c9728a67f7de7136e76c11c059a314e8d10e4fb5bf366d79accf3dbe62",
+      "overrides": {
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          }
+        },
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.15
+          }
+        },
+        "experiment/density": {
+          "model_overrides": {
+            "private_dropout": 0.15
+          }
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.15
+          }
+        },
+        "experiment/surface_tension": {
+          "model_overrides": {
+            "private_dropout": 0.15
+          }
+        },
+        "experiment/melting_point": {
+          "model_overrides": {
+            "private_dropout": 0.15
+          }
+        },
+        "experiment/heat_capacity": {
+          "model_overrides": {
+            "private_dropout": 0.15
+          }
+        },
+        "experiment/thermal_decomposition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.15
+          }
+        },
+        "experiment/equilibrium_pressure": {
+          "model_overrides": {
+            "private_dropout": 0.15
+          }
+        },
+        "experiment/gas_solubility": {
+          "model_overrides": {
+            "private_dropout": 0.15
+          }
+        },
+        "experiment/water_activity_coefficient": {
+          "model_overrides": {
+            "private_dropout": 0.15
+          }
+        },
+        "experiment/pec50": {
+          "model_overrides": {
+            "private_dropout": 0.15
+          }
+        },
+        "experiment/dynamic_relative_permittivity": {
+          "model_overrides": {
+            "private_dropout": 0.15
+          }
+        },
+        "experiment/static_relative_permittivity": {
+          "model_overrides": {
+            "private_dropout": 0.15
+          }
+        },
+        "experiment/anodic_potential_limit": {
+          "model_overrides": {
+            "private_dropout": 0.15
+          }
+        },
+        "experiment/cathodic_potential_limit": {
+          "model_overrides": {
+            "private_dropout": 0.15
+          }
+        }
+      }
+    },
+    {
+      "id": "038",
+      "description": "Near-winning tasks PRIVATE LR x0.5",
+      "recipe_hash": "ec6bb7fbb1be6d88def84943fcbff68e1a7737e75ab6158ae3845fad0bd3c402",
+      "sha256": "b9fd48aeed25a99cd1b1ee15bac508023afab358d219b090dd5574b66b2220bc",
+      "overrides": {
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          },
+          "phase1_private_lr": 5.4000000000000005e-05
+        },
+        "experiment/viscosity": {
+          "phase1_private_lr": 4.5e-05
+        },
+        "experiment/density": {
+          "phase1_private_lr": 5.6250000000000005e-05
+        },
+        "experiment/refractive_index": {
+          "phase1_private_lr": 3.6e-05
+        },
+        "experiment/surface_tension": {
+          "phase1_private_lr": 3.6e-05
+        },
+        "experiment/melting_point": {
+          "phase1_private_lr": 6.75e-05
+        }
+      }
+    },
+    {
+      "id": "039",
+      "description": "Supported combination plus shorter small-task PRIVATE training",
+      "recipe_hash": "5bbe6ef23427e68a7f3d4c2aa6763ea547dcb5bda65ac00a21f537acffa48fc2",
+      "sha256": "0131e077b795164a0a868c0e6aac91f84ffab34645a740b73ab29e43d365cc33",
+      "overrides": {
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          }
+        },
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          }
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          }
+        },
+        "experiment/density": {
+          "phase3_private_epochs": 8
+        },
+        "experiment/surface_tension": {
+          "phase3_private_epochs": 6
+        },
+        "experiment/pec50": {
+          "phase1_private_lr": 3.7800000000000004e-05
+        },
+        "experiment/equilibrium_pressure": {
+          "phase1_private_epochs": 2,
+          "phase2_private_epochs": 0,
+          "phase3_private_epochs": 0
+        },
+        "experiment/gas_solubility": {
+          "phase1_private_epochs": 3,
+          "phase2_private_epochs": 0,
+          "phase3_private_epochs": 0
+        },
+        "experiment/water_activity_coefficient": {
+          "phase1_private_epochs": 3,
+          "phase2_private_epochs": 0,
+          "phase3_private_epochs": 0
+        },
+        "experiment/dynamic_relative_permittivity": {
+          "phase1_private_epochs": 2,
+          "phase2_private_epochs": 0,
+          "phase3_private_epochs": 0
+        },
+        "experiment/static_relative_permittivity": {
+          "phase1_private_epochs": 2,
+          "phase2_private_epochs": 0,
+          "phase3_private_epochs": 0
+        },
+        "experiment/anodic_potential_limit": {
+          "phase1_private_epochs": 3,
+          "phase2_private_epochs": 0,
+          "phase3_private_epochs": 0
+        },
+        "experiment/cathodic_potential_limit": {
+          "phase1_private_epochs": 3,
+          "phase2_private_epochs": 0,
+          "phase3_private_epochs": 0
+        }
+      }
+    },
+    {
+      "id": "040",
+      "description": "Supported combination plus higher small-task LR and Phase2 budget",
+      "recipe_hash": "a6eef11c4d26535e518dcb932ea4794c8dd483010247d6ec5f3038e84ad85806",
+      "sha256": "3d3ba7b8f121181025e8684c684c6bb226f3e3c951d1c2f568eaf9667e4b3dce",
+      "overrides": {
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          }
+        },
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          }
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          }
+        },
+        "experiment/density": {
+          "phase3_private_epochs": 8
+        },
+        "experiment/surface_tension": {
+          "phase3_private_epochs": 6
+        },
+        "experiment/pec50": {
+          "phase1_private_lr": 6.75e-05,
+          "phase2_private_epochs": 6
+        },
+        "experiment/equilibrium_pressure": {
+          "phase1_private_lr": 5.4e-05,
+          "phase2_private_epochs": 4
+        },
+        "experiment/gas_solubility": {
+          "phase1_private_lr": 8.1e-05,
+          "phase2_private_epochs": 6
+        },
+        "experiment/water_activity_coefficient": {
+          "phase1_private_lr": 8.1e-05,
+          "phase2_private_epochs": 6
+        },
+        "experiment/dynamic_relative_permittivity": {
+          "phase1_private_lr": 5.4e-05,
+          "phase2_private_epochs": 4
+        },
+        "experiment/static_relative_permittivity": {
+          "phase1_private_lr": 5.4e-05,
+          "phase2_private_epochs": 2
+        },
+        "experiment/anodic_potential_limit": {
+          "phase1_private_lr": 8.1e-05,
+          "phase2_private_epochs": 6
+        },
+        "experiment/cathodic_potential_limit": {
+          "phase1_private_lr": 8.1e-05,
+          "phase2_private_epochs": 6
+        }
+      }
     }
   ],
   "sources": {

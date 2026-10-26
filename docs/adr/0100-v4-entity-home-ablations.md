@@ -3,27 +3,29 @@
 - 状态：已接受
 - 日期：2026-10-15
 - 更新：2026-10-23，新增配对最终优化配方的3407套件；原split42配置与产物保留。
+- 更新：2026-10-26，取消3407套件四项容量对照；仅Phase1评估正式编号为C11，与C7、C0比较完整Base的阶段增量。
 - 范围：独立消融研究；正式 Base、历史产物、基线预算不变。
 
 ## 科研协议
 
 现役实验统一使用 `data/3407` 五折，以 `configs/v4/stage2/optimized_3407.yaml` 与 `configs/v4/stage3/optimized_3407.yaml` 的完整模型为唯一配对参照（HoME G2_C05 / Stage2 007 / Stage3 032，见[最终配方](../hpo-results.md)）。训练seed42、Stage3按42+fold派生；24实验性质，hydration为random/cv1、无测试集；两项模拟保持PRIVATE隔离并独立报告。除所声明的消融外，模型、任务归组、原始样本覆盖、条件、目标归一化、SmoothL1、owner裁剪、学习率和预算全部与优化配方一致。优化配方将两项电位任务归入phase_stability，共六个GROUP；不能混用原Base的七GROUP分层。Stage1在下游永久冻结；验证只报告；发布预先指定末轮/阶段末状态。
 
-原始 `configs/ablations/v4/` 的36份split42配置与 `outputs/ablations/v4/` 保留历史身份；新建36份 `configs/ablations/v4_3407/`，输出只写 `outputs/ablations/v4_3407/`。Stage1仍共享 `data/stage1` 和原语料prepare，不能将其语料seed误改为3407。3407 Stage2/3 prepare仅在数据、来源和完整性校验通过时复用；不存在时按配套配置重新prepare，既有不匹配产物不覆盖、不改SHA。
+原始 `configs/ablations/v4/` 的36份split42配置与 `outputs/ablations/v4/` 保留历史身份；`configs/ablations/v4_3407/` 共保留36份YAML，其中32份现役、4份容量对照已取消并仅供追溯，输出只写 `outputs/ablations/v4_3407/`。Stage1仍共享 `data/stage1` 和原语料prepare，不能将其语料seed误改为3407。3407 Stage2/3 prepare仅在数据、来源和完整性校验通过时复用；不存在时按配套配置重新prepare，既有不匹配产物不覆盖、不改SHA。
 
 | 核心对照 | 变化 | 解释边界 |
 |---|---|---|
-| C0 Base | 正式完整模型 | 配对参考 |
+| C0 Base | 正式完整模型（Phase1＋Phase2＋Phase3） | 配对参考 |
 | C1 no_stage1 | 固定 seed42 同结构随机冻结编码器，保留显式 RDKit217；重新准备实体、训练 Stage2/3 | Stage1 预训练总体贡献 |
 | C2 no_stage2 | 用完整 Stage2 自包含 YAML 构造训练前参数；零优化器更新；仍保留两项模拟 PRIVATE | Stage2 模拟预训练及迁移总体贡献 |
 | C3 no_global | 删除 GLOBAL L1/L2 专家及 L1 gate；Task Gate 的 z_global 输入为有效 learned1024 均值 | 同时减少容量及迁移参数 |
 | C4 no_group | 删除 GROUP L1/L2 专家及 L1 gate；保留 GROUP LayerNorm、partner 交互与原 owner 预算 | 领域专家通路贡献，不是完全取消 GROUP 共享 |
 | C5 no_private | 删除 PRIVATE expert，保留 Task Gate/FiLM/Tower/归一化及原三阶段 PRIVATE 配方 | 独立专家贡献，不是所有独立参数贡献 |
 | C6 uniform_gate | 从训练开始固定最终候选等权，冻结 Task Gate；L1 gate 正常训练 | 最终样本相关选择的贡献 |
-| C7 phase2 | 只读 Base Phase2 stitched 全状态 | 包含减少训练量，不能证明三阶段等预算最优 |
+| C7 phase2 | 只读 Base Phase2 stitched 全状态（Phase1＋Phase2） | 包含减少训练量，不能证明三阶段等预算最优 |
 | C8 single_task_mlp | primary2490、声明 partner2490、现有标准化条件按序拼接；独立1024→512→1 MLP | 同时改变架构和预算的整体系统对照 |
 | C9 no_smiles | 删除 SMILES 编码器、重建头与双视图一致性头；从头训练 Stage1/2/3 | 图分支保留；编码分支及其依赖监督总体贡献 |
 | C10 no_graph | 删除图编码器、原子/键重建头、电荷头与双视图一致性头；从头训练 Stage1/2/3 | SMILES分支保留；同时减少监督与容量 |
+| C11 phase1 | 只读 Base Phase1 固定末轮全状态（仅Phase1） | 与C7、C0比较阶段增量，无新增训练 |
 
 C3～C5删除专家通路前先完整加载并校验来源；保留参数逐张量一致，Task Gate 保留候选对应输出行按原顺序截取。删除 GLOBAL 不缩短 Phase1 日历；没有训练梯度的任务仍保留原始采样与 loss 报告，不创建虚假梯度或优化器更新。GROUP 删除后 primary/partner 的 L1 delta 均为零，保留现有 LayerNorm、FiLM、partner 路径及 L2 residual。
 
@@ -34,12 +36,12 @@ C9/C10保持原1024D残差融合，缺失分支的512D槽固定填零；剩余�
 ## 扩展实验
 
 - Stage1 五项监督分别只置零 `lambda_unimol`、`lambda_electronic`、`lambda_partial_charge`、`lambda_alignment`、`lambda_descriptor`。不变更语料/teacher/原子标签来源与筛选；各自重新训练 Stage1/2/3 和新实体缓存。关闭 RDKit loss 仍保留下游显式 RDKit217。
-- 容量四对照全部为零更新 Stage2：删除 GLOBAL、删除 GROUP，以及各自完整 HoME 参数量匹配模型。只对所有 Expert 隐藏宽度使用同一比例；枚举舍入后不同整数宽度组合，按参数差最小选择，不读取标签或验证指标，差异上限1%，参数计数只包含下游HoME，不计冻结Stage1。Gate/Tower/FiLM/partner及专家数量不变。新宽度使用固定源训练 seed 和模块名独立初始化，非专家参数保留。
-- Base Phase1 固定最后 epoch 检查点、Phase2 stitched、Phase3 final 只读比较。Phase1/2 selector 不能用于训练、恢复或挑选轮数。
+- 四项容量对照（`capacity_no_global`、`capacity_match_global`、`capacity_no_group`、`capacity_match_group`）已取消，不再纳入3407套件的训练、评估或主表；本轮减少20个Stage3折训练。配置和历史split42实现保留，3407容量配置在加载时明确拒绝，不能用旧批量命令重新启动。C3/C4仍保留，但不再通过容量匹配对照区分结构与参数量效应。
+- 阶段增量按C11（仅Phase1）→C7（Phase1＋Phase2）→C0（Phase1＋Phase2＋Phase3）比较，无新增训练。C11复用现有 `core/phase1/stage3.yaml` 和 `outputs/ablations/v4_3407/phase1/`，内部variant与model_id保持原身份。五折分别按同一协议评估Phase1末轮检查点、Phase2 stitched和Phase3 final；不同阶段训练量不同，结果只说明阶段增量，不能据此宣称三阶段在等预算下最优。Phase1/2 selector不能用于训练、恢复或挑选轮数。
 
 ## 身份、接口与隔离
 
-实现位于 `ablations/entity_home/`；Stage包仅通过公开Stage1配置扩展注册/模型工厂和 `Stage3Config.runtime_backend` 调用入口提供的研究后端，禁止反向导入消融包。现役36份完整YAML位于 `configs/ablations/v4_3407/`，历史split42的36份位于 `configs/ablations/v4/`，不修改正式YAML，不恢复旧ObjectEncoder。MLP复用同一3407实体prepare和authority；sweep允许显式GPU设备槽。汇总通过 `--ablation-authority-config configs/v4/stage3/optimized_3407.yaml` 绑定分组及bootstrap来源，独立分析的split_seed读取authority配置，不能写死42。
+实现位于 `ablations/entity_home/`；Stage包仅通过公开Stage1配置扩展注册/模型工厂和 `Stage3Config.runtime_backend` 调用入口提供的研究后端，禁止反向导入消融包。现役32份完整YAML及4份已取消容量配置位于 `configs/ablations/v4_3407/`，历史split42的36份位于 `configs/ablations/v4/`，不修改正式YAML，不恢复旧ObjectEncoder。MLP复用同一3407实体prepare和authority；sweep允许显式GPU设备槽。汇总通过 `--ablation-authority-config configs/v4/stage3/optimized_3407.yaml` 绑定分组及bootstrap来源，独立分析的split_seed读取authority配置，不能写死42。
 
 `ablation` 写入运行配置和训练身份 plan：变体、零更新初始化 YAML、所移除监督、完整初始模型状态 hash，以及参数量匹配的比例和计数。checkpoint/scope/final 使用独立 `ilume_stage3_entity_home_ablation_*_v1` kind；保留 format4、plan14/training18，不跨消融/正式或历史合同恢复。来源、数据、owner、SHA、完整张量校验不放宽。C1 导出独立 `ilume_stage1_random_encoder_v4`、零更新身份及固定 epoch0，不冒充预训练末轮。C2 从真正的 Stage2 初始模型构造来源，不读取已训练 Stage2 final，也不伪造正式 final。
 
