@@ -1,5 +1,6 @@
 """Behavioral checks for static research recipes, cache integrity and local scheduling."""
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import replace
 import json
@@ -17,7 +18,7 @@ from _configs import (generate_initial, generate_stage2, generate_stage3, genera
                       read_yaml, write_yaml, validate_pair, stage3_recipes, GROUP_VARIANTS)
 from _common import Job, run_queue
 from collect import final_statistics, metric_row
-from common.artifact_cache import artifact_cache
+from common.artifact_cache import artifact_cache, artifact_lock
 from common.identity import semantic_identity
 from common.io import sha256_file
 from stage2.home_config import load_home_recipe, home_recipe_from_dict, effective_training_seed
@@ -94,19 +95,24 @@ def test_weakopt_appends_new_configs_without_rebinding_folds(weakopt_campaign):
         weakopt.load_campaign()
 
 
-def test_weakopt_gpu_limits_resume_and_cross_trial_rejection(weakopt_campaign, monkeypatch):
+@pytest.mark.parametrize('device', ['cuda:0', 'cuda:1', 'cuda:2', 'cuda:3'])
+def test_weakopt_gpu_limits_resume_and_cross_trial_rejection(weakopt_campaign, monkeypatch, device):
     assert weakopt.devices_and_folds('cuda:2,cuda:3', 2, [1, 3]) == ('cuda:2', 'cuda:3')
-    for devices, maximum, folds in [('cuda:0', 1, [1]), ('cuda:2', 2, [1]),
+    assert weakopt.devices_and_folds('cuda:0,cuda:1,cuda:2,cuda:3', 4, [1, 3]) == ('cuda:0', 'cuda:1', 'cuda:2', 'cuda:3')
+    assert weakopt.devices_and_folds('cuda:0,cuda:1,cuda:2,cuda:3', 8, [1, 3]) == ('cuda:0', 'cuda:1', 'cuda:2', 'cuda:3')
+    assert weakopt.devices_and_folds(device, 1, [1]) == (device,)
+    for devices, maximum, folds in [('cuda:4', 1, [1]), ('cuda:2', 3, [1]),
+                                    ('cuda:0,cuda:1', 5, [1]),
                                     ('cuda:2,cuda:2', 2, [1]), ('cuda:2', 1, [1, 1])]:
         with pytest.raises(ValueError):
             weakopt.devices_and_folds(devices, maximum, folds)
     trial = weakopt.load_campaign()[0]['trials'][0]
     updated = []
     evaluated = []
-    def fake_native(script, arguments, log, device):
+    def fake_native(script, arguments, log, assigned_device):
         assert script == 'stage3/train' and '--resume' in arguments
         assert arguments[arguments.index('--max-parallel') + 1] == 1
-        assert arguments[arguments.index('--devices') + 1] == device == 'cuda:2'
+        assert arguments[arguments.index('--devices') + 1] == assigned_device == device
         requested = arguments[arguments.index('--fold') + 1:arguments.index('--output')]
         root = weakopt.ROOT / arguments[arguments.index('--output') + 1]
         for fold in requested:
@@ -117,13 +123,37 @@ def test_weakopt_gpu_limits_resume_and_cross_trial_rejection(weakopt_campaign, m
                 updated.append(fold)
     monkeypatch.setattr(weakopt, 'native', fake_native)
     monkeypatch.setattr(weakopt, 'evaluate_fold', lambda job, fold, device, resume: evaluated.append(fold))
-    weakopt.run_trial(trial, [1, 3], 'cuda:2')
-    weakopt.run_trial(trial, [1, 2, 3, 4, 5], 'cuda:2')
+    weakopt.run_trial(trial, [1, 3], device)
+    weakopt.run_trial(trial, [1, 2, 3, 4, 5], device)
     assert updated == [1, 3, 2, 4, 5]
     assert evaluated == [1, 3, 1, 2, 3, 4, 5]
     altered = dict(trial, recipe_hash='another recipe')
     with pytest.raises(ValueError, match='another frozen configuration'):
-        weakopt.run_trial(altered, [1], 'cuda:2')
+        weakopt.run_trial(altered, [1], device)
+
+
+@pytest.mark.parametrize('legacy_running', [False, True])
+def test_weakopt_gpu_slot_limit_and_existing_controller(tmp_path, monkeypatch, legacy_running):
+    monkeypatch.setattr(weakopt, 'OUTPUT', tmp_path)
+    limit = 1 if legacy_running else 2
+    barrier = threading.Barrier(limit)
+    mutex = threading.Lock()
+    active = 0
+    peak = 0
+    def work(_):
+        nonlocal active, peak
+        with weakopt.gpu_slot('cuda:0'):
+            with mutex:
+                active += 1
+                peak = max(peak, active)
+            barrier.wait(timeout=10)
+            time.sleep(.01)
+            with mutex:
+                active -= 1
+    previous = artifact_lock(tmp_path / 'locks/cuda-0.lock') if legacy_running else nullcontext()
+    with previous, ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(work, range(4)))
+    assert peak == limit and active == 0
 
 
 def test_weakopt_same_fold_ranking_ties_and_win_priority():
@@ -323,7 +353,8 @@ def test_cache_single_writer_integrity_and_dry_run(tmp_path):
     with pytest.raises(ValueError): artifact_cache(path,identity,build)
 
 
-def test_queue_device_slots_global_limit_and_failures(tmp_path):
+@pytest.mark.parametrize('maximum', [2, 4])
+def test_queue_device_slots_global_limit_and_failures(tmp_path, maximum):
     lock=threading.Lock();active=set();peak=[];events=[]
     jobs=[Job(str(i),'test',tmp_path/str(i)) for i in range(8)]
     def work(job,device):
@@ -334,8 +365,8 @@ def test_queue_device_slots_global_limit_and_failures(tmp_path):
         with lock:
             events.append((job.trial,'stage3'));active.remove(device)
         if job.trial=='3': raise RuntimeError('failed trial')
-    assert run_queue(jobs,('cuda:0','cuda:1','cuda:2','cuda:3'),2,work,record_failures=False)==['3']
-    assert max(peak)==2
+    assert run_queue(jobs,('cuda:0','cuda:1','cuda:2','cuda:3'),maximum,work,record_failures=False)==['3']
+    assert max(peak)==maximum
     for job in jobs:
         assert events.index((job.trial,'stage2'))<events.index((job.trial,'stage3'))
 

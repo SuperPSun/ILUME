@@ -8,12 +8,12 @@
 
 ```bash
 python scripts/HPO/weakopt.py generate
-python scripts/HPO/weakopt.py run --ids 001 002 003 004 005 006 007 008 --fold 1 3 --devices cuda:2,cuda:3 --max-parallel 2 --dry-run
-python scripts/HPO/weakopt.py run --ids 001 002 003 004 005 006 007 008 --fold 1 3 --devices cuda:2,cuda:3 --max-parallel 2
+python scripts/HPO/weakopt.py run --ids 001 002 003 004 005 006 007 008 --fold 1 3 --devices cuda:0,cuda:1,cuda:2,cuda:3 --max-parallel 8 --dry-run
+python scripts/HPO/weakopt.py run --ids 001 002 003 004 005 006 007 008 --fold 1 3 --devices cuda:0,cuda:1,cuda:2,cuda:3 --max-parallel 8
 python scripts/HPO/weakopt.py report --fold 1 3
 ```
 
-不设置外层 `CUDA_VISIBLE_DEVICES`；入口传递物理GPU编号，训练worker和评估子进程各自映射到分配的卡。只允许GPU2/3及其子集，每卡一作业，总并发2；单卡时同时设置 `--devices cuda:2 --max-parallel 1`。省略 `--ids` 会运行全部已冻结候选。失败后执行相同命令继续，`--resume`可显式附加，原生严格恢复始终启用；不修改历史文件或配置SHA。
+不设置外层 `CUDA_VISIBLE_DEVICES`；入口传递物理GPU编号，训练worker和评估子进程各自映射到分配的卡。默认GPU0/1/2/3，每卡两个作业，总并发8。使用子集时同时指定其两倍并发：例如 `--devices cuda:0,cuda:1 --max-parallel 4`，或 `--devices cuda:2 --max-parallel 2`；显式较低并发仍兼容。跨控制器的两个GPU作业槽限制每卡最多两个作业，第一槽沿用旧GPU锁，因此可与在途旧控制器并存。扩展设备不改变候选身份，不中断其他卡上的运行。省略 `--ids` 会运行全部已冻结候选。失败后执行相同命令继续，`--resume`可显式附加，原生严格恢复始终启用；不修改历史文件或配置SHA。
 
 首批001–006依次为黏度、密度、折射率、表面张力、玻璃化转变温度、熔点的dropout=0.05；007–012同顺序只将PRIVATE LR乘0.7；013–018同顺序只将Phase3增加2轮。019/020为水活度dropout=0/0.05；021/022为静态介电Phase3=1/2；023/024为pEC50的LR乘0.7/dropout=0.05。其余值均与冻结参考一致。
 
