@@ -1,0 +1,77 @@
+- description: 'viscosity: PRIVATE dropout 0.0'
+  overrides:
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.0
+- description: 'density: PRIVATE dropout 0.0'
+  overrides:
+    experiment/density:
+      model_overrides:
+        private_dropout: 0.0
+- description: 'surface_tension: PRIVATE dropout 0.0'
+  overrides:
+    experiment/surface_tension:
+      model_overrides:
+        private_dropout: 0.0
+- description: 'glass_transition_temperature: PRIVATE dropout 0.075'
+  overrides:
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.075
+- description: 'anodic_potential_limit: PRIVATE dropout 0.0'
+  overrides:
+    experiment/anodic_potential_limit:
+      model_overrides:
+        private_dropout: 0.0
+- description: 'cathodic_potential_limit: PRIVATE dropout 0.0'
+  overrides:
+    experiment/cathodic_potential_limit:
+      model_overrides:
+        private_dropout: 0.0
+- description: 'viscosity: PRIVATE LR x1.4 within owner ordering'
+  overrides:
+    experiment/viscosity:
+      phase1_private_lr: 0.000126
+- description: 'density: PRIVATE LR x1.4 within owner ordering'
+  overrides:
+    experiment/density:
+      phase1_private_lr: 0.000135
+- description: 'surface_tension: PRIVATE LR x1.4 within owner ordering'
+  overrides:
+    experiment/surface_tension:
+      phase1_private_lr: 0.0001008
+- description: 'glass_transition_temperature: PRIVATE LR x1.4 within owner ordering'
+  overrides:
+    experiment/glass_transition_temperature:
+      phase1_private_lr: 0.00015120000000000002
+- description: 'anodic_potential_limit: PRIVATE LR x1.4 within owner ordering'
+  overrides:
+    experiment/anodic_potential_limit:
+      phase1_private_lr: 7.560000000000001e-05
+- description: 'cathodic_potential_limit: PRIVATE LR x1.4 within owner ordering'
+  overrides:
+    experiment/cathodic_potential_limit:
+      phase1_private_lr: 7.560000000000001e-05
+- description: 'anodic_potential_limit: PRIVATE Phase1/2 budgets x1.5'
+  overrides:
+    experiment/anodic_potential_limit:
+      phase1_private_epochs: 9
+      phase2_private_epochs: 4
+- description: 'cathodic_potential_limit: PRIVATE Phase1/2 budgets x1.5'
+  overrides:
+    experiment/cathodic_potential_limit:
+      phase1_private_epochs: 9
+      phase2_private_epochs: 4
+- description: 'glass_transition_temperature: lower dropout and doubled Phase2 PRIVATE
+    budget'
+  overrides:
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.05
+      phase2_private_epochs: 12
+- description: 'density: lower dropout and doubled Phase2 PRIVATE budget'
+  overrides:
+    experiment/density:
+      model_overrides:
+        private_dropout: 0.0
+      phase2_private_epochs: 18

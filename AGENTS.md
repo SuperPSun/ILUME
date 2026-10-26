@@ -30,7 +30,7 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 ### 历史合同、消融与基线
 
 - 历史实现/Capacity 保持五模态格式 v2、Stage 2 仅补偿 physics 的 loss 与既有精调；Stage 3 保持整模裁剪、`max(N_t,1000)` 虚拟过采样、80/20 精调和 `taskwise_refined`（ADR-0026/0027）。Capacity 是端到端预注册研究，不是正式多容量主线、严格缩放定律或仅编码器效应；只用 Stage 1 Base prepare 一次，共享 `outputs/experiments_v1/stage1/prepare/artifacts`。Stage 3 正式输入只用 `formal/*.yaml`，选择只读拼接后的验证，不读末轮均值或测试集。
-- 旧Object消融配置和旧ObjectEncoder实现/加载已移除；现役独立Entity-HoME消融按 [ADR-0100](docs/adr/0100-v4-entity-home-ablations.md) 与 [消融手册](docs/v4-ablation-runbook.md) 执行。现役36份配置为 `configs/ablations/v4_3407/`，配对 `optimized_3407`，输出 `outputs/ablations/v4_3407/`；原split42的 `configs/ablations/v4/` 与产物保留。核心包含移除SMILES/分子图的完整重训，固定训练seed42、不追加seed稳定性测试。历史消融与历史实现/Capacity复现须使用对应Git版本，输出保留。
+- 旧Object消融配置和旧ObjectEncoder实现/加载已移除；现役独立Entity-HoME消融按 [ADR-0100](docs/adr/0100-v4-entity-home-ablations.md) 与 [消融手册](docs/v4-ablation-runbook.md) 执行。现役32份配置与4份已取消容量配置为 `configs/ablations/v4_3407/`，配对 `optimized_3407`，输出 `outputs/ablations/v4_3407/`；原split42的 `configs/ablations/v4/` 与产物保留。核心包含移除SMILES/分子图的完整重训，C11为仅Phase1，阶段增量按C11→C7→C0比较；固定训练seed42、不追加seed稳定性测试。历史消融与历史实现/Capacity复现须使用对应Git版本，输出保留。
 - ADR-0034/0036/0062/0068/0072/0073/0079/0080/0081 及 Stage3 候选仅作历史追溯，不作为活跃入口；旧输出只读，不跨身份加载。v1/Capacity 冻结合同仍有效。
 - ADR-0086：十个正式基线对汽化热、热膨胀、HOMO、LUMO 独立单次训练，任务目录原训练集/验证集/测试集；不训练 partial charge，不更新实验任务模型。神经模型 10 轮、XGBoost 1000 trees 保持各自末轮配方。历史单任务 MLP 消融和历史 split 配置不扩展；现役实体 MLP 按 ADR-0100 独立注册。Stage3 模拟验证集/测试集使用五个 final 原单位预测均值，比较身份绑定完整行集合、来源 SHA 与原始训练集总体标准差（零方差为 1）；模拟榜单不得进入实验 wins/radar/scatter。
 - 基线只复用注册表、split、canonical SMILES、条件/目标与评估口径，不改变 Stage 数值合同。按 ADR 索引读取各模型合同，不能把一个模型的预算推及其他模型。
@@ -42,7 +42,7 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 
 - Stage 实现仅在 `src/common`、`src/stage1`～`src/stage3`；基线在 `benchmarks/`，消融在 `ablations/`，二者禁止被 Stage 导入。消融代码不得放回 `benchmarks/`。
 - `common` 只收至少两个 Stage 实际复用的原子功能；不建 `utils.py`。跨 Stage 只导入公开合同，禁止 `_private_symbol` 或 `import *`。
-- 运行入口仅 `scripts/stage{1,2,3}/*.py`、`scripts/benchmarks/*.py`，不恢复 console CLI、shell/smoke/matrix/折 runner 或自动搜索入口；仅允许 ADR-0099 的独立 `scripts/HPO/*.py` 静态配置批量入口，科研算法仍在对应 Stage。
+- 运行入口仅 `scripts/stage{1,2,3}/*.py`、`scripts/benchmarks/*.py`，不恢复 console CLI、shell/smoke/matrix/折 runner 或自动搜索入口；允许 ADR-0099 的独立 `scripts/HPO/*.py` 静态配置批量入口和 ADR-0106 的独立 `scripts/generation/*.py` 专用生成研究入口。生成实现在 `generation/`，按单个完整请求训练，移除通用目标编码与跨请求重标记；只读 ADR-0105 的公开冻结 Predictor，Stage 禁止反向依赖生成模块；Stage 科研算法仍在对应 Stage。
 - 科研与 prepare 参数写完整自包含 YAML；`preparation` 不进入实验身份。`--output`、`--resume`、Stage 3 折/评估 selector 是运行参数。
 - Stage 3 训练入口必填 `--fold`，可多折；`--output` 是共同根目录，运行位于 `foldN/`。正式折并发只在该入口用 spawn worker 和显式设备槽调度，不下沉到 `src/stage3`；独立HPO外层使用设备队列，max-parallel任务槽轮流分配到设备，允许一卡多任务；底层折并行固定1，禁止嵌套放大并发。
 

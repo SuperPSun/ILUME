@@ -10,11 +10,15 @@ ILUME 的现役流程是 **冻结 v4 Stage1 → v4 五任务实体 HoME Stage2 �
 python -m pip install -e ".[dev,tokenizers]"
 ```
 
+## 专用离子液体逆向设计
+
+独立 `generation/` 提供按完整用户请求训练的 Anion-first 专用 GFlowNet，使用冻结 Stage3 五折 Predictor 对新离子对评分，不改变 Stage1–3。每次从22实验性质与两模拟性质中选择所需目标，固定方向、阈值、权重、工况、溶质及结构约束；一份权重只服务该请求，改变请求须新建协议并重新训练。保留审定阴离子、多价离子、片段组装、同请求回放、风险评分和候选导出。资源提取只产生待审草案；正式训练和研究结果须实际运行后产生。见 [生成手册](docs/generation-runbook.md) 和 [ADR-0106](docs/adr/0106-dedicated-inverse-design.md)。
+
 ## 正式 v4
 
 Stage1配置和独立预测器保持不变。Stage2采用五任务实体HoME，Stage3为24实验+两项模拟辅助；独立ObjectEncoder已取消。GLOBAL/GROUP的L1并行读取冻结Stage1 learned1024+标准化RDKit217实体、角色和有效位。Phase1联合训练，Phase2冻结GLOBAL，Phase3仅PRIVATE；两个模拟任务只更新自己的PRIVATE。
 
-正式配置为 `configs/v4/stage{1,2,3}/base.yaml`，准备产物和下游引用按 YAML 定位，运行输出由 `--output` 指定。见 [ADR-0095](docs/adr/0095-v4-entity-home-without-object-encoder.md) 和 [运行手册](docs/v4-runbook.md)。正式Stage1 编码器/特征需先齐备；不手改元数据或SHA。历史Object/v5工件只读，加载须使用历史Git版本；旧v5及Object消融配置已移除；现役独立消融见 [v4消融手册](docs/v4-ablation-runbook.md) 与 [ADR-0100](docs/adr/0100-v4-entity-home-ablations.md)。现役36份配置位于 `configs/ablations/v4_3407/`，配对最终 `optimized_3407`，输出 `outputs/ablations/v4_3407/`；原 `configs/ablations/v4/` 保留split42历史身份。核心含移除SMILES/分子图的完整重训，固定训练seed42，不追加seed稳定性测试。
+正式配置为 `configs/v4/stage{1,2,3}/base.yaml`，准备产物和下游引用按 YAML 定位，运行输出由 `--output` 指定。见 [ADR-0095](docs/adr/0095-v4-entity-home-without-object-encoder.md) 和 [运行手册](docs/v4-runbook.md)。正式Stage1 编码器/特征需先齐备；不手改元数据或SHA。历史Object/v5工件只读，加载须使用历史Git版本；旧v5及Object消融配置已移除；现役独立消融见 [v4消融手册](docs/v4-ablation-runbook.md) 与 [ADR-0100](docs/adr/0100-v4-entity-home-ablations.md)。现役32份配置与4份已取消容量配置位于 `configs/ablations/v4_3407/`，配对最终 `optimized_3407`，输出 `outputs/ablations/v4_3407/`；原 `configs/ablations/v4/` 保留split42历史身份。核心含移除SMILES/分子图的完整重训，C11为仅Phase1，阶段增量按C11→C7→C0比较；固定训练seed42，不追加seed稳定性测试。
 
 Stage1 共用 `data/stage1`。2026-10-20起，后续新实验统一采用 `data/3407`，已有正式Base、基线和消融配置及产物保留原划分；当前Base YAML仍指向 `data/42`，不可直接作为新划分运行。最终HPO配方与报告入口见 [HPO手册](docs/hpo-simple-runbook.md#当前选型与报告入口)；五套数据 split 的配置、输出隔离和运行前提见 [v4运行手册](docs/v4-runbook.md#数据-split-与路径)。
 

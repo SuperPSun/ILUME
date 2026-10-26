@@ -1,0 +1,27 @@
+# 请求内容示例；复制到专用训练YAML的request下，阈值仅示范格式，不是实验结论。
+objectives:
+  - task: experiment/electrical_conductivity
+    direction: maximize
+    unit: S/m
+    threshold: 1.0
+    weight: 1.0
+  - task: experiment/viscosity
+    direction: minimize
+    unit: mPa*s
+    threshold: 100.0
+    weight: 1.0
+conditions:
+  experiment/electrical_conductivity:
+    temperature_K: 298.15
+    pressure_kPa: 101.325
+  experiment/viscosity:
+    temperature_K: 298.15
+    pressure_kPa: 101.325
+solutes: {}
+constraints:
+  max_atoms: 60
+  min_atoms: 1
+  core_families: []
+  required_smarts: []
+  forbidden_smarts: []
+fixed_anion: ''

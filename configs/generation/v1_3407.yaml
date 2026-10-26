@@ -1,0 +1,58 @@
+# 专用GFN示例配方；正式训练前按实际需求填写request并使用新协议与输出。
+seed: 42
+predictor:
+  config_path: configs/v4/stage3/optimized_3407.yaml
+  checkpoint_dir: outputs/v4/stage3/optimized_3407/train
+resources:
+  cation_path: data/stage1/cation.csv
+  anion_path: data/stage1/anion.csv
+  library_path: data/generation/v1_3407/resources.approved.json
+  protocol_path: outputs/generation/dedicated_v1_3407/protocol/protocol.json
+request:
+  objectives:
+    - task: experiment/electrical_conductivity
+      direction: maximize
+      unit: S/m
+      threshold: 1.0
+      weight: 1.0
+    - task: experiment/viscosity
+      direction: minimize
+      unit: mPa*s
+      threshold: 100.0
+      weight: 1.0
+  conditions:
+    experiment/electrical_conductivity:
+      temperature_K: 298.15
+      pressure_kPa: 101.325
+    experiment/viscosity:
+      temperature_K: 298.15
+      pressure_kPa: 101.325
+  solutes: {}
+  constraints:
+    max_atoms: 60
+    min_atoms: 1
+    core_families: []
+    required_smarts: []
+    forbidden_smarts: []
+  fixed_anion: ''
+model:
+  width: 64
+  depth: 3
+  anion_conditioned: true
+reward:
+  beta: 4.0
+  uncertainty_penalty: 1.0
+  domain_penalty: 1.0
+  epsilon: 0.00000001
+training:
+  steps: 10000
+  batch_size: 8
+  replay_batch_size: 8
+  replay_capacity: 10000
+  learning_rate: 0.0003
+  max_grad_norm: 1.0
+  checkpoint_interval: 100
+sampling:
+  attempts: 1000
+  count: 50
+  max_property_queries: 5000

@@ -908,6 +908,202 @@
           "phase2_private_epochs": 6
         }
       }
+    },
+    {
+      "id": "041",
+      "description": "viscosity: PRIVATE dropout 0.0",
+      "recipe_hash": "25c513e3b6ccf0c8b1bf67736dd58f5465c1ca90b341ed7304a4707472147f5c",
+      "sha256": "80598c1af077a1581b355494086939020c0682106ddf82667024fef9584322d3",
+      "overrides": {
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.0
+          }
+        }
+      }
+    },
+    {
+      "id": "042",
+      "description": "density: PRIVATE dropout 0.0",
+      "recipe_hash": "c08f06cceb6c0c20589264f89d87dc322bdaf56b0d9e074f5b9aab5e9749ec82",
+      "sha256": "d42ac901a9c2d0edf9695a94da082ef2448830970e86371a359c26346eea8e04",
+      "overrides": {
+        "experiment/density": {
+          "model_overrides": {
+            "private_dropout": 0.0
+          }
+        }
+      }
+    },
+    {
+      "id": "043",
+      "description": "surface_tension: PRIVATE dropout 0.0",
+      "recipe_hash": "a8e793b982d6207775be5ae4940295d9df799b81e396ffce294ae4f52e77bb7a",
+      "sha256": "c834cc442615d4627a17124bb349f7f1117e814036c66870fa7eecd0b325345d",
+      "overrides": {
+        "experiment/surface_tension": {
+          "model_overrides": {
+            "private_dropout": 0.0
+          }
+        }
+      }
+    },
+    {
+      "id": "044",
+      "description": "glass_transition_temperature: PRIVATE dropout 0.075",
+      "recipe_hash": "559443fe4dfea872608930dc0496166331601bf82b2f674777fd6c3839167ec3",
+      "sha256": "d7af3a17f35994eccac7cff5e1874f8b5ee0a379306c1dbddea1e525a467adb4",
+      "overrides": {
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.075
+          }
+        }
+      }
+    },
+    {
+      "id": "045",
+      "description": "anodic_potential_limit: PRIVATE dropout 0.0",
+      "recipe_hash": "1eda0b175c3ad10f1369e7812ad1687f7dafde6a7a493160f6e8d2003001cb54",
+      "sha256": "f9317c66ec10e4a17edd8f6206760d1d7ec4a970288a98dc599b01d23df1c33b",
+      "overrides": {
+        "experiment/anodic_potential_limit": {
+          "model_overrides": {
+            "private_dropout": 0.0
+          }
+        }
+      }
+    },
+    {
+      "id": "046",
+      "description": "cathodic_potential_limit: PRIVATE dropout 0.0",
+      "recipe_hash": "c7d629d441e8febdedd5e60217a5ba93410fbc368eb55d93fe456ab25e2f48ec",
+      "sha256": "6510c79bfffc754e06926f953753a9134ad116823afed3f124478a3ea64c6335",
+      "overrides": {
+        "experiment/cathodic_potential_limit": {
+          "model_overrides": {
+            "private_dropout": 0.0
+          }
+        }
+      }
+    },
+    {
+      "id": "047",
+      "description": "viscosity: PRIVATE LR x1.4 within owner ordering",
+      "recipe_hash": "f999cfb2725d6e7cac61dc0fc45a84c48c48481170d4f00c5ca21236ab67c42d",
+      "sha256": "387d1685f84db57bb6b9a88b00576ace519b11229b246ed383985961db7daa14",
+      "overrides": {
+        "experiment/viscosity": {
+          "phase1_private_lr": 0.000126
+        }
+      }
+    },
+    {
+      "id": "048",
+      "description": "density: PRIVATE LR x1.4 within owner ordering",
+      "recipe_hash": "873a37bd7e8cf90593608a60dcd2103aa2e4024f97a6b537951b258723184cfc",
+      "sha256": "a9b7eda78e601a02b7ef2889f1827f7cc083640ec31fe90072f60b769ffcec4f",
+      "overrides": {
+        "experiment/density": {
+          "phase1_private_lr": 0.000135
+        }
+      }
+    },
+    {
+      "id": "049",
+      "description": "surface_tension: PRIVATE LR x1.4 within owner ordering",
+      "recipe_hash": "36ff7b6f1379c8d4b3c3c26c7380e3a792a7c2608178dd38dc6096ba2cab51ac",
+      "sha256": "855e67899065406f515bcaaf8321e0bc4df6a71dd8be749e24dcfa4e51cc0ec0",
+      "overrides": {
+        "experiment/surface_tension": {
+          "phase1_private_lr": 0.0001008
+        }
+      }
+    },
+    {
+      "id": "050",
+      "description": "glass_transition_temperature: PRIVATE LR x1.4 within owner ordering",
+      "recipe_hash": "78f349ab243a516d3c55c68c62f640c6e25f5b6a983b14ffe3c6c7c3606eedc1",
+      "sha256": "04bedf2f9f70e5e7b47da46d734f1ea1af778e7bc1cc614b37f763d0ae9e4e70",
+      "overrides": {
+        "experiment/glass_transition_temperature": {
+          "phase1_private_lr": 0.00015120000000000002
+        }
+      }
+    },
+    {
+      "id": "051",
+      "description": "anodic_potential_limit: PRIVATE LR x1.4 within owner ordering",
+      "recipe_hash": "d9ed7e4218e117701172505b17d70cf23dd286588193656e3bd5663eab0ad49b",
+      "sha256": "a7a98c402f0dbcb19827571e0ab996d9bb2cf85591e22124f66a394ad33a1524",
+      "overrides": {
+        "experiment/anodic_potential_limit": {
+          "phase1_private_lr": 7.560000000000001e-05
+        }
+      }
+    },
+    {
+      "id": "052",
+      "description": "cathodic_potential_limit: PRIVATE LR x1.4 within owner ordering",
+      "recipe_hash": "11f04332bff8ffe31b9e607759af5d6aa439d7155df2feb8fcf299fd270a1910",
+      "sha256": "b913d9604f009043d65bb18715872bc1a61c004a91f73f953c8fb5ec7ed0390f",
+      "overrides": {
+        "experiment/cathodic_potential_limit": {
+          "phase1_private_lr": 7.560000000000001e-05
+        }
+      }
+    },
+    {
+      "id": "053",
+      "description": "anodic_potential_limit: PRIVATE Phase1/2 budgets x1.5",
+      "recipe_hash": "6d6bc8c34201722c4bfb5d82ad46a39f4a737f165de7466aee944e3d5747f5d4",
+      "sha256": "b00720cdda15fb410e7e4b7f65e315e36eaed2577b8707fd401b747408b7d052",
+      "overrides": {
+        "experiment/anodic_potential_limit": {
+          "phase1_private_epochs": 9,
+          "phase2_private_epochs": 4
+        }
+      }
+    },
+    {
+      "id": "054",
+      "description": "cathodic_potential_limit: PRIVATE Phase1/2 budgets x1.5",
+      "recipe_hash": "4d38ce4c0130951c183a74619320d5aed43239e225a2351f08be2d6c447d7713",
+      "sha256": "3868bc9e3dbe19091c555ff054a352517e070e50a36dcc59ade90c109ee9fe83",
+      "overrides": {
+        "experiment/cathodic_potential_limit": {
+          "phase1_private_epochs": 9,
+          "phase2_private_epochs": 4
+        }
+      }
+    },
+    {
+      "id": "055",
+      "description": "glass_transition_temperature: lower dropout and doubled Phase2 PRIVATE budget",
+      "recipe_hash": "7580fc84e120a0d9dc4e552e433d66c7b4918167984ce02b6d736a02b4f2c1a1",
+      "sha256": "4deb223c964963590a6b11fa001a7c56ddc96cb47e052172d0153a4839e08634",
+      "overrides": {
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          },
+          "phase2_private_epochs": 12
+        }
+      }
+    },
+    {
+      "id": "056",
+      "description": "density: lower dropout and doubled Phase2 PRIVATE budget",
+      "recipe_hash": "c1132c63c736e41db4233d857400a6ece3e9a482e0fae6210ede899fe214a5a5",
+      "sha256": "95d3501832028a852cba7804ae15ce2175b92891d040ab481530b0b0459e3a12",
+      "overrides": {
+        "experiment/density": {
+          "model_overrides": {
+            "private_dropout": 0.0
+          },
+          "phase2_private_epochs": 18
+        }
+      }
     }
   ],
   "sources": {
