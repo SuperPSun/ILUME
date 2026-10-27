@@ -1104,6 +1104,930 @@
           "phase2_private_epochs": 18
         }
       }
+    },
+    {
+      "id": "057",
+      "description": "Combine task-local best near-winning parameters from the first 56 validation trials",
+      "recipe_hash": "f9201b6158fc809edf6b603df0f91d657a4d2b415411cc18131dff0385a88939",
+      "sha256": "40133d78bf347cf5367ac2b68d0edeaf41af920c3f5b388123a8be240525f51e",
+      "overrides": {
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.0
+          }
+        },
+        "experiment/density": {
+          "phase1_private_epochs": 15,
+          "phase2_private_epochs": 14
+        },
+        "experiment/surface_tension": {
+          "phase3_private_epochs": 10
+        },
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          },
+          "phase1_private_epochs": 4,
+          "phase2_private_epochs": 3
+        },
+        "experiment/melting_point": {
+          "phase1_private_lr": 6.75e-05
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          }
+        }
+      }
+    },
+    {
+      "id": "058",
+      "description": "Near-winning combination retaining original melting LR and glass budgets",
+      "recipe_hash": "5c385c6537644c3241ce545261ab2d386f6fc15ef3a3e0634a9b1bc7420ff048",
+      "sha256": "bdae938ca2ddb50bbc1cb53cc6ecff9bb5b6aac3a1918d8fd358e044d842078a",
+      "overrides": {
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.0
+          }
+        },
+        "experiment/density": {
+          "phase1_private_epochs": 15,
+          "phase2_private_epochs": 14
+        },
+        "experiment/surface_tension": {
+          "phase3_private_epochs": 10
+        },
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          }
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          }
+        }
+      }
+    },
+    {
+      "id": "059",
+      "description": "Combine viscosity zero dropout and glass dropout 0.05",
+      "recipe_hash": "ed0e021daec5b4e3dfc5de23a672e936bb435ade8e04baf643e659e27066412a",
+      "sha256": "2dfb239b25922280b46cf319d28a970f0a459de64765aaa7da790f45ba4e94d8",
+      "overrides": {
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.0
+          }
+        },
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          }
+        }
+      }
+    },
+    {
+      "id": "060",
+      "description": "Combine dropout contrasts with longer surface and density refinement",
+      "recipe_hash": "f6dfe81190d58812fb28b79066fdf7be0b17b4a55303fac2774b0c2a910ace93",
+      "sha256": "ee2d1aeecde7ac35f7b49a633ebbf2034da8bd225c9c73c8490007b2e7c60f6f",
+      "overrides": {
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.0
+          }
+        },
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          }
+        },
+        "experiment/surface_tension": {
+          "model_overrides": {
+            "private_dropout": 0.0
+          },
+          "phase3_private_epochs": 10
+        },
+        "experiment/density": {
+          "phase3_private_epochs": 8
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          }
+        }
+      }
+    },
+    {
+      "id": "061",
+      "description": "Near-winning tasks coordinated PRIVATE dropout 0.0",
+      "recipe_hash": "6835162ad0803c0e4550ba322413b585c2b597ef802ef5e45edbd5fffa790618",
+      "sha256": "731ed3935b91a785f23f6ce479f01671c9e4a310cbfaedf893eb7094058ce4d9",
+      "overrides": {
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.0
+          }
+        },
+        "experiment/density": {
+          "model_overrides": {
+            "private_dropout": 0.0
+          }
+        },
+        "experiment/surface_tension": {
+          "model_overrides": {
+            "private_dropout": 0.0
+          }
+        },
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          }
+        },
+        "experiment/melting_point": {
+          "model_overrides": {
+            "private_dropout": 0.0
+          }
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.0
+          }
+        }
+      }
+    },
+    {
+      "id": "062",
+      "description": "Near-winning tasks coordinated PRIVATE dropout 0.025",
+      "recipe_hash": "4625a605effb5c529f2f4612fe1ce4dbf01f520b2d6d992b98d365296cc483a3",
+      "sha256": "89b8cf36289b33642d13e7e96d9366dfb309fcbbdef5c23dac2342d3c73129ac",
+      "overrides": {
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          }
+        },
+        "experiment/density": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          }
+        },
+        "experiment/surface_tension": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          }
+        },
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          }
+        },
+        "experiment/melting_point": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          }
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          }
+        }
+      }
+    },
+    {
+      "id": "063",
+      "description": "Near-winning tasks coordinated PRIVATE dropout 0.075",
+      "recipe_hash": "2a83b3ddb009ccccd4c12ee9183435ed3241a8d815fc0e918c483b4f61d537aa",
+      "sha256": "95ac28734de0925ea9dce00f4f558046212b1240fcf191f5f4c4773317d326c5",
+      "overrides": {
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.075
+          }
+        },
+        "experiment/density": {
+          "model_overrides": {
+            "private_dropout": 0.075
+          }
+        },
+        "experiment/surface_tension": {
+          "model_overrides": {
+            "private_dropout": 0.075
+          }
+        },
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.075
+          }
+        },
+        "experiment/melting_point": {
+          "model_overrides": {
+            "private_dropout": 0.075
+          }
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.075
+          }
+        }
+      }
+    },
+    {
+      "id": "064",
+      "description": "Task-local best combination with near-winning PRIVATE LR x0.5",
+      "recipe_hash": "0a3a8635c7cbc61b992f5c75239865c3b6f7b722eb52abc22c62e5700b8eb8ee",
+      "sha256": "75ad4b9ff64820ab5c80a05e1bf931c471cbe81dce632c9a600508d18e0e9ffc",
+      "overrides": {
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.0
+          },
+          "phase1_private_lr": 4.5e-05
+        },
+        "experiment/density": {
+          "phase1_private_epochs": 15,
+          "phase2_private_epochs": 14,
+          "phase1_private_lr": 5.6250000000000005e-05
+        },
+        "experiment/surface_tension": {
+          "phase3_private_epochs": 10,
+          "phase1_private_lr": 3.6e-05
+        },
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          },
+          "phase1_private_epochs": 4,
+          "phase2_private_epochs": 3,
+          "phase1_private_lr": 5.4000000000000005e-05
+        },
+        "experiment/melting_point": {
+          "phase1_private_lr": 6.75e-05
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          },
+          "phase1_private_lr": 3.6e-05
+        }
+      }
+    },
+    {
+      "id": "065",
+      "description": "Task-local best combination with near-winning PRIVATE LR x0.25",
+      "recipe_hash": "f254a79da7e6e49898c993eea4410831ade895fc582a8ed3bc7b8944af1a86ff",
+      "sha256": "ae40baae16668673824b8dce928d8f32dd9b640fe0362ebfe2f5ea11b3f6a133",
+      "overrides": {
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.0
+          },
+          "phase1_private_lr": 2.25e-05
+        },
+        "experiment/density": {
+          "phase1_private_epochs": 15,
+          "phase2_private_epochs": 14,
+          "phase1_private_lr": 2.8125000000000003e-05
+        },
+        "experiment/surface_tension": {
+          "phase3_private_epochs": 10,
+          "phase1_private_lr": 1.8e-05
+        },
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          },
+          "phase1_private_epochs": 4,
+          "phase2_private_epochs": 3,
+          "phase1_private_lr": 2.7000000000000002e-05
+        },
+        "experiment/melting_point": {
+          "phase1_private_lr": 3.375e-05
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          },
+          "phase1_private_lr": 1.8e-05
+        }
+      }
+    },
+    {
+      "id": "066",
+      "description": "Task-local best combination with two additional reference Phase3 epochs",
+      "recipe_hash": "73ecb6ae57b59e0b1b8759bd923ca46759135f305e475e952cd39ad0f2debaf8",
+      "sha256": "36f042f94b37f45c3784b54af9e47bd4feb2764d2b1446f82ac90dea603f74a3",
+      "overrides": {
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.0
+          },
+          "phase3_private_epochs": 6
+        },
+        "experiment/density": {
+          "phase1_private_epochs": 15,
+          "phase2_private_epochs": 14,
+          "phase3_private_epochs": 8
+        },
+        "experiment/surface_tension": {
+          "phase3_private_epochs": 6
+        },
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          },
+          "phase1_private_epochs": 4,
+          "phase2_private_epochs": 3,
+          "phase3_private_epochs": 4
+        },
+        "experiment/melting_point": {
+          "phase1_private_lr": 6.75e-05,
+          "phase3_private_epochs": 6
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          },
+          "phase3_private_epochs": 4
+        }
+      }
+    },
+    {
+      "id": "067",
+      "description": "Task-local best combination with longer PRIVATE Phase1 exposure",
+      "recipe_hash": "5f763be62e3e9c82307db7f95abe9073c442271a4ccb16e8466ce170c0d36709",
+      "sha256": "7aa3382a5ed6e9053eb6cc0f3bbc100f7906904ae86c7c6a8fabf69a6044cd41",
+      "overrides": {
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.0
+          },
+          "phase1_private_epochs": 15
+        },
+        "experiment/density": {
+          "phase1_private_epochs": 15,
+          "phase2_private_epochs": 14
+        },
+        "experiment/surface_tension": {
+          "phase3_private_epochs": 10,
+          "phase1_private_epochs": 14
+        },
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          },
+          "phase1_private_epochs": 14,
+          "phase2_private_epochs": 3
+        },
+        "experiment/melting_point": {
+          "phase1_private_lr": 6.75e-05,
+          "phase1_private_epochs": 15
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          },
+          "phase1_private_epochs": 14
+        }
+      }
+    },
+    {
+      "id": "068",
+      "description": "Task-local best combination shifting PRIVATE Phase2 budget to Phase3",
+      "recipe_hash": "ecf7590fda8a271b60edd5b3410d4c3f58207511e15f9826883c77ff6a803e12",
+      "sha256": "1d1dc6f9e99233d6a0a73c387c5e34f1c2f6a5ee70e69420addfbb4840d5765c",
+      "overrides": {
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.0
+          },
+          "phase2_private_epochs": 0,
+          "phase3_private_epochs": 8
+        },
+        "experiment/density": {
+          "phase1_private_epochs": 15,
+          "phase2_private_epochs": 0,
+          "phase3_private_epochs": 8
+        },
+        "experiment/surface_tension": {
+          "phase3_private_epochs": 8,
+          "phase2_private_epochs": 0
+        },
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          },
+          "phase1_private_epochs": 4,
+          "phase2_private_epochs": 0,
+          "phase3_private_epochs": 8
+        },
+        "experiment/melting_point": {
+          "phase1_private_lr": 6.75e-05,
+          "phase2_private_epochs": 0,
+          "phase3_private_epochs": 8
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.05
+          },
+          "phase2_private_epochs": 0,
+          "phase3_private_epochs": 8
+        }
+      }
+    },
+    {
+      "id": "069",
+      "description": "Near-winning coordinated PRIVATE dropout 0.01 around trial062",
+      "recipe_hash": "7591e7875a7bead059eb5a7f893f089682842eb0c9e9ac24d385520cc231808a",
+      "sha256": "17bb90605abfd30ade43574d77d6209db2868dad973f229b8db404f10e06b8ee",
+      "overrides": {
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.01
+          }
+        },
+        "experiment/density": {
+          "model_overrides": {
+            "private_dropout": 0.01
+          }
+        },
+        "experiment/surface_tension": {
+          "model_overrides": {
+            "private_dropout": 0.01
+          }
+        },
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.01
+          }
+        },
+        "experiment/melting_point": {
+          "model_overrides": {
+            "private_dropout": 0.01
+          }
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.01
+          }
+        }
+      }
+    },
+    {
+      "id": "070",
+      "description": "Near-winning coordinated PRIVATE dropout 0.015 around trial062",
+      "recipe_hash": "92d43981218a19d0ec922142ec08135db8f63f321c5e07f1e7950ba3a967d947",
+      "sha256": "09618abc204ccb8305434cff153aa73b297d14c937df0305df0a5424fff30c05",
+      "overrides": {
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.015
+          }
+        },
+        "experiment/density": {
+          "model_overrides": {
+            "private_dropout": 0.015
+          }
+        },
+        "experiment/surface_tension": {
+          "model_overrides": {
+            "private_dropout": 0.015
+          }
+        },
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.015
+          }
+        },
+        "experiment/melting_point": {
+          "model_overrides": {
+            "private_dropout": 0.015
+          }
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.015
+          }
+        }
+      }
+    },
+    {
+      "id": "071",
+      "description": "Near-winning coordinated PRIVATE dropout 0.02 around trial062",
+      "recipe_hash": "c4ff33b030f0d43372e81d25ee8a774d69812cc27186a994fce6179e10b15d26",
+      "sha256": "bafe4d9f641500da3643ff2c21c455cf91bf280010a912c08b15bc147f4a3ec3",
+      "overrides": {
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.02
+          }
+        },
+        "experiment/density": {
+          "model_overrides": {
+            "private_dropout": 0.02
+          }
+        },
+        "experiment/surface_tension": {
+          "model_overrides": {
+            "private_dropout": 0.02
+          }
+        },
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.02
+          }
+        },
+        "experiment/melting_point": {
+          "model_overrides": {
+            "private_dropout": 0.02
+          }
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.02
+          }
+        }
+      }
+    },
+    {
+      "id": "072",
+      "description": "Near-winning coordinated PRIVATE dropout 0.03 around trial062",
+      "recipe_hash": "8d5817314eb4abedccbd0dde4392ca097ad1c5684e77a6784ec5b58eb846916b",
+      "sha256": "65a0b55735599940b8309860d3748b1dc09b30a4b54285cc5162c093e0fdd1b4",
+      "overrides": {
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.03
+          }
+        },
+        "experiment/density": {
+          "model_overrides": {
+            "private_dropout": 0.03
+          }
+        },
+        "experiment/surface_tension": {
+          "model_overrides": {
+            "private_dropout": 0.03
+          }
+        },
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.03
+          }
+        },
+        "experiment/melting_point": {
+          "model_overrides": {
+            "private_dropout": 0.03
+          }
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.03
+          }
+        }
+      }
+    },
+    {
+      "id": "073",
+      "description": "Near-winning coordinated PRIVATE dropout 0.035 around trial062",
+      "recipe_hash": "03b3213e80f223083bffa67b0bee4a81e95e5a084dc0ea9efb832924c3a6eb2b",
+      "sha256": "d9747d9fa88be7637f1b6117ecb7dfa50cbe1dd055da235b95bf979c44917427",
+      "overrides": {
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.035
+          }
+        },
+        "experiment/density": {
+          "model_overrides": {
+            "private_dropout": 0.035
+          }
+        },
+        "experiment/surface_tension": {
+          "model_overrides": {
+            "private_dropout": 0.035
+          }
+        },
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.035
+          }
+        },
+        "experiment/melting_point": {
+          "model_overrides": {
+            "private_dropout": 0.035
+          }
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.035
+          }
+        }
+      }
+    },
+    {
+      "id": "074",
+      "description": "Near-winning coordinated PRIVATE dropout 0.04 around trial062",
+      "recipe_hash": "5941a05d1d22fe13f65514bbd5bc944e2235d83154c4708de4abe045f3f38a9c",
+      "sha256": "276587bd749f0e6ce29987833dec3094e6a0e1d1d3044845943360e9f06e6169",
+      "overrides": {
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.04
+          }
+        },
+        "experiment/density": {
+          "model_overrides": {
+            "private_dropout": 0.04
+          }
+        },
+        "experiment/surface_tension": {
+          "model_overrides": {
+            "private_dropout": 0.04
+          }
+        },
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.04
+          }
+        },
+        "experiment/melting_point": {
+          "model_overrides": {
+            "private_dropout": 0.04
+          }
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.04
+          }
+        }
+      }
+    },
+    {
+      "id": "075",
+      "description": "Trial062 dropout with near-winning PRIVATE LR x0.7",
+      "recipe_hash": "65d13b84f8e42a7295b40c3e7283d97cfe56651837015e6e8b711a6c7617f95f",
+      "sha256": "c66d403001797e8a30d08145979082fde12d21ac1e231f2001c720e015c57612",
+      "overrides": {
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase1_private_lr": 6.3e-05
+        },
+        "experiment/density": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase1_private_lr": 7.875e-05
+        },
+        "experiment/surface_tension": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase1_private_lr": 5.04e-05
+        },
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase1_private_lr": 7.560000000000001e-05
+        },
+        "experiment/melting_point": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase1_private_lr": 9.449999999999999e-05
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase1_private_lr": 5.04e-05
+        }
+      }
+    },
+    {
+      "id": "076",
+      "description": "Trial062 dropout with near-winning PRIVATE LR x0.5",
+      "recipe_hash": "d582b6e229b197c933eccc6ffbaf20a231472dfaa1c3da6fdaa75927b8a7a0f8",
+      "sha256": "fb4b41f18d70e5e4abc33e9e09a833ee99cd2d1c8165497467541e7236511350",
+      "overrides": {
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase1_private_lr": 4.5e-05
+        },
+        "experiment/density": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase1_private_lr": 5.6250000000000005e-05
+        },
+        "experiment/surface_tension": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase1_private_lr": 3.6e-05
+        },
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase1_private_lr": 5.4000000000000005e-05
+        },
+        "experiment/melting_point": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase1_private_lr": 6.75e-05
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase1_private_lr": 3.6e-05
+        }
+      }
+    },
+    {
+      "id": "077",
+      "description": "Trial062 dropout with two additional PRIVATE Phase3 epochs",
+      "recipe_hash": "7fec5fbe96de6af255b6d0d1026bf16b606f7c5542d0382671468befc4e2d38b",
+      "sha256": "3b50175d52873b5929333a01f0827c392d4703cd3abaf00a4996a5af4fe280a1",
+      "overrides": {
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase3_private_epochs": 6
+        },
+        "experiment/density": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase3_private_epochs": 8
+        },
+        "experiment/surface_tension": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase3_private_epochs": 6
+        },
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase3_private_epochs": 4
+        },
+        "experiment/melting_point": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase3_private_epochs": 6
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase3_private_epochs": 4
+        }
+      }
+    },
+    {
+      "id": "078",
+      "description": "Trial062 dropout with eight PRIVATE Phase3 epochs",
+      "recipe_hash": "b26ae2eb17b905a481c42a46cb95756840c0536cded149ddb0cbd1a5c20f4e45",
+      "sha256": "367448c0d8e44337019e00faac2206729c19bac10de59788d14715b2b8041515",
+      "overrides": {
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase3_private_epochs": 8
+        },
+        "experiment/density": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase3_private_epochs": 8
+        },
+        "experiment/surface_tension": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase3_private_epochs": 8
+        },
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase3_private_epochs": 8
+        },
+        "experiment/melting_point": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase3_private_epochs": 8
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase3_private_epochs": 8
+        }
+      }
+    },
+    {
+      "id": "079",
+      "description": "Trial062 dropout with PRIVATE Phase1 budget x0.75",
+      "recipe_hash": "fd94e8eb4143cc97cc3ab83ccf6006c5bb58bd1fde9536a67f7b3d12838c24dc",
+      "sha256": "7b7e82d72889143b47fb2d189686d071df2dc697509d2e69f06dac1f8c3c0091",
+      "overrides": {
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase1_private_epochs": 8
+        },
+        "experiment/density": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase1_private_epochs": 8
+        },
+        "experiment/surface_tension": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase1_private_epochs": 7
+        },
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase1_private_epochs": 7
+        },
+        "experiment/melting_point": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase1_private_epochs": 8
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase1_private_epochs": 7
+        }
+      }
+    },
+    {
+      "id": "080",
+      "description": "Trial062 dropout with PRIVATE Phase2 budget x0.5",
+      "recipe_hash": "90017cf4998a8203e8df0a0f7dfe3060b50e577cc3bc3fa05398c3cbc0de9c60",
+      "sha256": "f92c61be9e7c2e591be174a6d27f73a33ea8c8dc06c6ba9ce0d62dd28010e087",
+      "overrides": {
+        "experiment/viscosity": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase2_private_epochs": 4
+        },
+        "experiment/density": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase2_private_epochs": 4
+        },
+        "experiment/surface_tension": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase2_private_epochs": 3
+        },
+        "experiment/glass_transition_temperature": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase2_private_epochs": 3
+        },
+        "experiment/melting_point": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase2_private_epochs": 4
+        },
+        "experiment/refractive_index": {
+          "model_overrides": {
+            "private_dropout": 0.025
+          },
+          "phase2_private_epochs": 3
+        }
+      }
     }
   ],
   "sources": {

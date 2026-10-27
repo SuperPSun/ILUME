@@ -11,6 +11,7 @@ import math
 import os
 from pathlib import Path
 import statistics
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -287,6 +288,75 @@ def gpu_slot(device):
         time.sleep(0.1)
 
 
+def lock_busy(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(handle, fcntl.LOCK_UN)
+    return False
+
+
+def fill_slots(children, failed):
+    """Inspect scheduling locks and completion markers without reading metrics."""
+    for tid, (process, device) in list(children.items()):
+        code = process.poll()
+        if code is not None:
+            if code:
+                failed.add(tid)
+            del children[tid]
+    manifest, _ = load_campaign(verify_sources=False)
+    launched = []
+    occupied = {}
+    for device in ("cuda:2", "cuda:3"):
+        name = device.replace(":", "-")
+        used = sum(lock_busy(OUTPUT / "locks" / filename) for filename in
+                   (f"{name}.lock", f"{name}-slot2.lock", f"{name}-slot3.lock"))
+        starting = sum(assigned == device and not lock_busy(OUTPUT / f"locks/trial-{tid}.lock")
+                       for tid, (_, assigned) in children.items())
+        occupied[device] = used
+        for _ in range(max(0, 3 - used - starting)):
+            for trial in manifest["trials"]:
+                tid = trial["id"]
+                root = OUTPUT / "trials" / tid
+                if tid in children or tid in failed or lock_busy(OUTPUT / f"locks/trial-{tid}.lock"):
+                    continue
+                if (root / "status.json").exists() and read_json(root / "status.json").get("status") == "failed":
+                    continue
+                if all(any(root.glob(f"valid*/fold{fold}/hpo_evaluation.json")) for fold in (1, 3)):
+                    continue
+                stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
+                log = OUTPUT / "watch" / f"{stamp}-{tid}.log"
+                log.parent.mkdir(exist_ok=True)
+                env = dict(os.environ)
+                env.pop("CUDA_VISIBLE_DEVICES", None)
+                with log.open("x") as handle:
+                    process = subprocess.Popen([sys.executable, "-u", "scripts/HPO/weakopt.py", "run",
+                        "--ids", tid, "--fold", "1", "3", "--devices", device, "--max-parallel", "1"],
+                        cwd=ROOT, env=env, stdin=subprocess.DEVNULL, stdout=handle,
+                        stderr=subprocess.STDOUT, start_new_session=True)
+                children[tid] = process, device
+                launched.append({"id": tid, "device": device, "pid": process.pid})
+                break
+            else:
+                break
+    return {"time_utc": datetime.now(timezone.utc).isoformat(), "occupied_slots": occupied,
+            "launched": launched, "failed_ids": sorted(failed)}
+
+
+def watch():
+    children, failed = {}, set()
+    with artifact_lock(OUTPUT / "locks/watch.lock"):
+        while not (OUTPUT / "selection.json").exists():
+            record = fill_slots(children, failed)
+            with (OUTPUT / "watch.jsonl").open("a") as handle:
+                handle.write(json.dumps(record) + "\n")
+            print(json.dumps(record), flush=True)
+            time.sleep(15 * 60)
+
+
 def run_trial(trial, folds, device, dry_run=False):
     config = CONFIGS / "trials" / (trial["id"] + ".yaml")
     root = OUTPUT / "trials" / trial["id"]
@@ -317,12 +387,12 @@ def run_trial(trial, folds, device, dry_run=False):
             atomic_json(root / "status.json", state)
 
 
-def validation_rows(trial, folds, baseline):
+def validation_rows(trial, folds, baseline, *, configs=None, output=None):
     """Require original evaluation identities and every declared file checksum."""
     from stage3.evaluate import resolve_stage3_evaluation_identity
 
-    root = OUTPUT / "trials" / trial["id"]
-    config = load_stage3_config(CONFIGS / "trials" / (trial["id"] + ".yaml"))
+    root = (OUTPUT if output is None else output) / "trials" / trial["id"]
+    config = load_stage3_config((CONFIGS if configs is None else configs) / "trials" / (trial["id"] + ".yaml"))
     rows = []
     scales = {(r["task"], int(r["fold"])): r for r in baseline["folds"] if r["model_id"] == "ilume"}
     for fold in folds:
@@ -453,6 +523,7 @@ def main():
     summary.add_argument("--ids", nargs="+")
     final = sub.add_parser("finalize", help="Lock an explicitly selected five-fold validation winner.")
     final.add_argument("--id", required=True)
+    sub.add_parser("watch", help="Check slots every 15 minutes and fill pending frozen two-fold trials.")
     args = parser.parse_args()
     os.chdir(ROOT)
     OUTPUT.mkdir(parents=True, exist_ok=True)
@@ -476,6 +547,8 @@ def main():
     elif args.command == "report":
         devices_and_folds("cuda:2,cuda:3", 2, args.fold)
         report(args.fold, args.ids)
+    elif args.command == "watch":
+        watch()
     else:
         finalize(args.id)
     return 0

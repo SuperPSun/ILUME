@@ -17,6 +17,14 @@ python scripts/HPO/weakopt.py report --fold 1 3
 
 首批001–006依次为黏度、密度、折射率、表面张力、玻璃化转变温度、熔点的dropout=0.05；007–012同顺序只将PRIVATE LR乘0.7；013–018同顺序只将Phase3增加2轮。019/020为水活度dropout=0/0.05；021/022为静态介电Phase3=1/2；023/024为pEC50的LR乘0.7/dropout=0.05。其余值均与冻结参考一致。
 
+### 每15分钟补位
+
+```bash
+python scripts/HPO/weakopt.py watch
+```
+
+该独立进程每15分钟只检查GPU2/3作业锁、候选锁和Fold1/3完成标记，在每卡三个作业的上限内补入未完成的已冻结候选。预留已启动但尚未取得GPU锁的子进程槽位，不重复启动正在运行的候选；失败候选保留现场，不自动重试。完成标记仅用于调度，最终排名仍执行完整身份和文件校验。检查记录追加到 `outputs/HPO/WeakOpt/watch.jsonl`，补位日志在 `outputs/HPO/WeakOpt/watch/`。不读取逐轮指标或测试指标，不生成新配置；锁定最终候选后停止检查。启用补位表示允许已有冻结候选在其他队列尚未结束时开始，GPU锁统一限制总并发。
+
 ## 追加候选及补折
 
 每批先分析验证结果，再显式准备追加提案，例如 `configs/HPO/WeakOpt/proposals/batch02.yaml`：
@@ -58,3 +66,18 @@ python scripts/benchmarks/summarize_paper.py --config configs/HPO/WeakOpt/trials
 ```
 
 测试只在锁定后运行一次五模型集成，目标6/10项第一。搜索入口不读取测试指标、不自动挑选或启动测试；目标未达到也保留结果，不返回测试驱动调参。当前3407及历史探索的选择边界需披露。相同名称的报告和锁定选择不得覆盖，失败评估目录保留后使用新的输出路径。
+
+## 第二轮Stage2/Stage3联合调参
+
+按[ADR-0107](adr/0107-weakopt-joint-stage2-stage3.md)启用独立80对预算，上一轮不改写。配置在 `configs/HPO/WeakOpt/Joint`，产物在 `outputs/HPO/WeakOpt/Joint`。
+
+```bash
+python scripts/HPO/weakopt_joint.py generate
+python scripts/HPO/weakopt_joint.py run --fold 1 3 --devices cuda:2,cuda:3 --max-parallel 6 --dry-run
+python scripts/HPO/weakopt_joint.py run --fold 1 3 --devices cuda:2,cuda:3 --max-parallel 6
+python scripts/HPO/weakopt_joint.py report --fold 1 3
+```
+
+首批24对先训练12份唯一Stage2来源，再执行24份Stage3两折。重复run始终严格恢复，完成折不重训。后续用 `generate --proposal <提案.yaml>` 追加；提案列表每项明确 `description`、`stage2`、`stage3`。stage2仅接受epochs、task_head_learning_rate、weight_decay、warmup_fraction；stage3为上一轮格式的任务覆盖字典。所有数值相对冻结参考写绝对值，不改来源路径来复用其他权重。
+
+补折用 `run --ids <编号> --fold 2 4 5`，然后 `report --fold 1 2 3 4 5`；锁定用 `finalize --id <五折最优编号>`。锁定后的测试和论文命令与第一轮相同，但配置、模型和输出均指向Joint内同编号路径；旧test不作为本轮产物，不按测试结果返回搜索。

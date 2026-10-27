@@ -11,11 +11,12 @@ import time
 
 import pytest
 import torch
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts/HPO'))
 from _configs import (generate_initial, generate_stage2, generate_stage3, generate_final,
-                      read_yaml, write_yaml, validate_pair, stage3_recipes, GROUP_VARIANTS)
+                      read_yaml, write_yaml, validate_pair, stage3_recipes, GROUP_VARIANTS, fingerprint)
 from _common import Job, run_queue
 from collect import final_statistics, metric_row
 from common.artifact_cache import artifact_cache, artifact_lock
@@ -25,6 +26,7 @@ from stage2.home_config import load_home_recipe, home_recipe_from_dict, effectiv
 from stage3.config import load_stage3_config, stage3_config_from_dict
 
 import weakopt
+import weakopt_joint
 
 
 @pytest.fixture
@@ -175,6 +177,40 @@ def test_weakopt_same_fold_ranking_ties_and_win_priority():
     assert ranked[0]['id'] == '002'
 
 
+def test_weakopt_watch_fills_free_slots_without_duplicate_or_failed_work(weakopt_campaign, monkeypatch):
+    from types import SimpleNamespace
+    for fold in (1, 3):
+        marker = weakopt.OUTPUT / f'trials/001/valid/fold{fold}/hpo_evaluation.json'
+        marker.parent.mkdir(parents=True)
+        marker.write_text('{}')
+    status = weakopt.OUTPUT / 'trials/003/status.json'
+    status.parent.mkdir(parents=True)
+    status.write_text('{"status":"failed"}')
+    commands = []
+    processes = []
+    def spawn(command, **kwargs):
+        assert command[command.index('--max-parallel') + 1] == '1'
+        assert command[command.index('--fold') + 1:command.index('--devices')] == ['1', '3']
+        process = SimpleNamespace(pid=100 + len(commands), code=None)
+        process.poll = lambda: process.code
+        commands.append(command)
+        processes.append(process)
+        return process
+    monkeypatch.setattr(weakopt.subprocess, 'Popen', spawn)
+    children, failed = {}, {'004'}
+    with ExitStack() as locks:
+        for name in ('cuda-2.lock', 'cuda-2-slot2.lock', 'cuda-3.lock', 'trial-002.lock'):
+            locks.enter_context(artifact_lock(weakopt.OUTPUT / 'locks' / name))
+        record = weakopt.fill_slots(children, failed)
+        assert [(r['id'], r['device']) for r in record['launched']] == [
+            ('005', 'cuda:2'), ('006', 'cuda:3'), ('007', 'cuda:3')]
+        assert weakopt.fill_slots(children, failed)['launched'] == []
+        processes[0].code = 1
+        record = weakopt.fill_slots(children, failed)
+        assert record['launched'][0]['id'] == '008' and '005' in failed
+    assert len(commands) == 4
+
+
 def test_weakopt_baseline_reader_requests_validation_only(monkeypatch):
     import benchmarks.common.paper as paper
     seen = []
@@ -240,6 +276,89 @@ def test_weakopt_finalize_requires_complete_validation_winner(weakopt_campaign, 
     assert json.loads((weakopt.OUTPUT / 'selection.json').read_text())['id'] == '002'
     with pytest.raises(FileExistsError, match='locked'):
         weakopt.finalize('002')
+
+
+@pytest.fixture
+def joint_campaign(weakopt_campaign, tmp_path, monkeypatch):
+    monkeypatch.setattr(weakopt_joint, 'ROOT', tmp_path)
+    monkeypatch.setattr(weakopt_joint, 'CONFIGS', weakopt.CONFIGS / 'Joint')
+    monkeypatch.setattr(weakopt_joint, 'OUTPUT', weakopt.OUTPUT / 'Joint')
+    monkeypatch.setattr(weakopt_joint, 'BASE2', tmp_path / 'stage2.yaml')
+    s2 = read_yaml(ROOT / 'configs/v4/stage2/optimized_3407.yaml')
+    s2['data']['artifacts_dir'] = 'prepared/artifacts'
+    s2['preparation']['data_metadata_path'] = 'prepared/audit.json'
+    write_yaml(weakopt_joint.BASE2, s2)
+    proposals = [{'description': f'dropout {v}', 'stage2': {'epochs': 5},
+                  'stage3': {'experiment/viscosity': {'model_overrides': {'private_dropout': v}}}}
+                 for v in (.05, 0.)]
+    proposal = tmp_path / 'proposal.yaml'
+    write_yaml(proposal, proposals)
+    weakopt_joint.generate(proposal)
+    return proposals
+
+
+def test_joint_generation_deduplicates_sources_and_rejects_changes(joint_campaign, tmp_path):
+    manifest, s2, s3 = weakopt_joint.load()
+    assert len(manifest['stage2']) == 1 and len(manifest['trials']) == 2
+    assert {t['stage2_id'] for t in manifest['trials']} == {'S001'}
+    assert weakopt_joint.normalized_stage3(read_yaml(weakopt_joint.CONFIGS / 'trials/001.yaml'), s3)['initialization'] == s3['initialization']
+    duplicate = tmp_path / 'duplicate.yaml'
+    write_yaml(duplicate, joint_campaign)
+    with pytest.raises(ValueError, match='Duplicate'):
+        weakopt_joint.generate(duplicate)
+    too_many = tmp_path / 'too-many.yaml'
+    write_yaml(too_many, joint_campaign * 40)
+    with pytest.raises(ValueError, match='80-pair'):
+        weakopt_joint.generate(too_many)
+    with pytest.raises(ValueError, match='Only Stage2'):
+        weakopt_joint.stage2_recipe(s2, {'batch_size': 512})
+    path = weakopt_joint.CONFIGS / 'stage2/S001.yaml'
+    changed = read_yaml(path)
+    changed['home']['model']['global_experts'] += 1
+    path.write_text(yaml.safe_dump(changed))
+    manifest['stage2'][0].update(sha256=sha256_file(path), recipe_hash=fingerprint(changed))
+    (weakopt_joint.CONFIGS / 'campaign.json').write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match='protected'):
+        weakopt_joint.load()
+
+
+def test_joint_stage3_resume_binds_exact_stage2_source(joint_campaign, monkeypatch):
+    manifest, _, _ = weakopt_joint.load()
+    trial = manifest['trials'][0]
+    source = weakopt_joint.OUTPUT / 'stage2/S001/train'
+    source.mkdir(parents=True)
+    for name in ('stage2_final.pt', 'stage2_final.json'):
+        (source / name).write_bytes(b'frozen source')
+    calls = []
+    monkeypatch.setattr(weakopt_joint, 'native', lambda script, args, log, device: calls.append((script, args, device)))
+    evaluated = []
+    monkeypatch.setattr(weakopt_joint, 'evaluate_fold', lambda job, fold, device, resume: evaluated.append(fold))
+    weakopt_joint.run_trial(trial, [1, 3], 'cuda:2')
+    weakopt_joint.run_trial(trial, [2, 4, 5], 'cuda:3')
+    assert evaluated == [1, 3, 2, 4, 5]
+    assert all(args[args.index('--max-parallel') + 1] == 1 and '--resume' in args for _, args, _ in calls)
+    assert [device for _, _, device in calls] == ['cuda:2', 'cuda:3']
+    (source / 'stage2_final.pt').write_bytes(b'changed source')
+    with pytest.raises(ValueError, match='another configuration or Stage2 source'):
+        weakopt_joint.run_trial(trial, [1], 'cuda:2')
+    assert len(calls) == 2
+
+
+def test_joint_finalize_requires_validation_winner_and_preserves_lock(joint_campaign, monkeypatch):
+    folder = weakopt_joint.OUTPUT / 'reports/test'
+    folder.mkdir(parents=True)
+    (folder / 'ranking.json').write_text('{}')
+    seen = []
+    def fake_report(folds):
+        seen.append(tuple(folds))
+        return {'ranked': [{'id': '002', 'wins': 10}]}, folder
+    monkeypatch.setattr(weakopt_joint, 'report', fake_report)
+    with pytest.raises(ValueError, match='highest ranked'):
+        weakopt_joint.finalize('001')
+    weakopt_joint.finalize('002')
+    assert seen == [(1, 2, 3, 4, 5)] * 2
+    with pytest.raises(FileExistsError, match='locked'):
+        weakopt_joint.finalize('002')
 
 
 def test_all_static_rounds_and_manual_binding(tmp_path):

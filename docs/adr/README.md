@@ -67,3 +67,5 @@
 - [ADR-0095](0095-v4-entity-home-without-object-encoder.md)：现役 v4 HoME 直接消费冻结实体、24实验与两项仅PRIVATE更新模拟。
 
 - [ADR-0099：独立静态配置HPO与人工选型](0099-simple-static-hpo.md)：仅独立研究入口；缓存复用、seed分离和严格迁移；2026-10-20起后续新实验采用3407，历史配置及产物保留。
+
+- [ADR-0107：WeakOpt第二轮Stage2/Stage3联合参数优化](0107-weakopt-joint-stage2-stage3.md)：独立80对候选，固定架构与Stage1，严格配对Stage2来源，验证选型。

@@ -1,0 +1,250 @@
+- description: Combine task-local best near-winning parameters from the first 56 validation
+    trials
+  overrides:
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.0
+    experiment/density:
+      phase1_private_epochs: 15
+      phase2_private_epochs: 14
+    experiment/surface_tension:
+      phase3_private_epochs: 10
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.05
+      phase1_private_epochs: 4
+      phase2_private_epochs: 3
+    experiment/melting_point:
+      phase1_private_lr: 6.75e-05
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.05
+- description: Near-winning combination retaining original melting LR and glass budgets
+  overrides:
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.0
+    experiment/density:
+      phase1_private_epochs: 15
+      phase2_private_epochs: 14
+    experiment/surface_tension:
+      phase3_private_epochs: 10
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.05
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.05
+- description: Combine viscosity zero dropout and glass dropout 0.05
+  overrides:
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.0
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.05
+- description: Combine dropout contrasts with longer surface and density refinement
+  overrides:
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.0
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.05
+    experiment/surface_tension:
+      model_overrides:
+        private_dropout: 0.0
+      phase3_private_epochs: 10
+    experiment/density:
+      phase3_private_epochs: 8
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.05
+- description: Near-winning tasks coordinated PRIVATE dropout 0.0
+  overrides:
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.0
+    experiment/density:
+      model_overrides:
+        private_dropout: 0.0
+    experiment/surface_tension:
+      model_overrides:
+        private_dropout: 0.0
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.05
+    experiment/melting_point:
+      model_overrides:
+        private_dropout: 0.0
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.0
+- description: Near-winning tasks coordinated PRIVATE dropout 0.025
+  overrides:
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.025
+    experiment/density:
+      model_overrides:
+        private_dropout: 0.025
+    experiment/surface_tension:
+      model_overrides:
+        private_dropout: 0.025
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.025
+    experiment/melting_point:
+      model_overrides:
+        private_dropout: 0.025
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.025
+- description: Near-winning tasks coordinated PRIVATE dropout 0.075
+  overrides:
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.075
+    experiment/density:
+      model_overrides:
+        private_dropout: 0.075
+    experiment/surface_tension:
+      model_overrides:
+        private_dropout: 0.075
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.075
+    experiment/melting_point:
+      model_overrides:
+        private_dropout: 0.075
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.075
+- description: Task-local best combination with near-winning PRIVATE LR x0.5
+  overrides:
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.0
+      phase1_private_lr: 4.5e-05
+    experiment/density:
+      phase1_private_epochs: 15
+      phase2_private_epochs: 14
+      phase1_private_lr: 5.6250000000000005e-05
+    experiment/surface_tension:
+      phase3_private_epochs: 10
+      phase1_private_lr: 3.6e-05
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.05
+      phase1_private_epochs: 4
+      phase2_private_epochs: 3
+      phase1_private_lr: 5.4000000000000005e-05
+    experiment/melting_point:
+      phase1_private_lr: 6.75e-05
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.05
+      phase1_private_lr: 3.6e-05
+- description: Task-local best combination with near-winning PRIVATE LR x0.25
+  overrides:
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.0
+      phase1_private_lr: 2.25e-05
+    experiment/density:
+      phase1_private_epochs: 15
+      phase2_private_epochs: 14
+      phase1_private_lr: 2.8125000000000003e-05
+    experiment/surface_tension:
+      phase3_private_epochs: 10
+      phase1_private_lr: 1.8e-05
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.05
+      phase1_private_epochs: 4
+      phase2_private_epochs: 3
+      phase1_private_lr: 2.7000000000000002e-05
+    experiment/melting_point:
+      phase1_private_lr: 3.375e-05
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.05
+      phase1_private_lr: 1.8e-05
+- description: Task-local best combination with two additional reference Phase3 epochs
+  overrides:
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.0
+      phase3_private_epochs: 6
+    experiment/density:
+      phase1_private_epochs: 15
+      phase2_private_epochs: 14
+      phase3_private_epochs: 8
+    experiment/surface_tension:
+      phase3_private_epochs: 6
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.05
+      phase1_private_epochs: 4
+      phase2_private_epochs: 3
+      phase3_private_epochs: 4
+    experiment/melting_point:
+      phase1_private_lr: 6.75e-05
+      phase3_private_epochs: 6
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.05
+      phase3_private_epochs: 4
+- description: Task-local best combination with longer PRIVATE Phase1 exposure
+  overrides:
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.0
+      phase1_private_epochs: 15
+    experiment/density:
+      phase1_private_epochs: 15
+      phase2_private_epochs: 14
+    experiment/surface_tension:
+      phase3_private_epochs: 10
+      phase1_private_epochs: 14
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.05
+      phase1_private_epochs: 14
+      phase2_private_epochs: 3
+    experiment/melting_point:
+      phase1_private_lr: 6.75e-05
+      phase1_private_epochs: 15
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.05
+      phase1_private_epochs: 14
+- description: Task-local best combination shifting PRIVATE Phase2 budget to Phase3
+  overrides:
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.0
+      phase2_private_epochs: 0
+      phase3_private_epochs: 8
+    experiment/density:
+      phase1_private_epochs: 15
+      phase2_private_epochs: 0
+      phase3_private_epochs: 8
+    experiment/surface_tension:
+      phase3_private_epochs: 8
+      phase2_private_epochs: 0
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.05
+      phase1_private_epochs: 4
+      phase2_private_epochs: 0
+      phase3_private_epochs: 8
+    experiment/melting_point:
+      phase1_private_lr: 6.75e-05
+      phase2_private_epochs: 0
+      phase3_private_epochs: 8
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.05
+      phase2_private_epochs: 0
+      phase3_private_epochs: 8

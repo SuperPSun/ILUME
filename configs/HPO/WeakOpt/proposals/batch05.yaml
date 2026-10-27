@@ -1,0 +1,276 @@
+- description: Near-winning coordinated PRIVATE dropout 0.01 around trial062
+  overrides:
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.01
+    experiment/density:
+      model_overrides:
+        private_dropout: 0.01
+    experiment/surface_tension:
+      model_overrides:
+        private_dropout: 0.01
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.01
+    experiment/melting_point:
+      model_overrides:
+        private_dropout: 0.01
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.01
+- description: Near-winning coordinated PRIVATE dropout 0.015 around trial062
+  overrides:
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.015
+    experiment/density:
+      model_overrides:
+        private_dropout: 0.015
+    experiment/surface_tension:
+      model_overrides:
+        private_dropout: 0.015
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.015
+    experiment/melting_point:
+      model_overrides:
+        private_dropout: 0.015
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.015
+- description: Near-winning coordinated PRIVATE dropout 0.02 around trial062
+  overrides:
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.02
+    experiment/density:
+      model_overrides:
+        private_dropout: 0.02
+    experiment/surface_tension:
+      model_overrides:
+        private_dropout: 0.02
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.02
+    experiment/melting_point:
+      model_overrides:
+        private_dropout: 0.02
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.02
+- description: Near-winning coordinated PRIVATE dropout 0.03 around trial062
+  overrides:
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.03
+    experiment/density:
+      model_overrides:
+        private_dropout: 0.03
+    experiment/surface_tension:
+      model_overrides:
+        private_dropout: 0.03
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.03
+    experiment/melting_point:
+      model_overrides:
+        private_dropout: 0.03
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.03
+- description: Near-winning coordinated PRIVATE dropout 0.035 around trial062
+  overrides:
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.035
+    experiment/density:
+      model_overrides:
+        private_dropout: 0.035
+    experiment/surface_tension:
+      model_overrides:
+        private_dropout: 0.035
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.035
+    experiment/melting_point:
+      model_overrides:
+        private_dropout: 0.035
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.035
+- description: Near-winning coordinated PRIVATE dropout 0.04 around trial062
+  overrides:
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.04
+    experiment/density:
+      model_overrides:
+        private_dropout: 0.04
+    experiment/surface_tension:
+      model_overrides:
+        private_dropout: 0.04
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.04
+    experiment/melting_point:
+      model_overrides:
+        private_dropout: 0.04
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.04
+- description: Trial062 dropout with near-winning PRIVATE LR x0.7
+  overrides:
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.025
+      phase1_private_lr: 6.3e-05
+    experiment/density:
+      model_overrides:
+        private_dropout: 0.025
+      phase1_private_lr: 7.875e-05
+    experiment/surface_tension:
+      model_overrides:
+        private_dropout: 0.025
+      phase1_private_lr: 5.04e-05
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.025
+      phase1_private_lr: 7.560000000000001e-05
+    experiment/melting_point:
+      model_overrides:
+        private_dropout: 0.025
+      phase1_private_lr: 9.449999999999999e-05
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.025
+      phase1_private_lr: 5.04e-05
+- description: Trial062 dropout with near-winning PRIVATE LR x0.5
+  overrides:
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.025
+      phase1_private_lr: 4.5e-05
+    experiment/density:
+      model_overrides:
+        private_dropout: 0.025
+      phase1_private_lr: 5.6250000000000005e-05
+    experiment/surface_tension:
+      model_overrides:
+        private_dropout: 0.025
+      phase1_private_lr: 3.6e-05
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.025
+      phase1_private_lr: 5.4000000000000005e-05
+    experiment/melting_point:
+      model_overrides:
+        private_dropout: 0.025
+      phase1_private_lr: 6.75e-05
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.025
+      phase1_private_lr: 3.6e-05
+- description: Trial062 dropout with two additional PRIVATE Phase3 epochs
+  overrides:
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.025
+      phase3_private_epochs: 6
+    experiment/density:
+      model_overrides:
+        private_dropout: 0.025
+      phase3_private_epochs: 8
+    experiment/surface_tension:
+      model_overrides:
+        private_dropout: 0.025
+      phase3_private_epochs: 6
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.025
+      phase3_private_epochs: 4
+    experiment/melting_point:
+      model_overrides:
+        private_dropout: 0.025
+      phase3_private_epochs: 6
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.025
+      phase3_private_epochs: 4
+- description: Trial062 dropout with eight PRIVATE Phase3 epochs
+  overrides:
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.025
+      phase3_private_epochs: 8
+    experiment/density:
+      model_overrides:
+        private_dropout: 0.025
+      phase3_private_epochs: 8
+    experiment/surface_tension:
+      model_overrides:
+        private_dropout: 0.025
+      phase3_private_epochs: 8
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.025
+      phase3_private_epochs: 8
+    experiment/melting_point:
+      model_overrides:
+        private_dropout: 0.025
+      phase3_private_epochs: 8
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.025
+      phase3_private_epochs: 8
+- description: Trial062 dropout with PRIVATE Phase1 budget x0.75
+  overrides:
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.025
+      phase1_private_epochs: 8
+    experiment/density:
+      model_overrides:
+        private_dropout: 0.025
+      phase1_private_epochs: 8
+    experiment/surface_tension:
+      model_overrides:
+        private_dropout: 0.025
+      phase1_private_epochs: 7
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.025
+      phase1_private_epochs: 7
+    experiment/melting_point:
+      model_overrides:
+        private_dropout: 0.025
+      phase1_private_epochs: 8
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.025
+      phase1_private_epochs: 7
+- description: Trial062 dropout with PRIVATE Phase2 budget x0.5
+  overrides:
+    experiment/viscosity:
+      model_overrides:
+        private_dropout: 0.025
+      phase2_private_epochs: 4
+    experiment/density:
+      model_overrides:
+        private_dropout: 0.025
+      phase2_private_epochs: 4
+    experiment/surface_tension:
+      model_overrides:
+        private_dropout: 0.025
+      phase2_private_epochs: 3
+    experiment/glass_transition_temperature:
+      model_overrides:
+        private_dropout: 0.025
+      phase2_private_epochs: 3
+    experiment/melting_point:
+      model_overrides:
+        private_dropout: 0.025
+      phase2_private_epochs: 4
+    experiment/refractive_index:
+      model_overrides:
+        private_dropout: 0.025
+      phase2_private_epochs: 3

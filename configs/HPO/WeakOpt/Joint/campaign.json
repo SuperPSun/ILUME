@@ -1,0 +1,708 @@
+{
+  "version": 1,
+  "limit": 80,
+  "trials": [
+    {
+      "id": "001",
+      "stage2_id": "S001",
+      "recipe_hash": "f83e22a37b6c0280535fa8ff6b6d1cc8cfcba1028184e8c83e19d20c3953fcbc",
+      "sha256": "e8320264d03d6439b3b43b9353837d609ea5f440bb6042718b15100e2440c54e",
+      "description": "Stage2 epochs=5, lr=6e-05; Stage3 reference",
+      "overrides": {
+        "description": "Stage2 epochs=5, lr=6e-05; Stage3 reference",
+        "stage2": {
+          "epochs": 5,
+          "task_head_learning_rate": 6e-05
+        },
+        "stage3": {}
+      }
+    },
+    {
+      "id": "002",
+      "stage2_id": "S001",
+      "recipe_hash": "a3d803b4614c14000ab19d3d1d805e2aa2d43c77b9d64620f94a0d2645c5494b",
+      "sha256": "524bfaf7068cb2df00aca7577ae7202139903496e9e9b2b60a17d9db9e01a649",
+      "description": "Stage2 epochs=5, lr=6e-05; Stage3 previous validation winner 038",
+      "overrides": {
+        "description": "Stage2 epochs=5, lr=6e-05; Stage3 previous validation winner 038",
+        "stage2": {
+          "epochs": 5,
+          "task_head_learning_rate": 6e-05
+        },
+        "stage3": {
+          "experiment/glass_transition_temperature": {
+            "model_overrides": {
+              "private_dropout": 0.05
+            },
+            "phase1_private_lr": 5.4000000000000005e-05
+          },
+          "experiment/viscosity": {
+            "phase1_private_lr": 4.5e-05
+          },
+          "experiment/density": {
+            "phase1_private_lr": 5.6250000000000005e-05
+          },
+          "experiment/refractive_index": {
+            "phase1_private_lr": 3.6e-05
+          },
+          "experiment/surface_tension": {
+            "phase1_private_lr": 3.6e-05
+          },
+          "experiment/melting_point": {
+            "phase1_private_lr": 6.75e-05
+          }
+        }
+      }
+    },
+    {
+      "id": "003",
+      "stage2_id": "S002",
+      "recipe_hash": "567c243520d09eeaf9e6238c9780530cb9383e4bca3abb4ef7d0948e19b01c5a",
+      "sha256": "3d3a99bb7105818c703e5ce646a1844c0eb7c18a367845ef1111e181040c4664",
+      "description": "Stage2 epochs=5, lr=0.0001; Stage3 reference",
+      "overrides": {
+        "description": "Stage2 epochs=5, lr=0.0001; Stage3 reference",
+        "stage2": {
+          "epochs": 5,
+          "task_head_learning_rate": 0.0001
+        },
+        "stage3": {}
+      }
+    },
+    {
+      "id": "004",
+      "stage2_id": "S002",
+      "recipe_hash": "7eb849d2ba30da7d790b79040260bb85f7561e1af0099f9b4d3e9bbd21012d1e",
+      "sha256": "2cacafcaf9ecc12d7692d3e415fa3d6d0b6462fd95c58e7363b6854315fa5cc8",
+      "description": "Stage2 epochs=5, lr=0.0001; Stage3 previous validation winner 038",
+      "overrides": {
+        "description": "Stage2 epochs=5, lr=0.0001; Stage3 previous validation winner 038",
+        "stage2": {
+          "epochs": 5,
+          "task_head_learning_rate": 0.0001
+        },
+        "stage3": {
+          "experiment/glass_transition_temperature": {
+            "model_overrides": {
+              "private_dropout": 0.05
+            },
+            "phase1_private_lr": 5.4000000000000005e-05
+          },
+          "experiment/viscosity": {
+            "phase1_private_lr": 4.5e-05
+          },
+          "experiment/density": {
+            "phase1_private_lr": 5.6250000000000005e-05
+          },
+          "experiment/refractive_index": {
+            "phase1_private_lr": 3.6e-05
+          },
+          "experiment/surface_tension": {
+            "phase1_private_lr": 3.6e-05
+          },
+          "experiment/melting_point": {
+            "phase1_private_lr": 6.75e-05
+          }
+        }
+      }
+    },
+    {
+      "id": "005",
+      "stage2_id": "S003",
+      "recipe_hash": "67a2ee8c9fcfb163dbeddc3f0d1362c5ebfa3cd824fd69b6712da6af25ca316b",
+      "sha256": "af6a5955d0ace19016ae7b021d8eaf804f493a17c9f9b94a63e132b21e0300c2",
+      "description": "Stage2 epochs=5, lr=0.0002; Stage3 reference",
+      "overrides": {
+        "description": "Stage2 epochs=5, lr=0.0002; Stage3 reference",
+        "stage2": {
+          "epochs": 5,
+          "task_head_learning_rate": 0.0002
+        },
+        "stage3": {}
+      }
+    },
+    {
+      "id": "006",
+      "stage2_id": "S003",
+      "recipe_hash": "06864b63d51ab4c1d9059985bc6057bad23c6822d4252bcbc6b0e9939a7b6739",
+      "sha256": "8aacb0a6e380d612a41d78582b5548e6be39e18541b6ef2515595c21db23a923",
+      "description": "Stage2 epochs=5, lr=0.0002; Stage3 previous validation winner 038",
+      "overrides": {
+        "description": "Stage2 epochs=5, lr=0.0002; Stage3 previous validation winner 038",
+        "stage2": {
+          "epochs": 5,
+          "task_head_learning_rate": 0.0002
+        },
+        "stage3": {
+          "experiment/glass_transition_temperature": {
+            "model_overrides": {
+              "private_dropout": 0.05
+            },
+            "phase1_private_lr": 5.4000000000000005e-05
+          },
+          "experiment/viscosity": {
+            "phase1_private_lr": 4.5e-05
+          },
+          "experiment/density": {
+            "phase1_private_lr": 5.6250000000000005e-05
+          },
+          "experiment/refractive_index": {
+            "phase1_private_lr": 3.6e-05
+          },
+          "experiment/surface_tension": {
+            "phase1_private_lr": 3.6e-05
+          },
+          "experiment/melting_point": {
+            "phase1_private_lr": 6.75e-05
+          }
+        }
+      }
+    },
+    {
+      "id": "007",
+      "stage2_id": "S004",
+      "recipe_hash": "19dccedffc6d07a0bb956625f2bbb45553fe78025c2cbd02fdefa1a2b9157bb6",
+      "sha256": "456c6a756aaad55077fe82d7b653532ac220d0011d66814bf85eae418352d547",
+      "description": "Stage2 epochs=5, lr=0.0003; Stage3 reference",
+      "overrides": {
+        "description": "Stage2 epochs=5, lr=0.0003; Stage3 reference",
+        "stage2": {
+          "epochs": 5,
+          "task_head_learning_rate": 0.0003
+        },
+        "stage3": {}
+      }
+    },
+    {
+      "id": "008",
+      "stage2_id": "S004",
+      "recipe_hash": "b1fc21f2e152d4b5447cc95586954d0ac0b6543169ac372c421573b11c5ed383",
+      "sha256": "c4d94b0cdad06930b5026886afeb3ad965454993418ad89756cbbd56dc2d6370",
+      "description": "Stage2 epochs=5, lr=0.0003; Stage3 previous validation winner 038",
+      "overrides": {
+        "description": "Stage2 epochs=5, lr=0.0003; Stage3 previous validation winner 038",
+        "stage2": {
+          "epochs": 5,
+          "task_head_learning_rate": 0.0003
+        },
+        "stage3": {
+          "experiment/glass_transition_temperature": {
+            "model_overrides": {
+              "private_dropout": 0.05
+            },
+            "phase1_private_lr": 5.4000000000000005e-05
+          },
+          "experiment/viscosity": {
+            "phase1_private_lr": 4.5e-05
+          },
+          "experiment/density": {
+            "phase1_private_lr": 5.6250000000000005e-05
+          },
+          "experiment/refractive_index": {
+            "phase1_private_lr": 3.6e-05
+          },
+          "experiment/surface_tension": {
+            "phase1_private_lr": 3.6e-05
+          },
+          "experiment/melting_point": {
+            "phase1_private_lr": 6.75e-05
+          }
+        }
+      }
+    },
+    {
+      "id": "009",
+      "stage2_id": "S005",
+      "recipe_hash": "009dfcec09bb670caa6bdb7daeb12a65ad65f476458d9e14e092f3766d340f22",
+      "sha256": "d9ad50b74ee61fc1668dfe639918247f13a60df3d9096608e0cf6388bd88db2e",
+      "description": "Stage2 epochs=15, lr=6e-05; Stage3 reference",
+      "overrides": {
+        "description": "Stage2 epochs=15, lr=6e-05; Stage3 reference",
+        "stage2": {
+          "epochs": 15,
+          "task_head_learning_rate": 6e-05
+        },
+        "stage3": {}
+      }
+    },
+    {
+      "id": "010",
+      "stage2_id": "S005",
+      "recipe_hash": "5a2e94e95342fa4a4b96ed7c234452dc20a945c603283d835330f1b56dfa18eb",
+      "sha256": "d696b9242ef4d0ba453502203b569d934e3e80b128145b6f8aa34eae0d348384",
+      "description": "Stage2 epochs=15, lr=6e-05; Stage3 previous validation winner 038",
+      "overrides": {
+        "description": "Stage2 epochs=15, lr=6e-05; Stage3 previous validation winner 038",
+        "stage2": {
+          "epochs": 15,
+          "task_head_learning_rate": 6e-05
+        },
+        "stage3": {
+          "experiment/glass_transition_temperature": {
+            "model_overrides": {
+              "private_dropout": 0.05
+            },
+            "phase1_private_lr": 5.4000000000000005e-05
+          },
+          "experiment/viscosity": {
+            "phase1_private_lr": 4.5e-05
+          },
+          "experiment/density": {
+            "phase1_private_lr": 5.6250000000000005e-05
+          },
+          "experiment/refractive_index": {
+            "phase1_private_lr": 3.6e-05
+          },
+          "experiment/surface_tension": {
+            "phase1_private_lr": 3.6e-05
+          },
+          "experiment/melting_point": {
+            "phase1_private_lr": 6.75e-05
+          }
+        }
+      }
+    },
+    {
+      "id": "011",
+      "stage2_id": "S006",
+      "recipe_hash": "1a158bc8e2a2811d1ef9f7ad7564caff34d49dc75f387e108ec6504d4b89ac5e",
+      "sha256": "f4dbbf0e9a4055f77c8418c20f90dc4be50b2f3b5df6a8eb40c936b72f6f8f87",
+      "description": "Stage2 epochs=15, lr=0.0001; Stage3 reference",
+      "overrides": {
+        "description": "Stage2 epochs=15, lr=0.0001; Stage3 reference",
+        "stage2": {
+          "epochs": 15,
+          "task_head_learning_rate": 0.0001
+        },
+        "stage3": {}
+      }
+    },
+    {
+      "id": "012",
+      "stage2_id": "S006",
+      "recipe_hash": "474f0ebe099f7b5a7ec61d79ddf22d2d28554c74aaa1d177bde6edcd34906ee1",
+      "sha256": "48729ba014a8cdcc70b2bba425c6df3f0a1483199422b7db1a1323290ff2cfd2",
+      "description": "Stage2 epochs=15, lr=0.0001; Stage3 previous validation winner 038",
+      "overrides": {
+        "description": "Stage2 epochs=15, lr=0.0001; Stage3 previous validation winner 038",
+        "stage2": {
+          "epochs": 15,
+          "task_head_learning_rate": 0.0001
+        },
+        "stage3": {
+          "experiment/glass_transition_temperature": {
+            "model_overrides": {
+              "private_dropout": 0.05
+            },
+            "phase1_private_lr": 5.4000000000000005e-05
+          },
+          "experiment/viscosity": {
+            "phase1_private_lr": 4.5e-05
+          },
+          "experiment/density": {
+            "phase1_private_lr": 5.6250000000000005e-05
+          },
+          "experiment/refractive_index": {
+            "phase1_private_lr": 3.6e-05
+          },
+          "experiment/surface_tension": {
+            "phase1_private_lr": 3.6e-05
+          },
+          "experiment/melting_point": {
+            "phase1_private_lr": 6.75e-05
+          }
+        }
+      }
+    },
+    {
+      "id": "013",
+      "stage2_id": "S007",
+      "recipe_hash": "93a6af8ec70b9355925a33586c15f17cd4b4502f1d7f1b86731c0c6b7fb8c27f",
+      "sha256": "0d75b4a54b260457d56470dab19ee2871b5c67f27861610c4fdccbf389fcfbaa",
+      "description": "Stage2 epochs=15, lr=0.0002; Stage3 reference",
+      "overrides": {
+        "description": "Stage2 epochs=15, lr=0.0002; Stage3 reference",
+        "stage2": {
+          "epochs": 15,
+          "task_head_learning_rate": 0.0002
+        },
+        "stage3": {}
+      }
+    },
+    {
+      "id": "014",
+      "stage2_id": "S007",
+      "recipe_hash": "71b66b3cdb9570790c2dfa54f1fca1cf7034201d316d8b03cc6a6ae3daa82356",
+      "sha256": "d118cd935c2b869066a6781cdd77b41094a086ecfa4ebccd10f067cf17f3cebc",
+      "description": "Stage2 epochs=15, lr=0.0002; Stage3 previous validation winner 038",
+      "overrides": {
+        "description": "Stage2 epochs=15, lr=0.0002; Stage3 previous validation winner 038",
+        "stage2": {
+          "epochs": 15,
+          "task_head_learning_rate": 0.0002
+        },
+        "stage3": {
+          "experiment/glass_transition_temperature": {
+            "model_overrides": {
+              "private_dropout": 0.05
+            },
+            "phase1_private_lr": 5.4000000000000005e-05
+          },
+          "experiment/viscosity": {
+            "phase1_private_lr": 4.5e-05
+          },
+          "experiment/density": {
+            "phase1_private_lr": 5.6250000000000005e-05
+          },
+          "experiment/refractive_index": {
+            "phase1_private_lr": 3.6e-05
+          },
+          "experiment/surface_tension": {
+            "phase1_private_lr": 3.6e-05
+          },
+          "experiment/melting_point": {
+            "phase1_private_lr": 6.75e-05
+          }
+        }
+      }
+    },
+    {
+      "id": "015",
+      "stage2_id": "S008",
+      "recipe_hash": "ed8d47514631cdff45b2b44b8e2f3ae6771d7135a81c922b8243fc8651d2c1e4",
+      "sha256": "aafb325eed80f7cacaf97d4750f9642b1612633cb234ecd945770e31ee866414",
+      "description": "Stage2 epochs=15, lr=0.0003; Stage3 reference",
+      "overrides": {
+        "description": "Stage2 epochs=15, lr=0.0003; Stage3 reference",
+        "stage2": {
+          "epochs": 15,
+          "task_head_learning_rate": 0.0003
+        },
+        "stage3": {}
+      }
+    },
+    {
+      "id": "016",
+      "stage2_id": "S008",
+      "recipe_hash": "7525d88954f1bb466387b3c7f844f80b058987ac610621d786fefadac7c7a0af",
+      "sha256": "8559e853a86a8a2080740bb1e324c87a9bab14ceff7824c0a0c9b814e333b809",
+      "description": "Stage2 epochs=15, lr=0.0003; Stage3 previous validation winner 038",
+      "overrides": {
+        "description": "Stage2 epochs=15, lr=0.0003; Stage3 previous validation winner 038",
+        "stage2": {
+          "epochs": 15,
+          "task_head_learning_rate": 0.0003
+        },
+        "stage3": {
+          "experiment/glass_transition_temperature": {
+            "model_overrides": {
+              "private_dropout": 0.05
+            },
+            "phase1_private_lr": 5.4000000000000005e-05
+          },
+          "experiment/viscosity": {
+            "phase1_private_lr": 4.5e-05
+          },
+          "experiment/density": {
+            "phase1_private_lr": 5.6250000000000005e-05
+          },
+          "experiment/refractive_index": {
+            "phase1_private_lr": 3.6e-05
+          },
+          "experiment/surface_tension": {
+            "phase1_private_lr": 3.6e-05
+          },
+          "experiment/melting_point": {
+            "phase1_private_lr": 6.75e-05
+          }
+        }
+      }
+    },
+    {
+      "id": "017",
+      "stage2_id": "S009",
+      "recipe_hash": "1be4f48fae737a1e96502e585313d66ee1d8e0ff12af9cf1ff66aea04e4df81c",
+      "sha256": "80cea1d0b6b105a997fed6959478422a6c0357bd744672e7c2569597c349775e",
+      "description": "Stage2 epochs=20, lr=6e-05; Stage3 reference",
+      "overrides": {
+        "description": "Stage2 epochs=20, lr=6e-05; Stage3 reference",
+        "stage2": {
+          "epochs": 20,
+          "task_head_learning_rate": 6e-05
+        },
+        "stage3": {}
+      }
+    },
+    {
+      "id": "018",
+      "stage2_id": "S009",
+      "recipe_hash": "5c0a35fb129fc3149eee109d78474b9d1e3077ca722106817962e081accc5c58",
+      "sha256": "67c9ed4593a35fbcd6e26793be1759127295d102e2fbb510dafe3c33a43a6339",
+      "description": "Stage2 epochs=20, lr=6e-05; Stage3 previous validation winner 038",
+      "overrides": {
+        "description": "Stage2 epochs=20, lr=6e-05; Stage3 previous validation winner 038",
+        "stage2": {
+          "epochs": 20,
+          "task_head_learning_rate": 6e-05
+        },
+        "stage3": {
+          "experiment/glass_transition_temperature": {
+            "model_overrides": {
+              "private_dropout": 0.05
+            },
+            "phase1_private_lr": 5.4000000000000005e-05
+          },
+          "experiment/viscosity": {
+            "phase1_private_lr": 4.5e-05
+          },
+          "experiment/density": {
+            "phase1_private_lr": 5.6250000000000005e-05
+          },
+          "experiment/refractive_index": {
+            "phase1_private_lr": 3.6e-05
+          },
+          "experiment/surface_tension": {
+            "phase1_private_lr": 3.6e-05
+          },
+          "experiment/melting_point": {
+            "phase1_private_lr": 6.75e-05
+          }
+        }
+      }
+    },
+    {
+      "id": "019",
+      "stage2_id": "S010",
+      "recipe_hash": "2267251ae430ffd556c1de2a06cc75765c324d1cd22bd0f5c7266ba4ccb0a28f",
+      "sha256": "ddd9a48fd8329bf972aad658ad9318b48d4688c91db1eb4b095f6e9a052584a2",
+      "description": "Stage2 epochs=20, lr=0.0001; Stage3 reference",
+      "overrides": {
+        "description": "Stage2 epochs=20, lr=0.0001; Stage3 reference",
+        "stage2": {
+          "epochs": 20,
+          "task_head_learning_rate": 0.0001
+        },
+        "stage3": {}
+      }
+    },
+    {
+      "id": "020",
+      "stage2_id": "S010",
+      "recipe_hash": "7899791dbcfbdc7379156eb088a2e8e22bf76b32988905d6fca767de02d485ac",
+      "sha256": "99b75ee684c62c3fe6950ea8a835dea6dfd1ce00ddd780574c1c19dd6d96429e",
+      "description": "Stage2 epochs=20, lr=0.0001; Stage3 previous validation winner 038",
+      "overrides": {
+        "description": "Stage2 epochs=20, lr=0.0001; Stage3 previous validation winner 038",
+        "stage2": {
+          "epochs": 20,
+          "task_head_learning_rate": 0.0001
+        },
+        "stage3": {
+          "experiment/glass_transition_temperature": {
+            "model_overrides": {
+              "private_dropout": 0.05
+            },
+            "phase1_private_lr": 5.4000000000000005e-05
+          },
+          "experiment/viscosity": {
+            "phase1_private_lr": 4.5e-05
+          },
+          "experiment/density": {
+            "phase1_private_lr": 5.6250000000000005e-05
+          },
+          "experiment/refractive_index": {
+            "phase1_private_lr": 3.6e-05
+          },
+          "experiment/surface_tension": {
+            "phase1_private_lr": 3.6e-05
+          },
+          "experiment/melting_point": {
+            "phase1_private_lr": 6.75e-05
+          }
+        }
+      }
+    },
+    {
+      "id": "021",
+      "stage2_id": "S011",
+      "recipe_hash": "7095c569d3a3f3b08b0dd04f55e567a137f74def7678a5001f43f41405d28ec0",
+      "sha256": "cef176e775692178b6f7e2bd6f84d6581cf72c44291fa947c6b9cf0aac802958",
+      "description": "Stage2 epochs=20, lr=0.0002; Stage3 reference",
+      "overrides": {
+        "description": "Stage2 epochs=20, lr=0.0002; Stage3 reference",
+        "stage2": {
+          "epochs": 20,
+          "task_head_learning_rate": 0.0002
+        },
+        "stage3": {}
+      }
+    },
+    {
+      "id": "022",
+      "stage2_id": "S011",
+      "recipe_hash": "7f1657b372a9e5db4ed2b454b9eafbcc712d2bbec3039f073536dacd6a3f6f42",
+      "sha256": "e4add538e6edb152762dc7b8dd86475dd0e54b5b0e7d5f80091ba59339362bb3",
+      "description": "Stage2 epochs=20, lr=0.0002; Stage3 previous validation winner 038",
+      "overrides": {
+        "description": "Stage2 epochs=20, lr=0.0002; Stage3 previous validation winner 038",
+        "stage2": {
+          "epochs": 20,
+          "task_head_learning_rate": 0.0002
+        },
+        "stage3": {
+          "experiment/glass_transition_temperature": {
+            "model_overrides": {
+              "private_dropout": 0.05
+            },
+            "phase1_private_lr": 5.4000000000000005e-05
+          },
+          "experiment/viscosity": {
+            "phase1_private_lr": 4.5e-05
+          },
+          "experiment/density": {
+            "phase1_private_lr": 5.6250000000000005e-05
+          },
+          "experiment/refractive_index": {
+            "phase1_private_lr": 3.6e-05
+          },
+          "experiment/surface_tension": {
+            "phase1_private_lr": 3.6e-05
+          },
+          "experiment/melting_point": {
+            "phase1_private_lr": 6.75e-05
+          }
+        }
+      }
+    },
+    {
+      "id": "023",
+      "stage2_id": "S012",
+      "recipe_hash": "3e5a4713d7f584bb6f8ef033c9720e28efbc4eea1edf0a63a27db198be34b624",
+      "sha256": "3a3b79287b6ca2ac0d98426465af7adeee32d87af361926181b60d6b3116e6b6",
+      "description": "Stage2 epochs=20, lr=0.0003; Stage3 reference",
+      "overrides": {
+        "description": "Stage2 epochs=20, lr=0.0003; Stage3 reference",
+        "stage2": {
+          "epochs": 20,
+          "task_head_learning_rate": 0.0003
+        },
+        "stage3": {}
+      }
+    },
+    {
+      "id": "024",
+      "stage2_id": "S012",
+      "recipe_hash": "7f754e80a466e37665d77d280546e5ad134e1509057809f46e1ac2061991d7c4",
+      "sha256": "7aff3e618de8e42a02a0b79c865d2d599259fd577b2a2588ba7412b679091ac0",
+      "description": "Stage2 epochs=20, lr=0.0003; Stage3 previous validation winner 038",
+      "overrides": {
+        "description": "Stage2 epochs=20, lr=0.0003; Stage3 previous validation winner 038",
+        "stage2": {
+          "epochs": 20,
+          "task_head_learning_rate": 0.0003
+        },
+        "stage3": {
+          "experiment/glass_transition_temperature": {
+            "model_overrides": {
+              "private_dropout": 0.05
+            },
+            "phase1_private_lr": 5.4000000000000005e-05
+          },
+          "experiment/viscosity": {
+            "phase1_private_lr": 4.5e-05
+          },
+          "experiment/density": {
+            "phase1_private_lr": 5.6250000000000005e-05
+          },
+          "experiment/refractive_index": {
+            "phase1_private_lr": 3.6e-05
+          },
+          "experiment/surface_tension": {
+            "phase1_private_lr": 3.6e-05
+          },
+          "experiment/melting_point": {
+            "phase1_private_lr": 6.75e-05
+          }
+        }
+      }
+    }
+  ],
+  "stage2": [
+    {
+      "id": "S001",
+      "sha256": "003d14afecc7617d8fd0395ca5b0cf94351de2ff93302ee2e9648c48a1cf5d78",
+      "recipe_hash": "b92b7c9b80faa62b2752773b497fb97e0388b2c6248131616d924ee5e0629742"
+    },
+    {
+      "id": "S002",
+      "sha256": "f015b1dd5d24de0145f54f83b4fe6ba3f46a0caf4c446f3006f1b79f5c1e86a7",
+      "recipe_hash": "a7f00565883234ca925a3d2c328c24021837d6941a20c8354ce4293506f955b7"
+    },
+    {
+      "id": "S003",
+      "sha256": "1d03b37bf11ac218edcce2d7b5623844618e1ac83daaa041b6eb0f576ff3b793",
+      "recipe_hash": "cebcc8d6dd2f5ce3d978a5fb10566e77dc9cd5338779f090e195acec4c519dbe"
+    },
+    {
+      "id": "S004",
+      "sha256": "5ede3a41453cbd5428585b9fa97eb7469ee81e12eea03c965344976ac57598d9",
+      "recipe_hash": "1a63c6cf7b4f4db39a7aafb673c749a9c4a0beedd9232f1c832b712c75a745a3"
+    },
+    {
+      "id": "S005",
+      "sha256": "8e2cde726536a12495cf83c699b1aab753b6a83edb6259cd42706c4e3cfa51c7",
+      "recipe_hash": "cbb5b80db2bf0618c0c8b2a8540a062a39663af0a9a69d029ba04ac55a755c5d"
+    },
+    {
+      "id": "S006",
+      "sha256": "653c6f761f031ac21a282ab44c1cbebc00b81065b3bef0d8e6161e01de857f8e",
+      "recipe_hash": "45fbe9a933c8d8f1d9b26fb142e5e499207b8e810c5b91f78fc9dcce492d07b2"
+    },
+    {
+      "id": "S007",
+      "sha256": "1648d67d4d60f5b9a98ed71fd2b6241664b22ed0914358a9b9d07b713b50eddd",
+      "recipe_hash": "13055247096f9a98d76e553b4c5e0bf6d19ddbe5d3914cf65befef423edc5c43"
+    },
+    {
+      "id": "S008",
+      "sha256": "cfdcc14c7e6c2719cbd4a681473b1303f6cd6eddf17cdc83db3e9115ddf95faf",
+      "recipe_hash": "4512a8cb3afa76f9b0352844090f36eeab5bd40f078b635bdab4a461ac42d4eb"
+    },
+    {
+      "id": "S009",
+      "sha256": "fe5e0798d38d8b77c9647423459f398ef6840e4b2802bb04ff82daead90d7e34",
+      "recipe_hash": "358bbb933a7346baf66b7de95d8765117bd3dfe47d0538e8a229607dbee3c14b"
+    },
+    {
+      "id": "S010",
+      "sha256": "448c2c9ab8629140c98f647e25831892e02de2c4c22042e81ad14dabae4ae77b",
+      "recipe_hash": "15f8df3ed916b65ce5c8a58b84946093535536dac88b5f7928e48e00cf8bcd2c"
+    },
+    {
+      "id": "S011",
+      "sha256": "bdc8cb027b107f6611d344fcae7186e03d36de58ba0e1e87dab27a6aa36845d4",
+      "recipe_hash": "01afb5958701624513217db3322d6860c031eb852787a146fe05765ba88c71fd"
+    },
+    {
+      "id": "S012",
+      "sha256": "e177d70414ec662605412317c713fe5be3afd75677cee3c8b344b98668a64505",
+      "recipe_hash": "24b6051120e99bca498313662ab6937b8d83e892cd5e97085c3d4118816d1f64"
+    }
+  ],
+  "files": {
+    "configs/HPO/WeakOpt/Joint/reference-stage2.yaml": "11690b797cb3e48ea1a2f4b8dbd2bed64b7ca04a5251fd8adbaed5454c82a953",
+    "configs/HPO/WeakOpt/Joint/reference-stage3.yaml": "837e57b3fab979b20430c19f46eb4bce447e4c66962a0ee28b63d712ae5d4218",
+    "outputs/HPO/WeakOpt/Joint/reference/baselines.json": "177d75c52acc377503b190ea173bca983207efbbf0f50d0a25815981755dffd7"
+  },
+  "sources": {
+    "configs/v4/stage3/optimized_3407.yaml": "b13fa84eaa8cd4f2a94edff2aaca23d377ad687a3cf5fb32240c8cc33bf309f1",
+    "outputs/v4/stage1/base/train/stage1_encoder.pt": "3e428c59071fd95434f2ccc23250407d006e020f07ded7ce9e889a432dca6902",
+    "outputs/v4/stage2/optimized_3407/train/stage2_final.pt": "b7681ce2e04c7c81df3b4c24d76a31f64bc93cd12d7ce00014a3afba1dbac2f6",
+    "outputs/v4/stage3/optimized_3407/prepare/artifacts/metadata.json": "92e7ad8cb81207e6a2b2c9cdf4d093c342c249c8b701fb35e5e7a05243e2b02e",
+    "outputs/v4/stage3/optimized_3407/prepare/data_metadata.json": "07f07a04cc0b39455acd820875442df94c658e548e0784e0f676fba4265a834f",
+    "configs/v4/stage2/optimized_3407.yaml": "6b3907324ef33d4db0d0e8c462454dc7680c0dac3347b80c50f528d67f6480ff",
+    "configs/HPO/WeakOpt/campaign.json": "5da46401ca1b01f316dfd45158fd799973d44c8146d2dc8b26b680eb169dd7c6",
+    "outputs/v4/stage2/optimized_3407/prepare/artifacts/metadata.json": "5e81793ebdcdb34b5483e881e31ee29cdb40ad621af4d1dd42e5a1a3722363b6",
+    "outputs/v4/stage2/optimized_3407/prepare/data_metadata.json": "0e710bfec883697906ba54fb1c3d3c2bccec616be89e6665c2bd66f387b087b0"
+  }
+}
