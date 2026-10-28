@@ -2350,6 +2350,54 @@ TRAINING_IDENTITY = semantic_identity(
     "stage3.training", {"contract_version": 1, "microbatch_size": 1024}
 )
 
+@pytest.mark.parametrize("variant", ("base", "chemberta2_mtr", "chemberta2_mlm"))
+def test_training_launcher_records_the_configured_encoder_source(monkeypatch, tmp_path, variant):
+    from ablations.entity_home.config import load_research_config
+    import common.outputs as outputs
+    import stage3.train as training
+
+    config_path = (
+        "configs/v4/stage3/optimized_3407.yaml"
+        if variant == "base"
+        else f"configs/ablations/v4_3407/core/{variant}/stage3.yaml"
+    )
+    config = load_research_config(config_path)
+    config = replace(config, training=replace(config.training, device="cpu"))
+    monkeypatch.setattr("ablations.entity_home.config.load_research_config", lambda _: config)
+    monkeypatch.setattr("stage3.config.configure_process_runtime", lambda _: None)
+    monkeypatch.setattr(training, "resolve_stage3_training_identity", lambda *args: TRAINING_IDENTITY)
+    monkeypatch.setattr(outputs, "repository_path", lambda value: tmp_path / value)
+    opened, completed = [], []
+
+    def open_run(**kwargs):
+        opened.append(kwargs)
+        root = tmp_path / kwargs["output"]
+        root.mkdir(parents=True)
+        return SimpleNamespace(root=root, complete=completed.append, fail=lambda: pytest.fail("training failed"))
+
+    def train(config, fold, *, output_dir, resume_from, expected_training_identity):
+        assert fold == 1 and resume_from is None
+        assert expected_training_identity == TRAINING_IDENTITY
+        _write_json(output_dir / "three_phase_final.json", {"kind": "test-final"})
+        _write_json(output_dir / "resolved_training_plan.json", {
+            "parameter_counts": {"total": 10, "trainable": 5},
+        })
+        return [{"epoch": 1}]
+
+    monkeypatch.setattr(outputs, "open_run_directory", open_run)
+    monkeypatch.setattr(training, "run_stage3_training", train)
+    assert train_launcher._run_fold(
+        config_path=config_path, fold=1, output_root="train", resume=False,
+        device=None, show_progress=True,
+    ) == "completed"
+    source = (
+        {"stage1_encoder": outputs.repository_relative(config.initialization.stage1_encoder)}
+        if variant == "base" else {"frozen_encoder": config.frozen_encoder.to_dict()}
+    )
+    assert opened[0]["details"] == {"fold": 1, **source, "assigned_device": "cpu"}
+    assert opened[0]["semantic_identity"] == TRAINING_IDENTITY
+    assert completed[0]["fold"] == 1
+
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
