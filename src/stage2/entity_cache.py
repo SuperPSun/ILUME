@@ -18,6 +18,8 @@ from .model import encode_object_entities
 
 @torch.no_grad()
 def prepare_frozen_entities(recipe):
+    if recipe.stage2.frozen_encoder is not None:
+        return json.loads((recipe.stage2.data.artifacts_dir / "frozen_entities.json").read_text())
     if not recipe.freeze_stage1:
         return None
     loaded = load_backbone(recipe)
@@ -62,4 +64,6 @@ def validate_frozen_entity_source(entities, backbone):
     manifest = entities.frozen_entity_manifest
     if (manifest is None or manifest["identity"]["payload"]["stage1_state_hash"] != encoding_state_hash(backbone)
             or manifest["identity"]["payload"].get("stage1_ablation") != backbone.config.to_dict().get("ablation")):
+        raise ValueError("Frozen Stage1 entity cache source mismatch; run v4 Stage2 prepare")
+    if hasattr(backbone, "encoder_identity") and manifest["identity"]["payload"].get("frozen_encoder_identity") != backbone.encoder_identity["hash"]:
         raise ValueError("Frozen Stage1 entity cache source mismatch; run v4 Stage2 prepare")

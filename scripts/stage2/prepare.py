@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
+import ablations.entity_home.chemberta  # Register independent frozen encoder sources.
+
 import ablations.entity_home.stage1  # Register independent Stage1 ablation configs and models.
 
 from common.data_identity import write_data_identity
@@ -52,7 +54,11 @@ def main() -> None:
         if manifest is not None:
             sources.append(manifest)
     rdkit_materialization = None
-    if config.representation is not None:
+    if config.frozen_encoder is not None:
+        from common.frozen_encoder import load_frozen_encoder
+        source = load_frozen_encoder(config.frozen_encoder)
+        data_identity = build_stage2_data_identity(config, registry, source.feature_identity)
+    elif config.representation is not None:
         from stage2.rdkit import resolve_rdkit_stage2_materialization
 
         rdkit_materialization = resolve_rdkit_stage2_materialization(config)
@@ -72,17 +78,18 @@ def main() -> None:
         stage="stage2", operation="prepare", config_path=args.config,
         config_payload=recipe.to_dict() if recipe else config.to_dict(),
         semantic_identity=data_identity,
-        output=args.output, seed=config.data.seed, reusable=True,
+        output=args.output, seed=config.data.seed, reusable=config.frozen_encoder is None,
         data_metadata=repository_relative(data_metadata or config.data.data_root / "stage2" / "metadata.json"),
         details=(
             {"representation": "rdkit_2d_mlp", "math_contract": math_contract}
             if config.representation is not None
             else {
-                **(
+                **({"frozen_encoder": config.frozen_encoder.to_dict()} if config.frozen_encoder is not None else
+                (
                     {"checkpoint": repository_relative(config.initialization.checkpoint)}
                     if config.initialization.checkpoint is not None
                     else {"stage1_config": repository_relative(config.initialization.stage1_config)}
-                ),
+                )),
                 "math_contract": math_contract,
                 **({} if recipe else {"teacher_dtype": "float32"}),
             }

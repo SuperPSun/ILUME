@@ -1,6 +1,14 @@
 """Read-only frozen Stage1 slots; no trainable representation encoder."""
 import torch
+from pathlib import Path
 from common.entity_inputs import EntityInputs
+
+
+def frozen_encoder_path(config):
+    if config.frozen_encoder is not None:
+        return Path(config.frozen_encoder.snapshot_dir) / "pytorch_model.bin"
+    return config.initialization.stage1_encoder
+
 
 class EntityRepresentations:
     output_dim = 1024

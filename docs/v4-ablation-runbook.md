@@ -88,7 +88,7 @@ python scripts/benchmarks/sweep.py --config configs/ablations/v4_3407/core/singl
 
 `no_smiles` 仅保留图编码器，关闭 SMILES 重建和双视图一致性；`no_graph` 仅保留 SMILES 编码器，关闭原子/键重建、电荷和双视图一致性。两项均从头训练，保留 RDKit/Uni-Mol/电子辅助监督和下游 RDKit217。缺失分支对应的512D槽固定填零，原1024D残差融合不变。剩余分支沿用原 masking 和 dropout。无图模型不提供原子表示，实体缓存保留行对齐的零宽原子张量。
 
-本轮现役32份完整YAML，另保留4份已取消容量配置供追溯；所有训练seed固定42。Stage1语料、AIS分词、RDKit统计与teacher来源复用Base，不生成新语料或全量teacher。去掉分子图指移除图编码分支，并非完全不使用图衍生信息。每项独立Stage1/Stage2/五折Stage3，不能混用双视图来源。
+本轮现役36份完整YAML，另保留4份已取消容量配置供追溯；所有训练seed固定42。Stage1语料、AIS分词、RDKit统计与teacher来源复用Base，不生成新语料或全量teacher。去掉分子图指移除图编码分支，并非完全不使用图衍生信息。每项独立Stage1/Stage2/五折Stage3，不能混用双视图来源。
 
 ```bash
 set -e
@@ -139,3 +139,46 @@ python scripts/benchmarks/summarize.py --input outputs/v4/stage3/optimized_3407/
 ## 产物回传
 
 无论在哪个设备训练，所有权重、配置、身份、日志和恢复产物都回传4090对应项目路径，不排除 `.pt`。按 [跨设备归档流程](v4-runbook.md#跨设备训练产物回传)完成只读校验，不覆盖现有运行或历史输出。
+
+<a id="chemberta2-frozen-home"></a>
+
+## C12/C13：ChemBERTa-2替换Stage1
+
+合同见[ADR-0107](adr/0107-chemberta2-frozen-home-ablations.md)。两项完整替换Stage1，均永久冻结，不提供显式RDKit217；`CLS384 + zero857`保留1241D实体和2490D打包。无需Stage1预训练、语料prepare、teacher或电荷缓存。下游训练完全配对optimized_3407，但分别使用独立实体缓存、Stage2权重和五折Stage3。
+
+以下命令由用户手动执行，先确认目标GPU空闲。既有H100/szx队列不自动调整。使用原ilume环境；安装额外依赖时不更换PyTorch：
+
+```bash
+python -m pip install --no-deps transformers==5.3.0 tokenizers==0.22.2 safetensors==0.6.2
+```
+
+`huggingface_hub>=1.3,<2`等Transformers通用依赖也须满足；缺少依赖会明确失败，不自动安装或下载。H100现有2.14+cu130保持不变。下列快照下载只消费三个明确文件；仓库在加载时核对预注册SHA，不执行远程模型代码：
+
+```bash
+python -c "from huggingface_hub import snapshot_download; snapshot_download('DeepChem/ChemBERTa-77M-MTR', revision='66b895cab8adebea0cb59a8effa66b2020f204ca', allow_patterns=['config.json','tokenizer.json','pytorch_model.bin'], local_dir='assets/chemberta2/chemberta2_mtr')"
+python -c "from huggingface_hub import snapshot_download; snapshot_download('DeepChem/ChemBERTa-77M-MLM', revision='ed8a5374f2024ec8da53760af91a33fb8f6a15ff', allow_patterns=['config.json','tokenizer.json','pytorch_model.bin'], local_dir='assets/chemberta2/chemberta2_mlm')"
+```
+
+源文件就位后先运行只读的实际权重提取/重载检查（未准备资源时测试会明确skip）：
+
+```bash
+pytest -q tests/test_stage3_ablations.py -k actual_chemberta
+```
+
+必须已有匹配的Base Stage2/3准备产物。新配置通过`preparation.reference_artifacts`只读校验来源、行/对象顺序和归一化；不消费Base表示。不同服务器需保持YAML中的仓库相对路径，下载的快照也须同步。
+
+下面顺序运行两个完整流程；`CUDA_VISIBLE_DEVICES=0`选择物理GPU0，Stage3显式单折并发。可以将两个变体拆到两个tmux窗口、不同GPU独立运行，但每个输出只能有一个写入者。
+
+```bash
+set -eo pipefail
+for ablation_name in chemberta2_mtr chemberta2_mlm; do
+  CUDA_VISIBLE_DEVICES=0 python scripts/stage2/prepare.py --config "configs/ablations/v4_3407/core/${ablation_name}/stage2.yaml" --output "outputs/ablations/v4_3407/${ablation_name}/stage2/prepare"
+  CUDA_VISIBLE_DEVICES=0 python scripts/stage2/train.py --config "configs/ablations/v4_3407/core/${ablation_name}/stage2.yaml" --output "outputs/ablations/v4_3407/${ablation_name}/stage2/train"
+  CUDA_VISIBLE_DEVICES=0 python scripts/stage3/prepare.py --config "configs/ablations/v4_3407/core/${ablation_name}/stage3.yaml" --output "outputs/ablations/v4_3407/${ablation_name}/stage3/prepare"
+  CUDA_VISIBLE_DEVICES=0 python scripts/stage3/train.py --config "configs/ablations/v4_3407/core/${ablation_name}/stage3.yaml" --fold 1 2 3 4 5 --output "outputs/ablations/v4_3407/${ablation_name}/stage3/train" --max-parallel 1 --devices cuda:0
+  CUDA_VISIBLE_DEVICES=0 python scripts/stage3/evaluate.py --config "configs/ablations/v4_3407/core/${ablation_name}/stage3.yaml" --checkpoint-dir "outputs/ablations/v4_3407/${ablation_name}/stage3/train" --split valid --fold 1 2 3 4 5 --output "outputs/ablations/v4_3407/${ablation_name}/stage3/valid"
+  CUDA_VISIBLE_DEVICES=0 python scripts/stage3/evaluate.py --config "configs/ablations/v4_3407/core/${ablation_name}/stage3.yaml" --checkpoint-dir "outputs/ablations/v4_3407/${ablation_name}/stage3/train" --split test --ensemble-folds --output "outputs/ablations/v4_3407/${ablation_name}/stage3/test"
+done
+```
+
+发布固定末状态，验证不选模；默认评估包含两模拟的独立报告。使用本手册既有汇总命令，authority仍为optimized_3407，24任务宏平均及六GROUP口径不变。实际参数量、成本和来源身份随产物保存；完整权重、配置、日志和清单均按[v4回传规则](v4-runbook.md#跨设备训练产物回传)归档至4090。MTR自身经过RDKit计算性质监督，因此只称“下游无显式RDKit描述符”，不称无RDKit知识或等预训练预算比较。

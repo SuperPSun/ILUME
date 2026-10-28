@@ -913,6 +913,11 @@ def _write_task_tensors(
 
 
 def prepare_stage2_data(config: Stage2Config, *, reporter: ProgressReporter | None = None) -> dict[str, Any]:
+    if config.frozen_encoder is not None:
+        from common.frozen_encoder import load_frozen_encoder
+        config.validate()
+        source = load_frozen_encoder(config.frozen_encoder, device=resolve_device(config.training.device))
+        return source.prepare_stage2(config)
     if config.representation is not None:
         from .rdkit import prepare_rdkit_stage2
 

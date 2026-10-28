@@ -11,7 +11,7 @@ class SimulationHoME(nn.Module):
     """Five-task HoME with permanently frozen Stage1 entity inputs."""
     def __init__(self, backbone, registry, base_config, stage2_config):
         super().__init__()
-        if not stage2_config.is_entity_home or not backbone.config.is_dual_view:
+        if not stage2_config.is_entity_home or (stage2_config.frozen_encoder is None and not backbone.config.is_dual_view):
             raise ValueError("Historical ObjectEncoder models require their historical Git revision")
         self.backbone = backbone.requires_grad_(False).eval()
         self.stage2_config = stage2_config
@@ -24,6 +24,8 @@ class SimulationHoME(nn.Module):
     @property
     def model_contract(self):
         contract = {**ENTITY_INPUT_CONTRACT, "source_tasks": sorted(self.registry.task_ids)}
+        if self.stage2_config.frozen_encoder is not None:
+            contract["frozen_encoder"] = self.backbone.encoder_identity["hash"]
         ablation = self.backbone.config.to_dict().get("ablation")
         if ablation is not None:
             contract["stage1_ablation"] = ablation

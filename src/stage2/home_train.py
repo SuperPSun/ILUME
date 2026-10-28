@@ -16,6 +16,7 @@ import torch.nn.functional as F
 from common.identity import require_compatible_identity, semantic_hash, semantic_identity, tensor_state_hash
 from common.io import atomic_json, atomic_torch_save, sha256_file
 from common.progress import ProgressReporter
+from common.frozen_encoder import load_frozen_encoder, FrozenEntityPacker
 from common.training import capture_rng_state, cosine_warmup, resolve_device, restore_rng_state, seed_everything
 from stage1.masking import MultimodalPacker
 from stage1.config import load_config as load_stage1_config
@@ -38,10 +39,7 @@ from .home_contract import (
     SOURCE_GROUPS, source_groups, state_hash, transferable_state,
 )
 from .home_model import SimulationHoME
-from .home_artifact import final_kind, full_owner_manifest, full_state_hash, load_home_final
-
-
-STAGE2_HOME_CHECKPOINT_KIND = "ilume_stage2_home_checkpoint_v1"
+from .home_artifact import checkpoint_kind, final_kind, full_owner_manifest, full_state_hash, load_home_final
 
 
 def _cpu_state(model: torch.nn.Module) -> dict[str, torch.Tensor]:
@@ -67,6 +65,8 @@ def training_identity(
         "stage2_data_identity": data_identity["hash"],
         **({"frozen_entity_cache": json.loads((config.data.artifacts_dir / "frozen_entities.json").read_text())} if experiment.freeze_stage1 else {}),
         "stage1_source": (
+            {"frozen_encoder": config.frozen_encoder.to_dict(), "encoder_identity": json.loads((config.data.artifacts_dir / "metadata.json").read_text())["frozen_encoder_identity"]}
+            if config.frozen_encoder is not None else
             {"checkpoint_sha256": sha256_file(config.initialization.checkpoint)}
             if experiment.initialization == "pretrained"
             else {
@@ -109,6 +109,11 @@ def resolve_training_identity(recipe: HomeRecipe, math_contract: Mapping[str, An
 def load_backbone(experiment: HomeRecipe):
     config = experiment.stage2
     seed_everything(effective_training_seed(config) if experiment.random_seed is None else experiment.random_seed)
+    if config.frozen_encoder is not None:
+        from types import SimpleNamespace
+        model = load_frozen_encoder(config.frozen_encoder)
+        return SimpleNamespace(model=model, config=model.config, vocabulary=None,
+                               artifact_hash=model.feature_identity["hash"])
     if experiment.initialization == "pretrained":
         loaded = load_stage1_model(
             config.initialization.checkpoint, config.data.pretrain_artifacts_dir,
@@ -138,7 +143,7 @@ def load_backbone(experiment: HomeRecipe):
 
 def build_model(experiment: HomeRecipe, registry: Any) -> tuple[SimulationHoME, Any]:
     loaded = load_backbone(experiment)
-    if loaded.config.is_dual_view != experiment.freeze_stage1:
+    if experiment.stage2.frozen_encoder is None and loaded.config.is_dual_view != experiment.freeze_stage1:
         raise ValueError("Stage2/Stage1 representation family mismatch: v4 requires permanent Stage1 freeze")
     model = SimulationHoME(loaded.model, registry, experiment.stage3, experiment.stage2)
     return model, loaded
@@ -311,9 +316,16 @@ def _export(
     checkpoint_path = root / f"checkpoint_epoch_{experiment.stage2_epochs:05d}.pt"
     from stage1.identity import metadata_identity as feature_metadata_identity
     feature_root = experiment.stage2.data.pretrain_artifacts_dir
-    feature_metadata = json.loads((feature_root / "metadata.json").read_text())
-    features = {name: json.loads((feature_root / name).read_text()) for name in (
-        "tokenizer.json", "descriptor_schema.json", "descriptor_scaler.json")}
+    external = experiment.stage2.frozen_encoder is not None
+    if external:
+        bundle = model.backbone.export_bundle()
+        feature_metadata = {"semantic": {"identities": {"feature": model.backbone.feature_identity}},
+                            "feature_generation_contract": bundle["extraction"]}
+        features = bundle["features"]
+    else:
+        feature_metadata = json.loads((feature_root / "metadata.json").read_text())
+        features = {name: json.loads((feature_root / name).read_text()) for name in (
+            "tokenizer.json", "descriptor_schema.json", "descriptor_scaler.json")}
     stage1_state = _cpu_state(model.backbone)
     stage1_hash = tensor_state_hash("stage1.encoding-state", stage1_state)
     shared = transferable_state(model.home)
@@ -332,6 +344,7 @@ def _export(
         "catalog_sha256": registry.catalog_sha256,
         "scalers": data_metadata["scalers"],
         "scalers_hash": semantic_hash("stage2.home.scalers.v1", data_metadata["scalers"]),
+        **({"frozen_encoder": bundle} if external else {}),
         "stage1_config": model.backbone.config.to_dict(),
         "stage1_feature_identity": dict(feature_metadata_identity(feature_metadata, "feature", context="Stage1 features")),
         "stage1_encoding_contract": {**model.model_contract, "feature_generation_contract": feature_metadata["feature_generation_contract"]},
@@ -398,11 +411,11 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
             if not bool(train[task].target_mask.all()) or not bool(valid[task].target_mask.all()):
                 raise ValueError(f"Stage2-HoME ordinary task has missing labels: {task}")
     model, loaded = build_model(experiment, registry)
-    if loaded.config.is_dual_view:
+    if config.frozen_encoder is not None or loaded.config.is_dual_view:
         from .entity_cache import validate_frozen_entity_source
         validate_frozen_entity_source(entities, model.backbone)
     model.to(device)
-    packer = MultimodalPacker(loaded.vocabulary)
+    packer = FrozenEntityPacker() if config.frozen_encoder is not None else MultimodalPacker(loaded.vocabulary)
     train_device = {task: Stage2DeviceTaskData.from_dataset(data, device) for task, data in train.items()}
     valid_device = {task: Stage2DeviceTaskData.from_dataset(data, device) for task, data in valid.items()}
     batches = task_batch_counts(train, config.training.batch_size)
@@ -415,7 +428,7 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
         {"params": model.backbone_parameters(), "lr": config.training.backbone_learning_rate},
         {"params": model.home_parameters(), "lr": config.training.task_head_learning_rate},
     ]
-    if loaded.config.is_dual_view:
+    if config.frozen_encoder is not None or loaded.config.is_dual_view:
         groups = [group for group in groups if len(group["params"])]
     optimizer = torch.optim.AdamW(
         groups, weight_decay=config.training.weight_decay,
@@ -440,7 +453,7 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
         if checkpoint_files != [output / f"checkpoint_epoch_{index:05d}.pt" for index in range(1, epoch + 1)]:
             raise ValueError("Stage2-HoME checkpoint sequence is incomplete")
         _check_history(output, epoch)
-        if (checkpoint.get("kind") != ("ilume_stage2_entity_home_checkpoint_v4" if config.is_entity_home else "ilume_stage2_home_checkpoint_v4" if experiment.freeze_stage1 else STAGE2_HOME_CHECKPOINT_KIND)
+        if (checkpoint.get("kind") != (checkpoint_kind(experiment))
             or checkpoint.get("format_version") != (4 if config.is_entity_home else 4 if experiment.freeze_stage1 else 1)
             or checkpoint.get("training_identity") != identity):
             raise ValueError("Stage2-HoME resume identity mismatch")
@@ -543,7 +556,7 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
             "validation_normalized_mae": validation,
         }
         checkpoint = {
-            "kind": "ilume_stage2_entity_home_checkpoint_v4" if config.is_entity_home else "ilume_stage2_home_checkpoint_v4" if experiment.freeze_stage1 else STAGE2_HOME_CHECKPOINT_KIND,
+            "kind": checkpoint_kind(experiment),
             "format_version": 4 if config.is_entity_home else 4 if experiment.freeze_stage1 else 1, "epoch": epoch, "updates": update,
             "training_identity": identity, "model": state,
             **({"owner_manifest": full_owner_manifest(model)} if config.is_entity_home else {}),

@@ -14,6 +14,7 @@ from stage1.config import config_from_dict
 from stage1.descriptors import DescriptorSchema, rdkit_descriptor_names
 from stage1.model import build_stage1_model
 from stage1.tokenizer import SmilesTokenizer
+from common.frozen_encoder import load_frozen_encoder
 
 from .home_config import home_recipe_from_dict
 from .home_contract import (
@@ -29,7 +30,17 @@ STAGE2_HOME_FINAL_KIND = "ilume_stage2_home_final_v2"
 STAGE2_HOME_V4_FINAL_KIND = "ilume_stage2_home_final_v4"
 
 
+def checkpoint_kind(recipe):
+    if recipe.stage2.frozen_encoder is not None:
+        return "ilume_stage2_external_frozen_home_checkpoint_v1"
+    if recipe.stage2.is_entity_home:
+        return "ilume_stage2_entity_home_checkpoint_v4"
+    return "ilume_stage2_home_checkpoint_v4" if recipe.freeze_stage1 else "ilume_stage2_home_checkpoint_v1"
+
+
 def final_kind(recipe):
+    if recipe.stage2.frozen_encoder is not None:
+        return "ilume_stage2_external_frozen_home_final_v1"
     if recipe.stage2.is_entity_home:
         return "ilume_stage2_entity_home_final_v4"
     return STAGE2_HOME_V4_FINAL_KIND if recipe.freeze_stage1 else STAGE2_HOME_FINAL_KIND
@@ -44,7 +55,7 @@ def full_owner_manifest(model: SimulationHoME) -> dict[str, str]:
     result: dict[str, str] = {}
     for name, _ in model.named_parameters():
         if name.startswith("backbone."):
-            result[name] = "STAGE1"
+            result[name] = "FROZEN_ENCODER" if model.stage2_config.frozen_encoder is not None else "STAGE1"
         elif name.startswith("object_encoder."):
             result[name] = "OBJECT"
         elif name.startswith("home."):
@@ -63,7 +74,7 @@ def load_home_final(path: str | Path) -> tuple[dict[str, Any], SimulationHoME, S
     if manifest.get("artifact") != artifact.name or manifest.get("artifact_sha256") != sha256_file(artifact):
         raise ValueError("Stage 2 final artifact SHA mismatch")
     payload = torch.load(artifact, map_location="cpu", weights_only=False)
-    if (payload.get("kind") != "ilume_stage2_entity_home_final_v4"
+    if (payload.get("kind") not in {"ilume_stage2_entity_home_final_v4", "ilume_stage2_external_frozen_home_final_v1"}
             or manifest.get("kind") != payload.get("kind") or payload.get("format_version") != 4):
         raise ValueError("Unsupported Stage 2 full HoME artifact kind")
     identity = payload["training_identity"]
@@ -120,14 +131,25 @@ def load_home_final(path: str | Path) -> tuple[dict[str, Any], SimulationHoME, S
     features = payload["feature_artifacts"]
     if semantic_hash("stage2.home.feature-artifacts.v1", features) != payload["feature_artifacts_hash"]:
         raise ValueError("Stage 2 full model feature artifact hash mismatch")
-    vocabulary = SmilesTokenizer.from_payload(features["tokenizer.json"])
-    schema = DescriptorSchema.from_payload(
-        features["descriptor_schema.json"], expected_raw_names=rdkit_descriptor_names(),
-    )
-    stage1_config = config_from_dict(payload["stage1_config"])
-    backbone = build_stage1_model(stage1_config, vocabulary, schema, encoder_only=stage1_config.is_dual_view)
+    if recipe.stage2.frozen_encoder is not None:
+        backbone = load_frozen_encoder(recipe.stage2.frozen_encoder, bundle=payload["frozen_encoder"])
+        if features != backbone.features or payload["stage1_config"] != backbone.config.to_dict():
+            raise ValueError("Stage2 embedded external encoder feature/config mismatch")
+        vocabulary = None
+    else:
+        vocabulary = SmilesTokenizer.from_payload(features["tokenizer.json"])
+        schema = DescriptorSchema.from_payload(
+            features["descriptor_schema.json"], expected_raw_names=rdkit_descriptor_names(),
+        )
+        stage1_config = config_from_dict(payload["stage1_config"])
+        backbone = build_stage1_model(stage1_config, vocabulary, schema, encoder_only=stage1_config.is_dual_view)
     model = SimulationHoME(backbone, registry, recipe.stage3, recipe.stage2)
     model.load_state_dict(state, strict=True)
+    if recipe.stage2.frozen_encoder is not None:
+        if (payload["stage1_feature_identity"] != backbone.feature_identity
+                or tensor_state_hash("stage1.encoding-state", backbone.state_dict()) != backbone.encoder_identity["payload"]["stage1_state_hash"]
+                or payload["stage1_encoding_contract"].get("feature_generation_contract") != payload["frozen_encoder"]["extraction"]):
+            raise ValueError("Stage2 full model differs from its embedded external encoder")
     if payload["owner_manifest"] != full_owner_manifest(model):
         raise ValueError("Stage 2 full model owner manifest mismatch")
     shared = transferable_state(model.home)

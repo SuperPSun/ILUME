@@ -9,6 +9,8 @@ from typing import Any, Sequence
 import torch
 import yaml
 
+from common.frozen_encoder import FrozenEncoderConfig
+
 
 BASE_GROUP_TASKS: dict[str, tuple[str, ...]] = {
     "transport": (
@@ -114,6 +116,7 @@ class Stage3DataConfig:
 @dataclass(frozen=True)
 class Stage3PreparationConfig:
     data_metadata_path: Path | None = None
+    reference_artifacts: Path | None = None
     encoding_batch_size: int = 256
     cache_dir: Path = Path("outputs/v1/stage3/base/prepare/object_cache")
 
@@ -301,6 +304,7 @@ class Stage3Config:
         default_factory=Stage3InitializationConfig
     )
     representation: Stage3RepresentationConfig | None = None
+    frozen_encoder: FrozenEncoderConfig | None = None
     model: Stage3ModelConfig = field(default_factory=Stage3ModelConfig)
     groups: dict[str, Stage3GroupConfig] = field(default_factory=_base_groups)
     tasks: dict[str, Stage3TaskConfig] = field(default_factory=_base_task_registry)
@@ -392,10 +396,16 @@ class Stage3Config:
             raise ValueError("Stage 3 cv repeats must be positive")
         if self.preparation.encoding_batch_size <= 0:
             raise ValueError("preparation.encoding_batch_size must be positive")
+        if self.frozen_encoder is not None and (
+                not self.is_entity_home or self.representation is not None
+                or self.initialization.stage1_encoder is not None
+                or self.initialization.stage1_artifacts_dir is not None
+                or self.preparation.reference_artifacts is None):
+            raise ValueError("External frozen encoder requires Entity-HoME, reference data and no Stage1 source")
         if self.representation is None:
             if self.is_entity_home:
                 if (self.initialization.stage2_encoder is not None or self.training.object_encoder_phase1 is not None
-                        or self.initialization.stage1_encoder is None or self.initialization.stage1_artifacts_dir is None):
+                        or (self.frozen_encoder is None and (self.initialization.stage1_encoder is None or self.initialization.stage1_artifacts_dir is None))):
                     raise ValueError("Entity HoME requires only frozen Stage1, not ObjectEncoder")
             else:
                 if self.initialization.stage2_encoder is None:
@@ -784,6 +794,10 @@ class Stage3Config:
             return value
 
         payload = convert(asdict(self))
+        if self.frozen_encoder is None:
+            payload.pop("frozen_encoder")
+        if self.preparation.reference_artifacts is None:
+            payload["preparation"].pop("reference_artifacts")
         if self.initialization.representation_contract == "object_v3":
             payload["initialization"].pop("representation_contract")
         if self.transfer_knowledge is None:
@@ -857,7 +871,7 @@ def _construct_dataclass(cls: type, raw: dict[str, Any] | None) -> Any:
 def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
     allowed = {
         "data", "preparation", "initialization", "representation", "model",
-        "groups", "tasks", "training", "transfer_knowledge"
+        "groups", "tasks", "training", "transfer_knowledge", "frozen_encoder"
     }
     unknown = set(raw) - allowed
     if unknown:
@@ -867,6 +881,8 @@ def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
         if name in data_raw:
             data_raw[name] = Path(data_raw[name])
     preparation_raw = dict(raw.get("preparation") or {})
+    if preparation_raw.get("reference_artifacts") is not None:
+        preparation_raw["reference_artifacts"] = Path(preparation_raw["reference_artifacts"])
     if "cache_dir" in preparation_raw:
         preparation_raw["cache_dir"] = Path(preparation_raw["cache_dir"])
     if preparation_raw.get("data_metadata_path") is not None:
@@ -1030,6 +1046,7 @@ def stage3_config_from_dict(raw: dict[str, Any]) -> Stage3Config:
         tasks=tasks,
         training=_construct_dataclass(Stage3TrainingConfig, training_raw),
         transfer_knowledge=knowledge,
+        frozen_encoder=(None if raw.get("frozen_encoder") is None else FrozenEncoderConfig(**raw["frozen_encoder"])),
     )
     config.validate()
     return config

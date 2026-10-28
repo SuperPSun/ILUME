@@ -26,9 +26,9 @@ def test_registered_ablation_contracts_are_paired_and_fixed_final(config_root, a
     base1=yaml.safe_load((ROOT/'configs/v4/stage1/base.yaml').read_text())
     base2=load_home_recipe(ROOT/f'configs/v4/stage2/{authority}.yaml')
     base3=load_stage3_config(ROOT/f'configs/v4/stage3/{authority}.yaml')
-    assert len(list(configs.rglob('*.yaml')))==36
+    assert len(list(configs.rglob('*.yaml')))==(40 if config_root=='v4_3407' else 36)
     cancelled=list((configs/'capacity').rglob('*.yaml')) if config_root=='v4_3407' else []
-    assert len(list(configs.rglob('*.yaml')))-len(cancelled)==(32 if config_root=='v4_3407' else 36)
+    assert len(list(configs.rglob('*.yaml')))-len(cancelled)==36
     assert not (configs/'repeats').exists()
     for name,removed in {'no_smiles':('smiles','alignment'), 'no_graph':('atom','bond','partial_charge','alignment')}.items():
         config=load_stage1_config(configs/f'core/{name}/stage1.yaml')
@@ -107,6 +107,60 @@ def test_entity_mlp_sweep_accepts_explicit_gpu_slots(monkeypatch, tmp_path):
         '--benchmark','stage3','--max-workers','2','--devices','cuda:0,cuda:1'])
     sweep.main()
     assert len(scheduled)==5
+
+
+@pytest.mark.parametrize("variant", ["chemberta2_mtr", "chemberta2_mlm"])
+def test_chemberta_native_states_freeze_padding_strict_reload_and_tamper(variant, chemberta_snapshot_factory):
+    from dataclasses import replace
+    from common.frozen_encoder import load_frozen_encoder
+    from stage2.frozen import FrozenObjectSpec
+    if chemberta_snapshot_factory is None:
+        pytest.skip('ChemBERTa optional dependencies are not installed')
+    spec = chemberta_snapshot_factory(variant)
+    source = load_frozen_encoder(spec)
+    assert not source.config.is_dual_view and not source.training
+    source.train()
+    assert not source.training and all(not p.requires_grad for p in source.parameters())
+    batched = source.encode_smiles(["CC", "C C C"])
+    torch.testing.assert_close(batched[0], source.encode_smiles(["CC"])[0], rtol=1e-5, atol=1e-6)
+    assert batched.shape == (2, 1241) and not batched[:, 384:].count_nonzero()
+    ids = torch.tensor([source.tokenizer.encode("CC").ids])
+    with torch.inference_mode():
+        expected = source.encoder(input_ids=ids, attention_mask=torch.ones_like(ids)).last_hidden_state[:, 0]
+    torch.testing.assert_close(batched[:1, :384], expected, rtol=1e-5, atol=1e-6)
+    values, roles = source.encode_slots([FrozenObjectSpec("il", (("cation", "[Na+]"), ("anion", "[Cl-]")))])
+    assert values.shape == (1, 2, 1241) and roles.tolist() == [[0, 1]]
+    with pytest.raises(ValueError, match="role"):
+        source.encode_slots([FrozenObjectSpec("molecule", (("neutral", "[Na+]"),))])
+    with pytest.raises(ValueError, match="512"):
+        source.encode_smiles([" ".join(["C"] * 512)])
+    bundle = source.export_bundle()
+    restored = load_frozen_encoder(spec, bundle=bundle)
+    assert torch.equal(source.encode_smiles(["CC"]), restored.encode_smiles(["CC"]))
+    corrupt = deepcopy(bundle)
+    corrupt["state"][next(iter(corrupt["state"]))] += 1
+    with pytest.raises(ValueError, match="identity"):
+        load_frozen_encoder(spec, bundle=corrupt)
+    other = replace(spec, variant="chemberta2_mlm" if variant.endswith("mtr") else "chemberta2_mtr")
+    with pytest.raises(ValueError, match="contract"):
+        load_frozen_encoder(other, bundle=bundle)
+    (Path(spec.snapshot_dir) / "tokenizer.json").write_text('{}')
+    with pytest.raises(ValueError, match="SHA"):
+        load_frozen_encoder(spec)
+
+
+@pytest.mark.parametrize("variant", ["chemberta2_mtr", "chemberta2_mlm"])
+def test_actual_chemberta_official_weights_extract_and_reload(variant):
+    from common.frozen_encoder import load_frozen_encoder
+    config = load_home_recipe(ROOT / f'configs/ablations/v4_3407/core/{variant}/stage2.yaml')
+    spec = config.stage2.frozen_encoder
+    if not (ROOT / spec.snapshot_dir / 'pytorch_model.bin').is_file():
+        pytest.skip('Official ChemBERTa snapshot must be prepared explicitly by the user')
+    source = load_frozen_encoder(spec)
+    values = source.encode_smiles(['CCO', '[Na+]', 'O=S(=O)([O-])C(F)(F)F'])
+    assert values.shape == (3, 1241) and not values[:, 384:].count_nonzero()
+    restored = load_frozen_encoder(spec, bundle=source.export_bundle())
+    assert torch.equal(values, restored.encode_smiles(['CCO', '[Na+]', 'O=S(=O)([O-])C(F)(F)F']))
 
 
 def test_ablation_summary_uses_selected_authority(monkeypatch):

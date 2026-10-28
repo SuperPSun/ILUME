@@ -13,6 +13,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
+import ablations.entity_home.chemberta  # Register independent frozen encoder sources.
+
 import ablations.entity_home.stage1  # Register independent Stage1 ablation configs and models.
 
 from common.outputs import open_run_directory, repository_path, repository_relative

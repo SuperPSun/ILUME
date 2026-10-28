@@ -13,7 +13,7 @@ from common.training import resolve_device, seed_everything
 from stage2.home_contract import load_transferable_state
 from stage2.home_artifact import load_home_final
 from stage1.identity import encoding_state_hash
-from stage2 import load_frozen_stage1_entities
+from stage2.frozen import load_entity_source
 
 from .config import Stage3Config, effective_training_seed
 from .data import Stage3TaskDataset
@@ -57,8 +57,7 @@ def load_source(config: Stage3Config) -> dict[str, Any]:
     payload, loaded_model, vocabulary = load_home_final(artifact_path)
     validate_transfer_architecture(loaded_model.home.model_config, config.model,
                                    loaded_model.home.group_configs, config.groups)
-    frozen = load_frozen_stage1_entities(config.initialization.stage1_encoder,
-                                       config.initialization.stage1_artifacts_dir)
+    frozen = load_entity_source(config)
     if (encoding_state_hash(loaded_model.backbone) != frozen.encoder_identity["payload"]["stage1_state_hash"]
             or payload["stage1_feature_identity"]["hash"] != frozen.encoder_identity["payload"]["feature_identity"]):
         raise ValueError("Stage2 source architecture or frozen Stage1 identity mismatch")

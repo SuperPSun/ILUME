@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import torch
+
+from common.frozen_encoder import FrozenEntityPacker
 from stage1.masking import MultimodalPacker
 from stage2.data import (
     Stage2BatchDescriptor, Stage2DeviceTaskData, Stage2EntityDataset,
@@ -214,7 +216,7 @@ def load_simulation_training_data(
     planned = load_simulation_plan_data(artifacts_dir, source_payload)
     valid = {task: Stage2TaskDataset(artifacts_dir, task, "valid") for task in planned.train}
     entities = Stage2EntityDataset(artifacts_dir)
-    if source_payload.get("kind") in {"ilume_stage2_home_final_v4", "ilume_stage2_entity_home_final_v4", "ilume_stage2_entity_home_zero_update_v1"}:
+    if source_payload.get("kind") in {"ilume_stage2_home_final_v4", "ilume_stage2_entity_home_final_v4", "ilume_stage2_entity_home_zero_update_v1", "ilume_stage2_external_frozen_home_final_v1"}:
         from common.identity import tensor_state_hash
 
         manifest = entities.frozen_entity_manifest
@@ -222,7 +224,7 @@ def load_simulation_training_data(
             raise ValueError("Stage 3 simulation frozen entity cache source mismatch")
     return SimulationTrainingData(
         entities, planned.train, valid,
-        MultimodalPacker(vocabulary),
+        FrozenEntityPacker() if source_payload.get("frozen_encoder") is not None else MultimodalPacker(vocabulary),
         {task: Stage2DeviceTaskData.from_dataset(data, device) for task, data in planned.train.items()},
         {task: Stage2DeviceTaskData.from_dataset(data, device) for task, data in valid.items()},
         planned.data_identity, amp_dtype,
@@ -240,7 +242,7 @@ def load_simulation_plan_data(
     if (identity["hash"] != source_payload["stage2_data_identity"]["hash"]
             or registry.registry_hash != source_payload["registry_hash"]):
         raise ValueError("Stage 3 simulation data differs from the Stage 2 source")
-    tasks = AUXILIARY_SIMULATION_TASKS if source_payload["kind"] in {"ilume_stage2_entity_home_final_v4", "ilume_stage2_entity_home_zero_update_v1"} else SIMULATION_TASKS
+    tasks = AUXILIARY_SIMULATION_TASKS if source_payload["kind"] in {"ilume_stage2_entity_home_final_v4", "ilume_stage2_entity_home_zero_update_v1", "ilume_stage2_external_frozen_home_final_v1"} else SIMULATION_TASKS
     train = {task: Stage2TaskDataset(artifacts_dir, task, "train") for task in tasks}
     return SimulationPlanData(train, identity["hash"])
 

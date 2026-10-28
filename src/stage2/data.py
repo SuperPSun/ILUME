@@ -22,6 +22,7 @@ from .registry import Stage2Registry
 STAGE2_ARTIFACT_VERSION = 3
 STAGE2_ARTIFACT_KIND = "ilume_stage2_object_data"
 STAGE2_RDKIT_ARTIFACT_KIND = "ilume_stage2_rdkit_object_data"
+STAGE2_FROZEN_ARTIFACT_KIND = "ilume_stage2_external_frozen_data_v1"
 STAGE2_PREPARATION_CONTRACT_VERSION = 3
 STAGE2_TENSOR_CONTRACT = {
     "conditions": "task_train_normalized_float32",
@@ -36,6 +37,7 @@ def _load_metadata(artifact_dir: Path) -> dict[str, Any]:
     if metadata.get("format_version") != STAGE2_ARTIFACT_VERSION or metadata.get("kind") not in {
         STAGE2_ARTIFACT_KIND,
         STAGE2_RDKIT_ARTIFACT_KIND,
+        STAGE2_FROZEN_ARTIFACT_KIND,
     }:
         raise ValueError("Unsupported Stage 2 object data artifact; rerun prepare for Object v3")
     if metadata.get("preparation_contract_version") != STAGE2_PREPARATION_CONTRACT_VERSION:
@@ -76,6 +78,27 @@ class Stage2EntityDataset:
             raise ValueError("Unsupported Stage 2 entity index format")
         self.entries = payload["entries"]
         self.features: torch.Tensor | None = None
+        if self.artifact_kind == STAGE2_FROZEN_ARTIFACT_KIND:
+            from common.identity import validate_semantic_identity
+            cached = torch.load(_verify_artifact_file(self.artifact_dir, self.metadata, "entity_features.pt"),
+                                map_location="cpu", weights_only=True)
+            manifest = json.loads(_verify_artifact_file(self.artifact_dir, self.metadata, "frozen_entities.json").read_text())
+            validate_semantic_identity(cached["identity"])
+            values = cached["features"]
+            if (cached.get("kind") != self.artifact_kind or manifest.get("kind") != self.artifact_kind
+                    or cached["identity"] != manifest["identity"]
+                    or cached["identity"]["payload"]["data_identity"] != self.metadata["semantic"]["identities"]["data"]["hash"]
+                    or manifest["artifact_sha256"] != sha256_file(self.artifact_dir / "entity_features.pt")
+                    or values.shape != (len(self.entries), 1241) or values.dtype != torch.float32
+                    or not torch.isfinite(values).all() or bool(values[:, 384:].count_nonzero())):
+                raise ValueError("External frozen entity cache tensor/source mismatch")
+            self.samples = tuple({**entry, "sample_id": f"{entry['role']}:{entry['canonical_smiles']}",
+                                  "frozen_entity_embedding": values[i]}
+                                 for i, entry in enumerate(self.entries))
+            if any(e["entity_id"] != i for i, e in enumerate(self.entries)):
+                raise ValueError("External frozen entity IDs must be contiguous")
+            self.frozen_entity_manifest = manifest
+            return
         if self.artifact_kind == STAGE2_RDKIT_ARTIFACT_KIND:
             feature_payload = torch.load(
                 _verify_artifact_file(

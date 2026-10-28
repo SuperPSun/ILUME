@@ -1,4 +1,5 @@
 from . import stage1  # Register strict reloading of single-view sources.
+from . import chemberta  # Register explicit external frozen sources.
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
 
@@ -9,7 +10,7 @@ from stage3.config import Stage3Config, Stage3SimulationTrainingConfig, load_sta
 
 VARIANTS = {
     'no_stage1', 'no_stage2', 'no_global', 'no_group', 'no_private',
-    'uniform_gate', 'no_smiles', 'no_graph', 'phase1', 'phase2', 'capacity_no_global', 'capacity_no_group',
+    'chemberta2_mtr', 'chemberta2_mlm', 'uniform_gate', 'no_smiles', 'no_graph', 'phase1', 'phase2', 'capacity_no_global', 'capacity_no_group',
     'capacity_match_global', 'capacity_match_group', 'auxiliary',
 }
 
@@ -41,6 +42,8 @@ class AblationSpec:
 
     @property
     def display_name(self):
+        if self.variant in chemberta.SOURCES:
+            return 'ChemBERTa-2 ' + self.variant.rsplit('_', 1)[1].upper() + ' + HoME'
         if self.variant in {'no_smiles', 'no_graph'}:
             return 'ILUME v4 w/o ' + ('SMILES' if self.variant == 'no_smiles' else 'Molecular Graph')
         label = 'w/o ' + self.supervision_removed.removeprefix('lambda_') + ' supervision' if self.variant == 'auxiliary' else self.variant
@@ -67,6 +70,13 @@ class AblationConfig(Stage3Config):
         if self.ablation is None or not self.is_entity_home:
             raise ValueError('Research config requires an Entity-HoME ablation')
         self.ablation.validate()
+        external = self.ablation.variant in chemberta.SOURCES
+        if external != (self.frozen_encoder is not None):
+            raise ValueError('ChemBERTa ablation requires its explicit frozen_encoder source')
+        if external:
+            chemberta.validate_spec(self.frozen_encoder)
+            if self.frozen_encoder.variant != self.ablation.variant:
+                raise ValueError('ChemBERTa ablation/source version mismatch')
         if self.data.seed == 3407 and self.ablation.variant.startswith('capacity_'):
             raise ValueError('Capacity controls for data/3407 were cancelled; compare fixed Base phase states instead')
         if self.ablation.zero_update:

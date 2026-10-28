@@ -7,6 +7,7 @@ from typing import Any
 import yaml
 
 from common.training import canonical_json_sha256
+from common.frozen_encoder import FrozenEncoderConfig
 from .registry import Stage2Registry
 
 
@@ -50,6 +51,7 @@ class Stage2DataConfig:
 @dataclass(frozen=True)
 class Stage2PreparationConfig:
     data_metadata_path: Path | None = None
+    reference_artifacts: Path | None = None
     workers: int = 8
     teacher_batch_size: int | None = 512
 
@@ -126,6 +128,7 @@ class Stage2Config:
     preparation: Stage2PreparationConfig = field(default_factory=Stage2PreparationConfig)
     initialization: Stage2InitializationConfig = field(default_factory=Stage2InitializationConfig)
     representation: Stage2RepresentationConfig | None = None
+    frozen_encoder: FrozenEncoderConfig | None = None
     model: Stage2ModelConfig = field(default_factory=Stage2ModelConfig)
     loss: Stage2LossConfig = field(default_factory=Stage2LossConfig)
     training: Stage2TrainingConfig = field(default_factory=Stage2TrainingConfig)
@@ -167,7 +170,16 @@ class Stage2Config:
             raise ValueError(
                 "loss.teacher_weighting must be uncompensated or task_compensated"
             )
-        if self.representation is None:
+        if self.frozen_encoder is not None:
+            if (not self.is_entity_home or self.representation is not None
+                    or self.data.pretrain_artifacts_dir is not None
+                    or self.initialization.checkpoint is not None
+                    or self.initialization.stage1_config is not None
+                    or self.initialization.random_seed is not None
+                    or self.loss.lambda_teacher != 0.0
+                    or self.preparation.reference_artifacts is None):
+                raise ValueError("External frozen encoders require Entity-HoME, reference data and no Stage1 source")
+        elif self.representation is None:
             if self.data.pretrain_artifacts_dir is None:
                 raise ValueError("Stage 2 requires Stage 1 feature artifacts")
             if (self.initialization.checkpoint is None) == (self.initialization.stage1_config is None):
@@ -309,6 +321,10 @@ class Stage2Config:
             payload["preparation"].pop("data_metadata_path")
         if self.training.seed is None:
             payload["training"].pop("seed")
+        if self.preparation.reference_artifacts is None:
+            payload["preparation"].pop("reference_artifacts")
+        if self.frozen_encoder is None:
+            payload.pop("frozen_encoder")
         if self.is_entity_home:
             for name in ("object_layers", "object_ffn_dim", "object_encoder_kind", "unary_hidden_dim", "pair_hidden_dim"):
                 payload["model"].pop(name)
@@ -342,6 +358,7 @@ _SECTIONS = {
     "preparation": Stage2PreparationConfig,
     "initialization": Stage2InitializationConfig,
     "representation": Stage2RepresentationConfig,
+    "frozen_encoder": FrozenEncoderConfig,
     "model": Stage2ModelConfig,
     "loss": Stage2LossConfig,
     "training": Stage2TrainingConfig,
@@ -361,8 +378,10 @@ def _construct(section_type: type, values: dict[str, Any] | None) -> Any:
         for key in ("data_root", "task_catalog_path", "pretrain_artifacts_dir", "artifacts_dir"):
             if values.get(key) is not None:
                 values[key] = Path(values[key])
-    elif section_type is Stage2PreparationConfig and values.get("data_metadata_path") is not None:
-        values["data_metadata_path"] = Path(values["data_metadata_path"])
+    elif section_type is Stage2PreparationConfig:
+        for key in ("data_metadata_path", "reference_artifacts"):
+            if values.get(key) is not None:
+                values[key] = Path(values[key])
     elif section_type is Stage2InitializationConfig:
         for key in ("checkpoint", "stage1_config"):
             if values.get(key) is not None:
@@ -383,7 +402,7 @@ def stage2_config_from_dict(raw: dict[str, Any]) -> Stage2Config:
     if unknown:
         raise ValueError("Unknown Stage 2 config sections: " + ", ".join(sorted(unknown)))
     sections = {
-        name: (None if name == "representation" and raw.get(name) is None else _construct(section, raw.get(name)))
+        name: (None if name in {"representation", "frozen_encoder"} and raw.get(name) is None else _construct(section, raw.get(name)))
         for name, section in _SECTIONS.items()
     }
     config = Stage2Config(**sections)

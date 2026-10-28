@@ -8,6 +8,9 @@ from typing import Any, Mapping, Sequence
 
 import torch
 
+from .entity_inputs import frozen_encoder_path
+from stage2.frozen import load_entity_source
+
 from common.identity import IDENTITY_CONTRACT_VERSION, require_compatible_identity
 from common.io import atomic_json, atomic_torch_save, sha256_file
 from common.progress import ProgressReporter
@@ -16,7 +19,6 @@ from stage2 import (
     FrozenObjectSpec,
     load_frozen_object_encoder,
     load_stage2_encoder_identity,
-    load_frozen_stage1_entities,
 )
 from .config import Stage3Config
 from .data import (
@@ -174,7 +176,7 @@ def materialize_object_slots(
     config: Stage3Config, object_keys: Sequence[ObjectKey]
 ) -> dict[str, Any]:
     """Freeze Stage 1 entity outputs, not the trainable ObjectEncoder output."""
-    encoder = load_frozen_stage1_entities(config.initialization.stage1_encoder, config.initialization.stage1_artifacts_dir, device=resolve_device(config.training.device))
+    encoder = load_entity_source(config, device=resolve_device(config.training.device))
     slots = torch.zeros((len(object_keys), 2, 1241), dtype=torch.float32)
     roles = torch.zeros((len(object_keys), 2), dtype=torch.long)
     counts = torch.tensor([len(key.slots) for key in object_keys], dtype=torch.long)
@@ -286,7 +288,7 @@ def _stage_artifacts(
         "kind": prepared_artifact_kind(config),
         "encoding_contract_version": OBJECT_ENCODING_CONTRACT_VERSION,
         ("stage1_encoder_identity" if config.is_entity_home else "stage2_encoder_identity"): stage2_encoder_identity,
-        **({"stage1_encoder_sha256": sha256_file(config.initialization.stage1_encoder), "source_stage1_checkpoint_sha256": sha256_file(config.initialization.stage1_encoder), "stage1_encoder_identity": stage2_encoder_identity} if config.is_entity_home else {"stage2_encoder_sha256": sha256_file(config.initialization.stage2_encoder)} if slot_payload is not None else {}),
+        **({"stage1_encoder_sha256": sha256_file(frozen_encoder_path(config)), "source_stage1_checkpoint_sha256": sha256_file(frozen_encoder_path(config)), "stage1_encoder_identity": stage2_encoder_identity} if config.is_entity_home else {"stage2_encoder_sha256": sha256_file(config.initialization.stage2_encoder)} if slot_payload is not None else {}),
         **({
             "source_encoder_state_hashes": source_artifact["state_hashes"],
             "source_stage1_checkpoint_sha256": source_artifact["provenance"].get("stage1_checkpoint_hash"),
@@ -425,9 +427,9 @@ def load_prepared_stage3(config: Stage3Config) -> dict[str, Any]:
         raise ValueError("Stage 3 artifact registry mismatch")
     if metadata.get("source_hashes") != source_hashes(config, registry):
         raise ValueError("Stage 3 artifact source hash mismatch")
-    encoder_path = config.initialization.stage1_encoder if config.is_entity_home else config.initialization.stage2_encoder
+    encoder_path = frozen_encoder_path(config) if config.is_entity_home else config.initialization.stage2_encoder
     assert encoder_path is not None
-    expected_stage2_identity = (load_frozen_stage1_entities(encoder_path, config.initialization.stage1_artifacts_dir).encoder_identity
+    expected_stage2_identity = (load_entity_source(config).encoder_identity
         if config.is_entity_home else load_stage2_encoder_identity(encoder_path))
     stored_stage2_identity = metadata.get("stage1_encoder_identity" if config.is_entity_home else "stage2_encoder_identity")
     if not isinstance(stored_stage2_identity, dict):

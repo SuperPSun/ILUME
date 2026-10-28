@@ -24,6 +24,14 @@ from stage1.model import load_stage1_model
 from stage1.identity import metadata_identity
 import json
 
+def load_entity_source(config, *, device="cpu"):
+    if config.frozen_encoder is not None:
+        from common.frozen_encoder import load_frozen_encoder
+        return load_frozen_encoder(config.frozen_encoder, device=device)
+    return load_frozen_stage1_entities(config.initialization.stage1_encoder,
+                                       config.initialization.stage1_artifacts_dir, device=device)
+
+
 STAGE2_ENCODER_VERSION = 1
 STAGE2_ENCODER_KIND = "ilume_stage2_encoder"
 STAGE2_HOME_ENCODER_KIND = "ilume_stage2_home_encoder_v1"

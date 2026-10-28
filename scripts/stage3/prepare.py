@@ -56,7 +56,7 @@ def main() -> None:
         details=(
             {"representation": "rdkit_2d_adapter"}
             if config.representation is not None
-            else {
+            else {"frozen_encoder": config.frozen_encoder.to_dict()} if config.frozen_encoder is not None else {
                 "stage1_encoder": repository_relative(
                     config.initialization.stage1_encoder if config.is_entity_home else config.initialization.stage2_encoder
                 )

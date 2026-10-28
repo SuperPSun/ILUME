@@ -5,8 +5,10 @@ from typing import Any, Mapping, Sequence
 
 from common.identity import semantic_identity
 from common.entity_inputs import ENTITY_INPUT_CONTRACT
+from .entity_inputs import frozen_encoder_path
+from stage2.frozen import load_entity_source
 from common.io import sha256_file
-from stage2 import load_frozen_stage1_entities, load_stage2_encoder_identity
+from stage2 import load_stage2_encoder_identity
 from .config import Stage3Config
 from .data import (
     OBJECT_ENCODING_CONTRACT_VERSION,
@@ -76,6 +78,9 @@ def build_stage3_prepared_identity(
     normalization: Mapping[str, Any],
     stage2_encoder_identity: Mapping[str, Any],
 ) -> dict[str, Any]:
+    if config.frozen_encoder is not None:
+        source = load_entity_source(config)
+        source.validate_stage3_reference(config, registry, objects, normalization)
     return semantic_identity(
         "stage3.prepared-data",
         {
@@ -145,9 +150,9 @@ def resolve_stage3_prepared_identity(
         f"fold{fold}": fit_normalization(config, registry, fold)
         for fold in range(1, 6)
     }
-    encoder_path = config.initialization.stage1_encoder if config.is_entity_home else config.initialization.stage2_encoder
+    encoder_path = frozen_encoder_path(config) if config.is_entity_home else config.initialization.stage2_encoder
     assert encoder_path is not None
-    encoder_identity = (load_frozen_stage1_entities(encoder_path, config.initialization.stage1_artifacts_dir).encoder_identity
+    encoder_identity = (load_entity_source(config).encoder_identity
         if config.is_entity_home else load_stage2_encoder_identity(encoder_path))
     return build_stage3_prepared_identity(
         config, registry, objects, normalization, encoder_identity

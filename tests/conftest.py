@@ -18,6 +18,43 @@ from stage1.tokenizer import SmilesTokenizer
 
 
 @pytest.fixture
+def chemberta_snapshot_factory(tmp_path, monkeypatch):
+    """Small genuine RoBERTa checkpoints with explicit test-only source hashes."""
+    import json
+    import importlib.util
+    if importlib.util.find_spec("transformers") is None:
+        return None
+    from tokenizers import Tokenizer, models, pre_tokenizers, processors
+    from transformers import RobertaConfig, RobertaModel
+    from ablations.entity_home import chemberta
+    from common.frozen_encoder import FrozenEncoderConfig
+    from common.io import sha256_file
+
+    def create(variant):
+        root = tmp_path / variant
+        root.mkdir()
+        vocabulary = {f"[unused{i}]": i for i in range(32)}
+        vocabulary.update({"[PAD]": 0, "[UNK]": 11, "[CLS]": 12, "[SEP]": 13,
+                           "C": 15, "CC": 16, "[Na+]": 17, "[Cl-]": 18})
+        vocabulary = {k: v for k, v in vocabulary.items() if not (k.startswith("[unused") and v in {0, 11, 12, 13, 15, 16, 17, 18})}
+        tokenizer = Tokenizer(models.WordLevel(vocabulary, unk_token="[UNK]"))
+        tokenizer.pre_tokenizer = pre_tokenizers.WhitespaceSplit()
+        tokenizer.post_processor = processors.TemplateProcessing(single="[CLS] $A [SEP]", special_tokens=[("[CLS]", 12), ("[SEP]", 13)])
+        tokenizer.save(str(root / "tokenizer.json"))
+        config = RobertaConfig(hidden_size=384, num_hidden_layers=1, num_attention_heads=12,
+                               intermediate_size=32, vocab_size=32, max_position_embeddings=515,
+                               pad_token_id=1, hidden_dropout_prob=0., attention_probs_dropout_prob=0.)
+        (root / "config.json").write_text(json.dumps(config.to_dict()))
+        torch.manual_seed(13 if variant.endswith("mtr") else 17)
+        model = RobertaModel(config, add_pooling_layer=False)
+        torch.save({"roberta." + k: v for k, v in model.state_dict().items()}, root / "pytorch_model.bin")
+        monkeypatch.setitem(chemberta.FILES, variant, {name: sha256_file(root / name) for name in ("config.json", "tokenizer.json", "pytorch_model.bin")})
+        repo_id, revision = chemberta.SOURCES[variant]
+        return FrozenEncoderConfig("chemberta2", variant, repo_id, revision, str(root))
+    return create
+
+
+@pytest.fixture
 def tiny_config() -> PretrainConfig:
     config = PretrainConfig()
     return replace(

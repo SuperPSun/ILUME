@@ -10,7 +10,7 @@
 
 现役实验统一使用 `data/3407` 五折，以 `configs/v4/stage2/optimized_3407.yaml` 与 `configs/v4/stage3/optimized_3407.yaml` 的完整模型为唯一配对参照（HoME G2_C05 / Stage2 007 / Stage3 032，见[最终配方](../hpo-results.md)）。训练seed42、Stage3按42+fold派生；24实验性质，hydration为random/cv1、无测试集；两项模拟保持PRIVATE隔离并独立报告。除所声明的消融外，模型、任务归组、原始样本覆盖、条件、目标归一化、SmoothL1、owner裁剪、学习率和预算全部与优化配方一致。优化配方将两项电位任务归入phase_stability，共六个GROUP；不能混用原Base的七GROUP分层。Stage1在下游永久冻结；验证只报告；发布预先指定末轮/阶段末状态。
 
-原始 `configs/ablations/v4/` 的36份split42配置与 `outputs/ablations/v4/` 保留历史身份；`configs/ablations/v4_3407/` 共保留36份YAML，其中32份现役、4份容量对照已取消并仅供追溯，输出只写 `outputs/ablations/v4_3407/`。Stage1仍共享 `data/stage1` 和原语料prepare，不能将其语料seed误改为3407。3407 Stage2/3 prepare仅在数据、来源和完整性校验通过时复用；不存在时按配套配置重新prepare，既有不匹配产物不覆盖、不改SHA。
+原始 `configs/ablations/v4/` 的36份split42配置与 `outputs/ablations/v4/` 保留历史身份；`configs/ablations/v4_3407/` 共保留40份YAML，其中36份现役、4份容量对照已取消并仅供追溯，输出只写 `outputs/ablations/v4_3407/`。Stage1仍共享 `data/stage1` 和原语料prepare，不能将其语料seed误改为3407。3407 Stage2/3 prepare仅在数据、来源和完整性校验通过时复用；不存在时按配套配置重新prepare，既有不匹配产物不覆盖、不改SHA。
 
 | 核心对照 | 变化 | 解释边界 |
 |---|---|---|
@@ -26,12 +26,16 @@
 | C9 no_smiles | 删除 SMILES 编码器、重建头与双视图一致性头；从头训练 Stage1/2/3 | 图分支保留；编码分支及其依赖监督总体贡献 |
 | C10 no_graph | 删除图编码器、原子/键重建头、电荷头与双视图一致性头；从头训练 Stage1/2/3 | SMILES分支保留；同时减少监督与容量 |
 | C11 phase1 | 只读 Base Phase1 固定末轮全状态（仅Phase1） | 与C7、C0比较阶段增量，无新增训练 |
+| C12 chemberta2_mtr | 冻结ChemBERTa-2 MTR替换Stage1，无显式RDKit | 外部预训练表示整体替换 |
+| C13 chemberta2_mlm | 冻结ChemBERTa-2 MLM替换Stage1，无显式RDKit | 外部预训练表示整体替换 |
 
 C3～C5删除专家通路前先完整加载并校验来源；保留参数逐张量一致，Task Gate 保留候选对应输出行按原顺序截取。删除 GLOBAL 不缩短 Phase1 日历；没有训练梯度的任务仍保留原始采样与 loss 报告，不创建虚假梯度或优化器更新。GROUP 删除后 primary/partner 的 L1 delta 均为零，保留现有 LayerNorm、FiLM、partner 路径及 L2 residual。
 
 MLP 保留 AdamW3e-4/WD0.01、batch128、BF16 CUDA、5%预热/余弦、10轮末轮、SiLU/dropout0.1，只训练24实验任务，不生成模拟榜单；与历史 Object 表示 MLP 使用不同模型注册名、输入合同、kind及状态 hash 命名空间。
 
 C9/C10保持原1024D残差融合，缺失分支的512D槽固定填零；剩余分支宽度、masking和dropout不变。不执行缺失分支前向或优化。无图模型无原子表示，缓存为行对齐零宽原子张量；learned1024＋RDKit217接口不变。两项都保留分子级RDKit/Uni-Mol/电子监督与显式描述符，双视图一致性关闭；原子电荷只在图分支存在时保留。AIS分词、图衍生的准备特征及RDKit统计仍按原数据合同生成，因此不能称为完全不使用图衍生信息。各项使用独立Stage1权重、Stage2/3缓存与新训练产物；不复用完整模型的迁移权重。新增成本2次Stage1、2次Stage2、10个Stage3折训练。
+
+C12/C13的冻结源、补零、严格加载和无描述符合同见[ADR-0107](0107-chemberta2-frozen-home-ablations.md)。新增4份Stage2/3配置，均重新准备实体及训练下游，不训练Stage1。
 
 ## 扩展实验
 
@@ -41,7 +45,7 @@ C9/C10保持原1024D残差融合，缺失分支的512D槽固定填零；剩余�
 
 ## 身份、接口与隔离
 
-实现位于 `ablations/entity_home/`；Stage包仅通过公开Stage1配置扩展注册/模型工厂和 `Stage3Config.runtime_backend` 调用入口提供的研究后端，禁止反向导入消融包。现役32份完整YAML及4份已取消容量配置位于 `configs/ablations/v4_3407/`，历史split42的36份位于 `configs/ablations/v4/`，不修改正式YAML，不恢复旧ObjectEncoder。MLP复用同一3407实体prepare和authority；sweep允许显式GPU设备槽。汇总通过 `--ablation-authority-config configs/v4/stage3/optimized_3407.yaml` 绑定分组及bootstrap来源，独立分析的split_seed读取authority配置，不能写死42。
+实现位于 `ablations/entity_home/`；Stage包仅通过公开Stage1配置扩展注册/模型工厂和 `Stage3Config.runtime_backend` 调用入口提供的研究后端，禁止反向导入消融包。现役36份完整YAML及4份已取消容量配置位于 `configs/ablations/v4_3407/`，历史split42的36份位于 `configs/ablations/v4/`，不修改正式YAML，不恢复旧ObjectEncoder。MLP复用同一3407实体prepare和authority；sweep允许显式GPU设备槽。汇总通过 `--ablation-authority-config configs/v4/stage3/optimized_3407.yaml` 绑定分组及bootstrap来源，独立分析的split_seed读取authority配置，不能写死42。
 
 `ablation` 写入运行配置和训练身份 plan：变体、零更新初始化 YAML、所移除监督、完整初始模型状态 hash，以及参数量匹配的比例和计数。checkpoint/scope/final 使用独立 `ilume_stage3_entity_home_ablation_*_v1` kind；保留 format4、plan14/training18，不跨消融/正式或历史合同恢复。来源、数据、owner、SHA、完整张量校验不放宽。C1 导出独立 `ilume_stage1_random_encoder_v4`、零更新身份及固定 epoch0，不冒充预训练末轮。C2 从真正的 Stage2 初始模型构造来源，不读取已训练 Stage2 final，也不伪造正式 final。
 

@@ -26,6 +26,10 @@ class EntityHomeBackend:
     def load_source(self, config):
         if not self.spec.zero_update:
             source = load_source(base_config(config))
+            if config.frozen_encoder is not None:
+                if source["_loaded_model"].stage2_config.frozen_encoder != config.frozen_encoder:
+                    raise ValueError("Stage2/Stage3 external frozen encoder source mismatch")
+                return source
             if self.spec.variant == 'auxiliary' and getattr(source['_loaded_model'].backbone.config.loss, self.spec.supervision_removed) != 0:
                 raise ValueError('Auxiliary ablation source did not remove its declared supervision')
             source_spec = getattr(source['_loaded_model'].backbone.config, 'ablation', None)
