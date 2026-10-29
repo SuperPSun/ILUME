@@ -27,6 +27,7 @@ from stage3.config import load_stage3_config, stage3_config_from_dict
 
 import weakopt
 import weakopt_joint
+import weakopt_shared
 
 
 @pytest.fixture
@@ -359,6 +360,96 @@ def test_joint_finalize_requires_validation_winner_and_preserves_lock(joint_camp
     assert seen == [(1, 2, 3, 4, 5)] * 2
     with pytest.raises(FileExistsError, match='locked'):
         weakopt_joint.finalize('002')
+
+
+@pytest.fixture
+def shared_campaign(weakopt_campaign, tmp_path, monkeypatch):
+    monkeypatch.setattr(weakopt_joint, 'ROOT', tmp_path)
+    monkeypatch.setattr(weakopt_joint, 'CONFIGS', weakopt.CONFIGS / 'Joint')
+    monkeypatch.setattr(weakopt_joint, 'OUTPUT', weakopt.OUTPUT / 'Joint')
+    monkeypatch.setattr(weakopt_joint, 'load', lambda: (*weakopt.load_campaign(), None))
+    monkeypatch.setattr(weakopt_shared, 'ROOT', tmp_path)
+    monkeypatch.setattr(weakopt_shared, 'CONFIGS', weakopt.CONFIGS / 'Shared')
+    monkeypatch.setattr(weakopt_shared, 'OUTPUT', weakopt.OUTPUT / 'Shared')
+    monkeypatch.setattr(weakopt_shared, 'BASE', tmp_path / 'reference-068.yaml')
+    raw = read_yaml(ROOT / 'configs/HPO/WeakOpt/Joint/trials/068.yaml')
+    for key in ('data', 'preparation', 'initialization'):
+        raw[key] = deepcopy(weakopt_campaign[key])
+    write_yaml(weakopt_shared.BASE, raw)
+    (tmp_path / 'stage2_final.json').write_text('{}')
+    write_yaml(weakopt_joint.CONFIGS / 'stage2/S030.yaml', {})
+    snapshot = weakopt_joint.OUTPUT / 'reference/baselines.json'
+    snapshot.parent.mkdir(parents=True)
+    snapshot.write_text(json.dumps({'sources': {}, 'folds': []}))
+    weakopt_shared.generate()
+    return raw
+
+
+def test_shared_owner_whitelist_sources_and_duplicate_budget(shared_campaign, tmp_path):
+    manifest, base = weakopt_shared.load()
+    assert len(manifest['trials']) == 16
+    weakopt_shared.generate()
+    changed = deepcopy(base)
+    changed['training']['three_phase']['global']['lr'] *= 1.2
+    weakopt_shared.validate_recipe(base, changed)
+    for path in [('model', 'global_experts'), ('training', 'max_grad_norm')]:
+        invalid = deepcopy(changed)
+        invalid[path[0]][path[1]] += 1
+        with pytest.raises(ValueError, match='whitelist'):
+            weakopt_shared.validate_recipe(base, invalid)
+    invalid = deepcopy(changed)
+    invalid['training']['three_phase']['global']['warmup_ratio'] = .1
+    with pytest.raises(ValueError, match='whitelist'):
+        weakopt_shared.validate_recipe(base, invalid)
+    duplicate = tmp_path / 'duplicate.yaml'
+    write_yaml(duplicate, [manifest['trials'][0]['overrides']])
+    with pytest.raises(ValueError, match='Duplicate'):
+        weakopt_shared.generate(duplicate)
+    too_many = tmp_path / 'too-many.yaml'
+    write_yaml(too_many, [manifest['trials'][0]['overrides']] * 33)
+    with pytest.raises(ValueError, match='48-candidate'):
+        weakopt_shared.generate(too_many)
+    (tmp_path / 'stage2_final.pt').write_text('corrupted')
+    with pytest.raises(ValueError, match='SHA256'):
+        weakopt_shared.load()
+
+
+def test_shared_promotion_budget_and_lock_are_persistent(shared_campaign):
+    trials = weakopt_shared.load()[0]['trials']
+    weakopt_shared.reserve(trials, [1, 3])
+    with pytest.raises(ValueError, match='completed screening'):
+        weakopt_shared.reserve(trials[:1], [2, 4, 5])
+    for t in trials[:9]:
+        for fold in (1, 3):
+            marker = weakopt_shared.OUTPUT / f"trials/{t['id']}/valid/fold{fold}/hpo_evaluation.json"
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text('{}')
+    weakopt_shared.reserve(trials[:8], [2, 4, 5])
+    before = (weakopt_shared.OUTPUT / 'budget.json').read_bytes()
+    weakopt_shared.reserve(trials[:8], [2, 4, 5])
+    assert (weakopt_shared.OUTPUT / 'budget.json').read_bytes() == before
+    with pytest.raises(ValueError, match='eight-candidate'):
+        weakopt_shared.reserve(trials[8:9], [2, 4, 5])
+    assert (weakopt_shared.OUTPUT / 'budget.json').read_bytes() == before
+    (weakopt_shared.OUTPUT / 'selection.json').write_text('{}')
+    with pytest.raises(ValueError, match='locked'):
+        weakopt_shared.reserve(trials[:1], [1, 3])
+    with pytest.raises(ValueError, match='locked'):
+        weakopt_shared.generate()
+
+
+def test_shared_trial_explicit_paths_preserve_source_binding(shared_campaign, monkeypatch, tmp_path):
+    trial = weakopt_shared.load()[0]['trials'][0]
+    calls = []
+    monkeypatch.setattr(weakopt_joint, 'native', lambda script, args, log, device: calls.append(args))
+    monkeypatch.setattr(weakopt_joint, 'evaluate_fold', lambda *args, **kwargs: None)
+    weakopt_joint.run_trial(trial, [1, 3], 'cuda:2', configs=weakopt_shared.CONFIGS, output=weakopt_shared.OUTPUT)
+    assert calls[0][calls[0].index('--output') + 1].startswith('outputs/HPO/WeakOpt/Shared/')
+    assert calls[0][calls[0].index('--max-parallel') + 1] == 1
+    (tmp_path / 'stage2_final.pt').write_text('different source')
+    with pytest.raises(ValueError, match='another configuration or Stage2 source'):
+        weakopt_joint.run_trial(trial, [2, 4, 5], 'cuda:3', configs=weakopt_shared.CONFIGS, output=weakopt_shared.OUTPUT)
+    assert len(calls) == 1
 
 
 def test_all_static_rounds_and_manual_binding(tmp_path):

@@ -191,15 +191,18 @@ def run_stage2(source, device, dry_run=False):
         train_stage2(job, device, resume=True)
 
 
-def run_trial(trial, folds, device, dry_run=False):
+def run_trial(trial, folds, device, dry_run=False, *, configs=None, output=None):
+    configs = CONFIGS if configs is None else configs
+    output = OUTPUT if output is None else output
     tid = trial["id"]
     if dry_run:
         print(f"DRY RUN pair {tid}: Stage2 {trial['stage2_id']}, folds={folds}, physical {device}")
         return
-    with artifact_lock(OUTPUT / f"locks/trial-{tid}.lock"), weakopt.gpu_slot(device):
-        path = OUTPUT / "trials" / tid
+    with artifact_lock(output / f"locks/trial-{tid}.lock"), weakopt.gpu_slot(device):
+        path = output / "trials" / tid
         path.mkdir(parents=True, exist_ok=True)
-        source = OUTPUT / "stage2" / trial["stage2_id"] / "train"
+        config = configs / "trials" / (tid + ".yaml")
+        source = (ROOT / read_yaml(config)["initialization"]["stage2_final"]).parent
         binding = {"recipe_hash": trial["recipe_hash"], "config_sha256": trial["sha256"],
                    "stage2_final_sha256": sha256_file(source / "stage2_final.pt"),
                    "stage2_manifest_sha256": sha256_file(source / "stage2_final.json")}
@@ -210,7 +213,6 @@ def run_trial(trial, folds, device, dry_run=False):
         state = {"status": "running", "folds_requested": list(folds), "device": device}
         atomic_json(path / "status.json", state)
         try:
-            config = CONFIGS / "trials" / (tid + ".yaml")
             native("stage3/train", ["--config", relative(config), "--fold", *folds,
                 "--output", relative(path / "train"), "--devices", device, "--max-parallel", 1, "--resume"],
                 path / "train.log", device)

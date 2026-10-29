@@ -81,3 +81,25 @@ python scripts/HPO/weakopt_joint.py report --fold 1 3
 首批24对先训练12份唯一Stage2来源，再执行24份Stage3两折。重复run始终严格恢复，完成折不重训。后续用 `generate --proposal <提案.yaml>` 追加；提案列表每项明确 `description`、`stage2`、`stage3`。stage2仅接受epochs、task_head_learning_rate、weight_decay、warmup_fraction；stage3为上一轮格式的任务覆盖字典。所有数值相对冻结参考写绝对值，不改来源路径来复用其他权重。
 
 补折用 `run --ids <编号> --fold 2 4 5`，然后 `report --fold 1 2 3 4 5`；锁定用 `finalize --id <五折最优编号>`。锁定后的测试和论文命令与第一轮相同，但配置、模型和输出均指向Joint内同编号路径；旧test不作为本轮产物，不按测试结果返回搜索。
+
+## 第三轮共享owner定向搜索
+
+按[ADR-0109](adr/0109-weakopt-shared-owner-search.md)执行。固定Joint/068及现有Stage2 S030来源；扩展Stage3 GLOBAL/GROUP学习率、存续期搜索，不改架构、数据、梯度规则或正式Base。配置与输出分别在 `configs/HPO/WeakOpt/Shared`、`outputs/HPO/WeakOpt/Shared`。
+
+预算最多48份新配置，Fold1/3筛选，最多8份补齐五折，总计不超过120个Stage3训练折；预算预约与GPU槽锁跨控制器生效。首次生成16份，后续提案写绝对参数，包含 `description`、`private`、`global`、`groups` 四个字段。private沿用任务覆盖格式；global只接受lr/epochs；groups只接受活跃GROUP的phase1/phase2下lr/epochs，仍需满足原生LR连续性和顺序。
+
+```bash
+python scripts/HPO/weakopt_shared.py generate
+python scripts/HPO/weakopt_shared.py run --fold 1 3 --devices cuda:2,cuda:3 --max-parallel 6 --dry-run
+python scripts/HPO/weakopt_shared.py run --fold 1 3 --devices cuda:2,cuda:3 --max-parallel 6
+python scripts/HPO/weakopt_shared.py report --fold 1 3
+```
+
+完成后分析验证，指定入围者补折；例如001仅表示命令格式，不表示已入围：
+
+```bash
+python scripts/HPO/weakopt_shared.py run --ids 001 --fold 2 4 5
+python scripts/HPO/weakopt_shared.py report --fold 1 2 3 4 5
+```
+
+按验证选择后用 `finalize --id <新五折最优编号>` 锁定；若新模型没有超过既有068，则保留旧模型并记录决定。测试只在最终锁定后执行一次，入口与前两轮相同，路径改为Shared内对应配置与输出。测试未达6项第一也不据此继续搜索。所有产物独立保留，失败用相同命令严格恢复，不修改旧配置或来源SHA。

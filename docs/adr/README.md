@@ -70,3 +70,4 @@
 - [ADR-0099：独立静态配置HPO与人工选型](0099-simple-static-hpo.md)：仅独立研究入口；缓存复用、seed分离和严格迁移；2026-10-20起后续新实验采用3407，历史配置及产物保留。
 
 - [ADR-0108：WeakOpt第二轮Stage2/Stage3联合参数优化](0108-weakopt-joint-stage2-stage3.md)：独立80对候选，固定架构与Stage1，严格配对Stage2来源，验证选型。
+- [ADR-0109：WeakOpt第三轮共享owner定向参数搜索](0109-weakopt-shared-owner-search.md)：固定既有Stage2，最多48配置/120训练折，扩展Stage3共享owner学习率与存续期，仅按验证选型。

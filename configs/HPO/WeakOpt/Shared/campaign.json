@@ -1,0 +1,610 @@
+{
+  "version": 1,
+  "limit": 48,
+  "promotions": 8,
+  "trials": [
+    {
+      "id": "001",
+      "stage2_id": "S030",
+      "description": "Restore short PRIVATE Phase3 except density and viscosity",
+      "recipe_hash": "2a092e595bf610c4ab17ea86ff05ad3de37ac0d6ac41550a27af1a26f3b49503",
+      "sha256": "0f3dcf965c583247eefdb959165325177efbc32e7cb1325a7db2ee131a3ad8f1",
+      "overrides": {
+        "description": "Restore short PRIVATE Phase3 except density and viscosity",
+        "private": {
+          "experiment/anodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/cathodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/surface_tension": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/melting_point": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/refractive_index": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/glass_transition_temperature": {
+            "phase3_private_epochs": 2
+          }
+        },
+        "global": {},
+        "groups": {}
+      }
+    },
+    {
+      "id": "002",
+      "stage2_id": "S030",
+      "description": "Restore only potential Phase3",
+      "recipe_hash": "1fbacaaaea41dbeb4a11b7c0ef6b2a261ff2164b33b05a20438c429dfd70651e",
+      "sha256": "17dce34763648093495b3a40e90f6ce08a425a89beef4a30a138042c86754b74",
+      "overrides": {
+        "description": "Restore only potential Phase3",
+        "private": {
+          "experiment/anodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/cathodic_potential_limit": {
+            "phase3_private_epochs": 2
+          }
+        },
+        "global": {},
+        "groups": {}
+      }
+    },
+    {
+      "id": "003",
+      "stage2_id": "S030",
+      "description": "Short PRIVATE tails",
+      "recipe_hash": "aaa55ca46a4506beb47e34785da41f66130708fd5f70c875edf49e3e8997df59",
+      "sha256": "8a4b3a687f6e8504f87c05223bdc2b8c38dd5f56ede4c582104abf5681829db9",
+      "overrides": {
+        "description": "Short PRIVATE tails",
+        "private": {
+          "experiment/anodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/cathodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/surface_tension": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/melting_point": {
+            "phase3_private_epochs": 1
+          },
+          "experiment/refractive_index": {
+            "phase3_private_epochs": 1
+          },
+          "experiment/glass_transition_temperature": {
+            "phase3_private_epochs": 2
+          }
+        },
+        "global": {},
+        "groups": {}
+      }
+    },
+    {
+      "id": "004",
+      "stage2_id": "S030",
+      "description": "GLOBAL LR x0.9",
+      "recipe_hash": "21cb883a3e506491a9a65fa24d83d9b709445516b438f4a9bfd5b9445ab3fddd",
+      "sha256": "30468bd6d05e66553670620aa3b545991cd11f0a34354f9db2fe7ba2d926ba7f",
+      "overrides": {
+        "description": "GLOBAL LR x0.9",
+        "private": {
+          "experiment/anodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/cathodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/surface_tension": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/melting_point": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/refractive_index": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/glass_transition_temperature": {
+            "phase3_private_epochs": 2
+          }
+        },
+        "global": {
+          "lr": 0.00022500000000000002
+        },
+        "groups": {}
+      }
+    },
+    {
+      "id": "005",
+      "stage2_id": "S030",
+      "description": "GLOBAL LR x1.2",
+      "recipe_hash": "5bf03d7aa6eecd9b43e23b811bd319ca6968bacf5336486b7b548b12dddd57ed",
+      "sha256": "05da51f61680f8bb8f3825c2ac635e43f77e8fe088fef9c34a41806ce18f541a",
+      "overrides": {
+        "description": "GLOBAL LR x1.2",
+        "private": {
+          "experiment/anodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/cathodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/surface_tension": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/melting_point": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/refractive_index": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/glass_transition_temperature": {
+            "phase3_private_epochs": 2
+          }
+        },
+        "global": {
+          "lr": 0.0003
+        },
+        "groups": {}
+      }
+    },
+    {
+      "id": "006",
+      "stage2_id": "S030",
+      "description": "GLOBAL lifetime 20",
+      "recipe_hash": "d0663cda07ecafb84ac61414c345c53df8b53126ded91deead14980bd29e97e9",
+      "sha256": "cf6c119dd67cb19df3153ce9dfaa5c6b408a3e8015f551f19a3c4686aad3f7b0",
+      "overrides": {
+        "description": "GLOBAL lifetime 20",
+        "private": {
+          "experiment/anodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/cathodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/surface_tension": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/melting_point": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/refractive_index": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/glass_transition_temperature": {
+            "phase3_private_epochs": 2
+          }
+        },
+        "global": {
+          "epochs": 20
+        },
+        "groups": {}
+      }
+    },
+    {
+      "id": "007",
+      "stage2_id": "S030",
+      "description": "phase_stability LR x0.85",
+      "recipe_hash": "62f093eabcf055df78faec343631571d9dd02c38c85a1ea049bf56bec9158d5b",
+      "sha256": "0afd439d09e2841a2905e764c766c54e95142ddae05b0ac1dabeddc93313202b",
+      "overrides": {
+        "description": "phase_stability LR x0.85",
+        "private": {
+          "experiment/anodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/cathodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/surface_tension": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/melting_point": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/refractive_index": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/glass_transition_temperature": {
+            "phase3_private_epochs": 2
+          }
+        },
+        "global": {},
+        "groups": {
+          "phase_stability": {
+            "phase1": {
+              "lr": 0.00017
+            },
+            "phase2": {
+              "lr": 8.5e-05
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "008",
+      "stage2_id": "S030",
+      "description": "phase_stability LR x1.15",
+      "recipe_hash": "bb7556d608635f72b6b7f3f90ad686b24ac307e3d16440e3aaa272380ca01f03",
+      "sha256": "7995f82349a72dd87f576bbc7af004a313ab610d64b7d70b515869240d948a57",
+      "overrides": {
+        "description": "phase_stability LR x1.15",
+        "private": {
+          "experiment/anodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/cathodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/surface_tension": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/melting_point": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/refractive_index": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/glass_transition_temperature": {
+            "phase3_private_epochs": 2
+          }
+        },
+        "global": {},
+        "groups": {
+          "phase_stability": {
+            "phase1": {
+              "lr": 0.00022999999999999998
+            },
+            "phase2": {
+              "lr": 0.00011499999999999999
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "009",
+      "stage2_id": "S030",
+      "description": "phase_stability Phase2 lifetime 12",
+      "recipe_hash": "88e57753bb889b16543c1bcef5b21761ce8822d8de30b64edea04063432661fe",
+      "sha256": "93a9d05226d324734b6983b1c2080ca5de45d5dc4bd97657d402928f462736f5",
+      "overrides": {
+        "description": "phase_stability Phase2 lifetime 12",
+        "private": {
+          "experiment/anodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/cathodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/surface_tension": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/melting_point": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/refractive_index": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/glass_transition_temperature": {
+            "phase3_private_epochs": 2
+          }
+        },
+        "global": {},
+        "groups": {
+          "phase_stability": {
+            "phase2": {
+              "epochs": 12
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "010",
+      "stage2_id": "S030",
+      "description": "phase_stability Phase2 lifetime 28",
+      "recipe_hash": "45cfb923d4a93ce7dd35da1097318d6a9e9e6b537d88f8bfb9abff17e24bfc7e",
+      "sha256": "b6591007fceaa195d63f9ec33d531aeafae75a8a109ac26170ecd8d64f9f317d",
+      "overrides": {
+        "description": "phase_stability Phase2 lifetime 28",
+        "private": {
+          "experiment/anodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/cathodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/surface_tension": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/melting_point": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/refractive_index": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/glass_transition_temperature": {
+            "phase3_private_epochs": 2
+          }
+        },
+        "global": {},
+        "groups": {
+          "phase_stability": {
+            "phase2": {
+              "epochs": 28
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "011",
+      "stage2_id": "S030",
+      "description": "thermophysical LR x0.75",
+      "recipe_hash": "5c65018fc43d2b522fc84bd84de3daf4f7968a65abcc1e9e222c40304b23b2e7",
+      "sha256": "96ff04a9640c00ce58b24cb3877c9b4856f928da87803c52f9ff629e47aea0ea",
+      "overrides": {
+        "description": "thermophysical LR x0.75",
+        "private": {
+          "experiment/anodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/cathodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/surface_tension": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/melting_point": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/refractive_index": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/glass_transition_temperature": {
+            "phase3_private_epochs": 2
+          }
+        },
+        "global": {},
+        "groups": {
+          "thermophysical": {
+            "phase1": {
+              "lr": 0.0001125
+            },
+            "phase2": {
+              "lr": 5.625e-05
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "012",
+      "stage2_id": "S030",
+      "description": "thermophysical LR x1.25",
+      "recipe_hash": "fd012c631f0261f6eb1a8db4a337a16eeb46d0bce356ac3060e2038ab29921b0",
+      "sha256": "1f2b5b04dea94c2c09721fa4092fa0ad14304ca7d372e7631a2a55f7424c272e",
+      "overrides": {
+        "description": "thermophysical LR x1.25",
+        "private": {
+          "experiment/anodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/cathodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/surface_tension": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/melting_point": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/refractive_index": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/glass_transition_temperature": {
+            "phase3_private_epochs": 2
+          }
+        },
+        "global": {},
+        "groups": {
+          "thermophysical": {
+            "phase1": {
+              "lr": 0.00018749999999999998
+            },
+            "phase2": {
+              "lr": 9.374999999999999e-05
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "013",
+      "stage2_id": "S030",
+      "description": "thermophysical Phase2 lifetime 8",
+      "recipe_hash": "d63db8873068f8c17c2f619be660d587d5b9a7cc7b14ad64d34e3b6bf4b8226c",
+      "sha256": "592afdffd0a6c8a6d7470bceb50cc45f91b4821a312c5630f95e8881008f9ec8",
+      "overrides": {
+        "description": "thermophysical Phase2 lifetime 8",
+        "private": {
+          "experiment/anodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/cathodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/surface_tension": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/melting_point": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/refractive_index": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/glass_transition_temperature": {
+            "phase3_private_epochs": 2
+          }
+        },
+        "global": {},
+        "groups": {
+          "thermophysical": {
+            "phase2": {
+              "epochs": 8
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "014",
+      "stage2_id": "S030",
+      "description": "dielectric_optical LR x0.75",
+      "recipe_hash": "49140fcb4f810d37b4bc7adec9a96ca42e888342bbf9ab7451e79de9b514b20e",
+      "sha256": "00307c4a57f5f4a221f70f685e34c7fc1f8a1fd3937aa7f9f2cfb80a7d4f30eb",
+      "overrides": {
+        "description": "dielectric_optical LR x0.75",
+        "private": {
+          "experiment/anodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/cathodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/surface_tension": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/melting_point": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/refractive_index": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/glass_transition_temperature": {
+            "phase3_private_epochs": 2
+          }
+        },
+        "global": {},
+        "groups": {
+          "dielectric_optical": {
+            "phase1": {
+              "lr": 7.500000000000001e-05
+            },
+            "phase2": {
+              "lr": 3.7500000000000003e-05
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "015",
+      "stage2_id": "S030",
+      "description": "dielectric_optical LR x1.25",
+      "recipe_hash": "45011d9fc7dd6ad80b8c91604573c9b4d0d837fa9a7e08cc8b9b3bce17307860",
+      "sha256": "3a162639f0451a70848a69cde96460c9dad37814cb627c7a98551562d10b689b",
+      "overrides": {
+        "description": "dielectric_optical LR x1.25",
+        "private": {
+          "experiment/anodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/cathodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/surface_tension": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/melting_point": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/refractive_index": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/glass_transition_temperature": {
+            "phase3_private_epochs": 2
+          }
+        },
+        "global": {},
+        "groups": {
+          "dielectric_optical": {
+            "phase1": {
+              "lr": 0.000125
+            },
+            "phase2": {
+              "lr": 6.25e-05
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "016",
+      "stage2_id": "S030",
+      "description": "dielectric_optical Phase2 lifetime 6",
+      "recipe_hash": "46dc315020ed9f5c056ecd49d6ad2f72090cdd6a0b12f438d796f6a3dae14751",
+      "sha256": "d015fdee142ad1a391500902c9aaec12b9df16f4f92d0f7f9a91bb80541c6a5a",
+      "overrides": {
+        "description": "dielectric_optical Phase2 lifetime 6",
+        "private": {
+          "experiment/anodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/cathodic_potential_limit": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/surface_tension": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/melting_point": {
+            "phase3_private_epochs": 4
+          },
+          "experiment/refractive_index": {
+            "phase3_private_epochs": 2
+          },
+          "experiment/glass_transition_temperature": {
+            "phase3_private_epochs": 2
+          }
+        },
+        "global": {},
+        "groups": {
+          "dielectric_optical": {
+            "phase2": {
+              "epochs": 6
+            }
+          }
+        }
+      }
+    }
+  ],
+  "files": {
+    "configs/HPO/WeakOpt/Shared/reference.yaml": "0e4b55eedeaff6d5facfccfa9bf4daa636ac0d3c62748f49ce7f174280eb4412",
+    "outputs/HPO/WeakOpt/Shared/reference/baselines.json": "177d75c52acc377503b190ea173bca983207efbbf0f50d0a25815981755dffd7"
+  },
+  "sources": {
+    "configs/v4/stage3/optimized_3407.yaml": "b13fa84eaa8cd4f2a94edff2aaca23d377ad687a3cf5fb32240c8cc33bf309f1",
+    "outputs/v4/stage1/base/train/stage1_encoder.pt": "3e428c59071fd95434f2ccc23250407d006e020f07ded7ce9e889a432dca6902",
+    "outputs/v4/stage2/optimized_3407/train/stage2_final.pt": "b7681ce2e04c7c81df3b4c24d76a31f64bc93cd12d7ce00014a3afba1dbac2f6",
+    "outputs/v4/stage3/optimized_3407/prepare/artifacts/metadata.json": "92e7ad8cb81207e6a2b2c9cdf4d093c342c249c8b701fb35e5e7a05243e2b02e",
+    "outputs/v4/stage3/optimized_3407/prepare/data_metadata.json": "07f07a04cc0b39455acd820875442df94c658e548e0784e0f676fba4265a834f",
+    "configs/v4/stage2/optimized_3407.yaml": "6b3907324ef33d4db0d0e8c462454dc7680c0dac3347b80c50f528d67f6480ff",
+    "configs/HPO/WeakOpt/campaign.json": "5da46401ca1b01f316dfd45158fd799973d44c8146d2dc8b26b680eb169dd7c6",
+    "outputs/v4/stage2/optimized_3407/prepare/artifacts/metadata.json": "5e81793ebdcdb34b5483e881e31ee29cdb40ad621af4d1dd42e5a1a3722363b6",
+    "outputs/v4/stage2/optimized_3407/prepare/data_metadata.json": "0e710bfec883697906ba54fb1c3d3c2bccec616be89e6665c2bd66f387b087b0",
+    "configs/HPO/WeakOpt/Joint/trials/068.yaml": "0e4b55eedeaff6d5facfccfa9bf4daa636ac0d3c62748f49ce7f174280eb4412",
+    "outputs/HPO/WeakOpt/Joint/stage2/S030/train/stage2_final.pt": "1a939693f48f7de9508056914d5a09a80f98642629383f5ed39cf148c33e1ae1",
+    "outputs/HPO/WeakOpt/Joint/stage2/S030/train/stage2_final.json": "d46dfa38ae6c1c1d20c79c8a4ef583e002113387494d6cdeeadf09d83f8ff316",
+    "configs/HPO/WeakOpt/Joint/stage2/S030.yaml": "55c719cd359acbb3f949459ddde472bec134016f88ea8354f529be0fe77444de"
+  }
+}
