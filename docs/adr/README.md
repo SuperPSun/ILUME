@@ -7,6 +7,7 @@
 | 主题 | ADR（按修订顺序） | 阅读重点 |
 |---|---|---|
 | Stage2 共享梯度聚合 | [0097](0097-stage2-batch-sample-weighted-gradients.md) | 五模拟联合step，GLOBAL/GROUP按真实batch样本加权，PRIVATE原始梯度；新训练身份及严格恢复/迁移 |
+| ChemBERTa-2冻结表示消融 | [0107](0107-chemberta2-frozen-home-ablations.md) | C12/C13；MTR/MLM CLS384固定补零、无显式RDKit、永久冻结；配对3407 HoME |
 | v4 实体HoME Stage2/3 主线 | [0095](0095-v4-entity-home-without-object-encoder.md) | 无ObjectEncoder；GLOBAL/GROUP直接并行处理实体；五模拟、24实验+两模拟仅PRIVATE更新；旧0094及Object合同退役 |
 | 现役 Stage3 共享梯度聚合 | [0096](0096-stage3-batch-sample-weighted-gradients.md) | GLOBAL跨实验任务、GROUP组内按当前真实batch样本数加权；PRIVATE原始平均梯度；尾batch/耗尽任务/模拟隔离；替代Entity-HoME的0070聚合规定 |
 | 固定架构弱任务优化 | [0104](0104-stage3-weakopt.md) | WeakOpt独立静态参数候选，累计80组、验证第一名优先；物理GPU2/3，测试不参与选型 |
@@ -68,4 +69,4 @@
 
 - [ADR-0099：独立静态配置HPO与人工选型](0099-simple-static-hpo.md)：仅独立研究入口；缓存复用、seed分离和严格迁移；2026-10-20起后续新实验采用3407，历史配置及产物保留。
 
-- [ADR-0107：WeakOpt第二轮Stage2/Stage3联合参数优化](0107-weakopt-joint-stage2-stage3.md)：独立80对候选，固定架构与Stage1，严格配对Stage2来源，验证选型。
+- [ADR-0108：WeakOpt第二轮Stage2/Stage3联合参数优化](0108-weakopt-joint-stage2-stage3.md)：独立80对候选，固定架构与Stage1，严格配对Stage2来源，验证选型。

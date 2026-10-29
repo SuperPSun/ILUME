@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+chemberta = ["transformers==5.3.0", "tokenizers==0.22.2", "safetensors==0.6.2"]
 reports = ["matplotlib>=3.8,<4"]
 tokenizers = [
     "tokenizers==0.22.2",

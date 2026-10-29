@@ -69,7 +69,7 @@ python scripts/benchmarks/summarize_paper.py --config configs/HPO/WeakOpt/trials
 
 ## 第二轮Stage2/Stage3联合调参
 
-按[ADR-0107](adr/0107-weakopt-joint-stage2-stage3.md)启用独立80对预算，上一轮不改写。配置在 `configs/HPO/WeakOpt/Joint`，产物在 `outputs/HPO/WeakOpt/Joint`。
+按[ADR-0108](adr/0108-weakopt-joint-stage2-stage3.md)启用独立80对预算，上一轮不改写。配置在 `configs/HPO/WeakOpt/Joint`，产物在 `outputs/HPO/WeakOpt/Joint`。
 
 ```bash
 python scripts/HPO/weakopt_joint.py generate

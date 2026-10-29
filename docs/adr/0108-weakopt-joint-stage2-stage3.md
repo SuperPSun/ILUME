@@ -1,4 +1,4 @@
-# ADR-0107：WeakOpt 第二轮 Stage2 / Stage3 联合参数优化
+# ADR-0108：WeakOpt 第二轮 Stage2 / Stage3 联合参数优化
 
 - 状态：已接受
 - 日期：2026-10-27
