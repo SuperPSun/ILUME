@@ -1409,13 +1409,15 @@ def _verify_single_view_ablations(stage1, stage3, recipe, tmp_path):
 def _verify_chemberta_home(stage3, recipe, tmp_path, snapshot_factory, monkeypatch):
     from dataclasses import fields
     from ablations.entity_home.config import AblationConfig, AblationSpec
-    from common.frozen_encoder import load_frozen_encoder
+    from common.frozen_encoder import FrozenEntityPacker, load_frozen_encoder
     from stage2.home_train import train_stage2_home
     from stage2.home_artifact import load_home_final
-    from stage2.data import Stage2EntityDataset
+    from stage2.data import Stage2BatchDescriptor, Stage2DeviceTaskData, Stage2EntityDataset, pack_stage2_batch
     from stage3.prepare import prepare_stage3, load_prepared_stage3
     from stage3.home import train_fold, load_source, load_simulation_final
     from stage3.evaluate import evaluate_checkpoints
+    from stage3.simulation import SIMULATION_TASKS
+    from stage3.simulation_evaluate import evaluate_simulation_checkpoints
     def forbidden(*args, **kwargs):
         raise AssertionError('External frozen source called ILUME Stage1/descriptors')
 
@@ -1493,6 +1495,40 @@ def _verify_chemberta_home(stage3, recipe, tmp_path, snapshot_factory, monkeypat
         assert all(torch.equal(v, final.simulation_backbone.state_dict()[k]) for k, v in before.items())
         report = evaluate_checkpoints(downstream, root/'stage3', split='valid', ensemble_folds=False, fold=1)
         assert len(report['tasks']) == 24 and report['reporting']['model_id'] == downstream.ablation.model_id
+        ensemble = root / 'simulation_ensemble'
+        for fold in range(1, 6):
+            directory = ensemble / f'fold{fold}'
+            directory.mkdir(parents=True)
+            for filename in ('three_phase_final.pt', 'three_phase_final.json'):
+                (directory / filename).hardlink_to(root / 'stage3' / filename)
+        expected_predictions = {}
+        for task in SIMULATION_TASKS:
+            data = Stage2TaskDataset(config.data.artifacts_dir, task, 'valid')
+            packed = pack_stage2_batch(Stage2BatchDescriptor(task, torch.arange(len(data))), {task: data},
+                entities, FrozenEntityPacker(), needs_entities=True, include_raw_atom_targets=False, pin_memory=False)
+            with torch.no_grad():
+                prediction = final.predict_simulation(task, packed, Stage2DeviceTaskData.from_dataset(data, torch.device('cpu'))).numpy().reshape(-1)
+            stats = payload['scalers'][task]['targets'][source.registry.by_id(task).target_columns[0]]
+            expected_predictions[task] = prediction.astype(np.float64) * stats['scale'] + stats['mean']
+        selected_folds = []
+        def select_final(_config, _root, *, fold, device):
+            selected_folds.append(fold)
+            return final.to(device).eval()
+        with monkeypatch.context() as guard:
+            guard.setattr('stage3.simulation_evaluate.load_simulation_final', select_final)
+            guard.setattr('stage3.simulation_evaluate.config_from_dict', forbidden)
+            guard.setattr('stage3.simulation_evaluate.calculate_descriptors', forbidden)
+            guard.setattr('stage3.simulation_evaluate.MultimodalPacker', forbidden)
+            for split in ('valid', 'test'):
+                predictions = root / ('simulation_' + split) / 'predictions'
+                result = evaluate_simulation_checkpoints(downstream, ensemble, split=split, predictions_dir=predictions)
+                assert tuple(result['tasks']) == SIMULATION_TASKS
+                assert result['reporting']['model_id'] == downstream.ablation.model_id
+                for task in SIMULATION_TASKS:
+                    with (predictions / (task.replace('/', '__') + '.csv')).open() as handle:
+                        actual = [float(row['prediction']) for row in csv.DictReader(handle)]
+                    np.testing.assert_allclose(actual, expected_predictions[task], rtol=1e-5, atol=1e-5)
+        assert selected_folds == list(range(1, 6)) * 2
         results.append(downstream)
     with pytest.raises(ValueError, match='identity|mismatch'):
         load_source(replace(results[0], frozen_encoder=results[1].frozen_encoder))

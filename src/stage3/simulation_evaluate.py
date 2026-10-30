@@ -11,6 +11,7 @@ from rdkit import Chem
 
 from common.identity import require_compatible_identity, semantic_identity
 from common.io import sha256_file
+from common.frozen_encoder import FrozenEntityPacker
 from common.reporting import reporting_block, sanitize_task_id, write_prediction_csv
 from stage3.simulation_reporting import (
     scalar_simulation_tasks, scalar_metrics, scalar_split_rows, simulation_comparison,
@@ -127,9 +128,19 @@ def evaluate_simulation_checkpoints(config: Any, checkpoint_dir: str | Path, *, 
     if expected_evaluation_identity is not None:
         require_compatible_identity(expected_evaluation_identity, identity, context="Stage3 simulation evaluation")
     registry, source = _sources(config, split)
+    frozen_encoder = source["_loaded_model"].backbone if config.frozen_encoder is not None else None
     source.pop("_loaded_model", None)
     source.pop("full_model_state", None)
-    build, vocabulary = _feature_builder(source)
+    if frozen_encoder is None:
+        build, vocabulary = _feature_builder(source)
+    else:
+        vocabulary = None
+
+        def build(role, smiles):
+            values, roles = frozen_encoder.encode_slots([
+                SimpleNamespace(topology="molecule", slots=((role, smiles),)),
+            ])
+            return {"role_id": int(roles[0, 0]), "frozen_entity_embedding": values[0, 0]}
     data_root = Path(source["recipe"]["data"]["data_root"])
     raw, datasets, entities, scales, comparison_sources = {}, {}, {}, {}, {}
     prepared_entities = None
@@ -166,7 +177,8 @@ def evaluate_simulation_checkpoints(config: Any, checkpoint_dir: str | Path, *, 
             for start in range(0, len(raw[task]), 256):
                 indices = torch.arange(start, min(start + 256, len(raw[task])))
                 packed = pack_stage2_batch(Stage2BatchDescriptor(task, indices), {task: dataset}, entities[task],
-                    MultimodalPacker(vocabulary), needs_entities=True, include_raw_atom_targets=False, pin_memory=False).to(device, non_blocking=False)
+                    FrozenEntityPacker() if frozen_encoder is not None else MultimodalPacker(vocabulary),
+                    needs_entities=True, include_raw_atom_targets=False, pin_memory=False).to(device, non_blocking=False)
                 with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=config.training.amp_dtype == "bf16"):
                     predicted = model.predict_simulation(task, packed, task_data).float().cpu().numpy()
                 stats = source["scalers"][task]["targets"][registry.by_id(task).target_columns[0]]
