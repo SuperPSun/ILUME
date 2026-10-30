@@ -1,0 +1,419 @@
+- description: Combined long GROUP tails with GLOBAL lifetime 16
+  private:
+    experiment/anodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/cathodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/surface_tension:
+      phase3_private_epochs: 4
+    experiment/melting_point:
+      phase3_private_epochs: 4
+    experiment/refractive_index:
+      phase3_private_epochs: 2
+    experiment/glass_transition_temperature:
+      phase3_private_epochs: 2
+  global:
+    epochs: 16
+  groups:
+    thermophysical:
+      phase2:
+        epochs: 8
+    dielectric_optical:
+      phase2:
+        epochs: 6
+- description: Combined long GROUP tails with GLOBAL lifetime 18
+  private:
+    experiment/anodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/cathodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/surface_tension:
+      phase3_private_epochs: 4
+    experiment/melting_point:
+      phase3_private_epochs: 4
+    experiment/refractive_index:
+      phase3_private_epochs: 2
+    experiment/glass_transition_temperature:
+      phase3_private_epochs: 2
+  global:
+    epochs: 18
+  groups:
+    thermophysical:
+      phase2:
+        epochs: 8
+    dielectric_optical:
+      phase2:
+        epochs: 6
+- description: GLOBAL18 with thermophysical early lifetime15
+  private:
+    experiment/anodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/cathodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/surface_tension:
+      phase3_private_epochs: 4
+    experiment/melting_point:
+      phase3_private_epochs: 4
+    experiment/refractive_index:
+      phase3_private_epochs: 2
+    experiment/glass_transition_temperature:
+      phase3_private_epochs: 2
+  global:
+    epochs: 18
+  groups:
+    thermophysical:
+      phase2:
+        epochs: 8
+      phase1:
+        epochs: 15
+    dielectric_optical:
+      phase2:
+        epochs: 6
+- description: GLOBAL18 with dielectric early lifetime12
+  private:
+    experiment/anodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/cathodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/surface_tension:
+      phase3_private_epochs: 4
+    experiment/melting_point:
+      phase3_private_epochs: 4
+    experiment/refractive_index:
+      phase3_private_epochs: 2
+    experiment/glass_transition_temperature:
+      phase3_private_epochs: 2
+  global:
+    epochs: 18
+  groups:
+    thermophysical:
+      phase2:
+        epochs: 8
+    dielectric_optical:
+      phase2:
+        epochs: 6
+      phase1:
+        epochs: 12
+- description: Long early lifetimes with dielectric_optical LR x1.25
+  private:
+    experiment/anodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/cathodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/surface_tension:
+      phase3_private_epochs: 4
+    experiment/melting_point:
+      phase3_private_epochs: 4
+    experiment/refractive_index:
+      phase3_private_epochs: 2
+    experiment/glass_transition_temperature:
+      phase3_private_epochs: 2
+  global:
+    epochs: 18
+  groups:
+    thermophysical:
+      phase2:
+        epochs: 8
+      phase1:
+        epochs: 15
+    dielectric_optical:
+      phase2:
+        epochs: 6
+        lr: 6.25e-05
+      phase1:
+        epochs: 12
+        lr: 0.000125
+- description: Long early lifetimes with thermophysical LR x1.15
+  private:
+    experiment/anodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/cathodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/surface_tension:
+      phase3_private_epochs: 4
+    experiment/melting_point:
+      phase3_private_epochs: 4
+    experiment/refractive_index:
+      phase3_private_epochs: 2
+    experiment/glass_transition_temperature:
+      phase3_private_epochs: 2
+  global:
+    epochs: 18
+  groups:
+    thermophysical:
+      phase2:
+        epochs: 8
+        lr: 8.624999999999998e-05
+      phase1:
+        epochs: 15
+        lr: 0.00017249999999999996
+    dielectric_optical:
+      phase2:
+        epochs: 6
+      phase1:
+        epochs: 12
+- description: Long early lifetimes with phase-stability early lifetime12
+  private:
+    experiment/anodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/cathodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/surface_tension:
+      phase3_private_epochs: 4
+    experiment/melting_point:
+      phase3_private_epochs: 4
+    experiment/refractive_index:
+      phase3_private_epochs: 2
+    experiment/glass_transition_temperature:
+      phase3_private_epochs: 2
+  global:
+    epochs: 18
+  groups:
+    thermophysical:
+      phase2:
+        epochs: 8
+      phase1:
+        epochs: 15
+    dielectric_optical:
+      phase2:
+        epochs: 6
+      phase1:
+        epochs: 12
+    phase_stability:
+      phase1:
+        epochs: 12
+- description: Long early lifetimes with biological Phase2 lifetime8
+  private:
+    experiment/anodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/cathodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/surface_tension:
+      phase3_private_epochs: 4
+    experiment/melting_point:
+      phase3_private_epochs: 4
+    experiment/refractive_index:
+      phase3_private_epochs: 2
+    experiment/glass_transition_temperature:
+      phase3_private_epochs: 2
+  global:
+    epochs: 18
+  groups:
+    thermophysical:
+      phase2:
+        epochs: 8
+      phase1:
+        epochs: 15
+    dielectric_optical:
+      phase2:
+        epochs: 6
+      phase1:
+        epochs: 12
+    biological:
+      phase2:
+        epochs: 8
+- description: Long early lifetimes retaining all incumbent PRIVATE tails
+  private: {}
+  global:
+    epochs: 18
+  groups:
+    thermophysical:
+      phase2:
+        epochs: 8
+      phase1:
+        epochs: 15
+    dielectric_optical:
+      phase2:
+        epochs: 6
+      phase1:
+        epochs: 12
+- description: Combined long GROUP tails retaining all incumbent PRIVATE tails
+  private: {}
+  global: {}
+  groups:
+    thermophysical:
+      phase2:
+        epochs: 8
+    dielectric_optical:
+      phase2:
+        epochs: 6
+- description: Combined long GROUP tails with regularized static adaptation
+  private:
+    experiment/anodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/cathodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/surface_tension:
+      phase3_private_epochs: 4
+    experiment/melting_point:
+      phase3_private_epochs: 4
+    experiment/refractive_index:
+      phase3_private_epochs: 2
+    experiment/glass_transition_temperature:
+      phase3_private_epochs: 2
+    experiment/static_relative_permittivity:
+      phase1_private_lr: 2.88e-05
+      phase1_private_epochs: 4
+      phase2_private_epochs: 2
+      phase3_private_epochs: 1
+      model_overrides:
+        private_dropout: 0.05
+  global: {}
+  groups:
+    thermophysical:
+      phase2:
+        epochs: 8
+    dielectric_optical:
+      phase2:
+        epochs: 6
+- description: Combined long GROUP tails with regularized melting adaptation
+  private:
+    experiment/anodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/cathodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/surface_tension:
+      phase3_private_epochs: 4
+    experiment/melting_point:
+      phase3_private_epochs: 4
+      phase1_private_lr: 5.4e-05
+      model_overrides:
+        private_dropout: 0.15
+    experiment/refractive_index:
+      phase3_private_epochs: 2
+    experiment/glass_transition_temperature:
+      phase3_private_epochs: 2
+  global: {}
+  groups:
+    thermophysical:
+      phase2:
+        epochs: 8
+    dielectric_optical:
+      phase2:
+        epochs: 6
+    phase_stability:
+      phase2:
+        epochs: 16
+- description: Long early lifetimes with viscosity density PRIVATE lifetime14
+  private:
+    experiment/anodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/cathodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/surface_tension:
+      phase3_private_epochs: 4
+    experiment/melting_point:
+      phase3_private_epochs: 4
+    experiment/refractive_index:
+      phase3_private_epochs: 2
+    experiment/glass_transition_temperature:
+      phase3_private_epochs: 2
+    experiment/viscosity:
+      phase1_private_epochs: 14
+    experiment/density:
+      phase1_private_epochs: 14
+  global:
+    epochs: 18
+  groups:
+    thermophysical:
+      phase2:
+        epochs: 8
+      phase1:
+        epochs: 15
+    dielectric_optical:
+      phase2:
+        epochs: 6
+      phase1:
+        epochs: 12
+- description: Long early lifetimes with short potential melting refractive tails
+  private:
+    experiment/anodic_potential_limit:
+      phase3_private_epochs: 1
+    experiment/cathodic_potential_limit:
+      phase3_private_epochs: 1
+    experiment/surface_tension:
+      phase3_private_epochs: 4
+    experiment/melting_point:
+      phase3_private_epochs: 1
+    experiment/refractive_index:
+      phase3_private_epochs: 1
+    experiment/glass_transition_temperature:
+      phase3_private_epochs: 2
+  global:
+    epochs: 18
+  groups:
+    thermophysical:
+      phase2:
+        epochs: 8
+      phase1:
+        epochs: 15
+    dielectric_optical:
+      phase2:
+        epochs: 6
+      phase1:
+        epochs: 12
+- description: Combined long GROUP tails with weak GROUP LR x1.1
+  private:
+    experiment/anodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/cathodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/surface_tension:
+      phase3_private_epochs: 4
+    experiment/melting_point:
+      phase3_private_epochs: 4
+    experiment/refractive_index:
+      phase3_private_epochs: 2
+    experiment/glass_transition_temperature:
+      phase3_private_epochs: 2
+  global: {}
+  groups:
+    thermophysical:
+      phase2:
+        epochs: 8
+        lr: 8.25e-05
+      phase1:
+        lr: 0.000165
+    dielectric_optical:
+      phase2:
+        epochs: 6
+        lr: 5.500000000000001e-05
+      phase1:
+        lr: 0.00011000000000000002
+    phase_stability:
+      phase1:
+        lr: 0.00022000000000000003
+      phase2:
+        lr: 0.00011000000000000002
+- description: Long early lifetimes with coordinated GLOBAL and weak GROUP LR x1.1
+  private:
+    experiment/anodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/cathodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/surface_tension:
+      phase3_private_epochs: 4
+    experiment/melting_point:
+      phase3_private_epochs: 4
+    experiment/refractive_index:
+      phase3_private_epochs: 2
+    experiment/glass_transition_temperature:
+      phase3_private_epochs: 2
+  global:
+    epochs: 18
+    lr: 0.000275
+  groups:
+    thermophysical:
+      phase2:
+        epochs: 8
+        lr: 8.25e-05
+      phase1:
+        epochs: 15
+        lr: 0.000165
+    dielectric_optical:
+      phase2:
+        epochs: 6
+        lr: 5.500000000000001e-05
+      phase1:
+        epochs: 12
+        lr: 0.00011000000000000002

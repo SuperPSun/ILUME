@@ -1,0 +1,30 @@
+- description: Independent solvation GROUP LR x0.75; short PRIVATE tails except density/viscosity
+  private: &id001
+    experiment/anodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/cathodic_potential_limit:
+      phase3_private_epochs: 2
+    experiment/surface_tension:
+      phase3_private_epochs: 4
+    experiment/melting_point:
+      phase3_private_epochs: 4
+    experiment/refractive_index:
+      phase3_private_epochs: 2
+    experiment/glass_transition_temperature:
+      phase3_private_epochs: 2
+  global: {}
+  groups:
+    solvation:
+      phase1:
+        lr: 0.00015000000000000001
+      phase2:
+        lr: 7.500000000000001e-05
+- description: Independent solvation GROUP LR x1.2; short PRIVATE tails except density/viscosity
+  private: *id001
+  global: {}
+  groups:
+    solvation:
+      phase1:
+        lr: 0.00024
+      phase2:
+        lr: 0.00012

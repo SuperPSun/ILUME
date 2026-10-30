@@ -88,6 +88,8 @@ python scripts/HPO/weakopt_joint.py report --fold 1 3
 
 预算最多48份新配置，Fold1/3筛选，最多8份补齐五折，总计不超过120个Stage3训练折；预算预约与GPU槽锁跨控制器生效。首次生成16份，后续提案写绝对参数，包含 `description`、`private`、`global`、`groups` 四个字段。private沿用任务覆盖格式；global只接受lr/epochs；groups只接受活跃GROUP的phase1/phase2下lr/epochs，仍需满足原生LR连续性和顺序。
 
+后续同批16份可拆成静态小块，用已完成并经审计的两折结果决定补位配置，使用 `generate --proposal <提案.yaml>` 追加，再以明确的 `--ids` 启动。统计批次始终为001–016、017–032、033–048；补折仍等待对应批次筛选结束，跨队列共用每卡三个作业锁。
+
 ```bash
 python scripts/HPO/weakopt_shared.py generate
 python scripts/HPO/weakopt_shared.py run --fold 1 3 --devices cuda:2,cuda:3 --max-parallel 6 --dry-run
@@ -103,3 +105,9 @@ python scripts/HPO/weakopt_shared.py report --fold 1 2 3 4 5
 ```
 
 按验证选择后用 `finalize --id <新五折最优编号>` 锁定；若新模型没有超过既有068，则保留旧模型并记录决定。测试只在最终锁定后执行一次，入口与前两轮相同，路径改为Shared内对应配置与输出。测试未达6项第一也不据此继续搜索。所有产物独立保留，失败用相同命令严格恢复，不修改旧配置或来源SHA。
+
+### 第三轮执行结果
+
+本轮48份配置完成两折筛选，8份补齐五折，共120个训练折。按完整五折验证锁定Shared/019：验证11/24项第一、共同尺度nMAE=0.258035；锁定后一次测试集成为4/10项第一、nMAE=0.216862。未达到15/24与6/10目标，预算用尽停止新增，不根据测试结果改选。
+
+逐任务收益、退化、预算、审计与报告入口保存在 `outputs/HPO/WeakOpt/Shared/final-decision.md`。正式Base和历史结果保持原样；本轮完整权重、恢复检查点、配置与日志保留，不自动将019提升为正式主线。不要重新运行已完成的测试或追加本轮候选。
