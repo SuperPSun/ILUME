@@ -25,6 +25,10 @@
 
 ADR-0093仅扩展独立回归头后训练：YAML支持默认Linear及逐目标MLP/残差 MLP；Linear继承预训练头并做等价标准化换算，非线性采用任务局部随机初始化/dropout。编码器/Fusion永久冻结、entity1024/atom512输入不变，验证只报告；format2内嵌结构并兼容旧Linear format1，不改变Stage1/2/3身份或正式训练。
 
+ADR-0110新增独立 `scripts/stage1/select_descriptors.py`：只读v4 prepared manifest的train并重算原始float64 RDKit，筛选数值/重尾、无效/重复及高相关列；结果仅为审计，不接入正式schema，不改变217维监督、下游宽度或训练身份。独立YAML与新输出，默认全量、抽样须显式标记；不运行正式全量审计，修改时另检查该入口帮助。
+
+ADR-0111将主项目及新teacher环境固定为包 `rdkit==2026.9.1` / runtime `2026.09.1`；217维清单及接口不变，旧版本prepare/teacher/sidecar/checkpoint仍严格隔离。新版本须重新prepare与训练，不改SHA、不混用旧来源；三个Stage继续使用 `configs/v4/stage*/base.yaml`，不设临时版本后缀Base。复用标准 `outputs/v4/stage*/base/` 前须完成用户按精确清单确认的旧运行清理/归档，不能覆盖遗留metadata/log或复用旧sidecar。主环境仍名 `ilume`，备份后仅清理旧RDKit并升级，不直接覆盖混装包，不改Python/PyTorch/CUDA/NumPy；基线独立环境和hash lock不变。
+
 ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选择；只扩展电荷监督，不复制语料或其他loss。sidecar format2及观察策略进入身份，旧sidecar/检查点不得交叉续训；无图同构映射仅跳过电荷记录并审计，策略进入身份；损坏资源/解析错误仍失败，来源与split检查不放宽，机制见ADR-0092与v4手册。
 
 ### 历史合同、消融与基线

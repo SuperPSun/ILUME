@@ -19,6 +19,51 @@
 
 当前Base采用十二层SMILES Transformer和八个独立残差图块：词表2,048个token时仅编码器约60.73M参数（[ADR-0090](adr/0090-stage1-v4-residual-encoder-capacity.md)）。身份一致的 Stage1 编码器、预处理语料、统计和完整 Uni-Mol 缓存可复用；切换 Stage2/3 数据 split 不要求重新训练 Stage1。旧架构检查点不得恢复到当前架构。若训练/下游目录已占用，选择新路径并同步更新下游引用，或在运行前明确安排归档；这些命令不授权替换历史结果。
 
+## RDKit 2026.9.1 主线升级
+
+现役主项目依赖精确固定 `rdkit==2026.9.1`，实际导入运行时为 `2026.09.1`（[ADR-0111](adr/0111-rdkit-2026-09-1.md)）。该版本默认描述符仍为同名、同顺序217维，不改变learned1024、atom512、1241维实体、模型容量或训练预算；筛选清单仍按ADR-0110独立审计，不自动接入模型。新版构象生成的可选ETKDGv4不启用，继续ETKDGv3/MMFF或UFF。
+
+主环境继续命名为 `ilume`，不另建版本后缀的正式环境。先确认没有进程正在使用其中的RDKit，并备份旧包及版本清单；只更新RDKit，保留当前Python、PyTorch/CUDA和NumPy，不使用无版本限制升级。若存在conda安装的 `rdkit/librdkit`，先卸载pip的RDKit，再对该环境执行conda的 `--force-remove rdkit librdkit`；执行前用 `--dry-run` 确认只移除这两个包，不连带更改其他依赖。pip-only环境无需conda移除步骤。完成旧包清理后安装并验证：
+
+```bash
+conda activate ilume
+python -m pip install --upgrade --no-deps --only-binary=:all: rdkit==2026.9.1
+python - <<'PY'
+import importlib.metadata
+from rdkit import rdBase
+from rdkit.Chem import Descriptors
+assert importlib.metadata.version("rdkit") == "2026.9.1"
+assert rdBase.rdkitVersion == "2026.09.1", rdBase.rdkitVersion
+assert len(Descriptors._descList) == 217
+print("RDKit package/runtime: 2026.9.1 / 2026.09.1; descriptors: 217")
+PY
+```
+
+不要直接覆盖conda/pip混装的旧包，也不要删除整个 `ilume` 环境来完成此次升级。升级后须启动新的Python进程/Jupyter kernel；已导入的扩展不会在原进程自动更新。基线及teacher独立环境不随主环境维护而自动更新；teacher用于新版缓存前须另按下文配方升级并验证。历史复现需要匹配历史Git及依赖，不再使用已升级的主环境。
+
+**旧产物不迁移**：即使维数相同，2025.09.5语料、统计、tokenizer/图、teacher、partial-charge sidecar与检查点也不改SHA、不重标版本、不与新环境混用。重新prepare Stage1、准备电荷sidecar、在匹配2026.09.1的独立Uni-Mol环境重新审计/生成teacher缓存，再从头训练Stage1并重新prepare/train Stage2/3。原始CSV、split authority和已验证Uni-Mol权重文件可复用；不保证升级后的canonical、QC成员及描述符数值逐bit相同。
+
+主线继续使用 `configs/v4/stage1/base.yaml`、`configs/v4/stage2/base.yaml`、`configs/v4/stage3/base.yaml`，不另设带RDKit版本后缀的Base配置。三者仍按 `outputs/v4/stage{1,2,3}/base/` 配对prepare、teacher、电荷sidecar与训练来源；科研参数及原数据split不因路径整理改变。复用标准输出路径前，须按工作区规则完成用户明确确认的旧产物清理或归档；不能覆盖旧产物，也不能只删权重后在遗留metadata/log的运行目录中启动新训练。保留的旧电荷sidecar不能用于新版prepare，须先另行归档后重新生成。未经授权，不自动移动或删除历史结果。描述符筛选YAML继续指向Base的新prepare，旧版本来源仍被严格拒绝。
+
+## RDKit 描述符只读筛选审计
+
+该工具只生成候选清单，不改变217维Stage1监督、下游实体宽度、Base YAML或已有模型。规则见 [ADR-0110](adr/0110-stage1-descriptor-selection-audit.md)，阈值在独立 [筛选YAML](../configs/v4/stage1/descriptor_selection.yaml)。完成旧Base运行目录的清理或归档后，在 `ilume` 环境使用 [Stage1 Base](../configs/v4/stage1/base.yaml) 重新prepare；该命令也会生成新的电荷sidecar。筛选无需先训练Stage1或生成teacher。
+
+```bash
+conda activate ilume
+python scripts/stage1/prepare.py \
+  --config configs/v4/stage1/base.yaml \
+  --output outputs/v4/stage1/base/prepare
+
+python scripts/stage1/select_descriptors.py \
+  --config configs/v4/stage1/descriptor_selection.yaml \
+  --output outputs/v4/stage1/base/descriptor_selection
+```
+
+默认仅对prepared manifest的全部train重新计算原始float64 RDKit，使用16个CPU worker、不用GPU；不读valid/test或目标标签，也不从已标准化float32恢复原始值。约518万分子时输出矩阵约9GB，运行前确保新输出目录有空间和CPU资源；不覆盖、无resume。终端有进度条，重定向输出为JSON进度。若仅预审，在复制的独立YAML中设正整数`max_molecules`，结果会明确标为抽样，不能据此断言全量零方差或罕见信息不存在。
+
+检查 `summary.json`的保留维数/原因，以及`artifacts/descriptor_statistics.csv`的逐列分位数、缺失和重尾比值；完整规则与名单在`artifacts/descriptor_selection.json`。默认排除超过1%非finite、数值平方不安全、明显重尾、常数/完全重复及`abs(Pearson)>0.98`的冗余列。IQR为零的稀疏列不会仅因此删除，不做自动变换。原始`.npy`保留复核。接入Stage1监督或下游输入需要另行实现并重训相应模型，不能把本清单替换旧schema或改SHA。
+
 ## 跨设备训练产物回传
 
 4090作为统一训练产物归档设备。本规则适用于正式Stage1/2/3、独立回归头后训练、HPO、基线及其他训练实验；无论在哪台设备训练，都必须将相关训练结果与完整模型权重回传到4090的ILUME项目目录，保持原有相对目录结构，HPO仍归入 `outputs/HPO`。在4090本机训练时直接保留在对应目录。
@@ -44,7 +89,7 @@ conda create -n ilume-unimol2 python=3.11 pip -y
 conda activate ilume-unimol2
 python -m pip install --upgrade pip
 python -m pip install torch==2.9.0 --index-url https://download.pytorch.org/whl/cu128
-python -m pip install numpy==1.26.4 pandas==1.5.3 rdkit==2025.9.5
+python -m pip install numpy==1.26.4 pandas==1.5.3 rdkit==2026.9.1
 python -m pip install -e .
 python -m pip install scipy joblib addict scikit-learn numba
 python -m pip install --no-deps unimol-tools==0.1.3.post1
@@ -79,6 +124,8 @@ assert importlib.metadata.version("unimol_tools") == "0.1.3.post1"
 assert torch.__version__.split("+", 1)[0] == "2.9.0", torch.__version__
 assert torch.cuda.is_available(), "CUDA is unavailable in the teacher environment"
 assert numpy.__version__ == "1.26.4", numpy.__version__
+assert importlib.metadata.version("rdkit") == "2026.9.1"
+assert rdBase.rdkitVersion == "2026.09.1", rdBase.rdkitVersion
 assert str(unimolv2.MODEL_CONFIG_V2["weight"]["84m"]) == "modelzoo/84M/checkpoint.pt"
 metadata = json.loads(Path("outputs/v4/stage1/base/prepare/artifacts/metadata.json").read_text())
 validate_feature_generation_runtime(metadata)
@@ -88,7 +135,7 @@ print(f"unimol_tools={importlib.metadata.version('unimol_tools')}; checkpoint={c
 PY
 ```
 
-验证器检查预处理语料的 `feature_generation_contract`，含RDKit运行时及分词器版本。须匹配 `rdBase.rdkitVersion`，不能只看 `pip show rdkit`：包元数据与实际导入运行时可能不同。若与准备产物合同不同，先修复独立环境再继续；不要修改产物元数据或仅为绕过检查重建语料。安装示例对应运行时 `2025.09.5`；若语料记录其他版本，则安装其精确版本。
+验证器检查预处理语料的 `feature_generation_contract`，含RDKit运行时及分词器版本。须匹配 `rdBase.rdkitVersion`，不能只看 `pip show rdkit`：包元数据与实际导入运行时可能不同。当前新运行的训练/teacher两环境均应为 `2026.09.1`。旧语料记录其他版本时，按历史Git版本和独立历史环境复现；不要修改产物元数据或绕过检查。升级后的全新语料与teacher目录必须配对，不能用新版teacher读取旧Base prepare。
 
 先生成独立小规模审计，检查 `manifest.json`（attempted/验证集/failed、吞吐及embedding字节数）；该审计不是训练缓存：
 

@@ -1,0 +1,11 @@
+# 独立只读筛选；不修改 Base 配方或已有 prepared artifact。
+artifacts_dir: outputs/v4/stage1/base/prepare/artifacts
+max_molecules: null  # null 为全部 train；正整数仅用于抽样预审，不代表全量结论。
+seed: 42
+max_invalid_fraction: 0.01
+max_std_to_iqr: 100.0
+max_abs_to_p99: 1000000.0
+correlation_threshold: 0.98
+min_pair_samples: 100
+workers: 16
+batch_size: 1024

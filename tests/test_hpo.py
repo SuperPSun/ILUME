@@ -707,7 +707,10 @@ def test_dry_run_executes_no_subprocess_and_writes_no_cache(tmp_path,monkeypatch
     monkeypatch.setattr(runner,'ROOT',tmp_path)
     a=tmp_path/'configs/stage2.yaml';b=tmp_path/'configs/stage3.yaml'
     write_yaml(a,read_yaml(ROOT/'configs/HPO/HoME/stage2/G0_C05.yaml'))
-    write_yaml(b,read_yaml(ROOT/'configs/HPO/HoME/stage3/G0_C05.yaml'))
+    # A pending-source dry run must not depend on archived production weights.
+    pending=read_yaml(ROOT/'configs/HPO/HoME/stage3/G0_C05.yaml')
+    pending['initialization']['stage2_final']=str(tmp_path/'not_trained_stage2_final.pt')
+    write_yaml(b,pending)
     identity=semantic_identity('test.prepare',{'split':42})
     cfg=SimpleNamespace(data=SimpleNamespace(artifacts_dir=tmp_path/'outputs/HPO/cache/stage2/42/artifacts'))
     monkeypatch.setattr(runner,'cache_identity',lambda *args:(cfg,identity))

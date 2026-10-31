@@ -1777,6 +1777,88 @@ def test_smiles_masking_uses_bert_replacement_distribution():
     mask_fraction = (corrupted[positions] == vocabulary.mask_id).float().mean().item()
     assert 0.77 < mask_fraction < 0.83
 
+def test_descriptor_selection_numeric_tail_redundancy_and_pairwise_correlation(tmp_path):
+    from stage1.descriptor_selection import DescriptorSelectionConfig, select_descriptor_columns
+
+    config = DescriptorSelectionConfig(tmp_path, min_pair_samples=100)
+    base = np.linspace(1., 2., 1000)
+    bad = base.copy()
+    bad[:20] = np.nan
+    partial = -3 * base + 1
+    partial[:10] = np.nan  # Exactly 1% invalid is allowed; Pearson uses paired valid rows.
+    heavy = base.copy()
+    heavy[-1] = 1.e30
+    sparse = np.zeros(1000)
+    sparse[-1] = 1
+    values = np.column_stack([base, 2 * base, base, np.ones(1000),
+                              np.full(1000, np.nan), bad, heavy, sparse,
+                              np.full(1000, 1.e200), partial])
+    names = ["base", "scaled", "duplicate", "constant", "missing", "bad", "heavy", "sparse", "huge", "partial"]
+    result = select_descriptor_columns(values, names, config)
+    assert result["retained_names"] == ["base", "sparse"]
+    assert result["removal_reasons"] == {"scaled": "correlated_with:base", "duplicate": "duplicate_of:base",
+        "constant": "zero_variance", "missing": "all_non_finite", "bad": "excess_non_finite",
+        "heavy": "heavy_tail", "huge": "unsafe_float64_square", "partial": "correlated_with:base"}
+    pair = next(p for p in result["correlated_pairs"] if p["removed"] == "partial")
+    assert pair["pearson"] == pytest.approx(-1.) and pair["paired_samples"] == 990
+    assert result["statistics"][names.index("sparse")]["zero_iqr"]
+    # A~B and B~C do not imply A~C; C must survive without transitive pruning.
+    theta = np.linspace(0, 2 * np.pi, 1000, endpoint=False)
+    chain = np.column_stack([np.cos(theta + shift) for shift in (0, np.pi / 6, np.pi / 3)])
+    assert select_descriptor_columns(chain, ["A", "B", "C"],
+        replace(config, correlation_threshold=.8))["retained_names"] == ["A", "C"]
+    assert select_descriptor_columns(values, names, replace(config, min_pair_samples=1001))["retained_names"] == [
+        "base", "scaled", "sparse", "partial"]
+    for change in ({"workers": 0}, {"max_molecules": True}, {"correlation_threshold": 1.},
+                   {"max_invalid_fraction": -.1}, {"max_std_to_iqr": float("inf")}):
+        with pytest.raises(ValueError):
+            replace(config, **change).validate()
+
+
+def test_descriptor_selection_train_only_artifacts_and_integrity(tmp_path, tiny_config):
+    from common.io import atomic_json, sha256_file
+    from stage1.descriptor_selection import DescriptorSelectionConfig, run_selection, selection_source
+    from stage1.descriptors import calculate_descriptors
+    from stage1.identity import feature_generation_contract
+
+    source = tmp_path / "source"
+    source.mkdir()
+    manifest = source / "manifest.csv"
+    manifest.write_text("sample_id,canonical_smiles,split\na,CC,train\nb,CCC,train\n"
+                        "v,this-is-not-a-molecule,valid\nc,CCO,train\n")
+    metadata = {"kind": "ilume_stage1_corpus", "format_version": 4,
+        "descriptor_raw_names": list(rdkit_descriptor_names()),
+        "feature_generation_contract": feature_generation_contract(tiny_config),
+        "artifact_hashes": {"manifest.csv": sha256_file(manifest)},
+        "summary": {"train": 3},
+        "semantic": {"identities": {"corpus": semantic_identity("test.corpus", {"train": 3})}}}
+    atomic_json(source / "metadata.json", metadata)
+    config = DescriptorSelectionConfig(source, workers=1, batch_size=2, min_pair_samples=2)
+    before = {p.name: p.read_bytes() for p in source.iterdir()}
+    prepared, identity = selection_source(config)
+    assert selection_source(replace(config, workers=2, batch_size=3))[1] == identity
+    summary = run_selection(config, tmp_path / "audit", prepared, identity)
+    raw = np.load(tmp_path / "audit/raw_descriptors.npy")
+    expected = np.stack([calculate_descriptors(Chem.MolFromSmiles(s), rdkit_descriptor_names())
+                         for s in ("CC", "CCC", "CCO")])
+    np.testing.assert_allclose(raw, expected, equal_nan=True)
+    assert summary["fit_molecules"] == 3 and not summary["sampled"]
+    assert before == {p.name: p.read_bytes() for p in source.iterdir()}
+    for filename, digest in summary["artifact_hashes"].items():
+        assert sha256_file(tmp_path / "audit" / filename) == digest
+    sampled = replace(config, max_molecules=2, workers=2)
+    sampled_identity = selection_source(sampled)[1]
+    first = run_selection(sampled, tmp_path / "sample1", prepared, sampled_identity)
+    second = run_selection(replace(sampled, workers=1), tmp_path / "sample2", prepared, sampled_identity)
+    assert first["sampled"] and first["fit_molecules"] == 2
+    assert first["artifact_hashes"] == second["artifact_hashes"]
+    with pytest.raises(FileExistsError):
+        run_selection(config, tmp_path / "audit", prepared, identity)
+    manifest.write_text(manifest.read_text() + "bad,CC,train\n")
+    with pytest.raises(ValueError, match="manifest hash"):
+        selection_source(config)
+
+
 def test_descriptor_schema_clean_pruned_groups_and_save_load(tmp_path):
     values = np.asarray(
         [
@@ -1806,6 +1888,25 @@ def test_descriptor_schema_clean_pruned_groups_and_save_load(tmp_path):
     assert loaded == pruned
 
 # --- Scientific model behavior ---
+
+def test_mainline_rdkit_pin_and_old_feature_contract_rejection(tiny_config):
+    import importlib.metadata
+    import tomllib
+    from rdkit import rdBase
+    from stage1.identity import feature_generation_contract, validate_feature_generation_runtime
+
+    project = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())
+    assert "rdkit==2026.9.1" in project["project"]["dependencies"]
+    assert importlib.metadata.version("rdkit") == "2026.9.1"
+    assert rdBase.rdkitVersion == "2026.09.1"
+    assert len(rdkit_descriptor_names()) == tiny_config.data.descriptor_dim == 217
+    contract = feature_generation_contract(tiny_config)
+    validate_feature_generation_runtime({"feature_generation_contract": contract})
+    old = {**contract, "rdkit_version": "2025.09.5"}
+    with pytest.raises(ValueError, match="contract mismatch: rdkit_version"):
+        validate_feature_generation_runtime({"feature_generation_contract": old})
+    assert semantic_identity("test.feature", contract) != semantic_identity("test.feature", old)
+
 
 def test_all_five_modalities_use_element_role_weights_and_component_means(
     tiny_config,

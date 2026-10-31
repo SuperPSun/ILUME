@@ -4,6 +4,8 @@ ILUME 的现役流程是 **冻结 v4 Stage1 → v4 五任务实体 HoME Stage2 �
 
 命令从仓库根目录执行。安装依赖并准备 ILUME-Data 的 Stage1/2/3 输入；CSV 与输出不进入 Git。正式训练使用尚不存在的输出目录，旧 HoME 产物不能与新正式身份交叉加载。本页命令是运行手册，不属于自动验收。
 
+主项目RDKit精确固定 `2026.9.1`（运行时 `2026.09.1`），默认仍为217维；旧版本准备产物与teacher不能混用，需新目录重新准备和训练，基线独立环境不升级。见 [升级与来源配对](docs/v4-runbook.md#rdkit-202691-主线升级)及 [ADR-0111](docs/adr/0111-rdkit-2026-09-1.md)。
+
 **4090统一归档**：任何设备上的训练结果与完整模型权重均须回传到4090，包括正式Stage、HPO、基线和独立后训练；完整产物范围及核验要求见 [跨设备回传规则](docs/v4-runbook.md#跨设备训练产物回传)。
 
 ```bash
@@ -23,6 +25,8 @@ Stage1配置和独立预测器保持不变。Stage2采用五任务实体HoME，S
 Stage1 共用 `data/stage1`。2026-10-20起，后续新实验统一采用 `data/3407`，已有正式Base、基线和消融配置及产物保留原划分；当前Base YAML仍指向 `data/42`，不可直接作为新划分运行。最终HPO配方与报告入口见 [HPO手册](docs/hpo-simple-runbook.md#当前选型与报告入口)；五套数据 split 的配置、输出隔离和运行前提见 [v4运行手册](docs/v4-runbook.md#数据-split-与路径)。
 
 在 `outputs/v4` 重跑最终优化配方使用 `configs/v4/stage2/optimized_3407.yaml` 和 `configs/v4/stage3/optimized_3407.yaml`，复用Stage1并重新prepare、训练Stage2及Stage3五折；[完整命令与恢复方式](docs/v4-runbook.md#最终优化配方3407)。
+
+Stage1 的独立RDKit描述符筛选命令见 [v4手册](docs/v4-runbook.md#rdkit-描述符只读筛选审计)；它只读train并输出异常/重尾、无效信息及相关冗余清单，不改变正式217维模型合同（[ADR-0110](docs/adr/0110-stage1-descriptor-selection-audit.md)）。
 
 ## v3 历史运行手册
 
