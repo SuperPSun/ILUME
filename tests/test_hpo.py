@@ -459,6 +459,9 @@ def test_all_static_rounds_and_manual_binding(tmp_path):
     assert len(list((root/'HoME/stage2').glob('*.yaml'))) == len(list((root/'HoME/stage3').glob('*.yaml'))) == 100
     pairs = {p.stem for p in (root/'HoME/stage2').glob('*.yaml')}
     assert pairs == {f'{g}_C{i:02}' for g in GROUP_VARIANTS for i in range(20)}
+    for stage in ('stage2', 'stage3'):
+        for path in (root / 'HoME' / stage).glob('*.yaml'):
+            assert read_yaml(path) == read_yaml(ROOT / 'configs/HPO/HoME' / stage / path.name)
     source = root/'selected.yaml'
     write_yaml(source, {'home': None})
     with pytest.raises(ValueError, match='Manual selection'):
@@ -508,7 +511,10 @@ def test_transfer_budget_private_and_structure_boundaries():
 
 
 def test_seed_epoch_defaults_and_private_overrides():
-    original=load_home_recipe(ROOT/'configs/v4/stage2/base.yaml')
+    original=load_home_recipe(ROOT/'configs/HPO/HoME/stage2/G0_C05.yaml')
+    original=replace(original, stage2=replace(original.stage2,
+        training=replace(original.stage2.training, seed=None),
+        preparation=replace(original.stage2.preparation, data_metadata_path=None)))
     assert 'seed' not in original.stage2.to_dict()['training']
     assert 'data_metadata_path' not in original.stage2.to_dict()['preparation']
     value=original.to_dict()
@@ -523,7 +529,8 @@ def test_seed_epoch_defaults_and_private_overrides():
     for bad in (-1,True,1.5):
         changed=deepcopy(value);changed['training']['seed']=bad
         with pytest.raises(ValueError): home_recipe_from_dict(changed)
-    base=read_yaml(ROOT/'configs/v4/stage3/base.yaml')
+    base=read_yaml(ROOT/'configs/HPO/HoME/stage3/G0_C05.yaml')
+    base['preparation'].pop('data_metadata_path')
     parsed=stage3_config_from_dict(base)
     assert 'data_metadata_path' not in parsed.to_dict()['preparation']
     for changed in stage3_recipes(base):
@@ -534,6 +541,35 @@ def test_seed_epoch_defaults_and_private_overrides():
             for phase in (2,3):
                 if getattr(original_recipe,f'phase{phase}_epochs')==0:
                     assert getattr(actual,f'phase{phase}_epochs')==0
+
+
+def test_main_g2_c01_recipe_and_historical_transfer_rejection():
+    from stage3.home import validate_transfer_architecture
+
+    a = read_yaml(ROOT / 'configs/v4/stage2/base.yaml')
+    b = read_yaml(ROOT / 'configs/v4/stage3/base.yaml')
+    old2 = read_yaml(ROOT / 'configs/v4/stage2/optimized_3407.yaml')
+    old3 = read_yaml(ROOT / 'configs/v4/stage3/optimized_3407.yaml')
+    expected2, expected3 = deepcopy(old2), deepcopy(old3)
+    expected2['home']['model']['global_experts'] = 1
+    expected3['model']['global_experts'] = 1
+    expected3['groups'].pop('electrochemical')
+    for groups in (expected2['home']['groups'], expected3['groups']):
+        for group in groups.values():
+            group['experts'] = max(1, group['experts'] - 1)
+    # Paths are paired to Base; all numerical settings outside C01 are unchanged.
+    normalize = lambda raw: json.loads(json.dumps(raw).replace('optimized_3407', 'base'))
+    assert a == normalize(expected2) and b == normalize(expected3)
+    assert len(b['tasks']) == 24
+    assert len({task['meta_group'] for task in b['tasks'].values()}) == 6
+    for task in ('experiment/anodic_potential_limit', 'experiment/cathodic_potential_limit'):
+        assert b['tasks'][task]['meta_group'] == 'phase_stability'
+    validate_pair(a, b)
+    current = stage3_config_from_dict(b)
+    previous = home_recipe_from_dict(old2)
+    with pytest.raises(ValueError, match='architecture mismatch'):
+        validate_transfer_architecture(previous.stage3.model, current.model,
+                                      previous.stage3.groups, current.groups)
 
 
 def test_cache_single_writer_integrity_and_dry_run(tmp_path):

@@ -66,7 +66,7 @@ def test_hydration_views_and_water_activity_are_complete():
     from benchmarks.aionopedia.model import MultiModalRegressor
     import torch
 
-    config = load_benchmark_config('configs/benchmarks/catalog_v4/aionopedia.yaml')
+    config = load_benchmark_config('configs/benchmarks/catalog_v4_3407/aionopedia.yaml')
     task = resolve_task(config, 'stage3', 'experiment/hydration', 1)
     for views in (aifc_model_views, iltransr_model_views, ilbert_model_sequences, llasmol_model_views):
         assert views(task, ('O',))[0] == ('O',)

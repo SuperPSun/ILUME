@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Any
 import torch
 from torch import nn
-from common.entity_inputs import EntityInputs, ENTITY_INPUT_CONTRACT
+from common.entity_inputs import EntityInputs
 from stage2.model import encode_object_entities
 from stage3.model import Stage3SparseModel
 from .home_contract import source_task_specs
@@ -19,11 +19,12 @@ class SimulationHoME(nn.Module):
         self.home = Stage3SparseModel(base_config.model,
             source_task_specs(registry, role_policy="formal_charge_v1"), 1024,
             group_configs=base_config.groups, initialization_seed=stage2_config.data.seed if stage2_config.training.seed is None else stage2_config.training.seed,
-            entity_inputs=True)
+            entity_inputs=True, entity_input_dim=(1241 if stage2_config.frozen_encoder is not None
+                else 1024 + backbone.descriptor_schema.selected_dim))
 
     @property
     def model_contract(self):
-        contract = {**ENTITY_INPUT_CONTRACT, "source_tasks": sorted(self.registry.task_ids)}
+        contract = {**self.home.entity_input_contract, "source_tasks": sorted(self.registry.task_ids)}
         if self.stage2_config.frozen_encoder is not None:
             contract["frozen_encoder"] = self.backbone.encoder_identity["hash"]
         ablation = self.backbone.config.to_dict().get("ablation")

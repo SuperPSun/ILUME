@@ -53,6 +53,8 @@ class DescriptorConfig:
     mode: str = "full"
     token_count: int = 1
     correlation_threshold: float = 0.98
+    excluded_names: tuple[str, ...] = ()
+    value_policy: str = "raw"
 
 
 @dataclass(frozen=True)
@@ -208,6 +210,21 @@ class PretrainConfig:
             raise ValueError("descriptor.token_count must be 1, 8, or 12")
         if not 0.0 < self.descriptor.correlation_threshold < 1.0:
             raise ValueError("descriptor.correlation_threshold must be between 0 and 1")
+        excluded = self.descriptor.excluded_names
+        if not isinstance(self.descriptor.value_policy, str) or self.descriptor.value_policy not in {"raw", "phi_mask_ring_log1p_v1"}:
+            raise ValueError("Unknown descriptor.value_policy")
+        if self.descriptor.value_policy != "raw" and (not self.is_dual_view or self.descriptor.mode != "full"):
+            raise ValueError("Descriptor value policy requires dual_view_v4 full mode")
+        if (not isinstance(excluded, tuple) or any(not isinstance(name, str) or not name for name in excluded)
+                or len(set(excluded)) != len(excluded)):
+            raise ValueError("descriptor.excluded_names must contain unique descriptor names")
+        if excluded and (not self.is_dual_view or self.descriptor.mode != "full"):
+            raise ValueError("Explicit descriptor exclusions require dual_view_v4 full mode")
+        if excluded:
+            from .descriptors import rdkit_descriptor_names
+            names = rdkit_descriptor_names()
+            if set(excluded) - set(names) or len(excluded) >= len(names):
+                raise ValueError("Unknown or exhaustive descriptor.excluded_names")
         if self.is_global_rdkit and (
             self.descriptor.mode != "full" or self.descriptor.token_count != 1
         ):
@@ -326,6 +343,10 @@ class PretrainConfig:
             return value
 
         payload = convert(asdict(self))
+        if not self.descriptor.excluded_names:
+            payload["descriptor"].pop("excluded_names")
+        if self.descriptor.value_policy == "raw":
+            payload["descriptor"].pop("value_policy")
         if self.loss.lambda_partial_charge == 0:
             payload["loss"].pop("lambda_partial_charge")
             payload["auxiliary"].pop("partial_charge_cache")
@@ -413,6 +434,10 @@ def _construct(section_type: type, values: dict[str, Any] | None) -> Any:
                 values[key] = Path(values[key])
     elif section_type is LossConfig and "role_weights" in values:
         values["role_weights"] = tuple(values["role_weights"])
+    elif section_type is DescriptorConfig and "excluded_names" in values:
+        if not isinstance(values["excluded_names"], (list, tuple)):
+            raise ValueError("descriptor.excluded_names must be a list of names")
+        values["excluded_names"] = tuple(values["excluded_names"])
     return section_type(**values)
 
 

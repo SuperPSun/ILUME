@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Sequence
 
 import numpy as np
+from rdkit import Chem
 from rdkit.Chem import Descriptors
 
 
@@ -35,17 +36,36 @@ GROUPS_8 = (
     "functional_groups",
 )
 SEMANTIC_MAPPING_VERSION = "rdkit-217-v1"
+DESCRIPTOR_VALUE_POLICY = "phi_mask_ring_log1p_v1"
+RING_COUNT_NAMES = (
+    "RingCount", "NumAliphaticCarbocycles", "NumAliphaticHeterocycles",
+    "NumAliphaticRings", "NumHeterocycles", "NumSaturatedCarbocycles",
+    "NumSaturatedHeterocycles", "NumSaturatedRings",
+)
+
+
+def mask_descriptor_values(values, names, molecule, value_policy="raw"):
+    if value_policy == "raw":
+        return values
+    if value_policy != DESCRIPTOR_VALUE_POLICY:
+        raise ValueError("Unknown descriptor value policy")
+    values = np.array(values, dtype=np.float64, copy=True)
+    if (len(Chem.GetMolFrags(molecule)) != 1 or molecule.GetNumHeavyAtoms() < 3
+            or molecule.GetNumBonds() < 2):
+        values[..., tuple(names).index("Phi")] = np.nan
+    return values
 
 
 def rdkit_descriptor_names() -> tuple[str, ...]:
     return tuple(name for name, _ in Descriptors._descList)
 
 
-def calculate_descriptors(mol, names: Sequence[str]) -> np.ndarray:
+def calculate_descriptors(mol, names: Sequence[str], *, value_policy="raw") -> np.ndarray:
     values_by_name = Descriptors.CalcMolDescriptors(
         mol, missingVal=float("nan"), silent=True
     )
-    return np.asarray([values_by_name[name] for name in names], dtype=np.float64)
+    values = np.asarray([values_by_name[name] for name in names], dtype=np.float64)
+    return mask_descriptor_values(values, names, mol, value_policy)
 
 
 def _descriptor_group_12(name: str) -> str:
@@ -149,6 +169,7 @@ class DescriptorSchema:
     mode: str
     token_count: int
     correlation_threshold: float
+    value_policy: str = "raw"
 
     @property
     def selected_names(self) -> tuple[str, ...]:
@@ -166,6 +187,8 @@ class DescriptorSchema:
         mode: str,
         token_count: int,
         correlation_threshold: float = 0.98,
+        excluded_names: Sequence[str] = (),
+        value_policy: str = "raw",
     ) -> "DescriptorSchema":
         values = np.asarray(values, dtype=np.float64)
         names = tuple(names)
@@ -173,8 +196,16 @@ class DescriptorSchema:
             raise ValueError("Descriptor matrix and name count do not match")
         if mode not in {"full", "clean", "pruned"}:
             raise ValueError("Descriptor mode must be full, clean, or pruned")
+        if (value_policy not in {"raw", DESCRIPTOR_VALUE_POLICY}
+                or (value_policy != "raw" and (mode != "full" or not set((*RING_COUNT_NAMES, "Phi")).issubset(names)))):
+            raise ValueError("Invalid descriptor value policy/schema")
         if token_count not in {1, 8, 12}:
             raise ValueError("Descriptor token_count must be 1, 8, or 12")
+        if (isinstance(excluded_names, str) or any(not isinstance(name, str) for name in excluded_names)
+                or len(set(excluded_names)) != len(excluded_names) or set(excluded_names) - set(names)):
+            raise ValueError("Unknown or duplicate excluded descriptor names")
+        if excluded_names and mode != "full":
+            raise ValueError("Explicit descriptor exclusions require full mode")
 
         removal: dict[str, str] = {}
         retained = list(range(len(names)))
@@ -257,6 +288,11 @@ class DescriptorSchema:
                         )
             retained = [raw_index for position, raw_index in enumerate(retained) if position in keep_positions]
 
+        if excluded_names:
+            retained = [index for index in retained if names[index] not in excluded_names]
+            if not retained:
+                raise ValueError("Descriptor exclusions cannot remove every descriptor")
+            removal.update({name: "explicit_exclusion" for name in excluded_names})
         selected_names = tuple(names[index] for index in retained)
         raw_semantic_groups = tuple(_descriptor_group_12(name) for name in names)
         if token_count == 1:
@@ -285,6 +321,7 @@ class DescriptorSchema:
             mode=mode,
             token_count=token_count,
             correlation_threshold=correlation_threshold,
+            value_policy=value_policy,
         )
 
     @classmethod
@@ -299,7 +336,15 @@ class DescriptorSchema:
         values = np.asarray(values)
         if values.shape[-1] != len(self.raw_names):
             raise ValueError("Raw descriptor input has the wrong final dimension")
-        return values[..., list(self.retained_indices)]
+        selected = values[..., list(self.retained_indices)]
+        if self.value_policy == DESCRIPTOR_VALUE_POLICY:
+            selected = selected.astype(np.float64, copy=False)
+            indices = [i for i, name in enumerate(self.selected_names) if name in RING_COUNT_NAMES]
+            rings = selected[..., indices]
+            if np.any(np.isfinite(rings) & (rings < 0)):
+                raise ValueError("Ring counts must be nonnegative")
+            selected[..., indices] = np.log1p(np.where(np.isfinite(rings), rings, np.nan))
+        return selected
 
     def save(self, path: str | Path) -> None:
         Path(path).write_text(
@@ -309,7 +354,8 @@ class DescriptorSchema:
 
     def to_payload(self) -> dict[str, object]:
         return {
-            "format_version": 2,
+            "format_version": 2 if self.value_policy == "raw" else 3,
+            **({"value_policy": self.value_policy} if self.value_policy != "raw" else {}),
             "raw_names": list(self.raw_names),
             "retained_indices": list(self.retained_indices),
             "removal_reasons": self.removal_reasons,
@@ -341,7 +387,9 @@ class DescriptorSchema:
         payload: dict[str, object],
         expected_raw_names: Sequence[str] | None = None,
     ) -> "DescriptorSchema":
-        if payload.get("format_version") != 2:
+        version = payload.get("format_version")
+        if (version not in {2, 3} or (version == 2 and "value_policy" in payload)
+                or (version == 3 and payload.get("value_policy") != DESCRIPTOR_VALUE_POLICY)):
             raise ValueError("Unsupported descriptor schema artifact format")
         raw_names = tuple(payload["raw_names"])  # type: ignore[arg-type]
         if expected_raw_names is not None and raw_names != tuple(expected_raw_names):
@@ -359,6 +407,7 @@ class DescriptorSchema:
             mode=str(payload["mode"]),
             token_count=int(payload["token_count"]),
             correlation_threshold=float(payload["correlation_threshold"]),
+            value_policy=str(payload.get("value_policy", "raw")),
         )
 
 
@@ -382,10 +431,14 @@ class DescriptorStandardizer:
         values: np.ndarray,
         columns: Sequence[int],
         names: Sequence[str],
+        *,
+        schema: DescriptorSchema | None = None,
     ) -> "DescriptorStandardizer":
         if values.ndim != 2 or len(columns) != len(names):
             raise ValueError("Descriptor columns and name count do not match")
-        return cls._fit_chunks(values, tuple(names), tuple(columns))
+        if schema is not None and (schema.retained_indices != tuple(columns) or schema.selected_names != tuple(names)):
+            raise ValueError("Descriptor scaler/schema columns differ")
+        return cls._fit_chunks(values, tuple(names), tuple(columns), schema=schema)
 
     @classmethod
     def _fit_chunks(
@@ -394,6 +447,8 @@ class DescriptorStandardizer:
         names: tuple[str, ...],
         columns: tuple[int, ...] | None = None,
         chunk_size: int = 65536,
+        *,
+        schema: DescriptorSchema | None = None,
     ) -> "DescriptorStandardizer":
         dimension = values.shape[1] if columns is None else len(columns)
         finite_counts = np.zeros(dimension, dtype=np.int64)
@@ -401,7 +456,9 @@ class DescriptorStandardizer:
         squared_deviations = np.zeros(dimension, dtype=np.float64)
         for start in range(0, values.shape[0], chunk_size):
             chunk = values[start : start + chunk_size]
-            if columns is not None:
+            if schema is not None:
+                chunk = schema.select(chunk)
+            elif columns is not None:
                 chunk = chunk[:, columns]
             valid = np.isfinite(chunk)
             safe_values = np.where(valid, chunk, 0.0).astype(

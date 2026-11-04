@@ -199,9 +199,9 @@ def _ais_batch(
 
 
 def _descriptor_batch(
-    task: tuple[list[tuple[int, str]], tuple[str, ...]],
+    task: tuple[list[tuple[int, str]], tuple[str, ...], str],
 ) -> tuple[list[int], np.ndarray]:
-    batch, raw_names = task
+    batch, raw_names, value_policy = task
     rows = []
     values = []
     for descriptor_row, canonical_smiles in batch:
@@ -209,7 +209,7 @@ def _descriptor_batch(
             mol = Chem.MolFromSmiles(canonical_smiles)
             if mol is None:
                 raise RuntimeError("Canonical SMILES unexpectedly failed RDKit parsing")
-            value = calculate_descriptors(mol, raw_names)
+            value = calculate_descriptors(mol, raw_names, value_policy=value_policy)
         except BaseException as error:
             raise RuntimeError(
                 f"descriptors row={descriptor_row} smiles={canonical_smiles!r}: "
@@ -1039,7 +1039,7 @@ def _descriptor_matrix(
             )
         )
         tasks = (
-            (batch, raw_names)
+            (batch, raw_names, config.descriptor.value_policy)
             for batch in _batches(inputs, config.preparation.descriptor_batch_size)
         )
         durable_completed = completed
@@ -1536,11 +1536,14 @@ def prepare_corpus(
             mode=config.descriptor.mode,
             token_count=config.descriptor.token_count,
             correlation_threshold=config.descriptor.correlation_threshold,
+            excluded_names=config.descriptor.excluded_names,
+            value_policy=config.descriptor.value_policy,
         )
         standardizer = DescriptorStandardizer.fit_columns(
             training_matrix,
             schema.retained_indices,
             schema.selected_names,
+            schema=schema,
         )
         fitted = standardizer.finite_counts > 0
         invalid = fitted & (

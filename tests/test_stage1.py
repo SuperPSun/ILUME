@@ -139,7 +139,7 @@ def test_v4_residual_capacity_and_shared_compatibility(tiny_config, tiny_samples
         training = DualViewPretrainModel(base, vocabulary)
         legacy = DualViewEncoder(old, vocabulary)
     assert sum(p.numel() for p in encoder.parameters()) == 60_725_419
-    assert sum(p.numel() for p in training.parameters()) == 65_125_947 + 513
+    assert sum(p.numel() for p in training.parameters()) == 65_125_947 + 513 - 6 * 1025
     assert sum(p.numel() for p in legacy.parameters()) == 29_466_795
     assert len(encoder.smiles_encoder.encoder.layers) == 12
     assert len(encoder.graph_encoder.blocks) == 8
@@ -556,12 +556,26 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
     config = PretrainConfig(
         architecture=ArchitectureConfig("dual_view_v4"),
         data=DataConfig(stage1_dir=source, artifacts_dir=tmp_path / "prepared", valid_fraction=0.4, max_smiles_tokens=64, shard_size=3),
+        descriptor=(load_config(ROOT / "configs/v4/stage1/base.yaml").descriptor
+                    if graph_message_mode == "residual_blocks" else DescriptorConfig()),
         model=ModelConfig(d_model=16, n_heads=4, smiles_layers=1, graph_depth=2, feedforward_dim=32, dropout=0.1, role_embedding=False, fusion_layers=0, graph_message_mode=graph_message_mode),
         masking=MaskingConfig(fusion_only_dropout=True, descriptor_ratio=0., descriptor_dropout=0.),
         auxiliary=AuxiliaryConfig(simulation_dir=tmp_path / "simulation", teacher_cache=tmp_path / "cache", teacher_checkpoint=checkpoint, teacher_shard_size=2),
         training=TrainingConfig(batch_size=2, epochs=2, device="cpu", amp_dtype="none", num_workers=0, validation_interval_steps=100),
     )
     prepare_corpus(config)
+    expected_descriptor_dim = 217 - len(config.descriptor.excluded_names)
+    assert PreparedCorpusDataset(config.data.artifacts_dir, "train").descriptor_schema.selected_dim == expected_descriptor_dim
+    if config.descriptor.excluded_names:
+        with pytest.raises(ValueError, match="descriptor recipe differs"):
+            resolve_stage1_training_identity(replace(config, descriptor=DescriptorConfig()))
+        with pytest.raises(ValueError, match="descriptor recipe differs"):
+            resolve_stage1_training_identity(replace(config, descriptor=replace(config.descriptor, value_policy="raw")))
+        old_values = replace(config, data=replace(config.data, artifacts_dir=tmp_path / "raw_prepared"),
+                             descriptor=replace(config.descriptor, value_policy="raw"))
+        prepare_corpus(old_values)
+        assert (old_values.data.artifacts_dir / "manifest.csv").read_bytes() == (config.data.artifacts_dir / "manifest.csv").read_bytes()
+        assert (old_values.data.artifacts_dir / "tokenizer.json").read_bytes() == (config.data.artifacts_dir / "tokenizer.json").read_bytes()
     charge_valid = None
     if graph_message_mode == "residual_blocks":
         from stage1.partial_charge import PartialChargeCache, prepare_partial_charge
@@ -1575,7 +1589,8 @@ def test_prepare_excludes_qc_failures_before_descriptor_calculation(
 
     descriptor_smiles = []
 
-    def fake_descriptors(mol, names):
+    def fake_descriptors(mol, names, *, value_policy="raw"):
+        assert value_policy == "raw"
         descriptor_smiles.append(Chem.MolToSmiles(mol, canonical=True))
         return np.arange(len(names), dtype=np.float64)
 
@@ -1810,9 +1825,21 @@ def test_descriptor_selection_numeric_tail_redundancy_and_pairwise_correlation(t
     assert select_descriptor_columns(values, names, replace(config, min_pair_samples=1001))["retained_names"] == [
         "base", "scaled", "sparse", "partial"]
     for change in ({"workers": 0}, {"max_molecules": True}, {"correlation_threshold": 1.},
-                   {"max_invalid_fraction": -.1}, {"max_std_to_iqr": float("inf")}):
+                   {"max_invalid_fraction": -.1}, {"max_std_to_iqr": float("inf")},
+                   {"audit_mode": "unknown"}, {"max_single_variance_fraction": 0},
+                   {"max_single_variance_fraction": float("nan")}):
         with pytest.raises(ValueError):
             replace(config, **change).validate()
+    reviewed = select_descriptor_columns(values, names, replace(config, audit_mode="prepared_review",
+        max_std_to_iqr=10., max_abs_to_p99=1000., max_single_variance_fraction=.05))
+    assert {"scaled", "bad", "heavy", "partial", "sparse"}.issubset(reviewed["retained_names"])
+    assert "excess_non_finite" in reviewed["review_flags"]["bad"]
+    assert "heavy_tail" in reviewed["review_flags"]["heavy"]
+    assert "single_observation_dominance" in reviewed["review_flags"]["sparse"]
+    assert reviewed["removal_reasons"]["duplicate"] == "duplicate_of:base"
+    boundary = select_descriptor_columns(np.array([[0.], [1.]]), ["x"], replace(config,
+        audit_mode="prepared_review", max_single_variance_fraction=.5))
+    assert not boundary["review_flags"]
 
 
 def test_descriptor_selection_train_only_artifacts_and_integrity(tmp_path, tiny_config):
@@ -1858,6 +1885,142 @@ def test_descriptor_selection_train_only_artifacts_and_integrity(tmp_path, tiny_
     with pytest.raises(ValueError, match="manifest hash"):
         selection_source(config)
 
+
+
+def test_descriptor_prepared_review_transforms_groups_and_train_only(tmp_path, tiny_config):
+    from common.io import atomic_json, sha256_file
+    from stage1.descriptor_selection import DescriptorSelectionConfig, run_selection, selection_source
+    from stage1.descriptors import calculate_descriptors
+    from stage1.identity import feature_generation_contract
+
+    source = tmp_path / "source"
+    source.mkdir()
+    descriptor = load_config(ROOT / "configs/v4/stage1/base.yaml").descriptor
+    smiles = ["[O].[O].[O]", "CCO", "C1CCCCC1", "C1CCOC1", "[Na+]"]
+    names = rdkit_descriptor_names()
+    masked = np.stack([calculate_descriptors(Chem.MolFromSmiles(s), names, value_policy=descriptor.value_policy) for s in smiles])
+    schema = DescriptorSchema.fit(masked, names, "full", 1, excluded_names=descriptor.excluded_names,
+                                  value_policy=descriptor.value_policy)
+    schema.save(source / "descriptor_schema.json")
+    manifest = source / "manifest.csv"
+    with manifest.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["sample_id", "canonical_smiles", "split", "role", "is_augmented", "seed_smiles"])
+        writer.writeheader()
+        for i, s in enumerate(smiles):
+            writer.writerow(dict(sample_id=str(i), canonical_smiles=s, split="train", role="neutral", is_augmented=str(i % 2), seed_smiles="CCO" if i % 2 else ""))
+        writer.writerow(dict(sample_id="v", canonical_smiles="invalid validation SMILES", split="valid", role="neutral", is_augmented="0"))
+    metadata = {"kind": "ilume_stage1_corpus", "format_version": 4,
+        "descriptor_raw_names": list(names), "summary": {"train": len(smiles)},
+        "feature_generation_contract": feature_generation_contract(tiny_config),
+        "artifact_hashes": {name: sha256_file(source / name) for name in ("manifest.csv", "descriptor_schema.json")},
+        "semantic": {"identities": {"corpus": semantic_identity("test.corpus", {"descriptor": {"value_policy": descriptor.value_policy}})}}}
+    atomic_json(source / "metadata.json", metadata)
+    before = {path.name: path.read_bytes() for path in source.iterdir()}
+    config = DescriptorSelectionConfig(source, workers=1, batch_size=2, min_pair_samples=2,
+        audit_mode="prepared_review", max_std_to_iqr=10., max_abs_to_p99=1000., max_single_variance_fraction=.05)
+    prepared, identity = selection_source(config)
+    summary = run_selection(config, tmp_path / "review", prepared, identity)
+    processed = np.load(tmp_path / "review/processed_descriptors.npy")
+    np.testing.assert_allclose(processed, schema.select(masked), equal_nan=True)
+    assert np.load(tmp_path / "review/raw_descriptors.npy")[0, names.index("Phi")] > 20000
+    assert np.isnan(processed[0, schema.selected_names.index("Phi")])
+    assert processed[2, schema.selected_names.index("RingCount")] == pytest.approx(np.log(2))
+    groups = json.loads((tmp_path / "review/descriptor_groups.json").read_text())
+    assert sum(group["molecules"] for group in groups["groups"].values()) == len(smiles)
+    assert sum(group["phi_inapplicable"] for group in groups["groups"].values()) == 2
+    assert {row["sample_id"] for row in groups["extreme_samples"]["Phi"]} == {"1", "2", "3"}
+    assert summary["raw_dim"] == 217 and summary["audited_dim"] == 211
+    parallel = run_selection(replace(config, workers=2), tmp_path / "parallel", prepared, identity)
+    assert parallel["artifact_hashes"] == summary["artifact_hashes"]
+    assert before == {path.name: path.read_bytes() for path in source.iterdir()}
+    for filename, digest in summary["artifact_hashes"].items():
+        assert sha256_file(tmp_path / "review" / filename) == digest
+    (source / "descriptor_schema.json").write_text("corrupt")
+    with pytest.raises(ValueError, match="schema SHA"):
+        selection_source(config)
+
+
+def test_v4_explicit_descriptor_exclusions_and_missing_target_mask(tiny_config, tiny_samples, tmp_path):
+    from stage1.auxiliary import empty_auxiliary_targets
+    from stage1.descriptors import DescriptorStandardizer, RING_COUNT_NAMES, mask_descriptor_values
+    from stage1.features import build_entity_sample
+    from stage1.dual_view import DualViewPretrainModel
+    active = load_config(ROOT / "configs/v4/stage1/base.yaml")
+    excluded = ("Ipc", "Kappa3", "SMR_VSA8", "SlogP_VSA9", "fr_Nhpyrrole", "fr_amide")
+    assert active.descriptor.excluded_names == excluded
+    names = rdkit_descriptor_names()
+    for s, applicable in [("[Na+]", False), ("CC", False), ("CCO.CCO", False), ("CCC", True), ("C1CC1", True)]:
+        original = np.zeros(217)
+        masked = mask_descriptor_values(original, names, Chem.MolFromSmiles(s), active.descriptor.value_policy)
+        assert np.isfinite(masked[names.index("Phi")]) == applicable
+        assert not np.isnan(original).any()
+    raw = np.random.default_rng(42).normal(size=(3, 217))
+    raw[0, names.index("MaxPartialCharge")] = np.nan
+    raw[1, names.index("BCUT2D_MWHI")] = np.inf
+    for name in RING_COUNT_NAMES:
+        raw[:, names.index(name)] = [0, 1, 8205]
+    smiles = ["[Na+]", "CC", "CCO"]
+    raw = np.stack([mask_descriptor_values(value, names, Chem.MolFromSmiles(s), active.descriptor.value_policy)
+                    for value, s in zip(raw, smiles, strict=True)])
+    schema = DescriptorSchema.fit(raw, names, "full", 1, excluded_names=excluded,
+                                  value_policy=active.descriptor.value_policy)
+    assert schema.selected_dim == 211
+    assert schema.selected_names == tuple(n for n in names if n not in excluded)
+    assert schema.removal_reasons == {name: "explicit_exclusion" for name in excluded}
+    assert all(name in schema.selected_names for name in ("MaxPartialCharge", "MinPartialCharge",
+        "MaxAbsPartialCharge", "MinAbsPartialCharge", "RingCount", "NumAliphaticRings",
+        *[n for n in names if n.startswith("BCUT2D_")]))
+    schema.save(tmp_path / "schema.json")
+    assert DescriptorSchema.load(tmp_path / "schema.json", expected_raw_names=names) == schema
+    assert schema.to_payload()["format_version"] == 3
+    selected_raw = schema.select(raw)
+    np.testing.assert_allclose(selected_raw[:, schema.selected_names.index("RingCount")], np.log1p([0, 1, 8205]))
+    scaler = DescriptorStandardizer.fit_columns(raw, schema.retained_indices, schema.selected_names, schema=schema)
+    np.testing.assert_allclose(scaler.means, np.nanmean(np.where(np.isfinite(selected_raw), selected_raw, np.nan), axis=0))
+    values, valid = scaler.transform(schema.select(raw))
+    assert np.isfinite(values).all() and (values[~valid] == 0).all() and (~valid).sum() == 4
+    config = replace(tiny_config, architecture=ArchitectureConfig("dual_view_v4"),
+        descriptor=active.descriptor, fingerprint=FingerprintConfig(),
+        model=replace(tiny_config.model, role_embedding=False),
+        masking=replace(tiny_config.masking, fusion_only_dropout=True, descriptor_dropout=0.))
+    config.validate()
+    assert config_from_dict(config.to_dict()).to_dict() == config.to_dict()
+    assert "excluded_names" not in replace(config, descriptor=DescriptorConfig()).to_dict()["descriptor"]
+    assert "value_policy" not in replace(config, descriptor=DescriptorConfig()).to_dict()["descriptor"]
+    vocabulary, samples = tiny_samples
+    for i, s in enumerate(smiles):
+        sample = build_entity_sample({"canonical_smiles": s, "sample_id": str(i), "role_id": i},
+                                     raw[i], schema, scaler, vocabulary, config)
+        np.testing.assert_array_equal(sample["descriptors"].numpy(), values[i])
+        np.testing.assert_array_equal(sample["descriptor_valid"].numpy(), valid[i])
+    selected = [{**{k: v for k, v in sample.items() if k != "fingerprints"}, "descriptors": torch.from_numpy(values[i]),
+                 "descriptor_valid": torch.from_numpy(valid[i]),
+                 "auxiliary_targets": empty_auxiliary_targets()} for i, sample in enumerate(samples)]
+    batch = MultimodalPacker(vocabulary)(selected)
+    model = DualViewPretrainModel(config, vocabulary, schema).eval()
+    with pytest.raises(ValueError, match="descriptor.*schema"):
+        DualViewPretrainModel(config, vocabulary, DescriptorSchema.fit(raw, names, "full", 1))
+    with pytest.raises(ValueError, match="policy"):
+        DualViewPretrainModel(replace(config, descriptor=replace(config.descriptor, value_policy="raw")), vocabulary, schema)
+    corrupted = schema.to_payload(); corrupted["value_policy"] = "unknown"
+    with pytest.raises(ValueError, match="schema artifact"):
+        DescriptorSchema.from_payload(corrupted)
+    invalid_counts = raw.copy(); invalid_counts[0, names.index("RingCount")] = -1
+    with pytest.raises(ValueError, match="nonnegative"):
+        schema.select(invalid_counts)
+    invalid_counts[0, names.index("RingCount")] = -np.inf
+    assert np.isnan(schema.select(invalid_counts)[0, schema.selected_names.index("RingCount")])
+    output = model(MultimodalMasker(vocabulary, config.masking).apply(batch))
+    assert output.logits["descriptor"].shape == (3, 211)
+    output.logits["descriptor"].retain_grad()
+    output.loss.backward()
+    assert torch.isfinite(output.loss)
+    assert output.logits["descriptor"].grad[~batch.descriptor_valid].count_nonzero() == 0
+    assert output.logits["descriptor"].grad[batch.descriptor_valid].abs().sum() > 0
+    for invalid in (["not_a_descriptor"], ["Ipc", "Ipc"], "Ipc"):
+        payload = config.to_dict(); payload["descriptor"]["excluded_names"] = invalid
+        with pytest.raises(ValueError, match="excluded_names"):
+            config_from_dict(payload)
 
 def test_descriptor_schema_clean_pruned_groups_and_save_load(tmp_path):
     values = np.asarray(

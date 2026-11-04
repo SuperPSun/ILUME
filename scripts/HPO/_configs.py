@@ -99,8 +99,9 @@ def generate_initial(destination=ROOT / 'configs/HPO'):
         path = destination / 'stage1' / f'{i:03}.yaml'
         write_yaml(path, raw)
         load_regression_config(path)
-    s2base = read_yaml(ROOT / 'configs/v4/stage2/base.yaml')
-    s3base = read_yaml(ROOT / 'configs/v4/stage3/base.yaml')
+    # Historical trial IDs retain their frozen topology and training recipe.
+    s2base = read_yaml(ROOT / 'configs/HPO/HoME/stage2/G0_C05.yaml')
+    s3base = read_yaml(ROOT / 'configs/HPO/HoME/stage3/G0_C05.yaml')
     for gid, mapping in GROUP_VARIANTS.items():
         for ci in range(20):
             s2, s3 = bind_cache('stage2', deepcopy(s2base)), bind_cache('stage3', deepcopy(s3base))

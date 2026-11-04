@@ -4,6 +4,10 @@
 
 已接受（2026-10-31）。新增只读筛选工具，不修订现役217维监督、1241维实体输入、模型或训练身份。产出的保留清单不是可直接加载的 `DescriptorSchema`；接入训练需要后续独立决定、实现与新身份，不可手改旧产物。
 
+后续修订：[ADR-0112](0112-v4-explicit-rdkit-211-selection.md) 独立决定 Base 使用显式 211 列；本工具自身仍不接入模型、不自动采用候选清单。
+
+现役审计YAML按[ADR-0113](0113-v4-descriptor-validity-ring-log-review.md)使用处理后分布的`prepared_review`，重尾/缺失/相关仅标记；下文为共享默认`legacy_selection`的历史筛选算法。
+
 ## 数据与执行
 
 - 独立入口 `scripts/stage1/select_descriptors.py`，配方为 `configs/v4/stage1/descriptor_selection.yaml`。仅读取已完成v4语料的 `metadata.json/manifest.csv`，验证manifest SHA、corpus身份、RDKit/特征运行时和描述符名称顺序。无需读取训练权重、teacher、模拟/实验标签，也不读取分片中的标准化描述符。

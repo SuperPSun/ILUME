@@ -8,10 +8,10 @@
 - 在4090仓库根执行，主环境为`ilume`。若尚无绘图依赖，先自行执行
   `python -m pip install -e '.[reports]'`；脚本不自动安装依赖。
 - 十模型完整回传至`outputs/benchmarks/v4_3407/`，保留原相对路径。
-- 明确选定ILUME运行根，例如`outputs/v4/stage3/optimized_3407/`。
+- 明确选定ILUME运行根；G2_C01主模型使用`outputs/v4/stage3/base/`和`configs/v4/stage3/base.yaml`。
   该目录必须已有`valid/fold1`至`valid/fold5`的完整评估和预测。训练完成本身不足以汇总。
 - `--with-test`还要求同一运行根的`test/`已完成五模型原单位预测集成。
-  Stage3评估命令见[v4手册](v4-runbook.md#最终优化配方3407)。
+  Stage3评估命令见[v4手册](v4-runbook.md#g2_c01-主模型)。
 
 联合评估生成的`valid/simulation/`和`test/simulation/`在解析论文候选前排除；模拟结果继续独立汇总。
 
@@ -23,22 +23,24 @@ AIonopedia按其原生`benchmark.aionopedia-training.v1`身份读取嵌套任务
 
 ```bash
 python scripts/benchmarks/summarize_paper.py \
-  --config configs/v4/stage3/optimized_3407.yaml \
-  --ilume outputs/v4/stage3/optimized_3407 \
+  --config configs/v4/stage3/base.yaml \
+  --ilume outputs/v4/stage3/base \
   --baselines outputs/benchmarks/v4_3407 \
-  --output outputs/reports/paper-3407-valid-001
+  --output outputs/reports/paper-g2-c01-3407-valid-001
 ```
 
 验证与现有10项测试任务一起发布：
 
 ```bash
 python scripts/benchmarks/summarize_paper.py \
-  --config configs/v4/stage3/optimized_3407.yaml \
-  --ilume outputs/v4/stage3/optimized_3407 \
+  --config configs/v4/stage3/base.yaml \
+  --ilume outputs/v4/stage3/base \
   --baselines outputs/benchmarks/v4_3407 \
   --with-test \
-  --output outputs/reports/paper-3407-valid-test-001
+  --output outputs/reports/paper-g2-c01-3407-valid-test-001
 ```
+
+默认`--config`为当前Base。历史G2_C05报告须显式传入`--config configs/v4/stage3/optimized_3407.yaml`及其原运行根，配对原始数据与Stage1来源；不把历史预测重标为G2_C01。G2_C01尚需完成新的训练与评估，不能直接用旧五折预测代替。
 
 输出目录已存在即拒绝。再次运行使用新的编号，不删除或覆盖历史报告。
 不把`outputs/HPO`整体作为输入，也不把不同split、候选或study的折凑成五折。

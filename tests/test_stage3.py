@@ -827,13 +827,14 @@ def test_three_phase_config_and_task_specific_gate_contract() -> None:
 
 
 
-def test_entity_home_electrochemical_base_capacity() -> None:
+def test_entity_home_historical_electrochemical_capacity() -> None:
     from common.entity_inputs import EntityInputs
     from stage3.three_phase import _checkpoint_format, _validate_checkpoint_common
 
-    config = load_stage3_config("configs/v4/stage3/base.yaml")
+    config = load_stage3_config("configs/HPO/HoME/stage3/G0_C05.yaml")
     tasks = ("experiment/anodic_potential_limit", "experiment/cathodic_potential_limit")
-    registry = resolve_task_registry(config)
+    registry = resolve_task_registry(replace(config, tasks={task: config.tasks[task] for task in tasks},
+                                            data=replace(config.data, split_strategies={})))
     model = Stage3SparseModel(
         config.model, {task: registry[task] for task in tasks}, 1024,
         group_configs=config.groups, task_configs=config.tasks,
@@ -2629,7 +2630,7 @@ def test_evaluation_launcher_domains_and_protocols(monkeypatch, tmp_path, split,
     monkeypatch.setattr(simulation, "resolve_simulation_evaluation_identity", resolve_simulation)
     monkeypatch.setattr(simulation, "evaluate_simulation_checkpoints", evaluate_simulation)
     assert evaluate_launcher.main() == 0
-    assert all(kwargs["data_metadata"] == "data/42/stage3/metadata.json" for kwargs, _ in runs)
+    assert all(kwargs["data_metadata"] == "outputs/v4/stage3/base/prepare/data_metadata.json" for kwargs, _ in runs)
     experimental_calls = [kwargs for name, kwargs in calls if name == "experimental"]
     simulation_calls = [kwargs for name, kwargs in calls if name == "simulation"]
     assert len(experimental_calls) == (0 if domain == "simulation" else 5 if split == "valid" else 1)

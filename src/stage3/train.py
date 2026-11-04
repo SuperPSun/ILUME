@@ -551,8 +551,7 @@ def build_resolved_training_plan(
         if config.initialization.representation_contract in {"dual_view_v4", "entity_home_v4"}:
             plan["representation_contract"] = config.initialization.representation_contract
             if config.is_entity_home:
-                from common.entity_inputs import ENTITY_INPUT_CONTRACT
-                plan["model"]["entity_input_contract"] = dict(ENTITY_INPUT_CONTRACT)
+                plan["model"]["entity_input_contract"] = dict(model.entity_input_contract)
         plan["model"].pop("group_experts")
         plan["schedule_mode"] = "three_phase"
         plan["phases"] = phase_plan

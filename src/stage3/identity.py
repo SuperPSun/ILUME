@@ -4,7 +4,7 @@ import csv
 from typing import Any, Mapping, Sequence
 
 from common.identity import semantic_identity
-from common.entity_inputs import ENTITY_INPUT_CONTRACT
+from common.entity_inputs import entity_input_contract
 from .entity_inputs import frozen_encoder_path
 from stage2.frozen import load_entity_source
 from common.io import sha256_file
@@ -101,7 +101,7 @@ def build_stage3_prepared_identity(
             "objects": [key.to_dict() for key in objects],
             "object_encoding_contract_version": OBJECT_ENCODING_CONTRACT_VERSION,
             ("stage1_encoder_identity" if config.is_entity_home else "stage2_encoder_identity"): stage2_encoder_identity["hash"],
-            **({"entity_input_contract": ENTITY_INPUT_CONTRACT} if config.is_entity_home else {}),
+            **({"entity_input_contract": entity_input_contract(stage2_encoder_identity["payload"].get("entity_input_dim", 1241))} if config.is_entity_home else {}),
         },
     )
 

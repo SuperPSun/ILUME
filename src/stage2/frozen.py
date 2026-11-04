@@ -165,8 +165,12 @@ def load_frozen_stage1_entities(checkpoint, artifacts_dir, *, device="cpu"):
     loaded.model.requires_grad_(False).to(target).eval()
     schema = DescriptorSchema.from_payload(json.loads((root / "descriptor_schema.json").read_text()), expected_raw_names=rdkit_descriptor_names())
     scaler = DescriptorStandardizer.from_payload(json.loads((root / "descriptor_scaler.json").read_text()))
+    entity_input_dim = loaded.model.entity_dim + schema.selected_dim
+    if entity_input_dim != 1241:
+        payload["entity_input_dim"] = entity_input_dim
+        identity = semantic_identity("stage3.frozen-stage1-entities.v4", payload)
     return FrozenStage1Entities(loaded.model, MultimodalPacker(loaded.vocabulary), loaded.config,
-        schema, scaler, identity, loaded.artifact_hash, target)
+        schema, scaler, identity, loaded.artifact_hash, target, entity_input_dim=entity_input_dim)
 
 def load_frozen_object_encoder(*args, **kwargs):
     raise ValueError("ObjectEncoder loading retired; use the historical Git revision")

@@ -7,7 +7,7 @@ from typing import Iterable, Mapping
 import torch
 from torch import nn
 from common.training import seeded_initialization
-from common.entity_inputs import EntityInputs, ENTITY_INPUT_CONTRACT
+from common.entity_inputs import EntityInputs, entity_input_contract
 
 from .config import (
     ResolvedStage3PrivateRecipe,
@@ -281,6 +281,7 @@ class Stage3SparseModel(nn.Module):
         transfer_knowledge: Stage3TransferKnowledgeConfig | None = None,
         initialization_seed: int | None = None,
         entity_inputs: bool = False,
+        entity_input_dim: int = 1241,
     ) -> None:
         super().__init__()
         self.model_config = model_config
@@ -292,7 +293,8 @@ class Stage3SparseModel(nn.Module):
         if entity_inputs and (d_model != 1024 or descriptor_input_dims is not None or transfer_knowledge is not None):
             raise ValueError("Entity HoME requires 1024D experts without legacy adapters")
         self.entity_inputs = entity_inputs
-        l1_input_dim = ENTITY_INPUT_CONTRACT["packed_dim"] if entity_inputs else d_model
+        self.entity_input_contract = entity_input_contract(entity_input_dim) if entity_inputs else None
+        l1_input_dim = self.entity_input_contract["packed_dim"] if entity_inputs else d_model
         self.transfer_knowledge = transfer_knowledge
         self.groups = tuple(
             sorted({spec.meta_group for spec in self.task_specs.values() if spec.enabled})
@@ -687,11 +689,11 @@ class Stage3SparseModel(nn.Module):
         if self.entity_inputs:
             if not isinstance(primary_embedding, EntityInputs):
                 raise ValueError("HoME requires raw frozen entity slots")
-            primary_embedding, anchor = primary_embedding.pack()
+            primary_embedding, anchor = primary_embedding.pack(self.entity_input_contract["entity_dim"])
             if partner_embedding is not None:
                 if not isinstance(partner_embedding, EntityInputs):
                     raise ValueError("HoME partner requires raw frozen entity slots")
-                partner_embedding, partner_anchor = partner_embedding.pack()
+                partner_embedding, partner_anchor = partner_embedding.pack(self.entity_input_contract["entity_dim"])
         else:
             anchor = primary_embedding
         key = sanitize_task(task_id)

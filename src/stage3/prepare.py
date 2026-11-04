@@ -177,7 +177,7 @@ def materialize_object_slots(
 ) -> dict[str, Any]:
     """Freeze Stage 1 entity outputs, not the trainable ObjectEncoder output."""
     encoder = load_entity_source(config, device=resolve_device(config.training.device))
-    slots = torch.zeros((len(object_keys), 2, 1241), dtype=torch.float32)
+    slots = torch.zeros((len(object_keys), 2, encoder.entity_input_dim), dtype=torch.float32)
     roles = torch.zeros((len(object_keys), 2), dtype=torch.long)
     counts = torch.tensor([len(key.slots) for key in object_keys], dtype=torch.long)
     entities = sorted({slot for key in object_keys for slot in key.slots})
@@ -187,7 +187,7 @@ def materialize_object_slots(
         cached = _load_cache_entry(config.preparation.cache_dir, encoder.encoder_identity, key)
         if cached is None:
             missing.append(slot)
-        elif cached.shape != (1241,):
+        elif cached.shape != (encoder.entity_input_dim,):
             raise ValueError("Stage1 cached entity input width mismatch")
         else:
             values[slot] = cached
@@ -298,7 +298,7 @@ def _stage_artifacts(
         "source_hashes": dict(source_digests),
         "object_count": len(objects),
         "embedding_dim": 1024 if config.is_entity_home else int(embeddings.shape[1]),
-        **({"entity_input_dim": 1241, "slot_contract": "ordered_entity_slots_v1"} if config.is_entity_home else {}),
+        **({"entity_input_dim": int(slot_payload["slots"].shape[-1]), "slot_contract": "ordered_entity_slots_v1"} if config.is_entity_home else {}),
         "counts": counts,
         "artifact_hashes": artifact_hashes,
         **({"object_slots_sha256": artifact_hashes["object_slots.pt"]} if slot_payload is not None else {}),
@@ -475,13 +475,16 @@ def load_prepared_stage3(config: Stage3Config) -> dict[str, Any]:
         context="Stage 3 prepared artifact",
     )
     slots = None
+    entity_input_dim = expected_stage2_identity["payload"].get("entity_input_dim", 1241)
+    if config.is_entity_home and metadata.get("entity_input_dim") != entity_input_dim:
+        raise ValueError("Stage3 prepared entity descriptor width mismatch")
     if expected_contract in {3, 4, 5}:
         slots = torch.load(root / "object_slots.pt", map_location="cpu", weights_only=True)
         if (
             slots.get("kind") != ("ilume_stage3_frozen_entity_slots_v4" if config.is_entity_home else "ilume_stage3_frozen_entity_slots")
             or slots.get("objects") != objects["objects"]
             or slots.get("stage1_encoder_identity" if config.is_entity_home else "stage2_encoder_identity") != expected_stage2_identity
-            or slots["slots"].shape != (len(objects["objects"]), 2, 1241 if config.is_entity_home or expected_contract == 4 else metadata["embedding_dim"])
+            or slots["slots"].shape != (len(objects["objects"]), 2, entity_input_dim if config.is_entity_home else 1241 if expected_contract == 4 else metadata["embedding_dim"])
             or slots["roles"].shape != (len(objects["objects"]), 2)
             or slots["counts"].shape != (len(objects["objects"]),)
             or not torch.isfinite(slots["slots"]).all()

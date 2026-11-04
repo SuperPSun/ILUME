@@ -8,6 +8,7 @@
 |---|---|---|
 | Stage2 共享梯度聚合 | [0097](0097-stage2-batch-sample-weighted-gradients.md) | 五模拟联合step，GLOBAL/GROUP按真实batch样本加权，PRIVATE原始梯度；新训练身份及严格恢复/迁移 |
 | ChemBERTa-2冻结表示消融 | [0107](0107-chemberta2-frozen-home-ablations.md) | C12/C13；MTR/MLM CLS384固定补零、无显式RDKit、永久冻结；配对3407 HoME |
+| G2_C01主模型容量与配方 | [0114](0114-g2-c01-main-model.md) | Base采用G2_C01、007/032训练超参及3407；新211维Stage1来源；旧HPO/optimized_3407/消融保留原身份 |
 | v4 实体HoME Stage2/3 主线 | [0095](0095-v4-entity-home-without-object-encoder.md) | 无ObjectEncoder；GLOBAL/GROUP直接并行处理实体；五模拟、24实验+两模拟仅PRIVATE更新；旧0094及Object合同退役 |
 | 现役 Stage3 共享梯度聚合 | [0096](0096-stage3-batch-sample-weighted-gradients.md) | GLOBAL跨实验任务、GROUP组内按当前真实batch样本数加权；PRIVATE原始平均梯度；尾batch/耗尽任务/模拟隔离；替代Entity-HoME的0070聚合规定 |
 | 固定架构弱任务优化 | [0104](0104-stage3-weakopt.md) | WeakOpt独立静态参数候选，累计80组、验证第一名优先；物理GPU2/3，测试不参与选型 |
@@ -16,7 +17,7 @@
 | 历史 v2/v3 表示与隔离 | [0039](0039-global-rdkit-v2-mainline.md) | 三模态 Stage 1、1024D 实体/Object/HoME；仅约束历史配置，现役表示由 0089 取代 |
 | Stage 1 执行 | [0013](0013-stage1-full-corpus-ddp.md)、[0014](0014-stage1-prepare-performance-and-corpus-v2.md)、[0015](0015-stage1-high-throughput-epoch-resume.md)、[0017](0017-stage1-base-runtime-profile.md) | 全量轮、prepare/运行时、DDP 与完整轮恢复 |
 | Stage1 独立回归头 | [0092](0092-stage1-atom-charge-and-frozen-regression-heads.md)、[0093](0093-stage1-configurable-frozen-predictors.md) | 冻结 entity1024/atom512；Linear/MLP/残差 MLP 默认与逐目标覆盖；独立 format2，兼容旧 Linear format1；验证只报告 |
-| Stage1 描述符筛选审计 | [0110](0110-stage1-descriptor-selection-audit.md) | 独立train-only原始RDKit数值/重尾、无效/重复及相关冗余筛选；只输出清单，不改变正式217维或训练身份 |
+| Stage1 描述符筛选与正式选择 | [0110](0110-stage1-descriptor-selection-audit.md)、[0112](0112-v4-explicit-rdkit-211-selection.md)、[0113](0113-v4-descriptor-validity-ring-log-review.md) | Base保留211列，Phi适用性mask、八项环计数log1p，监督/显式输入统一；严格复审只标记重尾/缺失/相关，原始/处理后矩阵与分组报告；实体1235/L1输入2478，新来源重新prepare与训练 |
 | 主线RDKit版本升级 | [0111](0111-rdkit-2026-09-1.md) | 精确固定包2026.9.1/runtime2026.09.1；维数和模型不变，严格拒绝旧特征来源，新目录重建prepare/teacher并重训；基线独立环境不变 |
 | 历史 v3/v4 Stage2-HoME | [0089](0089-v4-frozen-dual-view-stage1.md)（v4 表示与冻结边界）、[0082](0082-home-mainline-and-core-ablations.md)、[0083](0083-stage2-home-full-artifact-evaluation.md)、[0085](0085-retire-stage2-home-evaluation.md)、[0079](0079-stage2-home-stage3-home-transfer-ablation.md)（历史配方来源）、[0025](0025-stage2-homo-lumo-scalar-tasks.md) | 九任务仅物理监督 HoME、完整模型产物与 GLOBAL/GROUP 迁移；独立评估由 0085 退役；正式数值读 YAML |
 | Stage 3 训练机制与历史任务集 | [0089](0089-v4-frozen-dual-view-stage1.md)（v4 表示与冻结边界）、[0084](0084-stage3-simulation-phase2-phase3.md)、[0020](0020-stage3-v1-sparse-home-pcgrad.md)、[0046](0046-stage3-ownership-clipping-raw-sampling.md)、[0048](0048-stage3-owner-lifetime-three-phase-training.md)、[0050](0050-stage3-task-specific-owner-budget-and-private-capacity.md)、[0070](0070-stage3-retire-pcgrad.md)、[0075](0075-stage2-zero-update-stage3-object-phase1.md) | 历史20项实验+五项模拟；历史v5任务集见0094；现役v4由0095替代；稀疏 HoME、原始样本采样/裁剪、三阶段 owner 存续期/容量、ObjectEncoder Phase 1 |

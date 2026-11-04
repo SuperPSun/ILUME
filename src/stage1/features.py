@@ -18,7 +18,7 @@ from .config import (
     PretrainConfig,
     config_from_dict,
 )
-from .descriptors import DescriptorSchema, DescriptorStandardizer, rdkit_descriptor_names
+from .descriptors import DescriptorSchema, DescriptorStandardizer, mask_descriptor_values, rdkit_descriptor_names
 from .fingerprints import calculate_fingerprints
 from .graph import featurize_mol
 from .tokenizer import SmilesTokenizer
@@ -92,6 +92,7 @@ def build_entity_sample(
     encoded = tokenizer.encode(
         record["canonical_smiles"], config.data.max_smiles_tokens
     )
+    raw_descriptors = mask_descriptor_values(raw_descriptors, schema.raw_names, mol, schema.value_policy)
     selected = schema.select(raw_descriptors[None, :])
     standardized, descriptor_valid = standardizer.transform(selected)
     invalid = descriptor_valid & ~np.isfinite(standardized)

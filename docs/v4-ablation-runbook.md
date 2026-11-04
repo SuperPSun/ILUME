@@ -2,6 +2,8 @@
 
 科研合同见 [ADR-0100](adr/0100-v4-entity-home-ablations.md)。本手册所有命令在仓库根目录执行，使用 `ilume` 环境。配置位于 `configs/ablations/v4_3407/`，新产物位于 `outputs/ablations/v4_3407/`。正式训练由用户启动；每个新输出目录必须不存在。任何命令失败即停止后续步骤；不覆盖旧输出，不编辑 SHA，不自动下载 teacher或重建正式数据。
 
+主模型已按[ADR-0114](adr/0114-g2-c01-main-model.md)切换为G2_C01。本套件保留原G2_C05配对结构及来源，不能直接用于新主模型消融或把旧报告重新标成G2_C01结果。
+
 ## 前置检查
 
 本轮Base指 [最终优化配方3407](v4-runbook.md#最终优化配方3407)，对应 `configs/v4/stage2/optimized_3407.yaml` 和 `configs/v4/stage3/optimized_3407.yaml`。原 `configs/ablations/v4/` 与 `outputs/ablations/v4/` 仅保留split42历史身份。核心实验共享原Base Stage1 prepare；C1、C9、C10分别使用独立表示缓存，其他核心训练复用3407 Base Stage3 prepare及对应Stage2数据。Stage2来源必须满足ADR-0097新联合更新合同。Phase1/Phase2对照要求五个3407 Base折的阶段权重齐全；C0直接复用其final。

@@ -1,5 +1,6 @@
 """Scientific configs, input identities, and statistical boundaries of the active ablations."""
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -24,8 +25,19 @@ CONFIGS = ROOT/'configs/ablations/v4'
 def test_registered_ablation_contracts_are_paired_and_fixed_final(config_root, authority):
     configs=ROOT/'configs/ablations'/config_root
     base1=yaml.safe_load((ROOT/'configs/v4/stage1/base.yaml').read_text())
+    # Existing ablations retain their pre-ADR-0112 full217 descriptor recipe.
+    base1['descriptor'].pop('excluded_names', None)
+    base1['descriptor'].pop('value_policy', None)
     base2=load_home_recipe(ROOT/f'configs/v4/stage2/{authority}.yaml')
     base3=load_stage3_config(ROOT/f'configs/v4/stage3/{authority}.yaml')
+    if config_root == 'v4':
+        # The split42 suite remains paired with its pre-promotion G0_C05 recipe.
+        base2=load_home_recipe(ROOT/'configs/HPO/HoME/stage2/G0_C05.yaml')
+        base2=replace(base2, stage2=replace(base2.stage2,
+            training=replace(base2.stage2.training, seed=None)))
+        historical=load_stage3_config(ROOT/'configs/HPO/HoME/stage3/G0_C05.yaml')
+        base3=replace(historical, training=replace(historical.training, seed=None),
+            data=replace(historical.data, artifacts_dir=base3.data.artifacts_dir))
     assert len(list(configs.rglob('*.yaml')))==(40 if config_root=='v4_3407' else 36)
     cancelled=list((configs/'capacity').rglob('*.yaml')) if config_root=='v4_3407' else []
     assert len(list(configs.rglob('*.yaml')))-len(cancelled)==36

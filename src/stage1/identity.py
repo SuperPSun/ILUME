@@ -201,6 +201,10 @@ def resolve_stage1_training_identity(config: PretrainConfig) -> dict[str, Any]:
     metadata_path = config.data.artifacts_dir / "metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     corpus = metadata_identity(metadata, "corpus", context="Stage 1 corpus")
+    descriptor_recipe = corpus["payload"]["descriptor"]
+    if (config.descriptor.excluded_names or descriptor_recipe.get("excluded_names")
+            or config.descriptor.value_policy != "raw" or descriptor_recipe.get("value_policy")) and descriptor_recipe != config.to_dict()["descriptor"]:
+        raise ValueError("Stage1 descriptor recipe differs from prepared corpus; rerun prepare")
     layout = metadata_identity(
         metadata, "sampler_layout", context="Stage 1 corpus"
     )

@@ -1,19 +1,19 @@
 # v4 运行手册
 
-本手册是现役 v4 Stage1及实体HoME Stage2/3运行入口。Stage1合同不变；Stage2/3见 [ADR-0095](adr/0095-v4-entity-home-without-object-encoder.md)，旧Object/v5运行需历史Git版本。
+本手册是现役 v4 Stage1及实体HoME Stage2/3运行入口。Stage1现役描述符选择与数值处理见[ADR-0112](adr/0112-v4-explicit-rdkit-211-selection.md)、[ADR-0113](adr/0113-v4-descriptor-validity-ring-log-review.md)；Stage2/3见 [ADR-0095](adr/0095-v4-entity-home-without-object-encoder.md)，旧Object/v5运行需历史Git版本。
 
 
 从仓库根目录执行，使用新的 `outputs/v4/` 路径，不覆盖历史v3输出。Stage1科研合同见 [ADR-0089](adr/0089-v4-frozen-dual-view-stage1.md)。CUDA示例使用四张设备。
 
 ## 数据 split 与路径
 
-2026-10-20起，后续新实验统一采用 `data/3407`。固定配方为HoME `G2_C05`、Stage2 `007`、Stage3 `032`，共同训练seed42，Stage3实际按42+fold派生；数据划分seed与训练seed不得混淆。已有正式Base、基线、消融配置及产物保留原split，不改写历史身份。最终五套划分结果与后续使用边界见 [HPO手册](hpo-simple-runbook.md#当前选型与报告入口)。
+2026-11-04起，正式Stage2/3 Base采用 **G2_C01 / Stage2 007 / Stage3 032**，并显式配对 `data/3407`（[ADR-0114](adr/0114-g2-c01-main-model.md)）。共同训练seed42，Stage3按42+fold派生；数据划分seed与训练seed不得混淆。旧G2_C05的 `optimized_3407`、HPO、基线与消融产物保持原身份，历史五套划分结果不能重标为G2_C01。当前主模型命令见[下方运行步骤](#g2_c01-主模型)。
 
-已有正式Base YAML的Stage1 输入仍为 `data/stage1`；Stage2/3 输入分别为 `data/42/stage2`、`data/42/stage3`，共用 `data/42/task_catalog.csv`。以下原Base命令仍复现split42；新实验须使用独立的3407 YAML与输出。Stage2 YAML 的 `data.data_root` 为 split 根目录，catalog 内的 `stage2/...` 路径相对此根解析；Stage3 YAML 的 `data.stage3_dir` 指向同一split的 `stage3`。prepare 的数据审计 `metadata.json` 写入各自的数据目录。
+Stage1输入仍为 `data/stage1`；现役Base的Stage2/3输入分别为 `data/3407/stage2`、`data/3407/stage3`，共用 `data/3407/task_catalog.csv`。Stage2的 `data.data_root` 为split根目录，catalog内的 `stage2/...` 路径相对此根解析；Stage3的 `data.stage3_dir` 指向同一split的 `stage3`。Base的prepare审计显式写入各自 `outputs/v4/stage{2,3}/base/prepare/data_metadata.json`；旧split42 Base须使用历史Git和匹配来源复现，不能运行当前Base替代。
 
 测试其他数据 split 时，使用独立的自包含 YAML，将 Stage2 的 `data_root/task_catalog_path` 与 Stage3 的 `stage3_dir/task_catalog` 同步指向对应 split，并为 prepare、训练和评估指定独立输出及对应的下游引用。目录名 `42` 只定位数据，不自动改变训练随机种子、split policy 或 cv repeat。不同内容的 split 必须重新 prepare，不能共用数据身份不一致的准备产物或检查点；Stage1 来源保持不变。历史配置及基线保留各自的数据合同，不由本次目录调整迁移。
 
-五套数据目录为 `42`、`123`、`1234`、`3407`、`90756`，仓库正式 Base YAML 默认仅选择42。各套的 Stage3 `stage2_final/simulation_artifacts_dir` 必须配对到对应 split 的 Stage2 来源。并行 prepare 使用各自的 `preparation.cache_dir`：冻结 Stage1 表示可按身份串行复用，但当前缓存写入不支持多个进程共同写入。prepare、train、evaluate 的运行元数据 `data_metadata` 引用所选 split 的数据审计文件。
+五套数据目录为 `42`、`123`、`1234`、`3407`、`90756`，仓库正式Base YAML选择3407。各套的 Stage3 `stage2_final/simulation_artifacts_dir` 必须配对到对应 split 的 Stage2 来源。并行 prepare 使用各自的 `preparation.cache_dir`：冻结 Stage1 表示可按身份串行复用，但当前缓存写入不支持多个进程共同写入。prepare、train、evaluate的运行元数据 `data_metadata` 引用对应配置的数据审计路径；Base使用输出目录内的显式审计，不改写数据根的历史metadata。
 
 各 split 分别汇总，用 `--input` 或 `--include` 限定到该 split 的结果，再写入独立汇总目录；现有 summarizer 不合并不同来源身份的 split。根目录 `data/task_catalog.csv` 保留旧42副本，其他 split 使用各自目录内的 catalog。`1234`、`90756` 附带的 `stage1/properties` 不属于现役共享 Stage1 输入；Stage1 仍显式读取 `data/stage1`。
 
@@ -21,7 +21,7 @@
 
 ## RDKit 2026.9.1 主线升级
 
-现役主项目依赖精确固定 `rdkit==2026.9.1`，实际导入运行时为 `2026.09.1`（[ADR-0111](adr/0111-rdkit-2026-09-1.md)）。该版本默认描述符仍为同名、同顺序217维，不改变learned1024、atom512、1241维实体、模型容量或训练预算；筛选清单仍按ADR-0110独立审计，不自动接入模型。新版构象生成的可选ETKDGv4不启用，继续ETKDGv3/MMFF或UFF。
+现役主项目依赖精确固定 `rdkit==2026.9.1`，实际导入运行时为 `2026.09.1`（[ADR-0111](adr/0111-rdkit-2026-09-1.md)）。该版本原始描述符仍为同名、同顺序217维。现役Base按[ADR-0112](adr/0112-v4-explicit-rdkit-211-selection.md)显式保留211列；learned1024、atom512不变，实体变为1235维，双槽位L1输入2478维。训练预算不变，筛选工具的候选清单不自动接入模型。新版构象生成的可选ETKDGv4不启用，继续ETKDGv3/MMFF或UFF。
 
 主环境继续命名为 `ilume`，不另建版本后缀的正式环境。先确认没有进程正在使用其中的RDKit，并备份旧包及版本清单；只更新RDKit，保留当前Python、PyTorch/CUDA和NumPy，不使用无版本限制升级。若存在conda安装的 `rdkit/librdkit`，先卸载pip的RDKit，再对该环境执行conda的 `--force-remove rdkit librdkit`；执行前用 `--dry-run` 确认只移除这两个包，不连带更改其他依赖。pip-only环境无需conda移除步骤。完成旧包清理后安装并验证：
 
@@ -43,11 +43,11 @@ PY
 
 **旧产物不迁移**：即使维数相同，2025.09.5语料、统计、tokenizer/图、teacher、partial-charge sidecar与检查点也不改SHA、不重标版本、不与新环境混用。重新prepare Stage1、准备电荷sidecar、在匹配2026.09.1的独立Uni-Mol环境重新审计/生成teacher缓存，再从头训练Stage1并重新prepare/train Stage2/3。原始CSV、split authority和已验证Uni-Mol权重文件可复用；不保证升级后的canonical、QC成员及描述符数值逐bit相同。
 
-主线继续使用 `configs/v4/stage1/base.yaml`、`configs/v4/stage2/base.yaml`、`configs/v4/stage3/base.yaml`，不另设带RDKit版本后缀的Base配置。三者仍按 `outputs/v4/stage{1,2,3}/base/` 配对prepare、teacher、电荷sidecar与训练来源；科研参数及原数据split不因路径整理改变。复用标准输出路径前，须按工作区规则完成用户明确确认的旧产物清理或归档；不能覆盖旧产物，也不能只删权重后在遗留metadata/log的运行目录中启动新训练。保留的旧电荷sidecar不能用于新版prepare，须先另行归档后重新生成。未经授权，不自动移动或删除历史结果。描述符筛选YAML继续指向Base的新prepare，旧版本来源仍被严格拒绝。
+主线继续使用 `configs/v4/stage1/base.yaml`、`configs/v4/stage2/base.yaml`、`configs/v4/stage3/base.yaml`，不另设带RDKit版本后缀的Base配置。三者仍按 `outputs/v4/stage{1,2,3}/base/` 配对prepare、teacher、电荷sidecar与训练来源；本节版本升级不改变科研参数；后续Base的G2_C01容量、007/032超参及3407选择由[ADR-0114](adr/0114-g2-c01-main-model.md)另行确定。复用标准输出路径前，须按工作区规则完成用户明确确认的旧产物清理或归档；不能覆盖旧产物，也不能只删权重后在遗留metadata/log的运行目录中启动新训练。保留的旧电荷sidecar不能用于新版prepare，须先另行归档后重新生成。未经授权，不自动移动或删除历史结果。描述符筛选YAML继续指向Base的新prepare，旧版本来源仍被严格拒绝。
 
 ## RDKit 描述符只读筛选审计
 
-该工具只生成候选清单，不改变217维Stage1监督、下游实体宽度、Base YAML或已有模型。规则见 [ADR-0110](adr/0110-stage1-descriptor-selection-audit.md)，阈值在独立 [筛选YAML](../configs/v4/stage1/descriptor_selection.yaml)。完成旧Base运行目录的清理或归档后，在 `ilume` 环境使用 [Stage1 Base](../configs/v4/stage1/base.yaml) 重新prepare；该命令也会生成新的电荷sidecar。筛选无需先训练Stage1或生成teacher。
+该工具只生成候选清单，不自动改变Stage1监督、下游实体宽度、Base YAML或已有模型。规则见 [ADR-0110](adr/0110-stage1-descriptor-selection-audit.md)，阈值在独立 [筛选YAML](../configs/v4/stage1/descriptor_selection.yaml)。完成旧Base运行目录的清理或归档后，在 `ilume` 环境使用 [Stage1 Base](../configs/v4/stage1/base.yaml) 重新prepare；该命令也会生成新的电荷sidecar。筛选无需先训练Stage1或生成teacher。
 
 ```bash
 conda activate ilume
@@ -62,7 +62,17 @@ python scripts/stage1/select_descriptors.py \
 
 默认仅对prepared manifest的全部train重新计算原始float64 RDKit，使用16个CPU worker、不用GPU；不读valid/test或目标标签，也不从已标准化float32恢复原始值。约518万分子时输出矩阵约9GB，运行前确保新输出目录有空间和CPU资源；不覆盖、无resume。终端有进度条，重定向输出为JSON进度。若仅预审，在复制的独立YAML中设正整数`max_molecules`，结果会明确标为抽样，不能据此断言全量零方差或罕见信息不存在。
 
-检查 `summary.json`的保留维数/原因，以及`artifacts/descriptor_statistics.csv`的逐列分位数、缺失和重尾比值；完整规则与名单在`artifacts/descriptor_selection.json`。默认排除超过1%非finite、数值平方不安全、明显重尾、常数/完全重复及`abs(Pearson)>0.98`的冗余列。IQR为零的稀疏列不会仅因此删除，不做自动变换。原始`.npy`保留复核。接入Stage1监督或下游输入需要另行实现并重训相应模型，不能把本清单替换旧schema或改SHA。
+现役审计YAML使用`audit_mode: prepared_review`，要求先完成下述新policy的prepare；旧217维或未变换的211维prepared明确拒绝。输出同时保存原始217维`raw_descriptors.npy`和处理后211维`processed_descriptors.npy`，约518万行时两份矩阵合计约17.7GB，另需少量报告空间。`descriptor_statistics.csv`基于处理后数值，`std/IQR>10`、`max_abs/P99(abs)>1000`或单条记录贡献总平方偏差`>5%`标记review；超过1%非finite和`abs(Pearson)>0.98`也只标记。全无效、平方不安全、零方差或完全重复仍给出drop候选；任何候选都不自动改正式schema。IQR零仅跳过该比值，不因此删除稀疏列。`descriptor_groups.json`提供role×原始/扩增的有效数量、Phi屏蔽数和平方偏差贡献，以及极端记录及其seed字符串（前20条覆盖，非全语料seed统计）。完整名单见`descriptor_selection.json`；原始矩阵保留复核，不能替换旧schema或改SHA。共享默认`legacy_selection`仍按ADR-0110历史算法处理。
+
+## Base 的 211 维描述符选择
+
+正式[Stage1 Base](../configs/v4/stage1/base.yaml)的`descriptor.excluded_names`固定排除`Ipc`、`Kappa3`、`SMR_VSA8`、`SlogP_VSA9`、`fr_Nhpyrrole`、`fr_amide`。保留12项partial-charge/BCUT2D描述符和17项高相关列，不采用审计默认的182列。原始计算仍为217列；同一schema选出的211列同时用于Stage1辅助目标和下游显式输入。标准化仅拟合train有限值，非有限项标准化后填零，Stage1 loss用逐维有效mask排除；分子归一化与角色2/2/1不变，下游不增加mask特征。
+
+现役Base另显式设置`descriptor.value_policy: phi_mask_ring_log1p_v1`（[ADR-0113](adr/0113-v4-descriptor-validity-ring-log-review.md)）。Phi仅对单连通、重原子数≥3、键数≥2且结果有限的结构有效，其余仅屏蔽该项监督；八项环计数（RingCount及七项Num*环计数，完整名单见ADR）统一先log1p再拟合train均值/标准差。不适用或非有限项标准化后填0，下游与Stage1监督使用同一schema/scaler，不重复取log；不删分子、不做截尾、不变loss或采样。新policy存schema format3；默认raw仍输出历史format2并省略配置字段。维数虽仍为211，数值及来源身份已改变，旧211维prepared/teacher/sidecar/checkpoint也不能混用。
+
+learned1024和atom512、独立回归头输入不变；实体为1024+211=1235，GLOBAL/GROUP L1双槽输入为2478。Stage2/3读取来源schema/identity自动确定宽度，不在下游YAML再列一份维数。省略排除列表的旧配置仍为217维，旧产物必须与其原配置及来源配对。
+
+**需要新准备和训练**：排除列表改变corpus/feature/training identity，旧217维prepared、teacher、电荷sidecar与checkpoint不能直接复用。按本手册依次重新prepare Stage1、生成匹配身份的teacher/sidecar、训练Stage1，再prepare/train Stage2和prepare/train/evaluate Stage3。Uni-Mol源权重、原始数据和split authority可复用；当前缓存即使teacher数学输入未变，也不能重标旧身份复用。已有标准路径中的217维prepared及独立审计结果保持只读，须先经用户另行确认归档/清理，或选择新输出并同步所有下游引用。本次代码修改不执行正式运行。
 
 ## 跨设备训练产物回传
 
@@ -297,13 +307,15 @@ ssh SERVER 'sha256sum /path/to/ILUME/assets/unimol2/modelzoo/84M/checkpoint.pt'
 
 截至2026-10-11，本地上述 Stage1 编码器及特征元数据已存在；默认 Stage2 `base/prepare`、`base/train` 已有旧运行，而配置指定的 `base/train/stage2_final.pt` 不存在。新运行需使用未占用的目录，并同步 prepare 产物和 Stage3 来源引用；本次仅核对文件状态，没有验证这些正式产物的完整加载兼容性或执行正式作业。其他数据 split 的正式运行仍由用户显式安排。
 
-仅提供 `configs/v4/stage2/base.yaml` 和 `configs/v4/stage3/base.yaml`；新增架构/任务集对照已移除。Stage3 Phase2中的两项模拟任务只更新自身PRIVATE，不参与GLOBAL/GROUP梯度或共享梯度归一化；Phase3继续只更新PRIVATE。查看 `performance.jsonl` 的参数量、轮耗时及 `metrics.jsonl` 的实际 optimizer_updates。
+现役主模型入口为 `configs/v4/stage2/base.yaml` 和 `configs/v4/stage3/base.yaml`；`optimized_3407.yaml`仅保留历史G2_C05配方。Stage3 Phase2中的两项模拟任务只更新自身PRIVATE，不参与GLOBAL/GROUP梯度或共享梯度归一化；Phase3继续只更新PRIVATE。查看 `performance.jsonl` 的参数量、轮耗时及 `metrics.jsonl` 的实际 optimizer_updates。
 
-当前Stage3 Base的electrochemical GROUP采用L1/L2各2个专家、768D隐藏层、1024D输出。两项电位任务的PRIVATE/Tower/FiLM隐藏维度为512/256/128D，保留单PRIVATE专家、仅温度条件及dropout 0.1；Task Gate输入2048D、输出5个候选权重。electrochemical GROUP的Phase1保持2e-4/15轮，Phase2采用1e-4/4轮（原20轮）；两任务PRIVATE的Phase1/2/3预算仍为8/4/3轮，LR及三阶段机制不变。容量配方进入既有训练身份；容量或Phase2预算调整前的Stage3检查点不能恢复到当前Base，正式训练须使用未占用的新输出目录，Stage1/Stage2无需因本次容量调整重训。
+当前Stage3 Base为G2_C01：GLOBAL一个专家，transport/thermophysical/phase_stability/dielectric_optical/solvation/biological的GROUP专家数为1/1/2/1/2/1。两电位任务归入phase_stability；PRIVATE/Tower/FiLM宽度、dropout与007/032配方的LR/预算保持不变。Stage2的GLOBAL及两个可迁移GROUP同步缩减，必须重新训练Stage2后再训练Stage3；旧G2_C05权重不能迁移或恢复到新容量。现役Stage1需先按211维新policy重建来源。
 
 ## 最终优化配方（3407）
 
-在 `outputs/v4` 重跑已锁定的HoME `G2_C05` / Stage2 `007` / Stage3 `032`，使用独立配置 `configs/v4/stage2/optimized_3407.yaml` 与 `configs/v4/stage3/optimized_3407.yaml`。数据划分3407，训练seed42（Stage3实际42+fold）；完整模型结构、任务映射、LR、nominal Epoch及任务覆盖与完成五套复验时的配方一致。原Base YAML保留，不覆盖HPO结果。
+本节保留历史G2_C05的显式复现命令；现役G2_C01入口见[下一节](#g2_c01-主模型)，不能把本节结果标为G2_C01。旧配方需要其原始Stage1与特征来源，若标准Stage1路径已升级须在独立YAML中配对历史来源，不得混用。
+
+在 `outputs/v4` 重跑历史HoME `G2_C05` / Stage2 `007` / Stage3 `032`，使用独立配置 `configs/v4/stage2/optimized_3407.yaml` 与 `configs/v4/stage3/optimized_3407.yaml`。数据划分3407，训练seed42（Stage3实际42+fold）；完整模型结构、任务映射、LR、nominal Epoch及任务覆盖与完成五套复验时的配方一致。原Base YAML保留，不覆盖HPO结果。
 
 Stage1不重训，保留 `outputs/v4/stage1/base` 中的编码器、Prepare及其他来源；本节也不重新训练14个独立后训练头。Stage2/3使用新的 `optimized_3407` 输出和prepare审计，来源严格配对，不读取旧split42缓存或旧Stage2权重。下列命令从仓库根目录依次执行；正式GPU运行由研究者启动。
 
@@ -333,7 +345,11 @@ python scripts/benchmarks/summarize.py --input outputs/v4/stage3/optimized_3407 
 
 旧 `outputs/v4/stage2/base`、`outputs/v4/stage3/base` 可在报告准确文件数、大小并获确认后删除，但不能删除Stage1来源。旧split42消融配置仍引用这些Base产物，删除后须重新生成对应历史来源才能继续旧消融；3407新产物不能替代其身份。新运行使用独立路径，并不要求先删旧结果。其他设备上的代码与配置由研究者git pull；训练完成后按[回传规则](#跨设备训练产物回传)归档4090。
 
-## 原Base（split42）复现步骤
+## G2_C01 主模型
+
+使用 `configs/v4/stage{2,3}/base.yaml`，data/3407、训练seed42及007/032超参；依赖当前211维新policy的Stage1编码器与prepare。旧G2_C05来源及历史split42权重不能复用。先确认标准Base输出未占用；如有旧结果，按精确清单另行确认归档后再运行。
+
+本次实现核对发现3407 catalog缺少平衡压力与水活度系数两项任务；完整24任务入口仍严格拒绝。solvation的catalog体系数3684也与配方声明3611不一致。正式运行前须恢复匹配的数据及catalog，或另行确认数据协议变更，不删任务、不修改计数/SHA绕过。Stage1新版来源也须先按前文流程完成。
 
 与Stage1一样，从仓库根目录在 `ilume` 环境执行。下面各步骤成功后再执行下一步，使用未占用的输出目录。入口会自动校验来源、数据SHA和模型身份，无需另写Python校验脚本。修改prepare输出路径时，须同步修改对应YAML的 `data.artifacts_dir`；修改训练输出路径时，须同步修改下游来源配置。
 
@@ -343,16 +359,16 @@ prepare生成五任务数据和冻结Stage1实体缓存；train固定训练10轮
 
 ```bash
 python scripts/stage2/prepare.py --config configs/v4/stage2/base.yaml --output outputs/v4/stage2/base/prepare
-python scripts/stage2/train.py --config configs/v4/stage2/base.yaml --output outputs/v4/stage2/base/train
+python scripts/stage2/train.py --config configs/v4/stage2/base.yaml --output outputs/v4/stage2/base/train --device cuda:2
 ```
 
 ### Stage3：prepare 与五折 train
 
-Stage2训练完成后准备Stage3，再执行三阶段五折训练。下面使用一张已分配的GPU，五折串行执行；多GPU并行时才增加 `--max-parallel` 并扩展 `--devices`。
+Stage2训练完成后准备Stage3，再执行三阶段五折训练。下面使用GPU2/3、总并发两折；只用一张卡时改为单设备并将 `--max-parallel` 设为1。
 
 ```bash
 python scripts/stage3/prepare.py --config configs/v4/stage3/base.yaml --output outputs/v4/stage3/base/prepare
-python scripts/stage3/train.py --config configs/v4/stage3/base.yaml --fold 1 2 3 4 5 --output outputs/v4/stage3/base/train --devices cuda:0
+python scripts/stage3/train.py --config configs/v4/stage3/base.yaml --fold 1 2 3 4 5 --output outputs/v4/stage3/base/train --devices cuda:2,cuda:3 --max-parallel 2
 ```
 
 ### Stage3：实验与模拟联合评估
@@ -373,8 +389,11 @@ python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --checkpo
 只扫描新的实体HoME输出，发布到独立目录，不与旧20实验/四模拟结果混排。
 
 ```bash
-python scripts/benchmarks/summarize.py --input outputs/v4/stage3 --output outputs/v4/summary
+python scripts/benchmarks/summarize.py --input outputs/v4/stage3/base --output outputs/v4/summary_g2_c01_3407
+python scripts/benchmarks/summarize_paper.py --config configs/v4/stage3/base.yaml --ilume outputs/v4/stage3/base --baselines outputs/benchmarks/v4_3407 --with-test --output outputs/reports/paper-g2-c01-3407-001
 ```
+
+新Base中断时，Stage2训练使用 `--resume outputs/v4/stage2/base/train`，Stage3训练使用布尔 `--resume`；prepare和评估无此恢复步骤，已有输出不覆盖。
 
 只在确实需要继续中断作业时按现有入口显式使用 `--resume`；必须保留同一配置、源 SHA、折/owner/训练状态和指标尾部。不要通过修改元数据、kind、格式、任务名称或宽松加载复用不匹配的历史产物。
 

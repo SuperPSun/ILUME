@@ -5,7 +5,7 @@
 - 仓库维护的说明、手册和 ADR 统一使用中文；命令、路径、配置键、API、模型名称及科研身份标识保留原文。第三方原始文档和历史生成报告不随文档翻译改写。
 - 运行步骤读 [README](README.md)，科研合同按 [ADR 索引](docs/adr/README.md) 查对应主题，再读正式 YAML 与当前实现。旧设计只从 [历史摘要](docs/adr/history.md) 追溯，不作为现役入口。
 - 整理、重构不得改变数据筛选/split、分词器、描述符/指纹、masking、模型、loss、优化顺序、验证/选模及任何 Stage 数值行为。科研问题单独记录，不顺手修改。
-- 现役为 `configs/v4/stage1`、`configs/v4/stage2`、`configs/v4/stage3`（ADR-0095）；Stage1合同不变。Stage2/3取消ObjectEncoder，24实验+两模拟。运行路径以正式 YAML 和 [v4手册](docs/v4-runbook.md) 为准；旧Object/v5加载需历史Git版本，历史产物只读，禁止跨合同加载。
+- 现役为 `configs/v4/stage1`、`configs/v4/stage2`、`configs/v4/stage3`（ADR-0095/0114）；Stage2/3的Base采用G2_C01分组/专家数及Stage2 007 / Stage3 032训练超参，data/3407、训练seed42；历史optimized_3407/HPO选择与消融保持G2_C05身份。Stage1合同不变。Stage2/3取消ObjectEncoder，24实验+两模拟。运行路径以正式 YAML 和 [v4手册](docs/v4-runbook.md) 为准；旧Object/v5加载需历史Git版本，历史产物只读，禁止跨合同加载。
 
 
 ## 科学红线
@@ -14,20 +14,26 @@
 
 | 范围 | 必须保持的边界 | ADR |
 |---|---|---|
-| Stage 1 | 仅SMILES/Graph输入，独立512D 编码器、12层SMILES Transformer/8独立残差图block、CLS/原子均值、1024残差MLP；learned1024、atom512，不输入角色/描述符。结构重建、停止梯度一致性、RDKit217、离线Uni-Mol768、13电子目标及仅训练集原子电荷Linear512→1；现役系数和执行配置只读Base YAML及v4手册，sidecar不改语料/teacher。各项分子均值再按角色loss权重2/2/1；自然shuffle不变。fusion-only80/10/10，10轮、完整轮恢复；训练format4及仅编码器导出。每1000步rank0固定32分子梯度审计只报告，可CLI覆盖，不更新/调权/选模，不进入科研身份；独立14任务后训练只更新回归头，不替换编码器 | 0089/0090/0091/0092；执行0013/0014/0015/0017；0039仅历史v3 |
-| Stage 2 | Stage1永久冻结/eval；缓存1241D实体、形式电荷角色及有效位。GLOBAL/GROUP L1并行读取2490D有序槽位拼接，各专家内部投影，无独立ObjectEncoder。仅五项模拟、thermophysical/solvation GROUP，无电子GROUP/原子 adapter | 0095；Stage1表示0089 |
+| Stage 1 | 仅SMILES/Graph输入，独立512D 编码器、12层SMILES Transformer/8独立残差图block、CLS/原子均值、1024残差MLP；learned1024、atom512，不输入角色/描述符。结构重建、停止梯度一致性、RDKit211（显式排除6项、Phi适用性mask、八环计数log1p）、离线Uni-Mol768、13电子目标及仅训练集原子电荷Linear512→1；现役系数和执行配置只读Base YAML及v4手册，sidecar不改语料/teacher。各项分子均值再按角色loss权重2/2/1；自然shuffle不变。fusion-only80/10/10，10轮、完整轮恢复；训练format4及仅编码器导出。每1000步rank0固定32分子梯度审计只报告，可CLI覆盖，不更新/调权/选模，不进入科研身份；独立14任务后训练只更新回归头，不替换编码器 | 0089/0090/0091/0092/0112/0113；执行0013/0014/0015/0017；0039仅历史v3 |
+| Stage 2 | Stage1永久冻结/eval；缓存1235D实体、形式电荷角色及有效位。GLOBAL/GROUP L1并行读取2478D有序槽位拼接，各专家内部投影，无独立ObjectEncoder。仅五项模拟、thermophysical/solvation GROUP，无电子GROUP/原子 adapter | 0095/0112；Stage1表示0089 |
 | Stage 2 训练与产物 | 五模拟每联合step各取一个未耗尽batch，GLOBAL跨任务/GROUP组内按真实batch样本数加权，PRIVATE原始平均梯度，不乘任务补偿；`batch_sample_weighted_owner_raw_v1`及联合步调度进入身份，旧final拒绝迁移。256逻辑/微批、10轮末轮、完整stage2_final.pt/json；无仅编码器导出、精调/最优/last/evaluator。迁移GLOBAL、匹配GROUP及两模拟PRIVATE，严格身份和张量 hash | 0095/0097；历史0082/0083/0085 |
-| Stage 3 | 24实验+两模拟；electrochemical继承phase_stability预算，两电位限small/仅温度。Phase1实验GLOBAL/GROUP/PRIVATE；Phase2冻结GLOBAL；Phase3仅PRIVATE。模拟Phase1冻结，Phase2/3仅自身PRIVATE，不进共享梯度/分母/调度预算。共同锚点与末轮拼接 | 0095；机制0050/0070 |
+| Stage 3 | 24实验+两模拟；Base两电位归入phase_stability、限small/仅温度，G2_C01容量按0114。Phase1实验GLOBAL/GROUP/PRIVATE；Phase2冻结GLOBAL；Phase3仅PRIVATE。模拟Phase1冻结，Phase2/3仅自身PRIVATE，不进共享梯度/分母/调度预算。共同锚点与末轮拼接 | 0095；机制0050/0070 |
 | Stage 3 owner | 现役Entity-HoME Phase1/2的GLOBAL跨实验任务、GROUP组内按当前真实batch样本数加权平均；PRIVATE保持原始平均Loss梯度，模拟不进共享分母。Phase3单任务更新；`batch_sample_weighted_owner_raw_v1`及权重规则进入训练身份。历史非Entity保留0070合同。owner LR/存续期与规模类别默认、任务覆盖项的宽度/dropout进入身份；提前结束用`requires_grad=False`，不删除任务；零预算PRIVATE逐bit继承锚点。Base训练集/验证集microbatch上限1024 | 0096；预算0050/0055；诊断0054 |
-| Stage 3 诊断 | Entity-HoME在diagnostics.jsonl按整轮记录owner梯度前后范数mean/max、实际梯度step分母的裁剪率及真实共享样本贡献，冻结/缺失不混入均值、模拟不进共享分母；仅累计既有CPU标量/batch长度，不改训练身份，旧行保留。只读门控权重占比、归一化熵、PRIVATE 权重占比分位数；测试集 aggregate 合并折-样本。不得新增前向、进入 loss/选择或改预测 CSV；历史实现不输出。pEC50 Phase 3 为 3 轮 | 0054/0055/0098 |
+| Stage 3 诊断 | Entity-HoME在diagnostics.jsonl按整轮记录owner梯度前后范数mean/max、实际梯度step分母的裁剪率及真实共享样本贡献，冻结/缺失不混入均值、模拟不进共享分母；仅累计既有CPU标量/batch长度，不改训练身份，旧行保留。只读门控权重占比、归一化熵、PRIVATE 权重占比分位数；测试集 aggregate 合并折-样本。不得新增前向、进入 loss/选择或改预测 CSV；历史实现不输出。pEC50 Phase3沿用032为2轮；旧Base的3轮仅历史 | 0054/0055/0098/0114 |
 
 禁止恢复：Stage1 描述符/角色输入、重型token融合、指纹、角色平衡/重复采样、扩增倍率、多容量正式配置、轮中途恢复；Stage2/3不得反传Stage1，禁止Stage2渐进解冻、早停、最优/last、PCGrad或累加窗口；Stage3 四阶段、路由干预、门控校准；正式 Base 不启用 HPO/Optuna。独立静态 HPO 按 [ADR-0099](docs/adr/0099-simple-static-hpo.md) 和 [HPO手册](docs/hpo-simple-runbook.md) 执行，不恢复旧 HPO_v4。v4 alignment/RDKit/Uni-Mol/electronic辅助头只用于预训练，不进入仅编码器部署。ADR-0087候选保持历史v3身份，不增加正式Base数量。
 
 ADR-0093仅扩展独立回归头后训练：YAML支持默认Linear及逐目标MLP/残差 MLP；Linear继承预训练头并做等价标准化换算，非线性采用任务局部随机初始化/dropout。编码器/Fusion永久冻结、entity1024/atom512输入不变，验证只报告；format2内嵌结构并兼容旧Linear format1，不改变Stage1/2/3身份或正式训练。
 
-ADR-0110新增独立 `scripts/stage1/select_descriptors.py`：只读v4 prepared manifest的train并重算原始float64 RDKit，筛选数值/重尾、无效/重复及高相关列；结果仅为审计，不接入正式schema，不改变217维监督、下游宽度或训练身份。独立YAML与新输出，默认全量、抽样须显式标记；不运行正式全量审计，修改时另检查该入口帮助。
+ADR-0110新增独立 `scripts/stage1/select_descriptors.py`：只读v4 prepared manifest的train并重算原始float64 RDKit，筛选数值/重尾、无效/重复及高相关列；结果仅为审计，不自动接入正式schema；正式Base的显式211列由ADR-0112独立决定。独立YAML与新输出，默认全量、抽样须显式标记；不运行正式全量审计，修改时另检查该入口帮助。
 
-ADR-0111将主项目及新teacher环境固定为包 `rdkit==2026.9.1` / runtime `2026.09.1`；217维清单及接口不变，旧版本prepare/teacher/sidecar/checkpoint仍严格隔离。新版本须重新prepare与训练，不改SHA、不混用旧来源；三个Stage继续使用 `configs/v4/stage*/base.yaml`，不设临时版本后缀Base。复用标准 `outputs/v4/stage*/base/` 前须完成用户按精确清单确认的旧运行清理/归档，不能覆盖遗留metadata/log或复用旧sidecar。主环境仍名 `ilume`，备份后仅清理旧RDKit并升级，不直接覆盖混装包，不改Python/PyTorch/CUDA/NumPy；基线独立环境和hash lock不变。
+ADR-0111将主项目及新teacher环境固定为包 `rdkit==2026.9.1` / runtime `2026.09.1`；原始217维清单不变（现役Base选择与接口见ADR-0112），旧版本prepare/teacher/sidecar/checkpoint仍严格隔离。新版本须重新prepare与训练，不改SHA、不混用旧来源；三个Stage继续使用 `configs/v4/stage*/base.yaml`，不设临时版本后缀Base。复用标准 `outputs/v4/stage*/base/` 前须完成用户按精确清单确认的旧运行清理/归档，不能覆盖遗留metadata/log或复用旧sidecar。主环境仍名 `ilume`，备份后仅清理旧RDKit并升级，不直接覆盖混装包，不改Python/PyTorch/CUDA/NumPy；基线独立环境和hash lock不变。
+
+ADR-0112：现役Stage1 Base在`descriptor.excluded_names`仅排除`Ipc/Kappa3/SMR_VSA8/SlogP_VSA9/fr_Nhpyrrole/fr_amide`，监督及显式输入统一211维，保留12项有非有限值及17项高相关描述符；有限值拟合、标准化零填充和逐维有效mask不变。learned1024/atom512不变，实体1235、双槽L1输入2478由来源schema/identity解析。默认空排除仍为历史217/1241/2490且默认序列化省略；旧配置身份、ChemBERTa与baseline合同不批量修改。新Base须重新prepare/teacher/sidecar及三个Stage训练，旧输出只读，不自动迁移或清理。
+
+ADR-0113：Base的`descriptor.value_policy: phi_mask_ring_log1p_v1`对非单连通/重原子少于3/键少于2的结构仅屏蔽Phi；八环计数统一log1p后按train有限值拟合scaler。Stage1监督和下游共用同一schema，零填充/mask/分子及角色权重不变，不双重log、不删分子、不截尾；211/1235/2478维不变。新schema format3，默认raw省略字段且兼容format2；数值policy进入corpus/训练/feature来源身份，新旧211也不能混用。现役描述符审计为prepared_review，须新prepare；10/1000/5%严格阈值及高缺失/相关只标review，全无效/不安全/零方差/完全重复为drop候选但不自动改schema。保存原始217与处理后211矩阵、role×原始/扩增统计及极端样本seed报告，不改变采样或loss。重新准备匹配teacher/sidecar并重训三个Stage，旧输出只读，实施不自动启动正式运行。
+
+ADR-0114：主模型Stage2/3 Base采用G2_C01，一个GLOBAL，GROUP专家数transport/thermophysical/phase_stability/dielectric_optical/solvation/biological为1/1/2/1/2/1；PRIVATE宽度不变，训练超参沿用007/032，3407与当前211维Stage1来源严格配对。旧HPO生成读取冻结G0_C05模板，selected.yaml及optimized_3407、WeakOpt、既有消融配置/结果保留历史身份；不能用旧权重或消融替代新主模型，需要重新训练。
 
 ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选择；只扩展电荷监督，不复制语料或其他loss。sidecar format2及观察策略进入身份，旧sidecar/检查点不得交叉续训；无图同构映射仅跳过电荷记录并审计，策略进入身份；损坏资源/解析错误仍失败，来源与split检查不放宽，机制见ADR-0092与v4手册。
 

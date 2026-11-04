@@ -1,10 +1,10 @@
 # ILUME
 
-ILUME 的现役流程是 **冻结 v4 Stage1 → v4 五任务实体 HoME Stage2 → v4 Stage3 24实验 / 两模拟辅助 HoME**。冻结Stage1的learned1024与标准化RDKit217组成1241D实体输入；GLOBAL和GROUP的L1并行学习实体组合，不再经过独立ObjectEncoder。Stage3保留三阶段owner训练、模拟仅PRIVATE更新及严格来源验证。合同见 [ADR-0095](docs/adr/0095-v4-entity-home-without-object-encoder.md)；正式命令见 [v4运行手册](docs/v4-runbook.md)。Stage3评估默认在同一次调用中完成实验与两项模拟评估，保留各自的折/集成协议和独立榜单；可用 `--domain experimental|simulation` 单独评估。历史Object/v5及更早产物保持原身份，只能用对应历史Git版本加载。
+ILUME 的现役流程是 **冻结 v4 Stage1 → v4 五任务实体 HoME Stage2 → v4 Stage3 24实验 / 两模拟辅助 HoME**。冻结Stage1的learned1024与标准化RDKit211组成1235D实体输入；GLOBAL和GROUP的L1并行学习实体组合，不再经过独立ObjectEncoder。Stage3保留三阶段owner训练、模拟仅PRIVATE更新及严格来源验证。合同见 [ADR-0095](docs/adr/0095-v4-entity-home-without-object-encoder.md)；正式命令见 [v4运行手册](docs/v4-runbook.md)。Stage3评估默认在同一次调用中完成实验与两项模拟评估，保留各自的折/集成协议和独立榜单；可用 `--domain experimental|simulation` 单独评估。历史Object/v5及更早产物保持原身份，只能用对应历史Git版本加载。
 
 命令从仓库根目录执行。安装依赖并准备 ILUME-Data 的 Stage1/2/3 输入；CSV 与输出不进入 Git。正式训练使用尚不存在的输出目录，旧 HoME 产物不能与新正式身份交叉加载。本页命令是运行手册，不属于自动验收。
 
-主项目RDKit精确固定 `2026.9.1`（运行时 `2026.09.1`），默认仍为217维；旧版本准备产物与teacher不能混用，需新目录重新准备和训练，基线独立环境不升级。见 [升级与来源配对](docs/v4-runbook.md#rdkit-202691-主线升级)及 [ADR-0111](docs/adr/0111-rdkit-2026-09-1.md)。
+主项目RDKit精确固定 `2026.9.1`（运行时 `2026.09.1`），原始清单217维，Base显式保留211维（[ADR-0112](docs/adr/0112-v4-explicit-rdkit-211-selection.md)）；旧版本准备产物与teacher不能混用，需新目录重新准备和训练，基线独立环境不升级。见 [升级与来源配对](docs/v4-runbook.md#rdkit-202691-主线升级)及 [ADR-0111](docs/adr/0111-rdkit-2026-09-1.md)。
 
 **4090统一归档**：任何设备上的训练结果与完整模型权重均须回传到4090，包括正式Stage、HPO、基线和独立后训练；完整产物范围及核验要求见 [跨设备回传规则](docs/v4-runbook.md#跨设备训练产物回传)。
 
@@ -18,15 +18,15 @@ python -m pip install -e ".[dev,tokenizers]"
 
 ## 正式 v4
 
-Stage1配置和独立预测器保持不变。Stage2采用五任务实体HoME，Stage3为24实验+两项模拟辅助；独立ObjectEncoder已取消。GLOBAL/GROUP的L1并行读取冻结Stage1 learned1024+标准化RDKit217实体、角色和有效位。Phase1联合训练，Phase2冻结GLOBAL，Phase3仅PRIVATE；两个模拟任务只更新自己的PRIVATE。
+Stage1 Base显式排除六项描述符；Phi按结构适用性mask，八项环计数log1p后统一标准化（[ADR-0113](docs/adr/0113-v4-descriptor-validity-ring-log-review.md)）。独立预测器保持原合同。Stage2采用五任务实体HoME，Stage3为24实验+两项模拟辅助；独立ObjectEncoder已取消。GLOBAL/GROUP的L1并行读取冻结Stage1 learned1024+标准化RDKit211实体、角色和有效位。Phase1联合训练，Phase2冻结GLOBAL，Phase3仅PRIVATE；两个模拟任务只更新自己的PRIVATE。
 
-正式配置为 `configs/v4/stage{1,2,3}/base.yaml`，准备产物和下游引用按 YAML 定位，运行输出由 `--output` 指定。见 [ADR-0095](docs/adr/0095-v4-entity-home-without-object-encoder.md) 和 [运行手册](docs/v4-runbook.md)。正式Stage1 编码器/特征需先齐备；不手改元数据或SHA。历史Object/v5工件只读，加载须使用历史Git版本；旧v5及Object消融配置已移除；现役独立消融见 [v4消融手册](docs/v4-ablation-runbook.md) 与 [ADR-0100](docs/adr/0100-v4-entity-home-ablations.md)。现役36份配置与4份已取消容量配置位于 `configs/ablations/v4_3407/`，配对最终 `optimized_3407`，输出 `outputs/ablations/v4_3407/`；原 `configs/ablations/v4/` 保留split42历史身份。核心含移除SMILES/分子图的完整重训，C11为仅Phase1，阶段增量按C11→C7→C0比较；C12/C13以冻结ChemBERTa-2 MTR/MLM替换Stage1，不提供显式RDKit描述符（[ADR-0107](docs/adr/0107-chemberta2-frozen-home-ablations.md)）；固定训练seed42，不追加seed稳定性测试。
+正式配置为 `configs/v4/stage{1,2,3}/base.yaml`；Stage2/3主模型采用 **G2_C01 / Stage2 007 / Stage3 032**，GLOBAL一个专家，六个GROUP，沿用原优化配方的训练超参，PRIVATE宽度不变（[ADR-0114](docs/adr/0114-g2-c01-main-model.md)）。准备产物和下游引用按 YAML 定位，运行输出由 `--output` 指定。见 [ADR-0095](docs/adr/0095-v4-entity-home-without-object-encoder.md) 和 [运行手册](docs/v4-runbook.md)。正式Stage1 编码器/特征需先齐备；不手改元数据或SHA。历史Object/v5工件只读，加载须使用历史Git版本；旧v5及Object消融配置已移除；现役独立消融见 [v4消融手册](docs/v4-ablation-runbook.md) 与 [ADR-0100](docs/adr/0100-v4-entity-home-ablations.md)。现役36份配置与4份已取消容量配置位于 `configs/ablations/v4_3407/`，配对最终 `optimized_3407`，输出 `outputs/ablations/v4_3407/`；原 `configs/ablations/v4/` 保留split42历史身份。核心含移除SMILES/分子图的完整重训，C11为仅Phase1，阶段增量按C11→C7→C0比较；C12/C13以冻结ChemBERTa-2 MTR/MLM替换Stage1，不提供显式RDKit描述符（[ADR-0107](docs/adr/0107-chemberta2-frozen-home-ablations.md)）；固定训练seed42，不追加seed稳定性测试。
 
-Stage1 共用 `data/stage1`。2026-10-20起，后续新实验统一采用 `data/3407`，已有正式Base、基线和消融配置及产物保留原划分；当前Base YAML仍指向 `data/42`，不可直接作为新划分运行。最终HPO配方与报告入口见 [HPO手册](docs/hpo-simple-runbook.md#当前选型与报告入口)；五套数据 split 的配置、输出隔离和运行前提见 [v4运行手册](docs/v4-runbook.md#数据-split-与路径)。
+Stage1 共用 `data/stage1`，Stage2/3 Base已配对 `data/3407`。训练seed仍为42，Stage3按fold派生；历史HPO、G2_C05优化配方、基线及消融配置和产物保留原身份。历史两折容量结果支持压缩取舍，不能替代新主模型的3407五折验证；完整依据见 [HPO结果](docs/hpo-results.md)。
 
-在 `outputs/v4` 重跑最终优化配方使用 `configs/v4/stage2/optimized_3407.yaml` 和 `configs/v4/stage3/optimized_3407.yaml`，复用Stage1并重新prepare、训练Stage2及Stage3五折；[完整命令与恢复方式](docs/v4-runbook.md#最终优化配方3407)。
+新主模型使用配对的 `configs/v4/stage2/base.yaml`、`configs/v4/stage3/base.yaml`，输出位于 `outputs/v4/stage{2,3}/base/`；需先完成当前211维数值policy对应的Stage1来源，再重新prepare/train Stage2和Stage3五折，见 [G2_C01运行步骤](docs/v4-runbook.md#g2_c01-主模型)。旧 `optimized_3407` 及既有消融继续表示G2_C05，不能作为新主模型的权重或配对消融证据。正式运行由用户启动，不覆盖旧输出。
 
-Stage1 的独立RDKit描述符筛选命令见 [v4手册](docs/v4-runbook.md#rdkit-描述符只读筛选审计)；它只读train并输出异常/重尾、无效信息及相关冗余清单，不改变正式217维模型合同（[ADR-0110](docs/adr/0110-stage1-descriptor-selection-audit.md)）。
+Stage1 的独立RDKit描述符筛选命令见 [v4手册](docs/v4-runbook.md#rdkit-描述符只读筛选审计)；它只读train，现役prepared_review在新policy处理后标记重尾/缺失/相关问题并输出分组审计，不自动改变模型；Base的211列由独立决定显式配置（[ADR-0110](docs/adr/0110-stage1-descriptor-selection-audit.md)、[ADR-0112](docs/adr/0112-v4-explicit-rdkit-211-selection.md)）。
 
 ## v3 历史运行手册
 
@@ -522,4 +522,4 @@ pytest -q
 
 第三轮独立研究按[ADR-0109](docs/adr/0109-weakopt-shared-owner-search.md)扩展Stage3共享owner学习率及存续期：固定既有Stage2 S030，最多48份配置、120个训练折，配置/输出位于WeakOpt的 `Shared/` 子目录；前两轮产物保留。
 
-[扁平化 HPO 手册](docs/hpo-simple-runbook.md)：100组冻结预测头、100对HoME，人工选型后生成20组Stage2和50组Stage3，最后五套split固定五折复验。数据准备按身份共享，训练seed固定42；不自动选模、不使用Optuna、不自动终测。[HPO结果与最终配方](docs/hpo-results.md)统一记录选型依据、3407划分决定、关键报告和归档状态；已有正式v4配置和产物不追溯改写。
+[扁平化 HPO 手册](docs/hpo-simple-runbook.md)：100组冻结预测头、100对HoME，人工选型后生成20组Stage2和50组Stage3，最后五套split固定五折复验。数据准备按身份共享，训练seed固定42；不自动选模、不使用Optuna、不自动终测。[HPO结果与最终配方](docs/hpo-results.md)统一记录选型依据、3407划分决定、关键报告和归档状态；历史HPO选择与产物不追溯改写；当前Base按[ADR-0114](docs/adr/0114-g2-c01-main-model.md)采用G2_C01。

@@ -582,7 +582,8 @@ def test_loss_reductions_and_teacher_weighting() -> None:
     ).item() == pytest.approx(4.3)
 
 
-def test_entity_inputs_order_roles_and_parallel_expert_learning():
+@pytest.mark.parametrize("entity_dim", [1241, 1235])
+def test_entity_inputs_order_roles_and_parallel_expert_learning(entity_dim):
     from common.entity_inputs import EntityInputs
     from stage3.model import Stage3SparseModel, GLOBAL, group_owner
     from stage3.data import ResolvedTaskSpec, object_key_from_row
@@ -593,8 +594,8 @@ def test_entity_inputs_order_roles_and_parallel_expert_learning():
         partner_slots=("solute",), enabled=True, task_weight=1., catalog_schema_version=0, provenance={})
     model = Stage3SparseModel(Stage3ModelConfig(global_experts=1, group_experts=1,
         expert_hidden_ratio=.015625, tower_hidden_ratio=.015625, interaction_hidden_ratio=.015625),
-        {"test": spec}, 1024, entity_inputs=True)
-    values = torch.randn(2, 2, 1241)
+        {"test": spec}, 1024, entity_inputs=True, entity_input_dim=entity_dim)
+    values = torch.randn(2, 2, entity_dim)
     roles = torch.tensor([[0,1],[0,1]])
     primary = EntityInputs.from_slots(values, roles)
     partner = EntityInputs.from_slots(values[:,:1], torch.full((2,1),2))
@@ -603,7 +604,7 @@ def test_entity_inputs_order_roles_and_parallel_expert_learning():
         for module in (model.l1_global_experts[0], model.l1_group_experts['g'][0])]
     out = model('test',primary,torch.empty(2,0),partner_embedding=partner)
     assert out.predictions.shape == (2,)
-    assert torch.equal(observed[0],observed[1]) and observed[0].shape == (2,2490)
+    assert torch.equal(observed[0],observed[1]) and observed[0].shape == (2,2*entity_dim+8)
     optimizer = torch.optim.SGD(model.parameters(),lr=.1)
     before = {owner: [p.detach().clone() for p in model.parameters_for_owner(owner)] for owner in (GLOBAL,group_owner('g'))}
     out.predictions.square().sum().backward(); optimizer.step()
@@ -611,11 +612,13 @@ def test_entity_inputs_order_roles_and_parallel_expert_learning():
         assert any(not torch.equal(p,v) for p,v in zip(model.parameters_for_owner(owner),before[owner]))
     for handle in handles: handle.remove()
     for role in range(3):
-        assert EntityInputs.from_slots(values[:,:1],torch.full((2,1),role)).pack()[0].shape == (2,2490)
+        assert EntityInputs.from_slots(values[:,:1],torch.full((2,1),role)).pack()[0].shape == (2,2*entity_dim+8)
     with pytest.raises(ValueError,match='ordered'): EntityInputs.from_slots(values,roles.flip(1))
     with pytest.raises(ValueError,match='role'): EntityInputs.from_slots(values[:,:1],torch.full((2,1),9))
     with pytest.raises(ValueError,match='contract'): EntityInputs.from_slots(values[:,:,:1024],roles)
     with pytest.raises(ValueError,match='mask'): EntityInputs(values,roles,torch.zeros(2,2,dtype=torch.bool)).pack()
+    with pytest.raises(ValueError,match='contract'):
+        model('test', EntityInputs.from_slots(torch.zeros(2,2,1235 if entity_dim==1241 else 1241),roles),torch.empty(2,0),partner_embedding=partner)
     assert object_key_from_row('test',2,{'solute':'[NH4+]'},('solute',),'formal_charge_v1').slots == (('cation','[NH4+]'),)
     assert object_key_from_row('test',2,{'solvent':'[Cl-]'},('solvent',),'formal_charge_v1').slots == (('anion','[Cl-]'),)
 
@@ -639,9 +642,9 @@ def test_entity_home_base_contracts() -> None:
             stage3.tasks[enthalpy.task_id], condition_columns=("missing",)
         )}, data=replace(stage3.data, split_strategies={})))
     recipe = load_home_recipe("configs/v4/stage2/base.yaml")
-    assert recipe.stage2.data.data_root == Path("data/42")
-    assert recipe.stage2.data.task_catalog_path == Path("data/42/task_catalog.csv")
-    assert stage3.data.stage3_dir == Path("data/42/stage3")
+    assert recipe.stage2.data.data_root == Path("data/3407")
+    assert recipe.stage2.data.task_catalog_path == Path("data/3407/task_catalog.csv")
+    assert stage3.data.stage3_dir == Path("data/3407/stage3")
     assert stage3.data.task_catalog == recipe.stage2.data.task_catalog_path
     with pytest.raises(ValueError, match="missing"):
         load_stage2_registry(recipe.stage2.data.task_catalog_path, task_ids=(*recipe.stage2.data.tasks, "simulation/missing"))
@@ -673,7 +676,9 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
         architecture=ArchitectureConfig(kind="dual_view_v4"),
         data=replace(PretrainConfig().data, stage1_dir=tmp_path / "stage1", artifacts_dir=stage1_root,
                      valid_fraction=0.5, max_smiles_tokens=64, shard_size=4),
-        descriptor=DescriptorConfig(mode="full", token_count=1),
+        descriptor=DescriptorConfig(mode="full", token_count=1,
+            excluded_names=("Ipc", "Kappa3", "SMR_VSA8", "SlogP_VSA9", "fr_Nhpyrrole", "fr_amide"),
+            value_policy="phi_mask_ring_log1p_v1"),
         model=ModelConfig(d_model=512, n_heads=8, smiles_layers=1, graph_depth=2,
                           feedforward_dim=32, dropout=0., role_embedding=False),
         masking=MaskingConfig(fusion_only_dropout=True, descriptor_dropout=0.),
@@ -824,7 +829,7 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     assert not (output / "stage2_encoder.pt").exists()
     from stage2 import load_frozen_stage1_entities
     frozen = load_frozen_stage1_entities(checkpoint, stage1_root)
-    assert frozen.encode_slots([FrozenObjectSpec("molecule", (("cation", "[NH4+]"),))])[0].shape == (1,1,1241)
+    assert frozen.encode_slots([FrozenObjectSpec("molecule", (("cation", "[NH4+]"),))])[0].shape == (1,1,1235)
     with pytest.raises(ValueError,match="role"):
         frozen.encode_slots([FrozenObjectSpec("molecule", (("neutral", "[NH4+]"),))])
     with pytest.raises(ValueError,match="retired"):
@@ -882,7 +887,7 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
             test_path(stage3, spec).write_bytes(path.read_bytes())
     prepare_stage3(stage3)
     prepared = load_prepared_stage3(stage3)
-    assert prepared["metadata"]["prepared_contract_version"] == 4 and prepared["slots"]["slots"].shape[-1] == 1241
+    assert prepared["metadata"]["prepared_contract_version"] == 4 and prepared["slots"]["slots"].shape[-1] == 1235
     changed_model, _, names = build_model_and_store(changed, prepared, fold=1, device=torch.device("cpu"))
     assert names
     assert all(torch.equal(changed_model.state_dict()[name], payload["shared_state"][name]) for name in names)

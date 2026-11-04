@@ -51,8 +51,12 @@ def _model_hash(state: Mapping[str, torch.Tensor], *, entity_home: bool = False)
 
 
 def model_contract_for_recipe(experiment: HomeRecipe) -> dict[str, Any]:
-    from common.entity_inputs import ENTITY_INPUT_CONTRACT
-    return {**ENTITY_INPUT_CONTRACT, "source_tasks": sorted(experiment.stage2.data.tasks)}
+    from common.entity_inputs import entity_input_contract
+    from stage1.descriptors import DescriptorSchema
+    config = experiment.stage2
+    dimension = 1241 if config.frozen_encoder is not None else 1024 + DescriptorSchema.load(
+        config.data.pretrain_artifacts_dir / "descriptor_schema.json").selected_dim
+    return {**entity_input_contract(dimension), "source_tasks": sorted(config.data.tasks)}
 
 
 def training_identity(

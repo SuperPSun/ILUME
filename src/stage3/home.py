@@ -108,7 +108,10 @@ def build_model_and_store(
     kwargs = dict(group_configs=config.groups, task_configs=config.tasks,
         task_private_recipes={task: config.resolved_private_recipe(task)
             for task, spec in config.tasks.items() if spec.enabled},
-        initialization_seed=effective_training_seed(config) + fold, entity_inputs=True)
+        initialization_seed=effective_training_seed(config) + fold, entity_inputs=True,
+        entity_input_dim=source_model.home.entity_input_contract["entity_dim"])
+    if prepared["slots"]["slots"].shape[-1] != kwargs["entity_input_dim"]:
+        raise ValueError("Stage3 slots and Stage2 entity descriptor widths differ")
     model = (SimulationEntityModel(config.model, specs, 1024, source_model=source_model, **kwargs)
         if simulation_enabled else Stage3SparseModel(config.model, specs, 1024, **kwargs))
     model.representation_contract = "entity_home_v4"

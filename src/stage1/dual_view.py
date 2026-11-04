@@ -35,6 +35,12 @@ class DualViewEncoder(nn.Module):
         super().__init__()
         self.config = config
         self.descriptor_schema = descriptor_schema
+        if descriptor_schema is not None and descriptor_schema.value_policy != config.descriptor.value_policy:
+            raise ValueError("Stage1 descriptor value policy differs from prepared schema; rerun prepare")
+        if config.descriptor.excluded_names and descriptor_schema is not None:
+            expected = tuple(name for name in descriptor_schema.raw_names if name not in config.descriptor.excluded_names)
+            if descriptor_schema.selected_names != expected:
+                raise ValueError("Stage1 descriptor schema differs from configured exclusions; rerun prepare")
         recipe = config.model
         self.token_dim = self.atom_dim = recipe.d_model
         self.entity_dim = self.learned_dim = 2 * recipe.d_model
@@ -112,7 +118,8 @@ class DualViewPretrainModel(DualViewEncoder):
         self.graph_projector = alignment_mlp(width, width, 256)
         self.smiles_predictor = alignment_mlp(256, 128, 256)
         self.graph_predictor = alignment_mlp(256, 128, 256)
-        self.descriptor_decoder = nn.Linear(self.entity_dim, 217)
+        descriptor_dim = descriptor_schema.selected_dim if descriptor_schema is not None else config.data.descriptor_dim - len(config.descriptor.excluded_names)
+        self.descriptor_decoder = nn.Linear(self.entity_dim, descriptor_dim)
         self.unimol_projector = nn.Linear(self.entity_dim, 768)
         self.electronic_head = nn.Linear(self.entity_dim, 13)
         if config.loss.lambda_partial_charge > 0:

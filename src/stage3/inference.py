@@ -176,7 +176,7 @@ class FrozenPropertyPredictor:
         if missing:
             values, _ = self.encoder.encode_slots([FrozenObjectSpec("molecule", (pair,)) for pair in missing])
             self._entities.update((pair, value[0]) for pair, value in zip(missing, values, strict=True))
-        values = torch.stack([self._entities[pair] for pair in pairs]).reshape(1, len(pairs), 1241)
+        values = torch.stack([self._entities[pair] for pair in pairs]).unsqueeze(0)
         roles = torch.tensor([[{"cation": 0, "anion": 1, "neutral": 2}[role] for role, _ in pairs]])
         return EntityInputs.from_slots(values, roles).to(self.device)
 

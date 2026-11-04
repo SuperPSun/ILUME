@@ -14,7 +14,7 @@ from common.outputs import repository_path
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build independent paper comparison tables and figures from complete predictions.")
-    parser.add_argument("--config", default="configs/v4/stage3/optimized_3407.yaml", help="Matching Stage3 YAML; only task and split definitions are used.")
+    parser.add_argument("--config", default="configs/v4/stage3/base.yaml", help="Matching Stage3 YAML; only task and split definitions are used.")
     parser.add_argument("--ilume", required=True, help="Explicitly selected ILUME run root containing valid/fold1..5.")
     parser.add_argument("--baselines", required=True, help="Root containing all ten completed catalog_v4_3407 baselines.")
     parser.add_argument("--with-test", action="store_true", help="Also require and summarize ILUME test/ and baseline five-model ensemble test predictions.")

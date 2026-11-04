@@ -4,6 +4,10 @@
 - 日期：2026-10-08
 - 替代范围：ADR-0094 的 Stage2/3 和旧 v4 ObjectEncoder 合同；Stage1 合同不变。
 
+后续描述符选择见 [ADR-0112](0112-v4-explicit-rdkit-211-selection.md)：当前 Base 实体/L1 输入为1235/2478维，本篇1241/2490维为全217列时的历史数值；模型机制不变。
+
+后续主模型分组与容量见 [ADR-0114](0114-g2-c01-main-model.md)：Base采用G2_C01、007/032训练超参和3407，两电位归入phase_stability；本文原electrochemical容量、预算及参数量为历史记录。
+
 ## 决策
 
 完全移除独立 ObjectEncoder 的 Transformer、Unary、Pair、gamma 及其加载支持。历史产物不删除，复现须 checkout 对应历史 Git 版本。

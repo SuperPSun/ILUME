@@ -1,6 +1,6 @@
 # 扁平化 HPO 运行手册
 
-本流程使用静态 YAML 和人工选型，不使用 Optuna，不自动晋级，不读取测试指标。正式 Base 入口与配方保持不变。合同见 [ADR-0099](adr/0099-simple-static-hpo.md)。所有训练、缓存、日志和报告位于 `outputs/HPO`，配置位于 `configs/HPO`。
+本流程使用静态 YAML 和人工选型，不使用 Optuna，不自动晋级，不读取测试指标。HPO不会自动修改正式Base；人工主模型决定按ADR-0114另行落实。合同见 [ADR-0099](adr/0099-simple-static-hpo.md)。所有训练、缓存、日志和报告位于 `outputs/HPO`，配置位于 `configs/HPO`。
 
 HPO无论在哪台设备运行，训练结果与完整模型权重都须回传到4090的对应 `outputs/HPO`，保留配置、身份、日志和恢复产物；不得仅同步CSV/JSON或排除 `.pt`。共享缓存及来源按身份核验后复用或回传，具体遵循 [跨设备训练产物回传](v4-runbook.md#跨设备训练产物回传)。
 
@@ -8,13 +8,13 @@ HPO无论在哪台设备运行，训练结果与完整模型权重都须回传�
 
 ## 当前选型与报告入口
 
-固定配方为HoME `G2_C05` + Stage2 `007` + Stage3 `032`，后续新实验采用3407，训练seed42（Stage3实际42+fold）。完整选择依据、五套划分结果、报告保留节点和最新归档状态统一见 [HPO结果与最终配方](hpo-results.md)，不在本手册复制排名或历史运维报告。
+当前主模型为 **G2_C01 / Stage2 007 / Stage3 032**，正式Base使用3407及当前211维新policy Stage1来源，训练seed42（Stage3实际42+fold）。主模型命令见[v4手册](v4-runbook.md#g2_c01-主模型)，决定见[ADR-0114](adr/0114-g2-c01-main-model.md)。本手册下文复现历史G2_C05搜索与选择；`configs/HPO/selected.yaml`不改写，旧HPO生成器读取冻结G0_C05模板，候选编号及generation绑定保持原含义。完整证据见 [HPO结果](hpo-results.md)。
 
 `outputs/HPO/reports/README.md`仅索引关键人工决策节点。Stage1逐目标选择依据、HoME、Stage2、Stage3及最终划分报告保留完整排名、逐任务数据、源快照和复算脚本。早期未完成快照、预览和资源/传输审计的有效结论整合入docs，必要校验凭据附最终节点；其余报告在列明文件数、大小与范围并确认后清理。训练目录内的metadata、指标、身份和检查点不属于报告精简范围。
 
 3407参考配置为 `configs/HPO/final/3407/stage2.yaml`、`stage3.yaml`，归档模型为4090的 `outputs/HPO/final/3407/stage2/` 与 `stage3/train/fold1/`～`fold5/`。新实验从配套配置派生到独立YAML及输出，重新绑定同split的Stage2来源和prepare身份；不得只替换数据路径后沿用旧缓存、generation绑定或恢复目录。下文保留完整HPO复现步骤，不需要重新启动已完成的搜索。
 
-在 `outputs/v4` 独立复跑最终配方，使用 `configs/v4/stage2/optimized_3407.yaml` 与 `configs/v4/stage3/optimized_3407.yaml`；保持HPO选定参数及Stage1来源，Stage2/3准备产物和模型均写入新的v4路径，不再依赖HPO训练输出。命令见 [v4手册](v4-runbook.md#最终优化配方3407)。
+若需在 `outputs/v4` 独立复跑历史G2_C05配方，使用 `configs/v4/stage2/optimized_3407.yaml` 与 `configs/v4/stage3/optimized_3407.yaml`；保持HPO选定参数及Stage1来源，Stage2/3准备产物和模型均写入新的v4路径，不再依赖HPO训练输出。命令见 [v4手册](v4-runbook.md#最终优化配方3407)。
 
 ## 四轮实验与人工选择
 

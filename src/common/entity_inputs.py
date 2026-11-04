@@ -11,6 +11,13 @@ ENTITY_INPUT_CONTRACT = {
     "residual": "valid_learned_mean", "initialization": "seed_owner_v1",
 }
 
+
+def entity_input_contract(entity_dim=1241):
+    if isinstance(entity_dim, bool) or not isinstance(entity_dim, int) or not 1024 < entity_dim <= 1241:
+        raise ValueError("Entity descriptor width must be between 1 and 217")
+    return {**ENTITY_INPUT_CONTRACT, "entity_dim": entity_dim, "packed_dim": 2 * entity_dim + 8}
+
+
 @dataclass(frozen=True)
 class EntityInputs:
     values: torch.Tensor
@@ -33,8 +40,10 @@ class EntityInputs:
         result.pack()
         return result
 
-    def pack(self):
-        if (self.values.ndim != 3 or self.values.shape[1:] != (2, 1241)
+    def pack(self, entity_dim=None):
+        if (self.values.ndim != 3 or self.values.shape[1] != 2
+                or not 1024 < self.values.shape[-1] <= 1241
+                or (entity_dim is not None and self.values.shape[-1] != entity_dim)
                 or self.roles.shape != self.values.shape[:2] or self.mask.shape != self.roles.shape
                 or self.mask.dtype != torch.bool or self.roles.dtype != torch.long):
             raise ValueError("Entity slot tensor contract mismatch")

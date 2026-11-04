@@ -1,10 +1,11 @@
+# Main recipe: G2_C01 topology / Stage2 007 / Stage3 032; split 3407, training seed 42.
 data:
-  data_root: data/42
-  task_catalog_path: data/42/task_catalog.csv
+  data_root: data/3407
+  task_catalog_path: data/3407/task_catalog.csv
   pretrain_artifacts_dir: outputs/v4/stage1/base/prepare/artifacts
   artifacts_dir: outputs/v4/stage2/base/prepare/artifacts
   entity_shard_size: 4096
-  seed: 42
+  seed: 3407
   target_materialization_modes: {}
   tasks:
   - simulation/density
@@ -15,6 +16,7 @@ data:
 preparation:
   workers: 8
   teacher_batch_size: null
+  data_metadata_path: outputs/v4/stage2/base/prepare/data_metadata.json
 initialization:
   checkpoint: outputs/v4/stage1/base/train/stage1_encoder.pt
 model:
@@ -49,13 +51,14 @@ training:
   refinement_epochs: 0
   refinement_tasks: []
   refinement_lr_multiplier: 0.1
+  seed: 42
 home:
   freeze_stage1: true
   microbatch_size: 256
   initialization: pretrained
   random_seed: null
   model:
-    global_experts: 2
+    global_experts: 1
     private_experts: 1
     dropout: 0.1
     activation: silu
@@ -68,7 +71,7 @@ home:
     thermophysical:
       enabled: true
       group_weight: 1.0
-      experts: 2
+      experts: 1
       expert_hidden_ratio: 1.5
       phase1:
         lr: 0.00015
@@ -79,7 +82,7 @@ home:
     solvation:
       enabled: true
       group_weight: 1.0
-      experts: 3
+      experts: 2
       expert_hidden_ratio: 1.5
       phase1:
         lr: 0.0002
