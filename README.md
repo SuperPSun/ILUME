@@ -26,7 +26,7 @@ Stage1 共用 `data/stage1`，Stage2/3 Base已配对 `data/3407`。训练seed仍
 
 新主模型使用配对的 `configs/v4/stage2/base.yaml`、`configs/v4/stage3/base.yaml`，输出位于 `outputs/v4/stage{2,3}/base/`；需先完成当前211维数值policy对应的Stage1来源，再重新prepare/train Stage2和Stage3五折，见 [G2_C01运行步骤](docs/v4-runbook.md#g2_c01-主模型)。旧 `optimized_3407` 及既有消融继续表示G2_C05，不能作为新主模型的权重或配对消融证据。正式运行由用户启动，不覆盖旧输出。
 
-Stage1 的独立RDKit描述符筛选命令见 [v4手册](docs/v4-runbook.md#rdkit-描述符只读筛选审计)；它只读train，现役prepared_review在新policy处理后标记重尾/缺失/相关问题并输出分组审计，不自动改变模型；Base的211列由独立决定显式配置（[ADR-0110](docs/adr/0110-stage1-descriptor-selection-audit.md)、[ADR-0112](docs/adr/0112-v4-explicit-rdkit-211-selection.md)）。
+Stage1 描述符按正式YAML显式选择；当前211列及数值处理见 [v4手册](docs/v4-runbook.md#base-的-211-维描述符选择)。独立阈值筛选/复审工具已退役（[ADR-0110](docs/adr/0110-stage1-descriptor-selection-audit.md)）；人工评审建议不自动改写schema，prepare中的数值有效性、归一化及来源完整性校验继续保留。
 
 ## v3 历史运行手册
 

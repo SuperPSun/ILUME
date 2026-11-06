@@ -43,26 +43,13 @@ PY
 
 **旧产物不迁移**：即使维数相同，2025.09.5语料、统计、tokenizer/图、teacher、partial-charge sidecar与检查点也不改SHA、不重标版本、不与新环境混用。重新prepare Stage1、准备电荷sidecar、在匹配2026.09.1的独立Uni-Mol环境重新审计/生成teacher缓存，再从头训练Stage1并重新prepare/train Stage2/3。原始CSV、split authority和已验证Uni-Mol权重文件可复用；不保证升级后的canonical、QC成员及描述符数值逐bit相同。
 
-主线继续使用 `configs/v4/stage1/base.yaml`、`configs/v4/stage2/base.yaml`、`configs/v4/stage3/base.yaml`，不另设带RDKit版本后缀的Base配置。三者仍按 `outputs/v4/stage{1,2,3}/base/` 配对prepare、teacher、电荷sidecar与训练来源；本节版本升级不改变科研参数；后续Base的G2_C01容量、007/032超参及3407选择由[ADR-0114](adr/0114-g2-c01-main-model.md)另行确定。复用标准输出路径前，须按工作区规则完成用户明确确认的旧产物清理或归档；不能覆盖旧产物，也不能只删权重后在遗留metadata/log的运行目录中启动新训练。保留的旧电荷sidecar不能用于新版prepare，须先另行归档后重新生成。未经授权，不自动移动或删除历史结果。描述符筛选YAML继续指向Base的新prepare，旧版本来源仍被严格拒绝。
+主线继续使用 `configs/v4/stage1/base.yaml`、`configs/v4/stage2/base.yaml`、`configs/v4/stage3/base.yaml`，不另设带RDKit版本后缀的Base配置。三者仍按 `outputs/v4/stage{1,2,3}/base/` 配对prepare、teacher、电荷sidecar与训练来源；本节版本升级不改变科研参数；后续Base的G2_C01容量、007/032超参及3407选择由[ADR-0114](adr/0114-g2-c01-main-model.md)另行确定。复用标准输出路径前，须按工作区规则完成用户明确确认的旧产物清理或归档；不能覆盖旧产物，也不能只删权重后在遗留metadata/log的运行目录中启动新训练。保留的旧电荷sidecar不能用于新版prepare，须先另行归档后重新生成。未经授权，不自动移动或删除历史结果。
 
-## RDKit 描述符只读筛选审计
+## 描述符选择与历史审计
 
-该工具只生成候选清单，不自动改变Stage1监督、下游实体宽度、Base YAML或已有模型。规则见 [ADR-0110](adr/0110-stage1-descriptor-selection-audit.md)，阈值在独立 [筛选YAML](../configs/v4/stage1/descriptor_selection.yaml)。完成旧Base运行目录的清理或归档后，在 `ilume` 环境使用 [Stage1 Base](../configs/v4/stage1/base.yaml) 重新prepare；该命令也会生成新的电荷sidecar。筛选无需先训练Stage1或生成teacher。
+独立阈值筛选和处理后复审已于2026-11-06退役（[ADR-0110](adr/0110-stage1-descriptor-selection-audit.md)），相关脚本、实现、YAML与专属测试已移除。正式prepare仅按Base YAML和下节schema处理描述符，不再要求执行独立筛选命令；数值有效性、归一化和来源完整性校验继续保留。
 
-```bash
-conda activate ilume
-python scripts/stage1/prepare.py \
-  --config configs/v4/stage1/base.yaml \
-  --output outputs/v4/stage1/base/prepare
-
-python scripts/stage1/select_descriptors.py \
-  --config configs/v4/stage1/descriptor_selection.yaml \
-  --output outputs/v4/stage1/base/descriptor_selection
-```
-
-默认仅对prepared manifest的全部train重新计算原始float64 RDKit，使用16个CPU worker、不用GPU；不读valid/test或目标标签，也不从已标准化float32恢复原始值。约518万分子时输出矩阵约9GB，运行前确保新输出目录有空间和CPU资源；不覆盖、无resume。终端有进度条，重定向输出为JSON进度。若仅预审，在复制的独立YAML中设正整数`max_molecules`，结果会明确标为抽样，不能据此断言全量零方差或罕见信息不存在。
-
-现役审计YAML使用`audit_mode: prepared_review`，要求先完成下述新policy的prepare；旧217维或未变换的211维prepared明确拒绝。输出同时保存原始217维`raw_descriptors.npy`和处理后211维`processed_descriptors.npy`，约518万行时两份矩阵合计约17.7GB，另需少量报告空间。`descriptor_statistics.csv`基于处理后数值，`std/IQR>10`、`max_abs/P99(abs)>1000`或单条记录贡献总平方偏差`>5%`标记review；超过1%非finite和`abs(Pearson)>0.98`也只标记。全无效、平方不安全、零方差或完全重复仍给出drop候选；任何候选都不自动改正式schema。IQR零仅跳过该比值，不因此删除稀疏列。`descriptor_groups.json`提供role×原始/扩增的有效数量、Phi屏蔽数和平方偏差贡献，以及极端记录及其seed字符串（前20条覆盖，非全语料seed统计）。完整名单见`descriptor_selection.json`；原始矩阵保留复核，不能替换旧schema或改SHA。共享默认`legacy_selection`仍按ADR-0110历史算法处理。
+描述符去留通过逐项人工评审后另行明确科研合同；当前仍为下述211列，197维人工候选尚未采纳。独立审计退役不改变现有prepared、teacher、电荷sidecar、training identity或模型兼容性，也不移除gradient audit、teacher或电荷审计。旧独立审计产物不再作为活动入口；移动或清理仍须先报告精确清单并获得确认。
 
 ## Base 的 211 维描述符选择
 

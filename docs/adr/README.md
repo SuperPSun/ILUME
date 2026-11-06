@@ -17,7 +17,7 @@
 | 历史 v2/v3 表示与隔离 | [0039](0039-global-rdkit-v2-mainline.md) | 三模态 Stage 1、1024D 实体/Object/HoME；仅约束历史配置，现役表示由 0089 取代 |
 | Stage 1 执行 | [0013](0013-stage1-full-corpus-ddp.md)、[0014](0014-stage1-prepare-performance-and-corpus-v2.md)、[0015](0015-stage1-high-throughput-epoch-resume.md)、[0017](0017-stage1-base-runtime-profile.md) | 全量轮、prepare/运行时、DDP 与完整轮恢复 |
 | Stage1 独立回归头 | [0092](0092-stage1-atom-charge-and-frozen-regression-heads.md)、[0093](0093-stage1-configurable-frozen-predictors.md) | 冻结 entity1024/atom512；Linear/MLP/残差 MLP 默认与逐目标覆盖；独立 format2，兼容旧 Linear format1；验证只报告 |
-| Stage1 描述符筛选与正式选择 | [0110](0110-stage1-descriptor-selection-audit.md)、[0112](0112-v4-explicit-rdkit-211-selection.md)、[0113](0113-v4-descriptor-validity-ring-log-review.md) | Base保留211列，Phi适用性mask、八项环计数log1p，监督/显式输入统一；严格复审只标记重尾/缺失/相关，原始/处理后矩阵与分组报告；实体1235/L1输入2478，新来源重新prepare与训练 |
+| Stage1 正式描述符选择与数值策略 | [0112](0112-v4-explicit-rdkit-211-selection.md)、[0113](0113-v4-descriptor-validity-ring-log-review.md) | Base保留211列，Phi适用性mask、八项环计数log1p，监督/显式输入统一；实体1235/L1输入2478，新来源重新prepare与训练；独立阈值筛选/复审已退役，人工建议不自动接入 |
 | 主线RDKit版本升级 | [0111](0111-rdkit-2026-09-1.md) | 精确固定包2026.9.1/runtime2026.09.1；维数和模型不变，严格拒绝旧特征来源，新目录重建prepare/teacher并重训；基线独立环境不变 |
 | 历史 v3/v4 Stage2-HoME | [0089](0089-v4-frozen-dual-view-stage1.md)（v4 表示与冻结边界）、[0082](0082-home-mainline-and-core-ablations.md)、[0083](0083-stage2-home-full-artifact-evaluation.md)、[0085](0085-retire-stage2-home-evaluation.md)、[0079](0079-stage2-home-stage3-home-transfer-ablation.md)（历史配方来源）、[0025](0025-stage2-homo-lumo-scalar-tasks.md) | 九任务仅物理监督 HoME、完整模型产物与 GLOBAL/GROUP 迁移；独立评估由 0085 退役；正式数值读 YAML |
 | Stage 3 训练机制与历史任务集 | [0089](0089-v4-frozen-dual-view-stage1.md)（v4 表示与冻结边界）、[0084](0084-stage3-simulation-phase2-phase3.md)、[0020](0020-stage3-v1-sparse-home-pcgrad.md)、[0046](0046-stage3-ownership-clipping-raw-sampling.md)、[0048](0048-stage3-owner-lifetime-three-phase-training.md)、[0050](0050-stage3-task-specific-owner-budget-and-private-capacity.md)、[0070](0070-stage3-retire-pcgrad.md)、[0075](0075-stage2-zero-update-stage3-object-phase1.md) | 历史20项实验+五项模拟；历史v5任务集见0094；现役v4由0095替代；稀疏 HoME、原始样本采样/裁剪、三阶段 owner 存续期/容量、ObjectEncoder Phase 1 |
@@ -52,6 +52,7 @@
 
 | 范围 | 入口与状态 |
 |---|---|
+| Stage1 独立描述符筛选/复审 | [0110](0110-stage1-descriptor-selection-audit.md)：已退役，移除独立脚本、实现、YAML及专属测试；历史结果不再作为活动入口，正式211列和0113数值策略不变 |
 | v3 Stage2/Stage3 HoME 候选 | [0087](0087-stage2-stage3-home-base1-candidates.md)：base1-1～base1-10 保留原配对来源、容量与预算合同，不是 v4 入口 |
 | 旧迁移/微调/跨域 HoME 实验 | [0079](0079-stage2-home-stage3-home-transfer-ablation.md)、[0080](0080-stage2-home-transfer-full-finetune.md)、[0081](0081-stage2-stage3-cross-domain-home.md)：历史；正式身份由 0082 替代 |
 | 旧 RDKit / transfer / 路由 / 分组候选 | [0034](0034-rdkit-2d-home-representation-ablation.md)、[0036](0036-no-stage1-rdkit-stage2-stage3-ablation.md)、[0062](0062-stage2-stage3-full-transfer-matrix.md)、[0072](0072-stage3-transfer-knowledge-hierarchy-ablation.md)、[0073](0073-stage3-encoder-full-finetune-ablation.md)、[0063](0063-stage3-knowledge-graph-grouping-candidate.md)、[0064](0064-stage3-knowledge-graph-budget-candidates.md)、[0066](0066-stage3-knowledge-graph-targeted-small-experiments.md)、[0074](0074-stage3-base-global-group-capacity-candidates.md)：历史，不是活跃入口 |

@@ -6,6 +6,8 @@
 
 现役 Base 显式设置 `descriptor.value_policy: phi_mask_ring_log1p_v1`。共享默认 `raw`，默认序列化省略；旧配置、schema format2和旧身份继续按原值处理。baseline、ChemBERTa及历史消融配方不批量改写。
 
+2026-11-06定向修订：本篇的正式数值处理继续有效；独立只读复审工具已随[ADR-0110](0110-stage1-descriptor-selection-audit.md)退役，不再提供筛选/复审命令或要求正式训练前运行该工具。
+
 ## 正式预处理
 
 1. 继续排除 `Ipc/Kappa3/SMR_VSA8/SlogP_VSA9/fr_Nhpyrrole/fr_amide`。保留四项partial-charge、八项BCUT2D及此前17项高相关描述符。数据QC不因本次调整删除分子，不自动删除自由基、多片段或大宏环。
@@ -17,16 +19,16 @@
 
 新policy使用schema format3并绑定policy名称；未知policy/不一致来源拒绝加载。descriptor配置进入corpus/training身份，schema与scaler SHA进入feature及下游来源身份；维度相同也不能混用未经变换的旧211维产物。沿用Stage训练/checkpoint格式，通过现有来源与状态校验严格隔离。
 
-## 只读复审工具
+## 只读复审工具（已退役）
 
-现役 `configs/v4/stage1/descriptor_selection.yaml` 设置 `audit_mode: prepared_review`，只接受具有新policy、SHA及corpus来源一致的已完成prepared。
+以下为2026-11-03时的历史能力，2026-11-06已移除对应脚本、实现、YAML及专属测试。原`prepared_review`只接受具有新policy、SHA及corpus来源一致的已完成prepared；不再作为现役入口。
 
 - 仍只遍历train，保留未改动的float64 `raw_descriptors.npy`（217列），另存 `processed_descriptors.npy`（schema选择及处理后的211列）。不从标准化float32逆变换，不读取valid/test目标。
 - 在处理后的分布上严格使用 `std/IQR > 10`、`max_abs/P99(abs) > 1000`、单条记录占总体平方偏差 `> 0.05`。任一命中标记review；IQR或绝对值P99为零时跳过相应比值，不因IQR零而删稀疏特征。
 - 非有限比例 `> 0.01`、共同有效样本至少100且 `abs(Pearson)>0.98`也只标记review。全无效、平方数值不安全、零方差与完全重复列仍给出drop候选。任何候选均不自动改写正式schema，17项高相关列和12项部分缺失列保持原选择。
 - `descriptor_statistics.csv`记录处理后的统计、单条方差贡献、keep/review/drop；`descriptor_selection.json`保留正式schema的排除记录及复审候选，非自动加载的训练产物。新review输出format2，独立审计身份纳入mode、阈值、schema SHA和policy。
 - `descriptor_groups.json`按role×原始/扩增记录有效数量、Phi适用性屏蔽数及相对全train中心的平方偏差贡献；为九项关注列及仍有重尾/单条支配信号的列保存标准化绝对值最高20条的结构、sample ID与seed字符串。seed聚合只覆盖这些极端记录，不声称是全语料结构族统计，不改变采样或权重。
-- 共享默认 `legacy_selection` 保留ADR-0110原始审计算法和默认序列化；不重写旧审计结果。
+- 原共享默认 `legacy_selection` 使用ADR-0110原始审计算法和默认序列化；两种模式均已退役，历史结果不重标身份。
 
 ## 证据与解释边界
 
@@ -34,6 +36,6 @@
 
 ## 运行与验证
 
-需要在新输出重做Stage1 prepare、匹配corpus的teacher及电荷sidecar并从头训练，再重新prepare/train Stage2和prepare/train/evaluate Stage3；旧输出保持只读，不手改SHA或迁移缓存，不自动归档/删除。审计必须在新prepared完成后运行，原始数据、split与Uni-Mol源权重可复用。实现阶段仅临时小数据，不启动正式准备、全量审计或训练。
+采用本篇数值policy仍需在新输出重做Stage1 prepare、匹配corpus的teacher及电荷sidecar并从头训练，再重新prepare/train Stage2和prepare/train/evaluate Stage3；独立审计退役本身不要求重建当前匹配的prepared或模型。旧输出保持只读，不手改SHA或迁移缓存，不自动归档/删除。原始数据、split与Uni-Mol源权重可复用。实现阶段仅临时小数据，不启动正式准备、缓存或训练。
 
-验证覆盖Phi结构边界/单项mask、八列log1p恰好一次、train-only统计、统一下游样本构造、schema format2/3兼容及新旧policy拒绝、真实loss缺失梯度、完整轮恢复和只读梯度审计。复审覆盖阈值边界、重尾/缺失/相关不自动删除、原始与处理后矩阵、role/扩增/seed报告、串并行一致及SHA损坏拒绝；旧配置和消融不随新Base数值处理迁移。
+现役验证保留Phi结构边界/单项mask、八列log1p恰好一次、train-only统计、统一下游样本构造、schema format2/3兼容及新旧policy拒绝、真实loss缺失梯度、完整轮恢复和只读梯度审计。原独立复审的阈值、矩阵/分组报告及并行完整性测试随工具退役移除；旧配置和消融不随新Base数值处理迁移。

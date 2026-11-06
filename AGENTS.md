@@ -25,13 +25,13 @@
 
 ADR-0093仅扩展独立回归头后训练：YAML支持默认Linear及逐目标MLP/残差 MLP；Linear继承预训练头并做等价标准化换算，非线性采用任务局部随机初始化/dropout。编码器/Fusion永久冻结、entity1024/atom512输入不变，验证只报告；format2内嵌结构并兼容旧Linear format1，不改变Stage1/2/3身份或正式训练。
 
-ADR-0110新增独立 `scripts/stage1/select_descriptors.py`：只读v4 prepared manifest的train并重算原始float64 RDKit，筛选数值/重尾、无效/重复及高相关列；结果仅为审计，不自动接入正式schema；正式Base的显式211列由ADR-0112独立决定。独立YAML与新输出，默认全量、抽样须显式标记；不运行正式全量审计，修改时另检查该入口帮助。
+ADR-0110的独立描述符阈值筛选/复审入口已退役；正式列清单与数值策略只按ADR-0112/0113及YAML执行。人工评审建议未自动接入训练；prepare/QC、有效mask、SHA检查、gradient audit及teacher/电荷审计继续保留。
 
 ADR-0111将主项目及新teacher环境固定为包 `rdkit==2026.9.1` / runtime `2026.09.1`；原始217维清单不变（现役Base选择与接口见ADR-0112），旧版本prepare/teacher/sidecar/checkpoint仍严格隔离。新版本须重新prepare与训练，不改SHA、不混用旧来源；三个Stage继续使用 `configs/v4/stage*/base.yaml`，不设临时版本后缀Base。复用标准 `outputs/v4/stage*/base/` 前须完成用户按精确清单确认的旧运行清理/归档，不能覆盖遗留metadata/log或复用旧sidecar。主环境仍名 `ilume`，备份后仅清理旧RDKit并升级，不直接覆盖混装包，不改Python/PyTorch/CUDA/NumPy；基线独立环境和hash lock不变。
 
 ADR-0112：现役Stage1 Base在`descriptor.excluded_names`仅排除`Ipc/Kappa3/SMR_VSA8/SlogP_VSA9/fr_Nhpyrrole/fr_amide`，监督及显式输入统一211维，保留12项有非有限值及17项高相关描述符；有限值拟合、标准化零填充和逐维有效mask不变。learned1024/atom512不变，实体1235、双槽L1输入2478由来源schema/identity解析。默认空排除仍为历史217/1241/2490且默认序列化省略；旧配置身份、ChemBERTa与baseline合同不批量修改。新Base须重新prepare/teacher/sidecar及三个Stage训练，旧输出只读，不自动迁移或清理。
 
-ADR-0113：Base的`descriptor.value_policy: phi_mask_ring_log1p_v1`对非单连通/重原子少于3/键少于2的结构仅屏蔽Phi；八环计数统一log1p后按train有限值拟合scaler。Stage1监督和下游共用同一schema，零填充/mask/分子及角色权重不变，不双重log、不删分子、不截尾；211/1235/2478维不变。新schema format3，默认raw省略字段且兼容format2；数值policy进入corpus/训练/feature来源身份，新旧211也不能混用。现役描述符审计为prepared_review，须新prepare；10/1000/5%严格阈值及高缺失/相关只标review，全无效/不安全/零方差/完全重复为drop候选但不自动改schema。保存原始217与处理后211矩阵、role×原始/扩增统计及极端样本seed报告，不改变采样或loss。重新准备匹配teacher/sidecar并重训三个Stage，旧输出只读，实施不自动启动正式运行。
+ADR-0113：Base的`descriptor.value_policy: phi_mask_ring_log1p_v1`对非单连通/重原子少于3/键少于2的结构仅屏蔽Phi；八环计数统一log1p后按train有限值拟合scaler。Stage1监督和下游共用同一schema，零填充/mask/分子及角色权重不变，不双重log、不删分子、不截尾；211/1235/2478维不变。新schema format3，默认raw省略字段且兼容format2；数值policy进入corpus/训练/feature来源身份，新旧211也不能混用。独立复审工具已退役，正式数值策略保持有效。重新准备匹配teacher/sidecar并重训三个Stage，旧输出只读，实施不自动启动正式运行。
 
 ADR-0114：主模型Stage2/3 Base采用G2_C01，一个GLOBAL，GROUP专家数transport/thermophysical/phase_stability/dielectric_optical/solvation/biological为1/1/2/1/2/1；PRIVATE宽度不变，训练超参沿用007/032，3407与当前211维Stage1来源严格配对。旧HPO生成读取冻结G0_C05模板，selected.yaml及optimized_3407、WeakOpt、既有消融配置/结果保留历史身份；不能用旧权重或消融替代新主模型，需要重新训练。
 

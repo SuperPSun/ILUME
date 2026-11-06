@@ -2,11 +2,15 @@
 
 ## 状态与边界
 
-已接受（2026-10-31）。新增只读筛选工具，不修订现役217维监督、1241维实体输入、模型或训练身份。产出的保留清单不是可直接加载的 `DescriptorSchema`；接入训练需要后续独立决定、实现与新身份，不可手改旧产物。
+已退役（Retired，2026-11-06；原决定接受于2026-10-31）。移除独立描述符筛选脚本、实现、YAML及专属测试，停止阈值筛选和处理后复审入口。本文以下算法与路径仅保留为历史说明，复现须使用对应Git版本。
+
+正式Base的211列、Phi适用性mask、八项环计数log1p及来源身份继续由[ADR-0112](0112-v4-explicit-rdkit-211-selection.md)、[ADR-0113](0113-v4-descriptor-validity-ring-log-review.md)约束。退役不改变prepare/QC、有效mask、scaler、模型、loss、training identity或checkpoint兼容性，也不移除gradient audit、teacher或电荷审计。
+
+既有独立筛选、复审与极端结构检查结果不再作为现役筛选入口；产物移动/清理仍须按工作区规则先报告精确清单并确认。逐项人工评审单独保留，其197维候选尚未采纳，不得据此改写正式schema或已有产物。
 
 后续修订：[ADR-0112](0112-v4-explicit-rdkit-211-selection.md) 独立决定 Base 使用显式 211 列；本工具自身仍不接入模型、不自动采用候选清单。
 
-现役审计YAML按[ADR-0113](0113-v4-descriptor-validity-ring-log-review.md)使用处理后分布的`prepared_review`，重尾/缺失/相关仅标记；下文为共享默认`legacy_selection`的历史筛选算法。
+退役前审计YAML按ADR-0113使用处理后分布的`prepared_review`，重尾/缺失/相关仅标记；下文为原共享默认`legacy_selection`的历史筛选算法。
 
 ## 数据与执行
 
