@@ -16,7 +16,7 @@ descriptor:
   token_count: 1
   correlation_threshold: 0.98
   excluded_names: [Ipc, Kappa3, SMR_VSA8, SlogP_VSA9, fr_Nhpyrrole, fr_amide]
-  value_policy: phi_mask_ring_log1p_v1
+  value_policy: phi_mask_ring_log1p_gasteiger_v2
 preparation:
   workers: 16
   catalog_batch_size: 10000

@@ -4,7 +4,7 @@
 
 已接受（2026-11-03）。定向修订 ADR-0112 的数值处理，保留原始217列及显式211列选择；不新增删列，不改变分子成员、split、自然shuffle、角色权重、loss系数、编码器、专家容量或训练预算。此配方基于训练集审计提出，尚未证明会改善下游性能。
 
-现役 Base 显式设置 `descriptor.value_policy: phi_mask_ring_log1p_v1`。共享默认 `raw`，默认序列化省略；旧配置、schema format2和旧身份继续按原值处理。baseline、ChemBERTa及历史消融配方不批量改写。
+本篇原配方设置 `descriptor.value_policy: phi_mask_ring_log1p_v1`。后续[ADR-0115](0115-stage1-peoe-gasteiger-validity-mask.md)在保留Phi/环计数处理的基础上，为现役Base增加PEOE电荷来源校验并显式启用v2；旧v1行为保持不变。共享默认 `raw`，默认序列化省略；旧配置、schema format2和旧身份继续按原值处理。baseline、ChemBERTa及历史消融配方不批量改写。
 
 2026-11-06定向修订：本篇的正式数值处理继续有效；独立只读复审工具已随[ADR-0110](0110-stage1-descriptor-selection-audit.md)退役，不再提供筛选/复审命令或要求正式训练前运行该工具。
 

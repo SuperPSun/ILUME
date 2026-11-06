@@ -571,6 +571,8 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
             resolve_stage1_training_identity(replace(config, descriptor=DescriptorConfig()))
         with pytest.raises(ValueError, match="descriptor recipe differs"):
             resolve_stage1_training_identity(replace(config, descriptor=replace(config.descriptor, value_policy="raw")))
+        with pytest.raises(ValueError, match="descriptor recipe differs"):
+            resolve_stage1_training_identity(replace(config, descriptor=replace(config.descriptor, value_policy="phi_mask_ring_log1p_v1")))
         old_values = replace(config, data=replace(config.data, artifacts_dir=tmp_path / "raw_prepared"),
                              descriptor=replace(config.descriptor, value_policy="raw"))
         prepare_corpus(old_values)
@@ -1792,12 +1794,14 @@ def test_smiles_masking_uses_bert_replacement_distribution():
     mask_fraction = (corrupted[positions] == vocabulary.mask_id).float().mean().item()
     assert 0.77 < mask_fraction < 0.83
 
-def test_v4_explicit_descriptor_exclusions_and_missing_target_mask(tiny_config, tiny_samples, tmp_path):
+@pytest.mark.parametrize("value_policy", ["phi_mask_ring_log1p_v1", "phi_mask_ring_log1p_gasteiger_v2"])
+def test_v4_explicit_descriptor_exclusions_and_missing_target_mask(tiny_config, tiny_samples, tmp_path, value_policy):
     from stage1.auxiliary import empty_auxiliary_targets
     from stage1.descriptors import DescriptorStandardizer, RING_COUNT_NAMES, mask_descriptor_values
     from stage1.features import build_entity_sample
     from stage1.dual_view import DualViewPretrainModel
     active = load_config(ROOT / "configs/v4/stage1/base.yaml")
+    active = replace(active, descriptor=replace(active.descriptor, value_policy=value_policy))
     excluded = ("Ipc", "Kappa3", "SMR_VSA8", "SlogP_VSA9", "fr_Nhpyrrole", "fr_amide")
     assert active.descriptor.excluded_names == excluded
     names = rdkit_descriptor_names()
@@ -1830,7 +1834,8 @@ def test_v4_explicit_descriptor_exclusions_and_missing_target_mask(tiny_config, 
     scaler = DescriptorStandardizer.fit_columns(raw, schema.retained_indices, schema.selected_names, schema=schema)
     np.testing.assert_allclose(scaler.means, np.nanmean(np.where(np.isfinite(selected_raw), selected_raw, np.nan), axis=0))
     values, valid = scaler.transform(schema.select(raw))
-    assert np.isfinite(values).all() and (values[~valid] == 0).all() and (~valid).sum() == 4
+    expected_invalid = 18 if value_policy == "phi_mask_ring_log1p_gasteiger_v2" else 4
+    assert np.isfinite(values).all() and (values[~valid] == 0).all() and (~valid).sum() == expected_invalid
     config = replace(tiny_config, architecture=ArchitectureConfig("dual_view_v4"),
         descriptor=active.descriptor, fingerprint=FingerprintConfig(),
         model=replace(tiny_config.model, role_embedding=False),
@@ -1873,6 +1878,64 @@ def test_v4_explicit_descriptor_exclusions_and_missing_target_mask(tiny_config, 
         payload = config.to_dict(); payload["descriptor"]["excluded_names"] = invalid
         with pytest.raises(ValueError, match="excluded_names"):
             config_from_dict(payload)
+
+
+def test_v4_gasteiger_failure_masks_peoe_and_preserves_valid_features(tmp_path, monkeypatch):
+    from stage1.descriptors import DescriptorStandardizer, calculate_descriptors, mask_descriptor_values
+    from stage1.features import build_entity_sample
+    from rdkit.Chem import rdPartialCharges
+
+    config = load_config(ROOT / "configs/v4/stage1/base.yaml")
+    policy = "phi_mask_ring_log1p_gasteiger_v2"
+    assert config.descriptor.value_policy == policy
+    names = rdkit_descriptor_names()
+    peoe = [i for i, name in enumerate(names) if name.startswith("PEOE_VSA")]
+    other = [i for i in range(len(names)) if i not in peoe]
+    assert len(peoe) == 14
+    smiles = ["F[P-](F)(F)(F)(F)F", "CCO", "F[B-](F)(F)F", "C[P+](C)(C)C"]
+    original = np.stack([calculate_descriptors(Chem.MolFromSmiles(s), names) for s in smiles])
+    old = np.stack([calculate_descriptors(Chem.MolFromSmiles(s), names,
+        value_policy="phi_mask_ring_log1p_v1") for s in smiles])
+    current = np.stack([calculate_descriptors(Chem.MolFromSmiles(s), names,
+        value_policy=policy) for s in smiles])
+    assert np.isfinite(original[0, peoe]).all()
+    assert np.isnan(current[0, peoe]).all()
+    np.testing.assert_array_equal(current[:, other], old[:, other])
+    np.testing.assert_array_equal(current[1:], old[1:])
+    assert current[0, names.index("MolWt")] == original[0, names.index("MolWt")]
+    schema = DescriptorSchema.fit(current, names, "full", 1,
+        excluded_names=config.descriptor.excluded_names, value_policy=policy)
+    scaler = DescriptorStandardizer.fit_columns(current, schema.retained_indices, schema.selected_names, schema=schema)
+    selected_peoe = [i for i, name in enumerate(schema.selected_names) if name.startswith("PEOE_VSA")]
+    np.testing.assert_array_equal(scaler.finite_counts[selected_peoe], [3] * 14)
+    np.testing.assert_allclose(scaler.means[selected_peoe], current[1:, peoe].mean(0))
+    vocabulary = SmilesTokenizer.fit(smiles, backend="ais")
+    sample = build_entity_sample({"canonical_smiles": smiles[0], "sample_id": "pf6", "role_id": 1},
+        original[0], schema, scaler, vocabulary, config)
+    assert not sample["descriptor_valid"][selected_peoe].any()
+    assert sample["descriptors"][selected_peoe].count_nonzero() == 0
+    assert sample["descriptor_valid"][schema.selected_names.index("MolWt")]
+    schema.save(tmp_path / "schema.json")
+    assert DescriptorSchema.load(tmp_path / "schema.json", expected_raw_names=names) == schema
+    old_config = replace(config, descriptor=replace(config.descriptor, value_policy="phi_mask_ring_log1p_v1"))
+    old_config.validate()
+    from stage1.dual_view import DualViewEncoder
+    with pytest.raises(ValueError, match="policy"):
+        DualViewEncoder(old_config, vocabulary, schema)
+
+    compute = rdPartialCharges.ComputeGasteigerCharges
+    molecule = Chem.MolFromSmiles("CCO")
+    for prop in ("_GasteigerCharge", "_GasteigerHCharge"):
+        def nonfinite_charge(mol, **kwargs):
+            assert kwargs == {"nIter": 12, "throwOnParamFailure": True}
+            compute(mol, **kwargs)
+            mol.GetAtomWithIdx(0).SetDoubleProp(prop, float("nan"))
+        with monkeypatch.context() as patch:
+            patch.setattr(rdPartialCharges, "ComputeGasteigerCharges", nonfinite_charge)
+            values = mask_descriptor_values(original[1], names, molecule, policy)
+        assert np.isnan(values[peoe]).all()
+    np.testing.assert_array_equal(original[1], old[1])
+    assert not molecule.GetAtomWithIdx(0).HasProp("_GasteigerCharge")
 
 def test_descriptor_schema_clean_pruned_groups_and_save_load(tmp_path):
     values = np.asarray(

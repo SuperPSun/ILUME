@@ -1,6 +1,6 @@
 # v4 运行手册
 
-本手册是现役 v4 Stage1及实体HoME Stage2/3运行入口。Stage1现役描述符选择与数值处理见[ADR-0112](adr/0112-v4-explicit-rdkit-211-selection.md)、[ADR-0113](adr/0113-v4-descriptor-validity-ring-log-review.md)；Stage2/3见 [ADR-0095](adr/0095-v4-entity-home-without-object-encoder.md)，旧Object/v5运行需历史Git版本。
+本手册是现役 v4 Stage1及实体HoME Stage2/3运行入口。Stage1现役描述符选择与数值处理见[ADR-0112](adr/0112-v4-explicit-rdkit-211-selection.md)、[ADR-0113](adr/0113-v4-descriptor-validity-ring-log-review.md)、[ADR-0115](adr/0115-stage1-peoe-gasteiger-validity-mask.md)；Stage2/3见 [ADR-0095](adr/0095-v4-entity-home-without-object-encoder.md)，旧Object/v5运行需历史Git版本。
 
 
 从仓库根目录执行，使用新的 `outputs/v4/` 路径，不覆盖历史v3输出。Stage1科研合同见 [ADR-0089](adr/0089-v4-frozen-dual-view-stage1.md)。CUDA示例使用四张设备。
@@ -55,7 +55,9 @@ PY
 
 正式[Stage1 Base](../configs/v4/stage1/base.yaml)的`descriptor.excluded_names`固定排除`Ipc`、`Kappa3`、`SMR_VSA8`、`SlogP_VSA9`、`fr_Nhpyrrole`、`fr_amide`。保留12项partial-charge/BCUT2D描述符和17项高相关列，不采用审计默认的182列。原始计算仍为217列；同一schema选出的211列同时用于Stage1辅助目标和下游显式输入。标准化仅拟合train有限值，非有限项标准化后填零，Stage1 loss用逐维有效mask排除；分子归一化与角色2/2/1不变，下游不增加mask特征。
 
-现役Base另显式设置`descriptor.value_policy: phi_mask_ring_log1p_v1`（[ADR-0113](adr/0113-v4-descriptor-validity-ring-log-review.md)）。Phi仅对单连通、重原子数≥3、键数≥2且结果有限的结构有效，其余仅屏蔽该项监督；八项环计数（RingCount及七项Num*环计数，完整名单见ADR）统一先log1p再拟合train均值/标准差。不适用或非有限项标准化后填0，下游与Stage1监督使用同一schema/scaler，不重复取log；不删分子、不做截尾、不变loss或采样。新policy存schema format3；默认raw仍输出历史format2并省略配置字段。维数虽仍为211，数值及来源身份已改变，旧211维prepared/teacher/sidecar/checkpoint也不能混用。
+现役Base显式设置`descriptor.value_policy: phi_mask_ring_log1p_gasteiger_v2`（[ADR-0115](adr/0115-stage1-peoe-gasteiger-validity-mask.md)），保留[ADR-0113](adr/0113-v4-descriptor-validity-ring-log-review.md)的Phi与环计数处理。Phi仅对单连通、重原子数≥3、键数≥2且结果有限的结构有效；八项环计数统一先log1p再拟合train均值/标准差。另在分子副本上严格检查Gasteiger参数及所有原子/隐式氢电荷；计算失败或非有限时，整组14项PEOE_VSA不参与scaler拟合及描述符监督，即使RDKit返回有限PEOE值也会屏蔽。其他描述符仍按各自已有规则处理。
+
+不适用或非有限项标准化后填0，下游与Stage1监督使用同一schema/scaler，不重复取log；不删分子、不加输入维度、不变loss或采样。schema format3内嵌policy，新v2和旧`phi_mask_ring_log1p_v1`分别保留各自行为；默认raw仍为历史format2并省略配置字段。维数仍为211，但新policy改变corpus/feature/training身份，旧v1 prepared、teacher、sidecar和checkpoint不能混用；须按原流程在新目录重新准备与训练，不覆盖当前产物。实施不启动正式运行。
 
 learned1024和atom512、独立回归头输入不变；实体为1024+211=1235，GLOBAL/GROUP L1双槽输入为2478。Stage2/3读取来源schema/identity自动确定宽度，不在下游YAML再列一份维数。省略排除列表的旧配置仍为217维，旧产物必须与其原配置及来源配对。
 

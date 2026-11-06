@@ -211,7 +211,9 @@ class PretrainConfig:
         if not 0.0 < self.descriptor.correlation_threshold < 1.0:
             raise ValueError("descriptor.correlation_threshold must be between 0 and 1")
         excluded = self.descriptor.excluded_names
-        if not isinstance(self.descriptor.value_policy, str) or self.descriptor.value_policy not in {"raw", "phi_mask_ring_log1p_v1"}:
+        if not isinstance(self.descriptor.value_policy, str) or self.descriptor.value_policy not in {
+            "raw", "phi_mask_ring_log1p_v1", "phi_mask_ring_log1p_gasteiger_v2"
+        }:
             raise ValueError("Unknown descriptor.value_policy")
         if self.descriptor.value_policy != "raw" and (not self.is_dual_view or self.descriptor.mode != "full"):
             raise ValueError("Descriptor value policy requires dual_view_v4 full mode")

@@ -14,7 +14,7 @@
 
 | 范围 | 必须保持的边界 | ADR |
 |---|---|---|
-| Stage 1 | 仅SMILES/Graph输入，独立512D 编码器、12层SMILES Transformer/8独立残差图block、CLS/原子均值、1024残差MLP；learned1024、atom512，不输入角色/描述符。结构重建、停止梯度一致性、RDKit211（显式排除6项、Phi适用性mask、八环计数log1p）、离线Uni-Mol768、13电子目标及仅训练集原子电荷Linear512→1；现役系数和执行配置只读Base YAML及v4手册，sidecar不改语料/teacher。各项分子均值再按角色loss权重2/2/1；自然shuffle不变。fusion-only80/10/10，10轮、完整轮恢复；训练format4及仅编码器导出。每1000步rank0固定32分子梯度审计只报告，可CLI覆盖，不更新/调权/选模，不进入科研身份；独立14任务后训练只更新回归头，不替换编码器 | 0089/0090/0091/0092/0112/0113；执行0013/0014/0015/0017；0039仅历史v3 |
+| Stage 1 | 仅SMILES/Graph输入，独立512D 编码器、12层SMILES Transformer/8独立残差图block、CLS/原子均值、1024残差MLP；learned1024、atom512，不输入角色/描述符。结构重建、停止梯度一致性、RDKit211（显式排除6项、Phi适用性mask、八环计数log1p、Gasteiger失败屏蔽14项PEOE）、离线Uni-Mol768、13电子目标及仅训练集原子电荷Linear512→1；现役系数和执行配置只读Base YAML及v4手册，sidecar不改语料/teacher。各项分子均值再按角色loss权重2/2/1；自然shuffle不变。fusion-only80/10/10，10轮、完整轮恢复；训练format4及仅编码器导出。每1000步rank0固定32分子梯度审计只报告，可CLI覆盖，不更新/调权/选模，不进入科研身份；独立14任务后训练只更新回归头，不替换编码器 | 0089/0090/0091/0092/0112/0113/0115；执行0013/0014/0015/0017；0039仅历史v3 |
 | Stage 2 | Stage1永久冻结/eval；缓存1235D实体、形式电荷角色及有效位。GLOBAL/GROUP L1并行读取2478D有序槽位拼接，各专家内部投影，无独立ObjectEncoder。仅五项模拟、thermophysical/solvation GROUP，无电子GROUP/原子 adapter | 0095/0112；Stage1表示0089 |
 | Stage 2 训练与产物 | 五模拟每联合step各取一个未耗尽batch，GLOBAL跨任务/GROUP组内按真实batch样本数加权，PRIVATE原始平均梯度，不乘任务补偿；`batch_sample_weighted_owner_raw_v1`及联合步调度进入身份，旧final拒绝迁移。256逻辑/微批、10轮末轮、完整stage2_final.pt/json；无仅编码器导出、精调/最优/last/evaluator。迁移GLOBAL、匹配GROUP及两模拟PRIVATE，严格身份和张量 hash | 0095/0097；历史0082/0083/0085 |
 | Stage 3 | 24实验+两模拟；Base两电位归入phase_stability、限small/仅温度，G2_C01容量按0114。Phase1实验GLOBAL/GROUP/PRIVATE；Phase2冻结GLOBAL；Phase3仅PRIVATE。模拟Phase1冻结，Phase2/3仅自身PRIVATE，不进共享梯度/分母/调度预算。共同锚点与末轮拼接 | 0095；机制0050/0070 |
@@ -25,13 +25,15 @@
 
 ADR-0093仅扩展独立回归头后训练：YAML支持默认Linear及逐目标MLP/残差 MLP；Linear继承预训练头并做等价标准化换算，非线性采用任务局部随机初始化/dropout。编码器/Fusion永久冻结、entity1024/atom512输入不变，验证只报告；format2内嵌结构并兼容旧Linear format1，不改变Stage1/2/3身份或正式训练。
 
-ADR-0110的独立描述符阈值筛选/复审入口已退役；正式列清单与数值策略只按ADR-0112/0113及YAML执行。人工评审建议未自动接入训练；prepare/QC、有效mask、SHA检查、gradient audit及teacher/电荷审计继续保留。
+ADR-0110的独立描述符阈值筛选/复审入口已退役；正式列清单与数值策略只按ADR-0112/0113/0115及YAML执行。人工评审建议未自动接入训练；prepare/QC、有效mask、SHA检查、gradient audit及teacher/电荷审计继续保留。
 
 ADR-0111将主项目及新teacher环境固定为包 `rdkit==2026.9.1` / runtime `2026.09.1`；原始217维清单不变（现役Base选择与接口见ADR-0112），旧版本prepare/teacher/sidecar/checkpoint仍严格隔离。新版本须重新prepare与训练，不改SHA、不混用旧来源；三个Stage继续使用 `configs/v4/stage*/base.yaml`，不设临时版本后缀Base。复用标准 `outputs/v4/stage*/base/` 前须完成用户按精确清单确认的旧运行清理/归档，不能覆盖遗留metadata/log或复用旧sidecar。主环境仍名 `ilume`，备份后仅清理旧RDKit并升级，不直接覆盖混装包，不改Python/PyTorch/CUDA/NumPy；基线独立环境和hash lock不变。
 
 ADR-0112：现役Stage1 Base在`descriptor.excluded_names`仅排除`Ipc/Kappa3/SMR_VSA8/SlogP_VSA9/fr_Nhpyrrole/fr_amide`，监督及显式输入统一211维，保留12项有非有限值及17项高相关描述符；有限值拟合、标准化零填充和逐维有效mask不变。learned1024/atom512不变，实体1235、双槽L1输入2478由来源schema/identity解析。默认空排除仍为历史217/1241/2490且默认序列化省略；旧配置身份、ChemBERTa与baseline合同不批量修改。新Base须重新prepare/teacher/sidecar及三个Stage训练，旧输出只读，不自动迁移或清理。
 
 ADR-0113：Base的`descriptor.value_policy: phi_mask_ring_log1p_v1`对非单连通/重原子少于3/键少于2的结构仅屏蔽Phi；八环计数统一log1p后按train有限值拟合scaler。Stage1监督和下游共用同一schema，零填充/mask/分子及角色权重不变，不双重log、不删分子、不截尾；211/1235/2478维不变。新schema format3，默认raw省略字段且兼容format2；数值policy进入corpus/训练/feature来源身份，新旧211也不能混用。独立复审工具已退役，正式数值策略保持有效。重新准备匹配teacher/sidecar并重训三个Stage，旧输出只读，实施不自动启动正式运行。
+
+ADR-0115：现役Base在保留0113处理的基础上启用`phi_mask_ring_log1p_gasteiger_v2`，副本上严格检查Gasteiger参数及原子/隐式氢电荷；失败时屏蔽整组14项PEOE_VSA，不进scaler或描述符监督，下游填0。其他特征、维数、loss和采样不变；旧raw/v1行为保留，policy身份拒绝交叉复用。需新prepare/teacher/sidecar及三个Stage训练，旧产物只读，不自动运行或清理。
 
 ADR-0114：主模型Stage2/3 Base采用G2_C01，一个GLOBAL，GROUP专家数transport/thermophysical/phase_stability/dielectric_optical/solvation/biological为1/1/2/1/2/1；PRIVATE宽度不变，训练超参沿用007/032，3407与当前211维Stage1来源严格配对。旧HPO生成读取冻结G0_C05模板，selected.yaml及optimized_3407、WeakOpt、既有消融配置/结果保留历史身份；不能用旧权重或消融替代新主模型，需要重新训练。
 

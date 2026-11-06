@@ -8,7 +8,7 @@ from typing import Sequence
 
 import numpy as np
 from rdkit import Chem
-from rdkit.Chem import Descriptors
+from rdkit.Chem import Descriptors, rdPartialCharges
 
 
 GROUPS_12 = (
@@ -37,6 +37,7 @@ GROUPS_8 = (
 )
 SEMANTIC_MAPPING_VERSION = "rdkit-217-v1"
 DESCRIPTOR_VALUE_POLICY = "phi_mask_ring_log1p_v1"
+GASTEIGER_VALUE_POLICY = "phi_mask_ring_log1p_gasteiger_v2"
 RING_COUNT_NAMES = (
     "RingCount", "NumAliphaticCarbocycles", "NumAliphaticHeterocycles",
     "NumAliphaticRings", "NumHeterocycles", "NumSaturatedCarbocycles",
@@ -47,12 +48,24 @@ RING_COUNT_NAMES = (
 def mask_descriptor_values(values, names, molecule, value_policy="raw"):
     if value_policy == "raw":
         return values
-    if value_policy != DESCRIPTOR_VALUE_POLICY:
+    if value_policy not in {DESCRIPTOR_VALUE_POLICY, GASTEIGER_VALUE_POLICY}:
         raise ValueError("Unknown descriptor value policy")
     values = np.array(values, dtype=np.float64, copy=True)
     if (len(Chem.GetMolFrags(molecule)) != 1 or molecule.GetNumHeavyAtoms() < 3
             or molecule.GetNumBonds() < 2):
         values[..., tuple(names).index("Phi")] = np.nan
+    if value_policy == GASTEIGER_VALUE_POLICY:
+        checked = Chem.Mol(molecule)
+        try:
+            rdPartialCharges.ComputeGasteigerCharges(checked, nIter=12, throwOnParamFailure=True)
+            charge_valid = np.isfinite([
+                atom.GetDoubleProp(prop) for atom in checked.GetAtoms()
+                for prop in ("_GasteigerCharge", "_GasteigerHCharge")
+            ]).all()
+        except (ValueError, RuntimeError):
+            charge_valid = False
+        if not charge_valid:
+            values[..., [i for i, name in enumerate(names) if name.startswith("PEOE_VSA")]] = np.nan
     return values
 
 
@@ -196,7 +209,7 @@ class DescriptorSchema:
             raise ValueError("Descriptor matrix and name count do not match")
         if mode not in {"full", "clean", "pruned"}:
             raise ValueError("Descriptor mode must be full, clean, or pruned")
-        if (value_policy not in {"raw", DESCRIPTOR_VALUE_POLICY}
+        if (value_policy not in {"raw", DESCRIPTOR_VALUE_POLICY, GASTEIGER_VALUE_POLICY}
                 or (value_policy != "raw" and (mode != "full" or not set((*RING_COUNT_NAMES, "Phi")).issubset(names)))):
             raise ValueError("Invalid descriptor value policy/schema")
         if token_count not in {1, 8, 12}:
@@ -337,7 +350,7 @@ class DescriptorSchema:
         if values.shape[-1] != len(self.raw_names):
             raise ValueError("Raw descriptor input has the wrong final dimension")
         selected = values[..., list(self.retained_indices)]
-        if self.value_policy == DESCRIPTOR_VALUE_POLICY:
+        if self.value_policy in {DESCRIPTOR_VALUE_POLICY, GASTEIGER_VALUE_POLICY}:
             selected = selected.astype(np.float64, copy=False)
             indices = [i for i, name in enumerate(self.selected_names) if name in RING_COUNT_NAMES]
             rings = selected[..., indices]
@@ -389,7 +402,7 @@ class DescriptorSchema:
     ) -> "DescriptorSchema":
         version = payload.get("format_version")
         if (version not in {2, 3} or (version == 2 and "value_policy" in payload)
-                or (version == 3 and payload.get("value_policy") != DESCRIPTOR_VALUE_POLICY)):
+                or (version == 3 and payload.get("value_policy") not in {DESCRIPTOR_VALUE_POLICY, GASTEIGER_VALUE_POLICY})):
             raise ValueError("Unsupported descriptor schema artifact format")
         raw_names = tuple(payload["raw_names"])  # type: ignore[arg-type]
         if expected_raw_names is not None and raw_names != tuple(expected_raw_names):
