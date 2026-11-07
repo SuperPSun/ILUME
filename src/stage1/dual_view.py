@@ -50,10 +50,19 @@ class DualViewEncoder(nn.Module):
             recipe.d_model, recipe.n_heads, recipe.smiles_layers,
             recipe.feedforward_dim, recipe.dropout, recipe.gradient_checkpointing,
         )
-        self.graph_encoder = DirectedMessagePassingEncoder(
-            recipe.d_model, recipe.graph_depth, recipe.dropout,
-            message_mode=recipe.graph_message_mode, feedforward_dim=recipe.feedforward_dim,
-        )
+        if recipe.graph_encoder_type == "dgt":
+            from .dgt import DualGraphTransformerEncoder
+            self.graph_encoder = DualGraphTransformerEncoder(
+                recipe.d_model, recipe.graph_depth, recipe.n_heads,
+                recipe.graph_feedforward_dim, recipe.dropout,
+                query_chunk_size=config.training.dgt_query_chunk_size,
+                recompute=config.training.dgt_attention_checkpointing,
+            )
+        else:
+            self.graph_encoder = DirectedMessagePassingEncoder(
+                recipe.d_model, recipe.graph_depth, recipe.dropout,
+                message_mode=recipe.graph_message_mode, feedforward_dim=recipe.feedforward_dim,
+            )
         self.fusion = ResidualFusion(self.entity_dim)
 
     def views(self, batch):
@@ -64,6 +73,8 @@ class DualViewEncoder(nn.Module):
             torch.zeros_like(batch.graphs.bond_batch, dtype=torch.bool) if masks is None else masks.bond_mask,
         )
         smiles = self.smiles_encoder(batch.token_ids, batch.token_padding_mask)
+        if self.config.model.graph_encoder_type == "dgt":
+            return smiles, atoms, bonds, smiles[:, 0], self.graph_encoder.pool(atoms, bonds, batch.graphs)
         pooled = atoms.new_zeros((len(batch.roles), self.atom_dim)).index_add(0, batch.graphs.atom_batch, atoms)
         counts = torch.bincount(batch.graphs.atom_batch, minlength=len(batch.roles)).clamp_min(1)
         return smiles, atoms, bonds, smiles[:, 0], pooled / counts[:, None]

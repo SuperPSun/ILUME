@@ -264,6 +264,7 @@ class PreparedCorpusDataset(Dataset):
         self._verified_shards: set[str] = set()
         self.teacher_cache = None
         self.partial_charge_cache = None
+        self.dgt_topology_cache = None
 
     def __len__(self) -> int:
         return sum(self._lengths)
@@ -311,6 +312,8 @@ class PreparedCorpusDataset(Dataset):
         ):
             raise ValueError(f"Unsupported shard format: {relative_path}")
         samples = payload["samples"]
+        if self.dgt_topology_cache is not None:
+            samples = self.dgt_topology_cache.attach_shard(relative_path, samples)
         self._cache[relative_path] = samples
         while len(self._cache) > self.shard_cache_size:
             self._cache.popitem(last=False)
@@ -361,4 +364,5 @@ def graph_record_from_sample(sample: dict[str, Any]) -> GraphRecord:
         atom_continuous=sample["atom_continuous"],
         bond_categorical=sample["bond_categorical"],
         bond_index=sample["bond_index"],
+        dgt_topology=sample.get("dgt_topology"),
     )

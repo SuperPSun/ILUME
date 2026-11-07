@@ -515,6 +515,10 @@ def _load_checkpoint(
         checkpoint_identity,
         context="Stage 1 resume",
     )
+    if config.model.graph_encoder_type == "dgt":
+        for name in ("dgt_query_chunk_size", "dgt_attention_checkpointing"):
+            if checkpoint["config"]["training"].get(name) != getattr(config.training, name):
+                raise ValueError(f"DGT execution setting changed on resume: {name}")
     expected = {
         "train_size": train_size,
         "steps_per_epoch": steps_per_epoch,
@@ -574,6 +578,11 @@ def run_training(
     valid_dataset = PreparedCorpusDataset(
         artifact_dir, "valid", config.data.shard_cache_size
     )
+    if config.model.graph_encoder_type == "dgt":
+        from .dgt_topology import DGTTopologyCache
+        cache = DGTTopologyCache(config, artifact_metadata)
+        for dataset in (train_dataset, valid_dataset):
+            dataset.dgt_topology_cache = cache
     if config.is_dual_view:
         from .auxiliary import TeacherCache
         for dataset in (train_dataset, valid_dataset):

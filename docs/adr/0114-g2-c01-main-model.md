@@ -40,6 +40,8 @@ Stage2使用其中thermophysical/solvation两组，与Stage3严格匹配。每�
 
 ## 验证与运行
 
+后续[ADR-0117](0117-base-22-tasks-updated-solvation.md)已根据用户确认，将现役Base对齐为22实验＋两模拟辅助，并按更新数据将solvation声明改为3684体系。下面的24任务缺失说明保留为本决策实施时的历史核查；新Base不再请求已排除的两个任务，严格来源与体系数检查仍保留。
+
 检查新Base相对旧优化配方仅改变专家数、移除空GROUP及Base路径；任务、训练数值及split保持一致。验证Stage2/3配对、旧容量迁移拒绝及旧HPO全部200份HoME YAML再生成一致；执行pytest、入口help、编译、Markdown链接及diff检查，只使用临时数据。
 
 实现时本地3407 catalog缺少 `experiment/equilibrium_pressure` 与 `experiment/water_activity_coefficient`，完整24任务注册表解析仍拒绝。另外，solvation的catalog体系数为3684，原优化配方声明3611，现有一致性校验也会拒绝。需要先确认配套数据版本，不能静默删任务、改计数绕过或用历史预测补齐；正式训练前须恢复匹配的数据与catalog，或另行确认数据协议变更。运行命令见[v4手册](../v4-runbook.md#g2_c01-主模型)，本次不启动正式prepare、训练或评估。

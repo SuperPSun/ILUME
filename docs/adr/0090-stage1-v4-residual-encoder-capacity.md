@@ -6,6 +6,8 @@
 
 ## 决策
 
+2026-11-06：现役Base图分支及读出已由[ADR-0116](0116-stage1-dual-graph-transformer.md)替代为八层双路DGT、encoder约77.99M。以下D-MPNN容量表保留为历史加载合同；SMILES与Fusion结构不变。
+
 以下 batch128 配方在 2026-10-07 Base 改为全局 batch512 后已成为历史。当前执行与损失数值由 [Base YAML](../../configs/v4/stage1/base.yaml) 和 [v4 运行手册](../v4-runbook.md) 定义；本 ADR 的架构与参数审计不变。
 
 - SMILES Transformer 从 8 层增加到 12 层；宽度512、8个注意力头、FFN2048 和 dropout0.10 不变。

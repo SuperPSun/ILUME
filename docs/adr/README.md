@@ -7,13 +7,15 @@
 | 主题 | ADR（按修订顺序） | 阅读重点 |
 |---|---|---|
 | Stage2 共享梯度聚合 | [0097](0097-stage2-batch-sample-weighted-gradients.md) | 五模拟联合step，GLOBAL/GROUP按真实batch样本加权，PRIVATE原始梯度；新训练身份及严格恢复/迁移 |
+| Stage1 双路2D DGT | [0116](0116-stage1-dual-graph-transformer.md) | 现役Base八层双路512D DGT、encoder约77.99M；拓扑sidecar、逐通道pair attention、分块重计算和双路池化；旧D-MPNN严格历史加载，0089/0090图架构数值为历史 |
+| Base当前实验数据协议 | [0117](0117-base-22-tasks-updated-solvation.md) | 22实验＋两模拟；显式排除平衡压力/水活度系数，solvation按更新catalog声明3684体系；其余recipe不变，历史配置不迁移 |
 | ChemBERTa-2冻结表示消融 | [0107](0107-chemberta2-frozen-home-ablations.md) | C12/C13；MTR/MLM CLS384固定补零、无显式RDKit、永久冻结；配对3407 HoME |
 | G2_C01主模型容量与配方 | [0114](0114-g2-c01-main-model.md) | Base采用G2_C01、007/032训练超参及3407；新211维Stage1来源；旧HPO/optimized_3407/消融保留原身份 |
 | v4 实体HoME Stage2/3 主线 | [0095](0095-v4-entity-home-without-object-encoder.md) | 无ObjectEncoder；GLOBAL/GROUP直接并行处理实体；五模拟、24实验+两模拟仅PRIVATE更新；旧0094及Object合同退役 |
 | 现役 Stage3 共享梯度聚合 | [0096](0096-stage3-batch-sample-weighted-gradients.md) | GLOBAL跨实验任务、GROUP组内按当前真实batch样本数加权；PRIVATE原始平均梯度；尾batch/耗尽任务/模拟隔离；替代Entity-HoME的0070聚合规定 |
 | 固定架构弱任务优化 | [0104](0104-stage3-weakopt.md) | WeakOpt独立静态参数候选，累计80组、验证第一名优先；物理GPU2/3，测试不参与选型 |
 | 专用离子液体逆向设计 | [0106](0106-dedicated-inverse-design.md)；[0105](0105-universal-inverse-design.md)保留冻结Predictor和化学资源合同 | 每个完整请求独立训练GFN；标量logZ、同请求回放；严格绑定目标/工况/约束，拒绝旧通用产物；可靠性风险筛查 |
-| v4 冻结双视图Stage1 | [0089](0089-v4-frozen-dual-view-stage1.md)、[0090](0090-stage1-v4-residual-encoder-capacity.md)、[0091](0091-stage1-v4-loss-weights-gradient-audit.md)、[0092](0092-stage1-atom-charge-and-frozen-regression-heads.md) | Stage1 learned1024、自然shuffle与2/2/1 loss权重；约60.73M 编码器，仅训练集原子电荷、重复结构独立观察/sidecar format2及1000步只读审计；现役系数/batch/workers读[Base YAML](../../configs/v4/stage1/base.yaml)和[v4手册](../v4-runbook.md)，正文旧数值为历史；独立冻结回归头后训练不替换编码器；下游永久冻结Stage1 |
+| v4 冻结双视图Stage1 | [0089](0089-v4-frozen-dual-view-stage1.md)、[0090](0090-stage1-v4-residual-encoder-capacity.md)、[0091](0091-stage1-v4-loss-weights-gradient-audit.md)、[0092](0092-stage1-atom-charge-and-frozen-regression-heads.md) | Stage1 learned1024、自然shuffle与2/2/1 loss权重；0090的约60.73M为历史，现役DGT见0116；仅训练集原子电荷、重复结构独立观察/sidecar format2及1000步只读审计；现役系数/batch/workers读[Base YAML](../../configs/v4/stage1/base.yaml)和[v4手册](../v4-runbook.md)，正文旧数值为历史；独立冻结回归头后训练不替换编码器；下游永久冻结Stage1 |
 | 历史 v2/v3 表示与隔离 | [0039](0039-global-rdkit-v2-mainline.md) | 三模态 Stage 1、1024D 实体/Object/HoME；仅约束历史配置，现役表示由 0089 取代 |
 | Stage 1 执行 | [0013](0013-stage1-full-corpus-ddp.md)、[0014](0014-stage1-prepare-performance-and-corpus-v2.md)、[0015](0015-stage1-high-throughput-epoch-resume.md)、[0017](0017-stage1-base-runtime-profile.md) | 全量轮、prepare/运行时、DDP 与完整轮恢复 |
 | Stage1 独立回归头 | [0092](0092-stage1-atom-charge-and-frozen-regression-heads.md)、[0093](0093-stage1-configurable-frozen-predictors.md) | 冻结 entity1024/atom512；Linear/MLP/残差 MLP 默认与逐目标覆盖；独立 format2，兼容旧 Linear format1；验证只报告 |

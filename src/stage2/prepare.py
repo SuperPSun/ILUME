@@ -1128,6 +1128,10 @@ def stage1_encoding_contract(loaded: LoadedStage1Model) -> dict[str, Any]:
         contract.update(contract_version=4, encoding_api="dual-view-learned-v4", representation={"kind": loaded.model.representation_kind, "learned_dim": loaded.model.entity_dim, "entity_input_dim": loaded.model.entity_dim + loaded.model.descriptor_schema.selected_dim, "atom_dim": loaded.model.atom_dim})
     else:
         contract["fingerprint"] = raw_config["fingerprint"]
+    if loaded.config.model.graph_encoder_type == "dgt":
+        from stage1.dgt_topology import DGT_CONTRACT
+        contract["model"].update(graph_encoder_type="dgt", graph_feedforward_dim=loaded.config.model.graph_feedforward_dim,
+                                 dgt_contract=DGT_CONTRACT)
     return contract
 
 

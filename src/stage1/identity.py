@@ -163,8 +163,16 @@ def build_stage1_training_identity(
         "quick_validation_samples_per_role",
         "gradient_audit_interval_steps",
         "gradient_audit_batch_size",
+        "dgt_query_chunk_size",
+        "dgt_attention_checkpointing",
     ):
         training.pop(name, None)
+    if config.model.graph_encoder_type == "dgt":
+        from .dgt_topology import DGTTopologyCache, DGT_CONTRACT
+        metadata = json.loads((config.data.artifacts_dir / "metadata.json").read_text())
+        cache = DGTTopologyCache(config, metadata)
+        training["dgt_topology_identity"] = cache.materialization_identity["hash"]
+        training["dgt_contract"] = DGT_CONTRACT
     if config.is_dual_view:
         from .auxiliary import TeacherCache, teacher_recipe
         metadata = json.loads((config.data.artifacts_dir / "metadata.json").read_text())
@@ -304,6 +312,10 @@ def build_stage1_encoder_identity(
             payload["ablation"] = raw["ablation"]
         if config.model.graph_message_mode != "shared":
             payload["model"]["graph_message_mode"] = config.model.graph_message_mode
+        if config.model.graph_encoder_type == "dgt":
+            from .dgt_topology import DGT_CONTRACT
+            payload["model"].update(graph_encoder_type="dgt", graph_feedforward_dim=config.model.graph_feedforward_dim,
+                                     dgt_contract=DGT_CONTRACT)
     return semantic_identity("stage1.encoder", payload)
 
 

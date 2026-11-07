@@ -66,6 +66,7 @@ class GraphRecord:
     atom_continuous: torch.Tensor
     bond_categorical: torch.Tensor
     bond_index: torch.Tensor
+    dgt_topology: dict[str, torch.Tensor] | None = None
 
 
 @dataclass(frozen=True)
@@ -81,6 +82,8 @@ class PackedGraph:
     bond_batch: torch.Tensor
     atom_scopes: tuple[tuple[int, int], ...]
     bond_scopes: tuple[tuple[int, int], ...]
+    raw_bond_indices: tuple[torch.Tensor, ...] = ()
+    dgt_topologies: tuple[dict[str, torch.Tensor] | None, ...] = ()
 
     def to(
         self, device: torch.device | str, *, non_blocking: bool = False
@@ -97,6 +100,8 @@ class PackedGraph:
             bond_batch=self.bond_batch.to(device, non_blocking=non_blocking),
             atom_scopes=self.atom_scopes,
             bond_scopes=self.bond_scopes,
+            raw_bond_indices=self.raw_bond_indices,
+            dgt_topologies=self.dgt_topologies,
         )
 
     def pin_memory(self) -> "PackedGraph":
@@ -112,6 +117,8 @@ class PackedGraph:
             bond_batch=self.bond_batch.pin_memory(),
             atom_scopes=self.atom_scopes,
             bond_scopes=self.bond_scopes,
+            raw_bond_indices=self.raw_bond_indices,
+            dgt_topologies=self.dgt_topologies,
         )
 
 
@@ -208,4 +215,6 @@ def pack_graphs(graphs: Sequence[GraphRecord]) -> PackedGraph:
         bond_batch=torch.cat(bond_batch, dim=0),
         atom_scopes=tuple(atom_scopes),
         bond_scopes=tuple(bond_scopes),
+        raw_bond_indices=tuple(graph.bond_index for graph in graphs),
+        dgt_topologies=tuple(graph.dgt_topology for graph in graphs),
     )

@@ -5,7 +5,7 @@
 - 仓库维护的说明、手册和 ADR 统一使用中文；命令、路径、配置键、API、模型名称及科研身份标识保留原文。第三方原始文档和历史生成报告不随文档翻译改写。
 - 运行步骤读 [README](README.md)，科研合同按 [ADR 索引](docs/adr/README.md) 查对应主题，再读正式 YAML 与当前实现。旧设计只从 [历史摘要](docs/adr/history.md) 追溯，不作为现役入口。
 - 整理、重构不得改变数据筛选/split、分词器、描述符/指纹、masking、模型、loss、优化顺序、验证/选模及任何 Stage 数值行为。科研问题单独记录，不顺手修改。
-- 现役为 `configs/v4/stage1`、`configs/v4/stage2`、`configs/v4/stage3`（ADR-0095/0114）；Stage2/3的Base采用G2_C01分组/专家数及Stage2 007 / Stage3 032训练超参，data/3407、训练seed42；历史optimized_3407/HPO选择与消融保持G2_C05身份。Stage1合同不变。Stage2/3取消ObjectEncoder，24实验+两模拟。运行路径以正式 YAML 和 [v4手册](docs/v4-runbook.md) 为准；旧Object/v5加载需历史Git版本，历史产物只读，禁止跨合同加载。
+- 现役为 `configs/v4/stage1`、`configs/v4/stage2`、`configs/v4/stage3`（ADR-0095/0114）；Stage2/3的Base采用G2_C01分组/专家数及Stage2 007 / Stage3 032训练超参，data/3407、训练seed42；历史optimized_3407/HPO选择与消融保持G2_C05身份。Stage1现役DGT图架构见ADR-0116。Stage2/3取消ObjectEncoder，Base按ADR-0117为22实验+两模拟。运行路径以正式 YAML 和 [v4手册](docs/v4-runbook.md) 为准；旧Object/v5加载需历史Git版本，历史产物只读，禁止跨合同加载。
 
 
 ## 科学红线
@@ -14,10 +14,10 @@
 
 | 范围 | 必须保持的边界 | ADR |
 |---|---|---|
-| Stage 1 | 仅SMILES/Graph输入，独立512D 编码器、12层SMILES Transformer/8独立残差图block、CLS/原子均值、1024残差MLP；learned1024、atom512，不输入角色/描述符。结构重建、停止梯度一致性、RDKit211（显式排除6项、Phi适用性mask、八环计数log1p、Gasteiger失败屏蔽14项PEOE）、离线Uni-Mol768、13电子目标及仅训练集原子电荷Linear512→1；现役系数和执行配置只读Base YAML及v4手册，sidecar不改语料/teacher。各项分子均值再按角色loss权重2/2/1；自然shuffle不变。fusion-only80/10/10，10轮、完整轮恢复；训练format4及仅编码器导出。每1000步rank0固定32分子梯度审计只报告，可CLI覆盖，不更新/调权/选模，不进入科研身份；独立14任务后训练只更新回归头，不替换编码器 | 0089/0090/0091/0092/0112/0113/0115；执行0013/0014/0015/0017；0039仅历史v3 |
+| Stage 1 | 仅SMILES/Graph输入，独立512D 编码器、12层SMILES Transformer/8层独立双路2D DGT、CLS/原子与键均值拼接后投影512、1024残差MLP；learned1024、atom512，不输入角色/描述符。结构重建、停止梯度一致性、RDKit211（显式排除6项、Phi适用性mask、八环计数log1p、Gasteiger失败屏蔽14项PEOE）、离线Uni-Mol768、13电子目标及仅训练集原子电荷Linear512→1；现役系数和执行配置只读Base YAML及v4手册，sidecar不改语料/teacher。各项分子均值再按角色loss权重2/2/1；自然shuffle不变。fusion-only80/10/10，10轮、完整轮恢复；训练format4及仅编码器导出。每1000步rank0固定32分子梯度审计只报告，可CLI覆盖，不更新/调权/选模，不进入科研身份；独立14任务后训练只更新回归头，不替换编码器 | 0089/0090/0091/0092/0112/0113/0115/0116；执行0013/0014/0015/0017；0039仅历史v3 |
 | Stage 2 | Stage1永久冻结/eval；缓存1235D实体、形式电荷角色及有效位。GLOBAL/GROUP L1并行读取2478D有序槽位拼接，各专家内部投影，无独立ObjectEncoder。仅五项模拟、thermophysical/solvation GROUP，无电子GROUP/原子 adapter | 0095/0112；Stage1表示0089 |
 | Stage 2 训练与产物 | 五模拟每联合step各取一个未耗尽batch，GLOBAL跨任务/GROUP组内按真实batch样本数加权，PRIVATE原始平均梯度，不乘任务补偿；`batch_sample_weighted_owner_raw_v1`及联合步调度进入身份，旧final拒绝迁移。256逻辑/微批、10轮末轮、完整stage2_final.pt/json；无仅编码器导出、精调/最优/last/evaluator。迁移GLOBAL、匹配GROUP及两模拟PRIVATE，严格身份和张量 hash | 0095/0097；历史0082/0083/0085 |
-| Stage 3 | 24实验+两模拟；Base两电位归入phase_stability、限small/仅温度，G2_C01容量按0114。Phase1实验GLOBAL/GROUP/PRIVATE；Phase2冻结GLOBAL；Phase3仅PRIVATE。模拟Phase1冻结，Phase2/3仅自身PRIVATE，不进共享梯度/分母/调度预算。共同锚点与末轮拼接 | 0095；机制0050/0070 |
+| Stage 3 | Base为22实验+两模拟（0117排除equilibrium_pressure/water_activity_coefficient、solvation更新为3684体系）；两电位归入phase_stability、限small/仅温度，G2_C01容量按0114。Phase1实验GLOBAL/GROUP/PRIVATE；Phase2冻结GLOBAL；Phase3仅PRIVATE。模拟Phase1冻结，Phase2/3仅自身PRIVATE，不进共享梯度/分母/调度预算。共同锚点与末轮拼接 | 0095/0117；机制0050/0070 |
 | Stage 3 owner | 现役Entity-HoME Phase1/2的GLOBAL跨实验任务、GROUP组内按当前真实batch样本数加权平均；PRIVATE保持原始平均Loss梯度，模拟不进共享分母。Phase3单任务更新；`batch_sample_weighted_owner_raw_v1`及权重规则进入训练身份。历史非Entity保留0070合同。owner LR/存续期与规模类别默认、任务覆盖项的宽度/dropout进入身份；提前结束用`requires_grad=False`，不删除任务；零预算PRIVATE逐bit继承锚点。Base训练集/验证集microbatch上限1024 | 0096；预算0050/0055；诊断0054 |
 | Stage 3 诊断 | Entity-HoME在diagnostics.jsonl按整轮记录owner梯度前后范数mean/max、实际梯度step分母的裁剪率及真实共享样本贡献，冻结/缺失不混入均值、模拟不进共享分母；仅累计既有CPU标量/batch长度，不改训练身份，旧行保留。只读门控权重占比、归一化熵、PRIVATE 权重占比分位数；测试集 aggregate 合并折-样本。不得新增前向、进入 loss/选择或改预测 CSV；历史实现不输出。pEC50 Phase3沿用032为2轮；旧Base的3轮仅历史 | 0054/0055/0098/0114 |
 
@@ -34,6 +34,10 @@ ADR-0112：现役Stage1 Base在`descriptor.excluded_names`仅排除`Ipc/Kappa3/S
 ADR-0113：Base的`descriptor.value_policy: phi_mask_ring_log1p_v1`对非单连通/重原子少于3/键少于2的结构仅屏蔽Phi；八环计数统一log1p后按train有限值拟合scaler。Stage1监督和下游共用同一schema，零填充/mask/分子及角色权重不变，不双重log、不删分子、不截尾；211/1235/2478维不变。新schema format3，默认raw省略字段且兼容format2；数值policy进入corpus/训练/feature来源身份，新旧211也不能混用。独立复审工具已退役，正式数值策略保持有效。重新准备匹配teacher/sidecar并重训三个Stage，旧输出只读，实施不自动启动正式运行。
 
 ADR-0115：现役Base在保留0113处理的基础上启用`phi_mask_ring_log1p_gasteiger_v2`，副本上严格检查Gasteiger参数及原子/隐式氢电荷；失败时屏蔽整组14项PEOE_VSA，不进scaler或描述符监督，下游填0。其他特征、维数、loss和采样不变；旧raw/v1行为保留，policy身份拒绝交叉复用。需新prepare/teacher/sidecar及三个Stage训练，旧产物只读，不自动运行或清理。
+
+ADR-0116：现役Stage1 Base使用512D/8头/8层双路2D DGT、每路FFN1024，encoder77,986,987参数。仅最短路径≤8与长度≤18无弦环拓扑，逐通道pair score/value attention；原子/键双池化Linear1024→512，learned1024/atom512不变。新增独立DGT拓扑sidecar与prepare的`--dgt-topology-only`，绑定corpus/分片/结构/hash；不修改原corpus/teacher/电荷sidecar。固定query32非重入重计算，执行值写入配置并严格恢复，不自动缩batch/截断。旧D-MPNN默认序列化、state与预测保留，不能跨架构恢复；新Base从头训练Stage1并重跑下游，独立benchmark和历史消融不变。
+
+ADR-0117：用户确认现役Base采用22实验＋两模拟辅助，显式移除equilibrium_pressure和water_activity_coefficient，solvation unique_systems按更新catalog为3684。六组、剩余任务recipe、训练超参及严格校验不变；不改原始数据/catalog/SHA，不批量更新历史optimized_3407、HPO、消融或基线。新Stage3身份拒绝旧24任务/旧solvation来源；不同任务集合macro不可直接比较。
 
 ADR-0114：主模型Stage2/3 Base采用G2_C01，一个GLOBAL，GROUP专家数transport/thermophysical/phase_stability/dielectric_optical/solvation/biological为1/1/2/1/2/1；PRIVATE宽度不变，训练超参沿用007/032，3407与当前211维Stage1来源严格配对。旧HPO生成读取冻结G0_C05模板，selected.yaml及optimized_3407、WeakOpt、既有消融配置/结果保留历史身份；不能用旧权重或消融替代新主模型，需要重新训练。
 
@@ -81,5 +85,7 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 - `trash/` 不进 Git。移动旧产物/YAML/未消费数据或删除机器缓存前，报告精确文件数、大小、目标和冲突策略，等用户明确确认。不得覆盖、重排或删除既有 `trash/`。
 
 ## 当前基线数据协议
+
+ADR-0117本轮只调整Base；以下基线仍保留24任务协议，尚未迁移到当前22任务catalog，重跑配对基线须另行建立协议与身份。
 
 ADR-0102为现役基线入口：`configs/benchmarks/catalog_v4_3407`使用data/3407的24实验和HOMO/LUMO/热膨胀三模拟，十模型全量重训共1,230作业，输出outputs/benchmarks/v4_3407；各模型原配方与训练种子不变，不复用split42结果或清单。旧outputs/benchmarks按先报告精确数量/字节/目标并确认的规则在4090归档trash、szx删除，预训练资产和环境保留。ADR-0101及catalog_v4配置保留split42历史合同；旧训练身份不改写，正式训练仍由用户启动。

@@ -39,7 +39,8 @@ model:
   n_heads: 8
   smiles_layers: 12
   graph_depth: 8
-  graph_message_mode: residual_blocks
+  graph_encoder_type: dgt
+  graph_feedforward_dim: 1024
   descriptor_hidden_dim: 1024
   descriptor_blocks: 2
   fusion_layers: 0
@@ -59,6 +60,7 @@ loss:
   lambda_partial_charge: 0.25
   role_weights: [2.0, 2.0, 1.0]
 auxiliary:
+  graph_topology_cache: outputs/v4/stage1/base/dgt_topology/artifacts
   simulation_dir: data/stage1/properties
   teacher_cache: outputs/v4/stage1/base/teacher
   teacher_checkpoint: assets/unimol2/modelzoo/84M/checkpoint.pt
@@ -67,7 +69,7 @@ auxiliary:
   partial_charge_cache: outputs/v4/stage1/base/partial_charge/artifacts
   partial_charge_manifest: data/stage1/properties/partial_atomic_charge/charge_20260514/structure_manifest.csv
 training:
-  batch_size: 512
+  batch_size: 256
   epochs: 10
   learning_rate: 0.0001
   weight_decay: 0.01
@@ -81,3 +83,5 @@ training:
   quick_validation_samples_per_role: 256
   gradient_audit_interval_steps: 1000
   gradient_audit_batch_size: 32
+  dgt_query_chunk_size: 32
+  dgt_attention_checkpointing: true

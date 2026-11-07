@@ -108,6 +108,8 @@ class ModelConfig:
     graph_head: str = "mlp"
     gradient_checkpointing: bool = False
     graph_message_mode: str = "shared"
+    graph_encoder_type: str = "dmpnn"
+    graph_feedforward_dim: int | None = None
 
 
 @dataclass(frozen=True)
@@ -133,6 +135,7 @@ class AuxiliaryConfig:
     teacher_shard_size: int = 4096
     partial_charge_cache: Path = Path("outputs/v4/stage1/base/partial_charge/artifacts")
     partial_charge_manifest: Path = Path("data/stage1/properties/partial_atomic_charge/charge_20260514/structure_manifest.csv")
+    graph_topology_cache: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -151,6 +154,8 @@ class TrainingConfig:
     quick_validation_samples_per_role: int = 256
     gradient_audit_interval_steps: int = 0
     gradient_audit_batch_size: int = 32
+    dgt_query_chunk_size: int = 32
+    dgt_attention_checkpointing: bool = True
 
 
 @dataclass(frozen=True)
@@ -265,6 +270,20 @@ class PretrainConfig:
             raise ValueError("model.graph_head must be linear or mlp")
         if self.model.graph_message_mode not in {"shared", "residual_blocks"}:
             raise ValueError("model.graph_message_mode must be shared or residual_blocks")
+        if self.model.graph_encoder_type not in {"dmpnn", "dgt"}:
+            raise ValueError("model.graph_encoder_type must be dmpnn or dgt")
+        if self.model.graph_encoder_type == "dgt":
+            if not self.is_dual_view or self.model.graph_message_mode != "shared":
+                raise ValueError("DGT requires dual_view_v4 without D-MPNN graph_message_mode")
+            for name, value in (("graph_depth", self.model.graph_depth),
+                                ("graph_feedforward_dim", self.model.graph_feedforward_dim),
+                                ("dgt_query_chunk_size", self.training.dgt_query_chunk_size)):
+                if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                    raise ValueError(f"{name} must be a positive integer for DGT")
+            if not isinstance(self.training.dgt_attention_checkpointing, bool):
+                raise ValueError("dgt_attention_checkpointing must be boolean")
+        elif self.model.graph_feedforward_dim is not None or self.auxiliary.graph_topology_cache is not None:
+            raise ValueError("graph_feedforward_dim and graph_topology_cache require DGT")
         if self.model.graph_message_mode == "residual_blocks":
             if not self.is_dual_view:
                 raise ValueError("residual_blocks requires dual_view_v4")
@@ -358,6 +377,14 @@ class PretrainConfig:
                 payload["training"].pop(name)
         if self.model.graph_message_mode == "shared":
             payload["model"].pop("graph_message_mode")
+        if self.model.graph_encoder_type == "dmpnn":
+            payload["model"].pop("graph_encoder_type")
+            payload["model"].pop("graph_feedforward_dim")
+            payload["auxiliary"].pop("graph_topology_cache")
+            payload["training"].pop("dgt_query_chunk_size")
+            payload["training"].pop("dgt_attention_checkpointing")
+        elif self.auxiliary.graph_topology_cache is None:
+            payload["auxiliary"].pop("graph_topology_cache")
         if self.is_global_rdkit or self.is_dual_view:
             payload.pop("fingerprint")
             payload["masking"].pop("fingerprint_ratio")
@@ -398,7 +425,8 @@ class PretrainConfig:
         payload = self.to_dict()
         payload.pop("preparation")
         payload["training"].pop("compile")
-        for name in ("gradient_audit_interval_steps", "gradient_audit_batch_size"):
+        for name in ("gradient_audit_interval_steps", "gradient_audit_batch_size",
+                     "dgt_query_chunk_size", "dgt_attention_checkpointing"):
             payload["training"].pop(name, None)
         return payload
 
@@ -431,8 +459,8 @@ def _construct(section_type: type, values: dict[str, Any] | None) -> Any:
             if key in values:
                 values[key] = Path(values[key])
     elif section_type is AuxiliaryConfig:
-        for key in ("simulation_dir", "teacher_cache", "teacher_checkpoint", "partial_charge_cache", "partial_charge_manifest"):
-            if key in values:
+        for key in ("simulation_dir", "teacher_cache", "teacher_checkpoint", "partial_charge_cache", "partial_charge_manifest", "graph_topology_cache"):
+            if key in values and values[key] is not None:
                 values[key] = Path(values[key])
     elif section_type is LossConfig and "role_weights" in values:
         values["role_weights"] = tuple(values["role_weights"])

@@ -177,7 +177,7 @@ def teacher_recipe(config, corpus_metadata):
     })
 
 
-def prepare_teacher_cache(config, *, device="cpu", batch_size=32, workers=1, limit=None, output=None, teacher=None):
+def prepare_teacher_cache(config, *, device="cpu", batch_size=8, workers=1, limit=None, output=None, teacher=None):
     if workers < 1:
         raise ValueError("Teacher --workers must be positive")
     if not config.is_dual_view or batch_size < 1 or (limit is not None and (limit < 1 or output is None)):

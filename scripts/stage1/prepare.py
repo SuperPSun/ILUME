@@ -42,8 +42,11 @@ def main() -> None:
     parser.add_argument("--config", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--workers", type=int)
-    parser.add_argument("--partial-charge-only", action="store_true",
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--partial-charge-only", action="store_true",
                         help="Prepare train-only atom-label sidecar using the existing corpus.")
+    modes.add_argument("--dgt-topology-only", action="store_true",
+                       help="Prepare a DGT topology sidecar from the existing corpus.")
     args = parser.parse_args()
     config = load_config(args.config)
     if args.workers is not None:
@@ -52,6 +55,19 @@ def main() -> None:
             preparation=replace(config.preparation, workers=args.workers),
         )
         config.validate()
+    if args.dgt_topology_only:
+        from stage1.dgt_topology import topology_recipe, prepare_dgt_topology
+        metadata = json.loads((config.data.artifacts_dir / "metadata.json").read_text())
+        recipe = topology_recipe(config, metadata)
+        run = open_run_directory(stage="stage1", operation="dgt_topology_prepare",
+                                 config_path=args.config, config_payload={"dgt_topology_recipe": recipe},
+                                 semantic_identity=recipe, output=args.output, seed=config.data.seed, reusable=True)
+        try:
+            run.complete(prepare_dgt_topology(config, run.artifacts))
+        except BaseException:
+            run.fail()
+            raise
+        return
     if args.partial_charge_only:
         prepare_charge_run(config, args.config, args.output)
         return

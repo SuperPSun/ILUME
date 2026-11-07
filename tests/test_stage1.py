@@ -63,6 +63,107 @@ from stage1.train import _DistributedContext, _global_training_losses, run_train
 import stage1.train as train_module
 
 
+def test_dgt_dual_topology_and_masked_equivariance():
+    from stage1.dgt import DualGraphTransformerEncoder
+    from stage1.dgt_topology import build_dgt_topology
+    from stage1.graph import featurize_mol, pack_graphs
+
+    mol = Chem.MolFromSmiles("c1ccccc1CC.O")
+    record = featurize_mol(mol)
+    topology = build_dgt_topology(mol.GetNumAtoms(), record.bond_index)
+    assert topology["atom_spd"][0, 3] == 3
+    assert topology["atom_spd"][0, -1] == 9
+    assert topology["atom_ring"][0, 1] == 1 and topology["atom_ring"][0, 3] == 2
+    for (left, right), atom in zip(topology["line_index"].T.tolist(), topology["shared_atom"].tolist()):
+        assert atom in record.bond_index[:, left] and atom in record.bond_index[:, right]
+    # A line-graph triangle at a branched atom is also an induced cycle.
+    star = featurize_mol(Chem.MolFromSmiles("CC(C)C"))
+    assert (build_dgt_topology(4, star.bond_index)["bond_ring"] == 1).sum() == 6
+    long_chain = featurize_mol(Chem.MolFromSmiles("C" * 11))
+    distances = build_dgt_topology(11, long_chain.bond_index)["atom_spd"]
+    assert distances[0, 8] == 8 and distances[0, 9] == 9
+
+    torch.manual_seed(21)
+    net = DualGraphTransformerEncoder(16, 2, 4, 32, 0., query_chunk_size=2).eval()
+    graph = pack_graphs([record])
+    atom_mask = torch.zeros(mol.GetNumAtoms(), dtype=torch.bool)
+    bond_mask = torch.zeros(record.bond_index.shape[1], dtype=torch.bool)
+    atoms, bonds = net(graph, atom_mask, bond_mask)
+    pooled = net.pool(atoms, bonds, graph)
+    permutation = list(reversed(range(mol.GetNumAtoms())))
+    reordered = pack_graphs([featurize_mol(Chem.RenumberAtoms(mol, permutation))])
+    a, b = net(reordered, atom_mask, bond_mask)
+    torch.testing.assert_close(a, atoms[permutation], atol=2e-6, rtol=2e-6)
+    torch.testing.assert_close(net.pool(a, b, reordered), pooled, atol=2e-6, rtol=2e-6)
+    mixed = pack_graphs([record, featurize_mol(Chem.MolFromSmiles("[Na+]"))])
+    a, b = net(mixed, torch.zeros(len(mixed.atom_batch), dtype=torch.bool), torch.zeros(len(mixed.bond_batch), dtype=torch.bool))
+    torch.testing.assert_close(a[:len(atoms)], atoms)
+    torch.testing.assert_close(net.pool(a, b, mixed)[0], pooled[0])
+    atom_mask, bond_mask = atom_mask.clone(), bond_mask.clone()
+    atom_mask[0] = bond_mask[0] = True
+    reference = net(graph, atom_mask, bond_mask)
+    categories = graph.atom_categorical.clone()
+    categories[0] = 0
+    bond_categories = graph.bond_categorical.clone()
+    bond_categories[0] = 0
+    mass = graph.atom_continuous.clone()
+    mass[0] = 999
+    changed = replace(graph, atom_categorical=categories, atom_continuous=mass, bond_categorical=bond_categories)
+    assert all(torch.equal(x, y) for x, y in zip(reference, net(changed, atom_mask, bond_mask)))
+    pooled.square().sum().backward()
+    for block in net.blocks:
+        assert block.atom.query.weight.grad.abs().sum() > 0
+        assert block.bond.query.weight.grad.abs().sum() > 0
+
+
+def test_dgt_channelwise_attention_chunk_and_checkpoint_gradients():
+    from copy import deepcopy
+    from stage1.dgt import DGTStream, DualGraphTransformerEncoder
+    from stage1.graph import featurize_mol, pack_graphs
+
+    stream = DGTStream(4, 2, 8, 0.).double()
+    torch.manual_seed(3)
+    q, k, v = [torch.randn(1, 3, 4, dtype=torch.double) for _ in range(3)]
+    pair_att, pair_value = [torch.randn(1, 3, 3, 4, dtype=torch.double) for _ in range(2)]
+    expected = torch.zeros_like(q)
+    for query in range(3):
+        for channel in range(4):
+            head = channel // 2
+            scores = ((q[0, query, head * 2:head * 2 + 2] * k[0, :, head * 2:head * 2 + 2]).sum(-1)
+                      / 2 ** .5 + pair_att[0, query, :, channel])
+            expected[0, query, channel] = (scores.float().softmax(0).double() * (v[0, :, channel] + pair_value[0, query, :, channel])).sum()
+    torch.testing.assert_close(stream.attend(q, k, v, pair_att, pair_value, torch.ones(1, 3, dtype=torch.bool)), expected)
+    graph = pack_graphs([featurize_mol(Chem.MolFromSmiles("CCO")), featurize_mol(Chem.MolFromSmiles("[Na+]"))])
+    masks = (torch.zeros(len(graph.atom_batch), dtype=torch.bool), torch.zeros(len(graph.bond_batch), dtype=torch.bool))
+    reference = DualGraphTransformerEncoder(16, 2, 4, 32, 0., query_chunk_size=32, recompute=False)
+    chunked = deepcopy(reference)
+    chunked.query_chunk_size, chunked.recompute = 1, True
+    outputs = []
+    for net in (reference, chunked):
+        a, b = net(graph, *masks)
+        output = net.pool(a, b, graph)
+        output.square().sum().backward()
+        outputs.append(output)
+    torch.testing.assert_close(*outputs, atol=2e-6, rtol=2e-6)
+    for left, right in zip(reference.parameters(), chunked.parameters(), strict=True):
+        torch.testing.assert_close(left.grad, right.grad, atol=3e-6, rtol=3e-5)
+    reference = DualGraphTransformerEncoder(16, 2, 4, 32, .1, query_chunk_size=2, recompute=False)
+    chunked = deepcopy(reference)
+    chunked.recompute = True
+    state = torch.random.get_rng_state()
+    states, predictions = [], []
+    for net in (reference, chunked):
+        torch.random.set_rng_state(state)
+        a, b = net(graph, *masks)
+        value = net.pool(a, b, graph)
+        value.square().sum().backward()
+        predictions.append(value)
+        states.append(torch.random.get_rng_state())
+    assert torch.equal(*predictions) and torch.equal(*states)
+    for left, right in zip(reference.parameters(), chunked.parameters(), strict=True):
+        torch.testing.assert_close(left.grad, right.grad, rtol=0, atol=0)
+
+
 def test_global_rdkit_v2_representation_and_losses(
     tiny_config, tiny_samples
 ) -> None:
@@ -118,28 +219,70 @@ def test_global_rdkit_v2_representation_and_losses(
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _topology_low_fd_worker(rank, root):
+    import resource
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from stage1.dgt_topology import build_dgt_topology, prepare_dgt_topology
+
+    resource.setrlimit(resource.RLIMIT_NOFILE, (256, resource.getrlimit(resource.RLIMIT_NOFILE)[1]))
+    samples = [{"sample_id": f"sample-{i}", "atom_categorical": torch.zeros(3, 7, dtype=torch.long),
+                "bond_index": torch.tensor([[0, 1], [1, 2]])} for i in range(512)]
+    dataset = SimpleNamespace(metadata={}, shards=[{"path": "fixture.pt"}], _load_shard=lambda _: samples)
+    config = SimpleNamespace(data=SimpleNamespace(artifacts_dir=Path(root)),
+                             preparation=SimpleNamespace(workers=2))
+    identity = semantic_identity("test.topology-transport", {"fixture": "512-independent-molecules"})
+    with patch("stage1.data.PreparedCorpusDataset", return_value=dataset), \
+         patch("stage1.dgt_topology.topology_recipe", return_value=identity):
+        manifest = prepare_dgt_topology(config, Path(root))
+    payload = torch.load(Path(root) / manifest["shards"]["fixture.pt"]["path"], weights_only=False)
+    assert payload["sample_ids"] == [row["sample_id"] for row in samples]
+    assert len(payload["records"]) == len(samples)
+    for record, sample in zip(payload["records"], samples, strict=True):
+        reference = build_dgt_topology(3, sample["bond_index"])
+        assert all(record[name].dtype == value.dtype and torch.equal(record[name], value)
+                   for name, value in reference.items())
+
+
+def test_dgt_parallel_topology_with_low_file_descriptor_limit(tmp_path):
+    mp.spawn(_topology_low_fd_worker, args=(str(tmp_path),), nprocs=1, join=True)
+
+
 def test_v4_residual_capacity_and_shared_compatibility(tiny_config, tiny_samples, monkeypatch):
     from types import SimpleNamespace
     from stage1.dual_view import DualViewEncoder, DualViewPretrainModel
     from stage1.identity import build_stage1_corpus_identity
 
     base = load_config(ROOT / "configs/v4/stage1/base.yaml")
+    assert base.training.batch_size == 256
     assert [base.loss.lambda_smiles, base.loss.lambda_atom, base.loss.lambda_bond,
             base.loss.lambda_alignment, base.loss.lambda_descriptor,
             base.loss.lambda_unimol, base.loss.lambda_electronic] == [.2, 1., 1., .1, .25, .5, .25]
     assert (base.training.gradient_audit_interval_steps, base.training.gradient_audit_batch_size) == (1000, 32)
     assert base.loss.lambda_partial_charge == .25
-    assert (base.model.smiles_layers, base.model.graph_depth, base.model.graph_message_mode) == (12, 8, "residual_blocks")
+    assert (base.model.smiles_layers, base.model.graph_depth, base.model.graph_encoder_type) == (12, 8, "dgt")
+    assert base.model.graph_feedforward_dim == 1024
     assert config_from_dict(base.to_dict()).to_dict() == base.to_dict()
-    old = replace(base, model=replace(base.model, smiles_layers=8, graph_depth=6, graph_message_mode="shared"))
+    for name, value in (("graph_encoder_type", "unknown"), ("graph_feedforward_dim", 0),
+                        ("graph_feedforward_dim", True), ("graph_message_mode", "residual_blocks")):
+        with pytest.raises(ValueError):
+            replace(base, model=replace(base.model, **{name: value})).validate()
+    with pytest.raises(ValueError, match="dual_view_v4"):
+        replace(tiny_config, model=replace(tiny_config.model, graph_encoder_type="dgt", graph_feedforward_dim=32)).validate()
+    residual = replace(base, model=replace(base.model, graph_encoder_type="dmpnn", graph_feedforward_dim=None,
+                                          graph_message_mode="residual_blocks"),
+                       auxiliary=replace(base.auxiliary, graph_topology_cache=None))
+    old = replace(residual, model=replace(residual.model, smiles_layers=8, graph_depth=6, graph_message_mode="shared"))
     assert "graph_message_mode" not in old.to_dict()["model"]
     with torch.device("meta"):
         vocabulary = SimpleNamespace(tokens=tuple(range(2048)))
         encoder = DualViewEncoder(base, vocabulary)
         training = DualViewPretrainModel(base, vocabulary)
         legacy = DualViewEncoder(old, vocabulary)
-    assert sum(p.numel() for p in encoder.parameters()) == 60_725_419
-    assert sum(p.numel() for p in training.parameters()) == 65_125_947 + 513 - 6 * 1025
+        historical = DualViewEncoder(residual, vocabulary)
+    assert sum(p.numel() for p in encoder.parameters()) == 77_986_987
+    assert sum(p.numel() for p in training.parameters()) == 82_381_878
+    assert sum(p.numel() for p in historical.parameters()) == 60_725_419
     assert sum(p.numel() for p in legacy.parameters()) == 29_466_795
     assert len(encoder.smiles_encoder.encoder.layers) == 12
     assert len(encoder.graph_encoder.blocks) == 8
@@ -166,6 +309,7 @@ def test_v4_residual_capacity_and_shared_compatibility(tiny_config, tiny_samples
                    masking=replace(tiny_config.masking, fusion_only_dropout=True, descriptor_dropout=0))
     explicit = tiny.to_dict()
     explicit["model"]["graph_message_mode"] = "shared"
+    explicit["model"]["graph_encoder_type"] = "dmpnn"
     assert config_from_dict(explicit).to_dict() == tiny.to_dict()
     assert not any(name.startswith("gradient_audit") for name in tiny.to_dict()["training"])
     assert "lambda_partial_charge" not in tiny.to_dict()["loss"]
@@ -466,7 +610,7 @@ def test_regression_predictor_config_structure_and_rng(tmp_path, device_name):
     assert torch.equal(block(values), values + block.residual(values))
 
 
-@pytest.mark.parametrize("graph_message_mode", ["shared", "residual_blocks"])
+@pytest.mark.parametrize("graph_message_mode", ["shared", "residual_blocks", "dgt"])
 def test_dual_view_structure_only_losses_and_downstream_freeze(tiny_config, tiny_samples, monkeypatch, graph_message_mode):
     from stage1.auxiliary import empty_auxiliary_targets
     from stage1.dual_view import DualViewPretrainModel, molecule_loss_statistics, reduce_molecule_elements
@@ -477,7 +621,10 @@ def test_dual_view_structure_only_losses_and_downstream_freeze(tiny_config, tiny
         tiny_config, architecture=ArchitectureConfig("dual_view_v4"),
         descriptor=DescriptorConfig(mode="full", token_count=1),
         fingerprint=FingerprintConfig(),
-        model=replace(tiny_config.model, role_embedding=False, graph_message_mode=graph_message_mode),
+        model=replace(tiny_config.model, role_embedding=False,
+                      graph_message_mode="shared" if graph_message_mode == "dgt" else graph_message_mode,
+                      graph_encoder_type="dgt" if graph_message_mode == "dgt" else "dmpnn",
+                      graph_feedforward_dim=64 if graph_message_mode == "dgt" else None),
         masking=replace(tiny_config.masking, fusion_only_dropout=True, descriptor_dropout=0,
                         smiles_dropout=0.1, graph_dropout=0.1),
     )
@@ -531,7 +678,7 @@ def test_dual_view_structure_only_losses_and_downstream_freeze(tiny_config, tiny
     assert all(torch.equal(value, model.state_dict()[key]) for key, value in baseline.items())
 
 
-@pytest.mark.parametrize("graph_message_mode", ["shared", "residual_blocks"])
+@pytest.mark.parametrize("graph_message_mode", ["shared", "residual_blocks", "dgt"])
 def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeypatch, graph_message_mode):
     from stage1.config import AuxiliaryConfig, MaskingConfig
     from stage1.auxiliary import ELECTRONIC_SOURCES, TeacherCache, prepare_teacher_cache, load_electronic_labels
@@ -558,12 +705,62 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
         data=DataConfig(stage1_dir=source, artifacts_dir=tmp_path / "prepared", valid_fraction=0.4, max_smiles_tokens=64, shard_size=3),
         descriptor=(load_config(ROOT / "configs/v4/stage1/base.yaml").descriptor
                     if graph_message_mode == "residual_blocks" else DescriptorConfig()),
-        model=ModelConfig(d_model=16, n_heads=4, smiles_layers=1, graph_depth=2, feedforward_dim=32, dropout=0.1, role_embedding=False, fusion_layers=0, graph_message_mode=graph_message_mode),
+        model=ModelConfig(d_model=16, n_heads=4, smiles_layers=1, graph_depth=2, feedforward_dim=32, dropout=0.1, role_embedding=False, fusion_layers=0,
+                          graph_message_mode="shared" if graph_message_mode == "dgt" else graph_message_mode,
+                          graph_encoder_type="dgt" if graph_message_mode == "dgt" else "dmpnn",
+                          graph_feedforward_dim=32 if graph_message_mode == "dgt" else None),
         masking=MaskingConfig(fusion_only_dropout=True, descriptor_ratio=0., descriptor_dropout=0.),
-        auxiliary=AuxiliaryConfig(simulation_dir=tmp_path / "simulation", teacher_cache=tmp_path / "cache", teacher_checkpoint=checkpoint, teacher_shard_size=2),
+        auxiliary=AuxiliaryConfig(simulation_dir=tmp_path / "simulation", teacher_cache=tmp_path / "cache", teacher_checkpoint=checkpoint, teacher_shard_size=2,
+                                  graph_topology_cache=tmp_path / "topology" if graph_message_mode == "dgt" else None),
         training=TrainingConfig(batch_size=2, epochs=2, device="cpu", amp_dtype="none", num_workers=0, validation_interval_steps=100),
     )
     prepare_corpus(config)
+    if graph_message_mode == "dgt":
+        from stage1.dgt_topology import prepare_dgt_topology, DGTTopologyCache
+        import stage1.dgt_topology as topology_module
+        real_builder = topology_module.build_dgt_topology
+        attempts = []
+        def interrupted_topology(*args):
+            attempts.append(1)
+            if len(attempts) == 4:
+                raise RuntimeError("planned topology interruption")
+            return real_builder(*args)
+        with monkeypatch.context() as patch:
+            patch.setattr(topology_module, "build_dgt_topology", interrupted_topology)
+            with pytest.raises(RuntimeError, match="topology interruption"):
+                prepare_dgt_topology(config, config.auxiliary.graph_topology_cache)
+        first_shard = config.auxiliary.graph_topology_cache / "shards/topology_000000.pt"
+        original_topology = first_shard.read_bytes()
+        parallel_recipe = replace(config, preparation=replace(config.preparation, workers=2))
+        topology_manifest = prepare_dgt_topology(parallel_recipe, config.auxiliary.graph_topology_cache)
+        assert first_shard.read_bytes() == original_topology
+        corpus_metadata = json.loads((config.data.artifacts_dir / "metadata.json").read_text())
+        topology_cache = DGTTopologyCache(config, corpus_metadata, validate_all=True)
+        wrong_metadata = json.loads(json.dumps(corpus_metadata))
+        old_identity = wrong_metadata["semantic"]["identities"]["corpus"]
+        wrong_metadata["semantic"]["identities"]["corpus"] = semantic_identity(
+            old_identity["type"], {**old_identity["payload"], "test_different_source": True})
+        with pytest.raises(ValueError, match="identity"):
+            DGTTopologyCache(config, wrong_metadata)
+        assert topology_manifest == prepare_dgt_topology(config, config.auxiliary.graph_topology_cache)
+        cached = PreparedCorpusDataset(config.data.artifacts_dir, "all")
+        cached.dgt_topology_cache = topology_cache
+        from stage1.dgt_topology import build_dgt_topology
+        for index in range(len(cached)):
+            sample = cached[index]
+            expected = build_dgt_topology(len(sample["atom_categorical"]), sample["bond_index"])
+            assert all(torch.equal(value, expected[name]) for name, value in sample["dgt_topology"].items())
+        item = next(iter(topology_manifest["shards"].values()))
+        topology_path = config.auxiliary.graph_topology_cache / item["path"]
+        contents = topology_path.read_bytes()
+        topology_path.write_bytes(b"corrupt")
+        with pytest.raises(ValueError, match="corrupt"):
+            DGTTopologyCache(config, corpus_metadata, validate_all=True)
+        topology_path.write_bytes(contents)
+        plain = PreparedCorpusDataset(config.data.artifacts_dir, "all")
+        source = plain.shards[0]["path"]
+        with pytest.raises(ValueError, match="order or structure"):
+            topology_cache.attach_shard(source, list(reversed(plain._load_shard(source))))
     expected_descriptor_dim = 217 - len(config.descriptor.excluded_names)
     assert PreparedCorpusDataset(config.data.artifacts_dir, "train").descriptor_schema.selected_dim == expected_descriptor_dim
     if config.descriptor.excluded_names:
@@ -675,7 +872,13 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
     with pytest.raises(RuntimeError, match="parallel audit interruption"):
         prepare_teacher_cache(parallel_config, teacher=fail_after_shard, batch_size=2, output=parallel_root)
     committed = (parallel_root / "shard_000000.pt").read_bytes()
-    parallel = prepare_teacher_cache(parallel_config, teacher=coordinate_teacher, batch_size=2, workers=2, output=parallel_root)
+    inference_sizes = []
+    def small_batch_teacher(molecules):
+        inference_sizes.append(len(molecules))
+        return coordinate_teacher(molecules)
+    parallel = prepare_teacher_cache(parallel_config, teacher=small_batch_teacher, batch_size=1,
+                                     workers=2, output=parallel_root)
+    assert inference_sizes and set(inference_sizes) == {1}
     assert (parallel_root / "shard_000000.pt").read_bytes() == committed
     assert serial["identity"] == parallel["identity"]
     assert serial["valid"] == parallel["valid"] == 9
@@ -699,6 +902,7 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
         return torch.tensor([molecule.GetNumAtoms()], dtype=torch.float32)
     class TeacherModel:
         def batch_collate_fn(self, examples):
+            assert len(examples) == 1
             return {"features": torch.stack([item[0] for item in examples])}, None
         def __call__(self, *, features, return_repr):
             return {"cls_repr": features.repeat(1, 768)}
@@ -706,7 +910,8 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
     adapter.model, adapter.device = TeacherModel(), torch.device("cpu")
     with monkeypatch.context() as patch:
         patch.setitem(sys.modules, "unimol_tools.data.conformer", SimpleNamespace(mol2unimolv2=featurize))
-        feature_manifest = prepare_teacher_cache(config, teacher=adapter, batch_size=2, output=tmp_path / "feature_cache")
+        feature_manifest = prepare_teacher_cache(config, teacher=adapter, batch_size=1,
+                                                 output=tmp_path / "feature_cache")
     assert len(feature_calls) == len(set(feature_calls)) == 9
     assert feature_manifest["valid"] == 8 and feature_manifest["failed"] == 1
     # Missing/failed 3D is masked, never removed from the molecular corpus.
@@ -727,15 +932,18 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
     def interrupted_teacher(molecules):
         attempts.append(len(molecules))
         if len(attempts) == 2:
-            raise RuntimeError("planned teacher interruption")
+            raise torch.OutOfMemoryError("planned teacher interruption")
         return torch.ones(len(molecules), 768)
-    with pytest.raises(RuntimeError, match="planned teacher interruption"):
+    with pytest.raises(torch.OutOfMemoryError, match="planned teacher interruption"):
         prepare_teacher_cache(config, teacher=interrupted_teacher, batch_size=2, output=interrupted_root)
+    assert len(attempts) == 2
+    assert not (interrupted_root / "manifest.json").exists()
+    assert not (interrupted_root / "shard_000001.pt").exists()
     committed = (interrupted_root / "shard_000000.pt").read_bytes()
     changed = replace(config, auxiliary=replace(config.auxiliary, teacher_version="different"))
     with pytest.raises(ValueError, match="resume recipe mismatch"):
         prepare_teacher_cache(changed, teacher=teacher, output=interrupted_root)
-    resumed = prepare_teacher_cache(config, teacher=teacher, batch_size=2, output=interrupted_root)
+    resumed = prepare_teacher_cache(config, teacher=teacher, batch_size=1, output=interrupted_root)
     assert resumed["complete"] and resumed["attempted"] == 9
     assert (interrupted_root / "shard_000000.pt").read_bytes() == committed
     assert len(load_electronic_labels(config)) == 1
@@ -743,6 +951,9 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
     cache = TeacherCache(config.auxiliary.teacher_cache, metadata, require_complete=True)
     from stage1.auxiliary import teacher_recipe
     alternate = replace(config, model=replace(config.model, graph_message_mode="residual_blocks" if graph_message_mode == "shared" else "shared"))
+    if graph_message_mode == "dgt":
+        alternate = replace(config, model=replace(config.model, graph_encoder_type="dmpnn", graph_feedforward_dim=None),
+                            auxiliary=replace(config.auxiliary, graph_topology_cache=None))
     assert teacher_recipe(alternate, metadata) == teacher_recipe(config, metadata)
     assert resolve_stage1_training_identity(alternate) != resolve_stage1_training_identity(config)
     dataset = PreparedCorpusDataset(config.data.artifacts_dir, "train")
@@ -769,8 +980,16 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
         run_training(alternate, output_dir=tmp_path / "incompatible", resume_from=output / "last.pt")
     with pytest.raises(ValueError, match="identity"):
         run_training(changed_loss, output_dir=tmp_path / "incompatible_loss", resume_from=output / "last.pt")
+    if graph_message_mode == "dgt":
+        changed_execution = replace(config, training=replace(config.training, dgt_query_chunk_size=1))
+        assert resolve_stage1_training_identity(changed_execution) == resolve_stage1_training_identity(config)
+        with pytest.raises(ValueError, match="execution setting"):
+            run_training(changed_execution, output_dir=tmp_path / "incompatible_execution", resume_from=output / "last.pt")
     run_training(config, output_dir=output, resume_from=output / "last.pt")
     encoder = load_stage1_model(output / "stage1_encoder.pt", config.data.artifacts_dir)
+    if graph_message_mode == "dgt":
+        from stage2.prepare import stage1_encoding_contract
+        assert stage1_encoding_contract(encoder)["model"]["graph_encoder_type"] == "dgt"
     assert encoder.model.entity_dim == 32 and encoder.model.atom_dim == 16
     assert all(key.startswith(("smiles_encoder.", "graph_encoder.", "fusion.")) for key in encoder.model.state_dict())
     exported = torch.load(output / "stage1_encoder.pt", weights_only=False)
@@ -811,7 +1030,7 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
     interval_config = replace(audited_config, training=replace(audited_config.training, gradient_audit_interval_steps=4))
     run_training(interval_config, output_dir=interval_output)
     assert [json.loads(line)["global_step"] for line in (interval_output / "gradient_audit.jsonl").read_text().splitlines()] == [4]
-    if graph_message_mode == "residual_blocks":
+    if graph_message_mode in {"residual_blocks", "dgt"}:
         for label, recipe in (("off", config), ("on", audited_config)):
             mp.spawn(_ddp_training_worker, args=(2, str(tmp_path / f"audit_{label}_init"), recipe,
                                                 str(tmp_path / f"ddp_{label}"), None, False), nprocs=2, join=True)
@@ -829,7 +1048,8 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
         assert {row["probe_hash"] for row in ddp_rows} == {rows[0]["probe_hash"]}
         mp.spawn(_ddp_training_worker, args=(2, str(tmp_path / "audit_error_init"), audited_config,
                                             str(tmp_path / "ddp_error"), None, False, True), nprocs=2, join=True)
-        assert all("partial_charge_grad_norm" in row for row in ddp_rows)
+        if config.loss.lambda_partial_charge > 0:
+            assert all("partial_charge_grad_norm" in row for row in ddp_rows)
     # Independent post-training never reads test and does not change the source.
     from stage1.regression import RegressionConfig, REGRESSION_TASKS, regression_identity, run_regression, load_regression_head
     for task, columns, _ in ELECTRONIC_SOURCES:
@@ -986,7 +1206,8 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
     from stage1.identity import build_stage1_encoder_identity
     encoder_identity = build_stage1_encoder_identity(model=encoder.model, config=config,
                                                      feature_identity=metadata["semantic"]["identities"]["feature"])
-    assert encoder_identity["payload"]["model"].get("graph_message_mode", "shared") == graph_message_mode
+    assert encoder_identity["payload"]["model"].get("graph_message_mode", "shared") == ("shared" if graph_message_mode == "dgt" else graph_message_mode)
+    assert encoder_identity["payload"]["model"].get("graph_encoder_type", "dmpnn") == config.model.graph_encoder_type
     with pytest.raises(RuntimeError, match="state_dict"):
         DualViewEncoder(alternate, encoder.vocabulary).load_state_dict(exported["model"], strict=True)
     shard = config.auxiliary.teacher_cache / manifest["shards"][0]["path"]

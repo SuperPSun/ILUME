@@ -17,7 +17,7 @@ Stage1输入仍为 `data/stage1`；现役Base的Stage2/3输入分别为 `data/34
 
 各 split 分别汇总，用 `--input` 或 `--include` 限定到该 split 的结果，再写入独立汇总目录；现有 summarizer 不合并不同来源身份的 split。根目录 `data/task_catalog.csv` 保留旧42副本，其他 split 使用各自目录内的 catalog。`1234`、`90756` 附带的 `stage1/properties` 不属于现役共享 Stage1 输入；Stage1 仍显式读取 `data/stage1`。
 
-当前Base采用十二层SMILES Transformer和八个独立残差图块：词表2,048个token时仅编码器约60.73M参数（[ADR-0090](adr/0090-stage1-v4-residual-encoder-capacity.md)）。身份一致的 Stage1 编码器、预处理语料、统计和完整 Uni-Mol 缓存可复用；切换 Stage2/3 数据 split 不要求重新训练 Stage1。旧架构检查点不得恢复到当前架构。若训练/下游目录已占用，选择新路径并同步更新下游引用，或在运行前明确安排归档；这些命令不授权替换历史结果。
+当前Base采用十二层SMILES Transformer和八层双路2D DGT：词表2,048个token时encoder为77,986,987参数（[ADR-0116](adr/0116-stage1-dual-graph-transformer.md)）。learned1024、atom512及211维描述符接口不变。同policy的预处理语料、统计和完整Uni-Mol缓存可复用，但额外需要独立拓扑sidecar；旧D-MPNN不能恢复到DGT，须从头训练Stage1并重新生成Stage2/3表示及训练。切换Stage2/3 split本身不要求重训来源一致的Stage1。若训练/下游目录已占用，选择新路径并同步更新下游引用，或在运行前明确安排归档；这些命令不授权替换历史结果。
 
 ## RDKit 2026.9.1 主线升级
 
@@ -74,6 +74,8 @@ learned1024和atom512、独立回归头输入不变；实体为1024+211=1235，G
 回传完成后按文件清单、大小和SHA核对源/目标，可用 `rsync -acni` 做只读差异检查，并通过项目现有身份/产物加载校验。确认权重、日志与检查点配套一致后才视为回传完成；核验前保留训练设备上的原始产物。实际传输地址以4090的SSH配置和项目路径为准；本规则不自动授权删除源产物或覆盖目标，也不要求程序自动同步。
 
 ## Stage1 数据准备与离线 teacher
+
+先完成当前描述符Gasteiger v2对应的corpus与电荷sidecar；旧v1不能直接混用。以下标准路径已有历史产物时，须使用新路径并同步YAML引用，或先另行确认归档；不要直接覆盖。
 
 ```bash
 python scripts/stage1/prepare.py --config configs/v4/stage1/base.yaml --output outputs/v4/stage1/base/prepare
@@ -139,13 +141,15 @@ PY
 先生成独立小规模审计，检查 `manifest.json`（attempted/验证集/failed、吞吐及embedding字节数）；该审计不是训练缓存：
 
 ```bash
-python scripts/stage1/teacher.py --config configs/v4/stage1/base.yaml --device cuda:0 --batch-size 32 --limit 100 --output outputs/v4/stage1/base/teacher_audit
+python scripts/stage1/teacher.py --config configs/v4/stage1/base.yaml --device cuda:0 --batch-size 8 --limit 100 --output outputs/v4/stage1/base/teacher_audit
 ```
 
 确认成功率、吞吐和存储后生成完整缓存。重复相同命令恢复不可变分片，不恢复任意部分行。OOM视为运行失败，不视为可mask分子。batch大小/设备和 `--workers` 是执行设置；canonical结构顺序及每分子构象种子固定。
 
+Teacher默认推理batch为8，仅使用既有`--batch-size`控制。分片、结构顺序、构象及失败mask规则不变；batch不改变teacher recipe，已提交分片严格校验后原样复用，未完成分片重算。不同推理batch形状可能造成浮点舍入差异，不承诺新生成向量逐bit相同。单分子仍放不下时明确失败，不自动缩批、裁剪分子或把OOM记成无效3D目标。
+
 ```bash
-python scripts/stage1/teacher.py --config configs/v4/stage1/base.yaml --device cuda:0 --batch-size 32
+python scripts/stage1/teacher.py --config configs/v4/stage1/base.yaml --device cuda:0 --batch-size 8
 ```
 
 GPU利用率低时可通过 `--workers` 在并行CPU进程准备构象及Uni-Mol特征。有界有序队列预取输入，父进程负责GPU推理；worker不加载teacher模型或使用CUDA。特征只算一次，不在推理前重复计算。默认 `--workers 1` 保留串行执行。worker增加RAM占用，不得超过作业分配的CPU资源。
@@ -155,8 +159,8 @@ Slurm作业可从 `#SBATCH --cpus-per-task=8`、一张GPU开始，在已分配�
 ```bash
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
-python -u scripts/stage1/teacher.py --config configs/v4/stage1/base.yaml --device cuda:0 --batch-size 64 --workers 8 --limit 100 --output outputs/v4/stage1/base/teacher_audit_parallel
-python -u scripts/stage1/teacher.py --config configs/v4/stage1/base.yaml --device cuda:0 --batch-size 64 --workers 8
+python -u scripts/stage1/teacher.py --config configs/v4/stage1/base.yaml --device cuda:0 --batch-size 8 --workers 8 --limit 100 --output outputs/v4/stage1/base/teacher_audit_parallel
+python -u scripts/stage1/teacher.py --config configs/v4/stage1/base.yaml --device cuda:0 --batch-size 8 --workers 8
 ```
 
 重启同一缓存根前先停止旧作业；不支持并发写入。worker数变化仍可复用已完成分片。重定向/Slurm输出在启动、每个分片提交及推理batch之间约每30秒刷新 `teacher_progress` JSON。`processed/total` 包含内存中的工作；`committed` 统计安全发布的分子。单个慢构象/batch可能延迟下一条日志。可用 `tail -f slurm-<job-id>.out` 监控。
@@ -169,7 +173,25 @@ conda activate ilume
 python scripts/stage1/train.py --config configs/v4/stage1/base.yaml --output outputs/v4/stage1/base/train
 ```
 
-现役Base全局batch512，每rank使用8个DataLoader worker。四rank DDP因此每GPU为batch128，训练加载器共32个worker。LR保持1e-4；此前batch128配方属于历史，不能恢复到改变后的训练身份。语料及teacher缓存仍可复用。worker数量仅属执行参数，本身不改变科研训练身份。
+现役Base全局batch256，由此前512减半以降低显存占用；单卡每步256条，四rank DDP每GPU为batch64。每rank仍使用8个DataLoader worker，四rank训练加载器共32个worker。LR保持1e-4，优化器步数及warmup/cosine预算按新batch重算；不能从旧512配置的checkpoint恢复。语料、teacher及匹配的sidecar仍可复用。worker数量仅属执行参数，本身不改变科研训练身份。
+
+<a id="stage1-dgt-topology"></a>
+
+### Stage1 DGT 拓扑与恢复
+
+当前Base图分支为8层双路DGT，宽512、8头、每路FFN1024；SMILES仍为12层/FFN2048。原子与键分别均值池化后投影512D，保持learned1024/atom512。纯2D最短路径与环关系不读取监督目标、3D、描述符或角色。当前global batch256、10轮，LR、loss和mask定义不变，不自动调整batch或截断原子。
+
+完成上方匹配corpus的prepare后，在`ilume`环境额外执行一次：
+
+```bash
+python scripts/stage1/prepare.py --config configs/v4/stage1/base.yaml --dgt-topology-only --output outputs/v4/stage1/base/dgt_topology
+```
+
+YAML的`auxiliary.graph_topology_cache`指向该目录的`artifacts`。它按corpus分片生成独立拓扑缓存，提供分片进度；同身份重启可继续完整分片，损坏/缺失/错位明确失败，不覆盖未提交的孤立分片。普通prepare不会自动生成它，缺少缓存时DGT训练直接提示上述命令。该操作不修改原corpus、teacher或电荷sidecar。已匹配Gasteiger v2的teacher无需仅因DGT重做；旧v1来源仍须按0115重建。
+
+拓扑worker使用普通NumPy数组传输，父进程重建原dtype的tensor；避免PyTorch共享storage为大量输入/输出tensor占用文件句柄，在终端默认1024句柄上限下也无需依赖提高`ulimit`。计算、样本顺序、缓存格式及身份不变。先前因`Too many open files`失败且没有孤立分片时，可重跑同一命令续做；不自动删除失败记录或已有分片。整段流水线应使用`&&`连接或逐步确认成功，避免准备失败后继续触发下游缺失来源报错。
+
+`training.dgt_query_chunk_size: 32`与`dgt_attention_checkpointing: true`控制attention分块重计算；科研identity排除这两个执行值，但恢复要求与检查点完全相同。不是普通FlashAttention替换，不支持OOM自动降batch。完整模型及encoder导出保存DGT和读出投影；旧D-MPNN只能按内嵌历史配置加载，不能resume到新Base。Stage1训练之后仍需重新prepare/train Stage2及prepare/train/evaluate Stage3，Stage1始终冻结。下游新分子由同一构建器按需生成拓扑，不要求其出现在预训练corpus缓存。
 
 ### Stage1 进度与输入停顿
 
@@ -338,7 +360,7 @@ python scripts/benchmarks/summarize.py --input outputs/v4/stage3/optimized_3407 
 
 使用 `configs/v4/stage{2,3}/base.yaml`，data/3407、训练seed42及007/032超参；依赖当前211维新policy的Stage1编码器与prepare。旧G2_C05来源及历史split42权重不能复用。先确认标准Base输出未占用；如有旧结果，按精确清单另行确认归档后再运行。
 
-本次实现核对发现3407 catalog缺少平衡压力与水活度系数两项任务；完整24任务入口仍严格拒绝。solvation的catalog体系数3684也与配方声明3611不一致。正式运行前须恢复匹配的数据及catalog，或另行确认数据协议变更，不删任务、不修改计数/SHA绕过。Stage1新版来源也须先按前文流程完成。
+2026-11-06已按用户确认对齐当前数据协议（[ADR-0117](adr/0117-base-22-tasks-updated-solvation.md)）：Base排除平衡压力与水活度系数，保留22项实验和两项模拟辅助；solvation按真实更新的catalog声明3684体系，其余任务配方、GROUP和训练预算不变。严格任务/体系数校验仍保留。历史24任务的optimized_3407、HPO、消融及基线配置/结果不随此修改，不能与新22任务macro直接比较。Stage1新版DGT及Gasteiger v2来源须先按前文流程完成。
 
 与Stage1一样，从仓库根目录在 `ilume` 环境执行。下面各步骤成功后再执行下一步，使用未占用的输出目录。入口会自动校验来源、数据SHA和模型身份，无需另写Python校验脚本。修改prepare输出路径时，须同步修改对应YAML的 `data.artifacts_dir`；修改训练输出路径时，须同步修改下游来源配置。
 
@@ -388,6 +410,8 @@ python scripts/benchmarks/summarize_paper.py --config configs/v4/stage3/base.yam
 
 ## 数据核验结论与限制
 
+现役Base的任务集合由ADR-0117定义，以下24任务/120个分折文件描述是2026-10-08历史快照，不作为当前22任务的运行前提。
+
 以下为2026-10-08本地核验快照；正式运行仍以加载和prepare的实时完整性检查为准。实现已通过临时CPU链路验证，正式训练和五折结果尚未生成。
 
 当前任务目录的 gas_solubility 包含多种气体，不能视为旧 x_co2 的同义名称；本版本已按明确确认改变目标。新增水活度和焓任务有实际任务目录/分折来源，焓任务展示为汽化焓（Enthalpy of vaporization），仅使用temperature_K；常量phase列不进入模型。任务目录中的任务标识、目录、目标列及源SHA保持原样。hydration 继续 random/cv1 且无测试集，其余使用任务目录的 system split。Stage1电荷监督及其资源合同保持不变。参考压缩包不替代实时任务目录和文件身份。
@@ -401,5 +425,7 @@ Stage2五任务训练集/验证集来源齐全；两项辅助任务的训练集/
 正式运行保持本手册原配方。独立调参使用 [HPO手册](hpo-simple-runbook.md) 和 [ADR-0099](adr/0099-simple-static-hpo.md)，配置与输出分别位于 `configs/HPO`、`outputs/HPO`，人工选型后分轮生成完整YAML。Stage2支持正整数Epoch及可选training.seed；默认10轮和data.seed沿用行为保留。HPO显式固定训练seed42，Prepare审计写入独立输出，不改写数据目录metadata或正式产物。
 
 ## 当前数据版本的基线
+
+ADR-0117只调整正式Base；下面24任务基线配置保留原协议，尚未迁移到当前22任务catalog。配对重跑需另行更新注册表authority、科研配置及输出身份，不在本轮范围内。
 
 基线现役catalog_v4_3407协议按[基线手册](baseline-catalog-v4-runbook.md)及[ADR-0102](adr/0102-baseline-split3407-full-retraining.md)运行：data/3407、24实验、三模拟，十模型全部重训共1,230作业，输出outputs/benchmarks/v4_3407。0101的split42复用安排及历史20实验/四模拟不再作为当前入口；旧baseline按用户确认范围归档/删除。Stage1/2/3数值合同不变。

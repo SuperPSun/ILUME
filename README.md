@@ -1,6 +1,6 @@
 # ILUME
 
-ILUME 的现役流程是 **冻结 v4 Stage1 → v4 五任务实体 HoME Stage2 → v4 Stage3 24实验 / 两模拟辅助 HoME**。冻结Stage1的learned1024与标准化RDKit211组成1235D实体输入；GLOBAL和GROUP的L1并行学习实体组合，不再经过独立ObjectEncoder。Stage3保留三阶段owner训练、模拟仅PRIVATE更新及严格来源验证。合同见 [ADR-0095](docs/adr/0095-v4-entity-home-without-object-encoder.md)；正式命令见 [v4运行手册](docs/v4-runbook.md)。Stage3评估默认在同一次调用中完成实验与两项模拟评估，保留各自的折/集成协议和独立榜单；可用 `--domain experimental|simulation` 单独评估。历史Object/v5及更早产物保持原身份，只能用对应历史Git版本加载。
+ILUME 的现役流程是 **冻结 v4 Stage1 → v4 五任务实体 HoME Stage2 → v4 Stage3 22实验 / 两模拟辅助 HoME**。冻结Stage1的learned1024与标准化RDKit211组成1235D实体输入；GLOBAL和GROUP的L1并行学习实体组合，不再经过独立ObjectEncoder。Stage3保留三阶段owner训练、模拟仅PRIVATE更新及严格来源验证。合同见 [ADR-0095](docs/adr/0095-v4-entity-home-without-object-encoder.md)；正式命令见 [v4运行手册](docs/v4-runbook.md)。Stage3评估默认在同一次调用中完成实验与两项模拟评估，保留各自的折/集成协议和独立榜单；可用 `--domain experimental|simulation` 单独评估。历史Object/v5及更早产物保持原身份，只能用对应历史Git版本加载。
 
 命令从仓库根目录执行。安装依赖并准备 ILUME-Data 的 Stage1/2/3 输入；CSV 与输出不进入 Git。正式训练使用尚不存在的输出目录，旧 HoME 产物不能与新正式身份交叉加载。本页命令是运行手册，不属于自动验收。
 
@@ -18,7 +18,11 @@ python -m pip install -e ".[dev,tokenizers]"
 
 ## 正式 v4
 
-Stage1 Base显式排除六项描述符；Phi按结构适用性mask，八项环计数log1p，Gasteiger电荷来源失败时联动屏蔽14项PEOE_VSA，再统一标准化（[ADR-0113](docs/adr/0113-v4-descriptor-validity-ring-log-review.md)、[ADR-0115](docs/adr/0115-stage1-peoe-gasteiger-validity-mask.md)）。独立预测器保持原合同。Stage2采用五任务实体HoME，Stage3为24实验+两项模拟辅助；独立ObjectEncoder已取消。GLOBAL/GROUP的L1并行读取冻结Stage1 learned1024+标准化RDKit211实体、角色和有效位。Phase1联合训练，Phase2冻结GLOBAL，Phase3仅PRIVATE；两个模拟任务只更新自己的PRIVATE。
+Stage1 Base现采用十二层SMILES与八层双路2D DGT，encoder约77.99M；原子/键双路池化后投影512D，保持learned1024与atom512。须额外准备独立DGT拓扑sidecar；原D-MPNN artifact保留严格历史加载。见[ADR-0116](docs/adr/0116-stage1-dual-graph-transformer.md)和[v4手册](docs/v4-runbook.md#stage1-dgt-topology)。不改变Stage2/3或独立D-MPNN benchmark。
+
+现役Base按[ADR-0117](docs/adr/0117-base-22-tasks-updated-solvation.md)排除`equilibrium_pressure`和`water_activity_coefficient`，solvation按更新catalog声明3684体系；其余科研配方不变。历史24任务配置和输出保留原身份。
+
+Stage1 Base显式排除六项描述符；Phi按结构适用性mask，八项环计数log1p，Gasteiger电荷来源失败时联动屏蔽14项PEOE_VSA，再统一标准化（[ADR-0113](docs/adr/0113-v4-descriptor-validity-ring-log-review.md)、[ADR-0115](docs/adr/0115-stage1-peoe-gasteiger-validity-mask.md)）。独立预测器保持原合同。Stage2采用五任务实体HoME，Stage3为22实验+两项模拟辅助；独立ObjectEncoder已取消。GLOBAL/GROUP的L1并行读取冻结Stage1 learned1024+标准化RDKit211实体、角色和有效位。Phase1联合训练，Phase2冻结GLOBAL，Phase3仅PRIVATE；两个模拟任务只更新自己的PRIVATE。
 
 正式配置为 `configs/v4/stage{1,2,3}/base.yaml`；Stage2/3主模型采用 **G2_C01 / Stage2 007 / Stage3 032**，GLOBAL一个专家，六个GROUP，沿用原优化配方的训练超参，PRIVATE宽度不变（[ADR-0114](docs/adr/0114-g2-c01-main-model.md)）。准备产物和下游引用按 YAML 定位，运行输出由 `--output` 指定。见 [ADR-0095](docs/adr/0095-v4-entity-home-without-object-encoder.md) 和 [运行手册](docs/v4-runbook.md)。正式Stage1 编码器/特征需先齐备；不手改元数据或SHA。历史Object/v5工件只读，加载须使用历史Git版本；旧v5及Object消融配置已移除；现役独立消融见 [v4消融手册](docs/v4-ablation-runbook.md) 与 [ADR-0100](docs/adr/0100-v4-entity-home-ablations.md)。现役36份配置与4份已取消容量配置位于 `configs/ablations/v4_3407/`，配对最终 `optimized_3407`，输出 `outputs/ablations/v4_3407/`；原 `configs/ablations/v4/` 保留split42历史身份。核心含移除SMILES/分子图的完整重训，C11为仅Phase1，阶段增量按C11→C7→C0比较；C12/C13以冻结ChemBERTa-2 MTR/MLM替换Stage1，不提供显式RDKit描述符（[ADR-0107](docs/adr/0107-chemberta2-frozen-home-ablations.md)）；固定训练seed42，不追加seed稳定性测试。
 
@@ -139,6 +143,8 @@ no-Stage1 使用其独立配置与输出根；no-Stage2 和单任务 MLP 消融�
 <a id="baselines-and-ablations"></a>
 
 ## 基线与消融
+
+本轮Base已按ADR-0117切换22实验协议；下述catalog_v4_3407基线仍保留原24实验协议，尚未迁移到当前22任务catalog。重跑配对基线须另行建立新协议和输出，不能直接沿用这些历史配置或比较不同任务集合的macro。
 
 当前数据版本基线使用 `configs/benchmarks/catalog_v4_3407/` 与 `outputs/benchmarks/v4_3407/<model>/`，覆盖24实验及HOMO/LUMO/热膨胀三模拟。十模型在data/3407全部重训，共1,230个训练作业，不复用split42结果；训练种子和各模型原配方不变。清理、szx的gpu05调度和新报告按[当前基线手册](docs/baseline-catalog-v4-runbook.md)及[ADR-0102](docs/adr/0102-baseline-split3407-full-retraining.md)执行。0101的split42复用安排及下方旧配置/四模拟命令保留历史协议说明。
 

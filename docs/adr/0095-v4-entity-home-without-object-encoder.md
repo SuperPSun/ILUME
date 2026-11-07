@@ -8,6 +8,8 @@
 
 后续主模型分组与容量见 [ADR-0114](0114-g2-c01-main-model.md)：Base采用G2_C01、007/032训练超参和3407，两电位归入phase_stability；本文原electrochemical容量、预算及参数量为历史记录。
 
+现役Base的任务集合后由[ADR-0117](0117-base-22-tasks-updated-solvation.md)调整为22实验＋两模拟辅助；本文原24实验协议与参数量仅作历史追溯。
+
 ## 决策
 
 完全移除独立 ObjectEncoder 的 Transformer、Unary、Pair、gamma 及其加载支持。历史产物不删除，复现须 checkout 对应历史 Git 版本。

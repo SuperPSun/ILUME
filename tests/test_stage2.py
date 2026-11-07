@@ -631,7 +631,16 @@ def test_entity_home_base_contracts() -> None:
 
     stage3 = load_stage3_config("configs/v4/stage3/base.yaml")
     resolved = resolve_task_registry(stage3)
-    assert len(resolved) == 24 and "experiment/x_co2" not in resolved
+    assert len(resolved) == 22 and "experiment/x_co2" not in resolved
+    assert not {"experiment/equilibrium_pressure", "experiment/water_activity_coefficient"} & resolved.keys()
+    assert stage3.tasks["experiment/solvation"].unique_systems == 3684
+    from stage3.data import load_task_catalog
+    facts = load_task_catalog(stage3.data.task_catalog)
+    assert set(resolved) == set(facts)
+    assert facts["experiment/solvation"].unique_systems == stage3.tasks["experiment/solvation"].unique_systems
+    with pytest.raises(ValueError, match="unique_systems/catalog mismatch"):
+        resolve_task_registry(replace(stage3, tasks={**stage3.tasks, "experiment/solvation": replace(
+            stage3.tasks["experiment/solvation"], unique_systems=3611)}))
     assert set(simulation_tasks(stage3)) == {"simulation/heat_of_vaporization", "simulation/thermal_expansion"}
     enthalpy = resolved["experiment/enthalpy_of_vaporization_or_sublimation"]
     assert enthalpy.condition_columns == ("temperature_K",) and enthalpy.condition_width == 1
@@ -678,9 +687,10 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
                      valid_fraction=0.5, max_smiles_tokens=64, shard_size=4),
         descriptor=DescriptorConfig(mode="full", token_count=1,
             excluded_names=("Ipc", "Kappa3", "SMR_VSA8", "SlogP_VSA9", "fr_Nhpyrrole", "fr_amide"),
-            value_policy="phi_mask_ring_log1p_v1"),
+            value_policy="phi_mask_ring_log1p_gasteiger_v2"),
         model=ModelConfig(d_model=512, n_heads=8, smiles_layers=1, graph_depth=2,
-                          feedforward_dim=32, dropout=0., role_embedding=False),
+                          feedforward_dim=32, dropout=0., role_embedding=False,
+                          graph_encoder_type="dgt", graph_feedforward_dim=32),
         masking=MaskingConfig(fusion_only_dropout=True, descriptor_dropout=0.),
         auxiliary=AuxiliaryConfig(simulation_dir=tmp_path / "stage2"),
     )
@@ -909,7 +919,7 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     model, store, _ = build_model_and_store(stage3, prepared, fold=1, device=torch.device("cpu"), source=load_source(stage3))
     for name, value in payload["shared_state"].items():
         assert torch.equal(model.state_dict()[name], value)
-    assert len(model.task_specs) == 26 and model.simulation_atom_adapter is None
+    assert len(model.task_specs) == len(stage3.tasks) + 2 == 24 and model.simulation_atom_adapter is None
     model.set_trainable_owners({GLOBAL})
     model.train()
     assert not model.simulation_backbone.training
@@ -955,7 +965,7 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     assert rows[-1]["phase"] == "three_phase_final"
     final = torch.load(train_root / "three_phase_final.pt", weights_only=False)
     assert final["kind"] == "ilume_stage3_entity_home_three_phase_final_v4"
-    assert len(final["private_state_hashes"]) == 26
+    assert len(final["private_state_hashes"]) == len(stage3.tasks) + 2 == 24
     phase1 = torch.load(train_root / "phase_1" / "checkpoint_epoch_00002.pt", weights_only=False)
     assert all(torch.equal(value, phase1["model"][name]) for name, value in final["model"].items() if name.startswith("simulation_backbone."))
     manifest = model.ownership_manifest()
@@ -1056,7 +1066,7 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     with pytest.raises(ValueError, match="batch_sample_weighted_owner_raw_v1"):
         _load_model(stage3, prepared, historical_path, 1, 0, torch.device("cpu"), three_phase_final=True)
     metrics = evaluate_checkpoints(stage3, train_root, split="valid", ensemble_folds=False, fold=1, predictions_dir=tmp_path / "predictions")
-    assert len(metrics["tasks"]) == 24
+    assert len(metrics["tasks"]) == len(stage3.tasks) == 22
     from stage3.evaluate import _reporting_model
     assert _reporting_model(stage3, prepared["metadata"]) == ("ilume", "ILUME")
     if variant == "base":

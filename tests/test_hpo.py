@@ -557,10 +557,14 @@ def test_main_g2_c01_recipe_and_historical_transfer_rejection():
     for groups in (expected2['home']['groups'], expected3['groups']):
         for group in groups.values():
             group['experts'] = max(1, group['experts'] - 1)
-    # Paths are paired to Base; all numerical settings outside C01 are unchanged.
+    # ADR-0117 updates only Base's experiment roster and solvation provenance.
+    for task in ('experiment/equilibrium_pressure', 'experiment/water_activity_coefficient'):
+        expected3['tasks'].pop(task)
+    expected3['tasks']['experiment/solvation']['unique_systems'] = 3684
+    # Paths are paired to Base; all other numerical settings remain unchanged.
     normalize = lambda raw: json.loads(json.dumps(raw).replace('optimized_3407', 'base'))
     assert a == normalize(expected2) and b == normalize(expected3)
-    assert len(b['tasks']) == 24
+    assert len(b['tasks']) == 22
     assert len({task['meta_group'] for task in b['tasks'].values()}) == 6
     for task in ('experiment/anodic_potential_limit', 'experiment/cathodic_potential_limit'):
         assert b['tasks'][task]['meta_group'] == 'phase_stability'

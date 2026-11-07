@@ -28,6 +28,15 @@ def test_registered_ablation_contracts_are_paired_and_fixed_final(config_root, a
     # Existing ablations retain their pre-ADR-0112 full217 descriptor recipe.
     base1['descriptor'].pop('excluded_names', None)
     base1['descriptor'].pop('value_policy', None)
+    # These suites also retain the pre-ADR-0116 residual D-MPNN architecture.
+    base1['model'].pop('graph_encoder_type')
+    base1['model'].pop('graph_feedforward_dim')
+    base1['model']['graph_message_mode']='residual_blocks'
+    base1['auxiliary'].pop('graph_topology_cache')
+    base1['training'].pop('dgt_query_chunk_size')
+    base1['training'].pop('dgt_attention_checkpointing')
+    # Historical suites retain the global batch used before the Base reduction.
+    base1['training']['batch_size']=512
     base2=load_home_recipe(ROOT/f'configs/v4/stage2/{authority}.yaml')
     base3=load_stage3_config(ROOT/f'configs/v4/stage3/{authority}.yaml')
     if config_root == 'v4':
@@ -259,7 +268,7 @@ def test_comparison_requires_complete_base_and_reports_task_group_size(authority
     result=comparison_rows(snapshot,authority)
     summaries=stratify(result)
     macro=next(row for row in summaries if row['run']=='no_group' and row['stratum']=='all')
-    assert macro['tasks']==24 and macro['loss']==24
+    assert macro['tasks']==len(authority.tasks) and macro['loss']==len(authority.tasks)
     assert macro['delta_macro_normalized_mae']==pytest.approx(.1)
     assert len([row for row in summaries if row['run']=='no_group' and row['stratum']=='group'])==len({task.meta_group for task in authority.tasks.values()})
     write_analysis(snapshot, authority_path, tmp_path/'analysis')

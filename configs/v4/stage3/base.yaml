@@ -204,19 +204,6 @@ tasks:
       private_dropout: 0.15
     phase1_private_epochs: 9
     phase2_private_epochs: 6
-  experiment/equilibrium_pressure:
-    meta_group: phase_stability
-    unique_systems: 95
-    size_class: tiny
-    phase1_private_lr: 3.6e-05
-    phase1_private_epochs: 4
-    phase2_private_epochs: 2
-    phase3_private_epochs: 2
-    model_overrides:
-      private_hidden_ratio: 0.5
-      tower_hidden_ratio: 0.5
-      film_hidden_ratio: 0.5
-      private_dropout: 0.1
   experiment/glass_transition_temperature:
     meta_group: phase_stability
     unique_systems: 793
@@ -297,7 +284,7 @@ tasks:
     phase2_private_epochs: 6
   experiment/solvation:
     meta_group: solvation
-    unique_systems: 3611
+    unique_systems: 3684
     size_class: large
     partner_mode: interaction
     primary_slots:
@@ -372,19 +359,6 @@ tasks:
     - anion
     partner_slots:
     - solute
-    phase1_private_lr: 5.4000000000000005e-05
-    phase1_private_epochs: 6
-    phase2_private_epochs: 3
-    phase3_private_epochs: 2
-    model_overrides:
-      private_hidden_ratio: 0.75
-      tower_hidden_ratio: 0.75
-      film_hidden_ratio: 0.75
-      private_dropout: 0.1
-  experiment/water_activity_coefficient:
-    meta_group: solvation
-    unique_systems: 167
-    size_class: small
     phase1_private_lr: 5.4000000000000005e-05
     phase1_private_epochs: 6
     phase2_private_epochs: 3

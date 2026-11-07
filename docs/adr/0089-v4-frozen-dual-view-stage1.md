@@ -12,6 +12,8 @@
 
 ## 背景
 
+[ADR-0116](0116-stage1-dual-graph-transformer.md)进一步将现役Base图分支替换为2D DGT，双路池化后投影512D；learned1024、atom512及其余训练/冻结边界不变。
+
 后续2026-10-07 Base配方采用全局batch512及更新损失系数；当前值由 [Base YAML](../../configs/v4/stage1/base.yaml) 和 [v4运行手册](../v4-runbook.md#stage1-loss-and-gradient-audit) 定义。以下系数/batch值描述原始决定，不是当前运行配方。架构、目标定义及下游永久冻结不变。
 
 Stage1应学习与任务无关的分子结构；Stage2/3优化多任务HoME而不改变Stage1编码器。这是完整配方比较，不能归因于单一机制：架构、辅助监督、10轮预算及永久冻结同时改变。
@@ -26,6 +28,7 @@ Stage1应学习与任务无关的分子结构；Stage2/3优化多任务HoME而�
 - 电子目标精确按canonical SMILES关联模拟**仅训练集**：HOMO/LUMO PBE/TZVP及十一项HF目标。统计仅用匹配的唯一Stage1训练结构。不用模拟验证集/测试集标签，不沿augmentation 种子传播标签。RDKit统计也仅拟合Stage1 训练集。
 - Uni-Mol2 84M仅离线运行于独立 `unimol_tools==0.1.3.post1` 环境。必须有本地 `modelzoo/84M/checkpoint.pt`，不隐式下载。尝试完整语料中每个唯一canonical结构；由种子确定的ETKDGv3，优先MMFF否则UFF；缺少力场参数须审计为失败。保留电荷/立体化学。不支持/失败分子保留其他监督并mask掉3D；绝不替换为2D/零坐标或裁剪原子。审计失败、来源检查点SHA、teacher/RDKit版本、语料身份、排序结构索引和分片 hash。严格按分片恢复；完整生成前通过独立 `--limit/--output` 审计报告吞吐、成功率和存储。部分审计不能用于Stage1训练。
 - Teacher的 `--workers` 仅为执行参数（默认1）：有界spawn CPU进程池按排序顺序准备构象/特征，仅父进程负责GPU推理。特征只计算一次。不改变缓存配方、分子种子、batch边界、失败mask或分片恢复合同。非TTY运行在处理中和分片提交时刷新进度JSON；同一缓存根只能有一个写入者。
+- 2026-11-07显存调整：teacher默认推理batch改为8，统一由既有`--batch-size`控制，不引入额外子批参数。分片、结构顺序、构象和失败mask规则不变；batch不进入teacher身份，已提交分片校验后复用。新推理batch形状可能产生浮点舍入差异。OOM仍中止运行，禁止自动重试、裁剪或mask该分子。
 - 下游拼接冻结learned1024和标准化RDKit217，得到1241。ObjectEncoder独占 `Linear1241→1024 + LayerNorm`，之后接原有1024D transformer/HoME接口。旧默认输入1024不创建投影，也不额外消耗RNG。Stage1在Stage2/3始终eval、无梯度、不进入优化器。
 - Stage2 prepare缓存冻结实体/原子张量，绑定原编码器hash。九任务仅物理监督 HoME仍采用逻辑/微batch256、固定10轮，ObjectEncoder含入口投影的LR为3e-5。partial-charge用冻结512原子状态及1024上下文。严格校验状态/owner/shape hash后迁移GLOBAL和匹配thermophysical/solvation GROUP。
 - Stage3保存冻结1241实体槽位；仅ObjectEncoder在Phase1以1.5e-5适配15轮，之后冻结并物化最终状态绑定的表示缓存。当时实验/PRIVATE配方、二十任务合同（含hydration）、Phase2/3五项模拟辅助、原始样本暴露、`weighted_owner_raw_v1`、裁剪、分支锚点、拼接及验证仅报告均保留；不使用PCGrad。
