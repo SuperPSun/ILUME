@@ -1,5 +1,7 @@
 # 当前数据版本基线运行手册
 
+2026-11-07起，当前22任务数据协议的10项变化任务补训请使用[FLft补训手册](baseline-flft-22-retrain-runbook.md)及[ADR-0118](adr/0118-flft-22-task-baseline-retraining.md)。以下保留历史24任务全量重训步骤；旧输出根已按确认清单迁至 `outputs/benchmarks/FLftv4_3407/`，不能直接用旧配置重跑当前数据。
+
 现役合同见[ADR-0102](adr/0102-baseline-split3407-full-retraining.md)。全部命令在仓库根执行；主环境为`ilume`，高级模型由入口进入已有hash-lock环境，环境和资产按[README](../README.md#baselines-and-ablations)验证，不自动下载或安装。
 
 ## 3407配置、任务与结果

@@ -13,6 +13,13 @@ CATALOG_V4_SIMULATION_TASKS = (
     "simulation/thermal_expansion", "simulation/homo", "simulation/lumo",
 )
 CATALOG_V4_PROTOCOLS = {"catalog_v4", "catalog_v4_3407"}
+FLFT_22_PROTOCOL = "flft_v4_3407_22_retrain"
+FLFT_22_RETRAIN_TASKS = tuple("experiment/" + name for name in (
+    "electrical_conductivity", "viscosity", "density", "surface_tension",
+    "glass_transition_temperature", "melting_point",
+    "thermal_decomposition_temperature", "refractive_index", "solvation", "hydration",
+))
+AUDITED_BASELINE_PROTOCOLS = CATALOG_V4_PROTOCOLS | {FLFT_22_PROTOCOL}
 
 
 @dataclass(frozen=True)
@@ -73,8 +80,22 @@ class BenchmarkConfig:
     def validate(self) -> None:
         from stage3.simulation_reporting import SCALAR_SIMULATION_TASKS
 
-        if self.protocol not in {"legacy", *CATALOG_V4_PROTOCOLS}:
+        if self.protocol not in {"legacy", *AUDITED_BASELINE_PROTOCOLS}:
             raise ValueError("Unknown baseline protocol")
+        if self.protocol == FLFT_22_PROTOCOL:
+            if (
+                self.data.data_root != Path("data/3407")
+                or self.data.task_catalog != Path("data/3407/task_catalog.csv")
+                or self.data.stage3_authority_config != Path("configs/v4/stage3/base.yaml")
+            ):
+                raise ValueError("FLft retraining requires data/3407 and the current Stage 3 Base authority")
+            if (
+                not self.stage3.enabled
+                or self.stage3.tasks != FLFT_22_RETRAIN_TASKS
+                or self.stage3.folds != (1, 2, 3, 4, 5)
+                or self.simulation.enabled or self.simulation.tasks
+            ):
+                raise ValueError("FLft retraining requires exactly ten changed experimental tasks, five folds, and no simulations")
         expected_simulation = CATALOG_V4_SIMULATION_TASKS if self.protocol in CATALOG_V4_PROTOCOLS else SCALAR_SIMULATION_TASKS
         if self.protocol in CATALOG_V4_PROTOCOLS and (not self.stage3.enabled or self.stage3.tasks != "all" or self.stage3.folds != (1, 2, 3, 4, 5)):
             raise ValueError("catalog_v4 requires all experimental tasks and five folds")

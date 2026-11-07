@@ -86,6 +86,8 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 
 ## 当前基线数据协议
 
+ADR-0118新增 `configs/benchmarks/FLftv4_3407/` 的 `flft_v4_3407_22_retrain` 独立补训协议，authority为当前Base22任务，仅显式训练10项变化任务、五折共500作业，不运行模拟。原结构、资产、种子和配方不变，输出 `outputs/benchmarks/FLftv4_3407/retrain_22/<model>/`；每卡独立折次、不使用DDP。旧根已迁至FLftv4_3407，过期任务及完整旧sweep记录按用户确认清单归档trash。历史12任务和三模拟未完成复用审计，不直接形成完整22任务榜单；正式训练仍由用户执行。
+
 ADR-0117本轮只调整Base；以下基线仍保留24任务协议，尚未迁移到当前22任务catalog，重跑配对基线须另行建立协议与身份。
 
 ADR-0102为现役基线入口：`configs/benchmarks/catalog_v4_3407`使用data/3407的24实验和HOMO/LUMO/热膨胀三模拟，十模型全量重训共1,230作业，输出outputs/benchmarks/v4_3407；各模型原配方与训练种子不变，不复用split42结果或清单。旧outputs/benchmarks按先报告精确数量/字节/目标并确认的规则在4090归档trash、szx删除，预训练资产和环境保留。ADR-0101及catalog_v4配置保留split42历史合同；旧训练身份不改写，正式训练仍由用户启动。

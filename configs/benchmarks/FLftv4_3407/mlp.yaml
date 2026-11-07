@@ -1,0 +1,48 @@
+protocol: flft_v4_3407_22_retrain
+name: mlp
+display_name: MLP
+seed: 42
+data:
+  data_root: data/3407
+  task_catalog: data/3407/task_catalog.csv
+  stage3_authority_config: configs/v4/stage3/base.yaml
+  feature_cache: outputs/benchmarks/FLftv4_3407/retrain_22/cache/features.sqlite3
+features:
+  kind: basic_molecular_statistics
+model:
+  hidden_dims:
+  - 128
+  - 64
+  dropout: 0.2
+training:
+  optimizer: adamw
+  learning_rate: 0.001
+  weight_decay: 0.001
+  batch_size: 128
+  max_epochs: 10
+  loss: normalized_mse
+  model_selection: final_training_state
+  device: cuda
+  precision: fp32
+stage3:
+  enabled: true
+  tasks:
+  - experiment/electrical_conductivity
+  - experiment/viscosity
+  - experiment/density
+  - experiment/surface_tension
+  - experiment/glass_transition_temperature
+  - experiment/melting_point
+  - experiment/thermal_decomposition_temperature
+  - experiment/refractive_index
+  - experiment/solvation
+  - experiment/hydration
+  folds:
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+simulation:
+  enabled: false
+  tasks: []

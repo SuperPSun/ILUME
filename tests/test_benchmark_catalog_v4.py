@@ -11,7 +11,10 @@ import pytest
 import yaml
 from rdkit import Chem
 
-from benchmarks.common.config import load_benchmark_config, benchmark_config_from_dict
+from benchmarks.common.config import (
+    FLFT_22_PROTOCOL, FLFT_22_RETRAIN_TASKS,
+    load_benchmark_config, benchmark_config_from_dict,
+)
 from benchmarks.common.data import BenchmarkTask, RawDataset, configured_tasks, resolve_task
 from benchmarks.common.engine import TargetStats
 from benchmarks.common.features import basic_molecular_statistics, feature_schema, FeaturePreprocessor
@@ -263,7 +266,8 @@ def test_catalog_evaluation_rejects_legacy_checkpoint(reuse_source, monkeypatch)
 
 
 @pytest.mark.parametrize('domain', ('stage3', 'simulation'))
-def test_3407_identity_rejects_42_even_with_identical_source_bytes(reuse_source, monkeypatch, domain):
+@pytest.mark.parametrize('protocol', ('catalog_v4_3407', FLFT_22_PROTOCOL))
+def test_3407_identity_rejects_42_even_with_identical_source_bytes(reuse_source, monkeypatch, domain, protocol):
     from benchmarks.common import engine
     from common.identity import require_compatible_identity
     config, source, output, scope = reuse_source
@@ -275,7 +279,7 @@ def test_3407_identity_rejects_42_even_with_identical_source_bytes(reuse_source,
     monkeypatch.setattr(engine, 'resolve_task', task)
     fold = 1 if domain == 'stage3' else None
     old = engine.prepare_training(config, domain, task_id, fold)
-    current = replace(config, protocol='catalog_v4_3407', data=replace(config.data,
+    current = replace(config, protocol=protocol, data=replace(config.data,
         data_root=Path('data/3407'), task_catalog=Path('data/3407/task_catalog.csv')))
     new = engine.prepare_training(current, domain, task_id, fold)
     assert np.array_equal(new.train_features, old.train_features)
@@ -667,3 +671,80 @@ def test_paper_rejects_invalid_native_aionopedia_identity(paper_source, field):
     assert run.relative_to(repository).as_posix() in str(error.value)
     assert str(error.value).isascii()
     assert not output.exists()
+
+
+@pytest.mark.parametrize('model', ('mlp', 'ecfp_xgboost', 'dmpnn', 'molformer', 'ilbert', 'spmm', 'llasmol', 'aionopedia', 'iltransr', 'aifc'))
+def test_flft_22_retraining_preserves_recipe_and_limits_scope(model):
+    config = load_benchmark_config(f'configs/benchmarks/FLftv4_3407/{model}.yaml')
+    old = load_benchmark_config(f'configs/benchmarks/catalog_v4_3407/{model}.yaml')
+    for field in ('model', 'training', 'seed', 'environment', 'features', 'runtime'):
+        assert getattr(config, field) == getattr(old, field)
+    assert config.protocol == FLFT_22_PROTOCOL
+    assert configured_tasks(config, 'stage3') == FLFT_22_RETRAIN_TASKS
+    assert configured_tasks(config, 'simulation') == ()
+    hydration = resolve_task(config, 'stage3', 'experiment/hydration', 1)
+    assert hydration.slots == ('solute',)
+    assert hydration.valid_paths == (Path('data/3407/stage3/experiment/hydration/random/cv1/fold1.csv'),)
+    assert hydration.registry_payload['baseline_protocol'] == FLFT_22_PROTOCOL
+    solvation = resolve_task(config, 'stage3', 'experiment/solvation', 1)
+    assert solvation.valid_paths == (Path('data/3407/stage3/experiment/solvation/IL-solute/fold1.csv'),)
+    for name in ('equilibrium_pressure', 'water_activity_coefficient', 'heat_capacity'):
+        with pytest.raises(ValueError, match='Unknown or disabled'):
+            resolve_task(config, 'stage3', 'experiment/' + name, 1)
+    for field, value in (('tasks', 'all'), ('folds', [1])):
+        payload = config.to_dict()
+        payload['stage3'][field] = value
+        with pytest.raises(ValueError, match='exactly ten'):
+            benchmark_config_from_dict(payload)
+    payload = config.to_dict()
+    payload['data']['stage3_authority_config'] = 'configs/v4/stage3/optimized_3407.yaml'
+    with pytest.raises(ValueError, match='Base authority'):
+        benchmark_config_from_dict(payload)
+    payload = config.to_dict()
+    payload['simulation'] = old.to_dict()['simulation']
+    with pytest.raises(ValueError, match='no simulations'):
+        benchmark_config_from_dict(payload)
+
+
+def test_flft_22_rejects_historical_registry(monkeypatch):
+    from benchmarks.common import data
+    config = load_benchmark_config('configs/benchmarks/FLftv4_3407/mlp.yaml')
+    for extra, fillers in ((('experiment/equilibrium_pressure', 'experiment/water_activity_coefficient'), 12),
+                           (('experiment/equilibrium_pressure',), 11)):
+        registry = {name: SimpleNamespace(enabled=True) for name in
+                    (*FLFT_22_RETRAIN_TASKS, *(f'experiment/filler{i}' for i in range(fillers)), *extra)}
+        monkeypatch.setattr(data, 'resolve_task_registry', lambda _: registry)
+        with pytest.raises(ValueError, match='22-task registry'):
+            configured_tasks(config, 'stage3')
+        with pytest.raises(ValueError, match='22-task registry'):
+            resolve_task(config, 'stage3', FLFT_22_RETRAIN_TASKS[0], 1)
+
+
+def test_flft_22_sweep_schedules_only_fifty_independent_folds(reuse_source, monkeypatch):
+    from scripts.benchmarks import sweep
+    config, source, output, scope = reuse_source
+    config = replace(config, protocol=FLFT_22_PROTOCOL,
+        data=replace(config.data, data_root=Path('data/3407'), task_catalog=Path('data/3407/task_catalog.csv'),
+                     stage3_authority_config=Path('configs/v4/stage3/base.yaml')),
+        stage3=replace(config.stage3, tasks=FLFT_22_RETRAIN_TASKS),
+        simulation=replace(config.simulation, enabled=False, tasks=()))
+    Path('config.yaml').write_text(yaml.safe_dump(config.to_dict()))
+    monkeypatch.setattr(sweep, 'configured_tasks', lambda _, domain: FLFT_22_RETRAIN_TASKS if domain == 'stage3' else ())
+    monkeypatch.setattr(sweep, 'resolve_task', reuse.resolve_task)
+    def schedule(**kwargs):
+        jobs = kwargs['jobs']
+        assert len(jobs) == 50
+        assert len({job.key for job in jobs}) == 50
+        assert len(kwargs['ensembles']) == 10
+        assert {job.kind for job in jobs} == {'stage3_fold'}
+        assert {job.device for job in jobs} == {'cuda:0', 'cuda:1', 'cuda:2', 'cuda:3'}
+        assert kwargs['max_workers'] == 4
+        assert kwargs['state'].catalog_config.protocol == FLFT_22_PROTOCOL
+    monkeypatch.setattr(sweep, '_schedule', schedule)
+    monkeypatch.setattr('sys.argv', ['sweep.py', '--config', 'config.yaml', '--output', 'target',
+                                   '--devices', 'cuda:0,cuda:1,cuda:2,cuda:3', '--max-workers', '4'])
+    sweep.main()
+    summary = json.loads((output / 'summary.json').read_text())
+    assert summary['reporting']['data_protocol'] == FLFT_22_PROTOCOL
+    assert summary['reporting']['benchmarks']['stage3_validation']['protocol']['expected_tasks'] == list(FLFT_22_RETRAIN_TASKS)
+    assert summary['simulation_property_benchmark'] == {}

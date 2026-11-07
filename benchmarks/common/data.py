@@ -15,7 +15,7 @@ from stage3.data import (
     test_path,
 )
 
-from .config import BenchmarkConfig, BenchmarkName, CATALOG_V4_PROTOCOLS
+from .config import BenchmarkConfig, BenchmarkName, CATALOG_V4_PROTOCOLS, FLFT_22_PROTOCOL
 
 
 @dataclass(frozen=True)
@@ -52,6 +52,15 @@ class RawDataset:
 
     def __len__(self) -> int:
         return len(self.components)
+
+
+def _validate_flft_registry(config: BenchmarkConfig, registry: dict[str, Any]) -> None:
+    if config.protocol != FLFT_22_PROTOCOL:
+        return
+    enabled = {task_id for task_id, spec in registry.items() if spec.enabled}
+    retired = {"experiment/equilibrium_pressure", "experiment/water_activity_coefficient"}
+    if len(enabled) != 22 or enabled & retired or not set(config.stage3.tasks) <= enabled:
+        raise ValueError("FLft retraining requires the current 22-task registry and excludes retired tasks")
 
 
 def resolve_task(
@@ -93,6 +102,7 @@ def resolve_task(
         if authority.data.stage3_dir != expected_stage3_dir:
             raise ValueError("Benchmark and Stage 3 authority data roots differ")
         registry = resolve_task_registry(authority)
+        _validate_flft_registry(config, registry)
         allowed = (
             {name for name, value in registry.items() if value.enabled}
             if config.stage3.tasks == "all"
@@ -128,6 +138,7 @@ def configured_tasks(config: BenchmarkConfig, benchmark: BenchmarkName) -> tuple
         return ()
     authority = load_stage3_config(config.data.stage3_authority_config)
     registry = resolve_task_registry(authority)
+    _validate_flft_registry(config, registry)
     if config.stage3.tasks == "all":
         tasks = tuple(task_id for task_id, spec in registry.items() if spec.enabled)
         if config.protocol in CATALOG_V4_PROTOCOLS and len(tasks) != 24:
