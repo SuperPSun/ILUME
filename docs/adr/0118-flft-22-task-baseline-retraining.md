@@ -2,7 +2,7 @@
 
 ## 状态与范围
 
-已接受（2026-11-07，用户确认3090优先、H100承接大显存作业，并要求提供命令）。本轮只补训数据发生变化的10项实验任务；不实施其余任务复用、不发布完整22任务论文比较，不启动正式训练。
+已接受（2026-11-07）。最初按用户要求计划3090优先、H100承接大显存作业；用户随后改为szx运行其余9个模型，并明确保留H100已经启动的LlaSMol跑完。本轮只补训数据发生变化的10项实验任务；不实施其余任务复用、不发布完整22任务论文比较。脚本交付不提交新的正式训练，不中止H100已有运行。
 
 ## 数据与模型合同
 
@@ -19,9 +19,11 @@
 
 2026-11-07用户按精确清单确认后，旧根 `outputs/benchmarks/v4_3407` 已整体改名为 `outputs/benchmarks/FLftv4_3407`，10项变化任务的旧训练/评估及完整旧sweep记录已归档至 `trash/outputs/benchmarks/FLftv4_3407-outdated-20261107`。旧文件字节、训练身份和历史报告不改写，迁移映射与核验记录保存在 `outputs/benchmarks/maintenance/20261107-FLftv4_3407/`。历史评估中原检查点路径不自动改写或放宽校验。
 
-本轮新输出固定为 `outputs/benchmarks/FLftv4_3407/retrain_22/<model>/`，特征缓存使用 `retrain_22/cache/`，与保留的历史目录隔离。3090四卡优先运行除LlaSMol外的八个GPU模型；H100两卡运行LlaSMol及显存溢出任务；XGBoost单独CPU作业。每卡一个独立任务/折，不使用DDP，不改变batch或量化配方以迁就显存。szx本轮暂不安排。
+本轮新输出固定为 `outputs/benchmarks/FLftv4_3407/retrain_22/<model>/`，特征缓存使用 `retrain_22/cache/`，与保留的历史目录隔离。现役安排为szx的gpu05执行8个GPU模型及XGBoost，共450个训练作业；H100保留LlaSMol的50个作业，3090不再启动本轮baseline。每卡一个独立任务/折，不使用DDP，不改变batch或量化配方以迁就显存。
 
-两台机器不并发运行同一个模型的同一输出根；转移溢出模型前，先结束原sweep并将其完整输出迁至接收机器相同相对路径，经校验后再启动。所有完整权重、配置、日志、身份和预测最终回传4090。命令见[补训手册](../baseline-flft-22-retrain-runbook.md)。
+szx新增两份外部Slurm提交文件，位于 `/home/sunp/slurm/baseline/`。GPU数组为0–7、并发上限5，每项独占1卡、4CPU、64GB内存，模型内max-workers1；数组明确排除LlaSMol。XGBoost单独8CPU、32GB内存、不申请GPU。CPU不足时排队，不以放大worker或覆盖CUDA_VISIBLE_DEVICES绕过Slurm分配。每模型使用非阻塞flock防止重复提交写入同一输出，旧脚本不改写。bash语法、模拟命令执行、重复提交拒绝和 `sbatch --test-only` 通过后由用户实际提交；完整运行结果和外部脚本/日志仍回传4090。
+
+两台机器不并发运行同一个模型的同一输出根；如后续转移模型，先结束原sweep并将其完整输出迁至接收机器相同相对路径，经校验后再启动。所有完整权重、配置、日志、身份和预测最终回传4090。命令见[补训手册](../baseline-flft-22-retrain-runbook.md)。
 
 ## 验证
 

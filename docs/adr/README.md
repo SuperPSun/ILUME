@@ -37,7 +37,7 @@
 | 模型/实验 | ADR |
 |---|---|
 | 当前3407基线全量重训 | [0102](0102-baseline-split3407-full-retraining.md)：24实验、三模拟、十模型共1,230作业；split42旧结果不复用 |
-| 22任务数据协议定向补训 | [0118](0118-flft-22-task-baseline-retraining.md)：十模型各10变化任务、五折共500作业；3090优先/H100承接，不用DDP；不含其他任务复用或完整22任务榜单 |
+| 22任务数据协议定向补训 | [0118](0118-flft-22-task-baseline-retraining.md)：十模型各10变化任务、五折共500作业；szx其余9模型/H100保留LlaSMol，不用DDP；不含其他任务复用或完整22任务榜单 |
 | 历史split42基线数据升级与复用 | [0101](0101-baseline-catalog-v4-reuse.md)：24实验、三模拟；复用安排由0102替代 |
 | MLP / ECFP-XGBoost | [0022](0022-mlp-ecfp-xgboost-baselines.md) |
 | D-MPNN | [0028](0028-chemprop-dmpnn-baseline.md)、[0042](0042-dmpnn-shared-component-encoder.md) |

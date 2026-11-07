@@ -1,8 +1,38 @@
-# FLft baseline：3090优先的22任务协议定向补训
+# FLft baseline：22任务协议定向补训
 
 本轮按[ADR-0118](adr/0118-flft-22-task-baseline-retraining.md)，仅重新训练10项数据变化的实验任务：电导率、黏度、密度、表面张力、玻璃化转变温度、熔点、热分解温度、折射率、solvation、hydration。十模型各50个折次，共500个训练作业；包含训练后的逐折验证，以及有测试行任务的五模型测试集成。模拟和其他任务不运行。
 
-## 执行前
+## 当前安排：szx运行9个模型，H100保留LlaSMol
+
+2026-11-07用户改为在szx运行其余9个模型，H100已经启动的LlaSMol保留跑完，3090不再启动本轮baseline。szx共450个训练作业：8个GPU模型各50折次、XGBoost50折次；H100的LlaSMol另50折次，总预算仍为500。原3090/H100整批命令仅作备用，不与当前安排同时执行。
+
+代码、新配置、60个本轮数据文件、独立环境锁及预训练文件已在szx只读核对。GPU后端及权重完整SHA由原入口在分配的节点继续检查，不在登录节点训练。
+
+两份新脚本已部署到 `/home/sunp/slurm/baseline/`，旧脚本保留。它们不属于Git运行入口，而是该服务器的Slurm资源提交文件；4090留存副本及检查记录于 `outputs/benchmarks/maintenance/20261107-szx-flft-sbatch/`。
+
+| 脚本 | 范围与资源 |
+|---|---|
+| `baseline-flft-22-gpu.sbatch` | gpu_6000D/gpu05；数组0–7、最多并发5项；每项1卡、4 CPU、64GB内存、7天；每模型内部max-workers1 |
+| `baseline-flft-22-xgboost.sbatch` | gpu05；不申请GPU，8 CPU、32GB内存、7天；max-workers1 |
+
+GPU数组映射为 `0 aionopedia / 1 spmm / 2 molformer / 3 ilbert / 4 iltransr / 5 aifc / 6 dmpnn / 7 mlp`，不包含LlaSMol。每项只执行对应模型的10项实验任务五折训练、验证及有测试行任务的集成评估，不用DDP，不运行模拟。脚本保留Slurm的CUDA_VISIBLE_DEVICES，不传 `--devices`。
+
+在szx登录节点执行以下命令提交；脚本准备阶段仅做过 `sbatch --test-only`，未提交实际训练：
+
+```bash
+cd /home/sunp/slurm/baseline
+sbatch baseline-flft-22-gpu.sbatch
+sbatch baseline-flft-22-xgboost.sbatch
+squeue -u sunp
+```
+
+GPU日志为 `/home/sunp/slurm/logs/baseline-flft22-gpu_<array_job_id>_<index>.out/.err`，CPU日志为 `baseline-flft22-xgboost_<job_id>.out/.err`。产物为 `/home/sunp/ILUME/outputs/benchmarks/FLftv4_3407/retrain_22/<model>/`，状态在各模型的 `status.tsv`。同模型互斥锁保存在 `retrain_22/.locks/`，重复提交正在运行的模型会失败，不删除锁文件绕过检查。
+
+并发5是上限，不是立即占满5卡的承诺。核对时gpu05剩余11个CPU，按每项4CPU预计最多先运行2个GPU数组项；XGBoost需要8CPU，也可能排队。实际并发由Slurm按CPU、GPU和其他队列限制决定，不修改训练batch或配方以迁就资源。
+
+如只重交失败的GPU模型，确认原作业已结束后使用数组索引，例如 `sbatch --array=2 baseline-flft-22-gpu.sbatch` 仅重交MoLFormer。已完成折次经过原有严格校验后跳过，失败attempt不会中途恢复。
+
+## 其他设备备用：同步资源
 
 从4090直接使用rsync同步当前代码、配置、3407数据与预训练资产，不再使用补丁或独立SHA清单。2026-11-07已只读确认3090仓库为 `/mnt/backup8t/pengs/ILUME/`，H100为 `/workspace/pengs/ILUME/`。以下命令在4090执行；不传输主仓库 `.git`、训练输出、trash或Conda环境，不删除目标额外文件。同步期间不要在目标仓库修改同一批源文件。
 
@@ -41,7 +71,7 @@ test -f configs/benchmarks/FLftv4_3407/llasmol.yaml
 
 下面3090按0、1、2、3四卡均空闲书写；H100的编号应按实际两张空闲卡填写。独占节点内可直接传物理编号；如Slurm已设置CUDA_VISIBLE_DEVICES，不传会覆盖分配的物理编号，仅使用调度系统分配的卡。
 
-## 3090：四卡、每卡一个独立折次
+## 备用：3090四卡、每卡一个独立折次
 
 使用bash。依次完成八个GPU模型，每个模型的50个折次由现有sweep分配到四张卡；每张卡最多一个独立train/evaluate子进程，没有DDP。保留单独日志，某模型失败后继续下一个模型，失败模型根据日志再处理。
 
@@ -68,13 +98,14 @@ python scripts/benchmarks/sweep.py \
   --max-workers 1
 ```
 
-## H100：LlaSMol，两卡各一个独立折次
+## H100：已有LlaSMol继续运行
 
-用户已确认H100空闲卡为0、1，以下使用这两个编号。保持当前QLoRA、batch16、梯度累积2、关闭梯度检查点的配方。
+用户已确认H100使用0、1号卡，原LlaSMol已经启动，保留该运行，不重复执行以下命令。仅在原进程结束且需要重试时使用相同输出和配置。保持当前QLoRA、batch16、梯度累积2、关闭梯度检查点的配方。
 
 ```bash
-conda activate ilume
-python scripts/benchmarks/sweep.py \
+cd /workspace/pengs/ILUME
+ILUME_BENCHMARK_ENVIRONMENT=ilume-llasmol \
+/workspace/pengs/.conda/envs/ilume-llasmol/bin/python scripts/benchmarks/sweep.py \
   --config configs/benchmarks/FLftv4_3407/llasmol.yaml \
   --output outputs/benchmarks/FLftv4_3407/retrain_22/llasmol \
   --devices cuda:0,cuda:1 --max-workers 2
@@ -85,5 +116,5 @@ python scripts/benchmarks/sweep.py \
 - 3090出现OOM时保留失败attempt，不修改batch、精度、长度或梯度累积。不要在原模型仍运行时另开同模型sweep。
 - 确认原sweep结束后，把该模型完整输出同步至H100相同相对路径，使用同一份配置及数据，再以同一入口运行、只替换模型名与设备列表。经严格验证的完成折次跳过，失败折在新attempt重跑。不要删除或仅挑选复制预测文件。
 - 日志中的 `FAILED` 以及各模型 `status.tsv` / `metadata.json` 是状态依据；shell循环继续不代表前一个模型已成功。重跑命令不会恢复失败训练的中间epoch。
-- 保持本轮新输出的相对路径不变，将3090、H100的完整 `retrain_22/<model>/` 分别回传4090同路径；遵循[v4回传规则](v4-runbook.md#跨设备训练产物回传)，核验全部权重、清单、配置、日志和预测，冲突不覆盖。
-- szx本轮暂不启动训练。保留的历史12任务及三模拟尚未获得新协议复用资格；本轮完成后也不能直接运行旧论文汇总脚本生成完整22任务比较报告。
+- 保持本轮新输出的相对路径不变，将szx、H100的完整 `retrain_22/<model>/` 分别回传4090同路径，同时保留szx对应Slurm日志和脚本；遵循[v4回传规则](v4-runbook.md#跨设备训练产物回传)，核验全部权重、清单、配置、日志和预测，冲突不覆盖。
+- 保留的历史12任务及三模拟尚未获得新协议复用资格；本轮完成后也不能直接运行旧论文汇总脚本生成完整22任务比较报告。
