@@ -4,18 +4,32 @@
 
 ## 执行前
 
-在各服务器的ILUME仓库根目录执行。先同步本次代码与 `configs/benchmarks/FLftv4_3407/`、`configs/v4/stage3/base.yaml`、当前 `data/3407/` 及各模型的预训练资产。未提交的本地修改不会通过 `git pull` 传输；使用既有Git发布或显式同步流程，不以旧配置代替。两台服务器应使用相同代码版本和同一份数据。
-
-本次交付另提供 `outputs/benchmarks/maintenance/20261107-FLft-retrain-checks/flft-22-retrain.patch` 和 `flft-22-data.sha256`。补丁已在基于 `eedbcfb301f22ecd14519f0c6152fc8080636514` 的干净临时仓库重放验证。若未通过Git发布本次修改，将这两个文件复制到目标服务器 `/tmp/`，同步新数据后，在仓库根执行以下命令；任何一步失败都先处理差异，不开始训练。补丁仅应用一次。
+从4090直接使用rsync同步当前代码、配置、3407数据与预训练资产，不再使用补丁或独立SHA清单。2026-11-07已只读确认3090仓库为 `/mnt/backup8t/pengs/ILUME/`，H100为 `/workspace/pengs/ILUME/`。以下命令在4090执行；不传输主仓库 `.git`、训练输出、trash或Conda环境，不删除目标额外文件。同步期间不要在目标仓库修改同一批源文件。
 
 ```bash
-git pull --ff-only
-git apply --check /tmp/flft-22-retrain.patch && \
-git apply /tmp/flft-22-retrain.patch && \
-sha256sum --quiet -c /tmp/flft-22-data.sha256
+cd /data/pengs/ILUME
+rsync -aHcR --partial --info=progress2 \
+  ./src ./benchmarks ./scripts ./configs ./docs \
+  ./AGENTS.md ./README.md ./pyproject.toml \
+  ./data/3407 ./artifacts/benchmarks \
+  3090:/mnt/backup8t/pengs/ILUME/
+
+rsync -aHcR --partial --info=progress2 \
+  ./src ./benchmarks ./scripts ./configs ./docs \
+  ./AGENTS.md ./README.md ./pyproject.toml \
+  ./data/3407 ./artifacts/benchmarks \
+  h100:/workspace/pengs/ILUME/
 ```
 
-主环境使用 `ilume`，八个高级模型由入口自动切换到各自已安装的独立环境，不自动安装依赖。MoLFormer还需要其固定HF快照缓存。MLP/XGBoost使用当前主环境RDKit2026.09.1及全新特征缓存；不能复用旧版本缓存。
+3090运行MoLFormer还需要其固定HF快照缓存，必须连同blobs和snapshots一起同步。若H100后续承接MoLFormer，对H100也执行同样缓存同步，仅替换目标主机：
+
+```bash
+rsync -aHc --mkpath --partial --info=progress2 \
+  /home/pengs/.cache/huggingface/hub/models--ibm-research--MoLFormer-XL-both-10pct \
+  3090:~/.cache/huggingface/hub/
+```
+
+同步完成后再到各服务器ILUME仓库根目录运行下面的训练命令。主环境使用 `ilume`，八个高级模型由入口自动切换到各自已安装的独立环境，不自动安装依赖。MLP/XGBoost使用当前主环境RDKit2026.09.1及全新特征缓存；不能复用旧版本缓存。rsync只同步文件，不创建Git提交或同步Conda环境。
 
 先确认设备编号及新文件已就位：
 
