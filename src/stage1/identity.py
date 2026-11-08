@@ -165,6 +165,7 @@ def build_stage1_training_identity(
         "gradient_audit_batch_size",
         "dgt_query_chunk_size",
         "dgt_attention_checkpointing",
+        "dgt_attention_compile",
     ):
         training.pop(name, None)
     if config.model.graph_encoder_type == "dgt":

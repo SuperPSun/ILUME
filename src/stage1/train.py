@@ -516,8 +516,10 @@ def _load_checkpoint(
         context="Stage 1 resume",
     )
     if config.model.graph_encoder_type == "dgt":
-        for name in ("dgt_query_chunk_size", "dgt_attention_checkpointing"):
-            if checkpoint["config"]["training"].get(name) != getattr(config.training, name):
+        saved = checkpoint["config"]["training"]
+        for name in ("dgt_query_chunk_size", "dgt_attention_checkpointing", "dgt_attention_compile"):
+            value = saved.get(name, False) if name == "dgt_attention_compile" else saved.get(name)
+            if value != getattr(config.training, name):
                 raise ValueError(f"DGT execution setting changed on resume: {name}")
     expected = {
         "train_size": train_size,

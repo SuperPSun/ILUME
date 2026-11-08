@@ -35,6 +35,7 @@ def test_registered_ablation_contracts_are_paired_and_fixed_final(config_root, a
     base1['auxiliary'].pop('graph_topology_cache')
     base1['training'].pop('dgt_query_chunk_size')
     base1['training'].pop('dgt_attention_checkpointing')
+    base1['training'].pop('dgt_attention_compile')
     # Historical suites retain the global batch used before the Base reduction.
     base1['training']['batch_size']=512
     base2=load_home_recipe(ROOT/f'configs/v4/stage2/{authority}.yaml')

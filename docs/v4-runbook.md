@@ -195,7 +195,9 @@ YAML的`auxiliary.graph_topology_cache`指向该目录的`artifacts`。它按cor
 
 DGT查表反向采用dense embedding归约，并复用query循环中的padding/索引；拓扑在CPU整批打包后传至设备，减少逐分子小传输。模型结构、参数、batch、loss、mask及dropout随机数序列不变，无需重做prepare/teacher/电荷/拓扑缓存。BF16梯度的浮点累加顺序发生变化，不能承诺旧新实现训练轨迹逐bit相同。已经运行的进程不会自动切换实现；本优化不授权停止训练或清理运行目录，仍只支持既定完整轮恢复。
 
-`training.dgt_query_chunk_size: 32`与`dgt_attention_checkpointing: true`控制attention分块重计算；科研identity排除这两个执行值，但恢复要求与检查点完全相同。不是普通FlashAttention替换，不支持OOM自动降batch。完整模型及encoder导出保存DGT和读出投影；旧D-MPNN只能按内嵌历史配置加载，不能resume到新Base。Stage1训练之后仍需重新prepare/train Stage2及prepare/train/evaluate Stage3，Stage1始终冻结。下游新分子由同一构建器按需生成拓扑，不要求其出现在预训练corpus缓存。
+原子/键特征进一步使用按分子offset隔离的dense查表，空键池保持可微零贡献。现役Base显式启用`training.dgt_attention_compile: true`，只在CUDA局部编译逐通道attention的纯数学部分，dropout随机数在编译区外生成；全模型`compile`仍为false，CPU走原即时路径。首次及部分新shape会有编译等待，不能用第一步估算整轮；编译错误直接失败，不自动切回即时。只复用PyTorch自带编译后端，不安装新包；目标环境须支持该后端。浮点归约顺序可有变化，不承诺新旧预测/训练逐bit一致。
+
+`training.dgt_query_chunk_size: 32`与`dgt_attention_checkpointing: true`控制attention分块重计算；这两项及局部编译开关均不进入科研identity，但恢复要求与检查点完全相同。共享默认局部编译false且序列化省略，旧检查点缺少此字段按false解析；不能用新的true配置直接resume旧即时检查点，须新运行，或显式恢复原执行配置。新启动进程才生效，当前训练不会自动切换，本次优化不授权停止/清理运行。不是普通FlashAttention替换，不支持OOM自动降batch。完整模型及encoder导出保存DGT和读出投影；旧D-MPNN只能按内嵌历史配置加载，不能resume到新Base。Stage1训练之后仍需重新prepare/train Stage2及prepare/train/evaluate Stage3，Stage1始终冻结。下游新分子由同一构建器按需生成拓扑，不要求其出现在预训练corpus缓存。
 
 ### Stage1 进度与输入停顿
 

@@ -5,6 +5,8 @@ Copyright (c) 2025 Shuyuan Zhang. MIT license; see docs/licenses/DGT-MIT.txt.
 """
 from __future__ import annotations
 
+from functools import lru_cache
+
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -13,6 +15,22 @@ from torch.utils.checkpoint import checkpoint
 from .dgt_topology import build_dgt_topology
 from .encoders import _categorical_to_one_hot
 from .graph import ATOM_CARDINALITIES, BOND_CARDINALITIES
+
+
+def _channelwise_attention(scores, pair_attention, valid, pair_dropout, value, pair_value):
+    scores = (scores.unsqueeze(-1) + pair_attention).float()
+    scores = scores.masked_fill(~valid[:, None, :, None, None], -torch.inf)
+    weights = scores.softmax(2).flatten(-2).to(value.dtype)
+    weights = weights * pair_dropout
+    return (weights * (value[:, None] + pair_value)).sum(2)
+
+
+@lru_cache(maxsize=1)
+def _compiled_attention():
+    # No RNG or module state inside the graph. Keep the eager BF16 intermediate
+    # casts while fusing pointwise/reduction kernels; compilation errors propagate.
+    return torch.compile(_channelwise_attention, dynamic=True, fullgraph=True,
+                         options={"emulate_precision_casts": True})
 
 
 class PairEncoder(nn.Module):
@@ -38,9 +56,10 @@ class PairEncoder(nn.Module):
 
 
 class DGTStream(nn.Module):
-    def __init__(self, width, heads, feedforward, dropout):
+    def __init__(self, width, heads, feedforward, dropout, *, compile_attention=False):
         super().__init__()
         self.heads = heads
+        self.compile_attention = compile_attention
         self.query = nn.Linear(width, width, bias=False)
         self.key = nn.Linear(width, width, bias=False)
         self.value = nn.Linear(width, width, bias=False)
@@ -57,15 +76,13 @@ class DGTStream(nn.Module):
         q = query.unflatten(-1, (self.heads, head_dim))
         k = key.unflatten(-1, (self.heads, head_dim))
         scores = torch.einsum("bqhd,bkhd->bqkh", q, k) * (head_dim ** -0.5)
-        scores = scores.unsqueeze(-1) + pair_attention.unflatten(-1, (self.heads, head_dim))
         # An empty molecular bond graph gets a dummy key; its outputs are masked
         # away. No all-masked softmax and no communication between molecules.
-        scores = scores.float().masked_fill(~valid[:, None, :, None, None], -torch.inf)
-        weights = scores.softmax(2).flatten(-2).to(value.dtype)
         pair_dropout = self.attention_dropout(
-            torch.ones((*weights.shape[:3], 1), device=value.device, dtype=value.dtype))
-        weights = weights * pair_dropout
-        return (weights * (value[:, None] + pair_value)).sum(2)
+            torch.ones((*scores.shape[:3], 1), device=value.device, dtype=value.dtype))
+        attend = _compiled_attention() if self.compile_attention and query.is_cuda else _channelwise_attention
+        return attend(scores, pair_attention.unflatten(-1, (self.heads, head_dim)),
+                      valid, pair_dropout, value, pair_value)
 
     def forward(self, hidden, mask, pair_components, pair_indices, chunk_size, recompute):
         if hidden.shape[1] == 0:
@@ -76,9 +93,14 @@ class DGTStream(nn.Module):
         distance, ring, edge_type, node_index, edge_index, adjacency = pair_indices
         batch = torch.arange(len(hidden), device=hidden.device)[:, None, None]
         distance, ring, edge_type = distance.long(), ring.long(), edge_type.long()
+        node_lookup = (node_index + 1 + batch * (pair_components[0][0].shape[1] + 1)
+                       if node_index is not None else None)
+        edge_count = pair_components[0][1].shape[1]
+        edge_lookup = edge_index + 1 + batch * (edge_count + 1) if edge_count else None
         # Padding is independent of the query chunk and is reused on recompute.
-        padded_components = tuple((F.pad(parts[0], (0, 0, 1, 0)) if node_index is not None else None,
-                                   F.pad(parts[1], (0, 0, 1, 0))) for parts in pair_components)
+        padded_components = tuple((F.pad(parts[0], (0, 0, 1, 0)).flatten(0, 1) if node_index is not None else None,
+                                   F.pad(parts[1], (0, 0, 1, 0)).flatten(0, 1) if edge_count else parts[1].sum())
+                                  for parts in pair_components)
 
         def pair_chunk(parts, padded, start, end):
             nodes, _, distances, rings, types, bias = parts
@@ -92,8 +114,10 @@ class DGTStream(nn.Module):
                 # Atom-pair edge features include both endpoints only for bonds.
                 result = result + (nodes[:, start:end, None] + nodes[:, None]) * adjacency[:, start:end, :, None]
             else:
-                result = result + padded[0][batch, node_index[:, start:end] + 1]
-            return result + padded[1][batch, edge_index[:, start:end] + 1]
+                result = result + F.embedding(node_lookup[:, start:end], padded[0])
+            # An empty edge pool contributes exactly zero; keep its zero
+            # derivative without materializing a full dummy pair tensor.
+            return result + (F.embedding(edge_lookup[:, start:end], padded[1]) if edge_count else padded[1])
 
         pieces = []
         for start in range(0, hidden.shape[1], chunk_size):
@@ -114,14 +138,15 @@ class DGTStream(nn.Module):
 
 
 class DualGraphBlock(nn.Module):
-    def __init__(self, width, heads, feedforward, dropout):
+    def __init__(self, width, heads, feedforward, dropout, *, compile_attention=False):
         super().__init__()
-        self.atom = DGTStream(width, heads, feedforward, dropout)
-        self.bond = DGTStream(width, heads, feedforward, dropout)
+        self.atom = DGTStream(width, heads, feedforward, dropout, compile_attention=compile_attention)
+        self.bond = DGTStream(width, heads, feedforward, dropout, compile_attention=compile_attention)
 
 
 class DualGraphTransformerEncoder(nn.Module):
-    def __init__(self, width, depth, heads, feedforward, dropout, *, query_chunk_size=32, recompute=True):
+    def __init__(self, width, depth, heads, feedforward, dropout, *, query_chunk_size=32, recompute=True,
+                 compile_attention=False):
         super().__init__()
         self.query_chunk_size = query_chunk_size
         self.recompute = recompute
@@ -136,7 +161,8 @@ class DualGraphTransformerEncoder(nn.Module):
         self.bond_fusion = nn.Sequential(nn.Linear(2 * width, width), nn.GELU(), nn.Linear(width, width))
         self.atom_pairs = PairEncoder(width)
         self.bond_pairs = PairEncoder(width)
-        self.blocks = nn.ModuleList(DualGraphBlock(width, heads, feedforward, dropout) for _ in range(depth))
+        self.blocks = nn.ModuleList(DualGraphBlock(width, heads, feedforward, dropout,
+                                                  compile_attention=compile_attention) for _ in range(depth))
         self.graph_readout = nn.Linear(2 * width, width)
 
     @staticmethod

@@ -57,6 +57,7 @@ class DualViewEncoder(nn.Module):
                 recipe.graph_feedforward_dim, recipe.dropout,
                 query_chunk_size=config.training.dgt_query_chunk_size,
                 recompute=config.training.dgt_attention_checkpointing,
+                compile_attention=config.training.dgt_attention_compile,
             )
         else:
             self.graph_encoder = DirectedMessagePassingEncoder(

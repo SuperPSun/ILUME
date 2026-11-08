@@ -156,6 +156,7 @@ class TrainingConfig:
     gradient_audit_batch_size: int = 32
     dgt_query_chunk_size: int = 32
     dgt_attention_checkpointing: bool = True
+    dgt_attention_compile: bool = False
 
 
 @dataclass(frozen=True)
@@ -284,6 +285,10 @@ class PretrainConfig:
                 raise ValueError("dgt_attention_checkpointing must be boolean")
         elif self.model.graph_feedforward_dim is not None or self.auxiliary.graph_topology_cache is not None:
             raise ValueError("graph_feedforward_dim and graph_topology_cache require DGT")
+        if not isinstance(self.training.dgt_attention_compile, bool):
+            raise ValueError("dgt_attention_compile must be boolean")
+        if self.training.dgt_attention_compile and self.model.graph_encoder_type != "dgt":
+            raise ValueError("dgt_attention_compile requires the dgt graph encoder")
         if self.model.graph_message_mode == "residual_blocks":
             if not self.is_dual_view:
                 raise ValueError("residual_blocks requires dual_view_v4")
@@ -375,6 +380,8 @@ class PretrainConfig:
         for name, default in (("gradient_audit_interval_steps", 0), ("gradient_audit_batch_size", 32)):
             if payload["training"][name] == default:
                 payload["training"].pop(name)
+        if not self.training.dgt_attention_compile:
+            payload["training"].pop("dgt_attention_compile")
         if self.model.graph_message_mode == "shared":
             payload["model"].pop("graph_message_mode")
         if self.model.graph_encoder_type == "dmpnn":
@@ -426,7 +433,7 @@ class PretrainConfig:
         payload.pop("preparation")
         payload["training"].pop("compile")
         for name in ("gradient_audit_interval_steps", "gradient_audit_batch_size",
-                     "dgt_query_chunk_size", "dgt_attention_checkpointing"):
+                     "dgt_query_chunk_size", "dgt_attention_checkpointing", "dgt_attention_compile"):
             payload["training"].pop(name, None)
         return payload
 

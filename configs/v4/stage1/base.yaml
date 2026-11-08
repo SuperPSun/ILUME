@@ -85,3 +85,4 @@ training:
   gradient_audit_batch_size: 32
   dgt_query_chunk_size: 32
   dgt_attention_checkpointing: true
+  dgt_attention_compile: true

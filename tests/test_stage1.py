@@ -99,6 +99,16 @@ def test_dgt_dual_topology_and_masked_equivariance():
     a, b = net(mixed, torch.zeros(len(mixed.atom_batch), dtype=torch.bool), torch.zeros(len(mixed.bond_batch), dtype=torch.bool))
     torch.testing.assert_close(a[:len(atoms)], atoms)
     torch.testing.assert_close(net.pool(a, b, mixed)[0], pooled[0])
+    # Batched feature lookups must not read another molecule's padded table.
+    other = featurize_mol(Chem.MolFromSmiles("CCO"))
+    mixed = pack_graphs([record, featurize_mol(Chem.MolFromSmiles("[Na+]")), other])
+    a, b = net(mixed, torch.zeros(len(mixed.atom_batch), dtype=torch.bool), torch.zeros(len(mixed.bond_batch), dtype=torch.bool))
+    single = pack_graphs([other])
+    own = net(single, torch.zeros(len(single.atom_batch), dtype=torch.bool), torch.zeros(len(single.bond_batch), dtype=torch.bool))
+    torch.testing.assert_close(a[-3:], own[0], atol=2e-6, rtol=2e-6)
+    torch.testing.assert_close(b[-2:], own[1], atol=2e-6, rtol=2e-6)
+    # The following storage regression compares the original two-molecule batch.
+    mixed = pack_graphs([record, featurize_mol(Chem.MolFromSmiles("[Na+]"))])
     # Coalesced cache views preserve both predictions and encoder gradients.
     records = [replace(record, dgt_topology=topology), featurize_mol(Chem.MolFromSmiles("[Na+]"))]
     coalesced = pack_graphs(records).to("cpu")
@@ -205,6 +215,36 @@ def test_dgt_channelwise_attention_chunk_and_checkpoint_gradients():
         torch.optim.AdamW(net.parameters(), lr=1e-4).step()
     for left, right in zip(reference.parameters(), optimized.parameters(), strict=True):
         torch.testing.assert_close(left, right, rtol=1e-10, atol=1e-10)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_dgt_compiled_attention_gradients_and_rng():
+    from stage1.dgt import DGTStream
+
+    # Changing query/key lengths must work with the same compiled function.
+    for dtype in (torch.float32, torch.bfloat16):
+        for queries, keys in ((3, 5), (2, 7)):
+            torch.manual_seed(31)
+            args = [torch.randn(shape, device="cuda", dtype=dtype, requires_grad=True)
+                    for shape in ((2, queries, 16), (2, keys, 16), (2, keys, 16),
+                                  (2, queries, keys, 16), (2, queries, keys, 16))]
+            valid = torch.ones(2, keys, device="cuda", dtype=torch.bool)
+            valid[1, 1:] = False
+            rng = torch.cuda.get_rng_state()
+            results = []
+            for compile_attention in (False, True):
+                stream = DGTStream(16, 4, 32, .1, compile_attention=compile_attention).cuda()
+                torch.cuda.set_rng_state(rng)
+                output = stream.attend(*args, valid)
+                gradients = torch.autograd.grad(output.square().mean(), args)
+                results.append((output, gradients, torch.cuda.get_rng_state()))
+            assert torch.equal(results[0][2], results[1][2])
+            tolerance = 2e-2 if dtype == torch.bfloat16 else 3e-5
+            torch.testing.assert_close(results[0][0], results[1][0], atol=tolerance, rtol=tolerance)
+            for eager, compiled in zip(results[0][1], results[1][1], strict=True):
+                assert torch.isfinite(compiled).all()
+                error = (eager.float() - compiled.float()).norm() / eager.float().norm().clamp_min(1e-10)
+                assert error < tolerance
 
 
 def test_global_rdkit_v2_representation_and_losses(
@@ -336,6 +376,7 @@ def test_v4_residual_capacity_and_shared_compatibility(tiny_config, tiny_samples
 
     base = load_config(ROOT / "configs/v4/stage1/base.yaml")
     assert base.training.batch_size == 256
+    assert base.training.dgt_attention_compile is True
     assert [base.loss.lambda_smiles, base.loss.lambda_atom, base.loss.lambda_bond,
             base.loss.lambda_alignment, base.loss.lambda_descriptor,
             base.loss.lambda_unimol, base.loss.lambda_electronic] == [.2, 1., 1., .1, .25, .5, .25]
@@ -344,6 +385,12 @@ def test_v4_residual_capacity_and_shared_compatibility(tiny_config, tiny_samples
     assert (base.model.smiles_layers, base.model.graph_depth, base.model.graph_encoder_type) == (12, 8, "dgt")
     assert base.model.graph_feedforward_dim == 1024
     assert config_from_dict(base.to_dict()).to_dict() == base.to_dict()
+    eager = replace(base, training=replace(base.training, dgt_attention_compile=False))
+    compiled = replace(base, training=replace(base.training, dgt_attention_compile=True))
+    assert "dgt_attention_compile" not in eager.to_dict()["training"]
+    assert eager.experiment_dict() == compiled.experiment_dict()
+    with pytest.raises(ValueError, match="boolean"):
+        replace(base, training=replace(base.training, dgt_attention_compile=1)).validate()
     for name, value in (("graph_encoder_type", "unknown"), ("graph_feedforward_dim", 0),
                         ("graph_feedforward_dim", True), ("graph_message_mode", "residual_blocks")):
         with pytest.raises(ValueError):
@@ -352,7 +399,8 @@ def test_v4_residual_capacity_and_shared_compatibility(tiny_config, tiny_samples
         replace(tiny_config, model=replace(tiny_config.model, graph_encoder_type="dgt", graph_feedforward_dim=32)).validate()
     residual = replace(base, model=replace(base.model, graph_encoder_type="dmpnn", graph_feedforward_dim=None,
                                           graph_message_mode="residual_blocks"),
-                       auxiliary=replace(base.auxiliary, graph_topology_cache=None))
+                       auxiliary=replace(base.auxiliary, graph_topology_cache=None),
+                       training=replace(base.training, dgt_attention_compile=False))
     old = replace(residual, model=replace(residual.model, smiles_layers=8, graph_depth=6, graph_message_mode="shared"))
     assert "graph_message_mode" not in old.to_dict()["model"]
     with torch.device("meta"):
@@ -437,8 +485,9 @@ def test_residual_graph_bonded_and_bondless_gradients(smiles):
             assert all(torch.count_nonzero(p.grad) == 0 for p in block.parameters())
 
 
+@pytest.mark.parametrize("graph_type", ["dmpnn", "dgt"])
 @pytest.mark.parametrize("device_name", ["cpu", "cuda"])
-def test_v4_gradient_audit_reference_and_state_isolation(tiny_config, tiny_samples, device_name):
+def test_v4_gradient_audit_reference_and_state_isolation(tiny_config, tiny_samples, device_name, graph_type):
     import random
     from stage1.auxiliary import empty_auxiliary_targets
     from stage1.dual_view import DualViewPretrainModel
@@ -450,7 +499,10 @@ def test_v4_gradient_audit_reference_and_state_isolation(tiny_config, tiny_sampl
     amp_enabled = device.type == "cuda"
     config = replace(tiny_config, architecture=ArchitectureConfig("dual_view_v4"),
                      descriptor=DescriptorConfig(mode="full", token_count=1), fingerprint=FingerprintConfig(),
-                     model=replace(tiny_config.model, role_embedding=False, dropout=.1, graph_message_mode="residual_blocks"),
+                     model=replace(tiny_config.model, role_embedding=False, dropout=.1,
+                                   graph_message_mode="shared" if graph_type == "dgt" else "residual_blocks",
+                                   graph_encoder_type=graph_type, graph_feedforward_dim=64 if graph_type == "dgt" else None),
+                     training=replace(tiny_config.training, dgt_attention_compile=graph_type == "dgt"),
                      masking=replace(tiny_config.masking, fusion_only_dropout=True, descriptor_dropout=0),
                      loss=replace(tiny_config.loss, lambda_descriptor=.5, lambda_unimol=.25, lambda_partial_charge=.1))
     vocabulary, samples = tiny_samples
@@ -1062,10 +1114,11 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
     with pytest.raises(ValueError, match="identity"):
         run_training(changed_loss, output_dir=tmp_path / "incompatible_loss", resume_from=output / "last.pt")
     if graph_message_mode == "dgt":
-        changed_execution = replace(config, training=replace(config.training, dgt_query_chunk_size=1))
-        assert resolve_stage1_training_identity(changed_execution) == resolve_stage1_training_identity(config)
-        with pytest.raises(ValueError, match="execution setting"):
-            run_training(changed_execution, output_dir=tmp_path / "incompatible_execution", resume_from=output / "last.pt")
+        for option, value in (("dgt_query_chunk_size", 1), ("dgt_attention_compile", True)):
+            changed_execution = replace(config, training=replace(config.training, **{option: value}))
+            assert resolve_stage1_training_identity(changed_execution) == resolve_stage1_training_identity(config)
+            with pytest.raises(ValueError, match="execution setting"):
+                run_training(changed_execution, output_dir=tmp_path / "incompatible_execution", resume_from=output / "last.pt")
     run_training(config, output_dir=output, resume_from=output / "last.pt")
     encoder = load_stage1_model(output / "stage1_encoder.pt", config.data.artifacts_dir)
     if graph_message_mode == "dgt":
