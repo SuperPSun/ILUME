@@ -99,6 +99,19 @@ def test_dgt_dual_topology_and_masked_equivariance():
     a, b = net(mixed, torch.zeros(len(mixed.atom_batch), dtype=torch.bool), torch.zeros(len(mixed.bond_batch), dtype=torch.bool))
     torch.testing.assert_close(a[:len(atoms)], atoms)
     torch.testing.assert_close(net.pool(a, b, mixed)[0], pooled[0])
+    # Coalesced cache views preserve both predictions and encoder gradients.
+    records = [replace(record, dgt_topology=topology), featurize_mol(Chem.MolFromSmiles("[Na+]"))]
+    coalesced = pack_graphs(records).to("cpu")
+    original = replace(coalesced, raw_bond_indices=tuple(row.bond_index for row in records),
+                       dgt_topologies=tuple(row.dgt_topology for row in records))
+    masks = (torch.zeros(len(mixed.atom_batch), dtype=torch.bool),
+             torch.zeros(len(mixed.bond_batch), dtype=torch.bool))
+    expected = net(original, *masks)
+    actual = net(coalesced, *masks)
+    assert all(torch.equal(left, right) for left, right in zip(expected, actual))
+    expected_grad = torch.autograd.grad(net.pool(*expected, original).square().sum(), tuple(net.parameters()))
+    actual_grad = torch.autograd.grad(net.pool(*actual, coalesced).square().sum(), tuple(net.parameters()))
+    assert all(torch.equal(left, right) for left, right in zip(expected_grad, actual_grad))
     atom_mask, bond_mask = atom_mask.clone(), bond_mask.clone()
     atom_mask[0] = bond_mask[0] = True
     reference = net(graph, atom_mask, bond_mask)
@@ -117,7 +130,9 @@ def test_dgt_dual_topology_and_masked_equivariance():
 
 
 def test_dgt_channelwise_attention_chunk_and_checkpoint_gradients():
+    from contextlib import nullcontext
     from copy import deepcopy
+    from unittest.mock import patch
     from stage1.dgt import DGTStream, DualGraphTransformerEncoder
     from stage1.graph import featurize_mol, pack_graphs
 
@@ -162,6 +177,34 @@ def test_dgt_channelwise_attention_chunk_and_checkpoint_gradients():
     assert torch.equal(*predictions) and torch.equal(*states)
     for left, right in zip(reference.parameters(), chunked.parameters(), strict=True):
         torch.testing.assert_close(left.grad, right.grad, rtol=0, atol=0)
+
+    # The optimized table lookup retains the old direct-index mathematics,
+    # including gradients for category zero and checkpoint/autograd.grad use.
+    reference = DualGraphTransformerEncoder(16, 2, 4, 32, .1, query_chunk_size=2).double()
+    optimized = deepcopy(reference)
+    rng = torch.random.get_rng_state()
+    results = []
+    for net, direct_lookup in ((reference, True), (optimized, False)):
+        torch.random.set_rng_state(rng)
+        lookup = patch("stage1.dgt.F.embedding", side_effect=lambda ids, table: table[ids]) if direct_lookup else nullcontext()
+        with lookup:
+            a, b = net(graph, *masks)
+            prediction = net.pool(a, b, graph)
+            grads = torch.autograd.grad(prediction.square().sum(), tuple(net.parameters()))
+        results.append((prediction, grads, torch.random.get_rng_state()))
+    assert torch.equal(results[0][0], results[1][0])
+    assert torch.equal(results[0][2], results[1][2])
+    for left, right in zip(results[0][1], results[1][1], strict=True):
+        torch.testing.assert_close(left, right, rtol=1e-12, atol=1e-12)
+    names = list(dict(optimized.named_parameters()))
+    for name in ("atom_pairs.ring.weight", "atom_pairs.edge_type.weight"):
+        assert results[1][1][names.index(name)][0].abs().sum() > 0
+    for net, (_, grads, _) in zip((reference, optimized), results, strict=True):
+        for parameter, gradient in zip(net.parameters(), grads, strict=True):
+            parameter.grad = gradient
+        torch.optim.AdamW(net.parameters(), lr=1e-4).step()
+    for left, right in zip(reference.parameters(), optimized.parameters(), strict=True):
+        torch.testing.assert_close(left, right, rtol=1e-10, atol=1e-10)
 
 
 def test_global_rdkit_v2_representation_and_losses(
@@ -246,6 +289,44 @@ def _topology_low_fd_worker(rank, root):
 
 def test_dgt_parallel_topology_with_low_file_descriptor_limit(tmp_path):
     mp.spawn(_topology_low_fd_worker, args=(str(tmp_path),), nprocs=1, join=True)
+
+
+def _collate_dgt_graphs(smiles):
+    from stage1.graph import featurize_mol, pack_graphs
+    from stage1.dgt_topology import build_dgt_topology
+    graphs = [featurize_mol(Chem.MolFromSmiles(value)) for value in smiles]
+    return pack_graphs([replace(graph, dgt_topology=build_dgt_topology(
+        len(graph.atom_categorical), graph.bond_index)) for graph in graphs])
+
+
+def _dgt_loader_low_fd_worker(rank):
+    import resource
+    from torch.utils.data import DataLoader
+    from stage1.graph import featurize_mol
+    from stage1.dgt_topology import build_dgt_topology
+
+    resource.setrlimit(resource.RLIMIT_NOFILE, (256, resource.getrlimit(resource.RLIMIT_NOFILE)[1]))
+    smiles = ["CCO", "[Na+]", "CC(C)C", "c1ccccc1"] * 132 + ["[Na+]"]
+    loader = DataLoader(smiles, batch_size=256, num_workers=2, collate_fn=_collate_dgt_graphs,
+                        multiprocessing_context="spawn", persistent_workers=True, prefetch_factor=2, timeout=15)
+    for _ in range(2):
+        offset = 0
+        for packed in loader:
+            expected = smiles[offset:offset + 256]
+            assert len(packed.atom_scopes) == len(expected)
+            for i, value in enumerate(expected):
+                reference = featurize_mol(Chem.MolFromSmiles(value))
+                topology = build_dgt_topology(len(reference.atom_categorical), reference.bond_index)
+                assert torch.equal(packed.raw_bond_indices[i], reference.bond_index)
+                for name, target in topology.items():
+                    actual = packed.dgt_topologies[i][name]
+                    assert actual.dtype == target.dtype and torch.equal(actual, target)
+            offset += len(expected)
+        assert offset == len(smiles)
+
+
+def test_dgt_dataloader_batch256_with_low_file_descriptor_limit():
+    mp.spawn(_dgt_loader_low_fd_worker, nprocs=1, join=True)
 
 
 def test_v4_residual_capacity_and_shared_compatibility(tiny_config, tiny_samples, monkeypatch):

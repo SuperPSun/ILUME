@@ -191,6 +191,10 @@ YAML的`auxiliary.graph_topology_cache`指向该目录的`artifacts`。它按cor
 
 拓扑worker使用普通NumPy数组传输，父进程重建原dtype的tensor；避免PyTorch共享storage为大量输入/输出tensor占用文件句柄，在终端默认1024句柄上限下也无需依赖提高`ulimit`。计算、样本顺序、缓存格式及身份不变。先前因`Too many open files`失败且没有孤立分片时，可重跑同一命令续做；不自动删除失败记录或已有分片。整段流水线应使用`&&`连接或逐步确认成功，避免准备失败后继续触发下游缺失来源报错。
 
+训练DataLoader同样按batch合并局部键索引及六种DGT拓扑tensor的底层storage，保留逐分子视图，避免batch256在共享内存传输时耗尽1024句柄。此修复不改训练batch、worker、采样、mask、预测或梯度，不需要重建prepare/teacher/拓扑缓存。已经卡在旧代码中的进程需要停止后重新启动；没有完整轮checkpoint时不能使用`--resume`，原运行记录须保留，新输出目录和下游来源引用须配对，或按工作区规则确认归档后复用标准路径。
+
+DGT查表反向采用dense embedding归约，并复用query循环中的padding/索引；拓扑在CPU整批打包后传至设备，减少逐分子小传输。模型结构、参数、batch、loss、mask及dropout随机数序列不变，无需重做prepare/teacher/电荷/拓扑缓存。BF16梯度的浮点累加顺序发生变化，不能承诺旧新实现训练轨迹逐bit相同。已经运行的进程不会自动切换实现；本优化不授权停止训练或清理运行目录，仍只支持既定完整轮恢复。
+
 `training.dgt_query_chunk_size: 32`与`dgt_attention_checkpointing: true`控制attention分块重计算；科研identity排除这两个执行值，但恢复要求与检查点完全相同。不是普通FlashAttention替换，不支持OOM自动降batch。完整模型及encoder导出保存DGT和读出投影；旧D-MPNN只能按内嵌历史配置加载，不能resume到新Base。Stage1训练之后仍需重新prepare/train Stage2及prepare/train/evaluate Stage3，Stage1始终冻结。下游新分子由同一构建器按需生成拓扑，不要求其出现在预训练corpus缓存。
 
 ### Stage1 进度与输入停顿

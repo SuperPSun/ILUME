@@ -74,30 +74,34 @@ class DGTStream(nn.Module):
         safe_mask = mask.clone()
         safe_mask[:, 0] |= ~mask.any(1)
         distance, ring, edge_type, node_index, edge_index, adjacency = pair_indices
+        batch = torch.arange(len(hidden), device=hidden.device)[:, None, None]
+        distance, ring, edge_type = distance.long(), ring.long(), edge_type.long()
+        # Padding is independent of the query chunk and is reused on recompute.
+        padded_components = tuple((F.pad(parts[0], (0, 0, 1, 0)) if node_index is not None else None,
+                                   F.pad(parts[1], (0, 0, 1, 0))) for parts in pair_components)
 
-        def pair_chunk(parts, start, end):
-            nodes, edges, distances, rings, types, bias = parts
-            result = (distances[distance[:, start:end].long()]
-                      + rings[ring[:, start:end].long()]
-                      + types[edge_type[:, start:end].long()] + bias)
+        def pair_chunk(parts, padded, start, end):
+            nodes, _, distances, rings, types, bias = parts
+            # Dense embedding backward reduces repeated small-table indices
+            # without the contended generic indexed-write backward. Do not set
+            # padding_idx: the original projected-table lookup trains row zero.
+            result = (F.embedding(distance[:, start:end], distances)
+                      + F.embedding(ring[:, start:end], rings)
+                      + F.embedding(edge_type[:, start:end], types) + bias)
             if node_index is None:
                 # Atom-pair edge features include both endpoints only for bonds.
                 result = result + (nodes[:, start:end, None] + nodes[:, None]) * adjacency[:, start:end, :, None]
             else:
-                padded = F.pad(nodes, (0, 0, 1, 0))
-                batch = torch.arange(len(nodes), device=nodes.device)[:, None, None]
-                result = result + padded[batch, node_index[:, start:end] + 1]
-            padded_edges = F.pad(edges, (0, 0, 1, 0))
-            batch = torch.arange(len(edges), device=edges.device)[:, None, None]
-            return result + padded_edges[batch, edge_index[:, start:end] + 1]
+                result = result + padded[0][batch, node_index[:, start:end] + 1]
+            return result + padded[1][batch, edge_index[:, start:end] + 1]
 
         pieces = []
         for start in range(0, hidden.shape[1], chunk_size):
             end = min(start + chunk_size, hidden.shape[1])
 
             def compute(q, k, v, begin=start, finish=end):
-                attention = pair_chunk(pair_components[0], begin, finish)
-                values = pair_chunk(pair_components[1], begin, finish)
+                attention = pair_chunk(pair_components[0], padded_components[0], begin, finish)
+                values = pair_chunk(pair_components[1], padded_components[1], begin, finish)
                 return self.attend(q, k, v, attention, values, safe_mask)
 
             inputs = (query[:, start:end], key, value)
@@ -151,24 +155,28 @@ class DualGraphTransformerEncoder(nn.Module):
         batch_size = len(topologies)
         n, m = atom_mask.shape[1], bond_mask.shape[1]
         device = atom_mask.device
-        atom_distance = torch.full((batch_size, n, n), 9, dtype=torch.uint8, device=device)
+        # Cached topology and local bond indices are CPU tensors. Pack first,
+        # then transfer each dense tensor once rather than per molecule.
+        atom_distance = torch.full((batch_size, n, n), 9, dtype=torch.uint8)
         atom_ring = torch.zeros_like(atom_distance)
-        bond_distance = torch.full((batch_size, m, m), 9, dtype=torch.uint8, device=device)
+        bond_distance = torch.full((batch_size, m, m), 9, dtype=torch.uint8)
         bond_ring = torch.zeros_like(bond_distance)
-        atom_edges = torch.full((batch_size, n, n), -1, dtype=torch.long, device=device)
-        bond_nodes = torch.full((batch_size, m, m), -1, dtype=torch.long, device=device)
+        atom_edges = torch.full((batch_size, n, n), -1, dtype=torch.long)
+        bond_nodes = torch.full((batch_size, m, m), -1, dtype=torch.long)
         for batch, (topology, (atom_start, atom_count), (_, bond_count)) in enumerate(zip(
                 topologies, graph.atom_scopes, graph.bond_scopes, strict=True)):
             for name, target, count in (("atom_spd", atom_distance, atom_count), ("atom_ring", atom_ring, atom_count),
                                         ("bond_spd", bond_distance, bond_count), ("bond_ring", bond_ring, bond_count)):
-                target[batch, :count, :count] = topology[name].to(device)
-            edges = graph.raw_bond_indices[batch].to(device)
+                target[batch, :count, :count] = topology[name].cpu()
+            edges = graph.raw_bond_indices[batch].cpu()
             if bond_count:
-                indices = torch.arange(bond_count, device=device)
+                indices = torch.arange(bond_count)
                 atom_edges[batch, edges[0], edges[1]] = indices
                 atom_edges[batch, edges[1], edges[0]] = indices
-            line = topology["line_index"].to(device=device, dtype=torch.long)
-            bond_nodes[batch, line[0], line[1]] = topology["shared_atom"].to(device=device, dtype=torch.long)
+            line = topology["line_index"].to(device="cpu", dtype=torch.long)
+            bond_nodes[batch, line[0], line[1]] = topology["shared_atom"].to(device="cpu", dtype=torch.long)
+        atom_distance, atom_ring, bond_distance, bond_ring, atom_edges, bond_nodes = (
+            tensor.to(device) for tensor in (atom_distance, atom_ring, bond_distance, bond_ring, atom_edges, bond_nodes))
         atom_adj = atom_edges >= 0
         bond_adj = bond_nodes >= 0
         atom_type = torch.where(atom_adj, 0, 2)

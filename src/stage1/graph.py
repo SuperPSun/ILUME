@@ -163,6 +163,13 @@ def featurize_mol(mol: Chem.Mol) -> GraphRecord:
     )
 
 
+def _coalesced_views(tensors: Sequence[torch.Tensor]) -> tuple[torch.Tensor, ...]:
+    # DataLoader IPC needs one shared-memory descriptor per storage, not per view.
+    sizes = [tensor.numel() for tensor in tensors]
+    storage = torch.cat([tensor.reshape(-1) for tensor in tensors])
+    return tuple(view.reshape_as(tensor) for view, tensor in zip(storage.split(sizes), tensors, strict=True))
+
+
 def pack_graphs(graphs: Sequence[GraphRecord]) -> PackedGraph:
     atom_categorical: list[torch.Tensor] = []
     atom_continuous: list[torch.Tensor] = []
@@ -203,6 +210,16 @@ def pack_graphs(graphs: Sequence[GraphRecord]) -> PackedGraph:
         reverse = torch.empty((0,), dtype=torch.long)
         directed_to_bond = torch.empty((0,), dtype=torch.long)
 
+    topologies = [graph.dgt_topology for graph in graphs]
+    present = [topology for topology in topologies if topology is not None]
+    if present:
+        packed_topologies = [{} if topology is not None else None for topology in topologies]
+        for name in present[0]:
+            views = _coalesced_views([topology[name] for topology in present])
+            for topology, view in zip((item for item in packed_topologies if item is not None), views, strict=True):
+                topology[name] = view
+        topologies = packed_topologies
+
     return PackedGraph(
         atom_categorical=torch.cat(atom_categorical, dim=0),
         atom_continuous=torch.cat(atom_continuous, dim=0),
@@ -215,6 +232,6 @@ def pack_graphs(graphs: Sequence[GraphRecord]) -> PackedGraph:
         bond_batch=torch.cat(bond_batch, dim=0),
         atom_scopes=tuple(atom_scopes),
         bond_scopes=tuple(bond_scopes),
-        raw_bond_indices=tuple(graph.bond_index for graph in graphs),
-        dgt_topologies=tuple(graph.dgt_topology for graph in graphs),
+        raw_bond_indices=_coalesced_views([graph.bond_index for graph in graphs]),
+        dgt_topologies=tuple(topologies),
     )

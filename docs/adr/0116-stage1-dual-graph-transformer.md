@@ -22,6 +22,10 @@ Base设置`model.graph_encoder_type: dgt`、`graph_depth: 8`、`graph_feedforwar
 
 2026-11-07修复并行传输的文件句柄耗尽：worker输入/输出通过普通NumPy数组传输，父进程重建tensor，避免逐tensor共享storage消耗句柄。串行与并行拓扑值、dtype、排序、缓存格式及科学身份不变；不以提高系统上限或忽略失败作为修复。
 
+2026-11-08修复训练DataLoader的同类问题：每batch的局部键索引及每种拓扑tensor分别合并为一块连续storage，再按原分子顺序恢复视图；输入分子数增长不再产生逐分子storage句柄。值、dtype、mask、前向及梯度保持不变，缺少拓扑的按需构建路径保留；不修改缓存、模型参数、采样、科研身份或checkpoint格式。256句柄上限下覆盖batch256、两worker预取、短尾及多轮复用，不通过降低batch、关闭worker或提高系统上限绕过问题。
+
+2026-11-08执行优化：投影后的距离、环及类型表改用dense `F.embedding`查表，避免通用索引反向在3/10行小表上的高争用；不设置`padding_idx`或频率缩放，保留原投影查表对类别0的有效梯度。query循环外复用padding、batch索引和整型拓扑；六份稠密拓扑矩阵在CPU按原分子顺序打包后分别整批传至设备。逐通道score/value、mask、dropout调用顺序、分块/重计算、参数名/形状、优化器、身份及缓存格式均不变。FP64/FP32参考验证导数等价；BF16反向累加顺序改变，因此不承诺与旧实现的训练轨迹逐bit相同，旧通用索引本身也存在低精度累加误差。无需重建已有匹配缓存，不增加配置开关或宽松恢复。
+
 `training.dgt_query_chunk_size: 32`，`dgt_attention_checkpointing: true`。按query分块重建pair特征，使用非重入checkpoint保留dropout RNG；共享线性pair映射先投影各加和项，避免常驻N×N×512矩阵。DGT最初实现保留全局batch512及原训练预算，不做length bucketing、OOM自动回退。执行设置不进入科研身份，但写入运行配置并在恢复时严格校验。
 
 后续显存调整（2026-11-07）：按用户要求将现役Base的全局batch从512减半至256；单卡256，四rank DDP每卡64。10轮、LR、loss、自然shuffle和其他执行设置不变，更新数及warmup/cosine预算按新batch重新计算。batch属于训练身份，禁止从旧512检查点续训；匹配的corpus、teacher、电荷及拓扑缓存仍可复用。历史消融配置不批量修改。
