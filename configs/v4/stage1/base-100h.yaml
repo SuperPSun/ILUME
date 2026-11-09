@@ -83,6 +83,6 @@ training:
   quick_validation_samples_per_role: 256
   gradient_audit_interval_steps: 1000
   gradient_audit_batch_size: 32
-  dgt_query_chunk_size: 32
+  dgt_query_chunk_size: 64
   dgt_attention_checkpointing: false
   dgt_attention_compile: true
