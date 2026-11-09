@@ -105,6 +105,8 @@ class PackedGraph:
         )
 
     def pin_memory(self) -> "PackedGraph":
+        # CPU-only metadata must not keep IPC storage descriptors alive in the
+        # deep pinned-batch queue. Copy into process-local coalesced storages.
         return PackedGraph(
             atom_categorical=self.atom_categorical.pin_memory(),
             atom_continuous=self.atom_continuous.pin_memory(),
@@ -117,8 +119,8 @@ class PackedGraph:
             bond_batch=self.bond_batch.pin_memory(),
             atom_scopes=self.atom_scopes,
             bond_scopes=self.bond_scopes,
-            raw_bond_indices=self.raw_bond_indices,
-            dgt_topologies=self.dgt_topologies,
+            raw_bond_indices=_coalesced_views(self.raw_bond_indices),
+            dgt_topologies=_coalesced_topologies(self.dgt_topologies),
         )
 
 
@@ -165,9 +167,22 @@ def featurize_mol(mol: Chem.Mol) -> GraphRecord:
 
 def _coalesced_views(tensors: Sequence[torch.Tensor]) -> tuple[torch.Tensor, ...]:
     # DataLoader IPC needs one shared-memory descriptor per storage, not per view.
+    if not tensors:
+        return ()
     sizes = [tensor.numel() for tensor in tensors]
     storage = torch.cat([tensor.reshape(-1) for tensor in tensors])
     return tuple(view.reshape_as(tensor) for view, tensor in zip(storage.split(sizes), tensors, strict=True))
+
+
+def _coalesced_topologies(topologies):
+    present = [topology for topology in topologies if topology is not None]
+    packed = [{} if topology is not None else None for topology in topologies]
+    if present:
+        for name in present[0]:
+            views = _coalesced_views([topology[name] for topology in present])
+            for topology, view in zip((item for item in packed if item is not None), views, strict=True):
+                topology[name] = view
+    return tuple(packed)
 
 
 def pack_graphs(graphs: Sequence[GraphRecord]) -> PackedGraph:
@@ -210,15 +225,7 @@ def pack_graphs(graphs: Sequence[GraphRecord]) -> PackedGraph:
         reverse = torch.empty((0,), dtype=torch.long)
         directed_to_bond = torch.empty((0,), dtype=torch.long)
 
-    topologies = [graph.dgt_topology for graph in graphs]
-    present = [topology for topology in topologies if topology is not None]
-    if present:
-        packed_topologies = [{} if topology is not None else None for topology in topologies]
-        for name in present[0]:
-            views = _coalesced_views([topology[name] for topology in present])
-            for topology, view in zip((item for item in packed_topologies if item is not None), views, strict=True):
-                topology[name] = view
-        topologies = packed_topologies
+    topologies = _coalesced_topologies([graph.dgt_topology for graph in graphs])
 
     return PackedGraph(
         atom_categorical=torch.cat(atom_categorical, dim=0),
@@ -233,5 +240,5 @@ def pack_graphs(graphs: Sequence[GraphRecord]) -> PackedGraph:
         atom_scopes=tuple(atom_scopes),
         bond_scopes=tuple(bond_scopes),
         raw_bond_indices=_coalesced_views([graph.bond_index for graph in graphs]),
-        dgt_topologies=tuple(topologies),
+        dgt_topologies=topologies,
     )

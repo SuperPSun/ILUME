@@ -122,6 +122,15 @@ def test_dgt_dual_topology_and_masked_equivariance():
     expected_grad = torch.autograd.grad(net.pool(*expected, original).square().sum(), tuple(net.parameters()))
     actual_grad = torch.autograd.grad(net.pool(*actual, coalesced).square().sum(), tuple(net.parameters()))
     assert all(torch.equal(left, right) for left, right in zip(expected_grad, actual_grad))
+    if torch.cuda.is_available():
+        pinned = coalesced.pin_memory()
+        assert all(not value.is_shared() for value in pinned.raw_bond_indices)
+        assert all(not value.is_shared() for topology in pinned.dgt_topologies if topology is not None
+                   for value in topology.values())
+        pinned_output = net(pinned, *masks)
+        assert all(torch.equal(left, right) for left, right in zip(actual, pinned_output))
+        pinned_grad = torch.autograd.grad(net.pool(*pinned_output, pinned).square().sum(), tuple(net.parameters()))
+        assert all(torch.equal(left, right) for left, right in zip(actual_grad, pinned_grad))
     atom_mask, bond_mask = atom_mask.clone(), bond_mask.clone()
     atom_mask[0] = bond_mask[0] = True
     reference = net(graph, atom_mask, bond_mask)
@@ -339,37 +348,54 @@ def _collate_dgt_graphs(smiles):
         len(graph.atom_categorical), graph.bond_index)) for graph in graphs])
 
 
-def _dgt_loader_low_fd_worker(rank):
+def _dgt_loader_low_fd_worker(rank, pin_memory=False):
+    import os
     import resource
+    import time
     from torch.utils.data import DataLoader
     from stage1.graph import featurize_mol
     from stage1.dgt_topology import build_dgt_topology
 
-    resource.setrlimit(resource.RLIMIT_NOFILE, (256, resource.getrlimit(resource.RLIMIT_NOFILE)[1]))
-    smiles = ["CCO", "[Na+]", "CC(C)C", "c1ccccc1"] * 512 + ["[Na+]"]
-    config = PretrainConfig(training=TrainingConfig(batch_size=256, num_workers=2))
-    options = train_module._loader_options(config, torch.device("cpu"), shard_rows=8192)
-    loader = DataLoader(smiles, batch_size=256, num_workers=2, collate_fn=_collate_dgt_graphs,
+    limit = 1024 if pin_memory else 256
+    resource.setrlimit(resource.RLIMIT_NOFILE, (limit, resource.getrlimit(resource.RLIMIT_NOFILE)[1]))
+    batch_size, workers = (64, 8) if pin_memory else (256, 2)
+    smiles = ["CCO", "[Na+]", "CC(C)C", "c1ccccc1"] * (4096 if pin_memory else 512) + ["[Na+]"]
+    config = PretrainConfig(training=TrainingConfig(batch_size=batch_size, num_workers=workers))
+    options = train_module._loader_options(config, torch.device("cuda" if pin_memory else "cpu"), shard_rows=8192)
+    loader = DataLoader(smiles, batch_size=batch_size, num_workers=workers, collate_fn=_collate_dgt_graphs,
                         multiprocessing_context="spawn", persistent_workers=True,
-                        prefetch_factor=options["prefetch_factor"], timeout=15)
+                        pin_memory=pin_memory, prefetch_factor=options["prefetch_factor"], timeout=30)
     for _ in range(2):
         offset = 0
         for packed in loader:
-            expected = smiles[offset:offset + 256]
+            if pin_memory and offset == 0:
+                # Let the pin thread fill its deep output queue while the consumer
+                # is busy. CPU-only metadata must release shared-memory FDs.
+                time.sleep(3)
+                assert packed.atom_categorical.is_pinned()
+                assert len(os.listdir("/proc/self/fd")) < limit // 2
+            expected = smiles[offset:offset + batch_size]
             assert len(packed.atom_scopes) == len(expected)
             for i, value in enumerate(expected):
                 reference = featurize_mol(Chem.MolFromSmiles(value))
                 topology = build_dgt_topology(len(reference.atom_categorical), reference.bond_index)
                 assert torch.equal(packed.raw_bond_indices[i], reference.bond_index)
+                if pin_memory:
+                    assert not packed.raw_bond_indices[i].is_shared()
                 for name, target in topology.items():
                     actual = packed.dgt_topologies[i][name]
                     assert actual.dtype == target.dtype and torch.equal(actual, target)
+                    if pin_memory:
+                        assert not actual.is_shared()
             offset += len(expected)
         assert offset == len(smiles)
 
 
-def test_dgt_dataloader_batch256_with_low_file_descriptor_limit():
-    mp.spawn(_dgt_loader_low_fd_worker, nprocs=1, join=True)
+@pytest.mark.parametrize("pin_memory", [False, True])
+def test_dgt_dataloader_batch256_with_low_file_descriptor_limit(pin_memory):
+    if pin_memory and not torch.cuda.is_available():
+        pytest.skip("CUDA pin memory requires a GPU")
+    mp.spawn(_dgt_loader_low_fd_worker, args=(pin_memory,), nprocs=1, join=True)
 
 
 class _ObservedCorpusDataset(PreparedCorpusDataset):
