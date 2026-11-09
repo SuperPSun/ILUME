@@ -10,6 +10,8 @@
 
 ## 科学红线
 
+[ADR-0120](docs/adr/0120-entity-token-attention-late-fusion.md)替代下表旧Base的MLP专家、2478D扁平专家入口和条件/池化合同：新Base为1024D/8头/2层实体token注意力，L1仅对象内部交互，L2的GLOBAL/GROUP/PRIVATE联合实体与物理条件；三槽保留至Task Gate后拼接3075D。溶剂槽位0、溶质槽位2。移除新模式的均值残差、压缩式PartnerInteraction及FiLM，保留逐token残差。Stage1、owner/样本加权/预算不变，新输出`outputs/v4/stage{2,3}/token_attention/`；旧MLP配置及产物保持历史身份。
+
 修改对应 Stage 前，必须阅读下表列出的 ADR；详细机制与数值以这些合同及 YAML 为准。
 
 | 范围 | 必须保持的边界 | ADR |
@@ -62,6 +64,8 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 - 科研与 prepare 参数写完整自包含 YAML；`preparation` 不进入实验身份。`--output`、`--resume`、Stage 3 折/评估 selector 是运行参数。
 - Stage 3 训练入口必填 `--fold`，可多折；`--output` 是共同根目录，运行位于 `foldN/`。正式折并发只在该入口用 spawn worker 和显式设备槽调度，不下沉到 `src/stage3`；独立HPO外层使用设备队列，max-parallel任务槽轮流分配到设备，允许一卡多任务；底层折并行固定1，禁止嵌套放大并发。
 
+Stage1训练DataLoader在W>0时按实际最大训练分片S、全局batch B和每rank worker数W使用`prefetch_factor=2+ceil(S/(B×W))`，提前排到下一分片；验证仍为2、W=0同步不变。不重排batch、不改变mask/RNG或放宽SHA；科研/缓存身份不变，新进程生效。额外占用CPU/pinned内存及在途句柄，不承诺隐藏首分片或消除worker重复解包，执行细节见v4手册。
+
 ## 数据、身份、输出与恢复
 
 - 4090是统一训练产物归档设备。无论在3090、其他服务器或本机训练，训练结果和完整模型权重都必须回传至4090对应项目目录；保留运行配置、日志、身份清单及恢复所需检查点，禁止仅同步报告或排除权重。回传与完整性核验遵循 [v4手册](docs/v4-runbook.md#跨设备训练产物回传)。
@@ -85,6 +89,8 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 - `trash/` 不进 Git。移动旧产物/YAML/未消费数据或删除机器缓存前，报告精确文件数、大小、目标和冲突策略，等用户明确确认。不得覆盖、重排或删除既有 `trash/`。
 
 ## 当前基线数据协议
+
+ADR-0121新增 `flft_v4_3407_22_completion`：MLP/XGBoost/标准化ILBERT各其余12实验五折＋热膨胀/HOMO/LUMO三模拟，共189作业，含无条件ILBERT从头重训。配置 `configs/benchmarks/FLftv4_3407/completion/`、输出 `outputs/benchmarks/FLftv4_3407/completion_22/`；精确绑定Base22任务，电子模拟仍用data/stage1/properties。原结构/种子/10轮或1000trees不变，MLP/XGBoost当前RDKit独立新缓存，ILBERT训练行z-score。3090每卡独立任务、无DDP，用户启动；旧产物保留，汇总器本次未扩展，不得把12任务子集当完整22任务榜单。
 
 ADR-0119为ILBERT增加独立 `train_only_zscore` 条件标准化：每任务/折仅训练行拟合均值和总体标准差，常量scale1；验证/测试使用checkpoint训练身份内保存的统计量，原始条件继续写入预测。旧raw配方与身份保持兼容，新旧互拒载；新配置为 `configs/benchmarks/FLftv4_3407/ilbert_condition_zscore.yaml`，输出 `outputs/benchmarks/FLftv4_3407/condition_zscore/ilbert/`，覆盖10变化任务五折50作业，不与旧attempt混合。原结构、资产和10轮固定配方不变，本次仅交付不自动训练。
 

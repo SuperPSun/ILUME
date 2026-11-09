@@ -1,5 +1,7 @@
 # ILUME
 
+现役Base已按 [ADR-0120](docs/adr/0120-entity-token-attention-late-fusion.md)升级实体token注意力：L1保留实体并学习对象内部关系，L2注入条件和跨对象交互，Task Gate逐槽位加权后拼接预测。Stage1、22实验＋两模拟和训练预算不变；Stage2/3从头训练，新路径为`outputs/v4/stage{2,3}/token_attention/`。以下旧MLP结构描述在此范围内由0120替代，历史输出不覆盖。
+
 ILUME 的现役流程是 **冻结 v4 Stage1 → v4 五任务实体 HoME Stage2 → v4 Stage3 22实验 / 两模拟辅助 HoME**。冻结Stage1的learned1024与标准化RDKit211组成1235D实体输入；GLOBAL和GROUP的L1并行学习实体组合，不再经过独立ObjectEncoder。Stage3保留三阶段owner训练、模拟仅PRIVATE更新及严格来源验证。合同见 [ADR-0095](docs/adr/0095-v4-entity-home-without-object-encoder.md)；正式命令见 [v4运行手册](docs/v4-runbook.md)。Stage3评估默认在同一次调用中完成实验与两项模拟评估，保留各自的折/集成协议和独立榜单；可用 `--domain experimental|simulation` 单独评估。历史Object/v5及更早产物保持原身份，只能用对应历史Git版本加载。
 
 命令从仓库根目录执行。安装依赖并准备 ILUME-Data 的 Stage1/2/3 输入；CSV 与输出不进入 Git。正式训练使用尚不存在的输出目录，旧 HoME 产物不能与新正式身份交叉加载。本页命令是运行手册，不属于自动验收。
@@ -239,6 +241,8 @@ conda run --no-capture-output -n ilume-ilbert \
 git config --global --add safe.directory \
   "$PWD/artifacts/benchmarks/ilbert/upstream"
 ```
+
+审计后剩余缺口按[ADR-0121](docs/adr/0121-baseline-22-task-completion-retraining.md)全部重训：MLP、XGBoost及标准化ILBERT各12实验五折＋三模拟，共189作业；3090命令见[补训手册](docs/baseline-flft-22-retrain-runbook.md#审计后剩余189作业补训)，新输出使用 `completion_22/`，已完成结果保留。
 
 ILBERT普通离子液体输入为单条`cation.anion` AIS sequence；solvation/transfer只增加共享backbone的有序双视图。所有输入固定padding/truncation到100 tokens并公开审计，旧配方数值条件保持注册表顺序和原始物理单位。新增独立[条件标准化配方](docs/baseline-flft-22-retrain-runbook.md#ilbert-独立条件标准化配方)，仅训练行拟合、checkpoint保存统计量，新旧身份隔离，见[ADR-0119](docs/adr/0119-ilbert-train-only-condition-standardization.md)。训练使用恒定`3e-5` learning rate完成10轮，验证不调整学习率。
 

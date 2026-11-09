@@ -13,6 +13,7 @@ from rdkit import Chem
 
 from benchmarks.common.config import (
     FLFT_22_PROTOCOL, FLFT_22_RETRAIN_TASKS,
+    FLFT_22_COMPLETION_PROTOCOL, FLFT_22_COMPLETION_TASKS, CATALOG_V4_SIMULATION_TASKS,
     load_benchmark_config, benchmark_config_from_dict,
 )
 from benchmarks.common.data import BenchmarkTask, RawDataset, configured_tasks, resolve_task
@@ -266,7 +267,7 @@ def test_catalog_evaluation_rejects_legacy_checkpoint(reuse_source, monkeypatch)
 
 
 @pytest.mark.parametrize('domain', ('stage3', 'simulation'))
-@pytest.mark.parametrize('protocol', ('catalog_v4_3407', FLFT_22_PROTOCOL))
+@pytest.mark.parametrize('protocol', ('catalog_v4_3407', FLFT_22_PROTOCOL, FLFT_22_COMPLETION_PROTOCOL))
 def test_3407_identity_rejects_42_even_with_identical_source_bytes(reuse_source, monkeypatch, domain, protocol):
     from benchmarks.common import engine
     from common.identity import require_compatible_identity
@@ -748,3 +749,63 @@ def test_flft_22_sweep_schedules_only_fifty_independent_folds(reuse_source, monk
     assert summary['reporting']['data_protocol'] == FLFT_22_PROTOCOL
     assert summary['reporting']['benchmarks']['stage3_validation']['protocol']['expected_tasks'] == list(FLFT_22_RETRAIN_TASKS)
     assert summary['simulation_property_benchmark'] == {}
+
+
+@pytest.mark.parametrize('model', ('mlp', 'ecfp_xgboost', 'ilbert'))
+def test_flft_completion_preserves_recipes_and_schedules_sixty_three_jobs(model):
+    from scripts.benchmarks import sweep
+    config = load_benchmark_config(f'configs/benchmarks/FLftv4_3407/completion/{model}.yaml')
+    old_name = 'ilbert_condition_zscore' if model == 'ilbert' else model
+    original = load_benchmark_config(f'configs/benchmarks/FLftv4_3407/{old_name}.yaml')
+    assert config.protocol == FLFT_22_COMPLETION_PROTOCOL
+    for field in ('model', 'training', 'seed', 'environment', 'runtime', 'features'):
+        assert getattr(config, field) == getattr(original, field)
+    assert configured_tasks(config, 'stage3') == FLFT_22_COMPLETION_TASKS
+    assert set(FLFT_22_COMPLETION_TASKS).isdisjoint(FLFT_22_RETRAIN_TASKS)
+    assert configured_tasks(config, 'simulation') == CATALOG_V4_SIMULATION_TASKS
+    task = resolve_task(config, 'stage3', 'experiment/self_diffusion_coefficient', 4)
+    assert task.registry_payload['baseline_protocol'] == FLFT_22_COMPLETION_PROTOCOL
+    assert task.valid_paths[0] == Path('data/3407/stage3/experiment/self_diffusion_coefficient/IL/cv1/fold4.csv')
+    for name in ('homo', 'lumo'):
+        simulation = resolve_task(config, 'simulation', f'simulation/{name}', None)
+        assert simulation.train_paths == (Path(f'data/stage1/properties/{name}/train.csv'),)
+        assert simulation.condition_columns == ()
+        assert simulation.registry_payload['baseline_protocol'] == FLFT_22_COMPLETION_PROTOCOL
+    thermal = resolve_task(config, 'simulation', 'simulation/thermal_expansion', None)
+    assert thermal.train_paths == (Path('data/3407/stage2/thermal_expansion/train.csv'),)
+    jobs, ensembles = sweep._build_jobs(
+        root=Path('unused'), stage3_tasks=config.stage3.tasks, folds=config.stage3.folds,
+        simulation_tasks=config.simulation.tasks, devices=('cuda:0', 'cuda:1') if model != 'ecfp_xgboost' else (),
+    )
+    assert len(jobs) == len({job.key for job in jobs}) == 63
+    assert len(ensembles) == 12
+    assert sum(job.kind == 'stage3_fold' for job in jobs) == 60
+    assert sum(job.kind == 'simulation' and job.fold is None for job in jobs) == 3
+    invalid = config.to_dict()
+    invalid['stage3']['tasks'] = list(FLFT_22_RETRAIN_TASKS)
+    with pytest.raises(ValueError, match='completion requires'):
+        benchmark_config_from_dict(invalid)
+    invalid = config.to_dict()
+    invalid['simulation']['tasks'] = ['simulation/homo', 'simulation/lumo']
+    with pytest.raises(ValueError, match='completion requires'):
+        benchmark_config_from_dict(invalid)
+    invalid = config.to_dict()
+    invalid['data']['data_root'] = 'data/42'
+    with pytest.raises(ValueError, match='Base authority'):
+        benchmark_config_from_dict(invalid)
+    if model == 'ilbert':
+        invalid = config.to_dict()
+        invalid['training']['condition_transform'] = 'raw_physical_units'
+        with pytest.raises(ValueError, match='standardized ILBERT'):
+            benchmark_config_from_dict(invalid)
+
+
+def test_flft_completion_rejects_wrong_twenty_two_task_registry(monkeypatch):
+    from benchmarks.common import data
+    config = load_benchmark_config('configs/benchmarks/FLftv4_3407/completion/mlp.yaml')
+    names = set(FLFT_22_COMPLETION_TASKS + FLFT_22_RETRAIN_TASKS)
+    names.remove('experiment/hydration')
+    names.add('experiment/unknown')
+    monkeypatch.setattr(data, 'resolve_task_registry', lambda _: {n: SimpleNamespace(enabled=True) for n in names})
+    with pytest.raises(ValueError, match='exact current 22-task registry'):
+        configured_tasks(config, 'stage3')

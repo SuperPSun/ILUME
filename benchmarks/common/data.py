@@ -15,7 +15,10 @@ from stage3.data import (
     test_path,
 )
 
-from .config import BenchmarkConfig, BenchmarkName, CATALOG_V4_PROTOCOLS, FLFT_22_PROTOCOL
+from .config import (
+    BenchmarkConfig, BenchmarkName, CATALOG_V4_PROTOCOLS, FLFT_22_PROTOCOL,
+    FLFT_22_COMPLETION_PROTOCOL, FLFT_22_COMPLETION_TASKS, FLFT_22_RETRAIN_TASKS,
+)
 
 
 @dataclass(frozen=True)
@@ -55,12 +58,14 @@ class RawDataset:
 
 
 def _validate_flft_registry(config: BenchmarkConfig, registry: dict[str, Any]) -> None:
-    if config.protocol != FLFT_22_PROTOCOL:
+    if config.protocol not in {FLFT_22_PROTOCOL, FLFT_22_COMPLETION_PROTOCOL}:
         return
     enabled = {task_id for task_id, spec in registry.items() if spec.enabled}
     retired = {"experiment/equilibrium_pressure", "experiment/water_activity_coefficient"}
     if len(enabled) != 22 or enabled & retired or not set(config.stage3.tasks) <= enabled:
         raise ValueError("FLft retraining requires the current 22-task registry and excludes retired tasks")
+    if config.protocol == FLFT_22_COMPLETION_PROTOCOL and enabled != set(FLFT_22_RETRAIN_TASKS + FLFT_22_COMPLETION_TASKS):
+        raise ValueError("FLft completion requires the exact current 22-task registry")
 
 
 def resolve_task(
@@ -80,7 +85,7 @@ def resolve_task(
         if spec.dataset.catalog_stage == 2:
             spec = replace(spec, dataset=replace(spec.dataset, catalog_stage=None))
         dataset_root = config.data.data_root
-        if config.protocol == "catalog_v4_3407" and spec.dataset.catalog_stage == 1:
+        if config.protocol in {"catalog_v4_3407", FLFT_22_COMPLETION_PROTOCOL} and spec.dataset.catalog_stage == 1:
             dataset_root = dataset_root.parent
         return BenchmarkTask(
             benchmark=benchmark, task_id=task_id, slots=spec.entity_columns,

@@ -66,6 +66,65 @@ PYTHONPATH=src:. CUDA_VISIBLE_DEVICES=0 python scripts/benchmarks/evaluate.py \
 
 完整sweep在上方独立 `condition_zscore/` 根从头运行50折，不复制单折预检目录拼装sweep根；正常重复执行同一sweep时，已完成折次通过严格校验后跳过。新配方的完整权重、配置、日志、身份及预测最终仍回传4090同相对路径。
 
+## 审计后剩余189作业补训
+
+2026-11-09用户按[ADR-0121](adr/0121-baseline-22-task-completion-retraining.md)选择将缺口全部重训：MLP、XGBoost、标准化ILBERT各12项其余实验任务五折＋热膨胀/HOMO/LUMO三模拟，每模型63次，共189次。包含无条件ILBERT的pEC50/HOMO/LUMO，不采用旧身份的等价派生。其余七个模型和已经完成的10项变化实验不重复训练。
+
+先将4090本次代码、配置提交推送，再在3090拉取。两环境及资产沿用原安装；下列GPU分配要求0–3号卡空闲，XGBoost保持配置的8线程。新目录 `completion_22/` 与既有所有结果隔离，不向旧目录写入。
+
+```bash
+cd /mnt/backup8t/pengs/ILUME
+git pull --ff-only
+conda activate ilume
+mkdir -p outputs/benchmarks/FLftv4_3407/completion_22/logs
+nvidia-smi
+```
+
+在三个独立终端分别激活 `ilume` 并从仓库根执行。ILBERT入口自动切换到 `ilume-ilbert`；每卡一个独立训练任务，无DDP。以下命令以前台运行并用tee保存完整日志，可放在现有tmux会话中：
+
+```bash
+set -o pipefail
+PYTHONPATH=src:. python scripts/benchmarks/sweep.py \
+  --config configs/benchmarks/FLftv4_3407/completion/ilbert.yaml \
+  --output outputs/benchmarks/FLftv4_3407/completion_22/ilbert \
+  --devices cuda:0,cuda:1 --max-workers 2 \
+  2>&1 | tee -a outputs/benchmarks/FLftv4_3407/completion_22/logs/ilbert.log
+```
+
+```bash
+set -o pipefail
+PYTHONPATH=src:. python scripts/benchmarks/sweep.py \
+  --config configs/benchmarks/FLftv4_3407/completion/mlp.yaml \
+  --output outputs/benchmarks/FLftv4_3407/completion_22/mlp \
+  --devices cuda:2,cuda:3 --max-workers 2 \
+  2>&1 | tee -a outputs/benchmarks/FLftv4_3407/completion_22/logs/mlp.log
+```
+
+```bash
+set -o pipefail
+PYTHONPATH=src:. python scripts/benchmarks/sweep.py \
+  --config configs/benchmarks/FLftv4_3407/completion/ecfp_xgboost.yaml \
+  --output outputs/benchmarks/FLftv4_3407/completion_22/ecfp_xgboost \
+  --max-workers 1 \
+  2>&1 | tee -a outputs/benchmarks/FLftv4_3407/completion_22/logs/ecfp_xgboost.log
+```
+
+无需分开手动启动验证与测试；完整sweep自动执行实验逐折验证、可用测试集五折集成和模拟逐任务验证/测试。无测试行任务如实记录no_samples。中断或失败后，在原进程已结束的前提下重新执行同一命令；严格核验通过的已完成任务跳过，失败任务在新attempt完整重训。不要同时启动两个相同模型的相同输出根。
+
+训练结束后在4090终端回传整个新目录；只新增、不覆盖任何已有文件、不删除源产物：
+
+```bash
+cd /data/pengs/ILUME
+rsync -aH --ignore-existing --partial-dir=.rsync-partial --info=progress2 \
+  3090:/mnt/backup8t/pengs/ILUME/outputs/benchmarks/FLftv4_3407/completion_22/ \
+  outputs/benchmarks/FLftv4_3407/completion_22/
+rsync -rHcni \
+  3090:/mnt/backup8t/pengs/ILUME/outputs/benchmarks/FLftv4_3407/completion_22/ \
+  outputs/benchmarks/FLftv4_3407/completion_22/
+```
+
+校验应无文件缺失/内容差异输出。保留3090原件直到最终归档确认。本次只补训练缺口，完整22任务论文汇总入口仍需另外适配，不能直接使用旧24任务汇总命令。
+
 ## 其他设备备用：同步资源
 
 从4090直接使用rsync同步当前代码、配置、3407数据与预训练资产，不再使用补丁或独立SHA清单。2026-11-07已只读确认3090仓库为 `/mnt/backup8t/pengs/ILUME/`，H100为 `/workspace/pengs/ILUME/`。以下命令在4090执行；不传输主仓库 `.git`、训练输出、trash或Conda环境，不删除目标额外文件。同步期间不要在目标仓库修改同一批源文件。
