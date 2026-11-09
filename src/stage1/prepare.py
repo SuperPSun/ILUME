@@ -12,7 +12,6 @@ import sqlite3
 import time
 from collections import Counter, deque
 from concurrent.futures import ProcessPoolExecutor
-from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 
@@ -156,14 +155,11 @@ def _canonicalize_augmentation_batch(
 
 def _entity_qc_batch(
     batch: list[tuple[int, str]],
-    *, max_graph_nodes: int | None = None,
 ) -> list[tuple[int, tuple[str, ...], tuple[str, ...], float]]:
     results = []
     for record_id, canonical_smiles in batch:
         try:
-            inspected = inspect_entity_qc(
-                {"canonical_smiles": canonical_smiles}, max_graph_nodes=max_graph_nodes
-            )
+            inspected = inspect_entity_qc({"canonical_smiles": canonical_smiles})
         except BaseException as error:
             raise RuntimeError(
                 f"entity_qc record id={record_id} smiles={canonical_smiles!r}: "
@@ -639,7 +635,7 @@ def _run_qc_and_tokenizer(
             )
         )
         for result_batch in _ordered_batch_map(
-            partial(_entity_qc_batch, max_graph_nodes=config.data.max_graph_nodes),
+            _entity_qc_batch,
             _batches(inputs, config.preparation.qc_batch_size),
             config.preparation.workers,
         ):
@@ -854,7 +850,6 @@ def _quality_control_summary(
     connection: sqlite3.Connection,
     tokenizer: SmilesTokenizer,
     max_smiles_tokens: int,
-    max_graph_nodes: int | None = None,
 ) -> dict[str, Any]:
     total = int(connection.execute("SELECT COUNT(*) FROM records").fetchone()[0])
     excluded_count = int(
@@ -891,7 +886,6 @@ def _quality_control_summary(
             "ipc_square_overflow_abs": IPC_SQUARE_OVERFLOW_LIMIT,
             "tokenizer_backend": tokenizer.backend,
             "max_smiles_tokens": max_smiles_tokens,
-            **({"max_graph_nodes": max_graph_nodes} if max_graph_nodes is not None else {}),
         },
         "excluded": {
             "total": excluded_count,
@@ -909,7 +903,6 @@ def _write_excluded_entities(
     connection: sqlite3.Connection,
     tokenizer: SmilesTokenizer,
     max_smiles_tokens: int,
-    max_graph_nodes: int | None = None,
 ) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     with temporary.open("w", newline="", encoding="utf-8") as handle:
@@ -927,18 +920,12 @@ def _write_excluded_entities(
                 "tokenizer_backend",
                 "token_count",
                 "max_smiles_tokens",
-                *(["atom_count", "bond_count", "max_graph_nodes"] if max_graph_nodes is not None else []),
             ],
         )
         writer.writeheader()
         for row in connection.execute(
             "SELECT * FROM records WHERE reasons != '[]' ORDER BY id"
         ):
-            graph_counts = {}
-            if max_graph_nodes is not None:
-                mol = Chem.MolFromSmiles(row["canonical_smiles"])
-                graph_counts = {"atom_count": mol.GetNumAtoms(), "bond_count": mol.GetNumBonds(),
-                                "max_graph_nodes": max_graph_nodes}
             writer.writerow(
                 {
                     "canonical_smiles": row["canonical_smiles"],
@@ -954,7 +941,6 @@ def _write_excluded_entities(
                     "tokenizer_backend": tokenizer.backend,
                     "token_count": row["token_count"] or "",
                     "max_smiles_tokens": max_smiles_tokens,
-                    **graph_counts,
                 }
             )
     temporary.replace(path)
@@ -1501,14 +1487,13 @@ def prepare_corpus(
     flush_performance()
 
     quality_control = _quality_control_summary(
-        connection, tokenizer, data_config.max_smiles_tokens, data_config.max_graph_nodes
+        connection, tokenizer, data_config.max_smiles_tokens
     )
     _write_excluded_entities(
         output_dir / "excluded_entities.csv",
         connection,
         tokenizer,
         data_config.max_smiles_tokens,
-        data_config.max_graph_nodes,
     )
     for role, stats in augmentation_audit.items():
         retained = int(

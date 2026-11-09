@@ -153,8 +153,6 @@ def build_stage1_training_identity(
     corpus_identity: Mapping[str, Any],
     sampler_layout_identity: Mapping[str, Any],
 ) -> dict[str, Any]:
-    if config.data.max_graph_nodes != corpus_identity["payload"]["data"].get("max_graph_nodes"):
-        raise ValueError("Stage1 max_graph_nodes differs from prepared corpus; rerun prepare")
     raw = config.to_dict()
     training = dict(raw["training"])
     for name in (
@@ -170,6 +168,10 @@ def build_stage1_training_identity(
         "dgt_attention_compile",
     ):
         training.pop(name, None)
+    if config.training.max_graph_nodes is not None:
+        from .training_filter import resolve_graph_training_filter
+        metadata = json.loads((config.data.artifacts_dir / "metadata.json").read_text())
+        training["graph_training_filter"] = resolve_graph_training_filter(config, metadata)
     if config.model.graph_encoder_type == "dgt":
         from .dgt_topology import DGTTopologyCache, DGT_CONTRACT
         metadata = json.loads((config.data.artifacts_dir / "metadata.json").read_text())

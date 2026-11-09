@@ -1,4 +1,4 @@
-# ADR-0122：Stage1 图大小准入与 H100 双卡 batch84
+# ADR-0122：Stage1 训练索引大小过滤与 H100 双卡 batch84
 
 - 状态：已采纳
 - 日期：2026-11-09
@@ -6,9 +6,11 @@
 
 ## 决定
 
-Stage1 Base 与 H100 执行配置显式设置 `data.max_graph_nodes: 160`。在现有实体 QC 中，原子数或无向键数严格大于160时排除完整分子；等于160保留。两者分别对应 DGT 原子图与键线图的节点数，不是有向消息边数。规则在分词器拟合、描述符统计和分片发布之前执行，不截断原子、不改原始文件、不在训练中跳过 batch，也不补充替代样本。
+Stage1 Base 与 H100 执行配置显式设置 `training.max_graph_nodes: 160`。仅在训练启动前排除原子数或无向键数严格大于160的扩增训练分子；等于160保留。两者分别对应 DGT 原子图与键线图的节点数，不是有向消息边数。若新来源出现超限原始训练样本，明确拒绝启动，避免静默违背保留全部原始样本的决定。验证、梯度审计、独立回归头后训练及下游编码不应用此训练过滤。
 
-共享配置默认 `null` 且序列化省略，历史配置不启用过滤。原有 BCUT、Ipc、SMILES 长度、泄漏排除及原始 split 规则不变。启用后在 `excluded_entities.csv` 记录 `graph_atoms_overlimit` / `graph_bonds_overlimit`、真实原子/键数及上限，元数据记录阈值与按原因、来源、角色、split统计。多个原因可重叠，不能将原因计数相加当作新增排除数。
+本决定按用户后续确认，撤回最初的 `data.max_graph_nodes` prepare/QC 过滤实现；旧字段不再接受，不保留双重过滤入口。prepared、分词器、描述符/电子/电荷标准化统计、teacher向量及失败mask、原子标签和DGT拓扑全部保留原样，不修改任何来源hash、不重新prepare。统计仍包含这14条，这是显式保留原统计的训练子集方案，不等价于在所有统计拟合前删除分子。
+
+共享训练配置默认 `null` 且序列化省略，历史配置、corpus/feature及缓存身份不增加字段。原有 BCUT、Ipc、SMILES 长度、泄漏排除及原始 split 规则不变。不截断原子、不改原始文件、不做运行时OOM回退或整batch跳过。
 
 ## 阈值依据与保留边界
 
@@ -22,10 +24,14 @@ Stage1 Base 与 H100 执行配置显式设置 `data.max_graph_nodes: 160`。在�
 
 ## 身份、准备与恢复
 
-非默认图大小上限进入语料配置、corpus identity及prepare签名；训练显式校验请求上限与prepared身份一致，两个方向不匹配均要求重新prepare。训练通过corpus hash绑定该规则，batch84另改变训练预算和身份。默认关闭时原序列化及身份不增加字段，artifact格式不升级。
+非默认图大小规则只进入 training identity，不进入 corpus/feature/teacher/sidecar identity。启动时校验原manifest/index SHA，扫描manifest训练行确定排除样本。SMILES字符数同时为原子/键数上界，仅对字符数超过阈值的结构调用RDKit计数。按原prepare的seed/mix-key排序合同定位少量排除项，再读取并校验对应源分片SHA、sample ID及真实原子/键数；保留全部原有完整性检查。逐进程只缓存已验证来源对应的解析结果，不修改prepared或新增共享缓存。
 
-新配置须使用新prepared及匹配的teacher、电荷、DGT拓扑缓存，随后从头训练；不得重标旧缓存hash、跨合同resume或覆盖当前产物。原始数据与旧输出保持只读。已有进程不热更新；是否停止、归档或删除由用户另行决定。实施阶段仅运行临时小数据测试，不启动正式prepare、teacher或训练。
+过滤清单绑定源corpus、manifest/index SHA、阈值、逐项sample ID、结构、大小及dataset index，整体进入training identity并写入运行目录 `training_filter.json`。恢复检查该清单和checkpoint身份；缺失、修改、阈值变化或来源变化均拒绝。format4不变，无过滤/旧检查点身份保持兼容；新batch84及过滤方案必须从头运行，不能resume旧batch64或无过滤checkpoint。
+
+DDP先由rank0解析并广播相同identity/清单，普通错误同步传播。sampler先保持原分片顺序和分片内shuffle，只移除清单中的索引，再在保留序列上做rank分配及既定最多world_size−1条的前缀补齐。禁止rank各自跳过batch；有效训练样本数驱动步数、warmup、cosine及checkpoint train_size。当前应为5,176,579条训练样本，双rank/global84每轮61,626步。
+
+已有匹配prepared、teacher、电荷和拓扑无需重新生成或迁移；H100更新代码后即可使用现有来源，在未占用新训练目录启动。原始数据与旧输出保持只读。已有进程不热更新；是否停止、归档或删除由用户另行决定。实施阶段仅运行临时小数据测试和只读索引审计，不启动正式prepare、teacher或训练。
 
 ## 验证
 
-覆盖串行及双worker prepare、等于上限保留、原子/键分别超限、过滤先于描述符计算、审计与原始样本保留、默认兼容、非法配置及新旧corpus训练互拒载。复用现有Stage1模型、DDP归一化、完整轮恢复和缓存完整性回归测试。
+覆盖等于上限保留、原子/键分别超限、原始样本保护、缺失/坏SHA、实际分片位置校验、过滤前后缓存字节不变、默认兼容与新旧训练identity互拒载。验证原shuffle的保留子序列、多轮raw exposure、短尾、双rank一致性、有效更新预算、固定末轮、恢复及审计损坏拒绝；复用现有Stage1模型、DDP归一化和缓存完整性回归测试。

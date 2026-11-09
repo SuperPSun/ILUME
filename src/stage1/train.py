@@ -17,7 +17,7 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, Sampler, Subset
 
 from common.identity import IDENTITY_CONTRACT_VERSION, require_compatible_identity
-from common.io import atomic_torch_save
+from common.io import atomic_json, atomic_torch_save
 from common.progress import ProgressReporter, loss_postfix
 from common.training import (
     canonical_json_sha256,
@@ -80,6 +80,7 @@ class _EpochSampler(Sampler[int]):
         rank: int = 0,
         world_size: int = 1,
         epoch: int = 0,
+        excluded_indices: tuple[int, ...] = (),
     ) -> None:
         if size <= 0:
             raise ValueError("Training dataset must not be empty")
@@ -93,17 +94,23 @@ class _EpochSampler(Sampler[int]):
         self.rank = rank
         self.world_size = world_size
         self.epoch = epoch
+        self.excluded_indices = frozenset(excluded_indices)
+        if any(index < 0 or index >= size for index in self.excluded_indices):
+            raise ValueError("Excluded training index is out of range")
+        self.retained_size = size - len(self.excluded_indices)
+        if self.retained_size <= 0:
+            raise ValueError("Training sampler has no retained samples")
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch
 
     @property
     def padding(self) -> int:
-        return (-self.size) % self.world_size
+        return (-self.retained_size) % self.world_size
 
     @property
     def samples_per_rank(self) -> int:
-        return (self.size + self.padding) // self.world_size
+        return (self.retained_size + self.padding) // self.world_size
 
     def __len__(self) -> int:
         return self.samples_per_rank
@@ -124,6 +131,8 @@ class _EpochSampler(Sampler[int]):
             np.random.default_rng(self._shard_seed(start, count)).shuffle(offsets)
             for offset in offsets:
                 index = start + int(offset)
+                if index in self.excluded_indices:
+                    continue
                 if len(prefix) < self.padding:
                     prefix.append(index)
                 yield index
@@ -577,9 +586,22 @@ def run_training(
             artifact_metadata, "sampler_layout", context="Stage 1 corpus"
         )
     )
-    training_identity = build_stage1_training_identity(
-        config, corpus_identity, sampler_layout_identity
-    )
+    identity_result = [None, None]
+    if context.is_primary:
+        try:
+            identity_result[0] = build_stage1_training_identity(
+                config, corpus_identity, sampler_layout_identity
+            )
+        except Exception as error:
+            identity_result[1] = f"{type(error).__name__}: {error}"
+            if not context.enabled:
+                raise
+    if context.enabled:
+        dist.broadcast_object_list(identity_result, src=0)
+    if identity_result[1] is not None:
+        raise RuntimeError(identity_result[1])
+    training_identity = identity_result[0]
+    training_filter = training_identity["payload"]["training"].get("graph_training_filter")
     train_dataset = PreparedCorpusDataset(
         artifact_dir, "train", config.data.shard_cache_size
     )
@@ -617,7 +639,13 @@ def run_training(
     else:
         training_model = raw_model
 
-    steps_per_epoch = math.ceil(len(train_dataset) / config.training.batch_size)
+    sampler = _EpochSampler(
+        train_dataset.shard_ranges, size=len(train_dataset), seed=config.data.seed,
+        rank=context.rank, world_size=context.world_size,
+        excluded_indices=tuple(row["dataset_index"] for row in training_filter["payload"]["excluded"])
+        if training_filter is not None else (),
+    )
+    steps_per_epoch = math.ceil(sampler.retained_size / config.training.batch_size)
     total_steps = config.training.epochs * steps_per_epoch
     optimizer = torch.optim.AdamW(
         raw_model.parameters(),
@@ -636,10 +664,27 @@ def run_training(
     scaler = torch.amp.GradScaler("cuda", enabled=fp16)
 
     output_dir = Path(output_dir)
+    audit_error = [None]
     if context.is_primary:
-        output_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            if training_filter is not None:
+                filter_path = output_dir / "training_filter.json"
+                if filter_path.exists():
+                    require_compatible_identity(training_filter, json.loads(filter_path.read_text()),
+                                                context="Stage1 training filter audit")
+                elif resume_from is not None:
+                    raise ValueError("Stage1 training filter audit missing on resume")
+                else:
+                    atomic_json(filter_path, training_filter)
+        except Exception as error:
+            audit_error[0] = f"{type(error).__name__}: {error}"
+            if not context.enabled:
+                raise
     if context.enabled:
-        dist.barrier()
+        dist.broadcast_object_list(audit_error, src=0)
+    if audit_error[0] is not None:
+        raise RuntimeError(audit_error[0])
     metrics_path = output_dir / "metrics.jsonl"
     completed_epoch = 0
     global_step = 0
@@ -648,7 +693,7 @@ def run_training(
             Path(resume_from),
             config=config,
             training_identity=training_identity,
-            train_size=len(train_dataset),
+            train_size=sampler.retained_size,
             steps_per_epoch=steps_per_epoch,
         )
         raw_model.load_state_dict(checkpoint["model"])
@@ -678,13 +723,6 @@ def run_training(
     reporter = ProgressReporter() if context.is_primary else None
     results: list[dict[str, float | int | str]] = []
     latest_valid_loss: float | None = None
-    sampler = _EpochSampler(
-        train_dataset.shard_ranges,
-        size=len(train_dataset),
-        seed=config.data.seed,
-        rank=context.rank,
-        world_size=context.world_size,
-    )
     train_loader = DataLoader(
         train_dataset,
         batch_size=local_batch_size,
@@ -870,7 +908,7 @@ def run_training(
             completed_epoch=completed_epoch,
             global_step=global_step,
             steps_per_epoch=steps_per_epoch,
-            train_size=len(train_dataset),
+            train_size=sampler.retained_size,
             config=config,
             training_identity=training_identity,
             corpus_identity=corpus_identity,

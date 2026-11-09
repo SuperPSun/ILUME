@@ -175,15 +175,17 @@ python scripts/stage1/train.py --config configs/v4/stage1/base.yaml --output out
 
 现役Base全局batch256，由此前512减半以降低显存占用；单卡每步256条，四rank DDP每GPU为batch64。每rank仍使用8个DataLoader worker，四rank训练加载器共32个worker。LR保持1e-4，优化器步数及warmup/cosine预算按新batch重算；不能从旧512配置的checkpoint恢复。语料、teacher及匹配的sidecar仍可复用。worker数量仅属执行参数，本身不改变科研训练身份。
 
-按[ADR-0122](adr/0122-stage1-graph-size-qc.md)，Base及`base-100h.yaml`新增`data.max_graph_nodes: 160`：prepare实体QC排除原子数或无向键数严格超过160的完整结构，等于160保留，不截断分子。当前新增排除仅14条中性扩增训练样本，已入库原始样本全部保留；未来数据更新需重新核查。排除原因、原子/键数和阈值写入`excluded_entities.csv`及metadata的`quality_control`。此项改变corpus身份，上段“缓存可复用”仅适用于batch变化，不能用于复用未启用大小过滤的旧corpus；须新prepare及匹配的teacher/电荷/拓扑缓存，从头训练，不覆盖当前产物。
+按[ADR-0122](adr/0122-stage1-graph-size-qc.md)，Base及`base-100h.yaml`使用`training.max_graph_nodes: 160`：启动训练前排除原子数或无向键数严格超过160的扩增训练样本，等于160保留；若过滤会排除原始训练样本则拒绝启动。当前仅14条中性扩增样本被排除，原始训练/验证及固定审计probe不变。运行目录`training_filter.json`记录来源、阈值、样本结构/大小和索引，清单纳入training identity。先过滤再按rank分配，不在DDP迭代中跳过batch。
 
-H100专用`configs/v4/stage1/base-100h.yaml`使用全局batch84、5轮；双rank每卡42，保持LR1e-4、query32及现有attention执行开关。仅在新缓存均完成且YAML来源路径配对、输出目录未占用后运行：
+**无需重跑prepare、teacher、电荷sidecar或拓扑。** 沿用现有全部缓存及原分词器、标准化统计，现有SHA检查不变；prepare已撤回最初的`data.max_graph_nodes`过滤，旧字段不再接受。训练启动会扫描manifest、核查少量相关分片，不进行3D构象生成或teacher推理。已有样本的统计保持原值，本方案不同于重新拟合筛选后统计。当前有效训练集5,176,579条，global84每轮61,626步；来源更新时重新解析清单与预算。
+
+H100专用`configs/v4/stage1/base-100h.yaml`使用全局batch84、5轮；双rank每卡42，保持LR1e-4、query32及现有attention执行开关。沿用已有匹配缓存，在YAML来源路径配对且输出目录未占用后运行：
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc-per-node=2 scripts/stage1/train.py --config configs/v4/stage1/base-100h.yaml --output outputs/v4/stage1/base/train
+CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc-per-node=2 scripts/stage1/train.py --config configs/v4/stage1/base-100h.yaml --output outputs/v4/stage1/base/train_graph160_b84_ddp2
 ```
 
-旧batch64或旧语料checkpoint不得续到此配置。筛除极端结构与DDP不能构成显存安全保证；不自动缩batch或跳过样本，当前训练不会被代码更新热切换。
+旧batch64或未过滤checkpoint不得续到此配置。筛除极端结构与DDP不能构成显存安全保证；不自动缩batch或跳过样本，当前训练不会被代码更新热切换。
 
 <a id="stage1-dgt-topology"></a>
 

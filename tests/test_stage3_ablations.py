@@ -28,8 +28,8 @@ def test_registered_ablation_contracts_are_paired_and_fixed_final(config_root, a
     # Existing ablations retain their pre-ADR-0112 full217 descriptor recipe.
     base1['descriptor'].pop('excluded_names', None)
     base1['descriptor'].pop('value_policy', None)
-    # Historical suites also retain the corpus before the graph-size QC limit.
-    base1['data'].pop('max_graph_nodes', None)
+    # Historical suites do not filter the Stage1 training index.
+    base1['training'].pop('max_graph_nodes', None)
     # These suites also retain the pre-ADR-0116 residual D-MPNN architecture.
     base1['model'].pop('graph_encoder_type')
     base1['model'].pop('graph_feedforward_dim')

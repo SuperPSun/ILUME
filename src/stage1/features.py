@@ -51,9 +51,7 @@ def _calculate_ipc(mol: Chem.Mol) -> float:
     return float(Descriptors.Ipc(mol))
 
 
-def inspect_entity_qc(
-    record: dict[str, Any], *, max_graph_nodes: int | None = None
-) -> EntityQC:
+def inspect_entity_qc(record: dict[str, Any]) -> EntityQC:
     mol = Chem.MolFromSmiles(record["canonical_smiles"])
     if mol is None:
         raise RuntimeError("Canonical SMILES unexpectedly failed RDKit parsing")
@@ -67,11 +65,6 @@ def inspect_entity_qc(
         )
     )
     reasons: list[str] = []
-    if max_graph_nodes is not None:
-        if mol.GetNumAtoms() > max_graph_nodes:
-            reasons.append("graph_atoms_overlimit")
-        if mol.GetNumBonds() > max_graph_nodes:
-            reasons.append("graph_bonds_overlimit")
     if unsupported:
         reasons.append("unsupported_bcut_bond_type")
     try:

@@ -66,7 +66,7 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 
 Stage1训练DataLoader在W>0时按实际最大训练分片S、全局batch B和每rank worker数W使用`prefetch_factor=2+ceil(S/(B×W))`，提前排到下一分片；验证仍为2、W=0同步不变。不重排batch、不改变mask/RNG或放宽SHA；科研/缓存身份不变，新进程生效。额外占用CPU/pinned内存及在途句柄；pin线程须把CPU局部键索引/拓扑复制为主进程非共享storage，避免深队列保留IPC句柄导致ancdata错误。不承诺隐藏首分片或消除worker重复解包，执行细节见v4手册。
 
-ADR-0122：Stage1 Base及H100配置在prepare实体QC启用`data.max_graph_nodes: 160`，原子数或无向键数严格超限才排除完整结构，等于上限保留；当前新增排除14条扩增训练样本，现有已入库原始样本不变。记录原因/大小审计，不截断、不改原始文件、不在训练中跳过。默认null/序列化省略以保留历史身份；新上限进入corpus身份并在训练时核对，旧prepared/teacher/电荷/拓扑及checkpoint不得直接混用。H100专用`base-100h.yaml`为全局batch84/5轮，双rank每卡42；标准Base仍为256/10轮。其余模型、loss和训练策略不变，不自动启停、归档或覆盖旧运行。
+ADR-0122：Stage1 Base及H100配置使用`training.max_graph_nodes: 160`，只在训练启动前确定性过滤超限扩增训练索引，等于160保留；若新来源将排除原始训练样本则明确失败。当前排除14条扩增，原始/验证/probe不变。撤回prepare端`data.max_graph_nodes`过滤；既有prepared、分词器/标准化统计、teacher失败mask、电荷和拓扑完整复用，不修改hash。`training_filter.json`绑定源SHA、阈值、sample ID及dataset index并进入training identity，恢复严格核对；先过滤再分配DDP rank、按有效样本重算步数，不跳过batch。默认null/序列化省略保持历史身份。H100专用`base-100h.yaml`为全局batch84/5轮，双rank每卡42；标准Base仍为256/10轮。新过滤/batch不得resume旧checkpoint，其余模型/loss不变，不自动启停、归档或覆盖旧运行。
 
 ## 数据、身份、输出与恢复
 

@@ -470,9 +470,9 @@ def test_v4_residual_capacity_and_shared_compatibility(tiny_config, tiny_samples
 
     base = load_config(ROOT / "configs/v4/stage1/base.yaml")
     assert base.training.batch_size == 256
-    assert base.data.max_graph_nodes == 160
+    assert base.training.max_graph_nodes == 160
     h100 = load_config(ROOT / "configs/v4/stage1/base-100h.yaml")
-    assert h100.data.max_graph_nodes == 160
+    assert h100.training.max_graph_nodes == 160
     assert h100.training.batch_size == 84
     assert h100.training.batch_size // 2 == 42
     assert base.training.dgt_attention_compile is True
@@ -1697,7 +1697,8 @@ def _ddp_training_worker(
     finally:
         dist.destroy_process_group()
 
-def test_two_rank_gloo_checkpoint_ownership_and_cross_world_resume(tmp_path, capsys) -> None:
+@pytest.mark.parametrize("graph_limit", [None, 4])
+def test_two_rank_gloo_checkpoint_ownership_and_cross_world_resume(tmp_path, capsys, graph_limit) -> None:
     source = tmp_path / "stage1"
     source.mkdir()
     _write_smiles(source / "cation.csv", ["[Na+]", "[K+]", "C[NH3+]", "C[NH2+]C"])
@@ -1738,8 +1739,15 @@ def test_two_rank_gloo_checkpoint_ownership_and_cross_world_resume(tmp_path, cap
             quick_validation_samples_per_role=1,
         ),
     )
+    if graph_limit is not None:
+        (source / "augmentation").mkdir()
+        for role in ("cation", "anion", "molecule"):
+            _write_role_csv(source / "augmentation" / f"{role}.csv",
+                            [("CCCCCCC", 0)] if role == "molecule" else [])
+        config = replace(config, data=replace(config.data, include_augmentation=True))
     prepare_corpus(config)
     capsys.readouterr()
+    config = replace(config, training=replace(config.training, max_graph_nodes=graph_limit))
 
     world_size = 2
     mp.spawn(
@@ -1758,6 +1766,10 @@ def test_two_rank_gloo_checkpoint_ownership_and_cross_world_resume(tmp_path, cap
     mid = torch.load(output / "last.pt", map_location="cpu", weights_only=False)
     assert mid["world_size_at_save"] == 2
     assert mid["global_step"] == 3
+    if graph_limit is not None:
+        audit = json.loads((output / "training_filter.json").read_text())
+        assert len(audit["payload"]["excluded"]) == 1
+        assert mid["train_size"] == audit["payload"]["retained_train_size"] == 6
     assert mid["completed_epoch"] == 1
     assert "rank_rng" not in mid
     assert "epoch_cursor" not in mid
@@ -2125,9 +2137,10 @@ def test_prepare_excludes_qc_failures_before_descriptor_calculation(
     assert metadata["augmentation_audit"]["anion"]["retained"] == 0
     assert metadata["augmentation_audit"]["neutral"]["retained"] == 0
 
-@pytest.mark.parametrize("workers", [1, 2])
-def test_prepare_graph_node_limit_and_identity(tmp_path, workers):
+def test_training_graph_filter_reuses_corpus_and_preserves_order(tmp_path, tiny_config):
+    from stage1.training_filter import resolve_graph_training_filter
     from stage1.identity import build_stage1_training_identity
+    from stage1.train import _EpochSampler
 
     stage1 = tmp_path / "stage1"
     augmentation = stage1 / "augmentation"
@@ -2141,50 +2154,70 @@ def test_prepare_graph_node_limit_and_identity(tmp_path, workers):
         _write_role_csv(stage1 / f"{name}.csv", rows)
         _write_role_csv(augmentation / f"{name}.csv", [])
     _write_role_csv(augmentation / "molecule.csv", [("CCCCCCC", 0), ("C1CC2CC1C2", 0)])
-    config = PretrainConfig(
-        data=DataConfig(stage1_dir=stage1, artifacts_dir=tmp_path / "capped", seed=7,
-                        valid_fraction=.25, include_augmentation=True, max_graph_nodes=6),
-        preparation=PreparationConfig(workers=workers),
+    config = replace(tiny_config,
+        data=DataConfig(stage1_dir=stage1, artifacts_dir=tmp_path / "prepared", seed=7,
+                        valid_fraction=.25, include_augmentation=True, shard_size=3),
+        descriptor=DescriptorConfig(mode="clean", token_count=1),
+        masking=replace(tiny_config.masking, smiles_dropout=0., graph_dropout=0.,
+                        descriptor_dropout=0., fingerprint_dropout=0.),
+        model=ModelConfig(d_model=8, n_heads=2, smiles_layers=1, graph_depth=1,
+                          feedforward_dim=16, fusion_layers=1, descriptor_hidden_dim=16),
+        training=TrainingConfig(batch_size=4, epochs=1, num_workers=0, device="cpu", amp_dtype="none"),
     )
-    summary = prepare_corpus(config)
-    assert summary["total"] == 12
-    assert summary["excluded_entities"] == 2
+    assert prepare_corpus(config)["total"] == 14
+    source_files = {p: hashlib.sha256(p.read_bytes()).hexdigest()
+                    for p in config.data.artifacts_dir.rglob("*") if p.is_file()}
+    filtered = replace(config, training=replace(config.training, max_graph_nodes=6))
     metadata = json.loads((config.data.artifacts_dir / "metadata.json").read_text())
-    assert metadata["quality_control"]["thresholds"]["max_graph_nodes"] == 6
-    with (config.data.artifacts_dir / "manifest.csv").open() as handle:
-        retained = list(csv.DictReader(handle))
-    assert all(row["is_augmented"] == "0" for row in retained)
-    assert {row["canonical_smiles"] for row in retained} == {
-        Chem.MolToSmiles(Chem.MolFromSmiles(smiles)) for rows in originals.values()
-        for smiles, _ in rows
+    plan = resolve_graph_training_filter(filtered, metadata)
+    assert plan == resolve_graph_training_filter(filtered, metadata)
+    assert len(plan["payload"]["excluded"]) == 2
+    assert plan["payload"]["retained_train_size"] == plan["payload"]["original_train_size"] - 2
+    excluded = tuple(row["dataset_index"] for row in plan["payload"]["excluded"])
+    dataset = PreparedCorpusDataset(config.data.artifacts_dir, "train")
+    assert {dataset[i]["sample_id"] for i in excluded} == {
+        row["sample_id"] for row in plan["payload"]["excluded"]
     }
-    with (config.data.artifacts_dir / "excluded_entities.csv").open() as handle:
-        excluded = {row["canonical_smiles"]: row for row in csv.DictReader(handle)}
-    assert excluded["CCCCCCC"]["exclusion_reasons"] == "graph_atoms_overlimit"
-    bond_key = Chem.MolToSmiles(Chem.MolFromSmiles("C1CC2CC1C2"))
-    assert excluded[bond_key]["exclusion_reasons"] == "graph_bonds_overlimit"
-    assert (excluded[bond_key]["atom_count"], excluded[bond_key]["bond_count"],
-            excluded[bond_key]["max_graph_nodes"]) == ("6", "7", "6")
-    default = replace(config, data=replace(config.data, max_graph_nodes=None,
-                                          artifacts_dir=tmp_path / "uncapped"))
-    assert "max_graph_nodes" not in default.to_dict()["data"]
-    assert config_from_dict(default.to_dict()).to_dict() == default.to_dict()
-    assert config_from_dict(config.to_dict()).to_dict() == config.to_dict()
-    assert prepare_corpus(default)["total"] == 14
-    old = json.loads((default.data.artifacts_dir / "metadata.json").read_text())
+    for epoch in (0, 1):
+        original = list(_EpochSampler(dataset.shard_ranges, size=len(dataset), seed=7, epoch=epoch))
+        expected = [i for i in original if i not in excluded]
+        sampler = _EpochSampler(dataset.shard_ranges, size=len(dataset), seed=7, epoch=epoch,
+                                excluded_indices=excluded)
+        assert list(sampler) == expected
+        ranks = [_EpochSampler(dataset.shard_ranges, size=len(dataset), seed=7, epoch=epoch,
+                               excluded_indices=excluded, rank=rank, world_size=2) for rank in range(2)]
+        interleaved = [i for pair in zip(*[list(rank) for rank in ranks], strict=True) for i in pair]
+        assert interleaved == expected + expected[:sampler.retained_size % 2]
     corpus = metadata["semantic"]["identities"]["corpus"]
-    old_corpus = old["semantic"]["identities"]["corpus"]
     layout = metadata["semantic"]["identities"]["sampler_layout"]
-    assert corpus["hash"] != old_corpus["hash"]
-    assert build_stage1_training_identity(config, corpus, layout)["hash"] != (
-        build_stage1_training_identity(default, old_corpus, layout)["hash"]
+    assert build_stage1_training_identity(filtered, corpus, layout)["hash"] != (
+        build_stage1_training_identity(config, corpus, layout)["hash"]
     )
-    for requested, prepared in ((config, old_corpus), (default, corpus)):
-        with pytest.raises(ValueError, match="max_graph_nodes differs.*rerun prepare"):
-            build_stage1_training_identity(requested, prepared, layout)
+    output = tmp_path / "train"
+    run_training(filtered, output_dir=output)
+    checkpoint = torch.load(output / "last.pt", weights_only=False)
+    assert checkpoint["train_size"] == len(dataset) - 2
+    assert checkpoint["global_step"] == (len(dataset) - 2 + 3) // 4
+    assert json.loads((output / "training_filter.json").read_text()) == plan
+    assert run_training(filtered, output_dir=output, resume_from=output / "last.pt") == []
+    with pytest.raises(ValueError, match="identity"):
+        run_training(config, output_dir=output, resume_from=output / "last.pt")
+    damaged = json.loads((output / "training_filter.json").read_text())
+    damaged["payload"]["max_graph_nodes"] = 5
+    (output / "training_filter.json").write_text(json.dumps(damaged))
+    with pytest.raises(ValueError):
+        run_training(filtered, output_dir=output, resume_from=output / "last.pt")
+    assert {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in source_files} == source_files
+    assert "max_graph_nodes" not in config.to_dict()["training"]
+    assert config_from_dict(filtered.to_dict()).to_dict() == filtered.to_dict()
     for invalid in (0, -1, True, 1.5, "160"):
         with pytest.raises(ValueError, match="max_graph_nodes must be a positive integer"):
-            replace(config, data=replace(config.data, max_graph_nodes=invalid)).validate()
+            replace(config, training=replace(config.training, max_graph_nodes=invalid)).validate()
+    with pytest.raises(ValueError, match="original sample"):
+        resolve_graph_training_filter(replace(config, training=replace(config.training, max_graph_nodes=5)), metadata)
+    (config.data.artifacts_dir / "manifest.csv").write_text("corrupt")
+    with pytest.raises(ValueError, match="source hash mismatch"):
+        resolve_graph_training_filter(filtered, metadata)
 
 
 def test_augmentation_leakage_and_worker_artifact_semantics(tmp_path):
