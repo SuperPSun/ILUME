@@ -42,7 +42,7 @@
 | MLP / ECFP-XGBoost | [0022](0022-mlp-ecfp-xgboost-baselines.md) |
 | D-MPNN | [0028](0028-chemprop-dmpnn-baseline.md)、[0042](0042-dmpnn-shared-component-encoder.md) |
 | MoLFormer | [0029](0029-molformer-baseline.md)、[0030](0030-molformer-throughput-contract.md) |
-| ILBERT | [0032](0032-ilbert-baseline.md) |
+| ILBERT | [0032](0032-ilbert-baseline.md)、[0119](0119-ilbert-train-only-condition-standardization.md)：独立训练集条件标准化；旧原始单位配方保留，身份隔离 |
 | SPMM | [0035](0035-spmm-baseline.md)、[0037](0037-spmm-wordpiece-character-limit.md)、[0038](0038-spmm-throughput-contract.md) |
 | LlaSMol | [0040](0040-llasmol-mistral-7b-baseline.md) |
 | AIonopedia | [0049](0049-aionopedia-multimodal-baseline.md) |

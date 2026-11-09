@@ -188,14 +188,17 @@ def _audit_train(config: Any, task: Any, run: Path) -> dict[str, Any]:
         module = importlib.import_module(f'benchmarks.{config.name}.adapter')
         key = 'graph_contract' if config.name == 'dmpnn' else 'input_contract'
         symbol = 'DMPNN_GRAPH_CONTRACT' if config.name == 'dmpnn' else config.name.upper() + '_INPUT_CONTRACT'
-        _equal(old[key], getattr(module, symbol), 'Input preprocessing contract changed')
+        contract = module.ilbert_input_contract(config) if config.name == 'ilbert' else getattr(module, symbol)
+        _equal(old[key], contract, 'Input preprocessing contract changed')
         if config.environment:
             lock = sha256_file(config.environment.lock)
             original_lock = old.get('environment_lock_sha256', metadata.get('provenance', {}).get('environment_lock_sha256'))
             if original_lock != lock:
                 raise ReuseMismatch('Dedicated environment lock changed')
         if config.name == 'ilbert':
-            _equal(old['condition_contract'], {'columns': list(task.condition_columns), 'transform': 'raw_physical_units'}, 'ILBERT condition contract changed')
+            _equal(old['condition_contract'], {'columns': list(task.condition_columns), 'transform': config.training['condition_transform']}, 'ILBERT condition contract changed')
+            if config.training['condition_transform'] == 'train_only_zscore':
+                _stats(old['condition_statistics'], train.conditions, 'ILBERT condition normalization changed')
         elif config.name == 'iltransr':
             population, digest = hashlib.sha256(), old['source_hashes']['condition_population_sha256']
             population.update('\t'.join(task.condition_columns).encode())

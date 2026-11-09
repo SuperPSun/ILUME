@@ -39,6 +39,49 @@ TokenCache = dict[str, tuple[torch.Tensor, int]]
 
 
 @dataclass(frozen=True)
+class ConditionStats:
+    mean: tuple[float, ...]
+    scale: tuple[float, ...]
+
+    @classmethod
+    def fit(cls, values: np.ndarray) -> "ConditionStats":
+        values = np.asarray(values, dtype=np.float64)
+        if values.ndim != 2 or len(values) == 0 or not np.isfinite(values).all():
+            raise ValueError("ILBERT train conditions must be a non-empty finite matrix")
+        mean = values.mean(axis=0)
+        scale = values.std(axis=0)
+        scale = np.where(scale > 0, scale, 1.0)
+        return cls(tuple(map(float, mean)), tuple(map(float, scale)))
+
+    def normalize(self, values: np.ndarray) -> np.ndarray:
+        if values.ndim != 2 or values.shape[1] != len(self.mean) or not np.isfinite(values).all():
+            raise ValueError("ILBERT condition shape or values differ from training")
+        return ((values - np.asarray(self.mean)) / np.asarray(self.scale)).astype(np.float32)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"mean": list(self.mean), "scale": list(self.scale)}
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "ConditionStats":
+        mean = np.asarray(raw["mean"], dtype=np.float64)
+        scale = np.asarray(raw["scale"], dtype=np.float64)
+        if (
+            mean.ndim != 1 or scale.shape != mean.shape
+            or not np.isfinite(mean).all() or not np.isfinite(scale).all()
+            or (scale <= 0).any()
+        ):
+            raise ValueError("Invalid ILBERT checkpoint condition statistics")
+        return cls(tuple(map(float, mean)), tuple(map(float, scale)))
+
+
+def ilbert_input_contract(config: BenchmarkConfig) -> dict[str, Any]:
+    contract = dict(ILBERT_INPUT_CONTRACT)
+    if config.training["condition_transform"] == "train_only_zscore":
+        contract["conditions"] = "train_only_zscore_in_registry_order"
+    return contract
+
+
+@dataclass(frozen=True)
 class PreparedSplit:
     raw: RawDataset
     model_sequences: tuple[tuple[str, ...], ...]
@@ -61,6 +104,7 @@ class ILBERTTrainingBundle:
     assets: dict[str, Any]
     token_cache: TokenCache
     pad_token_id: int
+    condition_stats: ConditionStats | None = None
 
 
 class SharedILBERTRegressor(torch.nn.Module):
@@ -215,6 +259,7 @@ def _prepare_split(
     token_cache: TokenCache,
     *,
     max_length: int,
+    condition_stats: ConditionStats | None = None,
 ) -> PreparedSplit:
     model_sequences: list[tuple[str, ...]] = []
     view_names: tuple[str, ...] | None = None
@@ -242,12 +287,19 @@ def _prepare_split(
                         "pre_truncation_token_length": length,
                     }
                 )
-    conditions = raw.conditions.astype(np.float32, copy=True)
+    conditions = (
+        raw.conditions.astype(np.float32, copy=True)
+        if condition_stats is None
+        else condition_stats.normalize(raw.conditions)
+    )
     if conditions.ndim != 2 or not np.isfinite(conditions).all():
         raise ValueError("ILBERT raw numeric conditions must be a finite matrix")
     lengths = [token_cache[value][1] for value in set(flat)]
+    contract = dict(ILBERT_INPUT_CONTRACT)
+    if condition_stats is not None:
+        contract["conditions"] = "train_only_zscore_in_registry_order"
     audit = {
-        "contract": ILBERT_INPUT_CONTRACT,
+        "contract": contract,
         "task": task.task_id,
         "split": split,
         "view_order": list(view_names or ()),
@@ -289,13 +341,21 @@ def prepare_ilbert_training(
     if int(tokenizer.pad_token_id) != 0:
         raise ValueError("ILBERT tokenizer pad token ID must be zero")
     token_cache: TokenCache = {}
+    train_raw = load_split(task, "train")
+    condition_stats = (
+        ConditionStats.fit(train_raw.conditions)
+        if config.training["condition_transform"] == "train_only_zscore"
+        else None
+    )
     train = _prepare_split(
-        load_split(task, "train"), task, "train", tokenizer, token_cache,
+        train_raw, task, "train", tokenizer, token_cache,
         max_length=int(config.model["max_length"]),
+        condition_stats=condition_stats,
     )
     valid = _prepare_split(
         load_split(task, "valid"), task, "valid", tokenizer, token_cache,
         max_length=int(config.model["max_length"]),
+        condition_stats=condition_stats,
     )
     if not len(train.raw):
         raise ValueError("ILBERT requires non-empty training rows")
@@ -319,14 +379,15 @@ def prepare_ilbert_training(
             "component_order": list(task.slots),
             "sequence_view_order": train.audit["view_order"],
             "source_hashes": source_hashes,
-            "input_contract": ILBERT_INPUT_CONTRACT,
+            "input_contract": ilbert_input_contract(config),
             "token_cache_audit": _token_cache_audit(token_cache),
             "train_input_audit": train.audit,
             "valid_input_audit": valid.audit,
             "condition_contract": {
                 "columns": list(task.condition_columns),
-                "transform": "raw_physical_units",
+                "transform": config.training["condition_transform"],
             },
+            **({"condition_statistics": condition_stats.to_dict()} if condition_stats is not None else {}),
             "target_statistics": target_stats.to_dict(),
             "upstream_assets": assets,
             "model": config.model,
@@ -345,6 +406,7 @@ def prepare_ilbert_training(
         assets=assets,
         token_cache=token_cache,
         pad_token_id=int(tokenizer.pad_token_id),
+        condition_stats=condition_stats,
     )
 
 
@@ -677,6 +739,7 @@ def ilbert_evaluation_audit(
         {},
         max_length=int(config.model["max_length"]),
     )
+    prepared.audit["contract"] = ilbert_input_contract(config)
     return prepared.audit
 
 
@@ -698,6 +761,11 @@ def evaluate_ilbert_checkpoint(
         manifest["training_identity"],
         context="ILBERT evaluation checkpoint",
     )
+    condition_stats = (
+        ConditionStats.from_dict(manifest["training_identity"]["payload"]["condition_statistics"])
+        if config.training["condition_transform"] == "train_only_zscore"
+        else None
+    )
     seed_benchmark(config.seed)
     _configure_tf32(bool(config.training["tf32"]))
     raw = load_split(bundle.task, split)
@@ -708,6 +776,7 @@ def evaluate_ilbert_checkpoint(
         _tokenizer(config),
         bundle.token_cache,
         max_length=int(config.model["max_length"]),
+        condition_stats=condition_stats,
     )
     model = build_ilbert_model(config, bundle)
     payload = torch.load(root / "model.pt", map_location="cpu", weights_only=True)
@@ -750,6 +819,7 @@ def evaluate_ilbert_checkpoint(
 
 
 __all__ = [
+    "ConditionStats",
     "EpochBatchSampler",
     "ILBERT_INPUT_CONTRACT",
     "ILBERTTrainingBundle",
@@ -758,6 +828,7 @@ __all__ = [
     "build_ilbert_model",
     "evaluate_ilbert_checkpoint",
     "ilbert_evaluation_audit",
+    "ilbert_input_contract",
     "ilbert_model_sequences",
     "prepare_ilbert_training",
     "train_ilbert_bundle",

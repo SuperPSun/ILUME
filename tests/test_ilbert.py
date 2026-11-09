@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,8 +13,14 @@ from benchmarks.common.config import load_benchmark_config
 from benchmarks.common.data import BenchmarkTask, RawDataset
 from benchmarks.common.engine import TargetStats
 from benchmarks.common.environment import environment_run_details
+from benchmarks.common.checkpoint import write_model_artifacts
+from benchmarks.common import reuse
 from benchmarks.ilbert.environment import ilbert_asset_snapshot
+from benchmarks.ilbert import adapter
+from common.identity import tensor_state_hash
+from common.io import atomic_json, atomic_yaml
 from benchmarks.ilbert.adapter import (
+    ConditionStats,
     EpochBatchSampler,
     SharedILBERTRegressor,
     _collate,
@@ -265,3 +272,138 @@ def test_ilbert_epoch_sampler_is_deterministic_and_complete() -> None:
     assert sorted(map(len, first)) == [5, 16, 16]
     sampler.set_epoch(1)
     assert list(sampler) != first
+
+
+def test_ilbert_zscore_config_keeps_the_fixed_recipe() -> None:
+    original = load_benchmark_config("configs/benchmarks/FLftv4_3407/ilbert.yaml")
+    normalized = load_benchmark_config("configs/benchmarks/FLftv4_3407/ilbert_condition_zscore.yaml")
+    expected = original.to_dict()
+    expected["display_name"] = normalized.display_name
+    expected["training"]["condition_transform"] = "train_only_zscore"
+    assert normalized.to_dict() == expected
+    for invalid in ("test_zscore", "task_global_stage3_population_zscore"):
+        with pytest.raises(ValueError, match="condition_transform"):
+            replace(normalized, training={**normalized.training, "condition_transform": invalid}).validate()
+    with pytest.raises(ValueError, match="registered fine-tuning recipe"):
+        replace(normalized, training={**normalized.training, "learning_rate": 1e-5}).validate()
+
+
+@pytest.fixture
+def ilbert_splits(tmp_path, monkeypatch):
+    paths = [tmp_path / f"{split}.csv" for split in ("train", "valid", "test")]
+    for path in paths:
+        path.write_text(path.stem, encoding="utf-8")
+    task = replace(
+        _task(conditions=("temperature_K", "pressure_kPa")),
+        train_paths=(paths[0],), valid_paths=(paths[1],), test_path=paths[2],
+    )
+    splits = {
+        name: replace(_raw(), conditions=np.asarray(values, dtype=np.float64))
+        for name, values in {
+            "train": [[300.0, 100.0], [350.0, 200.0]],
+            "valid": [[400.0, 950000.0], [450.0, 100.0]],
+            "test": [[500.0, 1000000.0], [525.0, 200.0]],
+        }.items()
+    }
+    monkeypatch.setattr(adapter, "resolve_task", lambda *args: task)
+    monkeypatch.setattr(adapter, "load_split", lambda task, split: splits[split])
+    monkeypatch.setattr(adapter, "ilbert_asset_snapshot", lambda config: {})
+    monkeypatch.setattr(adapter, "_tokenizer", lambda config: FakeTokenizer())
+    return task, splits
+
+
+def test_ilbert_conditions_use_training_rows_only(ilbert_splits) -> None:
+    task, splits = ilbert_splits
+    config = load_benchmark_config("configs/benchmarks/FLftv4_3407/ilbert_condition_zscore.yaml")
+    bundle = adapter.prepare_ilbert_training(config, "stage3", task.task_id, 1)
+    assert bundle.condition_stats.to_dict() == {"mean": [325.0, 150.0], "scale": [25.0, 50.0]}
+    assert bundle.train.raw_conditions.tolist() == [[-1.0, -1.0], [1.0, 1.0]]
+    np.testing.assert_array_equal(bundle.valid.raw_conditions, [[3.0, 18997.0], [5.0, -1.0]])
+    payload = bundle.training_identity["payload"]
+    assert payload["condition_statistics"] == bundle.condition_stats.to_dict()
+    assert payload["input_contract"]["conditions"] == "train_only_zscore_in_registry_order"
+    assert bundle.train.audit["condition_columns"] == ["temperature_K", "pressure_kPa"]
+    splits["valid"].conditions[:] *= 10
+    splits["test"].conditions[:] *= 100
+    repeated = adapter.prepare_ilbert_training(config, "stage3", task.task_id, 1)
+    assert repeated.condition_stats == bundle.condition_stats
+    original = load_benchmark_config("configs/benchmarks/FLftv4_3407/ilbert.yaml")
+    raw = adapter.prepare_ilbert_training(original, "stage3", task.task_id, 1)
+    assert raw.condition_stats is None
+    assert "condition_statistics" not in raw.training_identity["payload"]
+    assert raw.training_identity["payload"]["input_contract"] == adapter.ILBERT_INPUT_CONTRACT
+    np.testing.assert_array_equal(raw.train.raw_conditions, splits["train"].conditions.astype(np.float32))
+    assert raw.training_identity["hash"] != bundle.training_identity["hash"]
+
+
+@pytest.mark.parametrize("width", (0, 2))
+def test_ilbert_constant_and_empty_conditions(width) -> None:
+    values = np.asarray([[300.0, 100.0], [300.0, 200.0]])[:, :width]
+    stats = ConditionStats.fit(values)
+    restored = ConditionStats.from_dict(json.loads(json.dumps(stats.to_dict())))
+    np.testing.assert_array_equal(restored.normalize(values), np.asarray([[0.0, -1.0], [0.0, 1.0]])[:, :width])
+    assert restored.normalize(np.empty((0, width))).shape == (0, width)
+
+
+@pytest.mark.parametrize("transform", ("raw_physical_units", "train_only_zscore"))
+def test_ilbert_checkpoint_roundtrip_and_condition_identity(
+    tmp_path, monkeypatch, ilbert_splits, transform
+) -> None:
+    task, splits = ilbert_splits
+    config = load_benchmark_config("configs/benchmarks/FLftv4_3407/ilbert.yaml")
+    config = replace(config, training={**config.training, "condition_transform": transform})
+    bundle = adapter.prepare_ilbert_training(config, "stage3", task.task_id, 1)
+
+    class TinyModel(torch.nn.Linear):
+        def to(self, *args, **kwargs):
+            return self
+
+    model = TinyModel(2, 1)
+    state = model.state_dict()
+    state_hash = tensor_state_hash("benchmark.ilbert-state.v2", state)
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    integrity = write_model_artifacts(checkpoint, state, state_hash, [], {})
+    atomic_json(checkpoint / "checkpoint.json", {
+        "format_version": 2, "kind": "ilume_baseline_model", "model_kind": "ilbert",
+        "training_identity": bundle.training_identity, "model_state_hash": state_hash,
+        "target_statistics": bundle.target_stats.to_dict(), "integrity": integrity,
+    })
+    atomic_json(checkpoint / "metadata.json", {"semantic_identity": bundle.training_identity})
+    atomic_yaml(checkpoint / "run_config.yaml", config.to_dict())
+    monkeypatch.setattr(reuse, "load_split", lambda task, split: splits[split])
+    assert reuse._audit_train(config, task, checkpoint)["training_identity"]["hash"] == bundle.training_identity["hash"]
+    seen = []
+
+    def predict(model, loader, row_count, **kwargs):
+        conditions = loader[0][1].numpy()
+        seen.append(conditions)
+        return conditions[:, :1]
+
+    monkeypatch.setattr(adapter, "build_ilbert_model", lambda *args: TinyModel(2, 1))
+    monkeypatch.setattr(adapter, "_configure_tf32", lambda enabled: None)
+    monkeypatch.setattr(adapter.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(adapter, "_predict_normalized", predict)
+    monkeypatch.setattr(adapter, "_data_loader", lambda config, prepared, cache, target_stats: [
+        _collate(prepared, cache, target_stats)(list(range(len(prepared.raw))))
+    ])
+    for split in ("valid", "test"):
+        result = adapter.evaluate_ilbert_checkpoint(config, "stage3", task.task_id, 1, checkpoint, split)
+        expected = (bundle.condition_stats.normalize(splits[split].conditions)
+                    if bundle.condition_stats is not None else splits[split].conditions.astype(np.float32))
+        np.testing.assert_array_equal(seen[-1], expected)
+        np.testing.assert_array_equal(result.conditions, splits[split].conditions)
+        assert result.input_audit["contract"] == adapter.ilbert_input_contract(config)
+        np.testing.assert_array_equal(result.predictions, bundle.target_stats.denormalize(expected[:, :1]))
+    other = "train_only_zscore" if transform == "raw_physical_units" else "raw_physical_units"
+    with pytest.raises(ValueError, match="ILBERT evaluation checkpoint"):
+        adapter.evaluate_ilbert_checkpoint(
+            replace(config, training={**config.training, "condition_transform": other}),
+            "stage3", task.task_id, 1, checkpoint, "test",
+        )
+    if transform == "train_only_zscore":
+        manifest = json.loads((checkpoint / "checkpoint.json").read_text())
+        manifest["training_identity"]["payload"]["condition_statistics"]["mean"][0] += 1
+        atomic_json(checkpoint / "checkpoint.json", manifest)
+        with pytest.raises(ValueError):
+            adapter.evaluate_ilbert_checkpoint(config, "stage3", task.task_id, 1, checkpoint, "test")

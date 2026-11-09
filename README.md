@@ -240,7 +240,7 @@ git config --global --add safe.directory \
   "$PWD/artifacts/benchmarks/ilbert/upstream"
 ```
 
-ILBERT普通离子液体输入为单条`cation.anion` AIS sequence；solvation/transfer只增加共享backbone的有序双视图。所有输入固定padding/truncation到100 tokens并公开审计，数值条件保持注册表顺序和原始物理单位。训练使用恒定`3e-5` learning rate完成10 轮，验证不调整学习率。
+ILBERT普通离子液体输入为单条`cation.anion` AIS sequence；solvation/transfer只增加共享backbone的有序双视图。所有输入固定padding/truncation到100 tokens并公开审计，旧配方数值条件保持注册表顺序和原始物理单位。新增独立[条件标准化配方](docs/baseline-flft-22-retrain-runbook.md#ilbert-独立条件标准化配方)，仅训练行拟合、checkpoint保存统计量，新旧身份隔离，见[ADR-0119](docs/adr/0119-ilbert-train-only-condition-standardization.md)。训练使用恒定`3e-5` learning rate完成10轮，验证不调整学习率。
 
 </details>
 

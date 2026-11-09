@@ -397,6 +397,9 @@ class BenchmarkConfig:
         }
         if self.model != expected_model:
             raise ValueError("ILBERT model must match the registered upstream recipe")
+        condition_transform = self.training.get("condition_transform")
+        if condition_transform not in {"raw_physical_units", "train_only_zscore"}:
+            raise ValueError("ILBERT condition_transform must be raw_physical_units or train_only_zscore")
         expected_training = {
             "optimizer": "adam",
             "learning_rate": 3.0e-5,
@@ -408,7 +411,7 @@ class BenchmarkConfig:
             "tf32": True,
             "loss": "mse",
             "model_selection": "final_training_state",
-            "condition_transform": "raw_physical_units",
+            "condition_transform": condition_transform,
             "device": "cuda",
             "precision": "fp32",
         }

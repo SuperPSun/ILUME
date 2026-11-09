@@ -86,6 +86,8 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 
 ## 当前基线数据协议
 
+ADR-0119为ILBERT增加独立 `train_only_zscore` 条件标准化：每任务/折仅训练行拟合均值和总体标准差，常量scale1；验证/测试使用checkpoint训练身份内保存的统计量，原始条件继续写入预测。旧raw配方与身份保持兼容，新旧互拒载；新配置为 `configs/benchmarks/FLftv4_3407/ilbert_condition_zscore.yaml`，输出 `outputs/benchmarks/FLftv4_3407/condition_zscore/ilbert/`，覆盖10变化任务五折50作业，不与旧attempt混合。原结构、资产和10轮固定配方不变，本次仅交付不自动训练。
+
 ADR-0118新增 `configs/benchmarks/FLftv4_3407/` 的 `flft_v4_3407_22_retrain` 独立补训协议，authority为当前Base22任务，仅显式训练10项变化任务、五折共500作业，不运行模拟。原结构、资产、种子和配方不变，输出 `outputs/benchmarks/FLftv4_3407/retrain_22/<model>/`；每卡独立折次、不使用DDP。现役调度为szx其余9模型450作业，H100保留已启动LlaSMol的50作业；szx新sbatch位于 `/home/sunp/slurm/baseline/`，明确排除LlaSMol并保留Slurm的GPU分配，3090旧计划仅备用。旧根已迁至FLftv4_3407，过期任务及完整旧sweep记录按用户确认清单归档trash。历史12任务和三模拟未完成复用审计，不直接形成完整22任务榜单；正式训练仍由用户执行。
 
 ADR-0117本轮只调整Base；以下基线仍保留24任务协议，尚未迁移到当前22任务catalog，重跑配对基线须另行建立协议与身份。

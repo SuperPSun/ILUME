@@ -32,6 +32,40 @@ GPU日志为 `/home/sunp/slurm/logs/baseline-flft22-gpu_<array_job_id>_<index>.o
 
 如只重交失败的GPU模型，确认原作业已结束后使用数组索引，例如 `sbatch --array=2 baseline-flft-22-gpu.sbatch` 仅重交MoLFormer。已完成折次经过原有严格校验后跳过，失败attempt不会中途恢复。
 
+## ILBERT 独立条件标准化配方
+
+2026-11-08按[ADR-0119](adr/0119-ilbert-train-only-condition-standardization.md)增加独立配方。仅温度、压力等注册表数值条件改为训练行z-score；保留模型结构、预训练资产、seed42及10轮末轮发布。每折分别拟合统计量并随训练身份保存于checkpoint，验证/测试复用；常量scale1，无条件使用空统计量。预测CSV仍保存原始物理条件。
+
+原配置和 `retrain_22/ilbert/` 保留，不把标准化训练写成旧配方的下一次attempt，不按新旧验证分数择优拼接。下列新配置仍覆盖本轮10项变化任务五折，共50个训练作业；其余12任务和模拟不运行，也不自动发布完整22任务榜单。
+
+在3090拉取包含本次修改的Git提交后执行；当前环境和预训练资产无需重新安装或下载。先确保所列GPU可用。完整sweep每张卡运行一个独立任务，不使用DDP：
+
+```bash
+cd /mnt/backup8t/pengs/ILUME
+git pull --ff-only
+conda activate ilume
+PYTHONPATH=src:. python scripts/benchmarks/sweep.py \
+  --config configs/benchmarks/FLftv4_3407/ilbert_condition_zscore.yaml \
+  --output outputs/benchmarks/FLftv4_3407/condition_zscore/ilbert \
+  --devices cuda:0,cuda:1,cuda:2,cuda:3 --max-workers 4
+```
+
+若仅先运行黏度fold4，可直接使用原单折入口，使用独立 `condition_zscore_check/` 预检根。以下训练与验证输出均须尚不存在；它只产生该折结果，不构成五折比较或测试集成，也不据此选择训练参数或检查点：
+
+```bash
+PYTHONPATH=src:. CUDA_VISIBLE_DEVICES=0 python scripts/benchmarks/train.py \
+  --config configs/benchmarks/FLftv4_3407/ilbert_condition_zscore.yaml \
+  --benchmark stage3 --task experiment/viscosity --fold 4 \
+  --output outputs/benchmarks/FLftv4_3407/condition_zscore_check/ilbert/stage3/experiment__viscosity/fold4/attempt-001
+PYTHONPATH=src:. CUDA_VISIBLE_DEVICES=0 python scripts/benchmarks/evaluate.py \
+  --config configs/benchmarks/FLftv4_3407/ilbert_condition_zscore.yaml \
+  --benchmark stage3 --task experiment/viscosity --fold 4 --split valid \
+  --checkpoint outputs/benchmarks/FLftv4_3407/condition_zscore_check/ilbert/stage3/experiment__viscosity/fold4/attempt-001 \
+  --output outputs/benchmarks/FLftv4_3407/condition_zscore_check/ilbert/stage3/experiment__viscosity/evaluate_valid_fold4/attempt-001
+```
+
+完整sweep在上方独立 `condition_zscore/` 根从头运行50折，不复制单折预检目录拼装sweep根；正常重复执行同一sweep时，已完成折次通过严格校验后跳过。新配方的完整权重、配置、日志、身份及预测最终仍回传4090同相对路径。
+
 ## 其他设备备用：同步资源
 
 从4090直接使用rsync同步当前代码、配置、3407数据与预训练资产，不再使用补丁或独立SHA清单。2026-11-07已只读确认3090仓库为 `/mnt/backup8t/pengs/ILUME/`，H100为 `/workspace/pengs/ILUME/`。以下命令在4090执行；不传输主仓库 `.git`、训练输出、trash或Conda环境，不删除目标额外文件。同步期间不要在目标仓库修改同一批源文件。
