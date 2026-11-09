@@ -69,7 +69,7 @@ auxiliary:
   partial_charge_cache: outputs/v4/stage1/base/partial_charge/artifacts
   partial_charge_manifest: data/stage1/properties/partial_atomic_charge/charge_20260514/structure_manifest.csv
 training:
-  batch_size: 256
+  batch_size: 128
   epochs: 10
   learning_rate: 0.0001
   weight_decay: 0.01
