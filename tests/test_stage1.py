@@ -487,11 +487,12 @@ def test_residual_graph_bonded_and_bondless_gradients(smiles):
 
 @pytest.mark.parametrize("graph_type", ["dmpnn", "dgt"])
 @pytest.mark.parametrize("device_name", ["cpu", "cuda"])
-def test_v4_gradient_audit_reference_and_state_isolation(tiny_config, tiny_samples, device_name, graph_type):
+def test_v4_gradient_audit_reference_and_state_isolation(tiny_config, tiny_samples, device_name, graph_type, monkeypatch):
     import random
     from stage1.auxiliary import empty_auxiliary_targets
     from stage1.dual_view import DualViewPretrainModel
     from stage1.gradient_audit import AUDIT_LOSSES, audit_gradient_norms
+    from stage1.dgt import DGTStream
 
     if device_name == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA is unavailable")
@@ -516,6 +517,9 @@ def test_v4_gradient_audit_reference_and_state_isolation(tiny_config, tiny_sampl
         sample["auxiliary_targets"]["partial_charge_valid"] = torch.ones(count, dtype=torch.bool)
     probe = MultimodalMasker(vocabulary, config.masking, 400043).apply(MultimodalPacker(vocabulary)(samples), evaluation=True)
     model = DualViewPretrainModel(config, vocabulary).to(device).eval()
+    streams = [module for module in model.modules() if isinstance(module, DGTStream)]
+    for module in streams:
+        module.compile_attention = False
     with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp_enabled):
         reference = model(probe.to(device))
     assert reference.loss.item() == pytest.approx(sum(getattr(config.loss, f"lambda_{name}") * value.item() for name, value in reference.losses.items()))
@@ -525,6 +529,9 @@ def test_v4_gradient_audit_reference_and_state_isolation(tiny_config, tiny_sampl
     for name, loss in objectives.items():
         gradients = torch.autograd.grad(reference.losses[loss], parameters, retain_graph=True, allow_unused=True)
         expected[name] = torch.cat([g.flatten() for g in gradients if g is not None]).norm().item()
+    for index, module in enumerate(streams):
+        module.compile_attention = index % 2 == 0
+    attention_modes = [module.compile_attention for module in streams]
     model.train()
     model.electronic_head.eval()  # Preserve heterogeneous module modes too.
     modes = [module.training for module in model.modules()]
@@ -533,7 +540,12 @@ def test_v4_gradient_audit_reference_and_state_isolation(tiny_config, tiny_sampl
         p.grad = torch.ones_like(p)  # autograd.grad must leave existing .grad untouched.
     python_rng, numpy_rng, torch_rng = random.getstate(), np.random.get_state(), torch.get_rng_state()
     cuda_rng = torch.cuda.get_rng_state(device) if amp_enabled else None
-    row = audit_gradient_norms(model, probe, config, device, amp_enabled=amp_enabled, amp_dtype=torch.bfloat16)
+    with monkeypatch.context() as patch:
+        def reject_compilation():
+            raise AssertionError("Gradient audit must not compile attention")
+        patch.setattr("stage1.dgt._compiled_attention", reject_compilation)
+        row = audit_gradient_norms(model, probe, config, device, amp_enabled=amp_enabled, amp_dtype=torch.bfloat16)
+    assert [module.compile_attention for module in streams] == attention_modes
     assert modes == [module.training for module in model.modules()]
     assert random.getstate() == python_rng and torch.equal(torch.get_rng_state(), torch_rng)
     np.testing.assert_equal(np.random.get_state(), numpy_rng)
@@ -582,6 +594,16 @@ def test_v4_gradient_audit_reference_and_state_isolation(tiny_config, tiny_sampl
     malformed[0] = {**samples[0], "auxiliary_targets": {**samples[0]["auxiliary_targets"], "partial_charge": torch.zeros(2)}}
     with pytest.raises(ValueError, match="real atom count"):
         MultimodalPacker(vocabulary)(malformed)
+    modes_before_error = [module.training for module in model.modules()]
+    with monkeypatch.context() as patch:
+        def failed_forward(batch):
+            assert all(not module.compile_attention for module in streams)
+            raise RuntimeError("audit probe failed")
+        patch.setattr(model, "forward", failed_forward)
+        with pytest.raises(RuntimeError, match="audit probe failed"):
+            audit_gradient_norms(model, probe, config, device, amp_enabled=amp_enabled, amp_dtype=torch.bfloat16)
+    assert [module.compile_attention for module in streams] == attention_modes
+    assert modes_before_error == [module.training for module in model.modules()]
 
 
 @pytest.mark.parametrize("override, expected", [(None, 1000), (0, 0), (17, 17), (-1, None)])

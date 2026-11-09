@@ -7,6 +7,7 @@ import numpy as np
 import torch
 
 from common.identity import semantic_identity, tensor_state_hash
+from .dgt import DGTStream
 from .masking import MultimodalMasker, MultimodalPacker
 
 
@@ -51,14 +52,20 @@ def audit_gradient_norms(model, probe, config, device, *, amp_enabled, amp_dtype
         for p in encoder.parameters() if p.requires_grad
     ))
     modes = [(module, module.training) for module in model.modules()]
+    attention_modes = [(module, module.compile_attention) for module in model.modules()
+                       if isinstance(module, DGTStream)]
     python_rng, numpy_rng = random.getstate(), np.random.get_state()
     devices = [device.index if device.index is not None else torch.cuda.current_device()] if device.type == "cuda" else []
     try:
         with torch.random.fork_rng(devices=devices), torch.enable_grad():
             model.eval()
+            # Per-loss autograd.grad retains this graph. Compiled backward may
+            # donate buffers, which is incompatible with repeated differentiation.
+            for module, _ in attention_modes:
+                module.compile_attention = False
             batch = probe.to(device)
             with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp_enabled):
-                # Direct eager forward: bypass compiled call and the DDP wrapper.
+                # Bypass model compilation, local attention compilation and DDP.
                 output = model.forward(batch)
             result = {"weighted_grad_norms": {}, "coefficients": {}, "coverage": {}}
             role_weights = torch.as_tensor(config.loss.role_weights, device=device)
@@ -96,6 +103,8 @@ def audit_gradient_norms(model, probe, config, device, *, amp_enabled, amp_dtype
                 result["weighted_grad_norms"][name] = None if norm is None else abs(coefficient) * norm
             return result
     finally:
+        for module, enabled in attention_modes:
+            module.compile_attention = enabled
         for module, training in modes:
             module.training = training
         random.setstate(python_rng)

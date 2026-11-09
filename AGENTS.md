@@ -35,7 +35,7 @@ ADR-0113：Base的`descriptor.value_policy: phi_mask_ring_log1p_v1`对非单连�
 
 ADR-0115：现役Base在保留0113处理的基础上启用`phi_mask_ring_log1p_gasteiger_v2`，副本上严格检查Gasteiger参数及原子/隐式氢电荷；失败时屏蔽整组14项PEOE_VSA，不进scaler或描述符监督，下游填0。其他特征、维数、loss和采样不变；旧raw/v1行为保留，policy身份拒绝交叉复用。需新prepare/teacher/sidecar及三个Stage训练，旧产物只读，不自动运行或清理。
 
-ADR-0116：现役Stage1 Base使用512D/8头/8层双路2D DGT、每路FFN1024，encoder77,986,987参数。仅最短路径≤8与长度≤18无弦环拓扑，逐通道pair score/value attention；原子/键双池化Linear1024→512，learned1024/atom512不变。新增独立DGT拓扑sidecar与prepare的`--dgt-topology-only`，绑定corpus/分片/结构/hash；不修改原corpus/teacher/电荷sidecar。固定query32非重入重计算；Base另启用CUDA局部`dgt_attention_compile`，保持dropout在编译区外、原score/value定义及FP32 softmax，CPU即时、错误不回退。此开关共享默认false/省略，不进入科研身份，和另两项DGT执行值一样严格核对恢复；旧缺省按false，不能切换开关续训，不自动缩batch/截断。旧D-MPNN默认序列化、state与预测保留，不能跨架构恢复；新Base从头训练Stage1并重跑下游，独立benchmark和历史消融不变。
+ADR-0116：现役Stage1 Base使用512D/8头/8层双路2D DGT、每路FFN1024，encoder77,986,987参数。仅最短路径≤8与长度≤18无弦环拓扑，逐通道pair score/value attention；原子/键双池化Linear1024→512，learned1024/atom512不变。新增独立DGT拓扑sidecar与prepare的`--dgt-topology-only`，绑定corpus/分片/结构/hash；不修改原corpus/teacher/电荷sidecar。固定query32非重入重计算；Base另启用CUDA局部`dgt_attention_compile`，保持dropout在编译区外、原score/value定义及FP32 softmax，CPU即时、错误不回退。梯度审计临时使用未编译attention以支持逐目标保留图求导，结束（含异常）恢复原开关，正常训练继续编译。此开关共享默认false/省略，不进入科研身份，和另两项DGT执行值一样严格核对恢复；旧缺省按false，不能切换开关续训，不自动缩batch/截断。旧D-MPNN默认序列化、state与预测保留，不能跨架构恢复；新Base从头训练Stage1并重跑下游，独立benchmark和历史消融不变。
 
 ADR-0117：用户确认现役Base采用22实验＋两模拟辅助，显式移除equilibrium_pressure和water_activity_coefficient，solvation unique_systems按更新catalog为3684。六组、剩余任务recipe、训练超参及严格校验不变；不改原始数据/catalog/SHA，不批量更新历史optimized_3407、HPO、消融或基线。新Stage3身份拒绝旧24任务/旧solvation来源；不同任务集合macro不可直接比较。
 

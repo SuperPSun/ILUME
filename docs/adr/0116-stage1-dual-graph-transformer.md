@@ -28,6 +28,8 @@ Base设置`model.graph_encoder_type: dgt`、`graph_depth: 8`、`graph_feedforwar
 
 2026-11-08第二轮执行优化：原子/键特征使用带分子offset的dense embedding查表，严格隔离每个分子的padding行；空键池只添加可微零标量，不构造重复的零pair特征。新增CUDA局部编译开关`training.dgt_attention_compile`，共享默认false且序列化省略，现役Base为true。仅编译原逐通道score/mask/FP32 softmax/加权value归约，dropout在编译区外生成，保持随机数序列；开启BF16中间转换仿真，不替换为标准SDPA/FlashAttention。`fullgraph=True`、动态shape，首次调用/新shape可能编译，错误直接传播，不静默回退；CPU保留即时参考路径。全模型`training.compile`仍为false。GPU测试覆盖FP32/BF16输出/梯度、padding、动态长度及gradient audit，不承诺不同算子归约下逐bit相同。
 
+2026-11-09修复局部编译与梯度审计的兼容性：审计期间临时关闭所有DGTStream的局部attention编译，使用同一公式的即时路径，避免编译backward的buffer donation与逐目标`retain_graph=True`冲突。正常训练仍按YAML使用编译加速；成功或异常退出审计均逐模块恢复原开关、模式和RNG。不全局修改PyTorch编译配置，不改变模型、loss、科研身份或已有缓存。
+
 `training.dgt_query_chunk_size: 32`，`dgt_attention_checkpointing: true`。按query分块重建pair特征，使用非重入checkpoint保留dropout RNG；共享线性pair映射先投影各加和项，避免常驻N×N×512矩阵。DGT最初实现保留全局batch512及原训练预算，不做length bucketing、OOM自动回退。三项DGT执行设置不进入科研/encoder/缓存身份，但写入运行配置并在完整轮恢复时严格校验；旧检查点缺少局部编译字段按false解析。开关变化不能续接旧检查点，不放宽恢复；旧配置默认即时行为、参数键及历史产物格式不变。
 
 后续显存调整（2026-11-07）：按用户要求将现役Base的全局batch从512减半至256；单卡256，四rank DDP每卡64。10轮、LR、loss、自然shuffle和其他执行设置不变，更新数及warmup/cosine预算按新batch重新计算。batch属于训练身份，禁止从旧512检查点续训；匹配的corpus、teacher、电荷及拓扑缓存仍可复用。历史消融配置不批量修改。

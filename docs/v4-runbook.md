@@ -223,7 +223,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --standalone --nproc_per_node=4 scripts/st
 
 训练每完成1,000次优化器更新自动追加 `gradient_audit.jsonl`。rank0使用固定32分子验证探针及评估mask，关闭dropout；其他rank等待。报告原有七项原始编码器范数，启用时增加 `partial_charge_grad_norm`，以及 `weighted_grad_norms`（损失系数绝对值乘范数）、有效目标覆盖、探针ID/hash、步及尝试。既有指标和检查点选择不变。
 
-设置 `training.gradient_audit_interval_steps: 0` 或传入 `--gradient-audit-interval-steps 0` 可关闭；正CLI值覆盖YAML，省略则按YAML。`gradient_audit_batch_size` 控制探针大小（默认32）。诊断设置不改变科研身份。缺失标签目标记录 `null` 和 `no_valid_targets`；小自然探针没有电子/电荷标签不说明梯度弱。范数来自各自目标，不是向量和：不要仅凭大小自动调整系数。审计增加一次前向及最多八次梯度计算；OOM明确失败，不自动缩小探针。监控命令：
+设置 `training.gradient_audit_interval_steps: 0` 或传入 `--gradient-audit-interval-steps 0` 可关闭；正CLI值覆盖YAML，省略则按YAML。`gradient_audit_batch_size` 控制探针大小（默认32）。诊断设置不改变科研身份。缺失标签目标记录 `null` 和 `no_valid_targets`；小自然探针没有电子/电荷标签不说明梯度弱。范数来自各自目标，不是向量和：不要仅凭大小自动调整系数。DGT审计固定使用未编译attention，避免多目标保留计算图与编译buffer donation冲突；审计结束（含异常）恢复正常训练的局部编译开关。审计增加一次前向及最多八次梯度计算；OOM明确失败，不自动缩小探针。监控命令：
 
 ```bash
 tail -f outputs/v4/stage1/base/train/gradient_audit.jsonl
