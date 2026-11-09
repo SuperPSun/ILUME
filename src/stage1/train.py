@@ -151,7 +151,9 @@ def _config_hash(config: PretrainConfig) -> str:
     return canonical_json_sha256(config.experiment_dict())
 
 
-def _loader_options(config: PretrainConfig, device: torch.device) -> dict[str, Any]:
+def _loader_options(
+    config: PretrainConfig, device: torch.device, *, shard_rows: int = 0,
+) -> dict[str, Any]:
     workers = config.training.num_workers
     options: dict[str, Any] = {
         "num_workers": workers,
@@ -159,7 +161,11 @@ def _loader_options(config: PretrainConfig, device: torch.device) -> dict[str, A
         "persistent_workers": device.type == "cuda" and workers > 0,
     }
     if workers > 0:
-        options["prefetch_factor"] = 2
+        # Queue one global shard ahead, plus the existing two batches per worker.
+        # Each rank consumes its own partition, so use the global batch here.
+        options["prefetch_factor"] = 2 + math.ceil(
+            shard_rows / (config.training.batch_size * workers)
+        )
     return options
 
 
@@ -688,7 +694,9 @@ def run_training(
         generator=torch.Generator().manual_seed(
             config.data.seed + context.rank * 1000003
         ),
-        **_loader_options(config, device),
+        **_loader_options(config, device, shard_rows=max(
+            count for _, count in train_dataset.shard_ranges
+        )),
     )
     quick_indices = _quick_validation_indices(
         valid_dataset,

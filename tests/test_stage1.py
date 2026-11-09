@@ -346,9 +346,12 @@ def _dgt_loader_low_fd_worker(rank):
     from stage1.dgt_topology import build_dgt_topology
 
     resource.setrlimit(resource.RLIMIT_NOFILE, (256, resource.getrlimit(resource.RLIMIT_NOFILE)[1]))
-    smiles = ["CCO", "[Na+]", "CC(C)C", "c1ccccc1"] * 132 + ["[Na+]"]
+    smiles = ["CCO", "[Na+]", "CC(C)C", "c1ccccc1"] * 512 + ["[Na+]"]
+    config = PretrainConfig(training=TrainingConfig(batch_size=256, num_workers=2))
+    options = train_module._loader_options(config, torch.device("cpu"), shard_rows=8192)
     loader = DataLoader(smiles, batch_size=256, num_workers=2, collate_fn=_collate_dgt_graphs,
-                        multiprocessing_context="spawn", persistent_workers=True, prefetch_factor=2, timeout=15)
+                        multiprocessing_context="spawn", persistent_workers=True,
+                        prefetch_factor=options["prefetch_factor"], timeout=15)
     for _ in range(2):
         offset = 0
         for packed in loader:
@@ -367,6 +370,71 @@ def _dgt_loader_low_fd_worker(rank):
 
 def test_dgt_dataloader_batch256_with_low_file_descriptor_limit():
     mp.spawn(_dgt_loader_low_fd_worker, nprocs=1, join=True)
+
+
+class _ObservedCorpusDataset(PreparedCorpusDataset):
+    def __init__(self, artifacts, events):
+        super().__init__(artifacts, "train")
+        self.events = events
+
+    def _load_shard(self, relative_path):
+        cached = relative_path in self._cache
+        samples = super()._load_shard(relative_path)
+        if not cached:
+            self.events.put(relative_path)
+        return samples
+
+
+def test_stage1_prefetch_prepares_next_shard_without_changing_batches(tmp_path, tiny_config):
+    from dataclasses import asdict
+    from itertools import chain
+    from common.identity import tensor_state_hash
+    from torch.utils.data import DataLoader
+
+    source = tmp_path / "source"
+    source.mkdir()
+    _write_smiles(source / "cation.csv", ["[Na+]", "[K+]", "C[NH3+]", "C[NH2+]C"])
+    _write_smiles(source / "anion.csv", ["[Cl-]", "[Br-]", "[I-]", "C(=O)[O-]"])
+    _write_smiles(source / "molecule.csv", ["C" * n for n in range(1, 49)])
+    config = replace(tiny_config,
+                     data=DataConfig(stage1_dir=source, artifacts_dir=tmp_path / "prepared",
+                                     valid_fraction=.1, max_smiles_tokens=128, shard_size=32),
+                     training=replace(tiny_config.training, batch_size=1, num_workers=2))
+    prepare_corpus(config)
+    vocabulary = SmilesTokenizer.load(config.data.artifacts_dir / "tokenizer.json")
+    events = mp.get_context("spawn").Queue()
+    dataset = _ObservedCorpusDataset(config.data.artifacts_dir, events)
+    paths = [row["path"] for row in dataset.shards if row["split"] == "train"]
+    assert len(paths) >= 2
+    options = train_module._loader_options(config, torch.device("cpu"), shard_rows=32)
+    loader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=MultimodalPacker(vocabulary),
+                        multiprocessing_context="spawn", timeout=15,
+                        generator=torch.Generator().manual_seed(42), **options)
+    reference = DataLoader(PreparedCorpusDataset(config.data.artifacts_dir, "train"),
+                           batch_size=1, shuffle=False, collate_fn=MultimodalPacker(vocabulary),
+                           generator=torch.Generator().manual_seed(42))
+    iterator = iter(loader)
+    first = next(iterator)
+    # Hold the consumer on its first batch: the next shard must already be ready.
+    seen = set()
+    while paths[1] not in seen:
+        seen.add(events.get(timeout=15))
+    actual_masker = MultimodalMasker(vocabulary, config.masking, seed=42)
+    expected_masker = MultimodalMasker(vocabulary, config.masking, seed=42)
+    for actual, expected in zip(chain([first], iterator), reference, strict=True):
+        actual = actual_masker.apply(actual)
+        expected = expected_masker.apply(expected)
+        assert tensor_state_hash("prefetch.batch", asdict(actual)) == tensor_state_hash("prefetch.batch", asdict(expected))
+    events.close()
+    events.join_thread()
+    # Deeper look-ahead must propagate corruption when the affected batch is read.
+    (config.data.artifacts_dir / paths[1]).write_bytes(b"corrupt")
+    corrupt = DataLoader(PreparedCorpusDataset(config.data.artifacts_dir, "train"),
+                         batch_size=1, shuffle=False, collate_fn=MultimodalPacker(vocabulary),
+                         multiprocessing_context="spawn", timeout=15,
+                         generator=torch.Generator().manual_seed(42), **options)
+    with pytest.raises(ValueError, match="Shard hash mismatch"):
+        list(corrupt)
 
 
 def test_v4_residual_capacity_and_shared_compatibility(tiny_config, tiny_samples, monkeypatch):
@@ -1721,7 +1789,7 @@ def test_stage1_epoch_checkpoint_resume_and_attempt_log_preservation(
         ),
         training=TrainingConfig(
             batch_size=2, epochs=2,
-            learning_rate=1.0e-3, num_workers=0, device="cpu",
+            learning_rate=1.0e-3, num_workers=2, device="cpu",
             amp_dtype="none", compile=False,
             validation_interval_steps=2, quick_validation_samples_per_role=1,
         ),
@@ -1735,8 +1803,17 @@ def test_stage1_epoch_checkpoint_resume_and_attempt_log_preservation(
         validation_calls.append(bool(kwargs["quick"]))
         return real_validate(*args, **kwargs)
 
+    real_loader_options = train_module._loader_options
+
+    def shallow_loader_options(*args, **kwargs):
+        options = real_loader_options(*args, **kwargs)
+        options["prefetch_factor"] = 2
+        return options
+
+    monkeypatch.setattr(train_module, "_loader_options", shallow_loader_options)
     monkeypatch.setattr(train_module, "_validate", record_validation)
     baseline = run_training(config, output_dir=baseline_output, attempt_id="baseline")
+    monkeypatch.setattr(train_module, "_loader_options", real_loader_options)
     monkeypatch.setattr(train_module, "_validate", real_validate)
     assert [row["global_step"] for row in baseline] == [2, 3, 4, 6]
     assert validation_calls == [True, False, True, False]
@@ -1779,6 +1856,10 @@ def test_stage1_epoch_checkpoint_resume_and_attempt_log_preservation(
     assert (output / "checkpoint_epoch_00002.pt").is_file()
     assert (output / "last.pt").is_file()
     last = torch.load(output / "last.pt", map_location="cpu", weights_only=False)
+    reference = torch.load(baseline_output / "last.pt", map_location="cpu", weights_only=False)
+    torch.testing.assert_close(last["model"], reference["model"], rtol=0, atol=0)
+    torch.testing.assert_close(last["optimizer"], reference["optimizer"], rtol=0, atol=0)
+    assert last["scheduler"] == reference["scheduler"]
     assert last["completed_epoch"] == 2
     metric_rows = [
         json.loads(line)
