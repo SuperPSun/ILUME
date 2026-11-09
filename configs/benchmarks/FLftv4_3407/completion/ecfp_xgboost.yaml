@@ -1,0 +1,55 @@
+protocol: flft_v4_3407_22_completion
+name: ecfp_xgboost
+display_name: ECFP+XGBoost
+seed: 42
+data:
+  data_root: data/3407
+  task_catalog: data/3407/task_catalog.csv
+  stage3_authority_config: configs/v4/stage3/base.yaml
+  feature_cache: outputs/benchmarks/FLftv4_3407/completion_22/cache/features.sqlite3
+features:
+  kind: ecfp4
+  radius: 2
+  n_bits: 2048
+model:
+  n_estimators: 1000
+  max_depth: 6
+  learning_rate: 0.05
+  subsample: 0.8
+  colsample_bytree: 0.8
+  reg_lambda: 1.0
+  objective: reg:squarederror
+  eval_metric: mae
+  tree_method: hist
+training:
+  model_selection: final_training_state
+  n_jobs: 8
+  device: cpu
+  target_space: raw
+stage3:
+  enabled: true
+  tasks:
+  - experiment/self_diffusion_coefficient
+  - experiment/thermal_conductivity
+  - experiment/heat_capacity
+  - experiment/speed_of_sound
+  - experiment/dynamic_relative_permittivity
+  - experiment/static_relative_permittivity
+  - experiment/transfer_organic
+  - experiment/pec50
+  - experiment/gas_solubility
+  - experiment/enthalpy_of_vaporization_or_sublimation
+  - experiment/anodic_potential_limit
+  - experiment/cathodic_potential_limit
+  folds:
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+simulation:
+  enabled: true
+  tasks:
+  - simulation/thermal_expansion
+  - simulation/homo
+  - simulation/lumo
