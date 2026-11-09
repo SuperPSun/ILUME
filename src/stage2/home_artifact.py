@@ -31,6 +31,8 @@ STAGE2_HOME_V4_FINAL_KIND = "ilume_stage2_home_final_v4"
 
 
 def checkpoint_kind(recipe):
+    if recipe.stage3.model.expert_architecture == "entity_token_attention_v1":
+        return "ilume_stage2_token_home_checkpoint_v4"
     if recipe.stage2.frozen_encoder is not None:
         return "ilume_stage2_external_frozen_home_checkpoint_v1"
     if recipe.stage2.is_entity_home:
@@ -39,6 +41,8 @@ def checkpoint_kind(recipe):
 
 
 def final_kind(recipe):
+    if recipe.stage3.model.expert_architecture == "entity_token_attention_v1":
+        return "ilume_stage2_token_home_final_v4"
     if recipe.stage2.frozen_encoder is not None:
         return "ilume_stage2_external_frozen_home_final_v1"
     if recipe.stage2.is_entity_home:
@@ -74,7 +78,7 @@ def load_home_final(path: str | Path) -> tuple[dict[str, Any], SimulationHoME, S
     if manifest.get("artifact") != artifact.name or manifest.get("artifact_sha256") != sha256_file(artifact):
         raise ValueError("Stage 2 final artifact SHA mismatch")
     payload = torch.load(artifact, map_location="cpu", weights_only=False)
-    if (payload.get("kind") not in {"ilume_stage2_entity_home_final_v4", "ilume_stage2_external_frozen_home_final_v1"}
+    if (payload.get("kind") not in {"ilume_stage2_token_home_final_v4", "ilume_stage2_entity_home_final_v4", "ilume_stage2_external_frozen_home_final_v1"}
             or manifest.get("kind") != payload.get("kind") or payload.get("format_version") != 4):
         raise ValueError("Unsupported Stage 2 full HoME artifact kind")
     identity = payload["training_identity"]
@@ -123,7 +127,7 @@ def load_home_final(path: str | Path) -> tuple[dict[str, Any], SimulationHoME, S
     if payload["kind"] != final_kind(recipe):
         raise ValueError("Stage 2 final representation family mismatch")
     if (recipe.stage2.experiment_dict() != identity["payload"]["stage2_config"]
-            or asdict(recipe.stage3.model) != identity["payload"]["stage3_model"]
+            or recipe.stage3.model.to_dict() != identity["payload"]["stage3_model"]
             or {name: asdict(group) for name, group in recipe.stage3.groups.items()} != identity["payload"]["transfer_groups"]
             or identity["payload"].get("epochs") != recipe.stage2_epochs
             or manifest.get("fixed_final_epoch") != recipe.stage2_epochs):
@@ -143,7 +147,7 @@ def load_home_final(path: str | Path) -> tuple[dict[str, Any], SimulationHoME, S
         )
         stage1_config = config_from_dict(payload["stage1_config"])
         backbone = build_stage1_model(stage1_config, vocabulary, schema, encoder_only=stage1_config.is_dual_view)
-    model = SimulationHoME(backbone, registry, recipe.stage3, recipe.stage2)
+    model = SimulationHoME(backbone, registry, recipe.stage3, recipe.stage2, scalers=payload["scalers"])
     model.load_state_dict(state, strict=True)
     if recipe.stage2.frozen_encoder is not None:
         if (payload["stage1_feature_identity"] != backbone.feature_identity

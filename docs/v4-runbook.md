@@ -175,6 +175,16 @@ python scripts/stage1/train.py --config configs/v4/stage1/base.yaml --output out
 
 现役Base全局batch256，由此前512减半以降低显存占用；单卡每步256条，四rank DDP每GPU为batch64。每rank仍使用8个DataLoader worker，四rank训练加载器共32个worker。LR保持1e-4，优化器步数及warmup/cosine预算按新batch重算；不能从旧512配置的checkpoint恢复。语料、teacher及匹配的sidecar仍可复用。worker数量仅属执行参数，本身不改变科研训练身份。
 
+按[ADR-0122](adr/0122-stage1-graph-size-qc.md)，Base及`base-100h.yaml`新增`data.max_graph_nodes: 160`：prepare实体QC排除原子数或无向键数严格超过160的完整结构，等于160保留，不截断分子。当前新增排除仅14条中性扩增训练样本，已入库原始样本全部保留；未来数据更新需重新核查。排除原因、原子/键数和阈值写入`excluded_entities.csv`及metadata的`quality_control`。此项改变corpus身份，上段“缓存可复用”仅适用于batch变化，不能用于复用未启用大小过滤的旧corpus；须新prepare及匹配的teacher/电荷/拓扑缓存，从头训练，不覆盖当前产物。
+
+H100专用`configs/v4/stage1/base-100h.yaml`使用全局batch84、5轮；双rank每卡42，保持LR1e-4、query32及现有attention执行开关。仅在新缓存均完成且YAML来源路径配对、输出目录未占用后运行：
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc-per-node=2 scripts/stage1/train.py --config configs/v4/stage1/base-100h.yaml --output outputs/v4/stage1/base/train
+```
+
+旧batch64或旧语料checkpoint不得续到此配置。筛除极端结构与DDP不能构成显存安全保证；不自动缩batch或跳过样本，当前训练不会被代码更新热切换。
+
 <a id="stage1-dgt-topology"></a>
 
 ### Stage1 DGT 拓扑与恢复
@@ -207,7 +217,13 @@ DGT查表反向采用dense embedding归约，并复用query循环中的padding/�
 CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --standalone --nproc_per_node=4 scripts/stage1/train.py --config configs/v4/stage1/base.yaml --output outputs/v4/stage1/base/train
 ```
 
-使用未占用输出目录。训练、快速验证和完整验证加载器各用配置的worker数；CUDA 加载器首次使用后保留worker，每worker预取两个batch，因此开始验证时worker资源可能增加。应按作业CPU配额及存储吞吐选择worker，而非仅按GPU数量；增加worker不保证吞吐提升。
+使用未占用输出目录。训练、快速验证和完整验证加载器各用配置的worker数；CUDA加载器首次使用后保留worker，因此开始验证时worker资源可能增加。训练加载器按实际最大训练分片行数S、全局batch B与每rank worker数W，令每worker `prefetch_factor = 2 + ceil(S / (B × W))`，使提交的任务窗口覆盖约一个完整分片，再保留原有每worker两个batch的余量；worker可在当前分片的batch仍被消费时准备下一分片。DDP使用全局batch计算，各rank读取原有分区，不增加或重排样本。快速/完整验证仍固定每worker两个batch；W=0保持同步读取。
+
+例如8192行分片、全局batch64、8个worker时，每worker预取18个batch，每rank最多144个在途batch任务；不是将这144个batch放进GPU。代价是更多CPU/pinned内存和在途传输句柄，具体峰值取决于分子大小、worker及消费速度。仍逐项执行语料、拓扑、teacher和电荷来源/完整性校验，错误在读取对应batch时传播，不忽略或替换样本。首分片、持续慢于训练的存储/解包，以及审计/验证停顿不能保证被隐藏；该优化不消除不同worker重复解包。
+
+深预取必须同时使用pin-memory句柄修复：打包图的局部键索引与DGT拓扑在pin线程中复制为主进程普通CPU storage，避免已pin好的batch仍持有worker共享storage句柄。旧代码可能在1024软限制下报`received 0 items of ancdata`，继而`Pin memory thread exited unexpectedly`；这是CPU IPC传输故障，不等于CUDA显存OOM。修复保留深预取、原batch、worker、pinning与完整性检查，不要求提高`ulimit`或重建缓存。
+
+这只是数据加载时序优化，不修改配置schema、科研/缓存身份、batch边界、mask/RNG或训练/恢复规则；已有匹配缓存可复用。新进程才会使用新预取窗口，不能热更新运行中的进程，也不因此获得轮中途恢复能力。应按作业CPU/RAM配额及存储吞吐选择worker，而非仅按GPU数量；增加worker不保证吞吐提升。
 
 预期停顿发生在每1,000次更新的rank0梯度审计（其他rank等待）、每5,000次更新的审计加快速验证，以及轮边界的完整验证/检查点导出。审计日志在审计完成后写入，不在开始时写入。这些周期操作不能解释发生在对应边界前的停顿。
 
@@ -310,7 +326,7 @@ ssh SERVER 'sha256sum /path/to/ILUME/assets/unimol2/modelzoo/84M/checkpoint.pt'
 
 ## Stage2 / Stage3：实体 HoME v4
 
-合同见 [ADR-0095](adr/0095-v4-entity-home-without-object-encoder.md)。Stage1保持本手册前述配方，GLOBAL/GROUP直接处理实体，没有ObjectEncoder。
+现役专家与条件合同见 [ADR-0120](adr/0120-entity-token-attention-late-fusion.md)，数据及基础owner边界见 [ADR-0095](adr/0095-v4-entity-home-without-object-encoder.md)。Stage1保持本手册前述配方，GLOBAL/GROUP直接处理实体，没有ObjectEncoder。
 
 当前Stage3 Base采用 [ADR-0096](adr/0096-stage3-batch-sample-weighted-gradients.md)：Phase1/2共享梯度按本step各实验任务真实batch长度计算样本加权均值，GLOBAL直接跨任务聚合、GROUP在组内聚合，PRIVATE不额外缩放。尾batch按实际长度计权，任务耗尽后不进分母；模拟仍仅更新自身PRIVATE。Raw Sampling、loss、owner预算及评估口径不变。新聚合标识及权重规则进入训练身份，旧等权Entity-HoME检查点不可跨合同恢复或加载，后续训练须使用新目录；身份一致的准备产物及Stage1可复用。
 
@@ -326,7 +342,7 @@ ssh SERVER 'sha256sum /path/to/ILUME/assets/unimol2/modelzoo/84M/checkpoint.pt'
 
 现役主模型入口为 `configs/v4/stage2/base.yaml` 和 `configs/v4/stage3/base.yaml`；`optimized_3407.yaml`仅保留历史G2_C05配方。Stage3 Phase2中的两项模拟任务只更新自身PRIVATE，不参与GLOBAL/GROUP梯度或共享梯度归一化；Phase3继续只更新PRIVATE。查看 `performance.jsonl` 的参数量、轮耗时及 `metrics.jsonl` 的实际 optimizer_updates。
 
-当前Stage3 Base为G2_C01：GLOBAL一个专家，transport/thermophysical/phase_stability/dielectric_optical/solvation/biological的GROUP专家数为1/1/2/1/2/1。两电位任务归入phase_stability；PRIVATE/Tower/FiLM宽度、dropout与007/032配方的LR/预算保持不变。Stage2的GLOBAL及两个可迁移GROUP同步缩减，必须重新训练Stage2后再训练Stage3；旧G2_C05权重不能迁移或恢复到新容量。现役Stage1需先按211维新policy重建来源。
+当前Stage3 Base为G2_C01：GLOBAL一个专家，transport/thermophysical/phase_stability/dielectric_optical/solvation/biological的GROUP专家数为1/1/2/1/2/1。两电位任务归入phase_stability；PRIVATE FFN/Tower宽度、dropout与007/032配方的LR/预算保持不变。现役专家与条件融合按ADR-0120使用token注意力，旧FiLM不再创建。Stage2的GLOBAL及两个可迁移GROUP同步缩减，必须重新训练Stage2后再训练Stage3；旧G2_C05权重不能迁移或恢复到新容量。现役Stage1需先按211维新policy重建来源。
 
 ## 最终优化配方（3407）
 
@@ -364,7 +380,11 @@ python scripts/benchmarks/summarize.py --input outputs/v4/stage3/optimized_3407 
 
 ## G2_C01 主模型
 
-使用 `configs/v4/stage{2,3}/base.yaml`，data/3407、训练seed42及007/032超参；依赖当前211维新policy的Stage1编码器与prepare。旧G2_C05来源及历史split42权重不能复用。先确认标准Base输出未占用；如有旧结果，按精确清单另行确认归档后再运行。
+当前Base按[ADR-0120](adr/0120-entity-token-attention-late-fusion.md)使用实体token注意力，1024D/8头/2层；L1不读条件，L2三个owner层级联合实体与条件，最后按三槽拼接。Stage1和匹配prepared保持原合同，需重新训练Stage2及Stage3；旧MLP权重不能续训或迁入。参数量与新kind见ADR，新输出使用独立`token_attention/`根，以下命令不覆盖旧`base/`结果。各步骤成功后再执行下一步。
+
+使用 `configs/v4/stage{2,3}/base.yaml`，data/3407、训练seed42及007/032超参；依赖当前211维新policy的Stage1编码器与prepare。旧G2_C05来源及历史split42权重不能复用。新Stage2/3使用未占用的token_attention输出目录，保留旧Base；Stage1仍引用原配对来源，不需要为本次模型结构升级重新生成Stage1。
+
+2026-11-09只读核验：配置指定的`outputs/v4/stage1/base/train/stage1_encoder.pt`尚不存在；正式运行前须完成或回传当前配对Stage1编码器，并由入口核验完整来源。Stage1 prepare的metadata存在不能替代编码器。新`token_attention/`输出根尚未创建，本次没有启动正式作业。
 
 2026-11-06已按用户确认对齐当前数据协议（[ADR-0117](adr/0117-base-22-tasks-updated-solvation.md)）：Base排除平衡压力与水活度系数，保留22项实验和两项模拟辅助；solvation按真实更新的catalog声明3684体系，其余任务配方、GROUP和训练预算不变。严格任务/体系数校验仍保留。历史24任务的optimized_3407、HPO、消融及基线配置/结果不随此修改，不能与新22任务macro直接比较。Stage1新版DGT及Gasteiger v2来源须先按前文流程完成。
 
@@ -375,8 +395,8 @@ python scripts/benchmarks/summarize.py --input outputs/v4/stage3/optimized_3407 
 prepare生成五任务数据和冻结Stage1实体缓存；train固定训练10轮，发布 `stage2_final.pt` 和 `stage2_final.json`，不再导出独立编码器。
 
 ```bash
-python scripts/stage2/prepare.py --config configs/v4/stage2/base.yaml --output outputs/v4/stage2/base/prepare
-python scripts/stage2/train.py --config configs/v4/stage2/base.yaml --output outputs/v4/stage2/base/train --device cuda:2
+python scripts/stage2/prepare.py --config configs/v4/stage2/base.yaml --output outputs/v4/stage2/token_attention/prepare
+python scripts/stage2/train.py --config configs/v4/stage2/base.yaml --output outputs/v4/stage2/token_attention/train --device cuda:2
 ```
 
 ### Stage3：prepare 与五折 train
@@ -384,8 +404,8 @@ python scripts/stage2/train.py --config configs/v4/stage2/base.yaml --output out
 Stage2训练完成后准备Stage3，再执行三阶段五折训练。下面使用GPU2/3、总并发两折；只用一张卡时改为单设备并将 `--max-parallel` 设为1。
 
 ```bash
-python scripts/stage3/prepare.py --config configs/v4/stage3/base.yaml --output outputs/v4/stage3/base/prepare
-python scripts/stage3/train.py --config configs/v4/stage3/base.yaml --fold 1 2 3 4 5 --output outputs/v4/stage3/base/train --devices cuda:2,cuda:3 --max-parallel 2
+python scripts/stage3/prepare.py --config configs/v4/stage3/base.yaml --output outputs/v4/stage3/token_attention/prepare
+python scripts/stage3/train.py --config configs/v4/stage3/base.yaml --fold 1 2 3 4 5 --output outputs/v4/stage3/token_attention/train --devices cuda:2,cuda:3 --max-parallel 2
 ```
 
 ### Stage3：实验与模拟联合评估
@@ -393,8 +413,8 @@ python scripts/stage3/train.py --config configs/v4/stage3/base.yaml --fold 1 2 3
 默认 `--domain all`，每次调用完成同一split的实验与两项模拟评估。实验验证仍逐折评估，模拟验证仍使用全部五个final的原单位预测均值；测试集两类均按各自协议使用五模型集成。先查看验证结果，再报告测试集；hydration无测试集。
 
 ```bash
-python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --checkpoint-dir outputs/v4/stage3/base/train --split valid --fold 1 2 3 4 5 --output outputs/v4/stage3/base/valid
-python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --checkpoint-dir outputs/v4/stage3/base/train --split test --ensemble-folds --output outputs/v4/stage3/base/test
+python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --checkpoint-dir outputs/v4/stage3/token_attention/train --split valid --fold 1 2 3 4 5 --output outputs/v4/stage3/token_attention/valid
+python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --checkpoint-dir outputs/v4/stage3/token_attention/train --split test --ensemble-folds --output outputs/v4/stage3/token_attention/test
 ```
 
 联合评估使用未占用的输出根；实验验证写入 `foldN/`，实验测试写入根目录，模拟结果写入同根的 `simulation/`。每个运行仍独立记录身份、metadata、summary和预测清单，汇总器递归读取，实验与模拟榜单继续独立。入口先核对模拟所需的全部五折final来源；实验评估失败时返回非零并停止后续模拟评估，模拟失败时保留已完成实验结果且返回非零，不覆盖已有产物。
@@ -403,14 +423,15 @@ python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --checkpo
 
 ### 结果汇总
 
-只扫描新的实体HoME输出，发布到独立目录，不与旧20实验/四模拟结果混排。
+只扫描新的实体HoME输出，发布到独立目录，不与旧20/24实验或四模拟结果混排。
 
 ```bash
-python scripts/benchmarks/summarize.py --input outputs/v4/stage3/base --output outputs/v4/summary_g2_c01_3407
-python scripts/benchmarks/summarize_paper.py --config configs/v4/stage3/base.yaml --ilume outputs/v4/stage3/base --baselines outputs/benchmarks/v4_3407 --with-test --output outputs/reports/paper-g2-c01-3407-001
+python scripts/benchmarks/summarize.py --input outputs/v4/stage3/token_attention --output outputs/v4/summary_token_attention_3407
 ```
 
-新Base中断时，Stage2训练使用 `--resume outputs/v4/stage2/base/train`，Stage3训练使用布尔 `--resume`；prepare和评估无此恢复步骤，已有输出不覆盖。
+与基线生成论文联表前，须先核验基线具有完整的22任务、相同split及匹配数据身份；历史24任务的`outputs/benchmarks/v4_3407`不能直接替代。基线补训和复用审计见[22任务补训手册](baseline-flft-22-retrain-runbook.md)，本次不运行基线或发布不完整联表。
+
+新Base中断时，Stage2训练使用 `--resume outputs/v4/stage2/token_attention/train`，Stage3训练使用布尔 `--resume`；prepare和评估无此恢复步骤，已有输出不覆盖。
 
 只在确实需要继续中断作业时按现有入口显式使用 `--resume`；必须保留同一配置、源 SHA、折/owner/训练状态和指标尾部。不要通过修改元数据、kind、格式、任务名称或宽松加载复用不匹配的历史产物。
 

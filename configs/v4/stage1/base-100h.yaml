@@ -5,6 +5,7 @@ data:
   valid_fraction: 0.05
   seed: 42
   max_smiles_tokens: 256
+  max_graph_nodes: 160
   descriptor_dim: 217
   max_samples_per_role: null
   shard_size: 8192
@@ -69,7 +70,7 @@ auxiliary:
   partial_charge_cache: outputs/v4/stage1/base/partial_charge/artifacts
   partial_charge_manifest: data/stage1/properties/partial_atomic_charge/charge_20260514/structure_manifest.csv
 training:
-  batch_size: 64
+  batch_size: 84
   epochs: 5
   learning_rate: 0.0001
   weight_decay: 0.01

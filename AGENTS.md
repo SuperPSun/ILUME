@@ -17,7 +17,7 @@
 | 范围 | 必须保持的边界 | ADR |
 |---|---|---|
 | Stage 1 | 仅SMILES/Graph输入，独立512D 编码器、12层SMILES Transformer/8层独立双路2D DGT、CLS/原子与键均值拼接后投影512、1024残差MLP；learned1024、atom512，不输入角色/描述符。结构重建、停止梯度一致性、RDKit211（显式排除6项、Phi适用性mask、八环计数log1p、Gasteiger失败屏蔽14项PEOE）、离线Uni-Mol768、13电子目标及仅训练集原子电荷Linear512→1；现役系数和执行配置只读Base YAML及v4手册，sidecar不改语料/teacher。各项分子均值再按角色loss权重2/2/1；自然shuffle不变。fusion-only80/10/10，10轮、完整轮恢复；训练format4及仅编码器导出。每1000步rank0固定32分子梯度审计只报告，可CLI覆盖，不更新/调权/选模，不进入科研身份；独立14任务后训练只更新回归头，不替换编码器 | 0089/0090/0091/0092/0112/0113/0115/0116；执行0013/0014/0015/0017；0039仅历史v3 |
-| Stage 2 | Stage1永久冻结/eval；缓存1235D实体、形式电荷角色及有效位。GLOBAL/GROUP L1并行读取2478D有序槽位拼接，各专家内部投影，无独立ObjectEncoder。仅五项模拟、thermophysical/solvation GROUP，无电子GROUP/原子 adapter | 0095/0112；Stage1表示0089 |
+| Stage 2 | Stage1永久冻结/eval；缓存1235D实体、形式电荷角色及有效位。GLOBAL/GROUP L1并行读取1235D实体token，各专家内部投影到1024D并作对象内注意力；L2三个owner层级联合实体与物理条件，Task Gate后按三槽拼接3075D，无独立ObjectEncoder。仅五项模拟、thermophysical/solvation GROUP，无电子GROUP/原子 adapter | 0120/0095/0112；Stage1表示0089 |
 | Stage 2 训练与产物 | 五模拟每联合step各取一个未耗尽batch，GLOBAL跨任务/GROUP组内按真实batch样本数加权，PRIVATE原始平均梯度，不乘任务补偿；`batch_sample_weighted_owner_raw_v1`及联合步调度进入身份，旧final拒绝迁移。256逻辑/微批、10轮末轮、完整stage2_final.pt/json；无仅编码器导出、精调/最优/last/evaluator。迁移GLOBAL、匹配GROUP及两模拟PRIVATE，严格身份和张量 hash | 0095/0097；历史0082/0083/0085 |
 | Stage 3 | Base为22实验+两模拟（0117排除equilibrium_pressure/water_activity_coefficient、solvation更新为3684体系）；两电位归入phase_stability、限small/仅温度，G2_C01容量按0114。Phase1实验GLOBAL/GROUP/PRIVATE；Phase2冻结GLOBAL；Phase3仅PRIVATE。模拟Phase1冻结，Phase2/3仅自身PRIVATE，不进共享梯度/分母/调度预算。共同锚点与末轮拼接 | 0095/0117；机制0050/0070 |
 | Stage 3 owner | 现役Entity-HoME Phase1/2的GLOBAL跨实验任务、GROUP组内按当前真实batch样本数加权平均；PRIVATE保持原始平均Loss梯度，模拟不进共享分母。Phase3单任务更新；`batch_sample_weighted_owner_raw_v1`及权重规则进入训练身份。历史非Entity保留0070合同。owner LR/存续期与规模类别默认、任务覆盖项的宽度/dropout进入身份；提前结束用`requires_grad=False`，不删除任务；零预算PRIVATE逐bit继承锚点。Base训练集/验证集microbatch上限1024 | 0096；预算0050/0055；诊断0054 |
@@ -64,7 +64,9 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 - 科研与 prepare 参数写完整自包含 YAML；`preparation` 不进入实验身份。`--output`、`--resume`、Stage 3 折/评估 selector 是运行参数。
 - Stage 3 训练入口必填 `--fold`，可多折；`--output` 是共同根目录，运行位于 `foldN/`。正式折并发只在该入口用 spawn worker 和显式设备槽调度，不下沉到 `src/stage3`；独立HPO外层使用设备队列，max-parallel任务槽轮流分配到设备，允许一卡多任务；底层折并行固定1，禁止嵌套放大并发。
 
-Stage1训练DataLoader在W>0时按实际最大训练分片S、全局batch B和每rank worker数W使用`prefetch_factor=2+ceil(S/(B×W))`，提前排到下一分片；验证仍为2、W=0同步不变。不重排batch、不改变mask/RNG或放宽SHA；科研/缓存身份不变，新进程生效。额外占用CPU/pinned内存及在途句柄，不承诺隐藏首分片或消除worker重复解包，执行细节见v4手册。
+Stage1训练DataLoader在W>0时按实际最大训练分片S、全局batch B和每rank worker数W使用`prefetch_factor=2+ceil(S/(B×W))`，提前排到下一分片；验证仍为2、W=0同步不变。不重排batch、不改变mask/RNG或放宽SHA；科研/缓存身份不变，新进程生效。额外占用CPU/pinned内存及在途句柄；pin线程须把CPU局部键索引/拓扑复制为主进程非共享storage，避免深队列保留IPC句柄导致ancdata错误。不承诺隐藏首分片或消除worker重复解包，执行细节见v4手册。
+
+ADR-0122：Stage1 Base及H100配置在prepare实体QC启用`data.max_graph_nodes: 160`，原子数或无向键数严格超限才排除完整结构，等于上限保留；当前新增排除14条扩增训练样本，现有已入库原始样本不变。记录原因/大小审计，不截断、不改原始文件、不在训练中跳过。默认null/序列化省略以保留历史身份；新上限进入corpus身份并在训练时核对，旧prepared/teacher/电荷/拓扑及checkpoint不得直接混用。H100专用`base-100h.yaml`为全局batch84/5轮，双rank每卡42；标准Base仍为256/10轮。其余模型、loss和训练策略不变，不自动启停、归档或覆盖旧运行。
 
 ## 数据、身份、输出与恢复
 

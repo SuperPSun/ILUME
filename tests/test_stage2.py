@@ -663,7 +663,8 @@ def test_entity_home_base_contracts() -> None:
         replace(recipe.stage2, loss=replace(recipe.stage2.loss, task_weights={})).validate()
 
 
-def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_stage2_setup, tmp_path, monkeypatch, chemberta_snapshot_factory):
+@pytest.mark.parametrize("expert_architecture", ["mlp", "entity_token_attention_v1"])
+def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_stage2_setup, tmp_path, monkeypatch, chemberta_snapshot_factory, expert_architecture):
     variant = "base"
     from stage1.config import AuxiliaryConfig, MaskingConfig
     from stage1.model import build_stage1_model
@@ -680,6 +681,18 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
 
     recipe = load_home_recipe(f"configs/v4/stage2/{variant}.yaml")
     stage3 = load_stage3_config(f"configs/v4/stage3/{variant}.yaml")
+    recipe = replace(recipe, stage3=replace(recipe.stage3, model=replace(
+        recipe.stage3.model, expert_architecture=expert_architecture)))
+    stage3 = replace(stage3, model=replace(stage3.model, expert_architecture=expert_architecture))
+    token_attention = expert_architecture == "entity_token_attention_v1"
+    if token_attention:
+        # Exact production dispatch/owners/artifacts; shrink expert width only in this fixture.
+        from stage3.model import Stage3SparseModel
+        original_init = Stage3SparseModel.__init__
+        def tiny_experts(self, model_config, task_specs, d_model, **kwargs):
+            original_init(self, model_config, task_specs,
+                          16 if model_config.expert_architecture == "entity_token_attention_v1" else d_model, **kwargs)
+        monkeypatch.setattr(Stage3SparseModel, "__init__", tiny_experts)
     stage1_root = tmp_path / "dual_features"
     stage1 = PretrainConfig(
         architecture=ArchitectureConfig(kind="dual_view_v4"),
@@ -823,7 +836,7 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     with pytest.raises(ValueError, match="resume identity mismatch"):
         train_stage2_home(recipe, interrupted, resume=True)
 
-    assert payload["kind"] == "ilume_stage2_entity_home_final_v4" and payload["format_version"] == 4
+    assert payload["kind"] == ("ilume_stage2_token_home_final_v4" if token_attention else "ilume_stage2_entity_home_final_v4") and payload["format_version"] == 4
     assert all(torch.equal(value, source.backbone.state_dict()[name]) for name, value in source_backbone.items())
     assert len(source.registry.tasks) == len(config.data.tasks)
     corrupt = tmp_path / "corrupt_final.pt"
@@ -852,7 +865,9 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
         preparation=replace(stage3.preparation, cache_dir=tmp_path / "object_cache", encoding_batch_size=8),
         initialization=replace(stage3.initialization, stage2_encoder=None, stage1_encoder=checkpoint, stage1_artifacts_dir=stage1_root, stage2_final=output / "stage2_final.pt", simulation_artifacts_dir=config.data.artifacts_dir),
         model=recipe.stage3.model,
-        tasks={task: replace(spec, unique_systems=5, phase1_private_epochs=1, phase2_private_epochs=1, phase3_private_epochs=1) for task, spec in stage3.tasks.items()},
+        tasks={task: replace(spec, unique_systems=5, phase1_private_epochs=1, phase2_private_epochs=1, phase3_private_epochs=1,
+            model_overrides={**spec.model_overrides, 'private_hidden_ratio': .015625,
+                'tower_hidden_ratio': .015625, 'film_hidden_ratio': .015625}) for task, spec in stage3.tasks.items()},
         groups={group: replace(spec, expert_hidden_ratio=.015625, phase1=replace(spec.phase1, epochs=1), phase2=replace(spec.phase2, epochs=1)) for group, spec in stage3.groups.items()},
         training=replace(stage3.training, device="cpu", amp_dtype="none", cpu_threads=1, cpu_interop_threads=1, checkpoint_interval_epochs=1,
             three_phase=replace(stage3.training.three_phase, global_scope=replace(stage3.training.three_phase.global_scope, epochs=2),
@@ -964,7 +979,7 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     rows = train_fold(stage3, 1, output_dir=train_root)
     assert rows[-1]["phase"] == "three_phase_final"
     final = torch.load(train_root / "three_phase_final.pt", weights_only=False)
-    assert final["kind"] == "ilume_stage3_entity_home_three_phase_final_v4"
+    assert final["kind"] == ("ilume_stage3_token_home_three_phase_final_v4" if token_attention else "ilume_stage3_entity_home_three_phase_final_v4")
     assert len(final["private_state_hashes"]) == len(stage3.tasks) + 2 == 24
     phase1 = torch.load(train_root / "phase_1" / "checkpoint_epoch_00002.pt", weights_only=False)
     assert all(torch.equal(value, phase1["model"][name]) for name, value in final["model"].items() if name.startswith("simulation_backbone."))
@@ -973,6 +988,31 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
                if manifest.get(name) == "GLOBAL")
     loaded = load_simulation_final(stage3, train_root, fold=1)
     assert all(torch.equal(value, loaded.state_dict()[name]) for name, value in final["model"].items())
+    if token_attention:
+        # Exercise the actual public query implementation using controlled fold selectors.
+        # Full strict single-fold artifact loading was checked immediately above.
+        from stage3.inference import FrozenPropertyPredictor, PredictionQuery, PropertyCapability
+        from stage3.evaluate import _predict
+        from stage3.data import iter_rows
+        task = "experiment/density"
+        stats = prepared["normalization"]["fold1"][task]
+        predictor = object.__new__(FrozenPropertyPredictor)
+        predictor.config, predictor.device = stage3, torch.device("cpu")
+        predictor.encoder, predictor._entities = frozen, {}
+        predictor.models = [loaded] * 5
+        predictor.normalizations = [prepared["normalization"]["fold1"]] * 5
+        predictor.simulation_source = payload
+        target = resolved[task].target_column
+        predictor.capabilities = {task: PropertyCapability(task, target, "g/cm^3", "identity",
+            resolved[task].condition_columns, False, stats["target"]["mean"], stats["target"]["scale"], stats["conditions"])}
+        raw = next(iter_rows(stage3, resolved[task], (1,)))[2]
+        query = PredictionQuery(raw["cation"], raw["anion"],
+            {task: {name: float(raw[name]) for name in resolved[task].condition_columns}})
+        result = predictor.predict([query])[0][task]
+        valid = Stage3TaskDataset(stage3.data.artifacts_dir, 1, task, "valid")
+        _, predicted, _, _ = _predict(loaded, task, valid, store, stats, stage3, torch.device("cpu"))
+        assert result["native"] == pytest.approx(float(predicted[0]), abs=1e-5)
+        assert len(result["folds_native"]) == 5
     resumed = train_fold(stage3, 1, output_dir=train_root, resume_from=train_root)
     assert resumed[-1]["phase"] == "three_phase_final"
     assert torch.load(train_root / "three_phase_final.pt", weights_only=False)["model_state_hash"] == final["model_state_hash"]
@@ -1104,10 +1144,11 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
                 with (tmp_path / split / "predictions" / (task.replace("/", "__") + ".csv")).open() as handle:
                     actual = [float(row["prediction"]) for row in csv.DictReader(handle)]
                 np.testing.assert_allclose(actual, (predictions[task] + 3) * stats["scale"] + stats["mean"], rtol=1e-5, atol=1e-5)
-    if chemberta_snapshot_factory is not None:
-        _verify_chemberta_home(stage3, recipe, tmp_path, chemberta_snapshot_factory, monkeypatch)
-    _verify_entity_home_ablations(stage3, recipe, prepared, train_root, tmp_path)
-    _verify_single_view_ablations(stage1, stage3, recipe, tmp_path)
+    if not token_attention:
+        if chemberta_snapshot_factory is not None:
+            _verify_chemberta_home(stage3, recipe, tmp_path, chemberta_snapshot_factory, monkeypatch)
+        _verify_entity_home_ablations(stage3, recipe, prepared, train_root, tmp_path)
+        _verify_single_view_ablations(stage1, stage3, recipe, tmp_path)
     # Ignored source columns remain SHA-bound; never edit metadata hashes.
     bad = source_path(stage3, resolved[enthalpy], 1)
     bad.write_text(bad.read_text().replace("Liquid | Gas", "Solid | Gas"))
@@ -1201,6 +1242,10 @@ def _verify_entity_home_ablations(stage3, recipe, prepared, train_root, tmp_path
     for variant in ('no_global', 'no_group', 'no_private', 'uniform_gate', 'no_stage2',
                     'capacity_no_global', 'capacity_no_group', 'capacity_match_global', 'capacity_match_group'):
         config = research(variant)
+        if config.data.seed == 3407 and variant.startswith('capacity_'):
+            with pytest.raises(ValueError, match='Capacity controls for data/3407 were cancelled'):
+                config.validate()
+            continue
         config.validate()
         model, _, names = build_model_and_store(config, prepared, fold=1, device=torch.device('cpu'))
         if variant in {'no_global', 'no_group', 'no_private', 'uniform_gate'}:
@@ -1221,7 +1266,7 @@ def _verify_entity_home_ablations(stage3, recipe, prepared, train_root, tmp_path
         if variant == 'no_group':
             assert all(len(experts) == 0 for experts in model.l1_group_experts.values())
             assert model.interactions and model.l1_group_normalizations
-            values = EntityInputs.from_slots(torch.randn(2,1,1241), torch.tensor([[2],[2]]))
+            values = EntityInputs.from_slots(torch.randn(2,1,model.entity_input_contract['entity_dim']), torch.tensor([[2],[2]]))
             spec = model.task_specs['experiment/transfer_organic']
             conditions = torch.zeros(2,spec.condition_width)
             first = model(spec.task_id, values, conditions, partner_embedding=values).predictions
@@ -1255,7 +1300,7 @@ def _verify_entity_home_ablations(stage3, recipe, prepared, train_root, tmp_path
         loaded, _, _ = _load_model(config, prepared, output/'three_phase_final.pt',1,0,torch.device('cpu'),three_phase_final=True)
         assert all(torch.equal(value,loaded.state_dict()[name]) for name,value in artifact['model'].items())
         metrics = evaluate_checkpoints(config,output,split='valid',ensemble_folds=False,fold=1)
-        assert len(metrics['tasks'])==24 and metrics['reporting']['model_id'] == config.ablation.model_id
+        assert set(metrics['tasks']) == set(config.tasks) and metrics['reporting']['model_id'] == config.ablation.model_id
         if variant == 'uniform_gate':
             assert all(torch.equal(initial[name],value) for name,value in artifact['model'].items() if name.startswith('task_gates.'))
         with pytest.raises(ValueError, match='checkpoint mismatch: kind'):
@@ -1280,12 +1325,13 @@ def _verify_entity_home_ablations(stage3, recipe, prepared, train_root, tmp_path
     from stage3.data import Stage3TaskDataset
     mlp = SimpleNamespace(name='ilume_stage3_single_task_mlp_entity_v4')
     packed = _prepared_embeddings(mlp, prepared)
-    assert packed.shape == (len(prepared['objects']['objects']),2490)
+    packed_width = 2 * prepared['slots']['slots'].shape[-1] + 8
+    assert packed.shape == (len(prepared['objects']['objects']), packed_width)
     for task in ('experiment/density','experiment/transfer_organic','experiment/hydration'):
         spec = prepared['registry'][task]
         data = Stage3TaskDataset(stage3.data.artifacts_dir,1,task,'train')
         features = build_input_features(data,packed,spec)
-        assert features.shape[1] == 2490 * (2 if spec.partner_slots else 1) + spec.condition_width
+        assert features.shape[1] == packed_width * (2 if spec.partner_slots else 1) + spec.condition_width
 
     if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
         import shutil
@@ -1303,6 +1349,11 @@ def _verify_entity_home_ablations(stage3, recipe, prepared, train_root, tmp_path
             task_catalog=stage3.data.task_catalog,stage3_authority_config=authority_path,
             stage3_prepared_artifacts=authority.data.artifacts_dir))
         mlp_config.validate()
+        if packed_width != 2490:
+            # Historical independent MLPs require RDKit217; keep their strict contract.
+            with pytest.raises(ValueError, match='object embeddings are invalid'):
+                adapter.prepare_stage3_single_task_mlp_training(mlp_config,'stage3','experiment/density',1)
+            return
         for task in ('experiment/density','experiment/transfer_organic','experiment/hydration'):
             bundle = adapter.prepare_stage3_single_task_mlp_training(mlp_config,'stage3',task,1)
             output = tmp_path/('mlp_train_'+task.replace('/','__'))
@@ -1335,10 +1386,15 @@ def _verify_single_view_ablations(stage1, stage3, recipe, tmp_path):
 
     teacher_checkpoint=tmp_path/'single_view_teacher.pt'
     teacher_checkpoint.write_bytes(b'temporary injected teacher')
-    stage1=replace(stage1,auxiliary=replace(stage1.auxiliary,
+    # Single-view research recipes retain their historical RDKit217 / D-MPNN source.
+    stage1=replace(stage1,data=replace(stage1.data,artifacts_dir=tmp_path/'single_view_features'),
+        descriptor=replace(stage1.descriptor,excluded_names=(),value_policy='raw'),
+        model=replace(stage1.model,graph_encoder_type='dmpnn',graph_message_mode='residual_blocks',graph_feedforward_dim=None),
+        auxiliary=replace(stage1.auxiliary,graph_topology_cache=None,
         teacher_cache=tmp_path/'single_view_teacher',teacher_checkpoint=teacher_checkpoint),
         training=replace(stage1.training,epochs=1,batch_size=4,num_workers=0,device='cpu',amp_dtype='none',
-                         gradient_audit_interval_steps=1))
+                         gradient_audit_interval_steps=1,dgt_attention_checkpointing=False,dgt_attention_compile=False))
+    prepare_corpus(stage1)
     prepare_teacher_cache(stage1,teacher=lambda molecules: torch.ones(len(molecules),768),batch_size=4)
     vocabulary=SmilesTokenizer.load(stage1.data.artifacts_dir/'tokenizer.json')
     dataset=PreparedCorpusDataset(stage1.data.artifacts_dir,'train')
@@ -1393,7 +1449,8 @@ def _verify_single_view_ablations(stage1, stage3, recipe, tmp_path):
             load_stage1_model(root/'wrong_kind.pt',single.data.artifacts_dir)
         audit=[json.loads(line) for line in (root/'stage1/gradient_audit.jsonl').read_text().splitlines()]
         assert audit and all(name not in audit[0]['coverage'] for name in removed)
-        second=replace(recipe.stage2,data=replace(recipe.stage2.data,artifacts_dir=root/'stage2_prepared'),
+        second=replace(recipe.stage2,data=replace(recipe.stage2.data,artifacts_dir=root/'stage2_prepared',
+            pretrain_artifacts_dir=single.data.artifacts_dir),
             initialization=replace(recipe.stage2.initialization,checkpoint=root/'stage1/stage1_encoder.pt'))
         paired=replace(recipe,stage2=second)
         prepare_stage2_data(second);cache=prepare_frozen_entities(paired)
@@ -1406,6 +1463,7 @@ def _verify_single_view_ablations(stage1, stage3, recipe, tmp_path):
         downstream=replace(downstream,data=replace(downstream.data,artifacts_dir=root/'stage3_prepared'),
             preparation=replace(downstream.preparation,cache_dir=root/'stage3_entity_cache'),
             initialization=replace(downstream.initialization,stage1_encoder=root/'stage1/stage1_encoder.pt',
+                stage1_artifacts_dir=single.data.artifacts_dir,
                 stage2_final=root/'stage2/stage2_final.pt',simulation_artifacts_dir=second.data.artifacts_dir))
         downstream.validate()
         prepare_stage3(downstream)
@@ -1417,7 +1475,7 @@ def _verify_single_view_ablations(stage1, stage3, recipe, tmp_path):
         final=load_simulation_final(downstream,root/'stage3',fold=1)
         assert encoding_state_hash(final.simulation_backbone)==encoding_state_hash(loaded.model)
         scores=evaluate_checkpoints(downstream,root/'stage3',split='valid',ensemble_folds=False,fold=1)
-        assert len(scores['tasks'])==24 and scores['reporting']['model_id']==downstream.ablation.model_id
+        assert set(scores['tasks']) == set(downstream.tasks) and scores['reporting']['model_id']==downstream.ablation.model_id
     assert stage1_identities[0]!=stage1_identities[1]
 
 
@@ -1509,7 +1567,7 @@ def _verify_chemberta_home(stage3, recipe, tmp_path, snapshot_factory, monkeypat
         final = load_simulation_final(downstream, root/'stage3', fold=1)
         assert all(torch.equal(v, final.simulation_backbone.state_dict()[k]) for k, v in before.items())
         report = evaluate_checkpoints(downstream, root/'stage3', split='valid', ensemble_folds=False, fold=1)
-        assert len(report['tasks']) == 24 and report['reporting']['model_id'] == downstream.ablation.model_id
+        assert set(report['tasks']) == set(downstream.tasks) and report['reporting']['model_id'] == downstream.ablation.model_id
         ensemble = root / 'simulation_ensemble'
         for fold in range(1, 6):
             directory = ensemble / f'fold{fold}'

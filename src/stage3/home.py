@@ -114,6 +114,11 @@ def build_model_and_store(
         raise ValueError("Stage3 slots and Stage2 entity descriptor widths differ")
     model = (SimulationEntityModel(config.model, specs, 1024, source_model=source_model, **kwargs)
         if simulation_enabled else Stage3SparseModel(config.model, specs, 1024, **kwargs))
+    if config.model.expert_architecture == "entity_token_attention_v1":
+        statistics = dict(prepared["normalization"][f"fold{fold}"])
+        if simulation_enabled:
+            statistics.update({task: source["scalers"][task] for task in simulation_tasks(config)})
+        model.bind_condition_statistics(statistics)
     model.representation_contract = "entity_home_v4"
     model.to(device)
     if simulation_enabled:

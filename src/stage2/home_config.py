@@ -35,7 +35,7 @@ class HomeRecipe:
                 "microbatch_size": self.stage2_microbatch_size,
                 "initialization": self.initialization,
                 "random_seed": self.random_seed,
-                "model": asdict(self.stage3.model),
+                "model": self.stage3.model.to_dict(),
                 "groups": {name: asdict(group) for name, group in self.stage3.groups.items()},
                 **({"freeze_stage1": True} if self.freeze_stage1 else {}),
             },

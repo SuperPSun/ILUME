@@ -470,6 +470,11 @@ def test_v4_residual_capacity_and_shared_compatibility(tiny_config, tiny_samples
 
     base = load_config(ROOT / "configs/v4/stage1/base.yaml")
     assert base.training.batch_size == 256
+    assert base.data.max_graph_nodes == 160
+    h100 = load_config(ROOT / "configs/v4/stage1/base-100h.yaml")
+    assert h100.data.max_graph_nodes == 160
+    assert h100.training.batch_size == 84
+    assert h100.training.batch_size // 2 == 42
     assert base.training.dgt_attention_compile is True
     assert [base.loss.lambda_smiles, base.loss.lambda_atom, base.loss.lambda_bond,
             base.loss.lambda_alignment, base.loss.lambda_descriptor,
@@ -2119,6 +2124,68 @@ def test_prepare_excludes_qc_failures_before_descriptor_calculation(
     assert metadata["quality_control"]["excluded"]["total"] == 3
     assert metadata["augmentation_audit"]["anion"]["retained"] == 0
     assert metadata["augmentation_audit"]["neutral"]["retained"] == 0
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_prepare_graph_node_limit_and_identity(tmp_path, workers):
+    from stage1.identity import build_stage1_training_identity
+
+    stage1 = tmp_path / "stage1"
+    augmentation = stage1 / "augmentation"
+    augmentation.mkdir(parents=True)
+    originals = {
+        "cation": [("[Na+]", 1), ("[K+]", 1), ("C[NH3+]", 1), ("C[NH2+]C", 1)],
+        "anion": [("[Cl-]", -1), ("[Br-]", -1), ("[I-]", -1), ("C(=O)[O-]", -1)],
+        "molecule": [("CCCCCC", 0), ("C1CCCCC1", 0), ("O", 0), ("N", 0)],
+    }
+    for name, rows in originals.items():
+        _write_role_csv(stage1 / f"{name}.csv", rows)
+        _write_role_csv(augmentation / f"{name}.csv", [])
+    _write_role_csv(augmentation / "molecule.csv", [("CCCCCCC", 0), ("C1CC2CC1C2", 0)])
+    config = PretrainConfig(
+        data=DataConfig(stage1_dir=stage1, artifacts_dir=tmp_path / "capped", seed=7,
+                        valid_fraction=.25, include_augmentation=True, max_graph_nodes=6),
+        preparation=PreparationConfig(workers=workers),
+    )
+    summary = prepare_corpus(config)
+    assert summary["total"] == 12
+    assert summary["excluded_entities"] == 2
+    metadata = json.loads((config.data.artifacts_dir / "metadata.json").read_text())
+    assert metadata["quality_control"]["thresholds"]["max_graph_nodes"] == 6
+    with (config.data.artifacts_dir / "manifest.csv").open() as handle:
+        retained = list(csv.DictReader(handle))
+    assert all(row["is_augmented"] == "0" for row in retained)
+    assert {row["canonical_smiles"] for row in retained} == {
+        Chem.MolToSmiles(Chem.MolFromSmiles(smiles)) for rows in originals.values()
+        for smiles, _ in rows
+    }
+    with (config.data.artifacts_dir / "excluded_entities.csv").open() as handle:
+        excluded = {row["canonical_smiles"]: row for row in csv.DictReader(handle)}
+    assert excluded["CCCCCCC"]["exclusion_reasons"] == "graph_atoms_overlimit"
+    bond_key = Chem.MolToSmiles(Chem.MolFromSmiles("C1CC2CC1C2"))
+    assert excluded[bond_key]["exclusion_reasons"] == "graph_bonds_overlimit"
+    assert (excluded[bond_key]["atom_count"], excluded[bond_key]["bond_count"],
+            excluded[bond_key]["max_graph_nodes"]) == ("6", "7", "6")
+    default = replace(config, data=replace(config.data, max_graph_nodes=None,
+                                          artifacts_dir=tmp_path / "uncapped"))
+    assert "max_graph_nodes" not in default.to_dict()["data"]
+    assert config_from_dict(default.to_dict()).to_dict() == default.to_dict()
+    assert config_from_dict(config.to_dict()).to_dict() == config.to_dict()
+    assert prepare_corpus(default)["total"] == 14
+    old = json.loads((default.data.artifacts_dir / "metadata.json").read_text())
+    corpus = metadata["semantic"]["identities"]["corpus"]
+    old_corpus = old["semantic"]["identities"]["corpus"]
+    layout = metadata["semantic"]["identities"]["sampler_layout"]
+    assert corpus["hash"] != old_corpus["hash"]
+    assert build_stage1_training_identity(config, corpus, layout)["hash"] != (
+        build_stage1_training_identity(default, old_corpus, layout)["hash"]
+    )
+    for requested, prepared in ((config, old_corpus), (default, corpus)):
+        with pytest.raises(ValueError, match="max_graph_nodes differs.*rerun prepare"):
+            build_stage1_training_identity(requested, prepared, layout)
+    for invalid in (0, -1, True, 1.5, "160"):
+        with pytest.raises(ValueError, match="max_graph_nodes must be a positive integer"):
+            replace(config, data=replace(config.data, max_graph_nodes=invalid)).validate()
+
 
 def test_augmentation_leakage_and_worker_artifact_semantics(tmp_path):
     stage1 = tmp_path / "stage1"

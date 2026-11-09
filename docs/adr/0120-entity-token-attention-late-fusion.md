@@ -10,7 +10,7 @@ Stage1不变且永久冻结。Base继续G2_C01专家数量、Stage2 007 / Stage3
 
 每个样本保存三个1024D实体token，直至任务预测塔前都不做实体均值池化。槽位固定为：单分子`[分子,空,空]`；IL为`[阳离子,阴离子,空]`；IL+partner为`[阳离子,阴离子,partner]`；溶质+溶剂为`[溶剂,空,溶质]`。prepared仍按原primary/partner对象保存，模型按显式合同重排，不修改来源列、角色或已有SHA。角色取形式电荷，槽位位置另有embedding；无效槽位在每层及拼接前置零。
 
-GLOBAL和GROUP L1独立接收全部实体。每个专家独有1235→1024投影、角色/位置embedding及两层Pre-LN自注意力/FFN。L1仅允许同一对象内部交互：IL的阳阴离子相互注意，partner独立编码；单分子走同一网络。GLOBAL/GROUP并行，不增加ObjectEncoder。L1 gate读取三槽结构输入、role one-hot与有效位，不读条件；按专家维度求和，保留实体维度。取消旧GROUP实体均值残差，保留逐token注意力残差与LayerNorm。
+GLOBAL和GROUP L1独立接收全部实体。每个专家独有1235→1024投影、角色/位置embedding及两层Pre-LN自注意力/FFN。L1仅允许同一对象内部交互：IL的阳阴离子相互注意，partner独立编码；单分子走同一网络。GLOBAL/GROUP并行，不增加ObjectEncoder。L1 gate对primary与partner分别读取三槽mask后的结构输入、role one-hot与有效位，不读条件，不让另一对象通过路由权重提前改变本对象表示；primary两槽共用其路由，按专家维度逐槽求和，保留实体维度。取消旧GROUP实体均值残差，保留逐token注意力残差与LayerNorm。
 
 L2的GLOBAL、GROUP、PRIVATE各专家采用两层1024D/8头Pre-LN自注意力及FFN。输入为三个实体token加最多四个条件token，允许跨对象及结构—条件交互；输出保留三个实体位置，不对条件或实体做池化。原压缩对象的PartnerInteraction及后置ConditionFiLM仅在新模式移除；其交互功能由L2注意力承担。PRIVATE接收GROUP L1序列，GLOBAL L2接收GLOBAL L1序列。FFN宽度继续按各专家原hidden_ratio解析，激活/dropout及预测塔隐藏宽度继承原配方。
 

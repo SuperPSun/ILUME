@@ -1,5 +1,7 @@
 from __future__ import annotations
 from typing import Any
+import json
+from stage3.token_attention import token_model
 import torch
 from torch import nn
 from common.entity_inputs import EntityInputs
@@ -9,7 +11,7 @@ from .home_contract import source_task_specs
 
 class SimulationHoME(nn.Module):
     """Five-task HoME with permanently frozen Stage1 entity inputs."""
-    def __init__(self, backbone, registry, base_config, stage2_config):
+    def __init__(self, backbone, registry, base_config, stage2_config, *, scalers=None):
         super().__init__()
         if not stage2_config.is_entity_home or (stage2_config.frozen_encoder is None and not backbone.config.is_dual_view):
             raise ValueError("Historical ObjectEncoder models require their historical Git revision")
@@ -21,6 +23,10 @@ class SimulationHoME(nn.Module):
             group_configs=base_config.groups, initialization_seed=stage2_config.data.seed if stage2_config.training.seed is None else stage2_config.training.seed,
             entity_inputs=True, entity_input_dim=(1241 if stage2_config.frozen_encoder is not None
                 else 1024 + backbone.descriptor_schema.selected_dim))
+        if token_model(base_config.model):
+            if scalers is None:
+                scalers = json.loads((stage2_config.data.artifacts_dir / "scalers.json").read_text())
+            self.home.bind_condition_statistics(scalers)
 
     @property
     def model_contract(self):

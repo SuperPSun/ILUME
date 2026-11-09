@@ -97,6 +97,8 @@ def strict_encoder_state(raw, encoder, variant):
 
 
 class ChemBERTaEncoder(nn.Module):
+    entity_input_dim = 1241
+
     def __init__(self, spec, *, bundle=None):
         super().__init__()
         validate_spec(spec)

@@ -1,6 +1,6 @@
 # ILUME
 
-现役Base已按 [ADR-0120](docs/adr/0120-entity-token-attention-late-fusion.md)升级实体token注意力：L1保留实体并学习对象内部关系，L2注入条件和跨对象交互，Task Gate逐槽位加权后拼接预测。Stage1、22实验＋两模拟和训练预算不变；Stage2/3从头训练，新路径为`outputs/v4/stage{2,3}/token_attention/`。以下旧MLP结构描述在此范围内由0120替代，历史输出不覆盖。
+现役Base已按 [ADR-0120](docs/adr/0120-entity-token-attention-late-fusion.md)升级实体token注意力：L1保留实体并学习对象内部关系，L2注入条件和跨对象交互，Task Gate逐槽位加权后拼接预测。Stage1、22实验＋两模拟和训练预算不变；Stage2/3从头训练，新路径为`outputs/v4/stage{2,3}/token_attention/`。历史MLP配置与输出保持原身份。
 
 ILUME 的现役流程是 **冻结 v4 Stage1 → v4 五任务实体 HoME Stage2 → v4 Stage3 22实验 / 两模拟辅助 HoME**。冻结Stage1的learned1024与标准化RDKit211组成1235D实体输入；GLOBAL和GROUP的L1并行学习实体组合，不再经过独立ObjectEncoder。Stage3保留三阶段owner训练、模拟仅PRIVATE更新及严格来源验证。合同见 [ADR-0095](docs/adr/0095-v4-entity-home-without-object-encoder.md)；正式命令见 [v4运行手册](docs/v4-runbook.md)。Stage3评估默认在同一次调用中完成实验与两项模拟评估，保留各自的折/集成协议和独立榜单；可用 `--domain experimental|simulation` 单独评估。历史Object/v5及更早产物保持原身份，只能用对应历史Git版本加载。
 

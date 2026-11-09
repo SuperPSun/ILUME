@@ -8,6 +8,7 @@ import torch
 from torch import nn
 from common.training import seeded_initialization
 from common.entity_inputs import EntityInputs, entity_input_contract
+from .token_attention import token_model, attention_contract, initialize_token_modules, forward_tokens
 
 from .config import (
     ResolvedStage3PrivateRecipe,
@@ -290,11 +291,15 @@ class Stage3SparseModel(nn.Module):
         self.task_configs = dict(task_configs or {})
         self.task_private_recipes = dict(task_private_recipes or {})
         self.d_model = d_model
-        if entity_inputs and (d_model != 1024 or descriptor_input_dims is not None or transfer_knowledge is not None):
+        if entity_inputs and ((d_model != 1024 and not token_model(model_config)) or descriptor_input_dims is not None or transfer_knowledge is not None):
             raise ValueError("Entity HoME requires 1024D experts without legacy adapters")
         self.entity_inputs = entity_inputs
         self.entity_input_contract = entity_input_contract(entity_input_dim) if entity_inputs else None
         l1_input_dim = self.entity_input_contract["packed_dim"] if entity_inputs else d_model
+        if token_model(model_config):
+            if not entity_inputs:
+                raise ValueError("Token attention requires frozen entity inputs")
+            self.entity_input_contract = {**self.entity_input_contract, **attention_contract(model_config, entity_input_dim)}
         self.transfer_knowledge = transfer_knowledge
         self.groups = tuple(
             sorted({spec.meta_group for spec in self.task_specs.values() if spec.enabled})
@@ -302,6 +307,9 @@ class Stage3SparseModel(nn.Module):
         self._ownership_by_parameter: dict[nn.Parameter, Ownership] = {}
         self._modules_by_owner: dict[Ownership, list[nn.Module]] = {}
         self.descriptor_adapters = nn.ModuleDict()
+        if token_model(model_config):
+            initialize_token_modules(self, initialization_seed)
+            return
         if descriptor_input_dims is not None:
             if d_model != 512 or set(descriptor_input_dims) != {"il", "molecule"}:
                 raise ValueError("RDKit Stage 3 adapter contract is invalid")
@@ -556,6 +564,11 @@ class Stage3SparseModel(nn.Module):
                     + private_experts
                 ),
             }
+        if token_model(self.model_config):
+            for recipe in tasks.values():
+                recipe.pop("film_hidden_ratio")
+                recipe.pop("film_hidden")
+            return {"groups": groups, "tasks": tasks, "token_attention": attention_contract(self.model_config)}
         return {"groups": groups, "tasks": tasks}
 
     def _own_modules(self, owner: Ownership, *modules: nn.Module) -> None:
@@ -642,6 +655,19 @@ class Stage3SparseModel(nn.Module):
         sources.extend(config.private_sources.get(task_id, ()))
         return tuple(dict.fromkeys(sources))
 
+    def bind_condition_statistics(self, normalizations):
+        if token_model(self.model_config):
+            from common.condition_coordinates import physical_conditions
+            self.condition_statistics = {}
+            for task, spec in self.task_specs.items():
+                if not spec.enabled:
+                    continue
+                if task not in normalizations:
+                    raise ValueError(f"Missing condition normalization: {task}")
+                stats = normalizations[task]["conditions"]
+                physical_conditions(torch.empty((0, spec.condition_width)), spec.condition_columns, stats)
+                self.condition_statistics[task] = dict(stats)
+
     def group_delta(self, group: str, values: torch.Tensor):
         return _mixture(self.l1_group_experts[group], values, self.l1_group_gates[group](values))
 
@@ -670,6 +696,10 @@ class Stage3SparseModel(nn.Module):
         primary_knowledge: Mapping[str, torch.Tensor] | None = None,
         partner_knowledge: Mapping[str, torch.Tensor] | None = None,
     ) -> Stage3ForwardOutput:
+        if token_model(self.model_config):
+            if primary_knowledge is not None or partner_knowledge is not None:
+                raise ValueError("Token attention cannot consume historical transfer deltas")
+            return forward_tokens(self, task_id, primary_embedding, conditions, partner_embedding)
         spec = self.task_specs.get(task_id)
         if spec is None or not spec.enabled:
             raise ValueError(f"Inactive Stage 3 task: {task_id}")

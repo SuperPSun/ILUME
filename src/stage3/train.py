@@ -72,7 +72,7 @@ def checkpoint_epochs(total_epochs: int, interval: int) -> tuple[int, ...]:
 
 
 def _resolved_widths(d_model: int, config: Stage3Config) -> dict[str, int]:
-    return {
+    widths = {
         "d_model": d_model,
         "expert_hidden": max(1, round(d_model * config.model.expert_hidden_ratio)),
         "interaction_hidden": max(
@@ -81,6 +81,11 @@ def _resolved_widths(d_model: int, config: Stage3Config) -> dict[str, int]:
         "film_hidden": max(1, round(d_model * config.model.film_hidden_ratio)),
         "tower_hidden": max(1, round(d_model * config.model.tower_hidden_ratio)),
     }
+    if config.model.expert_architecture == "entity_token_attention_v1":
+        widths.pop("film_hidden")
+        widths.pop("interaction_hidden")
+        widths["tower_input"] = 3 * d_model + 3
+    return widths
 
 
 def _resolved_private_recipes(config: Stage3Config) -> dict[str, Any]:
@@ -160,7 +165,7 @@ def _load_plugin(
     source_model_config = source_plan.get("model")
     if not isinstance(source_model_config, dict) or any(
         source_model_config.get(name) != value
-        for name, value in asdict(config.model).items()
+        for name, value in config.model.to_dict().items()
     ):
         raise ValueError("Plugin model structure signature mismatch")
     source_registry = source.get("resolved_registry")
@@ -502,7 +507,7 @@ def build_resolved_training_plan(
             for group, spec in resolve_group_registry(config).items()
         },
         "data": data_plan,
-        "model": {**asdict(config.model), "resolved_widths": _resolved_widths(model.d_model, config)},
+        "model": {**config.model.to_dict(), "resolved_widths": _resolved_widths(model.d_model, config)},
         "optimizer": {
             "name": "AdamW", "implementation": config.training.optimizer_implementation,
             "weight_decay": config.training.weight_decay,

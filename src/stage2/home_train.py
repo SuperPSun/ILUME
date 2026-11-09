@@ -56,7 +56,10 @@ def model_contract_for_recipe(experiment: HomeRecipe) -> dict[str, Any]:
     config = experiment.stage2
     dimension = 1241 if config.frozen_encoder is not None else 1024 + DescriptorSchema.load(
         config.data.pretrain_artifacts_dir / "descriptor_schema.json").selected_dim
-    return {**entity_input_contract(dimension), "source_tasks": sorted(config.data.tasks)}
+    from stage3.token_attention import token_model, attention_contract
+    return {**entity_input_contract(dimension),
+        **(attention_contract(experiment.stage3.model, dimension) if token_model(experiment.stage3.model) else {}),
+        "source_tasks": sorted(config.data.tasks)}
 
 
 def training_identity(
@@ -79,7 +82,7 @@ def training_identity(
             }
         ),
         "stage2_config": config.experiment_dict(),
-        "stage3_model": asdict(experiment.stage3.model),
+        "stage3_model": experiment.stage3.model.to_dict(),
         "transfer_groups": {group: asdict(experiment.stage3.groups[group]) for group in ("thermophysical", "solvation")},
         **({"electronic_group": {
             "experts": experiment.stage3.groups["thermophysical"].experts,
@@ -364,7 +367,7 @@ def _export(
             "solvation": [task for task, group in source_groups(registry).items() if group == "solvation"],
         },
         "architecture": {
-            "stage3_model": asdict(experiment.stage3.model),
+            "stage3_model": experiment.stage3.model.to_dict(),
             "transfer_groups": ["solvation", "thermophysical"],
             **({"electronic_group": identity["payload"]["electronic_group"]} if "electronic_group" in identity["payload"] else {}),
         },

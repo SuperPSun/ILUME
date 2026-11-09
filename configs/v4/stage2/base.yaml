@@ -3,7 +3,7 @@ data:
   data_root: data/3407
   task_catalog_path: data/3407/task_catalog.csv
   pretrain_artifacts_dir: outputs/v4/stage1/base/prepare/artifacts
-  artifacts_dir: outputs/v4/stage2/base/prepare/artifacts
+  artifacts_dir: outputs/v4/stage2/token_attention/prepare/artifacts
   entity_shard_size: 4096
   seed: 3407
   target_materialization_modes: {}
@@ -16,7 +16,7 @@ data:
 preparation:
   workers: 8
   teacher_batch_size: null
-  data_metadata_path: outputs/v4/stage2/base/prepare/data_metadata.json
+  data_metadata_path: outputs/v4/stage2/token_attention/prepare/data_metadata.json
 initialization:
   checkpoint: outputs/v4/stage1/base/train/stage1_encoder.pt
 model:
@@ -58,13 +58,15 @@ home:
   initialization: pretrained
   random_seed: null
   model:
+    expert_architecture: entity_token_attention_v1
+    attention_heads: 8
+    attention_layers: 2
     global_experts: 1
     private_experts: 1
     dropout: 0.1
     activation: silu
     expert_hidden_ratio: 2.0
     interaction_hidden_ratio: 2.0
-    film_hidden_ratio: 1.0
     tower_hidden_ratio: 1.0
     l2_residual: true
   groups:

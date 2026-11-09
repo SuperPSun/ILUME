@@ -43,10 +43,10 @@ def source_groups(registry: Any) -> dict[str, str]:
 
 
 TRANSFER_GROUPS = ("solvation", "thermophysical")
-TRANSFER_GLOBAL_PREFIXES = ("l1_global_experts.", "l1_global_gate.", "l2_global_experts.")
+TRANSFER_GLOBAL_PREFIXES = ("l1_global_experts.", "l1_global_gate.", "l2_global_experts.", "global_conditions.")
 TRANSFER_GROUP_PREFIXES = (
     "l1_group_experts.", "l1_group_gates.", "l1_group_normalizations.",
-    "l2_group_experts.", "interactions.",
+    "l2_group_experts.", "interactions.", "group_conditions.",
 )
 
 

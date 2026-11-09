@@ -5,6 +5,7 @@ data:
   valid_fraction: 0.05
   seed: 42
   max_smiles_tokens: 256
+  max_graph_nodes: 160
   descriptor_dim: 217
   max_samples_per_role: null
   shard_size: 8192

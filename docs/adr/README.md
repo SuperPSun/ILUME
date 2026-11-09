@@ -6,6 +6,7 @@
 
 | 主题 | ADR（按修订顺序） | 阅读重点 |
 |---|---|---|
+| Base实体token注意力 | [0120](0120-entity-token-attention-late-fusion.md) | L1对象内部注意力、L2全实体与条件交互、三槽逐token门控后末端拼接；1024D/8头/2层，独立身份 |
 | Stage2 共享梯度聚合 | [0097](0097-stage2-batch-sample-weighted-gradients.md) | 五模拟联合step，GLOBAL/GROUP按真实batch样本加权，PRIVATE原始梯度；新训练身份及严格恢复/迁移 |
 | Stage1 双路2D DGT | [0116](0116-stage1-dual-graph-transformer.md) | 现役Base八层双路512D DGT、encoder约77.99M；拓扑sidecar、逐通道pair attention、分块重计算和双路池化；旧D-MPNN严格历史加载，0089/0090图架构数值为历史 |
 | Base当前实验数据协议 | [0117](0117-base-22-tasks-updated-solvation.md) | 22实验＋两模拟；显式排除平衡压力/水活度系数，solvation按更新catalog声明3684体系；其余recipe不变，历史配置不迁移 |
@@ -17,7 +18,7 @@
 | 专用离子液体逆向设计 | [0106](0106-dedicated-inverse-design.md)；[0105](0105-universal-inverse-design.md)保留冻结Predictor和化学资源合同 | 每个完整请求独立训练GFN；标量logZ、同请求回放；严格绑定目标/工况/约束，拒绝旧通用产物；可靠性风险筛查 |
 | v4 冻结双视图Stage1 | [0089](0089-v4-frozen-dual-view-stage1.md)、[0090](0090-stage1-v4-residual-encoder-capacity.md)、[0091](0091-stage1-v4-loss-weights-gradient-audit.md)、[0092](0092-stage1-atom-charge-and-frozen-regression-heads.md) | Stage1 learned1024、自然shuffle与2/2/1 loss权重；0090的约60.73M为历史，现役DGT见0116；仅训练集原子电荷、重复结构独立观察/sidecar format2及1000步只读审计；现役系数/batch/workers读[Base YAML](../../configs/v4/stage1/base.yaml)和[v4手册](../v4-runbook.md)，正文旧数值为历史；独立冻结回归头后训练不替换编码器；下游永久冻结Stage1 |
 | 历史 v2/v3 表示与隔离 | [0039](0039-global-rdkit-v2-mainline.md) | 三模态 Stage 1、1024D 实体/Object/HoME；仅约束历史配置，现役表示由 0089 取代 |
-| Stage 1 执行 | [0013](0013-stage1-full-corpus-ddp.md)、[0014](0014-stage1-prepare-performance-and-corpus-v2.md)、[0015](0015-stage1-high-throughput-epoch-resume.md)、[0017](0017-stage1-base-runtime-profile.md) | 全量轮、prepare/运行时、DDP 与完整轮恢复 |
+| Stage 1 执行 | [0013](0013-stage1-full-corpus-ddp.md)、[0014](0014-stage1-prepare-performance-and-corpus-v2.md)、[0015](0015-stage1-high-throughput-epoch-resume.md)、[0017](0017-stage1-base-runtime-profile.md)、[0122](0122-stage1-graph-size-qc.md) | 全量轮、prepare/运行时、DDP 与完整轮恢复；Base图大小160上限及H100全局batch84 |
 | Stage1 独立回归头 | [0092](0092-stage1-atom-charge-and-frozen-regression-heads.md)、[0093](0093-stage1-configurable-frozen-predictors.md) | 冻结 entity1024/atom512；Linear/MLP/残差 MLP 默认与逐目标覆盖；独立 format2，兼容旧 Linear format1；验证只报告 |
 | Stage1 正式描述符选择与数值策略 | [0112](0112-v4-explicit-rdkit-211-selection.md)、[0113](0113-v4-descriptor-validity-ring-log-review.md)、[0115](0115-stage1-peoe-gasteiger-validity-mask.md) | Base保留211列，Phi适用性mask、八项环计数log1p，Gasteiger来源失败时屏蔽14项PEOE；监督/显式输入统一；实体1235/L1输入2478，新来源重新prepare与训练；独立阈值筛选/复审已退役，人工建议不自动接入 |
 | 主线RDKit版本升级 | [0111](0111-rdkit-2026-09-1.md) | 精确固定包2026.9.1/runtime2026.09.1；维数和模型不变，严格拒绝旧特征来源，新目录重建prepare/teacher并重训；基线独立环境不变 |
@@ -38,6 +39,7 @@
 |---|---|
 | 当前3407基线全量重训 | [0102](0102-baseline-split3407-full-retraining.md)：24实验、三模拟、十模型共1,230作业；split42旧结果不复用 |
 | 22任务数据协议定向补训 | [0118](0118-flft-22-task-baseline-retraining.md)：十模型各10变化任务、五折共500作业；szx其余9模型/H100保留LlaSMol，不用DDP；不含其他任务复用或完整22任务榜单 |
+| 22任务基线剩余缺口全量补训 | [0121](0121-baseline-22-task-completion-retraining.md)：MLP/XGBoost/标准化ILBERT各12实验五折＋三模拟，共189作业；3090独立任务并发，旧结果保留 |
 | 历史split42基线数据升级与复用 | [0101](0101-baseline-catalog-v4-reuse.md)：24实验、三模拟；复用安排由0102替代 |
 | MLP / ECFP-XGBoost | [0022](0022-mlp-ecfp-xgboost-baselines.md) |
 | D-MPNN | [0028](0028-chemprop-dmpnn-baseline.md)、[0042](0042-dmpnn-shared-component-encoder.md) |

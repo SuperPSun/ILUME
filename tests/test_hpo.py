@@ -561,8 +561,18 @@ def test_main_g2_c01_recipe_and_historical_transfer_rejection():
     for task in ('experiment/equilibrium_pressure', 'experiment/water_activity_coefficient'):
         expected3['tasks'].pop(task)
     expected3['tasks']['experiment/solvation']['unique_systems'] = 3684
-    # Paths are paired to Base; all other numerical settings remain unchanged.
-    normalize = lambda raw: json.loads(json.dumps(raw).replace('optimized_3407', 'base'))
+    # ADR-0120 replaces experts and fusion while retaining owner budgets/recipes.
+    for model in (expected2['home']['model'], expected3['model']):
+        model.update(expert_architecture='entity_token_attention_v1', attention_heads=8, attention_layers=2)
+        model.pop('film_hidden_ratio')
+    for task in expected3['tasks'].values():
+        task.get('model_overrides', {}).pop('film_hidden_ratio', None)
+    # Stage1 paths stay fixed; new downstream outputs are isolated from old Base.
+    def normalize(raw):
+        text = json.dumps(raw).replace('optimized_3407', 'base')
+        for stage in ('stage2', 'stage3'):
+            text = text.replace(f'outputs/v4/{stage}/base/', f'outputs/v4/{stage}/token_attention/')
+        return json.loads(text)
     assert a == normalize(expected2) and b == normalize(expected3)
     assert len(b['tasks']) == 22
     assert len({task['meta_group'] for task in b['tasks'].values()}) == 6

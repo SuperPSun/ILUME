@@ -216,6 +216,8 @@ def _load_model(
         )
 
         expected_kind = (
+            "ilume_stage3_token_home_three_phase_final_v4"
+            if config.is_entity_home and config.model.expert_architecture == "entity_token_attention_v1" else
             "ilume_stage3_entity_home_three_phase_final_v4" if config.is_entity_home else
             "ilume_stage3_dual_view_three_phase_final_v4"
             if config.initialization.representation_contract == "dual_view_v4"

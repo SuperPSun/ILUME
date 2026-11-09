@@ -153,6 +153,8 @@ def build_stage1_training_identity(
     corpus_identity: Mapping[str, Any],
     sampler_layout_identity: Mapping[str, Any],
 ) -> dict[str, Any]:
+    if config.data.max_graph_nodes != corpus_identity["payload"]["data"].get("max_graph_nodes"):
+        raise ValueError("Stage1 max_graph_nodes differs from prepared corpus; rerun prepare")
     raw = config.to_dict()
     training = dict(raw["training"])
     for name in (

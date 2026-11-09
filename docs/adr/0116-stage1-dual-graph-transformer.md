@@ -24,6 +24,10 @@ Base设置`model.graph_encoder_type: dgt`、`graph_depth: 8`、`graph_feedforwar
 
 2026-11-08修复训练DataLoader的同类问题：每batch的局部键索引及每种拓扑tensor分别合并为一块连续storage，再按原分子顺序恢复视图；输入分子数增长不再产生逐分子storage句柄。值、dtype、mask、前向及梯度保持不变，缺少拓扑的按需构建路径保留；不修改缓存、模型参数、采样、科研身份或checkpoint格式。256句柄上限下覆盖batch256、两worker预取、短尾及多轮复用，不通过降低batch、关闭worker或提高系统上限绕过问题。
 
+2026-11-09修复深预取的pin-memory句柄保留：原pinning路径只复制将传到GPU的特征，CPU侧局部键索引和DGT拓扑仍引用worker的共享storage；深队列累积可耗尽1024句柄，表现为`received 0 items of ancdata`及`Pin memory thread exited unexpectedly`。现在pinning时将这些CPU元数据按字段合并复制到主进程普通CPU storage，及时释放IPC句柄；保持dtype、值、顺序及GPU输入不变，不额外固定这部分内存。保留深预取、SHA检查及原batch，不提高系统限制、不关闭pinning或worker。回归覆盖CUDA pin线程在8 worker×18预取、1024句柄限制下积压、完整消费、短尾及重复轮，另验证预测/梯度逐bit一致。
+
+2026-11-09训练分片提前准备：保留原DataLoader与sampler，在有worker时将训练的每worker预取窗口设为`2 + ceil(最大训练分片行数 / (全局batch × 每rank worker数))`，提前提交约一个分片的batch任务，覆盖部分下一分片读取、校验和辅助标签挂接时间。验证仍为2，零worker同步行为不变；不新增线程/缓存格式，不重排batch，不改变mask/RNG、来源SHA或科研身份。代价是更多CPU/pinned内存与在途句柄，不能隐藏首分片或保证完全消除等待，也不消除worker重复解包。临时测试覆盖提前加载、短尾、坏分片传播及预取前后训练/完整轮恢复状态逐bit一致；正式进程不自动重启。
+
 2026-11-08第一轮执行优化：投影后的距离、环及类型表改用dense `F.embedding`查表，避免通用索引反向在3/10行小表上的高争用；不设置`padding_idx`或频率缩放，保留原投影查表对类别0的有效梯度。query循环外复用padding、batch索引和整型拓扑；六份稠密拓扑矩阵在CPU按原分子顺序打包后分别整批传至设备。逐通道score/value、mask、dropout调用顺序、分块/重计算、参数名/形状、优化器、身份及缓存格式均不变。FP64/FP32参考验证导数等价；BF16反向累加顺序改变，因此不承诺与旧实现的训练轨迹逐bit相同，旧通用索引本身也存在低精度累加误差。无需重建已有匹配缓存，该轮不增加配置开关或宽松恢复。
 
 2026-11-08第二轮执行优化：原子/键特征使用带分子offset的dense embedding查表，严格隔离每个分子的padding行；空键池只添加可微零标量，不构造重复的零pair特征。新增CUDA局部编译开关`training.dgt_attention_compile`，共享默认false且序列化省略，现役Base为true。仅编译原逐通道score/mask/FP32 softmax/加权value归约，dropout在编译区外生成，保持随机数序列；开启BF16中间转换仿真，不替换为标准SDPA/FlashAttention。`fullgraph=True`、动态shape，首次调用/新shape可能编译，错误直接传播，不静默回退；CPU保留即时参考路径。全模型`training.compile`仍为false。GPU测试覆盖FP32/BF16输出/梯度、padding、动态长度及gradient audit，不承诺不同算子归约下逐bit相同。

@@ -38,6 +38,8 @@ def _scope_kind(plan: Mapping[str, Any], suffix: str) -> str:
     if "ablation" in plan:
         return "ilume_stage3_entity_home_ablation_v1_" + suffix
     if plan.get("representation_contract") == "entity_home_v4":
+        if plan.get("model", {}).get("expert_architecture") == "entity_token_attention_v1":
+            return "ilume_stage3_token_home_three_phase_v4_" + suffix
         return "ilume_stage3_entity_home_three_phase_v4_" + suffix
     if plan.get("representation_contract") == "dual_view_v4":
         prefix = "ilume_stage3_dual_view_three_phase_v4"
@@ -249,6 +251,8 @@ def _final_kind(plan: Mapping[str, Any]) -> str:
     if "ablation" in plan:
         return "ilume_stage3_entity_home_ablation_final_v1"
     if plan.get("representation_contract") == "entity_home_v4":
+        if plan.get("model", {}).get("expert_architecture") == "entity_token_attention_v1":
+            return "ilume_stage3_token_home_three_phase_final_v4"
         return "ilume_stage3_entity_home_three_phase_final_v4"
     if plan.get("representation_contract") == "dual_view_v4":
         return "ilume_stage3_dual_view_three_phase_final_v4"

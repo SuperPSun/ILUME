@@ -34,6 +34,7 @@ class DataConfig:
     valid_fraction: float = 0.05
     seed: int = 42
     max_smiles_tokens: int = 256
+    max_graph_nodes: int | None = None
     descriptor_dim: int = 217
     max_samples_per_role: int | None = None
     shard_size: int = 8192
@@ -196,6 +197,10 @@ class PretrainConfig:
             raise ValueError("data.valid_fraction must be between 0 and 1")
         if self.data.max_smiles_tokens < 3:
             raise ValueError("data.max_smiles_tokens must be at least 3")
+        if self.data.max_graph_nodes is not None and (
+            type(self.data.max_graph_nodes) is not int or self.data.max_graph_nodes <= 0
+        ):
+            raise ValueError("data.max_graph_nodes must be a positive integer or null")
         if self.data.descriptor_dim != 217:
             raise ValueError("data.descriptor_dim must remain the raw RDKit size 217")
         if self.data.shard_size <= 0 or self.data.shard_cache_size <= 0:
@@ -369,6 +374,8 @@ class PretrainConfig:
             return value
 
         payload = convert(asdict(self))
+        if self.data.max_graph_nodes is None:
+            payload["data"].pop("max_graph_nodes")
         if not self.descriptor.excluded_names:
             payload["descriptor"].pop("excluded_names")
         if self.descriptor.value_policy == "raw":

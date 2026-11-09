@@ -171,6 +171,25 @@ class Stage3ModelConfig:
     film_hidden_ratio: float = 1.0
     tower_hidden_ratio: float = 1.0
     l2_residual: bool = True
+    expert_architecture: str = "mlp"
+    attention_heads: int = 8
+    attention_layers: int = 2
+
+    def __post_init__(self):
+        if self.expert_architecture not in {"mlp", "entity_token_attention_v1"}:
+            raise ValueError("Unknown HoME expert architecture")
+        if (type(self.attention_heads) is not int or self.attention_heads < 1
+                or type(self.attention_layers) is not int or self.attention_layers < 1):
+            raise ValueError("HoME attention heads/layers must be positive integers")
+        if self.expert_architecture == "mlp" and (self.attention_heads != 8 or self.attention_layers != 2):
+            raise ValueError("MLP HoME cannot configure attention")
+
+    def to_dict(self):
+        payload = asdict(self)
+        if self.expert_architecture == "mlp":
+            for key in ("expert_architecture", "attention_heads", "attention_layers"):
+                payload.pop(key)
+        return payload
 
 
 @dataclass(frozen=True)
@@ -794,6 +813,7 @@ class Stage3Config:
             return value
 
         payload = convert(asdict(self))
+        payload["model"] = self.model.to_dict()
         if self.frozen_encoder is None:
             payload.pop("frozen_encoder")
         if self.preparation.reference_artifacts is None:
