@@ -175,6 +175,8 @@ python scripts/stage1/train.py --config configs/v4/stage1/base.yaml --output out
 
 现役Base全局batch256，由此前512减半以降低显存占用；单卡每步256条，四rank DDP每GPU为batch64。每rank仍使用8个DataLoader worker，四rank训练加载器共32个worker。LR保持1e-4，优化器步数及warmup/cosine预算按新batch重算；不能从旧512配置的checkpoint恢复。语料、teacher及匹配的sidecar仍可复用。worker数量仅属执行参数，本身不改变科研训练身份。
 
+### Stage1 训练索引过滤与 H100 双卡
+
 按[ADR-0122](adr/0122-stage1-graph-size-qc.md)，Base及`base-100h.yaml`使用`training.max_graph_nodes: 160`：启动训练前排除原子数或无向键数严格超过160的扩增训练样本，等于160保留；若过滤会排除原始训练样本则拒绝启动。当前仅14条中性扩增样本被排除，原始训练/验证及固定审计probe不变。运行目录`training_filter.json`记录来源、阈值、样本结构/大小和索引，清单纳入training identity。先过滤再按rank分配，不在DDP迭代中跳过batch。
 
 **无需重跑prepare、teacher、电荷sidecar或拓扑。** 沿用现有全部缓存及原分词器、标准化统计，现有SHA检查不变；prepare已撤回最初的`data.max_graph_nodes`过滤，旧字段不再接受。训练启动会扫描manifest、核查少量相关分片，不进行3D构象生成或teacher推理。已有样本的统计保持原值，本方案不同于重新拟合筛选后统计。当前有效训练集5,176,579条，global84每轮61,626步；来源更新时重新解析清单与预算。
@@ -186,6 +188,10 @@ CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc-per-node=2 scripts/stage1
 ```
 
 旧batch64或未过滤checkpoint不得续到此配置。筛除极端结构与DDP不能构成显存安全保证；不自动缩batch或跳过样本，当前训练不会被代码更新热切换。
+
+启动阶段rank0会先扫描manifest、核对少量源分片位置，再校验teacher/sidecar身份；随后广播相同清单给两rank。此阶段可能暂时没有进度条或训练目录，不能仅据此判断卡死。2026-11-09本地只读检查中，过滤解析约72秒，完整training identity解析约135秒；NFS负载和缓存状态可能延长时间。进入更新后检查`metrics.jsonl`与`training_filter.json`，不要将启动校验视为新一轮teacher生成。
+
+`--output`只决定训练写入位置，不会自动改写下游YAML。上例使用独立训练目录时，后续Stage2/3的`initialization.stage1_encoder`必须指向该目录生成的`stage1_encoder.pt`，`initialization.stage1_artifacts_dir`仍指向原prepare；不得误读标准`train/`下的历史encoder。若用户已确认标准`outputs/v4/stage1/base/train`未占用，也可将上例输出改为该标准路径。仅提供命令不代表自动停止、清理或启动训练。
 
 <a id="stage1-dgt-topology"></a>
 

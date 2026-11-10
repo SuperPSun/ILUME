@@ -38,6 +38,8 @@ Base设置`model.graph_encoder_type: dgt`、`graph_depth: 8`、`graph_feedforwar
 
 后续显存调整（2026-11-07）：按用户要求将现役Base的全局batch从512减半至256；单卡256，四rank DDP每卡64。10轮、LR、loss、自然shuffle和其他执行设置不变，更新数及warmup/cosine预算按新batch重新计算。batch属于训练身份，禁止从旧512检查点续训；匹配的corpus、teacher、电荷及拓扑缓存仍可复用。历史消融配置不批量修改。
 
+2026-11-09后续显存范围由[ADR-0122](0122-stage1-graph-size-qc.md)定向扩展：Base在训练索引层过滤超160的扩增样本，保留原始/验证/审计样本与全部prepared统计和缓存；不恢复prepare端大小过滤。H100专用配置使用全局batch84/5轮、双rank每卡42，query32、attention checkpointing=false；与标准Base的256/10轮、checkpointing=true区分。大小过滤清单与batch均绑定training identity，不能跨配方续训，不保证显存绝对安全。
+
 ## 身份与运行
 
 DGT模型、双路读出和拓扑算法进入training/encoder及下游来源合同；training另绑定sidecar物化身份。Stage1 format4不变。旧D-MPNN按内嵌配置严格加载，不能与DGT交叉恢复或宽松加载。

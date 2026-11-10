@@ -66,7 +66,7 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 
 Stage1训练DataLoader在W>0时按实际最大训练分片S、全局batch B和每rank worker数W使用`prefetch_factor=2+ceil(S/(B×W))`，提前排到下一分片；验证仍为2、W=0同步不变。不重排batch、不改变mask/RNG或放宽SHA；科研/缓存身份不变，新进程生效。额外占用CPU/pinned内存及在途句柄；pin线程须把CPU局部键索引/拓扑复制为主进程非共享storage，避免深队列保留IPC句柄导致ancdata错误。不承诺隐藏首分片或消除worker重复解包，执行细节见v4手册。
 
-ADR-0122：Stage1 Base及H100配置使用`training.max_graph_nodes: 160`，只在训练启动前确定性过滤超限扩增训练索引，等于160保留；若新来源将排除原始训练样本则明确失败。当前排除14条扩增，原始/验证/probe不变。撤回prepare端`data.max_graph_nodes`过滤；既有prepared、分词器/标准化统计、teacher失败mask、电荷和拓扑完整复用，不修改hash。`training_filter.json`绑定源SHA、阈值、sample ID及dataset index并进入training identity，恢复严格核对；先过滤再分配DDP rank、按有效样本重算步数，不跳过batch。默认null/序列化省略保持历史身份。H100专用`base-100h.yaml`为全局batch84/5轮，双rank每卡42；标准Base仍为256/10轮。新过滤/batch不得resume旧checkpoint，其余模型/loss不变，不自动启停、归档或覆盖旧运行。
+ADR-0122：Stage1的`training.max_graph_nodes: 160`只在分配DDP rank前过滤超限扩增训练索引；若涉及原始样本则失败，验证/probe不变。旧prepare大小过滤已撤回，全部缓存/统计及SHA保留。清单`training_filter.json`进入training identity，按有效样本计算预算，禁止跳batch或跨配方resume。H100配置batch84/5轮、双卡每卡42；标准Base为256/10轮。自定义Stage1输出须显式配对下游encoder路径。实现、缓存复用与启动诊断统一见[ADR-0122](docs/adr/0122-stage1-graph-size-qc.md)和[v4手册](docs/v4-runbook.md#stage1-训练索引过滤与-h100-双卡)，不自动启停或清理。
 
 ## 数据、身份、输出与恢复
 
@@ -91,6 +91,8 @@ ADR-0122：Stage1 Base及H100配置使用`training.max_graph_nodes: 160`，只�
 - `trash/` 不进 Git。移动旧产物/YAML/未消费数据或删除机器缓存前，报告精确文件数、大小、目标和冲突策略，等用户明确确认。不得覆盖、重排或删除既有 `trash/`。
 
 ## 当前基线数据协议
+
+ADR-0123新增完整22任务baseline报告：`scripts/benchmarks/summarize.py --baseline-config configs/benchmarks/FLftv4_3407/reports/summary_22.yaml`，以SHA固定既有来源审计和上移映射，明确组装250模型×任务组，复核身份/配方/数据/权重及完整有序预测。只读原单位预测，22实验验证与实际测试任务、三模拟分别任务等权汇总，不包含ILUME、不改旧身份/报告。已确认的completion任务产物上移到FLftv4_3407模型根，sweep记录与缓存分别保留在`sweeps/completion_22/`和`cache/completion_22/`；原路径只通过映射定位。原生预处理/环境/scaler深度审查承接固定SHA的既有审计，不自动放宽身份或重跑模型。详情见[完整报告手册](docs/baseline-22-summary-runbook.md)。
 
 ADR-0121新增 `flft_v4_3407_22_completion`：MLP/XGBoost/标准化ILBERT各其余12实验五折＋热膨胀/HOMO/LUMO三模拟，共189作业，含无条件ILBERT从头重训。配置 `configs/benchmarks/FLftv4_3407/completion/`、输出 `outputs/benchmarks/FLftv4_3407/completion_22/`；精确绑定Base22任务，电子模拟仍用data/stage1/properties。原结构/种子/10轮或1000trees不变，MLP/XGBoost当前RDKit独立新缓存，ILBERT训练行z-score。3090每卡独立任务、无DDP，用户启动；旧产物保留，汇总器本次未扩展，不得把12任务子集当完整22任务榜单。
 

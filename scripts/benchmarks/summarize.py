@@ -17,7 +17,7 @@ def main() -> None:
         description="Build deterministic ILUME and baseline result leaderboards."
     )
     parser.add_argument(
-        "--input", nargs="+", required=True, metavar="PATH",
+        "--input", nargs="+", metavar="PATH",
         help="One or more repository-relative directories to scan recursively.",
     )
     parser.add_argument(
@@ -32,10 +32,19 @@ def main() -> None:
         help="Optional repository-relative directories inside an input to exclude recursively.",
     )
     parser.add_argument("--output", default="summary")
+    parser.add_argument("--baseline-config", help="Assemble the complete audited 22-task baseline report from a dedicated YAML.")
     parser.add_argument("--ablation-analysis-output", help="Write a separate v4 ablation comparison; neither output may already exist.")
     parser.add_argument("--ablation-bootstrap", action="store_true", help="Add fixed-seed 10000-repeat paired system bootstrap intervals.")
     parser.add_argument("--ablation-authority-config", default="configs/v4/stage3/base.yaml", help="Paired Stage3 config for ablation groups, task sizes and bootstrap sources.")
     args = parser.parse_args()
+    if args.baseline_config:
+        if args.input or args.include or args.exclude or args.ablation_analysis_output or args.ablation_bootstrap:
+            parser.error("--baseline-config cannot be combined with input filters or ablation analysis")
+        from benchmarks.common.baseline_report import publish_baseline_report
+        publish_baseline_report(repository_path(args.baseline_config), repository_path(args.output), ROOT)
+        return
+    if not args.input:
+        parser.error("--input is required unless --baseline-config is provided")
     if args.ablation_bootstrap and not args.ablation_analysis_output:
         parser.error("--ablation-bootstrap requires --ablation-analysis-output")
     input_roots = [repository_path(path) for path in args.input]

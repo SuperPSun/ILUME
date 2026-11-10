@@ -22,6 +22,8 @@ python -m pip install -e ".[dev,tokenizers]"
 
 Stage1 Base现采用十二层SMILES与八层双路2D DGT，encoder约77.99M；原子/键双路池化后投影512D，保持learned1024与atom512。须额外准备独立DGT拓扑sidecar；原D-MPNN artifact保留严格历史加载。见[ADR-0116](docs/adr/0116-stage1-dual-graph-transformer.md)和[v4手册](docs/v4-runbook.md#stage1-dgt-topology)。不改变Stage2/3或独立D-MPNN benchmark。
 
+Stage1按[ADR-0122](docs/adr/0122-stage1-graph-size-qc.md)在训练启动前过滤原子数或无向键数超过160的扩增训练样本；现有prepared、teacher、电荷和拓扑缓存完整复用，验证集与原标准化统计不变，**不为此重跑prepare**。H100专用`configs/v4/stage1/base-100h.yaml`为全局batch84/5轮、双卡每卡42；正式`base.yaml`仍为batch256/10轮。训练清单写入`training_filter.json`并绑定新training identity，旧无过滤checkpoint不能续训；启动及下游路径配对见[v4手册](docs/v4-runbook.md#stage1-训练索引过滤与-h100-双卡)。
+
 现役Base按[ADR-0117](docs/adr/0117-base-22-tasks-updated-solvation.md)排除`equilibrium_pressure`和`water_activity_coefficient`，solvation按更新catalog声明3684体系；其余科研配方不变。历史24任务配置和输出保留原身份。
 
 Stage1 Base显式排除六项描述符；Phi按结构适用性mask，八项环计数log1p，Gasteiger电荷来源失败时联动屏蔽14项PEOE_VSA，再统一标准化（[ADR-0113](docs/adr/0113-v4-descriptor-validity-ring-log-review.md)、[ADR-0115](docs/adr/0115-stage1-peoe-gasteiger-validity-mask.md)）。独立预测器保持原合同。Stage2采用五任务实体HoME，Stage3为22实验+两项模拟辅助；独立ObjectEncoder已取消。GLOBAL/GROUP的L1并行读取冻结Stage1 learned1024+标准化RDKit211实体、角色和有效位。Phase1联合训练，Phase2冻结GLOBAL，Phase3仅PRIVATE；两个模拟任务只更新自己的PRIVATE。
@@ -30,7 +32,7 @@ Stage1 Base显式排除六项描述符；Phi按结构适用性mask，八项环�
 
 Stage1 共用 `data/stage1`，Stage2/3 Base已配对 `data/3407`。训练seed仍为42，Stage3按fold派生；历史HPO、G2_C05优化配方、基线及消融配置和产物保留原身份。历史两折容量结果支持压缩取舍，不能替代新主模型的3407五折验证；完整依据见 [HPO结果](docs/hpo-results.md)。
 
-新主模型使用配对的 `configs/v4/stage2/base.yaml`、`configs/v4/stage3/base.yaml`，输出位于 `outputs/v4/stage{2,3}/base/`；需先完成当前211维数值policy对应的Stage1来源，再重新prepare/train Stage2和Stage3五折，见 [G2_C01运行步骤](docs/v4-runbook.md#g2_c01-主模型)。旧 `optimized_3407` 及既有消融继续表示G2_C05，不能作为新主模型的权重或配对消融证据。正式运行由用户启动，不覆盖旧输出。
+新主模型使用配对的 `configs/v4/stage2/base.yaml`、`configs/v4/stage3/base.yaml`，输出位于 `outputs/v4/stage{2,3}/token_attention/`；需先完成当前211维数值policy对应的Stage1来源，再重新prepare/train Stage2和Stage3五折，见 [G2_C01运行步骤](docs/v4-runbook.md#g2_c01-主模型)。旧 `optimized_3407` 及既有消融继续表示G2_C05，不能作为新主模型的权重或配对消融证据。正式运行由用户启动，不覆盖旧输出。
 
 Stage1 描述符按正式YAML显式选择；当前211列及数值处理见 [v4手册](docs/v4-runbook.md#base-的-211-维描述符选择)。独立阈值筛选/复审工具已退役（[ADR-0110](docs/adr/0110-stage1-descriptor-selection-audit.md)）；人工评审建议不自动改写schema，prepare中的数值有效性、归一化及来源完整性校验继续保留。
 
@@ -507,6 +509,8 @@ LR和10轮，只发布轮 10末轮状态。
 </details>
 
 ## 输出与结果汇总
+
+完整22任务的十模型baseline报告使用[独立手册](docs/baseline-22-summary-runbook.md)和[ADR-0123](docs/adr/0123-complete-baseline-22-task-report.md)：明确组装10项定向补训、12项剩余实验与三模拟，从原单位预测重算并保留原训练身份。该入口不包含ILUME，不直接拼接旧根summary。
 
 论文展示另用[独立论文汇总入口](docs/paper-summary-runbook.md)：共同完整训练集尺度的总体指标、全部任务相对最强基线增益、性能覆盖曲线及SVG/PDF散点图；原汇总入口与旧报告口径保留。
 
