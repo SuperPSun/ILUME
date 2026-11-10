@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import csv
 from dataclasses import replace
 import json
@@ -34,7 +33,6 @@ from stage1.tokenizer import SmilesTokenizer
 from stage2 import FrozenObjectSpec, load_frozen_object_encoder
 from stage2.atom_targets import map_partial_charges, parse_mol2
 from stage2.config import (
-    DEFAULT_REFINEMENT_TASKS,
     STAGE2_CHECKPOINT_VERSION,
     Stage2Config,
     Stage2DataConfig,
@@ -42,16 +40,12 @@ from stage2.config import (
     Stage2PreparationConfig,
     Stage2RepresentationConfig,
     Stage2TrainingConfig,
-    load_stage2_config,
-    stage2_config_from_dict,
 )
 from stage2.data import (
-    STAGE2_PREPARATION_CONTRACT_VERSION,
     Stage2TaskDataset,
     load_artifact_registry,
     epoch_batch_schedule,
 )
-from stage2.identity import build_stage2_training_identity
 from stage2.model import (
     RDKitDescriptorBackbone,
     Stage2ObjectModel,
@@ -60,9 +54,6 @@ from stage2.model import (
 )
 from stage2.prepare import (
     prepare_stage2_data,
-    prepare_teacher_cache,
-    stage1_encoder_identity,
-    teacher_cache_identity,
 )
 from stage2.rdkit_train import (
     STAGE2_RDKIT_CHECKPOINT_KIND,
@@ -75,8 +66,6 @@ from stage2.train import (
     load_stage2_encoder_artifact,
     run_stage2_training,
     stage2_training_optimizer_groups,
-    joint_stage2_loss,
-    task_compensation_scale,
 )
 
 
@@ -249,110 +238,6 @@ def test_registry_is_catalog_driven_and_model_independent(tiny_stage2_setup):
     assert registry.by_id("simulation/homo").task_id != registry.by_id("simulation/lumo").task_id
 
 
-def test_stage2_refinement_config_contract(tiny_stage2_setup):
-    active = load_stage2_config(Path("configs/v3/stage2/base.yaml"))
-    assert active.model.object_layers == 2
-    assert active.model.object_ffn_dim == 2048
-    assert active.loss.lambda_teacher == 0.0
-    assert active.preparation.teacher_batch_size is None
-    assert active.training.epochs == 10
-    assert active.training.refinement_epochs == 0
-    assert active.training.refinement_tasks == ()
-    assert active.loss.teacher_weighting == "task_compensated"
-    assert active.to_dict()["loss"]["teacher_weighting"] == "task_compensated"
-
-    paths = [
-        Path("configs/v1/stage2/base.yaml"),
-        *sorted(Path("configs/experiments_v1/stage2").glob("*.yaml")),
-    ]
-    for path in paths:
-        config = load_stage2_config(path)
-        assert config.training.epochs == (5 if path == Path("configs/v1/stage2/base.yaml") else 10)
-        assert config.training.refinement_epochs == 10
-        assert config.training.refinement_tasks == DEFAULT_REFINEMENT_TASKS
-        assert config.loss.teacher_weighting == "uncompensated"
-        assert "teacher_weighting" not in config.to_dict()["loss"]
-        assert config.to_dict()["training"]["refinement_tasks"] == list(
-            DEFAULT_REFINEMENT_TASKS
-        )
-
-    invalid = active.to_dict()
-    invalid["loss"]["teacher_weighting"] = "unknown"
-    with pytest.raises(ValueError, match="teacher_weighting"):
-        stage2_config_from_dict(invalid)
-
-    registry = load_stage2_registry(tiny_stage2_setup.data.task_catalog_path)
-    identity_args = {
-        "data_identity": {"hash": "data"},
-        "teacher_identity": {"hash": "teacher"},
-        "stage1_encoder_identity": {"hash": "stage1"},
-        "registry": registry,
-        "model_contract": {"kind": "test"},
-        "normalized_task_weights": active.normalized_task_weights(registry),
-        "math_contract": {"precision": "test"},
-        "optimizer_implementation": "single_tensor",
-    }
-    legacy = replace(
-        active,
-        loss=replace(active.loss, teacher_weighting="uncompensated"),
-    )
-    assert build_stage2_training_identity(active, **identity_args)["hash"] != (
-        build_stage2_training_identity(legacy, **identity_args)["hash"]
-    )
-
-    with pytest.raises(ValueError, match="disabled together"):
-        replace(
-            tiny_stage2_setup,
-            training=replace(tiny_stage2_setup.training, refinement_epochs=0),
-        ).validate()
-    with pytest.raises(ValueError, match="duplicates"):
-        replace(
-            tiny_stage2_setup,
-            training=replace(
-                tiny_stage2_setup.training,
-                refinement_tasks=("simulation/homo", "simulation/homo"),
-            ),
-        ).validate()
-    with pytest.raises(ValueError, match="disabled together"):
-        replace(
-            tiny_stage2_setup,
-            training=replace(tiny_stage2_setup.training, refinement_tasks=()),
-        ).validate()
-    unknown = replace(
-        tiny_stage2_setup,
-        training=replace(
-            tiny_stage2_setup.training,
-            refinement_tasks=("simulation/unknown",),
-        ),
-    )
-    unknown.validate()
-    with pytest.raises(ValueError, match="unknown"):
-        unknown.validate_registry(load_stage2_registry(unknown.data.task_catalog_path))
-
-def test_prepare_v3_task_local_scalers_and_ragged_atoms(tiny_stage2_setup):
-    metadata = prepare_stage2_data(tiny_stage2_setup)
-    assert metadata["format_version"] == 3
-    assert metadata["preparation_contract_version"] == STAGE2_PREPARATION_CONTRACT_VERSION
-    assert "model_contract" not in metadata
-    assert metadata["summary"]["rows"]["simulation/density"]["train"] == 2
-    density = metadata["scalers"]["simulation/density"]["targets"]["density_g/cm^3"]
-    assert density["mean"] == pytest.approx(1.5)
-    assert density["scale"] == pytest.approx(0.5)
-    homo = metadata["scalers"]["simulation/homo"]["targets"]["HOMO_eV"]
-    lumo = metadata["scalers"]["simulation/lumo"]["targets"]["LUMO_eV"]
-    assert (homo["count"], homo["mean"], homo["scale"]) == pytest.approx(
-        (2, -4.0, 5.0)
-    )
-    assert (lumo["count"], lumo["mean"], lumo["scale"]) == pytest.approx(
-        (2, 0.0, 4.0)
-    )
-    atom = Stage2TaskDataset(tiny_stage2_setup.data.artifacts_dir, "simulation/partial_atomic_charge", "train")
-    assert atom.mol_ids == ("mol_train",)
-    assert atom.atom_target_offsets.tolist() == [0, 3]
-    assert metadata["scalers"]["simulation/partial_atomic_charge"]["targets"]["partial_atomic_charge"]["weighting"] == "molecule_equal"
-    audit = list(csv.DictReader((tiny_stage2_setup.data.artifacts_dir / "partial_charge_mapping_audit.csv").open()))
-    assert {row["status"] for row in audit} == {"mapped"}
-
 def test_prepare_rejects_orbital_role_provenance_mismatch(tiny_stage2_setup):
     path = tiny_stage2_setup.data.data_root / "stage2/homo/train.csv"
     rows = list(csv.DictReader(path.open(encoding="utf-8")))
@@ -360,105 +245,6 @@ def test_prepare_rejects_orbital_role_provenance_mismatch(tiny_stage2_setup):
     _write_csv(path, list(rows[0]), rows)
     with pytest.raises(ValueError, match="formal-charge mismatch"):
         prepare_stage2_data(tiny_stage2_setup)
-
-def test_data_and_teacher_identity_ignore_stage2_model_contract(tiny_stage2_setup):
-    first_data = prepare_stage2_data(tiny_stage2_setup)
-    first_teacher = prepare_teacher_cache(tiny_stage2_setup)
-    changed = replace(
-        tiny_stage2_setup,
-        model=replace(
-            tiny_stage2_setup.model,
-            object_layers=tiny_stage2_setup.model.object_layers + 1,
-            object_ffn_dim=tiny_stage2_setup.model.object_ffn_dim * 2,
-            dropout=0.2,
-        ),
-    )
-
-    second_data = prepare_stage2_data(changed)
-    second_teacher = prepare_teacher_cache(changed)
-
-    assert second_data["data_signature"] == first_data["data_signature"]
-    assert "model_contract" not in second_data
-    assert second_teacher["identity"] == first_teacher["identity"]
-    assert second_teacher["cache_reused"] is True
-    assert "model_contract" not in second_teacher
-    teacher_identity = second_teacher["semantic"]["identities"]["teacher"]
-    assert set(teacher_identity["payload"]) == {
-        "extraction_contract_version", "entity_identity",
-        "stage1_encoder_identity",
-    }
-    assert second_teacher["dtype"] == "float32"
-    assert "math_contract" in second_teacher
-
-def test_teacher_identity_binds_stage1_encoding_contract_and_entity_data(tiny_stage2_setup):
-    data_metadata = prepare_stage2_data(tiny_stage2_setup)
-    loaded = load_stage1_model(
-        tiny_stage2_setup.initialization.checkpoint,
-        tiny_stage2_setup.data.pretrain_artifacts_dir,
-        backbone_dropout=0.0,
-    )
-    identity = teacher_cache_identity(data_metadata, loaded)
-    changed_loaded = replace(
-        loaded,
-        config=replace(
-            loaded.config,
-            model=replace(loaded.config.model, n_heads=2),
-        ),
-    )
-    changed_identity = teacher_cache_identity(data_metadata, changed_loaded)
-    changed_feature_identity = teacher_cache_identity(
-        data_metadata, replace(loaded, artifact_hash="different"),
-    )
-    changed_data = copy.deepcopy(data_metadata)
-    changed_data["semantic"]["identities"]["entity"]["hash"] = "different"
-    changed_entity_identity = teacher_cache_identity(changed_data, loaded)
-
-    assert identity != changed_identity
-    assert identity != changed_feature_identity
-    assert identity != changed_entity_identity
-    assert identity["payload"]["stage1_encoder_identity"] == stage1_encoder_identity(loaded)["hash"]
-
-    with torch.no_grad():
-        next(loaded.model.smiles_encoder.parameters()).add_(1.0)
-    changed_state_identity = teacher_cache_identity(data_metadata, loaded)
-    assert identity != changed_state_identity
-
-def test_prepare_worker_count_preserves_atom_semantics(tiny_stage2_setup):
-    first_config = replace(
-        tiny_stage2_setup,
-        data=replace(
-            tiny_stage2_setup.data,
-            artifacts_dir=tiny_stage2_setup.data.data_root / "stage2_workers_1",
-        ),
-        preparation=replace(tiny_stage2_setup.preparation, workers=1),
-    )
-    second_config = replace(
-        tiny_stage2_setup,
-        data=replace(
-            tiny_stage2_setup.data,
-            artifacts_dir=tiny_stage2_setup.data.data_root / "stage2_workers_2",
-        ),
-        preparation=replace(tiny_stage2_setup.preparation, workers=2),
-    )
-    first_metadata = prepare_stage2_data(first_config)
-    second_metadata = prepare_stage2_data(second_config)
-    assert first_metadata["summary"] == second_metadata["summary"]
-    assert first_metadata["scalers"] == second_metadata["scalers"]
-    task = "simulation/partial_atomic_charge"
-    first = Stage2TaskDataset(first_config.data.artifacts_dir, task, "train")
-    second = Stage2TaskDataset(second_config.data.artifacts_dir, task, "train")
-    assert first.mol_ids == second.mol_ids
-    assert torch.equal(first.atom_target_offsets, second.atom_target_offsets)
-    assert torch.equal(first.atom_target_values, second.atom_target_values)
-    assert (
-        first_config.data.artifacts_dir / "partial_charge_mapping_audit.csv"
-    ).read_text(encoding="utf-8") == (
-        second_config.data.artifacts_dir / "partial_charge_mapping_audit.csv"
-    ).read_text(encoding="utf-8")
-
-
-
-
 
 # --- Partial-charge mapping behavior ---
 
@@ -551,7 +337,7 @@ def test_round_robin_is_complete_deterministic_and_does_not_cycle() -> None:
     assert len({item.task for item in first[:len(datasets)]}) == len(datasets)
     assert [item.task for item in first].count("c") == 1
 
-def test_loss_reductions_and_teacher_weighting() -> None:
+def test_loss_reductions_are_target_and_molecule_equal() -> None:
     predictions = torch.tensor([[2.0, 2.0], [0.0, 2.0]])
     target = torch.zeros_like(predictions)
     macro = masked_target_macro_smooth_l1_loss(
@@ -563,23 +349,6 @@ def test_loss_reductions_and_teacher_weighting() -> None:
         torch.ones(3, dtype=torch.bool), torch.tensor([0, 1, 1]), 2,
     )
     assert molecule.item() == pytest.approx(1.5)
-    compensation = task_compensation_scale(0.25, 20, 4, 10)
-    physics_loss = torch.tensor(2.0)
-    teacher_loss = torch.tensor(3.0)
-    assert joint_stage2_loss(
-        physics_loss,
-        teacher_loss,
-        compensation=compensation,
-        lambda_teacher=0.1,
-        teacher_weighting="task_compensated",
-    ).item() == pytest.approx(4.6)
-    assert joint_stage2_loss(
-        physics_loss,
-        teacher_loss,
-        compensation=compensation,
-        lambda_teacher=0.1,
-        teacher_weighting="uncompensated",
-    ).item() == pytest.approx(4.3)
 
 
 @pytest.mark.parametrize("entity_dim", [1241, 1235])

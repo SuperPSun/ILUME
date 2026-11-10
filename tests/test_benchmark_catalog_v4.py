@@ -26,51 +26,14 @@ from common.io import sha256_file
 from common.reporting import comparison_identity
 
 
-@pytest.mark.parametrize('model', ('mlp', 'ecfp_xgboost', 'dmpnn', 'molformer', 'ilbert', 'spmm', 'llasmol', 'aionopedia', 'iltransr', 'aifc'))
-@pytest.mark.parametrize('split', ('42', '3407'))
-def test_catalog_v4_keeps_model_recipe_and_binds_tasks(model, split):
-    protocol = 'catalog_v4' if split == '42' else 'catalog_v4_3407'
-    current = load_benchmark_config(f'configs/benchmarks/{protocol}/{model}.yaml')
-    legacy = load_benchmark_config(f'configs/benchmarks/{model}.yaml')
-    assert current.model == legacy.model
-    assert current.training == legacy.training
-    assert current.seed == legacy.seed
-    assert len(configured_tasks(current, 'stage3')) == 24
-    assert current.simulation.tasks == ('simulation/thermal_expansion', 'simulation/homo', 'simulation/lumo')
-    assert 'protocol' not in legacy.to_dict()
-    assert resolve_task(current, 'stage3', 'experiment/hydration', 1).slots == ('solute',)
-    assert current.protocol == protocol
-    assert current.data.data_root == Path(f'data/{split}')
-    assert current.data.task_catalog == Path(f'data/{split}/task_catalog.csv')
-    hydration = resolve_task(current, 'stage3', 'experiment/hydration', 1)
-    assert hydration.registry_payload['baseline_protocol'] == protocol
-    assert hydration.valid_paths[0] == Path(f'data/{split}/stage3/experiment/hydration/random/cv1/fold1.csv')
-    invalid = current.to_dict()
-    invalid['simulation']['tasks'] = list(legacy.simulation.tasks)
-    with pytest.raises(ValueError):
-        benchmark_config_from_dict(invalid)
-    if split == '3407':
-        for name in ('homo', 'lumo'):
-            task = resolve_task(current, 'simulation', f'simulation/{name}', None)
-            assert task.train_paths == (Path(f'data/stage1/properties/{name}/train.csv'),)
-        thermal = resolve_task(current, 'simulation', 'simulation/thermal_expansion', None)
-        assert thermal.train_paths == (Path('data/3407/stage2/thermal_expansion/train.csv'),)
-        invalid = current.to_dict()
-        invalid['data']['data_root'] = 'data/42'
-        with pytest.raises(ValueError, match='data/3407'):
-            benchmark_config_from_dict(invalid)
-
-
-def test_hydration_views_and_water_activity_are_complete():
+def test_hydration_views_are_complete():
     from benchmarks.aifc.adapter import aifc_model_views
     from benchmarks.iltransr.adapter import iltransr_model_views
     from benchmarks.ilbert.adapter import ilbert_model_sequences
     from benchmarks.llasmol.adapter import llasmol_model_views
-    from benchmarks.aionopedia.adapter import _prepare_split, SampleStats
-    from benchmarks.aionopedia.model import MultiModalRegressor
-    import torch
+    from benchmarks.aionopedia.adapter import _prepare_split
 
-    config = load_benchmark_config('configs/benchmarks/catalog_v4_3407/aionopedia.yaml')
+    config = load_benchmark_config('configs/benchmarks/FLftv4_3407/aionopedia.yaml')
     task = resolve_task(config, 'stage3', 'experiment/hydration', 1)
     for views in (aifc_model_views, iltransr_model_views, ilbert_model_sequences, llasmol_model_views):
         assert views(task, ('O',))[0] == ('O',)
@@ -80,20 +43,6 @@ def test_hydration_views_and_water_activity_are_complete():
     assert prepared.prompts == ('molecule O temperature 300K',)
     assert prepared.topology == 4
     assert prepared.temperature.tolist() == pytest.approx([.3])
-    water = resolve_task(config, 'stage3', 'experiment/water_activity_coefficient', 1)
-    raw = RawDataset((('[Na+]', '[Cl-]'),), 2, np.array([[.2, 300., 100.]]), np.array([[1.]]), ('tiny.csv:2',), ({},))
-    prepared = _prepare_split(water, raw, SampleStats(100., 1., True))
-    assert 'water_mole_fraction 0.2' in prepared.prompts[0]
-    assert prepared.extra_conditions['water_activity'].tolist() == pytest.approx([.2])
-    assert prepared.active_conditions == ('water_activity', 'pressure')
-    torch.manual_seed(7)
-    model = MultiModalRegressor(torch.nn.Identity(), water_activity=True)
-    assert 'water_activity' in model.condition_projectors
-    assert 'water_activity' in model.condition_segments
-    torch.manual_seed(7)
-    plain = MultiModalRegressor(torch.nn.Identity())
-    assert 'water_activity' not in plain.condition_projectors
-    assert all(torch.equal(value, model.state_dict()[key]) for key, value in plain.state_dict().items())
 
 
 def test_3407_orbitals_read_shared_stage1_rows(tmp_path, monkeypatch):

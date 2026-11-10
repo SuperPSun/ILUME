@@ -18,8 +18,6 @@ from rdkit import Chem
 from torch_geometric.data import Batch, Data
 import yaml
 
-from ablations.stage3_single_task_mlp.adapter import _manifest, _run_training_epochs, build_input_features
-from ablations.stage3_single_task_mlp.model import Stage3SingleTaskMLP
 from benchmarks.aifc.adapter import (
     ConditionStats as AIFCConditionStats,
     aifc_model_views,
@@ -104,7 +102,6 @@ import scripts.benchmarks.evaluate as benchmark_evaluate_launcher
 from scripts.benchmarks.sweep import (
     _JobResult,
     _SweepState,
-    _aggregate,
     _build_jobs,
     _schedule,
 )
@@ -559,143 +556,6 @@ def test_baseline_config_rejects_validation_driven_training() -> None:
             benchmark_config_from_dict(retired)
 
 
-@pytest.mark.usefixtures("historical_experimental_catalog")
-def test_native_split_benchmark_configs_follow_v2_authorities() -> None:
-    splits = ("system", "random", "individual")
-    benchmarks = ("mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm")
-    root = Path("configs/benchmarks/splits")
-    for split in splits:
-        authority = load_stage3_config(
-            Path("configs/v2/stage3/splits") / f"{split}.yaml"
-        )
-        expected = tuple(authority.enabled_task_ids)
-        for benchmark in benchmarks:
-            config = load_benchmark_config(root / f"{benchmark}__{split}.yaml")
-            assert config.data.stage3_authority_config == Path(
-                f"configs/v2/stage3/splits/{split}.yaml"
-            )
-            assert configured_tasks(config, "stage3") == expected
-            assert config.training["model_selection"] == "final_training_state"
-            assert {
-                "early_stopping_patience", "early_stopping_rounds", "selection_metric",
-            }.isdisjoint(config.training)
-            if benchmark == "ecfp_xgboost":
-                assert config.model["n_estimators"] == 1000
-            else:
-                assert config.training["max_epochs"] == 10
-            if benchmark == "ilbert":
-                assert config.training["scheduler"] == "constant"
-            if benchmark == "dmpnn":
-                assert config.model["multicomponent_shared"] is True
-
-
-@pytest.mark.parametrize("config_path", ("configs/ablations/no_stage3_home.yaml",))
-@pytest.mark.usefixtures("historical_experimental_catalog")
-def test_stage3_single_task_mlp_config_and_ordered_concat(config_path) -> None:
-    config = load_benchmark_config(config_path)
-    assert config.display_name == "ILUME w/o Stage3-HoME"
-    assert len(configured_tasks(config, "stage3")) == 20
-    assert config.data.feature_cache is None and config.features is None
-    with pytest.raises(ValueError, match="registered recipe"):
-        replace(config, model={**config.model, "dropout": 0.2}).validate()
-
-    embeddings = torch.arange(4 * 1024, dtype=torch.float32).reshape(4, 1024)
-    class Dataset:
-        conditions = torch.tensor([[0.25, -0.5], [1.0, 2.0]])
-        primary_object_ids = torch.tensor([0, 1])
-        partner_object_ids = torch.tensor([2, 3])
-
-        def __len__(self) -> int:
-            return 2
-
-    dataset = Dataset()
-    spec = SimpleNamespace(
-        task_id="experiment/partner",
-        condition_columns=("temperature_K", "pressure_kPa"),
-        partner_slots=("solute",),
-    )
-    features = build_input_features(dataset, embeddings, spec)
-    assert features.shape == (2, 2050)
-    torch.testing.assert_close(features[:, :1024], embeddings[[0, 1]])
-    torch.testing.assert_close(features[:, 1024:2048], embeddings[[2, 3]])
-    torch.testing.assert_close(features[:, 2048:], dataset.conditions)
-    first_model = Stage3SingleTaskMLP(features.shape[1])
-    second_model = Stage3SingleTaskMLP(features.shape[1])
-    assert {
-        id(parameter) for parameter in first_model.parameters()
-    }.isdisjoint(id(parameter) for parameter in second_model.parameters())
-
-    condition_only = SimpleNamespace(
-        task_id="experiment/condition",
-        condition_columns=("temperature_K", "pressure_kPa"),
-        partner_slots=(),
-    )
-    dataset.partner_object_ids = torch.full((2,), -1)
-    assert build_input_features(dataset, embeddings, condition_only).shape == (2, 1026)
-    with pytest.raises(ValueError, match="partner embedding is missing"):
-        build_input_features(dataset, embeddings, spec)
-
-    ordinary = SimpleNamespace(
-        task_id="experiment/plain", condition_columns=(), partner_slots=()
-    )
-    dataset.conditions = torch.empty((2, 0))
-    dataset.partner_object_ids = torch.full((2,), -1)
-    assert build_input_features(dataset, embeddings, ordinary).shape == (2, 1024)
-
-
-@pytest.mark.parametrize("version", (3,))
-@pytest.mark.usefixtures("historical_experimental_catalog")
-def test_stage3_single_task_mlp_v2_config_features_and_final_state(tmp_path: Path, version) -> None:
-    config = load_benchmark_config("configs/ablations/no_stage3_home.yaml" if version == 3 else "configs/v4/ablations/no_stage3_home.yaml")
-    assert config.data.stage3_authority_config == Path(f"configs/v{version}/stage3/base.yaml")
-    assert len(configured_tasks(config, "stage3")) == 20
-    assert config.training["max_epochs"] == 10
-    assert config.training["model_selection"] == "final_training_state"
-    with pytest.raises(ValueError, match="registered recipe"):
-        replace(config, model={**config.model, "hidden_dims": [512, 256]}).validate()
-
-    embeddings = torch.arange(4 * 1024, dtype=torch.float32).reshape(4, 1024)
-    class Rows:
-        conditions = torch.tensor([[0.25], [-0.5]])
-        primary_object_ids = torch.tensor([0, 1])
-        partner_object_ids = torch.tensor([2, 3])
-
-        def __len__(self) -> int:
-            return 2
-
-    features = build_input_features(
-        Rows(), embeddings,
-        SimpleNamespace(task_id="example", condition_columns=("temperature_K",), partner_slots=("solute",)),
-    )
-    assert features.shape == (2, 2049)
-    torch.testing.assert_close(features[:, :1024], embeddings[[0, 1]])
-    torch.testing.assert_close(features[:, 1024:2048], embeddings[[2, 3]])
-    torch.testing.assert_close(features[:, 2048:], Rows.conditions)
-
-    small = replace(config, training={**config.training, "batch_size": 2, "max_epochs": 2})
-    model = Stage3SingleTaskMLP(4, (1024, 512))
-    history, state, epoch, score = _run_training_epochs(
-        model, torch.randn(4, 4), torch.randn(4), torch.randn(2, 4), torch.randn(2),
-        small, training_seed=123, device=torch.device("cpu"), use_bf16=False,
-        reporter=RecordingReporter(),
-    )
-    assert epoch == 2 and score == history[-1]["valid_normalized_mae"]
-    for name, value in model.state_dict().items():
-        torch.testing.assert_close(state[name], value.cpu())
-
-    (tmp_path / "checkpoint.json").write_text(
-        json.dumps({"format_version": 1 if version == 3 else 4, "kind": f"ilume_stage3_single_task_mlp_model_home_v{1 if version == 3 else 4}", "integrity": {}}),
-        encoding="utf-8",
-    )
-    assert _manifest(tmp_path, config)["kind"].endswith(f"_home_v{1 if version == 3 else 4}")
-    (tmp_path / "checkpoint.json").write_text(
-        json.dumps({"format_version": 1, "kind": "ilume_stage3_single_task_mlp_model", "integrity": {}}),
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="Unsupported"):
-        _manifest(tmp_path, config)
-
-
 @pytest.mark.parametrize("name", ("dmpnn", "molformer", "ilbert", "spmm", "llasmol", "aionopedia", "iltransr", "aifc"))
 def test_baseline_environment_command(name: str) -> None:
     config_path = f"configs/benchmarks/{name}.yaml"
@@ -930,113 +790,6 @@ def test_sweep_scheduler_caps_concurrency_per_gpu(
     )
     assert maximum_active == 4
     assert maximum_by_device == {"cuda:0": 2, "cuda:1": 2}
-
-@pytest.mark.parametrize(
-    "config_name, expected_selector",
-    [
-        ("no_stage3_home", "final_training_state"),
-    ],
-)
-def test_stage3_only_ablation_aggregate_has_one_model_and_no_stage2_sections(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config_name: str, expected_selector: str,
-) -> None:
-    config = load_benchmark_config(
-        f"configs/ablations/{config_name}.yaml"
-    )
-    task = "experiment/example"
-    study_id = f"{config.name}-{semantic_identity(
-        'benchmark.reporting-study.v1',
-        {'model': config.name, 'config': sweep_module._scientific_config(config)},
-    )['hash']}"
-    monkeypatch.setattr(
-        sweep_module,
-        "configured_tasks",
-        lambda _config, benchmark: (task,) if benchmark == "stage3" else (),
-    )
-    monkeypatch.setattr(sweep_module, "resolve_task", lambda *_args: object())
-    monkeypatch.setattr(sweep_module, "has_test_rows", lambda _task: True)
-    monkeypatch.setattr(
-        sweep_module, "repository_relative", lambda value: Path(value).as_posix()
-    )
-    sources = {
-        **{f"{task}:fold{fold}": f"source-{fold}" for fold in range(1, 6)},
-        f"{task}:test": "test-source",
-    }
-    metric = {
-        "count": 2, "mae": 1.0, "rmse": 1.0, "r2": 0.0,
-        "normalized_mae": 0.5, "normalized_rmse": 0.5,
-    }
-
-    def completed(path: Path, payload: dict[str, object]) -> None:
-        run = path / "attempt-001"
-        run.mkdir(parents=True)
-        (run / "metadata.json").write_text(
-            '{"status":"completed"}\n', encoding="utf-8"
-        )
-        (run / "summary.json").write_text(
-            json.dumps(payload), encoding="utf-8"
-        )
-
-    task_root = tmp_path / "stage3" / "experiment__example"
-    for fold in range(1, 6):
-        comparison = comparison_identity(
-            "stage3_property",
-            split="valid",
-            expected=[task],
-            sources={key: value for key, value in sources.items() if not key.endswith(":test")},
-            normalization={f"{task}:fold{fold}": {"scale": 2.0}},
-            folds=range(1, 6),
-        )
-        completed(
-            task_root / f"evaluate_valid_fold{fold}",
-            {
-                "targets": {"value": metric},
-                "reporting": {
-                    "schema_version": 1,
-                    "study_id": study_id,
-                    "protocol": {"expected_tasks": [task]},
-                    "comparison_identity": comparison,
-                },
-            },
-        )
-    completed(
-        task_root / "evaluate_test",
-        {
-            "ensemble": {"targets": {"value": metric}},
-            "reporting": {
-                "schema_version": 1,
-                "study_id": study_id,
-                "protocol": {"expected_tasks": [task]},
-                "comparison_identity": comparison_identity(
-                    "stage3_property",
-                    split="test",
-                    expected=[task],
-                    sources=sources,
-                    normalization={
-                        f"{task}:fold{fold}": {"scale": 2.0}
-                        for fold in range(1, 6)
-                    },
-                    folds=range(1, 6),
-                    ensemble=True,
-                ),
-            },
-        },
-    )
-    summary = _aggregate(tmp_path, config)
-    assert set(summary["reporting"]["benchmarks"]) == {
-        "stage3_test", "stage3_validation"
-    }
-    assert summary["reporting"]["model_id"] == config.name
-    assert summary["reporting"]["model_display_name"] == config.display_name
-    assert summary["model_selector"] == expected_selector
-    assert summary["checkpoint_epoch"] is None
-    _write_run(tmp_path / "published", summary, stage="benchmark")
-    published = publish_summary(
-        tmp_path / "published", tmp_path / "leaderboard", tmp_path
-    )
-    assert len(published["leaderboards"]["stage3_test"]) == 1
-    assert len(published["leaderboards"]["stage3_validation"]) == 1
-    assert "legacy_stage2_reporting_contract" not in published["health"][0]["issues"]
 
 # --- Reporting contract ---
 

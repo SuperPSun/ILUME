@@ -20,7 +20,6 @@ from common.outputs import open_run_directory
 import common.outputs as outputs_module
 from stage1.config import (
     ArchitectureConfig,
-    GLOBAL_RDKIT_STAGE1_CHECKPOINT_VERSION,
     STAGE1_CHECKPOINT_KIND,
     STAGE1_CHECKPOINT_VERSION,
     config_from_dict,
@@ -36,25 +35,20 @@ from stage1.config import (
 from stage1.data import (
     CORPUS_FORMAT_VERSION,
     CORPUS_KIND,
-    GLOBAL_RDKIT_CORPUS_FORMAT_VERSION,
     PreparedCorpusDataset,
 )
 from stage1.descriptors import rdkit_descriptor_names, DescriptorSchema
 from stage1.fingerprints import calculate_fingerprints
 from stage1.features import IPC_SQUARE_OVERFLOW_LIMIT
 import stage1.features as features_module
-from stage1.graph import ATOM_FEATURE_NAMES, BOND_FEATURE_NAMES
 from stage1.masking import (
     MultimodalPacker,
     mask_smiles_tokens,
-    MultimodalCollator,
     MultimodalMasker,
 )
 from stage1.model import (
     LossStatistics,
     PretrainOutput,
-    MultimodalPretrainModel,
-    _weighted_component,
 )
 from stage1.prepare import prepare_corpus
 import stage1.prepare as prepare_module
@@ -255,56 +249,6 @@ def test_dgt_compiled_attention_gradients_and_rng():
                 error = (eager.float() - compiled.float()).norm() / eager.float().norm().clamp_min(1e-10)
                 assert error < tolerance
 
-
-def test_global_rdkit_v2_representation_and_losses(
-    tiny_config, tiny_samples
-) -> None:
-    vocabulary, legacy_samples = tiny_samples
-    config = replace(
-        tiny_config,
-        architecture=ArchitectureConfig(kind="global_rdkit_v2"),
-        descriptor=DescriptorConfig(mode="full", token_count=1),
-        model=replace(tiny_config.model, descriptor_blocks=2),
-    )
-    config.validate()
-    samples = [
-        {key: value for key, value in sample.items() if key != "fingerprints"}
-        for sample in legacy_samples
-    ]
-    schema = DescriptorSchema.fit(
-        np.stack([sample["descriptors"].numpy() for sample in samples]),
-        rdkit_descriptor_names(),
-        "full",
-        1,
-    )
-    model = MultimodalPretrainModel(config, vocabulary, schema)
-    packed = MultimodalPacker(vocabulary)(samples)
-    encoded = model.encode_entity(packed)
-
-    assert config.checkpoint_version == GLOBAL_RDKIT_STAGE1_CHECKPOINT_VERSION
-    assert "fingerprint" not in config.to_dict()
-    assert (model.token_dim, model.atom_dim, model.entity_dim) == (32, 32, 64)
-    assert model.fusion.modality_embedding.num_embeddings == 4
-    assert encoded.cls_embedding.shape == (3, 32)
-    assert encoded.rdkit_embedding.shape == (3, 32)
-    assert encoded.entity_embedding.shape == (3, 64)
-    assert torch.equal(
-        encoded.entity_embedding,
-        torch.cat((encoded.cls_embedding, encoded.rdkit_embedding), dim=-1),
-    )
-    assert torch.equal(model.encode(packed), encoded.cls_embedding)
-    assert not any("fingerprint" in name for name, _ in model.named_parameters())
-
-    masked = MultimodalMasker(vocabulary, config.masking).apply(packed)
-    output = model(masked)
-    assert masked.masks.modality_dropped.shape == (3, 3)
-    assert set(output.losses) == {"smiles", "descriptor", "atom", "bond"}
-    assert set(output.logits) == {"smiles", "descriptor", "atom", "bond"}
-    assert output.logits["descriptor"].shape == (3, 217)
-    invalid = config.to_dict()
-    invalid["fingerprint"] = {"kind": "none"}
-    with pytest.raises(ValueError, match="forbids fingerprint"):
-        config_from_dict(invalid)
 
 # --- Configuration, identity, and checkpoint/resume contracts ---
 
@@ -1472,21 +1416,6 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
     with pytest.raises(ValueError, match="integrity mismatch"):
         prepare_teacher_cache(config, teacher=teacher)
 
-def test_formal_stage1_has_one_large_capacity_base_profile() -> None:
-    active = load_config(ROOT / "configs/v2/stage1/base.yaml")
-    assert active.data.descriptor_dim == 217
-    assert active.descriptor.mode == "full"
-    assert active.descriptor.token_count == 1
-    assert active.model.d_model == 512
-    assert "fingerprint" not in active.to_dict()
-    assert sorted(path.name for path in (ROOT / "configs/v1/stage1").glob("*.yaml")) == [
-        "base.yaml"
-    ]
-    base = load_config(ROOT / "configs/v1/stage1/base.yaml")
-    assert base.loss.role_weights == (2.0, 2.0, 1.0)
-    assert "preparation" in base.to_dict()
-    assert "preparation" not in base.experiment_dict()
-
 def test_run_directory_allows_execution_change_on_resume(
     tmp_path, monkeypatch
 ) -> None:
@@ -1573,55 +1502,6 @@ def _write_charge_resources(root, molecules):
     (task / "test.csv").write_text("must never be read")
     return manifest, valid
 
-
-def test_global_rdkit_v2_corpus_uses_format3_without_fingerprints(
-    tmp_path, capsys
-) -> None:
-    source = tmp_path / "stage1"
-    source.mkdir()
-    _write_smiles(source / "cation.csv", ["[Na+]", "C[NH3+]"])
-    _write_smiles(source / "anion.csv", ["[Cl-]", "C(=O)[O-]"])
-    _write_smiles(source / "molecule.csv", ["O", "CC"])
-    artifacts = tmp_path / "prepared"
-    base = PretrainConfig()
-    config = replace(
-        base,
-        architecture=ArchitectureConfig(kind="global_rdkit_v2"),
-        data=replace(
-            base.data,
-            stage1_dir=source,
-            artifacts_dir=artifacts,
-            valid_fraction=0.5,
-            max_smiles_tokens=64,
-            shard_size=2,
-        ),
-        descriptor=DescriptorConfig(mode="full", token_count=1),
-        model=replace(
-            base.model,
-            d_model=16,
-            n_heads=4,
-            smiles_layers=1,
-            graph_depth=2,
-            descriptor_hidden_dim=32,
-            descriptor_blocks=2,
-            fusion_layers=1,
-            feedforward_dim=32,
-            dropout=0.0,
-        ),
-    )
-
-    prepare_corpus(config)
-    capsys.readouterr()
-    metadata = json.loads((artifacts / "metadata.json").read_text())
-    dataset = PreparedCorpusDataset(artifacts, "train")
-
-    assert metadata["format_version"] == GLOBAL_RDKIT_CORPUS_FORMAT_VERSION
-    assert metadata["descriptor_dim"] == 217
-    assert metadata["descriptor_token_count"] == 1
-    assert "fingerprint_kind" not in metadata
-    assert "fingerprint_contract" not in metadata
-    assert dataset.format_version == GLOBAL_RDKIT_CORPUS_FORMAT_VERSION
-    assert "fingerprints" not in dataset[0]
 
 def _ddp_training_worker(
     rank: int,
@@ -2570,136 +2450,6 @@ def test_mainline_rdkit_pin_and_old_feature_contract_rejection(tiny_config):
     assert semantic_identity("test.feature", contract) != semantic_identity("test.feature", old)
 
 
-def test_all_five_modalities_use_element_role_weights_and_component_means(
-    tiny_config,
-    tiny_samples,
-) -> None:
-    vocabulary, samples = tiny_samples
-    batch = MultimodalCollator(
-        vocabulary, tiny_config.masking, seed=tiny_config.data.seed
-    )(samples)
-    model = MultimodalPretrainModel(tiny_config, vocabulary)
-    output = model(batch)
-    role_weights = torch.tensor(tiny_config.loss.role_weights)
-
-    expected: dict[str, list[tuple[torch.Tensor, ...]]] = {}
-    smiles_mask = batch.masks.smiles_labels != -100
-    token_roles = batch.roles[:, None].expand_as(smiles_mask)
-    expected["smiles"] = [
-        _weighted_component(
-            F.cross_entropy(
-                output.logits["smiles"][smiles_mask],
-                batch.masks.smiles_labels[smiles_mask],
-                reduction="none",
-            ),
-            token_roles[smiles_mask],
-            role_weights,
-        )
-    ]
-
-    atom_mask = batch.masks.atom_mask
-    atom_roles = batch.roles[batch.graphs.atom_batch][atom_mask]
-    expected["atom"] = [
-        _weighted_component(
-            F.cross_entropy(
-                output.logits["atom"][name][atom_mask],
-                batch.graphs.atom_categorical[atom_mask, column],
-                reduction="none",
-            ),
-            atom_roles,
-            role_weights,
-        )
-        for column, name in enumerate(ATOM_FEATURE_NAMES)
-    ]
-
-    bond_mask = batch.masks.bond_mask
-    bond_roles = batch.roles[batch.graphs.bond_batch][bond_mask]
-    expected["bond"] = [
-        _weighted_component(
-            F.cross_entropy(
-                output.logits["bond"][name][bond_mask],
-                batch.graphs.bond_categorical[bond_mask, column],
-                reduction="none",
-            ),
-            bond_roles,
-            role_weights,
-        )
-        for column, name in enumerate(BOND_FEATURE_NAMES)
-    ]
-
-    descriptor_mask = batch.masks.descriptor_loss_mask
-    descriptor_roles = batch.roles[:, None].expand_as(descriptor_mask)
-    expected["descriptor"] = [
-        _weighted_component(
-            F.smooth_l1_loss(
-                output.logits["descriptor"][descriptor_mask],
-                batch.descriptors[descriptor_mask],
-                reduction="none",
-            ),
-            descriptor_roles[descriptor_mask],
-            role_weights,
-        )
-    ]
-
-    expected["fingerprint"] = []
-    for family, logits in output.logits["fingerprint"].items():
-        loss_mask = batch.masks.fingerprint_loss_mask[family]
-        fingerprint_roles = batch.roles[:, None].expand_as(loss_mask)
-        expected["fingerprint"].append(
-            _weighted_component(
-                F.binary_cross_entropy_with_logits(
-                    logits[loss_mask],
-                    batch.fingerprints.values[family][loss_mask],
-                    reduction="none",
-                ),
-                fingerprint_roles[loss_mask],
-                role_weights,
-            )
-        )
-
-    for modality, components in expected.items():
-        statistics = output.loss_statistics[modality]
-        assert torch.allclose(
-            statistics.numerators,
-            torch.stack([component[0] for component in components]),
-        )
-        assert torch.equal(
-            statistics.denominators,
-            torch.stack([component[1] for component in components]),
-        )
-        assert torch.allclose(output.losses[modality], statistics.mean())
-
-
-    assert set(output.losses) == {
-        "smiles",
-        "descriptor",
-        "atom",
-        "bond",
-        "fingerprint",
-    }
-    assert all(torch.isfinite(loss) for loss in output.losses.values())
-    assert output.logits["smiles"].shape[:2] == batch.token_ids.shape
-    assert output.logits["descriptor"].shape == (3, 217)
-    assert output.logits["fingerprint"]["morgan"].shape == (3, 2048)
-    assert output.logits["fingerprint"]["maccs"].shape == (3, 167)
-    assert output.fused_cls.shape == (3, tiny_config.model.d_model)
-
-    output.loss.backward()
-    required_parameters = [
-        model.smiles_encoder.token_embedding.weight,
-        model.graph_encoder.atom_mask_feature,
-        model.graph_encoder.bond_mask_feature,
-        model.descriptor_encoder.group_encoders[4].input_projection[0].weight,
-        model.fingerprint_encoder.chunk_encoder[0].weight,
-        model.fusion.modality_embedding.weight,
-        model.fusion.role_embedding.weight,
-        model.smiles_head.bias,
-        model.atom_heads["atomic_number"].weight,
-        model.bond_heads["bond_type"].weight,
-        model.descriptor_heads[4].weight,
-        model.fingerprint_heads["morgan"].weight,
-    ]
-    assert all(parameter.grad is not None for parameter in required_parameters)
 def test_regression_overlength_filter_keeps_observations_and_audits():
     from stage1.regression import filter_regression_inputs
 

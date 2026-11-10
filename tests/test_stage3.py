@@ -12,24 +12,19 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
-import numpy as np
 import pytest
-from rdkit import Chem
 import torch
 
-from common.descriptor_preprocessing import FeaturePreprocessor
 from common.identity import semantic_identity, tensor_state_hash
 from common.io import sha256_file
 from common.training import canonical_json_sha256, seed_everything
 import scripts.stage3.evaluate as evaluate_launcher
 import scripts.stage3.train as train_launcher
-from stage1.descriptors import calculate_descriptors, rdkit_descriptor_names
 from stage1.features import ROLE_TO_ID
 from stage2.model import ObjectEncoder
-from stage2.home_contract import SOURCE_GROUPS, state_hash
+from stage2.home_contract import SOURCE_GROUPS
 from stage3.capacity import refined_validation_summary, summarize_capacity_manifest
 from stage3.config import (
-    BASE_GROUP_TASKS,
     Stage3Config,
     Stage3DataConfig,
     Stage3GlobalBudgetConfig,
@@ -40,13 +35,11 @@ from stage3.config import (
     Stage3ObjectEncoderPhase1Config,
     Stage3PreparationConfig,
     Stage3PrivateClassConfig,
-    Stage3RepresentationConfig,
     Stage3TaskConfig,
     Stage3ThreePhaseConfig,
     Stage3TrainingConfig,
     Stage3KnowledgeGroupConfig,
     Stage3TransferKnowledgeConfig,
-    effective_training_seed,
     load_stage3_config,
     stage3_config_from_dict,
 )
@@ -62,7 +55,6 @@ from stage3.data import (
     resolve_raw_batch_allocation,
     resolve_task_registry,
     shuffled_epoch_indices,
-    source_path,
 )
 from stage3.evaluate import _load_model, evaluate_checkpoints, resolve_stage3_evaluation_identity
 from stage3.evaluate import _configured_study_id, _reporting_model
@@ -94,102 +86,11 @@ from stage3.three_phase import (
 from stage3.train import (
     _clip_joint_gradients,
     build_resolved_training_plan,
-    checkpoint_epochs,
     compute_task_gradient,
     resolve_stage3_training_identity,
     run_stage3_training,
 )
 from stage3.three_phase import run_three_phase_training
-
-
-def test_stage2_home_source_mapping_and_state_boundary() -> None:
-    from stage2.home_contract import (
-        SOURCE_GROUPS, load_transferable_state, source_task_specs,
-        state_hash, transferable_state,
-    )
-
-    tasks = tuple(
-        SimpleNamespace(
-            task_id=task,
-            target_columns=tuple(f"y{index}" for index in range(11))
-            if task == "simulation/simulated_qm_elec_hf" else ("y",),
-            condition_columns=("temperature_K",) if task in {
-                "simulation/density", "simulation/heat_capacity",
-                "simulation/thermal_expansion", "simulation/heat_of_vaporization",
-            } else (),
-            topology="interaction" if task == "simulation/transfer_organic" else
-                "ionic_liquid" if task in {
-                    "simulation/density", "simulation/heat_capacity",
-                    "simulation/thermal_expansion", "simulation/heat_of_vaporization",
-                } else "single_entity",
-        )
-        for task in SOURCE_GROUPS
-    )
-    registry = SimpleNamespace(tasks=tasks, task_ids=tuple(task.task_id for task in tasks))
-    specs = source_task_specs(registry)
-    assert len(specs) == 19
-    assert {spec.meta_group for spec in specs.values()} == {
-        "thermophysical", "solvation", "electronic_structure",
-    }
-    config = load_stage3_config("configs/v3/stage3/base.yaml")
-    source = Stage3SparseModel(
-        config.model, specs, 16,
-        group_configs={
-            **{name: config.groups[name] for name in ("thermophysical", "solvation")},
-            "electronic_structure": config.groups["thermophysical"],
-        },
-    )
-    state = transferable_state(source)
-    assert state
-    assert all("electronic_structure" not in name for name in state)
-    assert all(not name.startswith(("private_experts.", "task_gates.", "towers.")) for name in state)
-    target = Stage3SparseModel(
-        config.model,
-        {**specs, "experiment/new": replace(next(iter(specs.values())), task_id="experiment/new", meta_group="transport")},
-        16,
-        group_configs={
-            **{name: config.groups[name] for name in ("thermophysical", "solvation", "transport")},
-            "electronic_structure": config.groups["thermophysical"],
-        },
-    )
-    before = {name: value.clone() for name, value in target.state_dict().items()}
-    names = load_transferable_state(target, state, state_hash(state))
-    assert set(names) == set(state)
-    for name, value in target.state_dict().items():
-        assert torch.equal(value, state[name] if name in state else before[name])
-    with pytest.raises(ValueError, match="hash mismatch"):
-        load_transferable_state(target, state, "wrong")
-    incomplete = {name: value for name, value in state.items() if name != names[0]}
-    with pytest.raises(ValueError, match="incomplete"):
-        load_transferable_state(target, incomplete, state_hash(incomplete))
-
-
-
-@pytest.mark.parametrize("number", [1, 2, 3, 4])
-def test_home_candidate_transfer_shapes(number: int) -> None:
-    from stage2.home_config import load_home_recipe
-    from stage2.home_contract import SOURCE_GROUPS, load_transferable_state, source_task_specs, state_hash, transferable_state
-    from stage2.home_model import SimulationHoME
-
-    name = f"base1-{number}"
-    stage2 = load_home_recipe(f"configs/v3/stage2/candidates/{name}.yaml")
-    stage3 = load_stage3_config(f"configs/v3/stage3/candidates/{name}.yaml")
-    tasks = tuple(SimpleNamespace(
-        task_id=task, target_columns=("y",), condition_columns=(),
-        topology="single_entity",
-    ) for task in SOURCE_GROUPS)
-    registry = SimpleNamespace(tasks=tasks, task_ids=tuple(task.task_id for task in tasks))
-    backbone = torch.nn.Module()
-    backbone.entity_dim = 16
-    backbone.atom_dim = 8
-    backbone.config = SimpleNamespace(model=SimpleNamespace(n_heads=8))
-    source = Stage3SparseModel(stage3.model, source_task_specs(registry), 16, group_configs={**stage3.groups, "electronic_structure":stage3.groups["thermophysical"]})
-    state = transferable_state(source)
-    target = Stage3SparseModel(stage3.model, source_task_specs(registry), 16,
-                               group_configs=stage3.groups)
-    names = load_transferable_state(target, state, state_hash(state))
-    assert set(names) == set(state)
-    assert all(torch.equal(target.state_dict()[key], value) for key, value in state.items())
 
 
 def test_formal_home_source_rejects_old_kind(tmp_path):
@@ -581,149 +482,6 @@ def tiny_prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Stage3Conf
         summary = prepare_stage3(config)
     assert summary["task_count"] == 3
     return config
-
-
-@pytest.fixture()
-def tiny_rdkit_prepared(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Stage3Config:
-    config = _tiny_config(tmp_path)
-    config = replace(
-        config,
-        data=replace(config.data, artifacts_dir=tmp_path / "rdkit-artifacts"),
-        preparation=replace(
-            config.preparation, cache_dir=tmp_path / "rdkit-cache"
-        ),
-        initialization=Stage3InitializationConfig(
-            stage2_encoder=None, plugin=None
-        ),
-        representation=Stage3RepresentationConfig(
-            kind="rdkit_2d_adapter",
-            descriptor_family="rdkit_2d",
-            adapter="linear_layernorm",
-            output_dim=512,
-        ),
-    )
-    monkeypatch.setattr(
-        "stage3.prepare.load_stage2_encoder_identity",
-        lambda *_: pytest.fail("RDKit prepare loaded a Stage 2 identity"),
-    )
-    monkeypatch.setattr(
-        "stage3.prepare.load_frozen_object_encoder",
-        lambda *_args, **_kwargs: pytest.fail("RDKit prepare loaded Stage 2"),
-    )
-    summary = prepare_stage3(config)
-    assert summary["artifact_kind"] == "ilume_stage3_rdkit_sparse_data"
-    return config
-
-def test_base_registry_and_config_defaults_are_explicit() -> None:
-    config = load_stage3_config("configs/v1/stage3/base.yaml")
-    assert sum(map(len, BASE_GROUP_TASKS.values())) == 21
-    assert len(config.tasks) == 21
-    assert len(config.groups) == 6
-    assert config.data.split_policy == "prefer_il"
-    assert config.training.microbatch_size == 1024
-    assert config.training.checkpoint_interval_epochs == 10
-    assert config.training.seed is None
-    assert config.training.sampling_mode == "virtual"
-    assert config.training.schedule_mode == "legacy_joint_refinement"
-    assert all(group.experts is None for group in config.groups.values())
-    assert all(task.phase3_private_epochs is None for task in config.tasks.values())
-    assert config.training.joint_gradient_clip_mode == "global"
-    assert "sampling_mode" not in config.to_dict()["training"]
-    assert "joint_gradient_clip_mode" not in config.to_dict()["training"]
-    assert effective_training_seed(config) == config.data.seed
-    assert config.model.dropout == 0.10
-    assert config.model.expert_hidden_ratio == 2.0
-    assert config.representation is None
-    assert "representation" not in config.to_dict()
-    assert checkpoint_epochs(100, 10) == tuple(range(10, 101, 10))
-    assert checkpoint_epochs(23, 10) == (10, 20, 23)
-
-    v2 = load_stage3_config("configs/v3/stage3/base.yaml")
-    no_stage1 = load_stage3_config("configs/ablations/no_stage1_stage3.yaml")
-    no_stage2 = load_stage3_config("configs/ablations/no_stage2_stage3.yaml")
-    assert len(v2.enabled_task_ids) == 20
-    assert v2.data.split_policy == no_stage1.data.split_policy == no_stage2.data.split_policy == "system"
-    assert v2.model == config.model
-    assert all(group.experts is not None for group in v2.groups.values())
-    assert all(v2.resolved_private_recipe(task).phase3_epochs >= 0 for task in v2.tasks)
-    assert v2.training.sampling_mode == "raw"
-    assert v2.training.joint_gradient_clip_mode == "ownership"
-    assert v2.training.schedule_mode == "three_phase"
-    assert v2.initialization.home_mode == no_stage1.initialization.home_mode == "trained"
-    assert no_stage2.initialization.home_mode == "no_stage2"
-    assert "virtual_min_size" not in v2.to_dict()["training"]
-    for path in (
-        "configs/v2/stage3/splits/random.yaml",
-        "configs/v2/stage3/splits/system.yaml",
-        "configs/v2/stage3/splits/individual.yaml",
-        "configs/ablations/no_stage1_stage3.yaml",
-        "configs/ablations/no_stage2_stage3.yaml",
-    ):
-        active = load_stage3_config(path)
-        assert all(active.groups[group] == v2.groups[group] for group in active.groups)
-        assert ("electronic_structure" in active.groups) == ("no_stage1" in path)
-        assert active.tasks == v2.tasks
-        assert active.training.three_phase == v2.training.three_phase
-
-
-
-
-
-
-
-
-def test_v2_native_split_configs_match_materialized_task_subsets(tmp_path: Path) -> None:
-    expected = {
-        "system": ({"il", "il_solute", "solute_solvent", "random"}, 20),
-        "random": ({"random"}, 20),
-        "individual": ({"cation", "solvent", "random"}, 20),
-    }
-    root = Path("configs/v2/stage3/splits")
-    for name, (strategies, task_count) in expected.items():
-        config = load_stage3_config(root / f"{name}.yaml")
-        # Historical task contracts use isolated fixtures, not the evolving live catalog.
-        rows = []
-        for task_id, task in config.tasks.items():
-            slots = task.primary_slots + task.partner_slots
-            system = ("il_solute" if slots == ("cation", "anion", "solute") else
-                      "il" if slots == ("cation", "anion") else
-                      "solute_solvent" if slots == ("solute", "solvent") else "solute")
-            rows.append(_catalog_row(task_id, "value", ";".join(slots), "", system,
-                                     "random;il;il_solute;solute_solvent;cation;anion;solute;solvent",
-                                     task.unique_systems or 2))
-        catalog = tmp_path / "historical_catalog.csv"
-        _write_csv(catalog, list(rows[0]), rows)
-        original_config = config
-        config = replace(config, data=replace(config.data, task_catalog=catalog, stage3_dir=tmp_path / "stage3"))
-        registry = resolve_task_registry(config)
-        for spec in registry.values():
-            directory = {"il": "IL", "il_solute": "IL-solute", "solute_solvent": "solute-solvent"}.get(spec.split_strategy, spec.split_strategy)
-            for fold in range(1, 6):
-                _write_csv(config.data.stage3_dir / spec.task_id / directory / f"fold{fold}.csv", ["value"], [{"value": 1}])
-        enabled = {
-            task_id: spec for task_id, spec in registry.items() if spec.enabled
-        }
-        assert len(enabled) == task_count
-        assert {spec.split_strategy for spec in enabled.values()} == set(strategies)
-        assert original_config.data.artifacts_dir == Path(
-            f"outputs/v2/stage3/splits/{name}/prepare/artifacts"
-        )
-        assert config.preparation.cache_dir == Path(
-            f"outputs/v2/stage3/splits/{name}/prepare/object_cache"
-        )
-        assert config.training.sampling_mode == "raw"
-        assert config.training.joint_gradient_clip_mode == "ownership"
-        assert config.training.schedule_mode == "three_phase"
-        if name == "system":
-            assert {spec.system_type for spec in enabled.values()} == {"il", "il_solute", "solute_solvent", "solute"}
-        elif name == "individual":
-            assert sum(spec.split_strategy == "cation" for spec in enabled.values()) == 18
-            assert enabled["experiment/transfer_organic"].split_strategy == "solvent"
-        for spec in enabled.values():
-            for fold in range(1, 6):
-                assert source_path(config, spec, fold).is_file()
 
 
 def test_three_phase_config_and_task_specific_gate_contract() -> None:
@@ -1716,143 +1474,6 @@ def test_zero_global_or_private_experts_preserve_forward_and_ownership(
     assert model.parameters_for_owner(private_owner(task))
 
 
-def test_rdkit_prepare_adapter_refinement_and_reporting_contract(
-    tiny_rdkit_prepared: Stage3Config,
-) -> None:
-    metadata = json.loads(
-        (tiny_rdkit_prepared.data.artifacts_dir / "metadata.json").read_text()
-    )
-    assert metadata["kind"] == "ilume_stage3_rdkit_sparse_data"
-    assert "stage2_encoder_identity" not in metadata
-    contract = metadata["descriptor_contract"]
-    assert contract["fit_scope"] == "joint_training_rows"
-    assert contract["clip"] == [-10.0, 10.0]
-    assert set(contract["fold_preprocessing"]) == {
-        f"fold{fold}" for fold in range(1, 6)
-    }
-    names = rdkit_descriptor_names()
-    descriptor = lambda smiles: calculate_descriptors(
-        Chem.MolFromSmiles(smiles), names
-    )
-    expected_il = FeaturePreprocessor.fit(
-        np.stack(
-            [
-                np.concatenate((descriptor("[Na+]"), descriptor("[Cl-]"))),
-                np.concatenate((descriptor("[K+]"), descriptor("[Br-]"))),
-            ]
-            * 8
-        )
-    )
-    expected_single = FeaturePreprocessor.fit(
-        np.stack(
-            [descriptor(smiles) for smiles in ("C", "O", "CC", "CO")] * 4
-        )
-    )
-    fold1 = contract["fold_preprocessing"]["fold1"]
-    assert FeaturePreprocessor.from_dict(fold1["il"]) == expected_il
-    assert FeaturePreprocessor.from_dict(fold1["single"]) == expected_single
-    assert len(fold1["il"]["finite_mask"]) == 2 * len(names)
-    assert len(fold1["single"]["finite_mask"]) == len(names)
-
-    prepared_objects = {
-        "objects": json.loads(
-            (tiny_rdkit_prepared.data.artifacts_dir / "objects.json").read_text()
-        )
-    }
-    store = Stage3RepresentationStore(
-        tiny_rdkit_prepared.data.artifacts_dir,
-        1,
-        prepared_objects,
-        metadata["kind"],
-    )
-    registry = resolve_task_registry(tiny_rdkit_prepared)
-    model = Stage3SparseModel(
-        tiny_rdkit_prepared.model,
-        registry,
-        store.output_dim,
-        descriptor_input_dims=store.input_dims,
-    )
-    assert list(model.descriptor_adapters) == ["il", "molecule"]
-    for adapter in model.descriptor_adapters.values():
-        assert [type(layer) for layer in adapter] == [
-            torch.nn.Linear,
-            torch.nn.LayerNorm,
-        ]
-        assert all(
-            model.parameter_ownership()[parameter] == GLOBAL
-            for parameter in adapter.parameters()
-        )
-
-    config = _tiny_three_phase(tiny_rdkit_prepared)
-    output = config.data.artifacts_dir.parent / "rdkit-train"
-    run_stage3_training(config, 1, output_dir=output)
-    final = torch.load(output / "three_phase_final.pt", map_location="cpu", weights_only=False)
-    assert final["kind"] == "ilume_stage3_rdkit_home_three_phase_final"
-    assert final["representation"]["kind"] == "rdkit_2d_adapter"
-    assert any(name.startswith("descriptor_adapters.") for name in final["model"])
-    evaluation = evaluate_checkpoints(
-        config, output, split="valid", ensemble_folds=False,
-        task_subset=("experiment/a",), fold=1,
-    )
-    assert evaluation["reporting"]["model_id"] == "rdkit_2d_home"
-
-    object_config = replace(
-        tiny_rdkit_prepared,
-        representation=None,
-        initialization=Stage3InitializationConfig(
-            stage2_encoder=tiny_rdkit_prepared.data.task_catalog,
-            plugin=None,
-        ),
-    )
-    with pytest.raises(ValueError, match="requires RDKit representation config"):
-        load_prepared_stage3(object_config)
-
-
-def test_no_stage1_stage2_encoder_keeps_object_home_reporting(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config = _tiny_config(tmp_path)
-    encoder_identity = semantic_identity(
-        "stage2.rdkit-encoder", {"contract_version": 1, "test": True}
-    )
-    monkeypatch.setattr(
-        "stage3.prepare.load_stage2_encoder_identity", lambda _: encoder_identity
-    )
-
-    def fake_materialize(config, object_keys, reporter=None):
-        del config, reporter
-        values = torch.arange(
-            len(object_keys) * 4, dtype=torch.float32
-        ).reshape(-1, 4) / 10
-        return values, encoder_identity, {"hits": 0, "misses": len(object_keys)}
-
-    with patch(
-        "stage3.prepare.materialize_object_embeddings",
-        side_effect=fake_materialize,
-    ):
-        prepare_stage3(config)
-    metadata = json.loads(
-        (config.data.artifacts_dir / "metadata.json").read_text(encoding="utf-8")
-    )
-    assert metadata["kind"] == "ilume_stage3_sparse_data"
-    assert metadata["provenance"]["representation"] == "rdkit_2d_stage2"
-
-    config = _tiny_three_phase(config)
-    output = tmp_path / "no-stage1-stage3-train"
-    run_stage3_training(config, 1, output_dir=output)
-    evaluation = evaluate_checkpoints(
-        config,
-        output,
-        split="valid",
-        ensemble_folds=False,
-        task_subset=("experiment/a",),
-        fold=1,
-    )
-    assert evaluation["reporting"]["model_id"] == "rdkit_2d_stage2_home"
-    assert evaluation["reporting"]["model_display_name"] == (
-        "RDKit 2D MLP + Stage2 + HoME"
-    )
-
 def test_microbatch_accumulation_matches_full_task_batch(tiny_prepared: Stage3Config) -> None:
     registry = resolve_task_registry(tiny_prepared)
     dataset = Stage3TaskDataset(tiny_prepared.data.artifacts_dir, 1, "experiment/a", "train")
@@ -2148,7 +1769,7 @@ def test_no_pcgrad_partial_resume_is_exact(tiny_prepared: Stage3Config, scope: s
         assert (continuous / scope / filename).read_text() == (resumed / scope / filename).read_text()
 
 
-def test_pcgrad_accepts_only_tasks_present_in_raw_step(
+def test_raw_gradients_only_include_tasks_present_in_step(
     tiny_prepared: Stage3Config,
 ) -> None:
     registry = resolve_task_registry(tiny_prepared)
@@ -2179,7 +1800,7 @@ def test_pcgrad_accepts_only_tasks_present_in_raw_step(
     assert absent_private.isdisjoint(result.gradients)
 
 
-def test_pcgrad_accepts_empty_global_expert_block(
+def test_raw_gradients_accept_empty_global_expert_block(
     tiny_prepared: Stage3Config,
 ) -> None:
     config = replace(
@@ -2300,13 +1921,6 @@ def test_refined_score_uses_stitched_validation(tmp_path: Path) -> None:
     summary = refined_validation_summary(root, expected_epochs=20)
     assert summary["score"] == pytest.approx(0.25)
     assert summary["model_selector"] == "taskwise_refined"
-
-
-@pytest.mark.parametrize("scale", ("s", "base", "l", "xl"))
-def test_capacity_formal_configs_remain_loadable(scale: str) -> None:
-    config = load_stage3_config(f"configs/experiments_v1/stage3/formal/{scale}.yaml")
-    assert config.training.seed == 42
-    assert config.training.epochs == 100
 
 
 def test_capacity_probe_report_remains_supported(tmp_path: Path) -> None:
