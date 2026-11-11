@@ -2,6 +2,8 @@
 
 按[ADR-0126](adr/0126-xgboost-lightweight-variants.md)，现役只保留500棵/深度4。原版1000棵与500棵/深度6退役。22实验×五折＋三模拟＝113次训练；每作业CPU八线程，无需GPU或DDP。输入特征、物理条件、seed42及其他训练参数保持原定义，训练固定跑满500棵末轮发布，不早停。
 
+现役配置按用户要求恢复原命名 `configs/benchmarks/FLftv4_3407/completion/ecfp_xgboost.yaml`，显示名为 `ECFP+XGBoost`，实际仍为500棵/深度4。此次仅统一配置命名，已有输出与缓存不移动；不能将新身份写进3090仍存在的旧1000棵输出根。若已启动旧长文件名的500棵/深度4进程，先让该进程结束，再更新仓库或执行后续评估。
+
 ## 3090启动
 
 4090先提交并推送本次代码和配置，在3090拉取后执行。已有主环境、3407数据及共享电子模拟数据沿用原安装，不安装新依赖。
@@ -18,7 +20,7 @@ mkdir -p outputs/benchmarks/FLftv4_3407/lightweight/logs
 ```bash
 set -o pipefail
 PYTHONPATH=src:. python scripts/benchmarks/sweep.py \
-  --config configs/benchmarks/FLftv4_3407/lightweight/ecfp_xgboost_500_d4.yaml \
+  --config configs/benchmarks/FLftv4_3407/completion/ecfp_xgboost.yaml \
   --output outputs/benchmarks/FLftv4_3407/lightweight/ecfp_xgboost_500_d4 \
   --max-workers 1 --validation-only \
   2>&1 | tee -a outputs/benchmarks/FLftv4_3407/lightweight/logs/ecfp_xgboost_500_d4.log

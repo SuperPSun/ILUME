@@ -100,14 +100,7 @@ PYTHONPATH=src:. python scripts/benchmarks/sweep.py \
   2>&1 | tee -a outputs/benchmarks/FLftv4_3407/completion_22/logs/mlp.log
 ```
 
-```bash
-set -o pipefail
-PYTHONPATH=src:. python scripts/benchmarks/sweep.py \
-  --config configs/benchmarks/FLftv4_3407/completion/ecfp_xgboost.yaml \
-  --output outputs/benchmarks/FLftv4_3407/completion_22/ecfp_xgboost \
-  --max-workers 1 \
-  2>&1 | tee -a outputs/benchmarks/FLftv4_3407/completion_22/logs/ecfp_xgboost.log
-```
+本节XGBoost的原1000棵补训已经退役。按[ADR-0126](adr/0126-xgboost-lightweight-variants.md)，`completion/ecfp_xgboost.yaml`现已恢复为500棵/深度4配方的通用名称，覆盖22实验及三模拟共113作业；不能再按本节旧63作业和旧输出根运行。现役命令见[手册](xgboost-lightweight-runbook.md)。MLP和ILBERT的本节命令保持原合同。
 
 无需分开手动启动验证与测试；完整sweep自动执行实验逐折验证、可用测试集五折集成和模拟逐任务验证/测试。无测试行任务如实记录no_samples。中断或失败后，在原进程已结束的前提下重新执行同一命令；严格核验通过的已完成任务跳过，失败任务在新attempt完整重训。不要同时启动两个相同模型的相同输出根。
 

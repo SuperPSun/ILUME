@@ -1,4 +1,4 @@
-protocol: flft_v4_3407_22_completion
+protocol: flft_v4_3407_22_xgboost_lightweight
 name: ecfp_xgboost
 display_name: ECFP+XGBoost
 seed: 42
@@ -6,14 +6,14 @@ data:
   data_root: data/3407
   task_catalog: data/3407/task_catalog.csv
   stage3_authority_config: configs/v4/stage3/base.yaml
-  feature_cache: outputs/benchmarks/FLftv4_3407/completion_22/cache/features.sqlite3
+  feature_cache: outputs/benchmarks/FLftv4_3407/lightweight/cache/features.sqlite3
 features:
   kind: ecfp4
   radius: 2
   n_bits: 2048
 model:
-  n_estimators: 1000
-  max_depth: 6
+  n_estimators: 500
+  max_depth: 4
   learning_rate: 0.05
   subsample: 0.8
   colsample_bytree: 0.8
@@ -29,6 +29,16 @@ training:
 stage3:
   enabled: true
   tasks:
+  - experiment/electrical_conductivity
+  - experiment/viscosity
+  - experiment/density
+  - experiment/surface_tension
+  - experiment/glass_transition_temperature
+  - experiment/melting_point
+  - experiment/thermal_decomposition_temperature
+  - experiment/refractive_index
+  - experiment/solvation
+  - experiment/hydration
   - experiment/self_diffusion_coefficient
   - experiment/thermal_conductivity
   - experiment/heat_capacity

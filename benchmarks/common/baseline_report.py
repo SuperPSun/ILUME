@@ -110,7 +110,7 @@ def _task_config(repository: Path, model: str, domain: str, task: str, authority
     completed = model in {"mlp", "ecfp_xgboost", "ilbert"} and task not in FLFT_22_RETRAIN_TASKS
     changed = domain == "stage3" and task in FLFT_22_RETRAIN_TASKS
     if model == "ecfp_xgboost":
-        path = Path("configs/benchmarks/FLftv4_3407/lightweight/ecfp_xgboost_500_d4.yaml")
+        path = Path("configs/benchmarks/FLftv4_3407/completion/ecfp_xgboost.yaml")
     elif completed:
         path = Path(f"configs/benchmarks/FLftv4_3407/completion/{model}.yaml")
     elif changed:

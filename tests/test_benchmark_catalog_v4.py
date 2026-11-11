@@ -710,7 +710,7 @@ def test_flft_22_sweep_schedules_only_fifty_independent_folds(reuse_source, monk
     assert summary['simulation_property_benchmark'] == {}
 
 
-@pytest.mark.parametrize('model', ('mlp', 'ecfp_xgboost', 'ilbert'))
+@pytest.mark.parametrize('model', ('mlp', 'ilbert'))
 def test_flft_completion_preserves_recipes_and_schedules_sixty_three_jobs(model):
     from scripts.benchmarks import sweep
     config = load_benchmark_config(f'configs/benchmarks/FLftv4_3407/completion/{model}.yaml')
@@ -772,7 +772,10 @@ def test_flft_completion_rejects_wrong_twenty_two_task_registry(monkeypatch):
 
 def test_xgboost_lightweight_configs_preserve_inputs_and_isolate_recipe(tmp_path):
     from scripts.benchmarks.sweep import _build_jobs
-    config = load_benchmark_config('configs/benchmarks/FLftv4_3407/lightweight/ecfp_xgboost_500_d4.yaml')
+    from benchmarks.common.config import require_active_training_recipe
+    config = load_benchmark_config('configs/benchmarks/FLftv4_3407/completion/ecfp_xgboost.yaml')
+    require_active_training_recipe(config)
+    assert config.display_name == 'ECFP+XGBoost'
     formal = load_benchmark_config('configs/benchmarks/FLftv4_3407/ecfp_xgboost.yaml')
     expected_model = {**formal.model, 'n_estimators': 500, 'max_depth': 4}
     assert config.model == expected_model

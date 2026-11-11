@@ -658,7 +658,7 @@ def test_xgboost_uses_independent_models_and_fixed_budget(tmp_path: Path, depth)
     config = _tiny_config(tmp_path, name="ecfp_xgboost")
     rounds = 8
     if depth is not None:
-        lightweight = load_benchmark_config(f"configs/benchmarks/FLftv4_3407/lightweight/ecfp_xgboost_500_d{depth}.yaml")
+        lightweight = load_benchmark_config("configs/benchmarks/FLftv4_3407/completion/ecfp_xgboost.yaml")
         config = replace(config, features=lightweight.features, model=lightweight.model)
         rounds = 500
     bundle = prepare_training(config, "stage3", "experiment/tiny", 1)

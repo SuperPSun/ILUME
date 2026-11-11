@@ -28,7 +28,6 @@ def baseline_sources(tmp_path, monkeypatch):
     configs = {str(p.relative_to(original)): load_benchmark_config(p) for p in
                list((original / 'configs/benchmarks/FLftv4_3407').glob('*.yaml'))
                + list((original / 'configs/benchmarks/FLftv4_3407/completion').glob('*.yaml'))
-               + list((original / 'configs/benchmarks/FLftv4_3407/lightweight').glob('*.yaml'))
                + list((original / 'configs/benchmarks/catalog_v4_3407').glob('*.yaml'))}
     for name, config in configs.items():
         path = tmp_path / name

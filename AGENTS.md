@@ -92,7 +92,7 @@ ADR-0122：Stage1的`training.max_graph_nodes: 160`只在分配DDP rank前过滤
 
 ## 当前基线数据协议
 
-ADR-0126将现役ECFP+XGBoost固定为500棵/最大深度4，新协议`flft_v4_3407_22_xgboost_lightweight`，唯一配置`configs/benchmarks/FLftv4_3407/lightweight/ecfp_xgboost_500_d4.yaml`，输出`outputs/benchmarks/FLftv4_3407/lightweight/ecfp_xgboost_500_d4/`，22实验五折＋三模拟共113作业。原ECFP4/条件/seed42及其他参数不变；1000棵与500棵/深度6退役，原版训练/sweep入口拒绝运行，历史YAML仅供只读解析。按精确确认清单已删除4090三个原版产物目录共1498文件/396995033字节；其他模型/共享缓存/历史快照/远端保留。后续完整报告只选择500棵/深度4，未完成新训练及审计就失败，不回退旧结果。sweep的`--validation-only`仅训练/验证，测试标记not_requested，后续可去掉选项补齐；正式训练由用户启动，见[手册](docs/xgboost-lightweight-runbook.md)。
+ADR-0126将现役ECFP+XGBoost固定为500棵/最大深度4，新协议`flft_v4_3407_22_xgboost_lightweight`，唯一配置`configs/benchmarks/FLftv4_3407/completion/ecfp_xgboost.yaml`，输出`outputs/benchmarks/FLftv4_3407/lightweight/ecfp_xgboost_500_d4/`，22实验五折＋三模拟共113作业。原ECFP4/条件/seed42及其他参数不变；1000棵与500棵/深度6退役，原版训练/sweep入口拒绝运行，历史YAML仅供只读解析。按精确确认清单已删除4090三个原版产物目录共1498文件/396995033字节；其他模型/共享缓存/历史快照/远端保留。后续完整报告只选择500棵/深度4，未完成新训练及审计就失败，不回退旧结果。sweep的`--validation-only`仅训练/验证，测试标记not_requested，后续可去掉选项补齐；正式训练由用户启动，见[手册](docs/xgboost-lightweight-runbook.md)。
 
 ADR-0123新增完整22任务baseline报告：`scripts/benchmarks/summarize.py --baseline-config configs/benchmarks/FLftv4_3407/reports/summary_22.yaml`，以SHA固定既有来源审计和上移映射，明确组装250模型×任务组，复核身份/配方/数据/权重及完整有序预测。只读原单位预测，22实验验证与实际测试任务、三模拟分别任务等权汇总，不包含ILUME、不改旧身份/报告。已确认的completion任务产物上移到FLftv4_3407模型根，sweep记录与缓存分别保留在`sweeps/completion_22/`和`cache/completion_22/`；原路径只通过映射定位。原生预处理/环境/scaler深度审查承接固定SHA的既有审计，不自动放宽身份或重跑模型。详情见[完整报告手册](docs/baseline-22-summary-runbook.md)。
 

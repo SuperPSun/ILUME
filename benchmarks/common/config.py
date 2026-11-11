@@ -899,7 +899,7 @@ class BenchmarkConfig:
 
 def require_active_training_recipe(config: BenchmarkConfig) -> None:
     if config.name == "ecfp_xgboost" and config.protocol != XGBOOST_LIGHTWEIGHT_PROTOCOL:
-        raise ValueError("Original XGBoost recipes are retired; use configs/benchmarks/FLftv4_3407/lightweight/ecfp_xgboost_500_d4.yaml")
+        raise ValueError("Original XGBoost recipes are retired; use configs/benchmarks/FLftv4_3407/completion/ecfp_xgboost.yaml")
 
 
 def _mapping(raw: Any, context: str) -> dict[str, Any]:
