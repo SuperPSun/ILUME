@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-from benchmarks.common.config import load_benchmark_config
+from benchmarks.common.config import load_benchmark_config, require_active_training_recipe
 from benchmarks.common.environment import (
     ensure_benchmark_environment,
     environment_run_details,
@@ -28,6 +28,7 @@ def main() -> None:
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     config = load_benchmark_config(args.config)
+    require_active_training_recipe(config)
     if args.benchmark == "simulation" and args.fold is not None:
         parser.error("Simulation baseline forbids --fold")
     environment_snapshot = ensure_benchmark_environment(config)

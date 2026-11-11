@@ -14,6 +14,7 @@ from rdkit import Chem
 from benchmarks.common.config import (
     FLFT_22_PROTOCOL, FLFT_22_RETRAIN_TASKS,
     FLFT_22_COMPLETION_PROTOCOL, FLFT_22_COMPLETION_TASKS, CATALOG_V4_SIMULATION_TASKS,
+    XGBOOST_LIGHTWEIGHT_PROTOCOL,
     load_benchmark_config, benchmark_config_from_dict,
 )
 from benchmarks.common.data import BenchmarkTask, RawDataset, configured_tasks, resolve_task
@@ -216,7 +217,7 @@ def test_catalog_evaluation_rejects_legacy_checkpoint(reuse_source, monkeypatch)
 
 
 @pytest.mark.parametrize('domain', ('stage3', 'simulation'))
-@pytest.mark.parametrize('protocol', ('catalog_v4_3407', FLFT_22_PROTOCOL, FLFT_22_COMPLETION_PROTOCOL))
+@pytest.mark.parametrize('protocol', ('catalog_v4_3407', FLFT_22_PROTOCOL, FLFT_22_COMPLETION_PROTOCOL, XGBOOST_LIGHTWEIGHT_PROTOCOL))
 def test_3407_identity_rejects_42_even_with_identical_source_bytes(reuse_source, monkeypatch, domain, protocol):
     from benchmarks.common import engine
     from common.identity import require_compatible_identity
@@ -242,7 +243,8 @@ def test_3407_identity_rejects_42_even_with_identical_source_bytes(reuse_source,
         reuse.validate_reuse(current, Path('unused'), output)
 
 
-def test_3407_sweep_schedules_every_task_without_reuse(reuse_source, monkeypatch):
+@pytest.mark.parametrize('validation_only', (False, True))
+def test_3407_sweep_schedules_every_task_without_reuse(reuse_source, monkeypatch, validation_only):
     from scripts.benchmarks import sweep
     config, source, output, scope = reuse_source
     config = replace(config, protocol='catalog_v4_3407', data=replace(config.data,
@@ -259,11 +261,19 @@ def test_3407_sweep_schedules_every_task_without_reuse(reuse_source, monkeypatch
         assert len([j for j in kwargs['jobs'] if j.kind == 'simulation']) == 3
         assert kwargs['state'].rows == []
         assert kwargs['state'].catalog_config.protocol == 'catalog_v4_3407'
+        assert kwargs['state'].validation_only == validation_only
     monkeypatch.setattr(sweep, '_schedule', schedule)
-    monkeypatch.setattr('sys.argv', ['sweep.py','--config','config.yaml','--output','target'])
+    monkeypatch.setattr('sys.argv', ['sweep.py','--config','config.yaml','--output','target'] + (['--validation-only'] if validation_only else []))
     sweep.main()
     summary = json.loads((output / 'summary.json').read_text())
     assert summary['reporting']['data_protocol'] == 'catalog_v4_3407'
+    if validation_only:
+        assert summary['reporting']['benchmarks']['stage3_test']['status'] == 'not_requested'
+        from benchmarks.common.summary import build_summary
+        report = build_summary(output, Path.cwd())
+        assert not report['leaderboards']['stage3_test']
+        assert not report['leaderboards']['simulation_test']
+        assert not report['comparison_identities']['stage3_test']
 
 
 def test_catalog_sweep_assembles_imported_and_new_tasks(reuse_source, monkeypatch):
@@ -758,3 +768,83 @@ def test_flft_completion_rejects_wrong_twenty_two_task_registry(monkeypatch):
     monkeypatch.setattr(data, 'resolve_task_registry', lambda _: {n: SimpleNamespace(enabled=True) for n in names})
     with pytest.raises(ValueError, match='exact current 22-task registry'):
         configured_tasks(config, 'stage3')
+
+
+def test_xgboost_lightweight_configs_preserve_inputs_and_isolate_recipe(tmp_path):
+    from scripts.benchmarks.sweep import _build_jobs
+    config = load_benchmark_config('configs/benchmarks/FLftv4_3407/lightweight/ecfp_xgboost_500_d4.yaml')
+    formal = load_benchmark_config('configs/benchmarks/FLftv4_3407/ecfp_xgboost.yaml')
+    expected_model = {**formal.model, 'n_estimators': 500, 'max_depth': 4}
+    assert config.model == expected_model
+    assert config.training == formal.training and config.seed == formal.seed
+    assert config.features == formal.features
+    assert config.protocol == XGBOOST_LIGHTWEIGHT_PROTOCOL
+    assert config.data.feature_cache != formal.data.feature_cache
+    assert set(configured_tasks(config, 'stage3')) == set(FLFT_22_RETRAIN_TASKS + FLFT_22_COMPLETION_TASKS)
+    assert config.simulation.tasks == CATALOG_V4_SIMULATION_TASKS
+    jobs, ensembles = _build_jobs(root=tmp_path, stage3_tasks=configured_tasks(config, 'stage3'),
+        folds=config.stage3.folds, devices=(), simulation_tasks=config.simulation.tasks)
+    assert len(jobs) == 113 and len(ensembles) == 22
+    for task in CATALOG_V4_SIMULATION_TASKS:
+        resolved = resolve_task(config, 'simulation', task, None)
+        assert resolved.registry_payload['baseline_protocol'] == XGBOOST_LIGHTWEIGHT_PROTOCOL
+        if task != 'simulation/thermal_expansion':
+            assert resolved.train_paths[0] == Path(f'data/stage1/properties/{task.split("/")[-1]}/train.csv')
+    for name, value in [('n_estimators', 1000), ('max_depth', 3), ('max_depth', 6), ('learning_rate', .1), ('early_stopping_rounds', 10)]:
+        invalid = config.to_dict()
+        invalid['model'][name] = value
+        with pytest.raises(ValueError, match='fixed 500-tree'):
+            benchmark_config_from_dict(invalid)
+    for field, value in [('features', {'kind': 'ecfp4', 'radius': 2, 'n_bits': 1024}), ('seed', 1)]:
+        invalid = config.to_dict(); invalid[field] = value
+        with pytest.raises(ValueError, match='fixed 500-tree'):
+            benchmark_config_from_dict(invalid)
+    invalid = config.to_dict(); invalid['stage3']['tasks'].pop()
+    with pytest.raises(ValueError, match='all 22 experiments'):
+        benchmark_config_from_dict(invalid)
+    invalid = config.to_dict(); invalid['data']['data_root'] = 'data/42'
+    with pytest.raises(ValueError, match='Base authority'):
+        benchmark_config_from_dict(invalid)
+
+
+@pytest.mark.parametrize('entrypoint', ('train', 'sweep'))
+def test_retired_xgboost_training_entrypoints_fail_before_data_or_output(entrypoint, tmp_path, monkeypatch):
+    from scripts.benchmarks import train, sweep
+    module = train if entrypoint == 'train' else sweep
+    args = [f'{entrypoint}.py', '--config', 'configs/benchmarks/FLftv4_3407/ecfp_xgboost.yaml', '--output', str(tmp_path/'run')]
+    if entrypoint == 'train':
+        args += ['--benchmark', 'stage3', '--task', 'experiment/viscosity', '--fold', '1']
+    monkeypatch.setattr('sys.argv', args)
+    monkeypatch.setattr(module, 'ensure_benchmark_environment', lambda *_: pytest.fail('Retired recipe must fail before environment checks'))
+    with pytest.raises(ValueError, match='Original XGBoost recipes are retired'):
+        module.main()
+    assert not (tmp_path/'run').exists()
+
+
+def test_validation_only_sweep_never_executes_or_reads_test_results(reuse_source, monkeypatch):
+    from scripts.benchmarks import sweep
+    config, _, root, _ = reuse_source
+    calls = []
+    def run(state, **kwargs):
+        calls.append(kwargs)
+        return kwargs['root'] / 'attempt-001'
+    monkeypatch.setattr(sweep, '_run', run)
+    jobs, ensembles = sweep._build_jobs(root=root, stage3_tasks=('experiment/tiny',),
+        folds=(1, 2), devices=(), simulation_tasks=('simulation/tiny',))
+    state = sweep._SweepState(rows=[], status_path=root/'status.tsv', validation_only=True)
+    sweep._schedule(jobs=jobs, ensembles=ensembles, folds=(1, 2), max_workers=2,
+        state=state, config_path='config.yaml', root=root, train_script=Path('train.py'), evaluate_script=Path('evaluate.py'))
+    assert len(calls) == 6
+    assert [c['operation'] for c in calls].count('train') == 3
+    assert [c['operation'] for c in calls].count('evaluate_valid') == 3
+    assert all('test' not in c['command'] for c in calls)
+    def latest(parent, required):
+        assert 'evaluate_test' not in str(parent)
+        return None
+    monkeypatch.setattr(sweep, '_latest_completed', latest)
+    monkeypatch.setattr(sweep, 'configured_tasks', reuse.configured_tasks)
+    monkeypatch.setattr(sweep, 'has_test_rows', lambda _: pytest.fail('Test data must not be inspected'))
+    summary = sweep._aggregate(root, config, validation_only=True)
+    assert summary['reporting']['benchmarks']['stage3_test']['status'] == 'not_requested'
+    assert summary['reporting']['benchmarks']['simulation_test']['status'] == 'not_requested'
+    assert not summary['reporting']['source_runs']['stage3_test']

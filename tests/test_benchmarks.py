@@ -652,9 +652,15 @@ def test_mlp_train_checkpoint_and_test_evaluation(tmp_path: Path) -> None:
     assert "normalized_mae" in valid.metrics["value"]
 
 
-def test_xgboost_uses_independent_models_and_fixed_budget(tmp_path: Path) -> None:
+@pytest.mark.parametrize('depth', (None, 4))
+def test_xgboost_uses_independent_models_and_fixed_budget(tmp_path: Path, depth) -> None:
     pytest.importorskip("xgboost")
     config = _tiny_config(tmp_path, name="ecfp_xgboost")
+    rounds = 8
+    if depth is not None:
+        lightweight = load_benchmark_config(f"configs/benchmarks/FLftv4_3407/lightweight/ecfp_xgboost_500_d{depth}.yaml")
+        config = replace(config, features=lightweight.features, model=lightweight.model)
+        rounds = 500
     bundle = prepare_training(config, "stage3", "experiment/tiny", 1)
     output = tmp_path / "xgb_run"
     reporter = RecordingReporter()
@@ -662,7 +668,7 @@ def test_xgboost_uses_independent_models_and_fixed_budget(tmp_path: Path) -> Non
     reference_summary = train_bundle(config, bundle, tmp_path / "xgb_reference")
     assert summary == reference_summary
     assert set(summary["targets"]) == {"value"}
-    assert summary["targets"]["value"]["trained_rounds"] == 8
+    assert summary["targets"]["value"]["trained_rounds"] == rounds
     assert "best_iteration" not in summary["targets"]["value"]
     assert len(list(output.glob("model_*.json"))) == 1
     assert len(reporter.bars) == 1
@@ -670,9 +676,16 @@ def test_xgboost_uses_independent_models_and_fixed_budget(tmp_path: Path) -> Non
     assert all(set(bar.postfixes[-1]) == {"val_mae"} for bar in reporter.bars)
     checkpoint = json.loads((output / "checkpoint.json").read_text(encoding="utf-8"))
     assert checkpoint["format_version"] == 2
-    assert checkpoint["models"][0]["trained_rounds"] == 8
+    assert checkpoint["models"][0]["trained_rounds"] == rounds
     result = evaluate_checkpoint(config, "stage3", "experiment/tiny", 1, output, "test")
     assert result.predictions.shape == (2, 1)
+    if depth is not None:
+        other = replace(config, model={**config.model, "max_depth": 4 if depth == 6 else 6})
+        with pytest.raises(ValueError, match="semantic identity mismatch"):
+            evaluate_checkpoint(other, "stage3", "experiment/tiny", 1, output, "valid")
+        original = replace(config, model={**config.model, "n_estimators": 1000})
+        with pytest.raises(ValueError, match="semantic identity mismatch"):
+            evaluate_checkpoint(original, "stage3", "experiment/tiny", 1, output, "valid")
 
 def test_five_fold_ensemble_averages_predictions_before_metrics() -> None:
     results = [

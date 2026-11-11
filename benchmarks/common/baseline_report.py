@@ -22,7 +22,7 @@ from stage3.config import load_stage3_config
 from stage3.data import canonicalize_smiles, resolve_task_registry
 from .config import (CATALOG_V4_SIMULATION_TASKS, FLFT_22_COMPLETION_PROTOCOL,
                      FLFT_22_COMPLETION_TASKS, FLFT_22_PROTOCOL, FLFT_22_RETRAIN_TASKS,
-                     load_benchmark_config)
+                     XGBOOST_LIGHTWEIGHT_PROTOCOL, load_benchmark_config)
 from .data import load_split, resolve_task
 from .features import feature_schema
 from .paper import BASELINE_MODELS, _metrics
@@ -109,7 +109,9 @@ def _receipts(settings: dict[str, Any], audit: SourceAudit) -> dict[tuple[str, s
 def _task_config(repository: Path, model: str, domain: str, task: str, authority: Path):
     completed = model in {"mlp", "ecfp_xgboost", "ilbert"} and task not in FLFT_22_RETRAIN_TASKS
     changed = domain == "stage3" and task in FLFT_22_RETRAIN_TASKS
-    if completed:
+    if model == "ecfp_xgboost":
+        path = Path("configs/benchmarks/FLftv4_3407/lightweight/ecfp_xgboost_500_d4.yaml")
+    elif completed:
         path = Path(f"configs/benchmarks/FLftv4_3407/completion/{model}.yaml")
     elif changed:
         name = "ilbert_condition_zscore" if model == "ilbert" else model
@@ -120,7 +122,8 @@ def _task_config(repository: Path, model: str, domain: str, task: str, authority
     config = replace(config, data=replace(config.data, stage3_authority_config=authority))
     if domain == "stage3":
         config = replace(config, stage3=replace(config.stage3, tasks=(task,)))
-    protocol = FLFT_22_COMPLETION_PROTOCOL if completed else FLFT_22_PROTOCOL if changed else "catalog_v4_3407"
+    protocol = (XGBOOST_LIGHTWEIGHT_PROTOCOL if model == "ecfp_xgboost" else
+                FLFT_22_COMPLETION_PROTOCOL if completed else FLFT_22_PROTOCOL if changed else "catalog_v4_3407")
     return config, path, protocol
 
 
@@ -318,6 +321,8 @@ def build_baseline_report(settings: dict[str, Any], repository: Path) -> dict[st
             for task_id in tasks:
                 config, config_path, protocol = _task_config(repository, model, domain, task_id, Path(settings["authority_config"]))
                 parent = baseline / ("retrain_22" if protocol == FLFT_22_PROTOCOL and model != "ilbert" else "") / model / domain / sanitize_task_id(task_id)
+                if protocol == XGBOOST_LIGHTWEIGHT_PROTOCOL:
+                    parent = baseline / "lightweight" / "ecfp_xgboost_500_d4" / domain / sanitize_task_id(task_id)
                 records = receipts.get((model, domain, task_id), [])
                 accepted = []
                 for receipt in records:

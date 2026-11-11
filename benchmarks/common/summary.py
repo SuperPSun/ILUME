@@ -292,13 +292,13 @@ def _validate_current(candidate: Candidate) -> None:
             )
         for name in ("stage3_test", "stage3_validation"):
             section = benchmarks[name]
-            if section.get("status") not in {"unsupported", "incomplete"}:
+            if section.get("status") not in {"unsupported", "incomplete", "not_requested"}:
                 _validate_comparison(section.get("comparison_identity"), name)
         if not isinstance(reporting.get("source_runs"), dict):
             raise ValueError("benchmark sweep reporting lacks source runs")
         for label in ("simulation_test", "simulation_validation"):
             section = benchmarks.get(label)
-            if section is not None and section.get("status") not in {"unsupported", "incomplete"}:
+            if section is not None and section.get("status") not in {"unsupported", "incomplete", "not_requested"}:
                 _validate_comparison(section.get("comparison_identity"), label)
         return
     if reporting.get("benchmark") == "simulation_property":
@@ -729,7 +729,7 @@ def _simulation_results(candidates: Sequence[Candidate], split: str, *, catalog_
         reporting = summary["reporting"]
         if candidate.metadata["stage"] == "benchmark":
             section = reporting["benchmarks"].get(label)
-            if section is None or section.get("status") in {"unsupported", "incomplete"}:
+            if section is None or section.get("status") in {"unsupported", "incomplete", "not_requested"}:
                 continue
             values = summary.get("simulation_property_benchmark", {}).get(label, {})
             source_runs = reporting.get("source_runs", {}).get(label, {})
@@ -798,6 +798,8 @@ def _stage3_test(
             continue
         if candidate.metadata["stage"] == "benchmark":
             section = reporting["benchmarks"]["stage3_test"]
+            if section.get("status") == "not_requested":
+                continue
             metrics = summary["stage3_property_benchmark"]["test_ensemble"]
             checkpoint = ""
         elif candidate.metadata["stage"] == "stage3" and summary.get("split") == "test":
@@ -1694,7 +1696,7 @@ def _comparison_catalog(
             )
             sections = ((name, reporting),)
         for name, section in sections:
-            if section.get("status") in {"unsupported", "incomplete"}:
+            if section.get("status") in {"unsupported", "incomplete", "not_requested"}:
                 continue
             identity = section["comparison_identity"]
             identity_hash = str(identity["hash"])

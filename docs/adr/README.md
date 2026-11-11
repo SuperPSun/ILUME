@@ -42,6 +42,7 @@
 | 22任务基线剩余缺口全量补训 | [0121](0121-baseline-22-task-completion-retraining.md)：MLP/XGBoost/标准化ILBERT各12实验五折＋三模拟，共189作业；3090独立任务并发，旧结果保留 |
 | 历史split42基线数据升级与复用 | [0101](0101-baseline-catalog-v4-reuse.md)：24实验、三模拟；复用安排由0102替代 |
 | MLP / ECFP-XGBoost | [0022](0022-mlp-ecfp-xgboost-baselines.md) |
+| ECFP-XGBoost独立轻量化 | [0126](0126-xgboost-lightweight-variants.md)：现役只保留500棵/深度4；1000棵退役并按确认清单清理，深度6候选取消；22实验及三模拟，新完整报告不回退旧来源 |
 | D-MPNN | [0028](0028-chemprop-dmpnn-baseline.md)、[0042](0042-dmpnn-shared-component-encoder.md) |
 | MoLFormer | [0029](0029-molformer-baseline.md)、[0030](0030-molformer-throughput-contract.md) |
 | ILBERT | [0032](0032-ilbert-baseline.md)、[0119](0119-ilbert-train-only-condition-standardization.md)：独立训练集条件标准化；旧原始单位配方保留，身份隔离 |

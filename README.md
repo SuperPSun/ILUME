@@ -506,6 +506,8 @@ LR和10轮，只发布轮 10末轮状态。
 
 ## 输出与结果汇总
 
+ECFP+XGBoost现役只保留500棵、最大深度4，3090命令见[手册](docs/xgboost-lightweight-runbook.md)。1000棵原版已退役并按确认清单清理产物，500棵/深度6候选取消；历史报告保留原指标。先用sweep的 `--validation-only` 训练和验证，再补齐测试；新完整报告必须等待500棵/深度4训练和来源审计完成，不回退旧结果。
+
 完整22任务的十模型baseline报告使用[独立手册](docs/baseline-22-summary-runbook.md)和[ADR-0123](docs/adr/0123-complete-baseline-22-task-report.md)：明确组装10项定向补训、12项剩余实验与三模拟，从原单位预测重算并保留原训练身份。该入口不包含ILUME，不直接拼接旧根summary。
 
 论文展示另用[独立论文汇总入口](docs/paper-summary-runbook.md)：共同完整训练集尺度的总体指标、全部任务相对最强基线增益、性能覆盖曲线及SVG/PDF散点图；原汇总入口与旧报告口径保留。

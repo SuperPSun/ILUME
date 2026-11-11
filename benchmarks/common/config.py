@@ -26,7 +26,8 @@ FLFT_22_COMPLETION_TASKS = tuple("experiment/" + name for name in (
     "transfer_organic", "pec50", "gas_solubility",
     "enthalpy_of_vaporization_or_sublimation", "anodic_potential_limit", "cathodic_potential_limit",
 ))
-AUDITED_BASELINE_PROTOCOLS = CATALOG_V4_PROTOCOLS | {FLFT_22_PROTOCOL, FLFT_22_COMPLETION_PROTOCOL}
+XGBOOST_LIGHTWEIGHT_PROTOCOL = "flft_v4_3407_22_xgboost_lightweight"
+AUDITED_BASELINE_PROTOCOLS = CATALOG_V4_PROTOCOLS | {FLFT_22_PROTOCOL, FLFT_22_COMPLETION_PROTOCOL, XGBOOST_LIGHTWEIGHT_PROTOCOL}
 
 
 @dataclass(frozen=True)
@@ -89,7 +90,7 @@ class BenchmarkConfig:
 
         if self.protocol not in {"legacy", *AUDITED_BASELINE_PROTOCOLS}:
             raise ValueError("Unknown baseline protocol")
-        if self.protocol in {FLFT_22_PROTOCOL, FLFT_22_COMPLETION_PROTOCOL}:
+        if self.protocol in {FLFT_22_PROTOCOL, FLFT_22_COMPLETION_PROTOCOL, XGBOOST_LIGHTWEIGHT_PROTOCOL}:
             if (
                 self.data.data_root != Path("data/3407")
                 or self.data.task_catalog != Path("data/3407/task_catalog.csv")
@@ -111,7 +112,21 @@ class BenchmarkConfig:
                 or (self.name == "ilbert" and self.training.get("condition_transform") != "train_only_zscore")
             ):
                 raise ValueError("FLft completion requires MLP, XGBoost or standardized ILBERT, twelve tasks, five folds and three simulations")
-        expected_simulation = CATALOG_V4_SIMULATION_TASKS if self.protocol in CATALOG_V4_PROTOCOLS | {FLFT_22_COMPLETION_PROTOCOL} else SCALAR_SIMULATION_TASKS
+            if self.protocol == XGBOOST_LIGHTWEIGHT_PROTOCOL:
+                if (self.name != "ecfp_xgboost" or not self.stage3.enabled
+                    or self.stage3.tasks != FLFT_22_RETRAIN_TASKS + FLFT_22_COMPLETION_TASKS
+                    or self.stage3.folds != (1, 2, 3, 4, 5)
+                    or not self.simulation.enabled or self.simulation.tasks != CATALOG_V4_SIMULATION_TASKS):
+                    raise ValueError("Lightweight XGBoost requires all 22 experiments, five folds and three simulations")
+                expected_model = {"n_estimators": 500, "max_depth": self.model.get("max_depth"),
+                    "learning_rate": 0.05, "subsample": 0.8, "colsample_bytree": 0.8,
+                    "reg_lambda": 1.0, "objective": "reg:squarederror", "eval_metric": "mae", "tree_method": "hist"}
+                if (self.features != FeatureConfig("ecfp4", radius=2, n_bits=2048)
+                    or self.model.get("max_depth") != 4 or self.model != expected_model
+                    or self.training != {"model_selection": "final_training_state", "n_jobs": 8, "device": "cpu", "target_space": "raw"}
+                    or self.seed != 42):
+                    raise ValueError("Lightweight XGBoost requires the fixed 500-tree depth-4 recipe")
+        expected_simulation = CATALOG_V4_SIMULATION_TASKS if self.protocol in CATALOG_V4_PROTOCOLS | {FLFT_22_COMPLETION_PROTOCOL, XGBOOST_LIGHTWEIGHT_PROTOCOL} else SCALAR_SIMULATION_TASKS
         if self.protocol in CATALOG_V4_PROTOCOLS and (not self.stage3.enabled or self.stage3.tasks != "all" or self.stage3.folds != (1, 2, 3, 4, 5)):
             raise ValueError("catalog_v4 requires all experimental tasks and five folds")
         if self.protocol in CATALOG_V4_PROTOCOLS and not self.simulation.enabled:
@@ -882,6 +897,11 @@ class BenchmarkConfig:
         return payload
 
 
+def require_active_training_recipe(config: BenchmarkConfig) -> None:
+    if config.name == "ecfp_xgboost" and config.protocol != XGBOOST_LIGHTWEIGHT_PROTOCOL:
+        raise ValueError("Original XGBoost recipes are retired; use configs/benchmarks/FLftv4_3407/lightweight/ecfp_xgboost_500_d4.yaml")
+
+
 def _mapping(raw: Any, context: str) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError(f"{context} must be a mapping")
@@ -1005,4 +1025,5 @@ __all__ = [
     "FeatureConfig",
     "benchmark_config_from_dict",
     "load_benchmark_config",
+    "require_active_training_recipe",
 ]

@@ -21,13 +21,14 @@ from common.reporting import comparison_identity, write_prediction_csv
 
 @pytest.fixture
 def baseline_sources(tmp_path, monkeypatch):
-    models = ('mlp', 'ilbert', 'aionopedia')
+    models = ('mlp', 'ilbert', 'aionopedia', 'ecfp_xgboost')
     changed, completed = 'experiment/electrical_conductivity', 'experiment/self_diffusion_coefficient'
     simulations = ('simulation/thermal_expansion', 'simulation/homo', 'simulation/lumo')
     original = Path.cwd()
     configs = {str(p.relative_to(original)): load_benchmark_config(p) for p in
                list((original / 'configs/benchmarks/FLftv4_3407').glob('*.yaml'))
                + list((original / 'configs/benchmarks/FLftv4_3407/completion').glob('*.yaml'))
+               + list((original / 'configs/benchmarks/FLftv4_3407/lightweight').glob('*.yaml'))
                + list((original / 'configs/benchmarks/catalog_v4_3407').glob('*.yaml'))}
     for name, config in configs.items():
         path = tmp_path / name
@@ -68,6 +69,8 @@ def baseline_sources(tmp_path, monkeypatch):
             for task_id in tasks:
                 config, _, protocol = report._task_config(tmp_path, model, domain, task_id, Path('authority.yaml'))
                 root = baseline / ('retrain_22' if protocol == report.FLFT_22_PROTOCOL and model != 'ilbert' else '') / model / domain / task_id.replace('/', '__')
+                if protocol == report.XGBOOST_LIGHTWEIGHT_PROTOCOL:
+                    root = baseline / 'lightweight/ecfp_xgboost_500_d4' / domain / task_id.replace('/', '__')
                 record = {'model': model, 'domain': domain, 'task': task_id, 'errors': [], 'status': 'passed', 'folds': [], 'evaluations': []}
                 manifests = []
                 for fold in (range(1, 6) if domain == 'stage3' else [None]):
@@ -81,7 +84,7 @@ def baseline_sources(tmp_path, monkeypatch):
                                'registry': task.registry_payload, 'model': config.model, 'training': config.training,
                                'seed': config.seed, 'source_hashes': {split: [sha256_file(p) for p in paths]
                                     for split, paths in [('train', task.train_paths), ('valid', task.valid_paths)]}}
-                    if model == 'mlp':
+                    if model in ('mlp', 'ecfp_xgboost'):
                         payload['feature'] = feature_schema(config.features).to_dict()
                     if model == 'aionopedia':
                         payload.update(task={'benchmark': domain, 'task_id': task_id, 'fold': fold, 'registry_payload': task.registry_payload}, effective_seed=config.seed + int(fold or 1) - 1)
@@ -155,10 +158,10 @@ def test_baseline_report_assembles_complete_sources_without_rewriting(baseline_s
     f = baseline_sources
     original = {p: p.read_bytes() for p in f.repository.rglob('checkpoint.json')}
     payload = report.publish_baseline_report(f.config, f.output, f.repository)
-    assert payload['coverage']['training_jobs'] == 39
-    assert payload['coverage']['evaluation_runs'] == 54
+    assert payload['coverage']['training_jobs'] == 52
+    assert payload['coverage']['evaluation_runs'] == 72
     assert payload['coverage']['experimental_no_test'] == ['experiment/self_diffusion_coefficient']
-    assert len(payload['sections']['stage3_validation']['tasks']) == 6
+    assert len(payload['sections']['stage3_validation']['tasks']) == 8
     assert all(row['tasks'] == 3 for row in payload['sections']['simulation_test']['overall'])
     assert all(row['tasks'] == 1 for row in payload['sections']['stage3_test']['overall'])
     assert all(row['mae'] == pytest.approx(.2) for row in payload['sections']['stage3_validation']['tasks'])
@@ -229,6 +232,21 @@ def test_baseline_report_rejects_incomplete_or_changed_sources_atomically(baseli
     else:
         f.mapping.write_text(f.mapping.read_text() + ' ')
     with pytest.raises((ValueError, FileNotFoundError)):
+        report.publish_baseline_report(f.config, f.output, f.repository)
+    assert not f.output.exists()
+
+
+def test_baseline_report_does_not_fall_back_to_retired_xgboost(baseline_sources):
+    f = baseline_sources
+    receipts = json.loads(f.receipts.read_text())
+    for record in receipts['records']:
+        if record['model'] == 'ecfp_xgboost':
+            for train in record['folds']:
+                train['run'] = train['run'].replace('lightweight/ecfp_xgboost_500_d4/', 'ecfp_xgboost/')
+    f.receipts.write_text(json.dumps(receipts))
+    f.settings['source_audits'][0]['sha256'] = sha256_file(f.receipts)
+    f.config.write_text(yaml.safe_dump(f.settings))
+    with pytest.raises(ValueError, match='Exactly one approved source group'):
         report.publish_baseline_report(f.config, f.output, f.repository)
     assert not f.output.exists()
     assert not list(f.repository.glob('.report-staging-*'))

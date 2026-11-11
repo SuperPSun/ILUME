@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-from benchmarks.common.config import AUDITED_BASELINE_PROTOCOLS, load_benchmark_config
+from benchmarks.common.config import AUDITED_BASELINE_PROTOCOLS, load_benchmark_config, require_active_training_recipe
 from benchmarks.common.data import configured_tasks, has_test_rows, resolve_task
 from benchmarks.common.environment import (
     ensure_benchmark_environment,
@@ -105,6 +105,7 @@ class _SweepState:
     lock: threading.Lock = field(default_factory=threading.Lock)
     reserved_roots: set[Path] = field(default_factory=set)
     catalog_config: Any | None = None
+    validation_only: bool = False
 
     def reserve(
         self, *, root: Path, required: str, operation: str, benchmark: str,
@@ -328,7 +329,7 @@ def _execute_job(
         )
         if checkpoint is None:
             return _JobResult(job, False)
-        for split in ("valid", "test"):
+        for split in (("valid",) if state.validation_only else ("valid", "test")):
             _run(
                 state, operation=f"evaluate_{split}", benchmark="simulation", task=job.task, fold=None,
                 root=task_root / f"evaluate_{split}", required="summary.json", env=env,
@@ -428,7 +429,7 @@ def _schedule(
                 except Exception as error:
                     state.scheduler_failure(job, error)
                     result = _JobResult(job, False)
-                if job.kind != "stage3_fold":
+                if job.kind != "stage3_fold" or state.validation_only:
                     continue
                 assert job.fold is not None
                 task_results = fold_results[job.task]
@@ -439,7 +440,7 @@ def _schedule(
                     sequence += 1
 
 
-def _aggregate(root: Path, config: Any, *, benchmark: str = "all") -> dict[str, Any]:
+def _aggregate(root: Path, config: Any, *, benchmark: str = "all", validation_only: bool = False) -> dict[str, Any]:
     stage3_valid: dict[str, Any] = {}
     stage3_test: dict[str, Any] = {}
     stage3_valid_reporting: list[dict[str, Any]] = []
@@ -481,7 +482,7 @@ def _aggregate(root: Path, config: Any, *, benchmark: str = "all") -> dict[str, 
                     "normalized_rmse",
                 )
             }
-        run = _latest_completed(task_root / "evaluate_test", "summary.json")
+        run = None if validation_only else _latest_completed(task_root / "evaluate_test", "summary.json")
         if run:
             payload = json.loads(
                 (run / "summary.json").read_text(encoding="utf-8")
@@ -526,7 +527,7 @@ def _aggregate(root: Path, config: Any, *, benchmark: str = "all") -> dict[str, 
         )
 
     valid_expected = list(configured_tasks(config, "stage3")) if benchmark != "simulation" else []
-    test_expected = [
+    test_expected = [] if validation_only else [
         task
         for task in valid_expected
         if has_test_rows(
@@ -590,11 +591,16 @@ def _aggregate(root: Path, config: Any, *, benchmark: str = "all") -> dict[str, 
     if not valid_expected:
         for section in stage3_sections.values():
             section["status"] = "unsupported"
+    if validation_only:
+        stage3_sections["stage3_test"]["status"] = "not_requested"
     simulation_metrics = {}
     if benchmark != "stage3" and config.simulation.enabled:
         from stage3.simulation_reporting import simulation_comparison
 
         for split, label in (("valid", "simulation_validation"), ("test", "simulation_test")):
+            if validation_only and split == "test":
+                stage3_sections[label] = {"benchmark": "simulation_property", "status": "not_requested"}
+                continue
             values, sources, scales, fragments = {}, {}, {}, []
             source_runs[label] = {}
             for task in configured_tasks(config, "simulation"):
@@ -676,6 +682,7 @@ def main() -> None:
     reuse.add_argument("--prepare-reuse-from", help="Audit and copy catalog_v4 source artifacts only; never train.")
     reuse.add_argument("--reuse-manifest", help="Validate an audited catalog_v4 reuse manifest before scheduling.")
     parser.add_argument("--benchmark", choices=("all", "stage3", "simulation"), default="all")
+    parser.add_argument("--validation-only", action="store_true", help="Train and evaluate validation splits only; do not run or summarize test evaluations.")
     parser.add_argument(
         "--max-workers", type=_positive_int, default=1,
         help=("maximum concurrent train/evaluate subprocesses (default: 1); for "
@@ -688,7 +695,10 @@ def main() -> None:
               "assigned round-robin via CUDA_VISIBLE_DEVICES"),
     )
     args = parser.parse_args()
+    if args.validation_only and (args.prepare_reuse_from or args.reuse_manifest):
+        parser.error("--validation-only cannot be combined with reuse operations")
     config = load_benchmark_config(args.config)
+    require_active_training_recipe(config)
     if args.prepare_reuse_from:
         from benchmarks.common.reuse import prepare_reuse
         manifest = prepare_reuse(config, args.config, repository_path(args.prepare_reuse_from), repository_path(args.output))
@@ -730,6 +740,7 @@ def main() -> None:
         output=args.output, seed=config.seed, reusable=True,
         data_metadata=str(config.data.data_root / ("stage2" if args.benchmark == "simulation" else "stage3") / "metadata.json"),
         details={
+            **({"validation_only": True} if args.validation_only else {}),
             **({"reuse_manifest": args.reuse_manifest, "reuse_manifest_sha256": sha256_file(repository_path(args.reuse_manifest))} if args.reuse_manifest else {}),
             "reporting_schema_version": REPORTING_SCHEMA_VERSION,
             **environment_run_details(environment_snapshot),
@@ -748,6 +759,7 @@ def main() -> None:
         rows=rows, status_path=root / "status.tsv", progress=sweep_progress,
         model_name=config.name,
         catalog_config=config if config.protocol in AUDITED_BASELINE_PROTOCOLS else None,
+        validation_only=args.validation_only,
     )
     reused_tasks = {task for task, plan in (reuse_payload or {}).get("tasks", {}).items() if plan["action"] == "reuse"}
     for task in sorted(reused_tasks):
@@ -773,7 +785,7 @@ def main() -> None:
         sweep_progress.close()
 
     failures = sum(row["status"] == "FAILED" for row in rows)
-    summary = _aggregate(root, config, benchmark=args.benchmark)
+    summary = _aggregate(root, config, benchmark=args.benchmark, **({"validation_only": True} if args.validation_only else {}))
     summary["jobs"] = {"total": len(rows), "failed": failures}
     if failures:
         run.fail()
