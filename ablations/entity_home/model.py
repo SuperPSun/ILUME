@@ -6,24 +6,25 @@ from torch import nn
 from common.training import seeded_initialization
 from stage3.model import Expert
 from stage3.simulation import SimulationEntityModel
+from stage3.token_attention import token_model
+
+
+def expert_hidden_width(expert):
+    return (expert.stack.blocks[0].linear1.out_features if hasattr(expert, 'stack')
+            else expert.layers[0].out_features)
 
 
 class AblationSimulationModel(SimulationEntityModel):
+    def l1_token_values(self, group, values, roles, mask, packed):
+        removed = 'no_global' if group is None else 'no_group'
+        if self.ablation_variant == removed:
+            return values[..., :self.d_model].masked_fill(~mask[..., None], 0), values.new_empty((len(values), 3, 0))
+        return super().l1_token_values(group, values, roles, mask, packed)
+
     def group_delta(self, group, values):
         if self.ablation_variant in {'no_group', 'capacity_no_group'}:
             return values.new_zeros((len(values), self.d_model)), values.new_empty((len(values), 0))
         return super().group_delta(group, values)
-
-    def task_gate_weights(self, key, values):
-        if self.ablation_variant == 'uniform_gate':
-            count = self.task_gates[key].out_features
-            return values.new_full((len(values), count), 1.0 / count)
-        return super().task_gate_weights(key, values)
-
-    def set_trainable_owners(self, owners):
-        super().set_trainable_owners(owners)
-        if self.ablation_variant == 'uniform_gate':
-            self.task_gates.requires_grad_(False).eval()
 
     def resolved_capacity_recipe(self):
         result = deepcopy(super().resolved_capacity_recipe())
@@ -31,7 +32,7 @@ class AblationSimulationModel(SimulationEntityModel):
             experts = self.l1_group_experts[group]
             recipe['experts'] = len(experts)
             if experts:
-                recipe['expert_hidden'] = experts[0].layers[0].out_features
+                recipe['expert_hidden'] = expert_hidden_width(experts[0])
                 recipe['expert_hidden_ratio'] = recipe['expert_hidden'] / self.d_model
             else:
                 recipe['expert_hidden'] = 0
@@ -41,7 +42,7 @@ class AblationSimulationModel(SimulationEntityModel):
             experts = self.private_experts[key]
             recipe['private_experts'] = len(experts)
             if experts:
-                recipe['private_hidden'] = experts[0].layers[0].out_features
+                recipe['private_hidden'] = expert_hidden_width(experts[0])
                 recipe['private_hidden_ratio'] = recipe['private_hidden'] / self.d_model
             else:
                 recipe['private_hidden'] = 0
@@ -115,7 +116,7 @@ def transform_model(model, variant, *, seed):
             old = model.task_gates[key]
             if not indices:
                 raise ValueError('Ablation removed every task-gate candidate')
-            with torch.random.fork_rng(devices=[]):
+            with torch.random.fork_rng(devices=[old.weight.device.index] if old.weight.is_cuda else []):
                 gate = nn.Linear(old.in_features, len(indices), device=old.weight.device)
             with torch.no_grad():
                 gate.weight.copy_(old.weight[indices]); gate.bias.copy_(old.bias[indices])
@@ -127,13 +128,19 @@ def transform_model(model, variant, *, seed):
             model.l1_global_experts = nn.ModuleList()
             model.l2_global_experts = nn.ModuleList()
             model.l1_global_gate = None
+            if token_model(model.model_config):
+                model.global_conditions = nn.ModuleDict()
         elif scope == 'group':
             for group in model.groups:
                 model.l1_group_experts[group] = nn.ModuleList()
                 model.l2_group_experts[group] = nn.ModuleList()
             model.l1_group_gates = nn.ModuleDict()
+            if token_model(model.model_config):
+                model.group_conditions = nn.ModuleDict({group: nn.Identity() for group in model.groups})
         else:
             for key in model.private_experts:
                 model.private_experts[key] = nn.ModuleList()
+            if token_model(model.model_config):
+                model.private_conditions = nn.ModuleDict({key: nn.Identity() for key in model.private_experts})
     model.refresh_ownership()
     return model

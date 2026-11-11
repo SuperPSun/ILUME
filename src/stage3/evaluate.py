@@ -173,7 +173,7 @@ def _validate_three_phase_manifest(
             or manifest.get("simulation_validation") != artifact.get("simulation_validation")
         ):
             raise ValueError("Stage 3 simulation training manifest mismatch")
-    if artifact.get('kind') == 'ilume_stage3_entity_home_ablation_final_v1':
+    if artifact.get('kind') in {'ilume_stage3_entity_home_ablation_final_v1', 'ilume_stage3_token_home_ablation_final_v1'}:
         plan = artifact['resolved_training_plan']
         if (manifest.get('stage2_pretraining') != plan.get('stage2_pretraining')
                 or artifact.get('stage2_pretraining') != plan.get('stage2_pretraining')

@@ -68,10 +68,20 @@ class SingleViewEncoder(DualViewEncoder):
                 recipe.feedforward_dim, recipe.dropout, recipe.gradient_checkpointing,
             )
         else:
-            self.graph_encoder = DirectedMessagePassingEncoder(
-                recipe.d_model, recipe.graph_depth, recipe.dropout,
-                message_mode=recipe.graph_message_mode, feedforward_dim=recipe.feedforward_dim,
-            )
+            if recipe.graph_encoder_type == 'dgt':
+                from stage1.dgt import DualGraphTransformerEncoder
+                self.graph_encoder = DualGraphTransformerEncoder(
+                    recipe.d_model, recipe.graph_depth, recipe.n_heads,
+                    recipe.graph_feedforward_dim, recipe.dropout,
+                    query_chunk_size=config.training.dgt_query_chunk_size,
+                    recompute=config.training.dgt_attention_checkpointing,
+                    compile_attention=config.training.dgt_attention_compile,
+                )
+            else:
+                self.graph_encoder = DirectedMessagePassingEncoder(
+                    recipe.d_model, recipe.graph_depth, recipe.dropout,
+                    message_mode=recipe.graph_message_mode, feedforward_dim=recipe.feedforward_dim,
+                )
         self.fusion = ResidualFusion(self.entity_dim)
 
     def views(self, batch):
@@ -86,6 +96,8 @@ class SingleViewEncoder(DualViewEncoder):
             torch.zeros_like(batch.graphs.atom_batch, dtype=torch.bool) if masks is None else masks.atom_mask,
             torch.zeros_like(batch.graphs.bond_batch, dtype=torch.bool) if masks is None else masks.bond_mask,
         )
+        if self.config.model.graph_encoder_type == 'dgt':
+            return zero.new_empty((len(batch.roles), 0, self.token_dim)), atoms, bonds, zero, self.graph_encoder.pool(atoms, bonds, batch.graphs)
         pooled = atoms.new_zeros(zero.shape).index_add(0, batch.graphs.atom_batch, atoms)
         counts = torch.bincount(batch.graphs.atom_batch, minlength=len(batch.roles)).clamp_min(1)
         return zero.new_empty((len(batch.roles), 0, self.token_dim)), atoms, bonds, zero, pooled / counts[:, None]
@@ -110,7 +122,8 @@ class SingleViewPretrainModel(SingleViewEncoder, DualViewPretrainModel):
             self.bond_heads = nn.ModuleDict({name: nn.Linear(width, size) for name, size in zip(BOND_FEATURE_NAMES, BOND_CARDINALITIES, strict=True)})
             if config.loss.lambda_partial_charge > 0:
                 self.partial_charge_head = nn.Linear(self.atom_dim, 1)
-        self.descriptor_decoder = nn.Linear(self.entity_dim, 217)
+        descriptor_dim = descriptor_schema.selected_dim if descriptor_schema is not None else config.data.descriptor_dim - len(config.descriptor.excluded_names)
+        self.descriptor_decoder = nn.Linear(self.entity_dim, descriptor_dim)
         self.unimol_projector = nn.Linear(self.entity_dim, 768)
         self.electronic_head = nn.Linear(self.entity_dim, 13)
 

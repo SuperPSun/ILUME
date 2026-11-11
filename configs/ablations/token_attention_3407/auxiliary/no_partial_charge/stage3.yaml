@@ -1,8 +1,8 @@
-# C12/C13：冻结外部ChemBERTa-2，不提供显式RDKit217；配对optimized_3407。
+# 当前DGT/实体token注意力消融；data/3407，训练seed42。
 data:
   stage3_dir: data/3407/stage3
   task_catalog: data/3407/task_catalog.csv
-  artifacts_dir: outputs/ablations/v4_3407/chemberta2_mlm/stage3/prepare/artifacts
+  artifacts_dir: outputs/ablations/token_attention_3407/no_partial_charge/stage3/prepare/artifacts
   split_policy: system
   split_strategies:
     experiment/hydration: random
@@ -11,33 +11,34 @@ data:
   seed: 3407
 preparation:
   encoding_batch_size: 256
-  cache_dir: outputs/ablations/v4_3407/chemberta2_mlm/stage3/prepare/entity_cache
-  data_metadata_path: outputs/ablations/v4_3407/chemberta2_mlm/stage3/prepare/data_metadata.json
-  reference_artifacts: outputs/v4/stage3/optimized_3407/prepare/artifacts
+  cache_dir: outputs/ablations/token_attention_3407/no_partial_charge/stage3/prepare/entity_cache
+  data_metadata_path: outputs/ablations/token_attention_3407/no_partial_charge/stage3/prepare/data_metadata.json
 initialization:
   representation_contract: entity_home_v4
   stage2_encoder: null
   home_mode: trained
-  stage2_final: outputs/ablations/v4_3407/chemberta2_mlm/stage2/train/stage2_final.pt
-  simulation_artifacts_dir: outputs/ablations/v4_3407/chemberta2_mlm/stage2/prepare/artifacts
+  stage2_final: outputs/ablations/token_attention_3407/no_partial_charge/stage2/train/stage2_final.pt
+  simulation_artifacts_dir: outputs/ablations/token_attention_3407/no_partial_charge/stage2/prepare/artifacts
   plugin: null
-  stage1_encoder: null
-  stage1_artifacts_dir: null
+  stage1_encoder: outputs/ablations/token_attention_3407/no_partial_charge/stage1/train/stage1_encoder.pt
+  stage1_artifacts_dir: outputs/v4/stage1/base/prepare/artifacts
 model:
-  global_experts: 2
+  expert_architecture: entity_token_attention_v1
+  attention_heads: 8
+  attention_layers: 2
+  global_experts: 1
   private_experts: 1
   dropout: 0.1
   activation: silu
   expert_hidden_ratio: 2.0
   interaction_hidden_ratio: 2.0
-  film_hidden_ratio: 1.0
   tower_hidden_ratio: 1.0
   l2_residual: true
 groups:
   transport:
     enabled: true
     group_weight: 1.0
-    experts: 2
+    experts: 1
     expert_hidden_ratio: 1.5
     phase1:
       lr: 0.00015
@@ -48,7 +49,7 @@ groups:
   thermophysical:
     enabled: true
     group_weight: 1.0
-    experts: 2
+    experts: 1
     expert_hidden_ratio: 1.5
     phase1:
       lr: 0.00015
@@ -59,7 +60,7 @@ groups:
   phase_stability:
     enabled: true
     group_weight: 1.0
-    experts: 3
+    experts: 2
     expert_hidden_ratio: 1.5
     phase1:
       lr: 0.0002
@@ -81,7 +82,7 @@ groups:
   solvation:
     enabled: true
     group_weight: 1.0
-    experts: 3
+    experts: 2
     expert_hidden_ratio: 1.5
     phase1:
       lr: 0.0002
@@ -100,17 +101,6 @@ groups:
     phase2:
       lr: 3.75e-05
       epochs: 5
-  electrochemical:
-    enabled: true
-    group_weight: 1.0
-    experts: 2
-    expert_hidden_ratio: 0.75
-    phase1:
-      lr: 0.0002
-      epochs: 15
-    phase2:
-      lr: 0.0001
-      epochs: 4
 tasks:
   experiment/electrical_conductivity:
     meta_group: transport
@@ -121,7 +111,6 @@ tasks:
     model_overrides:
       private_hidden_ratio: 0.75
       tower_hidden_ratio: 0.75
-      film_hidden_ratio: 0.75
       private_dropout: 0.15
     phase1_private_epochs: 9
     phase2_private_epochs: 6
@@ -136,7 +125,6 @@ tasks:
     model_overrides:
       private_hidden_ratio: 0.5
       tower_hidden_ratio: 0.5
-      film_hidden_ratio: 0.5
       private_dropout: 0.1
   experiment/viscosity:
     meta_group: transport
@@ -147,7 +135,6 @@ tasks:
     model_overrides:
       private_hidden_ratio: 0.75
       tower_hidden_ratio: 0.75
-      film_hidden_ratio: 0.75
       private_dropout: 0.15
     phase1_private_epochs: 11
     phase2_private_epochs: 9
@@ -160,7 +147,6 @@ tasks:
     model_overrides:
       private_hidden_ratio: 0.5
       tower_hidden_ratio: 0.5
-      film_hidden_ratio: 0.5
       private_dropout: 0.1
     phase1_private_lr: 3.6e-05
     phase1_private_epochs: 4
@@ -175,7 +161,6 @@ tasks:
     model_overrides:
       private_hidden_ratio: 1.0
       tower_hidden_ratio: 1.0
-      film_hidden_ratio: 1.0
       private_dropout: 0.1
   experiment/heat_capacity:
     meta_group: thermophysical
@@ -188,7 +173,6 @@ tasks:
     model_overrides:
       private_hidden_ratio: 0.75
       tower_hidden_ratio: 0.75
-      film_hidden_ratio: 0.75
       private_dropout: 0.1
   experiment/speed_of_sound:
     meta_group: thermophysical
@@ -201,7 +185,6 @@ tasks:
     model_overrides:
       private_hidden_ratio: 0.75
       tower_hidden_ratio: 0.75
-      film_hidden_ratio: 0.75
       private_dropout: 0.1
   experiment/surface_tension:
     meta_group: thermophysical
@@ -212,23 +195,9 @@ tasks:
     model_overrides:
       private_hidden_ratio: 0.75
       tower_hidden_ratio: 0.75
-      film_hidden_ratio: 0.75
       private_dropout: 0.15
     phase1_private_epochs: 9
     phase2_private_epochs: 6
-  experiment/equilibrium_pressure:
-    meta_group: phase_stability
-    unique_systems: 95
-    size_class: tiny
-    phase1_private_lr: 3.6e-05
-    phase1_private_epochs: 4
-    phase2_private_epochs: 2
-    phase3_private_epochs: 2
-    model_overrides:
-      private_hidden_ratio: 0.5
-      tower_hidden_ratio: 0.5
-      film_hidden_ratio: 0.5
-      private_dropout: 0.1
   experiment/glass_transition_temperature:
     meta_group: phase_stability
     unique_systems: 793
@@ -237,7 +206,6 @@ tasks:
     model_overrides:
       private_hidden_ratio: 1.25
       tower_hidden_ratio: 1.25
-      film_hidden_ratio: 1.0
       private_dropout: 0.1
     phase1_private_lr: 0.00010800000000000001
     phase1_private_epochs: 9
@@ -253,7 +221,6 @@ tasks:
     model_overrides:
       private_hidden_ratio: 1.0
       tower_hidden_ratio: 1.0
-      film_hidden_ratio: 1.0
       private_dropout: 0.1
   experiment/thermal_decomposition_temperature:
     meta_group: phase_stability
@@ -263,7 +230,6 @@ tasks:
     model_overrides:
       private_hidden_ratio: 1.25
       tower_hidden_ratio: 1.25
-      film_hidden_ratio: 1.0
       private_dropout: 0.1
     phase1_private_lr: 0.000135
     phase1_private_epochs: 11
@@ -279,7 +245,6 @@ tasks:
     model_overrides:
       private_hidden_ratio: 0.5
       tower_hidden_ratio: 0.5
-      film_hidden_ratio: 0.5
       private_dropout: 0.1
   experiment/static_relative_permittivity:
     meta_group: dielectric_optical
@@ -291,7 +256,6 @@ tasks:
     model_overrides:
       private_hidden_ratio: 0.25
       tower_hidden_ratio: 0.25
-      film_hidden_ratio: 0.25
       private_dropout: 0.1
     phase1_private_lr: 3.6e-05
   experiment/refractive_index:
@@ -303,13 +267,12 @@ tasks:
     model_overrides:
       private_hidden_ratio: 0.75
       tower_hidden_ratio: 0.75
-      film_hidden_ratio: 0.75
       private_dropout: 0.15
     phase1_private_epochs: 9
     phase2_private_epochs: 6
   experiment/solvation:
     meta_group: solvation
-    unique_systems: 3611
+    unique_systems: 3684
     size_class: large
     partner_mode: interaction
     primary_slots:
@@ -324,7 +287,6 @@ tasks:
     model_overrides:
       private_hidden_ratio: 1.0
       tower_hidden_ratio: 1.0
-      film_hidden_ratio: 1.0
       private_dropout: 0.1
   experiment/hydration:
     meta_group: solvation
@@ -341,7 +303,6 @@ tasks:
     model_overrides:
       private_hidden_ratio: 0.75
       tower_hidden_ratio: 0.75
-      film_hidden_ratio: 0.75
       private_dropout: 0.1
   experiment/transfer_organic:
     meta_group: solvation
@@ -359,7 +320,6 @@ tasks:
     model_overrides:
       private_hidden_ratio: 1.0
       tower_hidden_ratio: 1.0
-      film_hidden_ratio: 1.0
       private_dropout: 0.1
   experiment/pec50:
     meta_group: biological
@@ -369,7 +329,6 @@ tasks:
     model_overrides:
       private_hidden_ratio: 0.75
       tower_hidden_ratio: 0.75
-      film_hidden_ratio: 0.75
       private_dropout: 0.1
     phase1_private_lr: 5.4000000000000005e-05
     phase1_private_epochs: 6
@@ -391,20 +350,6 @@ tasks:
     model_overrides:
       private_hidden_ratio: 0.75
       tower_hidden_ratio: 0.75
-      film_hidden_ratio: 0.75
-      private_dropout: 0.1
-  experiment/water_activity_coefficient:
-    meta_group: solvation
-    unique_systems: 167
-    size_class: small
-    phase1_private_lr: 5.4000000000000005e-05
-    phase1_private_epochs: 6
-    phase2_private_epochs: 3
-    phase3_private_epochs: 2
-    model_overrides:
-      private_hidden_ratio: 0.75
-      tower_hidden_ratio: 0.75
-      film_hidden_ratio: 0.75
       private_dropout: 0.1
   experiment/enthalpy_of_vaporization_or_sublimation:
     meta_group: thermophysical
@@ -419,7 +364,6 @@ tasks:
     model_overrides:
       private_hidden_ratio: 0.75
       tower_hidden_ratio: 0.75
-      film_hidden_ratio: 0.75
       private_dropout: 0.1
   experiment/anodic_potential_limit:
     enabled: true
@@ -431,7 +375,6 @@ tasks:
     model_overrides:
       private_hidden_ratio: 0.5
       tower_hidden_ratio: 0.25
-      film_hidden_ratio: 0.125
       private_dropout: 0.1
     phase1_private_lr: 5.4000000000000005e-05
     phase1_private_epochs: 6
@@ -447,7 +390,6 @@ tasks:
     model_overrides:
       private_hidden_ratio: 0.5
       tower_hidden_ratio: 0.25
-      film_hidden_ratio: 0.125
       private_dropout: 0.1
     phase1_private_lr: 5.4000000000000005e-05
     phase1_private_epochs: 6
@@ -516,13 +458,6 @@ training:
   cpu_threads: 1
   cpu_interop_threads: 1
   seed: 42
-frozen_encoder:
-  kind: chemberta2
-  variant: chemberta2_mlm
-  repo_id: DeepChem/ChemBERTa-77M-MLM
-  revision: ed8a5374f2024ec8da53760af91a33fb8f6a15ff
-  snapshot_dir: assets/chemberta2/chemberta2_mlm
-  pooling: last_hidden_cls
-  include_rdkit: false
 ablation:
-  variant: chemberta2_mlm
+  variant: auxiliary
+  supervision_removed: lambda_partial_charge

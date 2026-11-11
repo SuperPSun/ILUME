@@ -227,6 +227,17 @@ def entity_sequence(primary, partner, spec, entity_dim):
     return values, roles, mask, packed
 
 
+def l1_token_mixture(model, group, values, roles, mask, packed):
+    experts = model.l1_global_experts if group is None else model.l1_group_experts[group]
+    gate = model.l1_global_gate if group is None else model.l1_group_gates[group]
+    if gate is None:
+        return values.new_zeros((len(values), 3, model.d_model)), values.new_empty((len(values), 3, 0))
+    object_weights = gate(packed).softmax(-1)
+    weights = object_weights[:, [0, 0, 1]].masked_fill(~mask[..., None], 0)
+    outputs = torch.stack([expert(values, roles, mask) for expert in experts], 1)
+    return (weights.transpose(1, 2)[..., None] * outputs).sum(1), weights
+
+
 def forward_tokens(model, task, primary, conditions, partner):
     from .model import Stage3ForwardOutput
     spec = model.task_specs.get(task)
@@ -238,21 +249,13 @@ def forward_tokens(model, task, primary, conditions, partner):
         raise ValueError(f"Missing token HoME condition statistics: {task}")
     physical, present = physical_conditions(conditions, spec.condition_columns, model.condition_statistics[task])
 
-    def mixture(experts, gate):
-        object_weights = gate(packed).softmax(-1)
-        weights = object_weights[:, [0, 0, 1]].masked_fill(~mask[..., None], 0)
-        outputs = torch.stack([expert(values, roles, mask) for expert in experts], 1)
-        return (weights.transpose(1, 2)[..., None] * outputs).sum(1), weights
-
-    if model.l1_global_gate is None:
-        global_values = values.new_zeros((len(values), 3, model.d_model))
-        global_weights = values.new_empty((len(values), 3, 0))
-    else:
-        global_values, global_weights = mixture(model.l1_global_experts, model.l1_global_gate)
-    local, group_weights = mixture(model.l1_group_experts[group], model.l1_group_gates[group])
+    global_values, global_weights = model.l1_token_values(None, values, roles, mask, packed)
+    local, group_weights = model.l1_token_values(group, values, roles, mask, packed)
     local = model.l1_group_normalizations[group](local).masked_fill(~mask[..., None], 0)
 
     def candidates(experts, entities, encoder):
+        if not experts:
+            return entities.new_empty((len(entities), 0, 3, model.d_model))
         condition_tokens = encoder(physical, present)
         outputs = [expert(entities, mask, condition_tokens, present) for expert in experts]
         return torch.stack(outputs, 1) if outputs else entities.new_empty((len(entities), 0, 3, model.d_model))

@@ -1,6 +1,6 @@
 # ADR-0107：ChemBERTa-2 冻结表示替换 Stage1
 
-- 状态：已接受
+- 状态：已退役（2026-11-11）；用户取消两项实验，配置、注册和专用实现已删除，旧产物保留，复现使用历史Git版本。
 - 日期：2026-10-28
 - 范围：C12/C13 独立消融；正式 Base 和既有产物不变。
 
@@ -32,4 +32,4 @@ Stage2只读取并校验Base准备产物中的实体标识、任务行、目标/
 
 原论文：[ChemBERTa-2](https://arxiv.org/abs/2209.01712)。官方检查点：[MTR](https://huggingface.co/DeepChem/ChemBERTa-77M-MTR)、[MLM](https://huggingface.co/DeepChem/ChemBERTa-77M-MLM)。
 
-验收覆盖原生表示/补零、冻结、padding、角色/partner、超长拒绝、来源篡改、严格与离线重载、临时Stage2→Stage3→预测。正式资源准备、训练和评估只提供命令，由用户启动；保留原PyTorch环境，结果与完整权重按4090归档规则回传。运行见[消融手册](../v4-ablation-runbook.md#chemberta2-frozen-home)。
+验收覆盖原生表示/补零、冻结、padding、角色/partner、超长拒绝、来源篡改、严格与离线重载、临时Stage2→Stage3→预测。正式资源准备、训练和评估只提供命令，由用户启动；保留原PyTorch环境，结果与完整权重按4090归档规则回传。当前消融见[ADR-0124](0124-current-token-home-ablations.md)，本页不是运行入口。

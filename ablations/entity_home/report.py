@@ -45,7 +45,7 @@ def comparison_rows(snapshot, authority, *, base_run=None):
             raise ValueError('Ablation analysis requires one explicit comparable Base per split/seed')
         baseline = {row['task']:row for row in rows if row['run']==baselines[0]}
         if split=='valid' and set(baseline)!=set(authority.tasks):
-            raise ValueError('Ablation validation requires the complete 24-task Base')
+            raise ValueError(f'Ablation validation requires the complete {len(authority.tasks)}-task Base')
         for run in sorted({row['run'] for row in rows}):
             current = {row['task']:row for row in rows if row['run']==run}
             if set(current)!=set(baseline):
@@ -71,7 +71,7 @@ def comparison_rows(snapshot, authority, *, base_run=None):
 def stratify(rows):
     buckets = {}
     for row in rows:
-        for kind,label in [('all','24_experimental' if row['split']=='valid' else 'test_eligible'),('group',row['group']),('size_class',row['size_class'])]:
+        for kind,label in [('all','experimental' if row['split']=='valid' else 'test_eligible'),('group',row['group']),('size_class',row['size_class'])]:
             buckets.setdefault((row['split'],row['run'],kind,label),[]).append(row)
     return [{'split':split,'run':run,'stratum':kind,'label':label,'tasks':len(values),
              'macro_normalized_mae':sum(row['normalized_mae'] for row in values)/len(values),
@@ -103,7 +103,7 @@ def training_costs(input_roots, repository_root=None):
             manifest_path = path.parent / 'checkpoint.json'
             if manifest_path.is_file():
                 manifest = json.loads(manifest_path.read_text())
-                if manifest.get('kind') == 'ilume_stage3_single_task_mlp_model_entity_v4':
+                if manifest.get('kind') in {'ilume_stage3_single_task_mlp_model_entity_v4', 'ilume_stage3_single_task_mlp_model_entity_token_v4'}:
                     cost = summary['training_cost']
                     payload = manifest['training_identity']['payload']
                     result.append({'ablation':'single_task_mlp','fold':payload['fold'],'task':payload['task_id'],

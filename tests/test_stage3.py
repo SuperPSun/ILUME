@@ -1965,16 +1965,16 @@ TRAINING_IDENTITY = semantic_identity(
     "stage3.training", {"contract_version": 1, "microbatch_size": 1024}
 )
 
-@pytest.mark.parametrize("variant", ("base", "chemberta2_mtr", "chemberta2_mlm"))
+@pytest.mark.parametrize("variant", ("base", "no_smiles", "no_graph"))
 def test_training_launcher_records_the_configured_encoder_source(monkeypatch, tmp_path, variant):
     from ablations.entity_home.config import load_research_config
     import common.outputs as outputs
     import stage3.train as training
 
     config_path = (
-        "configs/v4/stage3/optimized_3407.yaml"
+        "configs/v4/stage3/base.yaml"
         if variant == "base"
-        else f"configs/ablations/v4_3407/core/{variant}/stage3.yaml"
+        else f"configs/ablations/token_attention_3407/core/{variant}/stage3.yaml"
     )
     config = load_research_config(config_path)
     config = replace(config, training=replace(config.training, device="cpu"))
@@ -2005,10 +2005,7 @@ def test_training_launcher_records_the_configured_encoder_source(monkeypatch, tm
         config_path=config_path, fold=1, output_root="train", resume=False,
         device=None, show_progress=True,
     ) == "completed"
-    source = (
-        {"stage1_encoder": outputs.repository_relative(config.initialization.stage1_encoder)}
-        if variant == "base" else {"frozen_encoder": config.frozen_encoder.to_dict()}
-    )
+    source = {"stage1_encoder": outputs.repository_relative(config.initialization.stage1_encoder)}
     assert opened[0]["details"] == {"fold": 1, **source, "assigned_device": "cpu"}
     assert opened[0]["semantic_identity"] == TRAINING_IDENTITY
     assert completed[0]["fold"] == 1

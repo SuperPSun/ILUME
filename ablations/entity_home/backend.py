@@ -16,20 +16,17 @@ from stage2.identity import build_stage2_data_identity, metadata_identity
 from stage3.home import load_source, source_plan, validate_transfer_architecture
 from stage3.model import GLOBAL
 from .config import base_config
-from .model import transform_model
+from .model import transform_model, expert_hidden_width
 
 
 class EntityHomeBackend:
-    def __init__(self, spec):
+    def __init__(self, spec, *, token_attention=False):
         self.spec = spec
+        self.token_attention = token_attention
 
     def load_source(self, config):
         if not self.spec.zero_update:
             source = load_source(base_config(config))
-            if config.frozen_encoder is not None:
-                if source["_loaded_model"].stage2_config.frozen_encoder != config.frozen_encoder:
-                    raise ValueError("Stage2/Stage3 external frozen encoder source mismatch")
-                return source
             if self.spec.variant == 'auxiliary' and getattr(source['_loaded_model'].backbone.config.loss, self.spec.supervision_removed) != 0:
                 raise ValueError('Auxiliary ablation source did not remove its declared supervision')
             source_spec = getattr(source['_loaded_model'].backbone.config, 'ablation', None)
@@ -120,7 +117,7 @@ class EntityHomeBackend:
                             'initial_model_state_hash': tensor_state_hash('ablation.entity-home.initial-state.v1', model.state_dict())}
         if hasattr(model, 'capacity_match'):
             plan['ablation']['capacity_match'] = model.capacity_match
-        global_hidden = model.l1_global_experts[0].layers[0].out_features if model.l1_global_experts else 0
+        global_hidden = expert_hidden_width(model.l1_global_experts[0]) if model.l1_global_experts else 0
         plan['model']['resolved_widths']['expert_hidden'] = global_hidden
         plan['model']['global_experts'] = len(model.l1_global_experts)
         if 'GLOBAL' in plan['phases']['phase1']['owners']:
@@ -132,6 +129,8 @@ class EntityHomeBackend:
             plan['phases']['phase1']['owners'].pop('GLOBAL')
     @property
     def final_kind(self):
+        if self.token_attention:
+            return 'ilume_stage3_token_home_ablation_final_v1'
         return 'ilume_stage3_entity_home_ablation_final_v1'
 
     @property
@@ -167,7 +166,9 @@ class EntityHomeBackend:
         model, store, _ = build_model_and_store(ordinary, prepared, fold=fold, device=device)
         artifact = torch.load(path, map_location='cpu', weights_only=False)
         selector = self.spec.selector
-        kind = 'ilume_stage3_entity_home_three_phase_v4_' + ('checkpoint' if selector == 'phase1' else '2_stitched')
+        prefix = ('ilume_stage3_token_home_three_phase_v4_' if config.model.expert_architecture == 'entity_token_attention_v1'
+                  else 'ilume_stage3_entity_home_three_phase_v4_')
+        kind = prefix + ('checkpoint' if selector == 'phase1' else '2_stitched')
         plan = artifact.get('resolved_training_plan', {})
         if (artifact.get('kind') != kind or artifact.get('format_version') != 4
                 or artifact.get('fold') != fold

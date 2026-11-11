@@ -47,7 +47,11 @@ INPUT_CONTRACT = {
 
 
 def _is_entity(config):
-    return config.name == "ilume_stage3_single_task_mlp_entity_v4"
+    return config.name in {"ilume_stage3_single_task_mlp_entity_v4", "ilume_stage3_single_task_mlp_entity_token_v4"}
+
+
+def _is_token(config):
+    return config.name == "ilume_stage3_single_task_mlp_entity_token_v4"
 
 
 def _encoder_key(config):
@@ -60,7 +64,9 @@ def _prepared_embeddings(config, prepared):
     from common.entity_inputs import EntityInputs
     slots = prepared["slots"]
     mask = torch.arange(2)[None, :].expand(len(slots["counts"]), -1) < slots["counts"][:, None]
-    return EntityInputs(slots["slots"], slots["roles"], mask).pack()[0].float()
+    entities = EntityInputs(slots["slots"], slots["roles"], mask)
+    entities.pack()
+    return entities if _is_token(config) else entities.pack()[0].float()
 
 
 def _is_v4(config: BenchmarkConfig) -> bool:
@@ -68,6 +74,8 @@ def _is_v4(config: BenchmarkConfig) -> bool:
 
 
 def _checkpoint_kind(config: BenchmarkConfig) -> str:
+    if _is_token(config):
+        return "ilume_stage3_single_task_mlp_model_entity_token_v4"
     if _is_entity(config):
         return "ilume_stage3_single_task_mlp_model_entity_v4"
     return "ilume_stage3_single_task_mlp_model_home_v4" if _is_v4(config) else CHECKPOINT_KIND
@@ -78,12 +86,19 @@ def _checkpoint_version(config: BenchmarkConfig) -> int:
 
 
 def _state_namespace(config: BenchmarkConfig) -> str:
+    if _is_token(config):
+        return "ablation.ilume-stage3-single-task-mlp-entity-token-state.v4"
     if _is_entity(config):
         return "ablation.ilume-stage3-single-task-mlp-entity-state.v4"
     return "ablation.ilume-stage3-single-task-mlp-home-state.v4" if _is_v4(config) else STATE_NAMESPACE
 
 
 def _input_contract(config: BenchmarkConfig) -> dict[str, Any]:
+    if _is_token(config):
+        return {"embedding_source": "frozen_entity_slots_v4", "entity_dim": 1235,
+                "embedding_dim": 3717, "embedding_transform": "none",
+                "feature_order": ["three_ordered_entity_slots", "role_one_hot", "valid_mask", "normalized_conditions"],
+                "slot_contract": "solvent_first_three_entity_tokens_v1", "condition_fusion": "ordered_concat"}
     if _is_entity(config):
         from common.entity_inputs import ENTITY_INPUT_CONTRACT
         return {**INPUT_CONTRACT, "embedding_source": "frozen_entity_slots_v4",
@@ -129,6 +144,10 @@ def _load_prepared(config: BenchmarkConfig) -> tuple[Stage3Config, dict[str, Any
     if metadata.get("embedding_dim") != (1024 if _is_entity(config) else embedding_dim):
         raise ValueError(f"Stage3 Single-task MLP requires {embedding_dim}-dimensional embeddings")
     embeddings = _prepared_embeddings(config, prepared)
+    if _is_token(config):
+        if authority.model.expert_architecture != "entity_token_attention_v1" or embeddings.values.shape[-1] != 1235:
+            raise ValueError("Token MLP requires the current token-attention authority and 1235D entities")
+        return authority, prepared
     if (
         not isinstance(embeddings, torch.Tensor)
         or embeddings.ndim != 2
@@ -154,6 +173,20 @@ def build_input_features(
         )
     if not torch.isfinite(dataset.conditions).all():
         raise ValueError(f"Stage3 Single-task MLP conditions are non-finite: {spec.task_id}")
+    from common.entity_inputs import EntityInputs
+    if isinstance(embeddings, EntityInputs):
+        from stage3.token_attention import entity_sequence
+        def select(indices):
+            if indices.ndim != 1 or len(indices) != len(dataset) or (len(indices) and (indices.min() < 0 or indices.max() >= len(embeddings.values))):
+                raise ValueError(f"Token MLP entity ids are invalid: {spec.task_id}")
+            return EntityInputs(embeddings.values[indices], embeddings.roles[indices], embeddings.mask[indices])
+        primary = select(dataset.primary_object_ids)
+        partner = select(dataset.partner_object_ids) if spec.partner_slots else None
+        if partner is None and len(dataset) and (dataset.partner_object_ids != -1).any():
+            raise ValueError(f"Token MLP received an undeclared partner: {spec.task_id}")
+        values, roles, mask, _ = entity_sequence(primary, partner, spec, embeddings.values.shape[-1])
+        role_values = torch.nn.functional.one_hot(roles, 3).float().masked_fill(~mask[..., None], 0)
+        return torch.cat((values.flatten(1), role_values.flatten(1), mask.float(), dataset.conditions.float()), -1).contiguous()
     if (
         dataset.primary_object_ids.ndim != 1
         or len(dataset.primary_object_ids) != len(dataset)

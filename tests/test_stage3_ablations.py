@@ -19,6 +19,54 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFIGS = ROOT/'configs/ablations/v4'
 
 
+def test_current_token_ablation_configs_preserve_base_and_retire_removed_experiments():
+    configs = ROOT/'configs/ablations/token_attention_3407'
+    base1 = yaml.safe_load((ROOT/'configs/v4/stage1/base-100h.yaml').read_text())
+    base2 = load_home_recipe(ROOT/'configs/v4/stage2/base.yaml')
+    base3 = load_stage3_config(ROOT/'configs/v4/stage3/base.yaml')
+    assert len(list(configs.rglob('*.yaml'))) == 31
+    assert len(base3.tasks) == 22 and base3.model.expert_architecture == 'entity_token_attention_v1'
+    for path in configs.rglob('stage1.yaml'):
+        actual = yaml.safe_load(path.read_text())
+        expected = deepcopy(base1)
+        name = path.parent.name
+        removed = {'no_unimol': ('unimol',), 'no_electronic': ('electronic',),
+                   'no_partial_charge': ('partial_charge',), 'no_alignment': ('alignment',),
+                   'no_descriptor_loss': ('descriptor',), 'no_stage1': (),
+                   'no_smiles': ('smiles', 'alignment'), 'no_graph': ('atom', 'bond', 'partial_charge', 'alignment')}[name]
+        for loss in removed:
+            expected['loss']['lambda_' + loss] = 0.
+        if name in {'no_smiles', 'no_graph'}:
+            expected['ablation'] = {'variant': name}
+        assert actual == expected
+        from stage1.config import config_from_dict
+        config = load_stage1_config(path)
+        assert config_from_dict(config.to_dict()) == config
+    for path in configs.rglob('stage2.yaml'):
+        recipe = load_home_recipe(path)
+        downstream = load_research_config(path.with_name('stage3.yaml'))
+        assert recipe.stage3 == base2.stage3 and recipe.stage2.training == base2.stage2.training
+        assert recipe.stage2.data.seed == 3407
+        assert recipe.stage2.initialization.checkpoint == downstream.initialization.stage1_encoder
+        assert recipe.stage2.data.artifacts_dir == downstream.initialization.simulation_artifacts_dir
+    for path in configs.rglob('stage3.yaml'):
+        config = load_research_config(path)
+        assert config.tasks == base3.tasks and config.groups == base3.groups
+        assert config.training == base3.training and config.model == base3.model
+        assert research_config_from_dict(config.to_dict()) == config
+        assert config.runtime_backend.final_kind == 'ilume_stage3_token_home_ablation_final_v1'
+    mlp = load_benchmark_config(configs/'core/single_task_mlp.yaml')
+    assert mlp.name == 'ilume_stage3_single_task_mlp_entity_token_v4'
+    assert mlp.data.stage3_authority_config == Path('configs/v4/stage3/base.yaml')
+    assert mlp.training['max_epochs'] == 10 and not mlp.simulation.enabled
+    for variant in ('uniform_gate', 'chemberta2_mtr', 'chemberta2_mlm'):
+        bad = yaml.safe_load((configs/'core/no_group/stage3.yaml').read_text())
+        bad['ablation']['variant'] = variant
+        with pytest.raises(ValueError, match='Unknown'):
+            research_config_from_dict(bad)
+        assert not any((ROOT/'configs/ablations').glob(f'*/core/{variant}/*.yaml'))
+
+
 @pytest.mark.parametrize('config_root,authority', [
     ('v4', 'base'), ('v4_3407', 'optimized_3407'),
 ])
@@ -50,9 +98,9 @@ def test_registered_ablation_contracts_are_paired_and_fixed_final(config_root, a
         historical=load_stage3_config(ROOT/'configs/HPO/HoME/stage3/G0_C05.yaml')
         base3=replace(historical, training=replace(historical.training, seed=None),
             data=replace(historical.data, artifacts_dir=Path('outputs/v4/stage3/base/prepare/artifacts')))
-    assert len(list(configs.rglob('*.yaml')))==(40 if config_root=='v4_3407' else 36)
+    assert len(list(configs.rglob('*.yaml')))==35
     cancelled=list((configs/'capacity').rglob('*.yaml')) if config_root=='v4_3407' else []
-    assert len(list(configs.rglob('*.yaml')))-len(cancelled)==36
+    assert len(list(configs.rglob('*.yaml')))-len(cancelled)==(31 if config_root=='v4_3407' else 35)
     assert not (configs/'repeats').exists()
     for name,removed in {'no_smiles':('smiles','alignment'), 'no_graph':('atom','bond','partial_charge','alignment')}.items():
         config=load_stage1_config(configs/f'core/{name}/stage1.yaml')
@@ -131,60 +179,6 @@ def test_entity_mlp_sweep_accepts_explicit_gpu_slots(monkeypatch, tmp_path):
         '--benchmark','stage3','--max-workers','2','--devices','cuda:0,cuda:1'])
     sweep.main()
     assert len(scheduled)==5
-
-
-@pytest.mark.parametrize("variant", ["chemberta2_mtr", "chemberta2_mlm"])
-def test_chemberta_native_states_freeze_padding_strict_reload_and_tamper(variant, chemberta_snapshot_factory):
-    from dataclasses import replace
-    from common.frozen_encoder import load_frozen_encoder
-    from stage2.frozen import FrozenObjectSpec
-    if chemberta_snapshot_factory is None:
-        pytest.skip('ChemBERTa optional dependencies are not installed')
-    spec = chemberta_snapshot_factory(variant)
-    source = load_frozen_encoder(spec)
-    assert not source.config.is_dual_view and not source.training
-    source.train()
-    assert not source.training and all(not p.requires_grad for p in source.parameters())
-    batched = source.encode_smiles(["CC", "C C C"])
-    torch.testing.assert_close(batched[0], source.encode_smiles(["CC"])[0], rtol=1e-5, atol=1e-6)
-    assert batched.shape == (2, 1241) and not batched[:, 384:].count_nonzero()
-    ids = torch.tensor([source.tokenizer.encode("CC").ids])
-    with torch.inference_mode():
-        expected = source.encoder(input_ids=ids, attention_mask=torch.ones_like(ids)).last_hidden_state[:, 0]
-    torch.testing.assert_close(batched[:1, :384], expected, rtol=1e-5, atol=1e-6)
-    values, roles = source.encode_slots([FrozenObjectSpec("il", (("cation", "[Na+]"), ("anion", "[Cl-]")))])
-    assert values.shape == (1, 2, 1241) and roles.tolist() == [[0, 1]]
-    with pytest.raises(ValueError, match="role"):
-        source.encode_slots([FrozenObjectSpec("molecule", (("neutral", "[Na+]"),))])
-    with pytest.raises(ValueError, match="512"):
-        source.encode_smiles([" ".join(["C"] * 512)])
-    bundle = source.export_bundle()
-    restored = load_frozen_encoder(spec, bundle=bundle)
-    assert torch.equal(source.encode_smiles(["CC"]), restored.encode_smiles(["CC"]))
-    corrupt = deepcopy(bundle)
-    corrupt["state"][next(iter(corrupt["state"]))] += 1
-    with pytest.raises(ValueError, match="identity"):
-        load_frozen_encoder(spec, bundle=corrupt)
-    other = replace(spec, variant="chemberta2_mlm" if variant.endswith("mtr") else "chemberta2_mtr")
-    with pytest.raises(ValueError, match="contract"):
-        load_frozen_encoder(other, bundle=bundle)
-    (Path(spec.snapshot_dir) / "tokenizer.json").write_text('{}')
-    with pytest.raises(ValueError, match="SHA"):
-        load_frozen_encoder(spec)
-
-
-@pytest.mark.parametrize("variant", ["chemberta2_mtr", "chemberta2_mlm"])
-def test_actual_chemberta_official_weights_extract_and_reload(variant):
-    from common.frozen_encoder import load_frozen_encoder
-    config = load_home_recipe(ROOT / f'configs/ablations/v4_3407/core/{variant}/stage2.yaml')
-    spec = config.stage2.frozen_encoder
-    if not (ROOT / spec.snapshot_dir / 'pytorch_model.bin').is_file():
-        pytest.skip('Official ChemBERTa snapshot must be prepared explicitly by the user')
-    source = load_frozen_encoder(spec)
-    values = source.encode_smiles(['CCO', '[Na+]', 'O=S(=O)([O-])C(F)(F)F'])
-    assert values.shape == (3, 1241) and not values[:, 384:].count_nonzero()
-    restored = load_frozen_encoder(spec, bundle=source.export_bundle())
-    assert torch.equal(values, restored.encode_smiles(['CCO', '[Na+]', 'O=S(=O)([O-])C(F)(F)F']))
 
 
 def test_ablation_summary_uses_selected_authority(monkeypatch):
@@ -278,16 +272,17 @@ def test_comparison_requires_complete_base_and_reports_task_group_size(authority
     analysis=json.loads((tmp_path/'analysis/analysis.json').read_text())
     assert analysis['protocol']['split_seed']==authority.data.seed
     snapshot['metrics']['stage3_validation']=rows[1:]
-    with pytest.raises(ValueError,match='24-task'):
+    with pytest.raises(ValueError,match=f'{len(authority.tasks)}-task'):
         comparison_rows(snapshot,authority)
 
 
-def test_entity_mlp_fixed_final_state_reloads_with_worsening_validation(monkeypatch, tmp_path):
+@pytest.mark.parametrize('suite', ['v4', 'token_attention_3407'])
+def test_entity_mlp_fixed_final_state_reloads_with_worsening_validation(monkeypatch, tmp_path, suite):
     from dataclasses import replace
     from ablations.stage3_single_task_mlp import adapter
     from ablations.stage3_single_task_mlp.model import Stage3SingleTaskMLP
     from common.identity import tensor_state_hash
-    config=load_benchmark_config(CONFIGS/'core/single_task_mlp.yaml')
+    config=load_benchmark_config(ROOT/'configs/ablations'/suite/'core/single_task_mlp.yaml')
     config=replace(config,training={**config.training,'max_epochs':3,'batch_size':2})
     model=Stage3SingleTaskMLP(2490,(1024,512),0.)
     features=torch.randn(3,2490);targets=torch.zeros(3)
@@ -305,4 +300,4 @@ def test_entity_mlp_fixed_final_state_reloads_with_worsening_validation(monkeypa
     reloaded=Stage3SingleTaskMLP(2490,(1024,512),0.)
     reloaded.load_state_dict(torch.load(path,weights_only=True),strict=True)
     assert tensor_state_hash(adapter._state_namespace(config),state)==tensor_state_hash(adapter._state_namespace(config),reloaded.state_dict())
-    assert adapter._checkpoint_kind(config)=='ilume_stage3_single_task_mlp_model_entity_v4'
+    assert adapter._checkpoint_kind(config)==('ilume_stage3_single_task_mlp_model_entity_token_v4' if suite=='token_attention_3407' else 'ilume_stage3_single_task_mlp_model_entity_v4')

@@ -1,9 +1,9 @@
-# C12/C13：冻结外部ChemBERTa-2，不提供显式RDKit217；配对optimized_3407。
+# 当前DGT/实体token注意力消融；data/3407，训练seed42。
 data:
   data_root: data/3407
   task_catalog_path: data/3407/task_catalog.csv
-  pretrain_artifacts_dir: null
-  artifacts_dir: outputs/ablations/v4_3407/chemberta2_mtr/stage2/prepare/artifacts
+  pretrain_artifacts_dir: outputs/v4/stage1/base/prepare/artifacts
+  artifacts_dir: outputs/ablations/token_attention_3407/no_graph/stage2/prepare/artifacts
   entity_shard_size: 4096
   seed: 3407
   target_materialization_modes: {}
@@ -16,10 +16,9 @@ data:
 preparation:
   workers: 8
   teacher_batch_size: null
-  data_metadata_path: outputs/ablations/v4_3407/chemberta2_mtr/stage2/prepare/data_metadata.json
-  reference_artifacts: outputs/v4/stage2/optimized_3407/prepare/artifacts
+  data_metadata_path: outputs/ablations/token_attention_3407/no_graph/stage2/prepare/data_metadata.json
 initialization:
-  checkpoint: null
+  checkpoint: outputs/ablations/token_attention_3407/no_graph/stage1/train/stage1_encoder.pt
 model:
   architecture_kind: entity_home_v1
   dropout: 0.1
@@ -59,20 +58,22 @@ home:
   initialization: pretrained
   random_seed: null
   model:
-    global_experts: 2
+    expert_architecture: entity_token_attention_v1
+    attention_heads: 8
+    attention_layers: 2
+    global_experts: 1
     private_experts: 1
     dropout: 0.1
     activation: silu
     expert_hidden_ratio: 2.0
     interaction_hidden_ratio: 2.0
-    film_hidden_ratio: 1.0
     tower_hidden_ratio: 1.0
     l2_residual: true
   groups:
     thermophysical:
       enabled: true
       group_weight: 1.0
-      experts: 2
+      experts: 1
       expert_hidden_ratio: 1.5
       phase1:
         lr: 0.00015
@@ -83,7 +84,7 @@ home:
     solvation:
       enabled: true
       group_weight: 1.0
-      experts: 3
+      experts: 2
       expert_hidden_ratio: 1.5
       phase1:
         lr: 0.0002
@@ -91,11 +92,3 @@ home:
       phase2:
         lr: 0.0001
         epochs: 24
-frozen_encoder:
-  kind: chemberta2
-  variant: chemberta2_mtr
-  repo_id: DeepChem/ChemBERTa-77M-MTR
-  revision: 66b895cab8adebea0cb59a8effa66b2020f204ca
-  snapshot_dir: assets/chemberta2/chemberta2_mtr
-  pooling: last_hidden_cls
-  include_rdkit: false

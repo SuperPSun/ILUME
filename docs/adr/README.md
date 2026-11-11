@@ -10,7 +10,6 @@
 | Stage2 共享梯度聚合 | [0097](0097-stage2-batch-sample-weighted-gradients.md) | 五模拟联合step，GLOBAL/GROUP按真实batch样本加权，PRIVATE原始梯度；新训练身份及严格恢复/迁移 |
 | Stage1 双路2D DGT | [0116](0116-stage1-dual-graph-transformer.md) | 现役Base八层双路512D DGT、encoder约77.99M；拓扑sidecar、逐通道pair attention、分块重计算和双路池化；旧D-MPNN严格历史加载，0089/0090图架构数值为历史 |
 | Base当前实验数据协议 | [0117](0117-base-22-tasks-updated-solvation.md) | 22实验＋两模拟；显式排除平衡压力/水活度系数，solvation按更新catalog声明3684体系；其余recipe不变，历史配置不迁移 |
-| ChemBERTa-2冻结表示消融 | [0107](0107-chemberta2-frozen-home-ablations.md) | C12/C13；MTR/MLM CLS384固定补零、无显式RDKit、永久冻结；配对3407 HoME |
 | G2_C01主模型容量与配方 | [0114](0114-g2-c01-main-model.md) | Base采用G2_C01、007/032训练超参及3407；新211维Stage1来源；旧HPO/optimized_3407/消融保留原身份 |
 | v4 实体HoME Stage2/3 主线 | [0095](0095-v4-entity-home-without-object-encoder.md) | 无ObjectEncoder；GLOBAL/GROUP直接并行处理实体；五模拟、24实验+两模拟仅PRIVATE更新；旧0094及Object合同退役 |
 | 现役 Stage3 共享梯度聚合 | [0096](0096-stage3-batch-sample-weighted-gradients.md) | GLOBAL跨实验任务、GROUP组内按当前真实batch样本数加权；PRIVATE原始平均梯度；尾batch/耗尽任务/模拟隔离；替代Entity-HoME的0070聚合规定 |
@@ -51,7 +50,7 @@
 | AIonopedia | [0049](0049-aionopedia-multimodal-baseline.md) |
 | ILTransR | [0057](0057-iltransr-stage3-baseline.md) |
 | AIFC | [0060](0060-aifc-stage3-baseline.md) |
-| 现役 v4 独立消融 | [0100](0100-v4-entity-home-ablations.md)：3407套件配对optimized_3407，核心十二行（C0～C11，含两项单视图及C11仅Phase1）、五监督；阶段增量为C11→C7→C0；四项容量对照已取消；训练seed42；原split42配置与产物保留 |
+| 现役DGT/token HoME消融 | [0124](0124-current-token-home-ablations.md)：C0～C10及E1～E5、22任务、31份YAML；删除原Uniform/ChemBERTa，保留历史产物；0100/0107仅历史 |
 | 历史核心三项消融 | [0089](0089-v4-frozen-dual-view-stage1.md)（历史 v4）、[0082](0082-home-mainline-and-core-ablations.md)、[0084](0084-stage3-simulation-phase2-phase3.md)、[0077](0077-stage3-single-task-mlp-v2-ablation.md)（历史配方来源） |
 
 ## 冻结合同与历史

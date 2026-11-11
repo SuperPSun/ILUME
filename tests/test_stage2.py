@@ -433,7 +433,7 @@ def test_entity_home_base_contracts() -> None:
 
 
 @pytest.mark.parametrize("expert_architecture", ["mlp", "entity_token_attention_v1"])
-def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_stage2_setup, tmp_path, monkeypatch, chemberta_snapshot_factory, expert_architecture):
+def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_stage2_setup, tmp_path, monkeypatch, expert_architecture):
     variant = "base"
     from stage1.config import AuxiliaryConfig, MaskingConfig
     from stage1.model import build_stage1_model
@@ -913,11 +913,8 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
                 with (tmp_path / split / "predictions" / (task.replace("/", "__") + ".csv")).open() as handle:
                     actual = [float(row["prediction"]) for row in csv.DictReader(handle)]
                 np.testing.assert_allclose(actual, (predictions[task] + 3) * stats["scale"] + stats["mean"], rtol=1e-5, atol=1e-5)
-    if not token_attention:
-        if chemberta_snapshot_factory is not None:
-            _verify_chemberta_home(stage3, recipe, tmp_path, chemberta_snapshot_factory, monkeypatch)
-        _verify_entity_home_ablations(stage3, recipe, prepared, train_root, tmp_path)
-        _verify_single_view_ablations(stage1, stage3, recipe, tmp_path)
+    _verify_entity_home_ablations(stage3, recipe, prepared, train_root, tmp_path)
+    _verify_single_view_ablations(stage1, stage3, recipe, tmp_path)
     # Ignored source columns remain SHA-bound; never edit metadata hashes.
     bad = source_path(stage3, resolved[enthalpy], 1)
     bad.write_text(bad.read_text().replace("Liquid | Gas", "Solid | Gas"))
@@ -1008,16 +1005,18 @@ def _verify_entity_home_ablations(stage3, recipe, prepared, train_root, tmp_path
         return AblationConfig(**values, ablation=spec)
     original, store, _ = build_model_and_store(stage3, prepared, fold=1, device=torch.device('cpu'))
     initial = {name: value.clone() for name,value in original.state_dict().items()}
-    for variant in ('no_global', 'no_group', 'no_private', 'uniform_gate', 'no_stage2',
+    for variant in ('no_global', 'no_group', 'no_private', 'no_stage2',
                     'capacity_no_global', 'capacity_no_group', 'capacity_match_global', 'capacity_match_group'):
         config = research(variant)
+        if stage3.model.expert_architecture != 'mlp' and variant.startswith('capacity_'):
+            continue
         if config.data.seed == 3407 and variant.startswith('capacity_'):
             with pytest.raises(ValueError, match='Capacity controls for data/3407 were cancelled'):
                 config.validate()
             continue
         config.validate()
         model, _, names = build_model_and_store(config, prepared, fold=1, device=torch.device('cpu'))
-        if variant in {'no_global', 'no_group', 'no_private', 'uniform_gate'}:
+        if variant in {'no_global', 'no_group', 'no_private'}:
             for name,value in model.state_dict().items():
                 if not name.startswith('task_gates.'):
                     assert torch.equal(value, initial[name]), (variant, name)
@@ -1034,7 +1033,9 @@ def _verify_entity_home_ablations(stage3, recipe, prepared, train_root, tmp_path
             assert model.parameters_for_owner(GLOBAL) == ()
         if variant == 'no_group':
             assert all(len(experts) == 0 for experts in model.l1_group_experts.values())
-            assert model.interactions and model.l1_group_normalizations
+            assert model.l1_group_normalizations
+            if stage3.model.expert_architecture == 'mlp':
+                assert model.interactions
             values = EntityInputs.from_slots(torch.randn(2,1,model.entity_input_contract['entity_dim']), torch.tensor([[2],[2]]))
             spec = model.task_specs['experiment/transfer_organic']
             conditions = torch.zeros(2,spec.condition_width)
@@ -1044,12 +1045,6 @@ def _verify_entity_home_ablations(stage3, recipe, prepared, train_root, tmp_path
         if variant == 'no_private':
             assert all(not len(experts) for experts in model.private_experts.values())
             assert model.parameters_for_owner(private_owner('experiment/density'))
-        if variant == 'uniform_gate':
-            for gate in model.task_gates.values():
-                assert not any(p.requires_grad for p in gate.parameters())
-            key = 'experiment__density'
-            weights = model.task_gate_weights(key, torch.randn(2,2048))
-            torch.testing.assert_close(weights, torch.full_like(weights, 1/weights.shape[-1]))
         if config.ablation.zero_update:
             source = load_source(config)
             assert source['training_identity']['payload']['optimizer_updates'] == 0
@@ -1065,13 +1060,11 @@ def _verify_entity_home_ablations(stage3, recipe, prepared, train_root, tmp_path
         output = tmp_path / ('ablation_' + variant)
         train_fold(config, 1, output_dir=output)
         artifact = torch.load(output/'three_phase_final.pt',weights_only=False)
-        assert artifact['kind'] == 'ilume_stage3_entity_home_ablation_final_v1'
+        assert artifact['kind'] == config.runtime_backend.final_kind
         loaded, _, _ = _load_model(config, prepared, output/'three_phase_final.pt',1,0,torch.device('cpu'),three_phase_final=True)
         assert all(torch.equal(value,loaded.state_dict()[name]) for name,value in artifact['model'].items())
         metrics = evaluate_checkpoints(config,output,split='valid',ensemble_folds=False,fold=1)
         assert set(metrics['tasks']) == set(config.tasks) and metrics['reporting']['model_id'] == config.ablation.model_id
-        if variant == 'uniform_gate':
-            assert all(torch.equal(initial[name],value) for name,value in artifact['model'].items() if name.startswith('task_gates.'))
         with pytest.raises(ValueError, match='checkpoint mismatch: kind'):
             _load_model(stage3,prepared,output/'three_phase_final.pt',1,0,torch.device('cpu'),three_phase_final=True)
         if variant == 'no_group':
@@ -1102,6 +1095,22 @@ def _verify_entity_home_ablations(stage3, recipe, prepared, train_root, tmp_path
         features = build_input_features(data,packed,spec)
         assert features.shape[1] == packed_width * (2 if spec.partner_slots else 1) + spec.condition_width
 
+    from common.entity_inputs import EntityInputs
+    from stage3.token_attention import entity_sequence
+    token_mlp = SimpleNamespace(name='ilume_stage3_single_task_mlp_entity_token_v4')
+    slots = _prepared_embeddings(token_mlp, prepared)
+    for task in ('experiment/density', 'experiment/transfer_organic', 'experiment/hydration'):
+        spec = prepared['registry'][task]
+        data = Stage3TaskDataset(stage3.data.artifacts_dir, 1, task, 'train')
+        features = build_input_features(data, slots, spec)
+        assert features.shape == (len(data), 3 * slots.values.shape[-1] + 12 + spec.condition_width)
+        primary = EntityInputs(slots.values[data.primary_object_ids], slots.roles[data.primary_object_ids], slots.mask[data.primary_object_ids])
+        partner = EntityInputs(slots.values[data.partner_object_ids], slots.roles[data.partner_object_ids], slots.mask[data.partner_object_ids]) if spec.partner_slots else None
+        values, roles, mask, _ = entity_sequence(primary, partner, spec, slots.values.shape[-1])
+        torch.testing.assert_close(features[:, :values.shape[1] * values.shape[2]], values.flatten(1))
+        if spec.condition_width:
+            torch.testing.assert_close(features[:, -spec.condition_width:], data.conditions)
+
     if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
         import shutil
         from benchmarks.common.config import load_benchmark_config
@@ -1113,12 +1122,13 @@ def _verify_entity_home_ablations(stage3, recipe, prepared, train_root, tmp_path
         authority_path = tmp_path/'mlp_authority.yaml'
         authority_path.write_text(yaml.safe_dump(authority.to_dict()))
         prepare_stage3(authority)
-        mlp_config = load_benchmark_config('configs/ablations/v4/core/single_task_mlp.yaml')
+        token = stage3.model.expert_architecture == 'entity_token_attention_v1'
+        mlp_config = load_benchmark_config('configs/ablations/' + ('token_attention_3407' if token else 'v4') + '/core/single_task_mlp.yaml')
         mlp_config = replace(mlp_config,data=replace(mlp_config.data,data_root=mlp_root,
             task_catalog=stage3.data.task_catalog,stage3_authority_config=authority_path,
             stage3_prepared_artifacts=authority.data.artifacts_dir))
         mlp_config.validate()
-        if packed_width != 2490:
+        if not token and packed_width != 2490:
             # Historical independent MLPs require RDKit217; keep their strict contract.
             with pytest.raises(ValueError, match='object embeddings are invalid'):
                 adapter.prepare_stage3_single_task_mlp_training(mlp_config,'stage3','experiment/density',1)
@@ -1155,15 +1165,15 @@ def _verify_single_view_ablations(stage1, stage3, recipe, tmp_path):
 
     teacher_checkpoint=tmp_path/'single_view_teacher.pt'
     teacher_checkpoint.write_bytes(b'temporary injected teacher')
-    # Single-view research recipes retain their historical RDKit217 / D-MPNN source.
     stage1=replace(stage1,data=replace(stage1.data,artifacts_dir=tmp_path/'single_view_features'),
-        descriptor=replace(stage1.descriptor,excluded_names=(),value_policy='raw'),
-        model=replace(stage1.model,graph_encoder_type='dmpnn',graph_message_mode='residual_blocks',graph_feedforward_dim=None),
         auxiliary=replace(stage1.auxiliary,graph_topology_cache=None,
         teacher_cache=tmp_path/'single_view_teacher',teacher_checkpoint=teacher_checkpoint),
         training=replace(stage1.training,epochs=1,batch_size=4,num_workers=0,device='cpu',amp_dtype='none',
                          gradient_audit_interval_steps=1,dgt_attention_checkpointing=False,dgt_attention_compile=False))
     prepare_corpus(stage1)
+    from stage1.dgt_topology import prepare_dgt_topology
+    stage1=replace(stage1,auxiliary=replace(stage1.auxiliary,graph_topology_cache=tmp_path/'single_view_topology'))
+    prepare_dgt_topology(stage1,stage1.auxiliary.graph_topology_cache)
     prepare_teacher_cache(stage1,teacher=lambda molecules: torch.ones(len(molecules),768),batch_size=4)
     vocabulary=SmilesTokenizer.load(stage1.data.artifacts_dir/'tokenizer.json')
     dataset=PreparedCorpusDataset(stage1.data.artifacts_dir,'train')
@@ -1246,131 +1256,3 @@ def _verify_single_view_ablations(stage1, stage3, recipe, tmp_path):
         scores=evaluate_checkpoints(downstream,root/'stage3',split='valid',ensemble_folds=False,fold=1)
         assert set(scores['tasks']) == set(downstream.tasks) and scores['reporting']['model_id']==downstream.ablation.model_id
     assert stage1_identities[0]!=stage1_identities[1]
-
-
-def _verify_chemberta_home(stage3, recipe, tmp_path, snapshot_factory, monkeypatch):
-    from dataclasses import fields
-    from ablations.entity_home.config import AblationConfig, AblationSpec
-    from common.frozen_encoder import FrozenEntityPacker, load_frozen_encoder
-    from stage2.home_train import train_stage2_home
-    from stage2.home_artifact import load_home_final
-    from stage2.data import Stage2BatchDescriptor, Stage2DeviceTaskData, Stage2EntityDataset, pack_stage2_batch
-    from stage3.prepare import prepare_stage3, load_prepared_stage3
-    from stage3.home import train_fold, load_source, load_simulation_final
-    from stage3.evaluate import evaluate_checkpoints
-    from stage3.simulation import SIMULATION_TASKS
-    from stage3.simulation_evaluate import evaluate_simulation_checkpoints
-    def forbidden(*args, **kwargs):
-        raise AssertionError('External frozen source called ILUME Stage1/descriptors')
-
-    results = []
-    for variant in ['chemberta2_mtr', 'chemberta2_mlm']:
-        spec = snapshot_factory(variant)
-        root = tmp_path / ('chain_' + variant)
-        config = replace(recipe.stage2, frozen_encoder=spec,
-            data=replace(recipe.stage2.data, pretrain_artifacts_dir=None, artifacts_dir=root/'stage2_prepared'),
-            initialization=replace(recipe.stage2.initialization, checkpoint=None),
-            preparation=replace(recipe.stage2.preparation, reference_artifacts=recipe.stage2.data.artifacts_dir))
-        paired = replace(recipe, stage2=config)
-        with monkeypatch.context() as guard:
-            guard.setattr('stage2.prepare.load_stage1_feature_inputs', forbidden)
-            guard.setattr('stage2.prepare.calculate_descriptors', forbidden)
-            prepare_stage2_data(config)
-        entities = Stage2EntityDataset(config.data.artifacts_dir)
-        assert all(not s['frozen_entity_embedding'][384:].count_nonzero() for s in entities.samples)
-        assert all('descriptors' not in s and 'atom_categorical' not in s for s in entities.samples)
-        for task in config.data.tasks:
-            for split in ['train', 'valid']:
-                original = Stage2TaskDataset(recipe.stage2.data.artifacts_dir, task, split)
-                actual = Stage2TaskDataset(config.data.artifacts_dir, task, split)
-                for key in ['source_rows', 'entity_indices', 'targets', 'target_mask', 'conditions']:
-                    assert torch.equal(getattr(original, key), getattr(actual, key))
-        before = load_frozen_encoder(spec).export_bundle()['state']
-        if variant == 'chemberta2_mtr':
-            import stage2.home_train as home_training
-            original_validate = home_training._validate
-            calls = 0
-
-            def interrupt_after_first_epoch(*args, **kwargs):
-                nonlocal calls
-                calls += 1
-                if calls == 2:
-                    raise RuntimeError('temporary external encoder interruption')
-                return original_validate(*args, **kwargs)
-
-            with monkeypatch.context() as interrupted:
-                interrupted.setattr(home_training, '_validate', interrupt_after_first_epoch)
-                with pytest.raises(RuntimeError, match='external encoder interruption'):
-                    train_stage2_home(paired, root/'stage2_resume')
-            train_stage2_home(paired, root/'stage2_resume', resume=True)
-            resumed = load_home_final(root/'stage2_resume/stage2_final.pt')[0]
-        train_stage2_home(paired, root/'stage2')
-        payload, source, _ = load_home_final(root/'stage2/stage2_final.pt')
-        if variant == 'chemberta2_mtr':
-            assert resumed['full_model_state_hash'] == payload['full_model_state_hash']
-        assert payload['kind'] == 'ilume_stage2_external_frozen_home_final_v1'
-        assert source.stage2_config.frozen_encoder == spec
-        assert all(torch.equal(v, source.backbone.state_dict()[k]) for k, v in before.items())
-        snapshot = Path(spec.snapshot_dir)
-        parked = snapshot.with_name(snapshot.name + '_offline')
-        snapshot.rename(parked)
-        try:
-            reloaded = load_home_final(root/'stage2/stage2_final.pt')[1]
-            assert all(torch.equal(v, reloaded.backbone.state_dict()[k]) for k, v in before.items())
-        finally:
-            parked.rename(snapshot)
-        downstream = AblationConfig(**{field.name: getattr(stage3, field.name) for field in fields(type(stage3))}, ablation=AblationSpec(variant))
-        downstream = replace(downstream, frozen_encoder=spec,
-            data=replace(stage3.data, artifacts_dir=root/'stage3_prepared'),
-            preparation=replace(stage3.preparation, reference_artifacts=stage3.data.artifacts_dir, cache_dir=root/'entity_cache'),
-            initialization=replace(stage3.initialization, stage1_encoder=None, stage1_artifacts_dir=None,
-                stage2_final=root/'stage2/stage2_final.pt', simulation_artifacts_dir=config.data.artifacts_dir))
-        downstream.validate()
-        with monkeypatch.context() as guard:
-            guard.setattr('stage2.frozen.calculate_descriptors', forbidden)
-            guard.setattr('stage2.frozen.load_stage1_model', forbidden)
-            prepare_stage3(downstream)
-        prepared = load_prepared_stage3(downstream)
-        assert not prepared['slots']['slots'][:, :, 384:].count_nonzero()
-        train_fold(downstream, 1, output_dir=root/'stage3')
-        final = load_simulation_final(downstream, root/'stage3', fold=1)
-        assert all(torch.equal(v, final.simulation_backbone.state_dict()[k]) for k, v in before.items())
-        report = evaluate_checkpoints(downstream, root/'stage3', split='valid', ensemble_folds=False, fold=1)
-        assert set(report['tasks']) == set(downstream.tasks) and report['reporting']['model_id'] == downstream.ablation.model_id
-        ensemble = root / 'simulation_ensemble'
-        for fold in range(1, 6):
-            directory = ensemble / f'fold{fold}'
-            directory.mkdir(parents=True)
-            for filename in ('three_phase_final.pt', 'three_phase_final.json'):
-                (directory / filename).hardlink_to(root / 'stage3' / filename)
-        expected_predictions = {}
-        for task in SIMULATION_TASKS:
-            data = Stage2TaskDataset(config.data.artifacts_dir, task, 'valid')
-            packed = pack_stage2_batch(Stage2BatchDescriptor(task, torch.arange(len(data))), {task: data},
-                entities, FrozenEntityPacker(), needs_entities=True, include_raw_atom_targets=False, pin_memory=False)
-            with torch.no_grad():
-                prediction = final.predict_simulation(task, packed, Stage2DeviceTaskData.from_dataset(data, torch.device('cpu'))).numpy().reshape(-1)
-            stats = payload['scalers'][task]['targets'][source.registry.by_id(task).target_columns[0]]
-            expected_predictions[task] = prediction.astype(np.float64) * stats['scale'] + stats['mean']
-        selected_folds = []
-        def select_final(_config, _root, *, fold, device):
-            selected_folds.append(fold)
-            return final.to(device).eval()
-        with monkeypatch.context() as guard:
-            guard.setattr('stage3.simulation_evaluate.load_simulation_final', select_final)
-            guard.setattr('stage3.simulation_evaluate.config_from_dict', forbidden)
-            guard.setattr('stage3.simulation_evaluate.calculate_descriptors', forbidden)
-            guard.setattr('stage3.simulation_evaluate.MultimodalPacker', forbidden)
-            for split in ('valid', 'test'):
-                predictions = root / ('simulation_' + split) / 'predictions'
-                result = evaluate_simulation_checkpoints(downstream, ensemble, split=split, predictions_dir=predictions)
-                assert tuple(result['tasks']) == SIMULATION_TASKS
-                assert result['reporting']['model_id'] == downstream.ablation.model_id
-                for task in SIMULATION_TASKS:
-                    with (predictions / (task.replace('/', '__') + '.csv')).open() as handle:
-                        actual = [float(row['prediction']) for row in csv.DictReader(handle)]
-                    np.testing.assert_allclose(actual, expected_predictions[task], rtol=1e-5, atol=1e-5)
-        assert selected_folds == list(range(1, 6)) * 2
-        results.append(downstream)
-    with pytest.raises(ValueError, match='identity|mismatch'):
-        load_source(replace(results[0], frozen_encoder=results[1].frozen_encoder))

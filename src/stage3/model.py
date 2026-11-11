@@ -259,6 +259,10 @@ def summarize_task_gate_observations(
 
 
 class Stage3SparseModel(nn.Module):
+    def l1_token_values(self, group, values, roles, mask, packed):
+        from .token_attention import l1_token_mixture
+        return l1_token_mixture(self, group, values, roles, mask, packed)
+
     def gate_observations(self, diagnostics: Mapping[str, torch.Tensor]) -> torch.Tensor:
         return task_gate_observations(diagnostics)
 

@@ -70,7 +70,7 @@ class BenchmarkConfig:
     name: Literal[
         "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm", "llasmol",
         "aionopedia", "iltransr", "aifc",
-        "ilume_stage3_single_task_mlp_home_v1", "ilume_stage3_single_task_mlp_entity_v4",
+        "ilume_stage3_single_task_mlp_home_v1", "ilume_stage3_single_task_mlp_entity_v4", "ilume_stage3_single_task_mlp_entity_token_v4",
     ]
     data: DataConfig
     features: FeatureConfig | None
@@ -121,12 +121,12 @@ class BenchmarkConfig:
             or self.data.task_catalog != Path("data/3407/task_catalog.csv")
         ):
             raise ValueError("catalog_v4_3407 requires data/3407 and its task catalog")
-        if self.simulation.enabled and (self.name in {"ilume_stage3_single_task_mlp_home_v1", "ilume_stage3_single_task_mlp_entity_v4"} or self.simulation.tasks != expected_simulation):
+        if self.simulation.enabled and (self.name in {"ilume_stage3_single_task_mlp_home_v1", "ilume_stage3_single_task_mlp_entity_v4", "ilume_stage3_single_task_mlp_entity_token_v4"} or self.simulation.tasks != expected_simulation):
             raise ValueError("Simulation baselines require the protocol's scalar tasks and exclude ablations")
         if self.name not in {
             "mlp", "ecfp_xgboost", "dmpnn", "molformer", "ilbert", "spmm", "llasmol",
             "aionopedia", "iltransr", "aifc",
-            "ilume_stage3_single_task_mlp_home_v1", "ilume_stage3_single_task_mlp_entity_v4",
+            "ilume_stage3_single_task_mlp_home_v1", "ilume_stage3_single_task_mlp_entity_v4", "ilume_stage3_single_task_mlp_entity_token_v4",
         }:
             raise ValueError(f"Unknown benchmark model: {self.name}")
         if not self.display_name:
@@ -147,7 +147,7 @@ class BenchmarkConfig:
             or self.features.n_bits <= 0
         ):
             raise ValueError("Fingerprint radius and n_bits must be positive")
-        if self.name in {"ilume_stage3_single_task_mlp_home_v1", "ilume_stage3_single_task_mlp_entity_v4"}:
+        if self.name in {"ilume_stage3_single_task_mlp_home_v1", "ilume_stage3_single_task_mlp_entity_v4", "ilume_stage3_single_task_mlp_entity_token_v4"}:
             self._validate_ilume_stage3_single_task_mlp()
         else:
             retired = {
@@ -167,7 +167,7 @@ class BenchmarkConfig:
                 )
         advanced = self.name in {
             "dmpnn", "molformer", "ilbert", "spmm", "llasmol", "aionopedia", "iltransr", "aifc",
-            "ilume_stage3_single_task_mlp_home_v1", "ilume_stage3_single_task_mlp_entity_v4",
+            "ilume_stage3_single_task_mlp_home_v1", "ilume_stage3_single_task_mlp_entity_v4", "ilume_stage3_single_task_mlp_entity_token_v4",
         }
         if not advanced and self.data.feature_cache is None:
             raise ValueError("Feature baselines require data.feature_cache")
