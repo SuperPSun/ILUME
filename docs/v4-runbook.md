@@ -443,6 +443,27 @@ python scripts/benchmarks/summarize.py --input outputs/v4/stage3/token_attention
 
 只在确实需要继续中断作业时按现有入口显式使用 `--resume`；必须保留同一配置、源 SHA、折/owner/训练状态和指标尾部。不要通过修改元数据、kind、格式、任务名称或宽松加载复用不匹配的历史产物。
 
+<a id="group-l2-partner"></a>
+
+## 独立试验：第三成分仅在GROUP L2接入
+
+[ADR-0125](adr/0125-group-l2-partner-injection.md)对应`group_l2_partner.yaml`：GLOBAL/GROUP L1只读主体，GROUP L2加入槽位2；GLOBAL/PRIVATE L2保持主体路径。第三成分在L2复用对应GROUP投影，不增加可训练参数，其他配方不变。此试验独立于当前Base及现役消融，保留原`token_attention/`结果。
+
+当前Base的Stage1和两阶段prepare已完成、身份匹配时，可直接只读复用，无需重复prepare。两份试验YAML已保留这些prepare路径，Stage3的Stage2来源改为新训练的final。4090仓库根依次执行：
+
+```bash
+python scripts/stage2/train.py --config configs/v4/stage2/group_l2_partner.yaml --output outputs/v4/stage2/group_l2_partner/train --device cuda:0 &&
+python scripts/stage3/train.py --config configs/v4/stage3/group_l2_partner.yaml --fold 1 2 3 4 5 --output outputs/v4/stage3/group_l2_partner/train --devices cuda:0,cuda:1,cuda:2,cuda:3 --max-parallel 4
+```
+
+完成后执行同口径独立验证，不据测试集选择配方：
+
+```bash
+python scripts/stage3/evaluate.py --config configs/v4/stage3/group_l2_partner.yaml --checkpoint-dir outputs/v4/stage3/group_l2_partner/train --split valid --fold 1 2 3 4 5 --output outputs/v4/stage3/group_l2_partner/valid
+```
+
+中断后，Stage2训练追加`--resume outputs/v4/stage2/group_l2_partner/train`，Stage3训练追加布尔`--resume`。两种接入模式不能交叉续训或迁移，不能沿用已有token_attention模型作为本次新模式权重。
+
 ## 数据核验结论与限制
 
 现役Base的任务集合由ADR-0117定义，以下24任务/120个分折文件描述是2026-10-08历史快照，不作为当前22任务的运行前提。

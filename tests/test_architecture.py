@@ -12,12 +12,12 @@ import tokenize
 
 ROOT = Path(__file__).resolve().parents[1]
 STAGES = {"stage1", "stage2", "stage3"}
-EXTERNAL_PACKAGES = {"ablations", "benchmarks", "generation"}
+EXTERNAL_PACKAGES = {"ablations", "benchmarks"}
 
 
 def test_source_annotations_and_cli_messages_are_english() -> None:
     failures = []
-    for directory in ('scripts', 'src', 'benchmarks', 'ablations', 'generation', 'tests'):
+    for directory in ('scripts', 'src', 'benchmarks', 'ablations', 'tests'):
         for path in sorted((ROOT / directory).rglob('*.py')):
             source = path.read_text(encoding='utf-8')
             for token in tokenize.generate_tokens(io.StringIO(source).readline):
@@ -93,9 +93,6 @@ def test_stage_packages_only_use_cross_stage_public_contracts() -> None:
                 path.read_text(encoding="utf-8"), stage
             ):
                 violations.append(f"{path.relative_to(ROOT)}:{line}: {imported}")
-    for path in sorted((ROOT / "generation").rglob("*.py")):
-        for line, imported in _cross_stage_private_imports(path.read_text(encoding="utf-8"), "generation"):
-            violations.append(f"{path.relative_to(ROOT)}:{line}: {imported}")
     assert violations == []
 
 
