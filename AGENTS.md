@@ -60,7 +60,7 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 
 - Stage 实现仅在 `src/common`、`src/stage1`～`src/stage3`；基线在 `benchmarks/`，消融在 `ablations/`，二者禁止被 Stage 导入。消融代码不得放回 `benchmarks/`。
 - `common` 只收至少两个 Stage 实际复用的原子功能；不建 `utils.py`。跨 Stage 只导入公开合同，禁止 `_private_symbol` 或 `import *`。
-- 运行入口仅 `scripts/stage{1,2,3}/*.py`、`scripts/benchmarks/*.py`，不恢复 console CLI、shell/smoke/matrix/折 runner 或自动搜索入口；允许 ADR-0099 的独立 `scripts/HPO/*.py` 静态配置批量入口和 ADR-0106 的独立 `scripts/generation/*.py` 专用生成研究入口。生成实现在 `generation/`，按单个完整请求训练，移除通用目标编码与跨请求重标记；只读 ADR-0105 的公开冻结 Predictor，Stage 禁止反向依赖生成模块；Stage 科研算法仍在对应 Stage。
+- 运行入口仅 `scripts/stage{1,2,3}/*.py`、`scripts/benchmarks/*.py`，不恢复 console CLI、shell/smoke/matrix/折 runner 或自动搜索入口；允许 ADR-0099 的独立 `scripts/HPO/*.py` 静态配置批量入口。GFN 生成模块及 `scripts/generation/*.py` 已退役；ADR-0105/0106 的生成方案仅作历史追溯，公开冻结 Predictor 保留。Stage 科研算法仍在对应 Stage。
 - 科研与 prepare 参数写完整自包含 YAML；`preparation` 不进入实验身份。`--output`、`--resume`、Stage 3 折/评估 selector 是运行参数。
 - Stage 3 训练入口必填 `--fold`，可多折；`--output` 是共同根目录，运行位于 `foldN/`。正式折并发只在该入口用 spawn worker 和显式设备槽调度，不下沉到 `src/stage3`；独立HPO外层使用设备队列，max-parallel任务槽轮流分配到设备，允许一卡多任务；底层折并行固定1，禁止嵌套放大并发。
 

@@ -29,8 +29,14 @@ def token_model(config):
 
 
 def attention_contract(config, entity_dim=None):
-    return {**TOKEN_CONTRACT, "heads": config.attention_heads, "layers": config.attention_layers,
-            **({"packed_dim": 3 * entity_dim + 12} if entity_dim is not None else {})}
+    contract = {**TOKEN_CONTRACT, "heads": config.attention_heads, "layers": config.attention_layers,
+                **({"packed_dim": 3 * entity_dim + 12} if entity_dim is not None else {})}
+    if config.partner_injection == "group_l2":
+        contract.update(partner_injection="group_l2", l1="primary_only_attention_without_conditions",
+                        l1_gate="primary_only_structural_route_v1",
+                        l2="group_partner_attention_global_private_primary_only_v1",
+                        partner_projection="paired_group_l1_projection_role_position_norm_v1")
+    return contract
 
 
 class TokenStack(nn.Module):
@@ -61,6 +67,9 @@ class EntityAttentionExpert(nn.Module):
         self.stack = TokenStack(width, hidden, heads, layers, dropout, activation)
         nn.init.normal_(self.roles.weight, std=0.02)
         nn.init.normal_(self.positions.weight, std=0.02)
+
+    def partner_token(self, values, roles):
+        return self.projection(values[:, 2:]) + self.roles(roles[:, 2:]) + self.positions.weight[None, 2:]
 
     def forward(self, values, roles, mask):
         tokens = self.projection(values) + self.roles(roles) + self.positions.weight[None]
@@ -249,20 +258,39 @@ def forward_tokens(model, task, primary, conditions, partner):
         raise ValueError(f"Missing token HoME condition statistics: {task}")
     physical, present = physical_conditions(conditions, spec.condition_columns, model.condition_statistics[task])
 
-    global_values, global_weights = model.l1_token_values(None, values, roles, mask, packed)
-    local, group_weights = model.l1_token_values(group, values, roles, mask, packed)
+    group_partner = model.model_config.partner_injection == "group_l2"
+    l1_values, l1_roles, l1_mask = values, roles, mask
+    if group_partner:
+        l1_mask = mask.clone()
+        l1_mask[:, 2] = False
+        l1_values = values.masked_fill(~l1_mask[..., None], 0)
+        l1_roles = roles.masked_fill(~l1_mask, 0)
+        packed = packed.clone()
+        packed[:, 1] = 0
+    global_values, global_weights = model.l1_token_values(None, l1_values, l1_roles, l1_mask, packed)
+    local, group_weights = model.l1_token_values(group, l1_values, l1_roles, l1_mask, packed)
     local = model.l1_group_normalizations[group](local).masked_fill(~mask[..., None], 0)
+    if group_partner:
+        local = local.masked_fill(~l1_mask[..., None], 0)
 
-    def candidates(experts, entities, encoder):
+    def candidates(experts, entities, encoder, *, with_partner=False):
         if not experts:
             return entities.new_empty((len(entities), 0, 3, model.d_model))
         condition_tokens = encoder(physical, present)
-        outputs = [expert(entities, mask, condition_tokens, present) for expert in experts]
+        active = mask if with_partner or not group_partner else l1_mask
+        outputs = []
+        for index, expert in enumerate(experts):
+            current = entities
+            if with_partner:
+                partner_tokens = model.l1_group_experts[group][index].partner_token(values, roles)
+                partner_tokens = model.l1_group_normalizations[group](partner_tokens)
+                current = torch.cat((entities[:, :2], partner_tokens), 1).masked_fill(~mask[..., None], 0)
+            outputs.append(expert(current, active, condition_tokens, present))
         return torch.stack(outputs, 1) if outputs else entities.new_empty((len(entities), 0, 3, model.d_model))
 
     global_outputs = (candidates(model.l2_global_experts, global_values, model.global_conditions["tokens"])
                       if model.l2_global_experts else local.new_empty((len(local), 0, 3, model.d_model)))
-    group_outputs = candidates(model.l2_group_experts[group], local, model.group_conditions[group])
+    group_outputs = candidates(model.l2_group_experts[group], local, model.group_conditions[group], with_partner=group_partner)
     private_outputs = candidates(model.private_experts[key], local, model.private_conditions[key])
     weights = model.task_gate_weights(key, torch.cat((global_values.flatten(1), local.flatten(1), mask.to(local.dtype)), -1))
     all_outputs = torch.cat((global_outputs, group_outputs, private_outputs), 1)

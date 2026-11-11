@@ -19,10 +19,11 @@ def spec(task="experiment/test", *, partner=False, organic=False, columns=("temp
         True, 1., 1, {}, "formal_charge_v1")
 
 
-def model_for(task_spec, experts=1):
+def model_for(task_spec, experts=1, partner_injection="l1"):
     # Tiny width uses the exact production modules, without allocating 1024D optimizers.
     config = Stage3ModelConfig(global_experts=experts, group_experts=experts, private_experts=1,
-        dropout=0., expert_architecture="entity_token_attention_v1", attention_heads=2)
+        dropout=0., expert_architecture="entity_token_attention_v1", attention_heads=2,
+        partner_injection=partner_injection)
     model = Stage3SparseModel(config, {task_spec.task_id: task_spec}, 16,
         initialization_seed=42, entity_inputs=True, entity_input_dim=1235)
     model.bind_condition_statistics({task_spec.task_id: {"conditions": {
@@ -137,3 +138,63 @@ def test_single_charged_entity_padding_and_owner_lifetimes():
     with pytest.raises(ValueError, match="architecture mismatch"):
         validate_transfer_architecture(historical, model.model_config, {}, {})
     assert Stage3ModelConfig().to_dict().get('expert_architecture') is None
+
+
+@pytest.mark.parametrize("organic", (False, True))
+def test_partner_enters_group_l2_only(organic):
+    task = spec(partner=True, organic=organic)
+    model = model_for(task, experts=2, partner_injection="group_l2").eval()
+    previous = model_for(task, experts=2)
+    assert model.state_dict().keys() == previous.state_dict().keys()
+    assert all(torch.equal(value, previous.state_dict()[key]) for key, value in model.state_dict().items())
+    with torch.no_grad():
+        model.l1_group_normalizations[task.meta_group].bias.fill_(0.2)
+    primary, partner = (molecule(0), molecule(1)) if organic else (ions(), molecule())
+    third = primary if organic else partner
+    values = third.values.detach().clone().requires_grad_(True)
+    third = EntityInputs(values, third.roles, third.mask)
+    if organic:
+        primary = third
+    else:
+        partner = third
+    first = model(task.task_id, primary, torch.zeros(2, 1), partner_embedding=partner)
+    altered = EntityInputs(values * 2, third.roles, third.mask)
+    second = model(task.task_id, altered if organic else primary, torch.zeros(2, 1),
+                   partner_embedding=partner if organic else altered)
+    for name in ('z_global', 'z_group', 'l1_global_gate', 'l1_group_gate', 'task_gate',
+                 'l2_global_candidates', 'l2_private_candidates'):
+        torch.testing.assert_close(first.diagnostics[name], second.diagnostics[name], rtol=0, atol=0)
+    for name in ('z_global', 'z_group', 'l2_global_candidates', 'l2_private_candidates'):
+        assert torch.count_nonzero(first.diagnostics[name][..., 2, :]) == 0
+    assert not torch.equal(first.diagnostics['l2_group_candidates'][:, :, 0], second.diagnostics['l2_group_candidates'][:, :, 0])
+    assert not torch.equal(first.predictions, second.predictions)
+    for name in ('l2_global_candidates', 'l2_private_candidates'):
+        gradient = torch.autograd.grad(first.diagnostics[name].sum(), values, retain_graph=True, allow_unused=True)[0]
+        assert gradient is None or torch.count_nonzero(gradient) == 0
+    gradient = torch.autograd.grad((first.predictions * torch.tensor([1., -2.])).sum(), values)[0]
+    assert torch.isfinite(gradient).all() and gradient.abs().sum() > 0
+
+
+def test_group_l2_partner_configuration_and_identity_boundaries():
+    from stage3.home import validate_transfer_architecture
+    from stage3.token_attention import attention_contract
+
+    original = Stage3ModelConfig(expert_architecture="entity_token_attention_v1")
+    changed = replace(original, partner_injection="group_l2")
+    assert 'partner_injection' not in original.to_dict()
+    assert 'partner_injection' not in Stage3ModelConfig().to_dict()
+    assert changed.to_dict()['partner_injection'] == 'group_l2'
+    assert attention_contract(original) != attention_contract(changed)
+    for source, target in ((original, changed), (changed, original)):
+        with pytest.raises(ValueError, match="architecture mismatch"):
+            validate_transfer_architecture(source, target, {}, {})
+    with pytest.raises(ValueError, match="partner_injection"):
+        replace(original, partner_injection="global_l1")
+    with pytest.raises(ValueError, match="token attention"):
+        Stage3ModelConfig(partner_injection="group_l2")
+    task = replace(spec(columns=()), primary_slots=("molecule",))
+    model = model_for(task, partner_injection="group_l2").eval()
+    initial = model(task.task_id, molecule(0), torch.empty(2, 0))
+    assert torch.isfinite(initial.predictions).all()
+    for name in ('l2_global_candidates', 'l2_group_candidates', 'l2_private_candidates'):
+        assert torch.count_nonzero(initial.diagnostics[name][..., 1:, :]) == 0

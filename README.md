@@ -14,10 +14,6 @@ ILUME 的现役流程是 **冻结 v4 Stage1 → v4 五任务实体 HoME Stage2 �
 python -m pip install -e ".[dev,tokenizers]"
 ```
 
-## 专用离子液体逆向设计
-
-独立 `generation/` 提供按完整用户请求训练的 Anion-first 专用 GFlowNet，使用冻结 Stage3 五折 Predictor 对新离子对评分，不改变 Stage1–3。每次从22实验性质与两模拟性质中选择所需目标，固定方向、阈值、权重、工况、溶质及结构约束；一份权重只服务该请求，改变请求须新建协议并重新训练。保留审定阴离子、多价离子、片段组装、同请求回放、风险评分和候选导出。资源提取只产生待审草案；正式训练和研究结果须实际运行后产生。见 [生成手册](docs/generation-runbook.md) 和 [ADR-0106](docs/adr/0106-dedicated-inverse-design.md)。
-
 ## 正式 v4
 
 Stage1 Base现采用十二层SMILES与八层双路2D DGT，encoder约77.99M；原子/键双路池化后投影512D，保持learned1024与atom512。须额外准备独立DGT拓扑sidecar；原D-MPNN artifact保留严格历史加载。见[ADR-0116](docs/adr/0116-stage1-dual-graph-transformer.md)和[v4手册](docs/v4-runbook.md#stage1-dgt-topology)。不改变Stage2/3或独立D-MPNN benchmark。

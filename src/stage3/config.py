@@ -174,6 +174,7 @@ class Stage3ModelConfig:
     expert_architecture: str = "mlp"
     attention_heads: int = 8
     attention_layers: int = 2
+    partner_injection: str = "l1"
 
     def __post_init__(self):
         if self.expert_architecture not in {"mlp", "entity_token_attention_v1"}:
@@ -183,9 +184,15 @@ class Stage3ModelConfig:
             raise ValueError("HoME attention heads/layers must be positive integers")
         if self.expert_architecture == "mlp" and (self.attention_heads != 8 or self.attention_layers != 2):
             raise ValueError("MLP HoME cannot configure attention")
+        if self.partner_injection not in {"l1", "group_l2"}:
+            raise ValueError("Unknown HoME partner_injection")
+        if self.partner_injection != "l1" and self.expert_architecture != "entity_token_attention_v1":
+            raise ValueError("GROUP L2 partner injection requires token attention")
 
     def to_dict(self):
         payload = asdict(self)
+        if self.partner_injection == "l1":
+            payload.pop("partner_injection")
         if self.expert_architecture == "mlp":
             for key in ("expert_architecture", "attention_heads", "attention_layers"):
                 payload.pop(key)

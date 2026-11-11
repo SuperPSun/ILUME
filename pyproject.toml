@@ -31,7 +31,7 @@ benchmarks = [
 ]
 [tool.setuptools.packages.find]
 where = ["src", "."]
-include = ["common*", "stage1*", "stage2*", "stage3*", "benchmarks*", "ablations*", "generation*"]
+include = ["common*", "stage1*", "stage2*", "stage3*", "benchmarks*", "ablations*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

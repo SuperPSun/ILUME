@@ -2644,3 +2644,58 @@ def test_entity_joint_epoch_sample_contributions_respect_frozen_and_simulation_o
         assert stats["owners"]["GLOBAL"]["trainable_steps"] == (2 if global_active else 0)
         assert stats["owners"]["GLOBAL"]["gradient_steps"] == 0
         assert stats["owners"]["GLOBAL"]["pre_norm"] == {"mean": None, "max": None}
+
+
+def test_frozen_public_inference_matches_native_ensemble_and_checks_inputs(monkeypatch, tmp_path):
+    import stage3.inference as inference
+    from stage3.inference import FrozenPropertyPredictor, PredictionQuery
+
+    task = "experiment/viscosity"
+    calls, models = [], []
+    class Encoder:
+        encoder_identity = semantic_identity("stage3.test.encoder", {})
+        def encode_slots(self, objects):
+            return torch.ones(len(objects), 1, 1241), torch.zeros(len(objects), 1, dtype=torch.long)
+    class Model(torch.nn.Module):
+        def __init__(self, fold):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.tensor(float(fold)))
+            self.task_specs = {task: SimpleNamespace(enabled=True, primary_slots=("cation", "anion"),
+                partner_slots=(), condition_columns=("temperature_K",), target_column="viscosity_mPa*s_log10")}
+        def forward(self, task, primary, conditions, **kwargs):
+            assert not self.training and not self.weight.requires_grad and not torch.is_grad_enabled()
+            return SimpleNamespace(predictions=primary.values[:, 0, 0] * self.weight + conditions[:, 0])
+    def loader(config, prepared, path, fold, epoch, device, **kwargs):
+        assert kwargs == {"three_phase_final": True}
+        calls.append(fold)
+        model = Model(fold); models.append(model)
+        return model, {"normalization": {task: {"target": {"mean": 0., "scale": .1},
+            "conditions": {"temperature_K": {"mean": 300., "scale": 10.}}}},
+            "training_identity": {"hash": str(fold)}}, None
+    for fold in range(1, 6):
+        directory = tmp_path / f"fold{fold}"; directory.mkdir()
+        (directory / "three_phase_final.pt").write_text(str(fold))
+    config = SimpleNamespace(is_entity_home=True, runtime_backend=None,
+        initialization=SimpleNamespace(stage1_encoder="unused", stage1_artifacts_dir="unused", simulation_artifacts_dir=None),
+        training=SimpleNamespace(amp_dtype="fp32"))
+    monkeypatch.setattr(inference, "load_prepared_stage3", lambda c: {"metadata": {"registry_hash": "r"}})
+    monkeypatch.setattr(inference, "load_frozen_stage1_entities", lambda *a, **k: Encoder())
+    monkeypatch.setattr(inference, "_load_model", loader)
+    monkeypatch.setattr(inference, "_validate_three_phase_manifest", lambda *a: "verified")
+    predictor = FrozenPropertyPredictor(config, tmp_path)
+    query = PredictionQuery("C[N+](C)(C)C", "[Cl-]", {task: {"temperature_K": 300.}})
+    result = predictor.predict([query])[0][task]
+    assert calls == [1, 2, 3, 4, 5]
+    assert result["native"] == pytest.approx(.3)
+    assert result["value"] == pytest.approx(10 ** .3)
+    assert result["value"] != pytest.approx(sum(10 ** p for p in result["folds_native"]) / 5)
+    assert all(p.grad is None and not p.requires_grad for m in models for p in m.parameters())
+    with pytest.raises(ValueError, match="conditions"):
+        predictor.predict([replace(query, conditions={task: {}})])
+    with pytest.raises(ValueError, match="positive cation"):
+        predictor.predict([replace(query, cation="CC")])
+    def rejected(*args, **kwargs):
+        raise ValueError("Stage 3 checkpoint prepared-data identity mismatch")
+    monkeypatch.setattr(inference, "_load_model", rejected)
+    with pytest.raises(ValueError, match="identity mismatch"):
+        FrozenPropertyPredictor(config, tmp_path)

@@ -432,8 +432,10 @@ def test_entity_home_base_contracts() -> None:
         replace(recipe.stage2, loss=replace(recipe.stage2.loss, task_weights={})).validate()
 
 
-@pytest.mark.parametrize("expert_architecture", ["mlp", "entity_token_attention_v1"])
-def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_stage2_setup, tmp_path, monkeypatch, expert_architecture):
+@pytest.mark.parametrize("expert_architecture, partner_injection", [
+    ("mlp", "l1"), ("entity_token_attention_v1", "l1"), ("entity_token_attention_v1", "group_l2"),
+])
+def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_stage2_setup, tmp_path, monkeypatch, expert_architecture, partner_injection):
     variant = "base"
     from stage1.config import AuxiliaryConfig, MaskingConfig
     from stage1.model import build_stage1_model
@@ -451,8 +453,9 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     recipe = load_home_recipe(f"configs/v4/stage2/{variant}.yaml")
     stage3 = load_stage3_config(f"configs/v4/stage3/{variant}.yaml")
     recipe = replace(recipe, stage3=replace(recipe.stage3, model=replace(
-        recipe.stage3.model, expert_architecture=expert_architecture)))
-    stage3 = replace(stage3, model=replace(stage3.model, expert_architecture=expert_architecture))
+        recipe.stage3.model, expert_architecture=expert_architecture, partner_injection=partner_injection)))
+    stage3 = replace(stage3, model=replace(stage3.model, expert_architecture=expert_architecture,
+                                         partner_injection=partner_injection))
     token_attention = expert_architecture == "entity_token_attention_v1"
     if token_attention:
         # Exact production dispatch/owners/artifacts; shrink expert width only in this fixture.
@@ -561,6 +564,12 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     assert payload["training_identity"]["payload"]["math_contract"]["gradient_aggregation"] == BATCH_SAMPLE_AGGREGATION
     assert payload["training_identity"]["payload"]["math_contract"]["gradient_weighting"] == BATCH_SAMPLE_WEIGHTING
     train_stage2_home(recipe, output, resume=True)
+    if token_attention:
+        other_mode = "l1" if partner_injection == "group_l2" else "group_l2"
+        incompatible = replace(recipe, stage3=replace(recipe.stage3, model=replace(
+            recipe.stage3.model, partner_injection=other_mode)))
+        with pytest.raises(ValueError, match="identity"):
+            train_stage2_home(incompatible, output, resume=True)
 
     # A real epoch-boundary interruption resumes to the identical final state.
     original_validate = home_training._validate
@@ -681,6 +690,11 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
             test_path(stage3, spec).write_bytes(path.read_bytes())
     prepare_stage3(stage3)
     prepared = load_prepared_stage3(stage3)
+    if token_attention:
+        incompatible = replace(stage3, model=replace(stage3.model, partner_injection=other_mode))
+        assert load_prepared_stage3(incompatible)["metadata"]["semantic"]["identities"]["prepared"] == prepared["metadata"]["semantic"]["identities"]["prepared"]
+        with pytest.raises(ValueError, match="architecture mismatch"):
+            load_source(incompatible)
     assert prepared["metadata"]["prepared_contract_version"] == 4 and prepared["slots"]["slots"].shape[-1] == 1235
     changed_model, _, names = build_model_and_store(changed, prepared, fold=1, device=torch.device("cpu"))
     assert names
