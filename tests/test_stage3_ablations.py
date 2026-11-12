@@ -190,11 +190,12 @@ def test_ablation_summary_uses_selected_authority(monkeypatch):
     def analyze(payload, config, output, **kw):
         assert payload=={'snapshot':'validated'}
         assert config==ROOT/authority and kw['bootstrap']
+        assert kw['base_run']=='I4'
         calls.append(config)
     monkeypatch.setattr(report, 'write_analysis', analyze)
     monkeypatch.setattr('sys.argv', ['summarize.py','--input','outputs/ablations/v4_3407',
         '--output','summary_ablation_cli_test','--ablation-analysis-output','analysis_ablation_cli_test',
-        '--ablation-authority-config',authority,'--ablation-bootstrap'])
+        '--ablation-authority-config',authority,'--ablation-bootstrap','--ablation-base-run','I4'])
     summarize.main()
     assert calls==[ROOT/authority]
 
@@ -209,6 +210,28 @@ def test_paired_bootstrap_keeps_whole_systems_and_rejects_mismatched_rows():
         paired_cluster_interval(base,other[:-1],groups)
     with pytest.raises(ValueError,match='coverage'):
         paired_cluster_interval(base,[1,float('nan'),1,1],groups)
+
+
+def test_stage2_costs_keep_type_coverage_separate_from_accuracy(tmp_path):
+    import json
+    from ablations.entity_home.report import training_costs
+    (tmp_path/'summary.json').write_text(json.dumps({'kind':'ilume_stage2_token_home_final_v4',
+        'fixed_final_epoch':2,'training_identity':{'hash':'source'}}))
+    counts = {'GROUP:solvation':{'ionic':{'samples':0,'entity_occurrences':0,'tasks':[],'optimizer_steps':0},
+                               'neutral':{'samples':3,'entity_occurrences':6,'tasks':['simulation/transfer_organic'],'optimizer_steps':1}}}
+    rows = [{'epoch':epoch,'train_seconds':2.,'validation_seconds':1.,'checkpoint_seconds':1.,'epoch_seconds':4.,
+             'home_parameter_count':100,'owner_parameter_counts':{'GROUP:solvation':100},
+             'train_peak_allocated_bytes':1024,'entity_type_training':counts} for epoch in (1,2)]
+    log=tmp_path/'performance.jsonl'
+    log.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+    result=training_costs([tmp_path])[0]
+    assert result['stage']=='stage2' and result['gpu_hours']==pytest.approx(8/3600)
+    assert result['entity_type_training']['GROUP:solvation']['ionic']['optimizer_steps']==0
+    assert result['entity_type_training']['GROUP:solvation']['neutral']['optimizer_steps']==2
+    assert 'normalized_mae' not in result
+    log.write_text(json.dumps(rows[1])+'\n')
+    with pytest.raises(ValueError,match='complete epoch'):
+        training_costs([tmp_path])
 
 
 @pytest.mark.parametrize('variant', ['no_smiles', 'no_graph'])
@@ -257,20 +280,42 @@ def test_comparison_requires_complete_base_and_reports_task_group_size(authority
     authority=load_stage3_config(authority_path)
     rows=[]
     for run,model,value in [('base','ILUME',.2),('no_group','ILUME v4 no_group',.3)]:
+        sources = []
+        for fold in range(1, 6):
+            path = tmp_path / run / f'fold{fold}'
+            path.mkdir(parents=True)
+            (path / 'summary.json').write_text(json.dumps({'split':'valid',
+                'reporting':{'benchmark':'stage3_property','protocol':{'fold':fold}},
+                'tasks':{task:{'count':1,'normalized_mae':value} for task in authority.tasks}}))
+            sources.append(str(path.relative_to(tmp_path)))
         rows.extend({'run':run,'model':model,'task':task,'normalized_mae_mean':value,
-                     'mae_mean':value,'rmse_mean':value,'r2_mean':.5,'normalized_mae_std':.01}
+                     'mae_mean':value,'rmse_mean':value,'r2_mean':.5,'normalized_mae_std':.01,
+                     'source_run':';'.join(sources)}
                     for task in authority.tasks)
     snapshot={'metrics':{'stage3_validation':rows,'stage3_test':[]},
               'leaderboards':{'stage3_validation':[{'run':'base','model':'ILUME'}],'stage3_test':[]}}
-    result=comparison_rows(snapshot,authority)
+    result=comparison_rows(snapshot,authority,repository_root=tmp_path)
+    assert all(row['fold_losses']==5 for row in result if row['run']=='no_group')
     summaries=stratify(result)
     macro=next(row for row in summaries if row['run']=='no_group' and row['stratum']=='all')
     assert macro['tasks']==len(authority.tasks) and macro['loss']==len(authority.tasks)
     assert macro['delta_macro_normalized_mae']==pytest.approx(.1)
     assert len([row for row in summaries if row['run']=='no_group' and row['stratum']=='group'])==len({task.meta_group for task in authority.tasks.values()})
+    assert {row['label'] for row in summaries if row['stratum']=='topology'} == {
+        'ionic_liquid','ionic_liquid_partner','solute_solvent','single_molecule'}
     write_analysis(snapshot, authority_path, tmp_path/'analysis')
     analysis=json.loads((tmp_path/'analysis/analysis.json').read_text())
     assert analysis['protocol']['split_seed']==authority.data.seed
+    snapshot['leaderboards']['stage3_validation'].append({'run':'no_group','model':'ILUME I4'})
+    paired = comparison_rows(snapshot, authority, base_run='no_group', repository_root=tmp_path)
+    assert all(row['base_run']=='no_group' for row in paired)
+    assert all(row['delta_normalized_mae']==pytest.approx(-.1) for row in paired if row['run']=='base')
+    assert all(row['fold_wins']==5 for row in paired if row['run']=='base')
+    with pytest.raises(ValueError, match='explicit comparable Base'):
+        comparison_rows(snapshot, authority, base_run='missing')
+    (tmp_path / 'no_group/fold5/summary.json').unlink()
+    with pytest.raises(FileNotFoundError):
+        comparison_rows(snapshot, authority, base_run='no_group', repository_root=tmp_path)
     snapshot['metrics']['stage3_validation']=rows[1:]
     with pytest.raises(ValueError,match=f'{len(authority.tasks)}-task'):
         comparison_rows(snapshot,authority)

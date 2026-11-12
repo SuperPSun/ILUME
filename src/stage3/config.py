@@ -175,6 +175,7 @@ class Stage3ModelConfig:
     attention_heads: int = 8
     attention_layers: int = 2
     partner_injection: str = "l1"
+    split_entity_encoders: bool = False
 
     def __post_init__(self):
         if self.expert_architecture not in {"mlp", "entity_token_attention_v1"}:
@@ -184,15 +185,21 @@ class Stage3ModelConfig:
             raise ValueError("HoME attention heads/layers must be positive integers")
         if self.expert_architecture == "mlp" and (self.attention_heads != 8 or self.attention_layers != 2):
             raise ValueError("MLP HoME cannot configure attention")
-        if self.partner_injection not in {"l1", "group_l2"}:
+        if self.partner_injection not in {"l1", "group_l2", "group_private_l2", "all_l2", "group_l2_encoded"}:
             raise ValueError("Unknown HoME partner_injection")
         if self.partner_injection != "l1" and self.expert_architecture != "entity_token_attention_v1":
             raise ValueError("GROUP L2 partner injection requires token attention")
+        if type(self.split_entity_encoders) is not bool:
+            raise ValueError("split_entity_encoders must be a boolean")
+        if self.split_entity_encoders and self.partner_injection != "group_l2_encoded":
+            raise ValueError("Split entity encoders require independently encoded GROUP L2 injection")
 
     def to_dict(self):
         payload = asdict(self)
         if self.partner_injection == "l1":
             payload.pop("partner_injection")
+        if not self.split_entity_encoders:
+            payload.pop("split_entity_encoders")
         if self.expert_architecture == "mlp":
             for key in ("expert_architecture", "attention_heads", "attention_layers"):
                 payload.pop(key)

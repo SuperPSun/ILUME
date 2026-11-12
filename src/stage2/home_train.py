@@ -399,6 +399,25 @@ def _export(
     return manifest
 
 
+def _entity_type_coverage(model, datasets, entities):
+    roles = torch.tensor([entry["role_id"] for entry in entities.entries], dtype=torch.long)
+    coverage = {owner.label: {kind: {"samples": 0, "entity_occurrences": 0, "tasks": []}
+                            for kind in ("ionic", "neutral")}
+                for owner in sorted(set(model.home.parameter_ownership().values()))
+                if owner.label == "GLOBAL" or owner.label.startswith("GROUP:")}
+    for task, data in datasets.items():
+        task_roles = roles[data.entity_indices]
+        for kind, active in (("ionic", task_roles != 2), ("neutral", task_roles == 2)):
+            samples, occurrences = int(active.any(1).sum()), int(active.sum())
+            for owner in ("GLOBAL", "GROUP:" + model.home.task_specs[task].meta_group):
+                counts = coverage[owner][kind]
+                counts["samples"] += samples
+                counts["entity_occurrences"] += occurrences
+                if samples:
+                    counts["tasks"].append(task)
+    return coverage
+
+
 def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume: bool = False) -> dict[str, Any]:
     config = experiment.stage2
     device = resolve_device(config.training.device)
@@ -431,6 +450,18 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
     metadata = json.loads((config.data.artifacts_dir / "metadata.json").read_text(encoding="utf-8"))
     data_identity = dict(metadata_identity(metadata, "data", context="Stage2-HoME data"))
     identity = training_identity(experiment, data_identity, math_contract)
+    owner_counts = None
+    if experiment.stage3.model.partner_injection not in {"l1", "group_l2"}:
+        owner_counts = {owner.label: sum(p.numel() for p in model.home.parameters_for_owner(owner))
+                        for owner in sorted(set(model.home.parameter_ownership().values()))}
+    typed_parameters = {}
+    type_coverage = None
+    if experiment.stage3.model.split_entity_encoders:
+        type_coverage = _entity_type_coverage(model, train, entities)
+        ownership = model.home.parameter_ownership()
+        typed_parameters = {parameter: (ownership[parameter].label, kind)
+                            for name, parameter in model.home.named_parameters()
+                            for kind in ("ionic", "neutral") if f".{kind}." in name}
     groups = [
         {"params": model.backbone_parameters(), "lr": config.training.backbone_learning_rate},
         {"params": model.home_parameters(), "lr": config.training.task_head_learning_rate},
@@ -502,6 +533,7 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
                    "train_seconds": 0.0, "batches": 0, "rows": 0}
             for task in train
         }
+        type_updates = {key: 0 for key in typed_parameters.values()}
         schedule = epoch_batch_schedule(train, config.training.batch_size, seed=effective_training_seed(config), epoch=epoch)
         progress = reporter.bar(
             total=len(schedule), desc=f"Stage2-HoME epoch {epoch}", unit="batch"
@@ -540,6 +572,9 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
                     optimizer.zero_grad(set_to_none=True)
                     for parameter, gradient in assembled.gradients.items():
                         parameter.grad = gradient.to(parameter.dtype)
+                    if typed_parameters:
+                        for key in {typed_parameters[p] for p in assembled.gradients if p in typed_parameters}:
+                            type_updates[key] += 1
                     torch.nn.utils.clip_grad_norm_(
                         parameters, config.training.max_grad_norm, error_if_nonfinite=True,
                     )
@@ -584,6 +619,13 @@ def train_stage2_home(experiment: HomeRecipe, output_dir: str | Path, *, resume:
             "home_parameter_count": sum(p.numel() for p in model.home.parameters()),
             "trainable_parameter_count": sum(p.numel() for p in model.parameters() if p.requires_grad),
         }
+        if owner_counts is not None:
+            performance["owner_parameter_counts"] = owner_counts
+        if type_coverage is not None:
+            performance["entity_type_training"] = {
+                owner: {kind: {**counts, "optimizer_steps": type_updates[owner, kind]}
+                        for kind, counts in kinds.items()}
+                for owner, kinds in type_coverage.items()}
         with (output / "performance.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(performance, sort_keys=True) + "\n")
         print(

@@ -144,6 +144,8 @@ no-Stage1 使用其独立配置与输出根；no-Stage2 和单任务 MLP 消融�
 
 ## 基线与消融
 
+第三成分注入与离子／中性分子独立编码另按[ADR-0127](docs/adr/0127-partner-injection-and-typed-encoding-ablations.md)和[专用手册](docs/partner-injection-ablation-runbook.md)执行：I2/I3/I4/S1共8份配对YAML，复用Stage1与prepare，新训练4次Stage2及20个Stage3折次；现役Base和0124核心套件保持原身份。
+
 本轮Base已按ADR-0117切换22实验协议。当前10项数据变化任务的定向补训使用 `configs/benchmarks/FLftv4_3407/`，新协议和输出按[ADR-0118](docs/adr/0118-flft-22-task-baseline-retraining.md)，szx的Slurm提交命令见[补训手册](docs/baseline-flft-22-retrain-runbook.md)。现役安排为szx运行其余9个模型、H100保留已启动的LlaSMol；共500个实验折次，不包含三模拟或完整22任务复用，不能直接与历史24任务macro比较。旧结果已迁至 `outputs/benchmarks/FLftv4_3407/`，历史配置及身份保留。
 
 当前数据版本基线使用 `configs/benchmarks/catalog_v4_3407/` 与 `outputs/benchmarks/v4_3407/<model>/`，覆盖24实验及HOMO/LUMO/热膨胀三模拟。十模型在data/3407全部重训，共1,230个训练作业，不复用split42结果；训练种子和各模型原配方不变。清理、szx的gpu05调度和新报告按[当前基线手册](docs/baseline-catalog-v4-runbook.md)及[ADR-0102](docs/adr/0102-baseline-split3407-full-retraining.md)执行。0101的split42复用安排及下方旧配置/四模拟命令保留历史协议说明。

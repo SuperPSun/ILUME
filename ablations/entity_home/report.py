@@ -33,14 +33,39 @@ def paired_cluster_interval(base, ablated, groups, *, seed=42, repeats=10000):
             'interpretation':'conditional_on_fixed_predictions','estimator':'pooled_row_mae'}
 
 
-def comparison_rows(snapshot, authority, *, base_run=None):
+def comparison_rows(snapshot, authority, *, base_run=None, repository_root=None):
     results = []
+    fold_cache = {}
+    def folds(row):
+        source = row.get('source_run')
+        if repository_root is None or not source:
+            return None
+        if source not in fold_cache:
+            values = {}
+            for relative in source.split(';'):
+                path = (Path(repository_root) / relative).resolve()
+                if not path.is_relative_to(Path(repository_root).resolve()):
+                    raise ValueError('Ablation fold source escapes repository')
+                summary = json.loads((path / 'summary.json').read_text())
+                reporting = summary['reporting']
+                if reporting.get('benchmark') != 'stage3_property':
+                    fold_cache[source] = None
+                    return None
+                fold = reporting['protocol']['fold']
+                if summary['split'] != 'valid' or fold in values:
+                    raise ValueError('Ablation fold source is not unique validation')
+                values[fold] = summary['tasks']
+            if set(values) != set(range(1, 6)):
+                raise ValueError('Ablation comparison requires all five validation folds')
+            fold_cache[source] = values
+        return fold_cache[source]
     for split, section, suffix in [('valid','stage3_validation','_mean'),('test','stage3_test','')]:
         rows = snapshot['metrics'][section]
         if not rows:
             continue
         leaders = snapshot['leaderboards'][section]
-        baselines = [leader['run'] for leader in leaders if leader['model']=='ILUME' and (base_run is None or leader['run']==base_run)]
+        baselines = [leader['run'] for leader in leaders
+                     if (leader['run']==base_run if base_run is not None else leader['model']=='ILUME')]
         if len(baselines)!=1:
             raise ValueError('Ablation analysis requires one explicit comparable Base per split/seed')
         baseline = {row['task']:row for row in rows if row['run']==baselines[0]}
@@ -56,13 +81,30 @@ def comparison_rows(snapshot, authority, *, base_run=None):
                 value, base = float(row['normalized_mae'+suffix]),float(reference['normalized_mae'+suffix])
                 if not math.isfinite(value) or not math.isfinite(base):
                     raise ValueError('Non-finite ablation MAE')
+                fold_counts = {'fold_wins': None, 'fold_losses': None, 'fold_ties': None}
+                if split == 'valid':
+                    first, second = folds(reference), folds(row)
+                    if first is not None and second is not None:
+                        pairs = [(first[f][task], second[f][task]) for f in range(1, 6)]
+                        if any(a['count'] != b['count'] or a['count'] <= 0
+                               or not math.isfinite(a['normalized_mae']) or not math.isfinite(b['normalized_mae'])
+                               for a, b in pairs):
+                            raise ValueError('Ablation fold coverage or metric mismatch')
+                        if (not math.isclose(sum(a['normalized_mae'] for a, _ in pairs)/5, base, rel_tol=1e-9, abs_tol=1e-12)
+                                or not math.isclose(sum(b['normalized_mae'] for _, b in pairs)/5, value, rel_tol=1e-9, abs_tol=1e-12)):
+                            raise ValueError('Ablation fold metrics differ from verified snapshot')
+                        fold_counts = {'fold_wins': sum(b['normalized_mae'] < a['normalized_mae'] for a, b in pairs),
+                                       'fold_losses': sum(b['normalized_mae'] > a['normalized_mae'] for a, b in pairs),
+                                       'fold_ties': sum(b['normalized_mae'] == a['normalized_mae'] for a, b in pairs)}
+                topology = ('ionic_liquid_partner' if recipe.partner_mode == 'interaction' else 'ionic_liquid') if len(recipe.primary_slots) == 2 else (
+                    'solute_solvent' if recipe.partner_mode == 'interaction' else 'single_molecule')
                 results.append({'split':split,'run':run,'model':row['model'],'base_run':baselines[0],
-                    'task':task,'group':recipe.meta_group,'size_class':recipe.size_class,
+                    'task':task,'group':recipe.meta_group,'size_class':recipe.size_class,'topology':topology,
                     **{metric:row[metric+suffix] for metric in ('mae','rmse','r2','normalized_mae')},
                     'base_normalized_mae':base,'delta_normalized_mae':value-base,
                     'relative_change':(value-base)/base if base else None,
                     'outcome':'win' if value<base else 'loss' if value>base else 'tie',
-                    'fold_std':row.get('normalized_mae_std') if split=='valid' else None})
+                    'fold_std':row.get('normalized_mae_std') if split=='valid' else None, **fold_counts})
     if not results:
         raise ValueError('No complete experimental ablation results')
     return results
@@ -71,7 +113,7 @@ def comparison_rows(snapshot, authority, *, base_run=None):
 def stratify(rows):
     buckets = {}
     for row in rows:
-        for kind,label in [('all','experimental' if row['split']=='valid' else 'test_eligible'),('group',row['group']),('size_class',row['size_class'])]:
+        for kind,label in [('all','experimental' if row['split']=='valid' else 'test_eligible'),('group',row['group']),('size_class',row['size_class']),('topology',row['topology'])]:
             buckets.setdefault((row['split'],row['run'],kind,label),[]).append(row)
     return [{'split':split,'run':run,'stratum':kind,'label':label,'tasks':len(values),
              'macro_normalized_mae':sum(row['normalized_mae'] for row in values)/len(values),
@@ -96,6 +138,29 @@ def training_costs(input_roots, repository_root=None):
     paths = sorted({path for root in roots for path in root.rglob('summary.json')})
     for path in paths:
         summary=json.loads(path.read_text())
+        if summary.get('kind') in {'ilume_stage2_token_home_final_v4', 'ilume_stage2_entity_home_final_v4'}:
+            performance = [json.loads(line) for line in (path.parent/'performance.jsonl').read_text().splitlines() if line]
+            if [row['epoch'] for row in performance] != list(range(1, summary['fixed_final_epoch']+1)):
+                raise ValueError('Stage2 cost report requires complete epoch performance logs')
+            gpu_seconds = sum(row['epoch_seconds'] for row in performance if row['train_peak_allocated_bytes'] > 0)
+            entry = {'stage':'stage2','training_identity':summary['training_identity']['hash'],
+                     'source_run':str(path.parent.relative_to(repository_root)) if repository_root is not None else path.parent.name,
+                     'epochs':len(performance),'gpu_hours':gpu_seconds/3600,
+                     'timing_scope':'epoch_wall_clock_including_validation_and_checkpoint',
+                     'home_parameters':performance[-1]['home_parameter_count'],
+                     'owner_parameters':performance[-1].get('owner_parameter_counts'),
+                     'peak_allocated_bytes':max(row['train_peak_allocated_bytes'] for row in performance),
+                     **{field:sum(row[field] for row in performance) for field in
+                        ('train_seconds','validation_seconds','checkpoint_seconds','epoch_seconds')}}
+            if 'entity_type_training' in performance[0]:
+                entry['entity_type_training'] = {
+                    owner:{kind:{'samples_per_epoch':counts['samples'],
+                                 'entity_occurrences_per_epoch':counts['entity_occurrences'],'tasks':counts['tasks'],
+                                 'optimizer_steps':sum(row['entity_type_training'][owner][kind]['optimizer_steps'] for row in performance)}
+                           for kind,counts in kinds.items()}
+                    for owner,kinds in performance[0]['entity_type_training'].items()}
+            result.append(entry)
+            continue
         if 'training_cost' not in summary:
             continue
         plan_path=path.parent/'resolved_training_plan.json'
@@ -135,7 +200,7 @@ def write_analysis(snapshot, authority_config, output, *, base_run=None, input_r
     if output.exists():
         raise FileExistsError('Ablation analysis output already exists')
     authority=load_stage3_config(authority_config)
-    rows=comparison_rows(snapshot,authority,base_run=base_run)
+    rows=comparison_rows(snapshot,authority,base_run=base_run,repository_root=repository_root)
     strata=stratify(rows)
     costs=training_costs(input_roots, repository_root)
     intervals = bootstrap_rows(snapshot, rows, authority, Path(repository_root)) if bootstrap else []

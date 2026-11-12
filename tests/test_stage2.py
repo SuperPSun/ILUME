@@ -432,10 +432,15 @@ def test_entity_home_base_contracts() -> None:
         replace(recipe.stage2, loss=replace(recipe.stage2.loss, task_weights={})).validate()
 
 
-@pytest.mark.parametrize("expert_architecture, partner_injection", [
-    ("mlp", "l1"), ("entity_token_attention_v1", "l1"), ("entity_token_attention_v1", "group_l2"),
+@pytest.mark.parametrize("expert_architecture, partner_injection, split_entity_encoders", [
+    ("mlp", "l1", False), ("entity_token_attention_v1", "l1", False),
+    ("entity_token_attention_v1", "group_l2", False),
+    ("entity_token_attention_v1", "group_private_l2", False),
+    ("entity_token_attention_v1", "all_l2", False),
+    ("entity_token_attention_v1", "group_l2_encoded", False),
+    ("entity_token_attention_v1", "group_l2_encoded", True),
 ])
-def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_stage2_setup, tmp_path, monkeypatch, expert_architecture, partner_injection):
+def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_stage2_setup, tmp_path, monkeypatch, expert_architecture, partner_injection, split_entity_encoders):
     variant = "base"
     from stage1.config import AuxiliaryConfig, MaskingConfig
     from stage1.model import build_stage1_model
@@ -453,9 +458,18 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     recipe = load_home_recipe(f"configs/v4/stage2/{variant}.yaml")
     stage3 = load_stage3_config(f"configs/v4/stage3/{variant}.yaml")
     recipe = replace(recipe, stage3=replace(recipe.stage3, model=replace(
-        recipe.stage3.model, expert_architecture=expert_architecture, partner_injection=partner_injection)))
+        recipe.stage3.model, expert_architecture=expert_architecture, partner_injection=partner_injection,
+        split_entity_encoders=split_entity_encoders)))
     stage3 = replace(stage3, model=replace(stage3.model, expert_architecture=expert_architecture,
-                                         partner_injection=partner_injection))
+                                         partner_injection=partner_injection, split_entity_encoders=split_entity_encoders))
+    research = partner_injection not in {"l1", "group_l2"}
+    if research:
+        from dataclasses import fields
+        from ablations.entity_home.config import AblationConfig, AblationSpec, PARTNER_VARIANTS
+        name = next(name for name, (_, mode, split) in PARTNER_VARIANTS.items()
+                    if (mode, split) == (partner_injection, split_entity_encoders))
+        stage3 = AblationConfig(**{field.name: getattr(stage3, field.name) for field in fields(type(stage3))},
+                                ablation=AblationSpec(name))
     token_attention = expert_architecture == "entity_token_attention_v1"
     if token_attention:
         # Exact production dispatch/owners/artifacts; shrink expert width only in this fixture.
@@ -549,6 +563,20 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     monkeypatch.setattr(home_training, "assemble_owner_gradients", record_assembly)
     train_stage2_home(recipe, output)
     payload, source, _ = load_home_final(output / "stage2_final.pt")
+    if split_entity_encoders:
+        performance = [json.loads(line) for line in (output / "performance.jsonl").read_text().splitlines()]
+        assert len(performance) == recipe.stage2_epochs
+        for row in performance:
+            coverage = row['entity_type_training']
+            assert coverage['GROUP:solvation']['ionic'] == {
+                'samples': 0, 'entity_occurrences': 0, 'tasks': [], 'optimizer_steps': 0}
+            assert coverage['GROUP:solvation']['neutral'] == {
+                'samples': 1, 'entity_occurrences': 2, 'tasks': ['simulation/transfer_organic'], 'optimizer_steps': 1}
+            assert coverage['GLOBAL']['ionic']['optimizer_steps'] == 2
+            assert coverage['GROUP:thermophysical']['neutral']['optimizer_steps'] == 0
+        untouched = initial.home.l1_group_experts['solvation'][0].ionic.state_dict()
+        assert all(torch.equal(value, untouched[name]) for name, value in
+                   source.home.l1_group_experts['solvation'][0].ionic.state_dict().items())
     counts = task_batch_counts({
         task: Stage2TaskDataset(config.data.artifacts_dir, task, "train")
         for task in config.data.tasks
@@ -567,7 +595,7 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     if token_attention:
         other_mode = "l1" if partner_injection == "group_l2" else "group_l2"
         incompatible = replace(recipe, stage3=replace(recipe.stage3, model=replace(
-            recipe.stage3.model, partner_injection=other_mode)))
+            recipe.stage3.model, partner_injection=other_mode, split_entity_encoders=False)))
         with pytest.raises(ValueError, match="identity"):
             train_stage2_home(incompatible, output, resume=True)
 
@@ -691,7 +719,10 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     prepare_stage3(stage3)
     prepared = load_prepared_stage3(stage3)
     if token_attention:
-        incompatible = replace(stage3, model=replace(stage3.model, partner_injection=other_mode))
+        incompatible = replace(stage3, model=replace(stage3.model, partner_injection=other_mode, split_entity_encoders=False))
+        if research:
+            from ablations.entity_home.config import base_config
+            incompatible = base_config(incompatible)
         assert load_prepared_stage3(incompatible)["metadata"]["semantic"]["identities"]["prepared"] == prepared["metadata"]["semantic"]["identities"]["prepared"]
         with pytest.raises(ValueError, match="architecture mismatch"):
             load_source(incompatible)
@@ -762,7 +793,8 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     rows = train_fold(stage3, 1, output_dir=train_root)
     assert rows[-1]["phase"] == "three_phase_final"
     final = torch.load(train_root / "three_phase_final.pt", weights_only=False)
-    assert final["kind"] == ("ilume_stage3_token_home_three_phase_final_v4" if token_attention else "ilume_stage3_entity_home_three_phase_final_v4")
+    assert final["kind"] == (stage3.runtime_backend.final_kind if research else
+        "ilume_stage3_token_home_three_phase_final_v4" if token_attention else "ilume_stage3_entity_home_three_phase_final_v4")
     assert len(final["private_state_hashes"]) == len(stage3.tasks) + 2 == 24
     phase1 = torch.load(train_root / "phase_1" / "checkpoint_epoch_00002.pt", weights_only=False)
     assert all(torch.equal(value, phase1["model"][name]) for name, value in final["model"].items() if name.startswith("simulation_backbone."))
@@ -891,8 +923,9 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
     metrics = evaluate_checkpoints(stage3, train_root, split="valid", ensemble_folds=False, fold=1, predictions_dir=tmp_path / "predictions")
     assert len(metrics["tasks"]) == len(stage3.tasks) == 22
     from stage3.evaluate import _reporting_model
-    assert _reporting_model(stage3, prepared["metadata"]) == ("ilume", "ILUME")
-    if variant == "base":
+    assert _reporting_model(stage3, prepared["metadata"]) == (
+        (stage3.ablation.model_id, stage3.ablation.display_name) if research else ("ilume", "ILUME"))
+    if variant == "base" and not research:
         from stage1.masking import MultimodalPacker
         from stage2.data import Stage2BatchDescriptor, Stage2DeviceTaskData, Stage2EntityDataset, pack_stage2_batch
         from stage3.simulation_evaluate import evaluate_simulation_checkpoints
@@ -927,8 +960,9 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(tiny_sta
                 with (tmp_path / split / "predictions" / (task.replace("/", "__") + ".csv")).open() as handle:
                     actual = [float(row["prediction"]) for row in csv.DictReader(handle)]
                 np.testing.assert_allclose(actual, (predictions[task] + 3) * stats["scale"] + stats["mean"], rtol=1e-5, atol=1e-5)
-    _verify_entity_home_ablations(stage3, recipe, prepared, train_root, tmp_path)
-    _verify_single_view_ablations(stage1, stage3, recipe, tmp_path)
+    if not research:
+        _verify_entity_home_ablations(stage3, recipe, prepared, train_root, tmp_path)
+        _verify_single_view_ablations(stage1, stage3, recipe, tmp_path)
     # Ignored source columns remain SHA-bound; never edit metadata hashes.
     bad = source_path(stage3, resolved[enthalpy], 1)
     bad.write_text(bad.read_text().replace("Liquid | Gas", "Solid | Gas"))

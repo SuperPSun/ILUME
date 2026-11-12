@@ -11,6 +11,14 @@ VARIANTS = {
     'no_stage1', 'no_stage2', 'no_global', 'no_group', 'no_private',
     'no_smiles', 'no_graph', 'phase1', 'phase2', 'capacity_no_global', 'capacity_no_group',
     'capacity_match_global', 'capacity_match_group', 'auxiliary',
+    'partner_group_private', 'partner_all', 'partner_encoded', 'typed_entity_encoders',
+}
+
+PARTNER_VARIANTS = {
+    'partner_group_private': ('I2', 'group_private_l2', False),
+    'partner_all': ('I3', 'all_l2', False),
+    'partner_encoded': ('I4', 'group_l2_encoded', False),
+    'typed_entity_encoders': ('S1', 'group_l2_encoded', True),
 }
 
 
@@ -41,6 +49,8 @@ class AblationSpec:
 
     @property
     def display_name(self):
+        if self.variant in PARTNER_VARIANTS:
+            return 'ILUME ' + PARTNER_VARIANTS[self.variant][0] + ' ' + self.variant
         if self.variant in {'no_smiles', 'no_graph'}:
             return 'ILUME v4 w/o ' + ('SMILES' if self.variant == 'no_smiles' else 'Molecular Graph')
         label = 'w/o ' + self.supervision_removed.removeprefix('lambda_') + ' supervision' if self.variant == 'auxiliary' else self.variant
@@ -67,6 +77,12 @@ class AblationConfig(Stage3Config):
         if self.ablation is None or not self.is_entity_home:
             raise ValueError('Research config requires an Entity-HoME ablation')
         self.ablation.validate()
+        if self.ablation.variant in PARTNER_VARIANTS:
+            _, injection, split = PARTNER_VARIANTS[self.ablation.variant]
+            if (self.model.expert_architecture != 'entity_token_attention_v1'
+                    or self.model.partner_injection != injection
+                    or self.model.split_entity_encoders != split):
+                raise ValueError('Partner ablation model differs from its declared variant')
         if self.frozen_encoder is not None:
             raise ValueError('External frozen encoder ablations have been retired')
         if self.data.seed == 3407 and self.ablation.variant.startswith('capacity_'):

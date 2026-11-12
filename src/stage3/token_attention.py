@@ -1,4 +1,5 @@
 """Entity-preserving experts; only L2 receives physical condition tokens."""
+from copy import deepcopy
 import torch
 from torch import nn
 
@@ -31,11 +32,25 @@ def token_model(config):
 def attention_contract(config, entity_dim=None):
     contract = {**TOKEN_CONTRACT, "heads": config.attention_heads, "layers": config.attention_layers,
                 **({"packed_dim": 3 * entity_dim + 12} if entity_dim is not None else {})}
-    if config.partner_injection == "group_l2":
-        contract.update(partner_injection="group_l2", l1="primary_only_attention_without_conditions",
+    if config.partner_injection != "l1":
+        contract.update(partner_injection=config.partner_injection, l1="primary_only_attention_without_conditions",
                         l1_gate="primary_only_structural_route_v1",
                         l2="group_partner_attention_global_private_primary_only_v1",
                         partner_projection="paired_group_l1_projection_role_position_norm_v1")
+        if config.partner_injection == "group_private_l2":
+            contract.update(l2="group_private_partner_global_primary_only_v1",
+                            private_partner="primary_group_route_weighted_normalized_projections_v1")
+        elif config.partner_injection == "all_l2":
+            contract.update(l2="all_owner_partner_attention_primary_only_gate_residual_v1",
+                            private_partner="primary_group_route_weighted_normalized_projections_v1",
+                            global_partner="paired_global_l1_projection_role_position_v1")
+        elif config.partner_injection == "group_l2_encoded":
+            contract.update(partner_projection="paired_group_l1_independent_attention_then_norm_v1")
+    if config.split_entity_encoders:
+        contract.update(l1="charge_typed_within_object_attention_without_conditions_v1",
+                        entity_encoders="independent_ionic_neutral_projection_attention_v1",
+                        entity_encoder_routing="formal_charge_role_preserve_objects_v1",
+                        entity_encoder_initialization="clone_shared_random_initialization_v1")
     return contract
 
 
@@ -71,6 +86,10 @@ class EntityAttentionExpert(nn.Module):
     def partner_token(self, values, roles):
         return self.projection(values[:, 2:]) + self.roles(roles[:, 2:]) + self.positions.weight[None, 2:]
 
+    def encoded_partner(self, values, roles, mask):
+        tokens = self.partner_token(values, roles)
+        return self.stack(tokens, torch.ones_like(mask[:, 2:])).masked_fill(~mask[:, 2:, None], 0)
+
     def forward(self, values, roles, mask):
         tokens = self.projection(values) + self.roles(roles) + self.positions.weight[None]
         # Primary (slots 0/1) and partner (slot 2) remain separate in L1.
@@ -78,6 +97,38 @@ class EntityAttentionExpert(nn.Module):
         # A dummy valid token avoids all-masked attention for an absent partner.
         partner = self.stack(tokens[:, 2:], torch.ones_like(mask[:, 2:]))
         return torch.cat((primary, partner), 1).masked_fill(~mask[..., None], 0)
+
+
+class TypedEntityAttentionExpert(nn.Module):
+    """Independent charge-type parameters, with interaction confined to each object."""
+    def __init__(self, shared):
+        super().__init__()
+        self.ionic = shared
+        self.neutral = deepcopy(shared)
+
+    @property
+    def stack(self):
+        return self.ionic.stack
+
+    def object_tokens(self, values, roles, mask, start):
+        result = values.new_zeros((*roles.shape, self.ionic.projection.out_features),
+                                  dtype=self.ionic.positions.weight.dtype)
+        active = mask.any(1)
+        for neutral, expert in ((False, self.ionic), (True, self.neutral)):
+            rows = torch.where(active & ((roles[:, 0] == 2) == neutral))[0]
+            if not rows.numel():
+                continue
+            tokens = (expert.projection(values[rows]) + expert.roles(roles[rows])
+                      + expert.positions.weight[None, start:start + roles.shape[1]])
+            result = result.index_copy(0, rows, expert.stack(tokens, mask[rows]))
+        return result
+
+    def encoded_partner(self, values, roles, mask):
+        return self.object_tokens(values[:, 2:], roles[:, 2:], mask[:, 2:], 2)
+
+    def forward(self, values, roles, mask):
+        return torch.cat((self.object_tokens(values[:, :2], roles[:, :2], mask[:, :2], 0),
+                          self.encoded_partner(values, roles, mask)), 1)
 
 
 class ConditionTokens(nn.Module):
@@ -151,10 +202,13 @@ def initialize_token_modules(model, initialization_seed):
         return dict(hidden=max(1, round(width * ratio)), heads=config.attention_heads,
                     layers=config.attention_layers, dropout=dropout, activation=config.activation)
 
+    def entity_expert(args):
+        expert = EntityAttentionExpert(model.entity_input_contract["entity_dim"], width, **args)
+        return TypedEntityAttentionExpert(expert) if config.split_entity_encoders else expert
+
     with seeded_initialization(initialization_seed, "GLOBAL"):
         args = arguments(config.expert_hidden_ratio, config.dropout)
-        model.l1_global_experts = nn.ModuleList([EntityAttentionExpert(
-            model.entity_input_contract["entity_dim"], width, **args) for _ in range(config.global_experts)])
+        model.l1_global_experts = nn.ModuleList([entity_expert(args) for _ in range(config.global_experts)])
         model.l2_global_experts = nn.ModuleList([ConditionalAttentionExpert(width, **args)
                                                for _ in range(config.global_experts)])
         model.l1_global_gate = nn.Linear(packed, config.global_experts) if config.global_experts else None
@@ -170,8 +224,7 @@ def initialize_token_modules(model, initialization_seed):
         ratio = config.expert_hidden_ratio if gc is None or gc.expert_hidden_ratio is None else gc.expert_hidden_ratio
         with seeded_initialization(initialization_seed, f"GROUP:{group}"):
             args = arguments(ratio, config.dropout)
-            model.l1_group_experts[group] = nn.ModuleList([EntityAttentionExpert(
-                model.entity_input_contract["entity_dim"], width, **args) for _ in range(count)])
+            model.l1_group_experts[group] = nn.ModuleList([entity_expert(args) for _ in range(count)])
             model.l1_group_gates[group] = nn.Linear(packed, count)
             model.l1_group_normalizations[group] = nn.LayerNorm(width)
             model.l2_group_experts[group] = nn.ModuleList([ConditionalAttentionExpert(width, **args) for _ in range(count)])
@@ -258,7 +311,8 @@ def forward_tokens(model, task, primary, conditions, partner):
         raise ValueError(f"Missing token HoME condition statistics: {task}")
     physical, present = physical_conditions(conditions, spec.condition_columns, model.condition_statistics[task])
 
-    group_partner = model.model_config.partner_injection == "group_l2"
+    mode = model.model_config.partner_injection
+    group_partner = mode != "l1"
     l1_values, l1_roles, l1_mask = values, roles, mask
     if group_partner:
         l1_mask = mask.clone()
@@ -273,7 +327,8 @@ def forward_tokens(model, task, primary, conditions, partner):
     if group_partner:
         local = local.masked_fill(~l1_mask[..., None], 0)
 
-    def candidates(experts, entities, encoder, *, with_partner=False):
+    group_partner_tokens = []
+    def candidates(experts, entities, encoder, *, with_partner=False, scope="group", private_partner=None):
         if not experts:
             return entities.new_empty((len(entities), 0, 3, model.d_model))
         condition_tokens = encoder(physical, present)
@@ -282,16 +337,29 @@ def forward_tokens(model, task, primary, conditions, partner):
         for index, expert in enumerate(experts):
             current = entities
             if with_partner:
-                partner_tokens = model.l1_group_experts[group][index].partner_token(values, roles)
-                partner_tokens = model.l1_group_normalizations[group](partner_tokens)
+                if scope == "global":
+                    partner_tokens = model.l1_global_experts[index].partner_token(values, roles)
+                elif scope == "private":
+                    partner_tokens = private_partner
+                else:
+                    source = model.l1_group_experts[group][index]
+                    partner_tokens = (source.encoded_partner(values, roles, mask) if mode == "group_l2_encoded"
+                                      else source.partner_token(values, roles))
+                    partner_tokens = model.l1_group_normalizations[group](partner_tokens)
+                    group_partner_tokens.append(partner_tokens)
                 current = torch.cat((entities[:, :2], partner_tokens), 1).masked_fill(~mask[..., None], 0)
             outputs.append(expert(current, active, condition_tokens, present))
         return torch.stack(outputs, 1) if outputs else entities.new_empty((len(entities), 0, 3, model.d_model))
 
-    global_outputs = (candidates(model.l2_global_experts, global_values, model.global_conditions["tokens"])
+    global_outputs = (candidates(model.l2_global_experts, global_values, model.global_conditions["tokens"],
+                                 with_partner=mode == "all_l2", scope="global")
                       if model.l2_global_experts else local.new_empty((len(local), 0, 3, model.d_model)))
     group_outputs = candidates(model.l2_group_experts[group], local, model.group_conditions[group], with_partner=group_partner)
-    private_outputs = candidates(model.private_experts[key], local, model.private_conditions[key])
+    private_partner = None
+    if mode in {"group_private_l2", "all_l2"}:
+        private_partner = (torch.stack(group_partner_tokens, 1) * group_weights[:, 0, :, None, None]).sum(1)
+    private_outputs = candidates(model.private_experts[key], local, model.private_conditions[key],
+                                  with_partner=private_partner is not None, scope="private", private_partner=private_partner)
     weights = model.task_gate_weights(key, torch.cat((global_values.flatten(1), local.flatten(1), mask.to(local.dtype)), -1))
     all_outputs = torch.cat((global_outputs, group_outputs, private_outputs), 1)
     mixed = (weights[:, :, None, None] * all_outputs).sum(1)

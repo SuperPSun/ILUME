@@ -464,6 +464,8 @@ python scripts/stage3/evaluate.py --config configs/v4/stage3/group_l2_partner.ya
 
 中断后，Stage2训练追加`--resume outputs/v4/stage2/group_l2_partner/train`，Stage3训练追加布尔`--resume`。两种接入模式不能交叉续训或迁移，不能沿用已有token_attention模型作为本次新模式权重。
 
+后续I2／I3／I4／S1的独立注入及分类型编码消融见[专用手册](partner-injection-ablation-runbook.md)和[ADR-0127](adr/0127-partner-injection-and-typed-encoding-ablations.md)；8份配对YAML位于`configs/ablations/partner_injection_3407/`，不替换上述Base或GROUP L2参照。
+
 ## 数据核验结论与限制
 
 现役Base的任务集合由ADR-0117定义，以下24任务/120个分折文件描述是2026-10-08历史快照，不作为当前22任务的运行前提。
