@@ -187,6 +187,14 @@ H100专用`configs/v4/stage1/base-100h.yaml`使用全局batch84、5轮；双rank
 CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc-per-node=2 scripts/stage1/train.py --config configs/v4/stage1/base-100h.yaml --output outputs/v4/stage1/base/train_graph160_b84_ddp2
 ```
 
+另提供[10轮配置](../configs/v4/stage1/base-100h-10epochs.yaml)，仅将上述H100配置的`training.epochs: 5`改为`10`，其他字段完全相同；H100或szx具备相应显存和双卡资源时可使用。匹配的prepare、teacher、电荷sidecar及拓扑全部复用。训练身份和warmup/cosine总预算随epoch改变，必须在未占用目录从头训练，不能接续已完成的5轮checkpoint：
+
+```bash
+torchrun --standalone --nproc-per-node=2 scripts/stage1/train.py --config configs/v4/stage1/base-100h-10epochs.yaml --output outputs/v4/stage1/base/train_10epochs
+```
+
+该命令使用环境分配的两张可见GPU；Slurm中保留调度器设置的`CUDA_VISIBLE_DEVICES`。原5轮配置、结果及下游来源路径不变；若后续采用10轮编码器，须显式配对Stage2/3的`initialization.stage1_encoder`。
+
 旧batch64或未过滤checkpoint不得续到此配置。筛除极端结构与DDP不能构成显存安全保证；不自动缩batch或跳过样本，当前训练不会被代码更新热切换。
 
 启动阶段rank0会先扫描manifest、核对少量源分片位置，再校验teacher/sidecar身份；随后广播相同清单给两rank。此阶段可能暂时没有进度条或训练目录，不能仅据此判断卡死。2026-11-09本地只读检查中，过滤解析约72秒，完整training identity解析约135秒；NFS负载和缓存状态可能延长时间。进入更新后检查`metrics.jsonl`与`training_filter.json`，不要将启动校验视为新一轮teacher生成。

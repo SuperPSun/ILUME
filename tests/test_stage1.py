@@ -419,6 +419,10 @@ def test_v4_residual_capacity_and_shared_compatibility(tiny_config, tiny_samples
     assert h100.training.max_graph_nodes == 160
     assert h100.training.batch_size == 84
     assert h100.training.batch_size // 2 == 42
+    h100_10 = load_config(ROOT / "configs/v4/stage1/base-100h-10epochs.yaml")
+    assert (h100.training.epochs, h100_10.training.epochs) == (5, 10)
+    assert config_from_dict(h100_10.to_dict()).to_dict() == h100_10.to_dict()
+    assert replace(h100_10, training=replace(h100_10.training, epochs=5)).to_dict() == h100.to_dict()
     assert base.training.dgt_attention_compile is True
     assert [base.loss.lambda_smiles, base.loss.lambda_atom, base.loss.lambda_bond,
             base.loss.lambda_alignment, base.loss.lambda_descriptor,
