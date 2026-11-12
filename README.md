@@ -530,6 +530,8 @@ pytest -q
 
 测试只使用临时小数据，不启动正式 prepare、训练或五折评估。旧实验设计只从 [历史 ADR](docs/adr/README.md#冻结合同与历史) 与 Git 历史记录追溯。
 
+代码或测试修改运行完整套件；纯文档修改检查链接与diff；仅配置修改运行对应配置契约测试，同时修改实现则运行全量。CLI帮助与compileall只检查受影响入口。保留的覆盖范围、共享fixture边界与耗时记录见[测试说明](docs/testing.md)。
+
 ## 独立静态 HPO
 
 [WeakOpt手册](docs/weakopt-runbook.md)：固定3407完整模型与Stage1/2来源，定向调整Stage3 PRIVATE学习率、轮数和dropout；累计最多80组，仅使用GPU2/3，按验证第一名任务数选型，锁定后再评估测试。配置及新增产物分别在 `configs/HPO/WeakOpt`、`outputs/HPO/WeakOpt`。

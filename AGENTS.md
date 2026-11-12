@@ -88,7 +88,7 @@ ADR-0122：Stage1的`training.max_graph_nodes: 160`只在分配DDP rank前过滤
 ## 验证与清理
 
 - Uni-Mol2 独立环境、权重获取/迁移与审计顺序以 [v4 手册](docs/v4-runbook.md) 为准。RDKit 比较导入后的运行时与准备产物特征合同，不只比较 pip 元数据；完成全量 teacher 缓存后才切回训练环境。
-- 修改后运行 `pytest -q`；按风险检查十个Stage入口（含离线`stage1/teacher.py`和独立`stage1/regression.py`）与四个基准比较脚本的`--help`、compileall、diff/Markdown链接检查。只用临时小数据；不自动下载teacher权重、生成全量3D缓存或执行正式prepare/训练/评估/回归头后训练。先用独立审计输出验证teacher成功率、吞吐、存储，再由用户正式运行。
+- 代码或测试修改运行完整 `pytest -q`；纯文档修改检查链接与diff；仅配置修改运行对应配置契约测试，同时涉及实现则运行全量。CLI的`--help`与compileall按受影响入口检查，不每次重复全部入口。不增加默认慢测排除或并行测试依赖；覆盖与计时见[测试说明](docs/testing.md)。只用临时小数据；不自动下载teacher权重、生成全量3D缓存或执行正式prepare/训练/评估/回归头后训练。先用独立审计输出验证teacher成功率、吞吐、存储，再由用户正式运行。
 - 优先复用/修改现有测试。只有此前未覆盖且会造成实质损失的科研、恢复、产物/身份、CLI/报告或高风险调度合同，才新增最小行为测试；不为私有辅助函数、搬家、简单重构或覆盖率扩测试。`tests/` 按 Stage/基准比较/common/architecture 集中组织，`conftest.py` 只放跨文件复用的小测试数据。
 - `trash/` 不进 Git。移动旧产物/YAML/未消费数据或删除机器缓存前，报告精确文件数、大小、目标和冲突策略，等用户明确确认。不得覆盖、重排或删除既有 `trash/`。
 

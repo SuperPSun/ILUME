@@ -117,7 +117,8 @@ def test_only_l2_sees_conditions_and_all_attention_owners_can_learn():
 
 @pytest.mark.parametrize("mode, split", [("l1", False), ("group_l2", False),
     ("group_private_l2", False), ("all_l2", False), ("group_l2_encoded", False), ("group_l2_encoded", True)])
-def test_single_charged_entity_padding_and_owner_lifetimes(mode, split):
+def test_single_charged_entity_padding_and_owner_lifetimes(tmp_path, mode, split):
+    from stage2.home_contract import transferable_state, load_transferable_state, state_hash
     from stage3.home import validate_transfer_architecture
 
     task = replace(spec(columns=()), primary_slots=("molecule",))
@@ -127,6 +128,16 @@ def test_single_charged_entity_padding_and_owner_lifetimes(mode, split):
     padded = primary.values.clone(); padded[:, 1] = 500.
     again = model(task.task_id, EntityInputs(padded, primary.roles, primary.mask), torch.empty(2, 0))
     torch.testing.assert_close(initial.predictions, again.predictions, rtol=0, atol=0)
+    shared = {name: value + .01 for name, value in transferable_state(model).items()}
+    untouched = {name: value.clone() for name, value in model.state_dict().items() if name not in shared}
+    assert set(load_transferable_state(model, shared, state_hash(shared))) == set(shared)
+    assert all(torch.equal(value, model.state_dict()[name]) for name, value in {**shared, **untouched}.items())
+    checkpoint = tmp_path / "model.pt"
+    torch.save(model.state_dict(), checkpoint)
+    reloaded = model_for(task, partner_injection=mode, split_entity_encoders=split).eval()
+    reloaded.load_state_dict(torch.load(checkpoint, weights_only=True))
+    torch.testing.assert_close(reloaded(task.task_id, primary, torch.empty(2, 0)).predictions,
+                               model(task.task_id, primary, torch.empty(2, 0)).predictions, rtol=0, atol=0)
     assert not model.private_conditions[sanitize_task(task.task_id)].projectors
     for owners in [{GLOBAL, group_owner(task.meta_group), private_owner(task.task_id)},
                    {group_owner(task.meta_group), private_owner(task.task_id)}, {private_owner(task.task_id)}]:

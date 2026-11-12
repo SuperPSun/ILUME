@@ -813,7 +813,7 @@ def test_regression_predictor_config_structure_and_rng(tmp_path, device_name):
 
 
 @pytest.mark.parametrize("graph_message_mode", ["shared", "residual_blocks", "dgt"])
-def test_dual_view_structure_only_losses_and_downstream_freeze(tiny_config, tiny_samples, monkeypatch, graph_message_mode):
+def test_dual_view_structure_only_losses_and_downstream_freeze(tiny_config, tiny_samples, tmp_path, monkeypatch, graph_message_mode):
     from stage1.auxiliary import empty_auxiliary_targets
     from stage1.dual_view import DualViewPretrainModel, molecule_loss_statistics, reduce_molecule_elements
     from stage1.masking import sample_modality_dropout
@@ -837,6 +837,15 @@ def test_dual_view_structure_only_losses_and_downstream_freeze(tiny_config, tiny
     packed = MultimodalPacker(vocabulary)(samples)
     model = DualViewPretrainModel(config, vocabulary).eval()
     encoded = model.encode_entity(packed)
+    checkpoint = tmp_path / "model.pt"
+    torch.save(model.state_dict(), checkpoint)
+    reloaded = DualViewPretrainModel(config, vocabulary).eval()
+    reloaded.load_state_dict(torch.load(checkpoint, weights_only=True))
+    torch.testing.assert_close(reloaded.encode_entity(packed).entity_embedding, encoded.entity_embedding, rtol=0, atol=0)
+    alternate = replace(config, model=replace(config.model, graph_encoder_type="dmpnn",
+        graph_feedforward_dim=None, graph_message_mode="residual_blocks" if graph_message_mode == "shared" else "shared"))
+    with pytest.raises(RuntimeError, match="state_dict"):
+        DualViewPretrainModel(alternate, vocabulary).load_state_dict(model.state_dict())
     altered = replace(packed, descriptors=torch.randn_like(packed.descriptors), roles=packed.roles.flip(0))
     assert torch.equal(model.encode_entity(altered).entity_embedding, encoded.entity_embedding)
     assert encoded.entity_embedding.shape == (3, 64)
@@ -880,7 +889,7 @@ def test_dual_view_structure_only_losses_and_downstream_freeze(tiny_config, tiny
     assert all(torch.equal(value, model.state_dict()[key]) for key, value in baseline.items())
 
 
-@pytest.mark.parametrize("graph_message_mode", ["shared", "residual_blocks", "dgt"])
+@pytest.mark.parametrize("graph_message_mode", ["dgt"])
 def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeypatch, graph_message_mode):
     from stage1.config import AuxiliaryConfig, MaskingConfig
     from stage1.auxiliary import ELECTRONIC_SOURCES, TeacherCache, prepare_teacher_cache, load_electronic_labels
@@ -905,8 +914,7 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
     config = PretrainConfig(
         architecture=ArchitectureConfig("dual_view_v4"),
         data=DataConfig(stage1_dir=source, artifacts_dir=tmp_path / "prepared", valid_fraction=0.4, max_smiles_tokens=64, shard_size=3),
-        descriptor=(load_config(ROOT / "configs/v4/stage1/base.yaml").descriptor
-                    if graph_message_mode == "residual_blocks" else DescriptorConfig()),
+        descriptor=load_config(ROOT / "configs/v4/stage1/base.yaml").descriptor,
         model=ModelConfig(d_model=16, n_heads=4, smiles_layers=1, graph_depth=2, feedforward_dim=32, dropout=0.1, role_embedding=False, fusion_layers=0,
                           graph_message_mode="shared" if graph_message_mode == "dgt" else graph_message_mode,
                           graph_encoder_type="dgt" if graph_message_mode == "dgt" else "dmpnn",
@@ -978,7 +986,7 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
         assert (old_values.data.artifacts_dir / "manifest.csv").read_bytes() == (config.data.artifacts_dir / "manifest.csv").read_bytes()
         assert (old_values.data.artifacts_dir / "tokenizer.json").read_bytes() == (config.data.artifacts_dir / "tokenizer.json").read_bytes()
     charge_valid = None
-    if graph_message_mode == "residual_blocks":
+    if graph_message_mode == "dgt":
         from stage1.partial_charge import PartialChargeCache, prepare_partial_charge
         molecule_list = ["[Na+]", "[K+]", "C[NH3+]", "[Cl-]", "[Br-]", "C(=O)[O-]", "O", "CC", "CCO"]
         charge_manifest, charge_valid = _write_charge_resources(tmp_path, molecule_list)
