@@ -11,7 +11,7 @@ VARIANTS = {
     'no_stage1', 'no_stage2', 'no_global', 'no_group', 'no_private',
     'no_smiles', 'no_graph', 'phase1', 'phase2', 'capacity_no_global', 'capacity_no_group',
     'capacity_match_global', 'capacity_match_group', 'auxiliary',
-    'partner_group_private', 'partner_all', 'partner_encoded', 'typed_entity_encoders',
+    'partner_group_private', 'partner_all', 'partner_encoded', 'typed_entity_encoders', 'partner_private',
 }
 
 PARTNER_VARIANTS = {
@@ -19,6 +19,7 @@ PARTNER_VARIANTS = {
     'partner_all': ('I3', 'all_l2', False),
     'partner_encoded': ('I4', 'group_l2_encoded', False),
     'typed_entity_encoders': ('S1', 'group_l2_encoded', True),
+    'partner_private': ('I5', 'private_l2', False),
 }
 
 

@@ -4,6 +4,8 @@
 
 已接受并实现（2026-11-11，用户要求执行方案）；S1采用独立的下游投影与注意力专家，在GROUP L2联合交互，Stage1保持共享冻结。本次交付实现、配对YAML及临时小数据验收；正式训练由用户启动，命令见[运行手册](../partner-injection-ablation-runbook.md)。
 
+2026-11-13按用户补充增加I5：第三成分仅进入PRIVATE L2，沿用I2的投影及汇聚规则，关闭GROUP L2的第三成分输入；原有编号、配置及产物不变。
+
 这是[ADR-0125](0125-group-l2-partner-injection.md)之外的独立研究套件，不改正式Base，不扩充或重编号[ADR-0124](0124-current-token-home-ablations.md)的C0～C10／E1～E5，不恢复HPO、容量搜索或追加训练seed。现有配置、来源、模型和结果保留原身份。
 
 ## 问题与可检验目标
@@ -12,7 +14,7 @@
 
 本设计分别检验三个问题：
 
-1. GROUP之外的PRIVATE、GLOBAL直接读取第三成分，是否有利于完整22任务验证？
+1. GROUP之外的PRIVATE、GLOBAL直接读取第三成分，以及仅PRIVATE而不让GROUP接收，是否有利于完整22任务验证？
 2. 接入范围固定为GROUP L2时，第三成分是否需要独立的L1注意力编码？
 3. 编码深度与接入位置相同时，离子与中性分子不共享下游编码参数是否有利？
 
@@ -31,8 +33,9 @@
 | I2 | 同I1；按下面固定规则增加PRIVATE输入 | GROUP、PRIVATE | 已实现；与I1比较PRIVATE直接访问的作用 |
 | I3 | 同I2；按下面固定规则增加GLOBAL输入 | GLOBAL、GROUP、PRIVATE | 已实现；与I2比较GLOBAL直接访问的作用 |
 | I4 | 同I1，但第三成分再经过对应GROUP专家的独立L1注意力编码 | GROUP | 已实现；与I1比较第三成分独立编码的作用 |
+| I5 | 同I2的PRIVATE投影及主体GROUP路由加权汇聚，不经过第三成分L1注意力 | PRIVATE | 与I2比较GROUP直接访问的作用，与I1比较仅PRIVATE／仅GROUP接入 |
 
-I1～I4的主体L1、L1主体路由、Task Gate结构输入及末端主体残差均不读取第三成分；Task Gate继续保留原三槽有效位。第三成分只通过指定L2候选进入末端混合，候选数量及flat门控算法不变。PRIVATE仍与GROUP L2并行，不改成读取GROUP L2输出的串行网络。
+I1～I5的主体L1、L1主体路由、Task Gate结构输入及末端主体残差均不读取第三成分；Task Gate继续保留原三槽有效位。第三成分只通过指定L2候选进入末端混合，候选数量及flat门控算法不变。PRIVATE仍与GROUP L2并行，不改成读取GROUP L2输出的串行网络。
 
 新增输入不另建投影或路由网络：
 
@@ -40,8 +43,9 @@ I1～I4的主体L1、L1主体路由、Task Gate结构输入及末端主体残差
 - I2／I3的PRIVATE读取上述GROUP第三成分表示的加权和，权重固定使用当前样本的主体GROUP L1路由权重；不按PRIVATE专家数量重新配对，不让第三成分改变该路由。此汇聚规则在I2／I3完全一致。
 - I3的GLOBAL按索引读取对应GLOBAL L1专家的第三成分投影／角色／位置编码；不增加GROUP到GLOBAL的参数依赖或新的归一化层。
 - I4在GROUP每个专家内部，对第三成分单独执行其已有的两层TokenStack，再经过原GROUP归一化。主体与第三成分在GROUP L2之前仍不相互注意。编码后的第三槽不回填到主体结构、gate或残差。
+- I5的GLOBAL／GROUP L2仅接收主体及条件；PRIVATE读取与I2完全相同的第三成分投影、归一化及主体GROUP路由加权和。投影、归一化和路由仍归属原GROUP owner，Phase3随GROUP冻结；“仅PRIVATE注入”描述L2接收分支，不表示第三成分的全部上游参数都属于PRIVATE。没有新增投影、路由或可训练参数。
 
-I1～I4保留相同参数集合，并按owner配对初始化；计算量、梯度和Dropout随机轨迹不要求相同。I0与I3也存在路由、残差及编码差异，不能将其差值称为纯注入时机消融。
+I1～I5保留相同参数集合，并按owner配对初始化；计算量、梯度和Dropout随机轨迹不要求相同。I0与I3也存在路由、残差及编码差异，不能将其差值称为纯注入时机消融。
 
 ## 第二组：独立的离子与中性分子专家S1
 
@@ -86,7 +90,7 @@ S1复制了L1专家，参数量和部分owner容量增加；L2候选数、门控
 
 | 变体 | Stage2 | Stage3 |
 |---|---:|---:|
-| I2／I3／I4 | 227,886,685 | 616,739,218 |
+| I2／I3／I4／I5 | 227,886,685 | 616,739,218 |
 | S1 | 293,886,557 | 755,272,594 |
 
 S1较I4的Stage2／Stage3参数分别增加28.96%／22.46%。Stage2在`performance.jsonl`记录每轮owner参数量；S1另记录各owner／类型的样本数、实体出现数、任务清单和实际收到梯度的优化器step数，不新增前向或调整梯度。无样本分支不执行注意力，保持`grad=None`，避免AdamW对其施加Weight Decay。
@@ -97,11 +101,13 @@ S1较I4的Stage2／Stage3参数分别增加28.96%／22.46%。Stage2在`performan
 
 先完成I2、I3、I4，再运行S1；S1始终配对I4，不根据前几项的成绩改换其参照。每项均训练完整Stage2及Stage3五折，不用两折成绩替代完整比较。I0／I1只读复用既有匹配权重；缺独立验证时按对应原配置补评估，不能重新标记为新模型。
 
-新增训练共4次Stage2、20个Stage3折次，Stage1新增训练为零。现有数据和Stage1身份一致时只读复用prepare，不重复编码；完整作业GPU小时与存储成本以正式运行的性能日志与训练成本为准，不从临时单任务探针外推固定时长。
+原方案新增4次Stage2、20个Stage3折次；I5另增1次Stage2及5个Stage3折次，合计5次Stage2、25个Stage3折次，Stage1新增训练为零。I5须从头训练匹配来源，不能借用I1／I2的Stage2 final。现有数据和Stage1身份一致时只读复用prepare，不重复编码；完整作业GPU小时与存储成本以正式运行的性能日志与训练成本为准，不从临时单任务探针外推固定时长。
 
-8份完整自包含YAML位于`configs/ablations/partner_injection_3407/{I2,I3,I4,S1}/stage{2,3}.yaml`。新训练与验证写入`outputs/ablations/partner_injection_3407/<编号>/stage{2,3}/`，汇总写入该套件的`reports/`；I0／I1不复制已有权重。
+10份完整自包含YAML位于`configs/ablations/partner_injection_3407/{I2,I3,I4,S1,I5}/stage{2,3}.yaml`。新训练与验证写入`outputs/ablations/partner_injection_3407/<编号>/stage{2,3}/`，汇总写入该套件的`reports/`；I0／I1不复制已有权重。
 
 原生模型字段为I2的`partner_injection: group_private_l2`、I3的`all_l2`、I4／S1的`group_l2_encoded`；仅S1设置`split_entity_encoders: true`。默认false省略序列化，原`l1`／`group_l2`配置身份与默认行为保持不变。S1禁止搭配其他接入模式；Stage3的`ablation.variant`分别为`partner_group_private`、`partner_all`、`partner_encoded`、`typed_entity_encoders`，解析时校验其与模型字段一致。科研路径和参数实现位于对应Stage，独立消融身份及对照报告逻辑位于`ablations/`，Stage不反向导入消融。
+
+I5使用`partner_injection: private_l2`及`ablation.variant: partner_private`，不设置类型分流。训练与注意力合同显式绑定PRIVATE接收、GLOBAL／GROUP主体输入及原GROUP投影汇聚，禁止与同形状的既有变体交叉迁移或恢复。
 
 各变体的编码、接收分支、投影／汇聚规则、参数分流及owner进入训练和产物身份；Stage2→Stage3严格配对。禁止跨变体迁移、resume、改SHA或按同形状部分加载。共享prepare身份只绑定既有数据和冻结Stage1，不随本次下游架构改变。继续使用公开Stage入口和现有消融扩展边界，不另建HPO或调度框架。
 
@@ -112,6 +118,7 @@ S1较I4的Stage2／Stage3参数分别增加28.96%／22.46%。Stage2在`performan
 实现验收只使用临时小数据：
 
 - 分别扰动第三槽，检查I1／I4／S1的GLOBAL与PRIVATE候选、主体L1及gate结构输入不变，GROUP候选可变化；I2仅扩展PRIVATE，I3再扩展GLOBAL。除既有mask外，不允许旁路读取第三成分。
+- I5仅PRIVATE候选及预测可随第三槽变化，GLOBAL／GROUP候选、主体L1及gate不变，非接收分支对第三槽梯度为零；同权重、eval条件下，其PRIVATE候选与I2逐bit一致。覆盖角色、mask、序列化、共享迁移及跨模式拒载，不增加默认重型链参数化。
 - 检查IL＋溶质、有机溶剂＋溶质、单分子、带电单分子及第三槽缺席；保持对象边界、三槽顺序和无效槽位逐层清零，归一化偏置不能泄漏。
 - 检查S1两类参数分别收到正确对象的梯度，不共享storage；同一中性分子作为溶剂或溶质走同一类型参数，但不同对象不在L1交互。对照I4的保留模块及初始参数按既定映射对齐。
 - 复用现有Stage2→Stage3端到端测试，覆盖样本加权、owner冻结、完整final、严格加载、完整轮恢复及跨变体拒载；保留现有Base的默认序列化和预测行为。

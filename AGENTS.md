@@ -47,7 +47,7 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 
 ### 历史合同、消融与基线
 
-- ADR-0127为用户另行授权的独立注入／类型编码消融：`configs/ablations/partner_injection_3407/`的I2/I3/I4/S1共8份Stage2/3 YAML，输出`outputs/ablations/partner_injection_3407/`。共享冻结Stage1与匹配prepare、data/3407/seed42/007/032；I2/I3扩展第三成分接收分支，I4恢复独立L1编码，S1离子／中性独立投影及注意力后在GROUP L2交互，S1以I4为配对参照。不同变体严格配对Stage2来源及训练身份，不改Base或0124套件，不增加seed。S1新增容量及类型预训练覆盖须单列，GLOBAL/GROUP/PRIVATE预算与样本加权不变；运行见[专用手册](docs/partner-injection-ablation-runbook.md)，正式训练由用户启动。
+- ADR-0127为用户另行授权的独立注入／类型编码消融：`configs/ablations/partner_injection_3407/`的I2/I3/I4/S1/I5共10份Stage2/3 YAML，输出`outputs/ablations/partner_injection_3407/`。共享冻结Stage1与匹配prepare、data/3407/seed42/007/032；I2/I3扩展第三成分接收分支，I5仅PRIVATE L2接收（沿用I2投影汇聚），I4恢复独立L1编码，S1离子／中性独立投影及注意力后在GROUP L2交互，S1以I4为配对参照。不同变体严格配对Stage2来源及训练身份，不改Base或0124套件，不增加seed。S1新增容量及类型预训练覆盖须单列，GLOBAL/GROUP/PRIVATE预算与样本加权不变；运行见[专用手册](docs/partner-injection-ablation-runbook.md)，正式训练由用户启动。
 
 - 历史实现/Capacity 保持五模态格式 v2、Stage 2 仅补偿 physics 的 loss 与既有精调；Stage 3 保持整模裁剪、`max(N_t,1000)` 虚拟过采样、80/20 精调和 `taskwise_refined`（ADR-0026/0027）。Capacity 是端到端预注册研究，不是正式多容量主线、严格缩放定律或仅编码器效应；只用 Stage 1 Base prepare 一次，共享 `outputs/experiments_v1/stage1/prepare/artifacts`。Stage 3 正式输入只用 `formal/*.yaml`，选择只读拼接后的验证，不读末轮均值或测试集。
 - 旧Object消融配置和旧ObjectEncoder实现/加载已移除；当前消融按[ADR-0124](docs/adr/0124-current-token-home-ablations.md)与[消融手册](docs/v4-ablation-runbook.md)执行：`configs/ablations/token_attention_3407/`共31份完整YAML，配对当前DGT/211维/22任务/token注意力Base，Stage1重训匹配实际来源batch84/5轮。核心C0～C10及E1～E5；原Uniform Task Gate及ChemBERTa-2两项已删除，不新增架构消融、不恢复容量或追加seed。旧`v4/`、`v4_3407/`其余配置仅作历史，原训练产物保留只读，禁止跨合同迁移。

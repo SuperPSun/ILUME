@@ -8,7 +8,7 @@
 |---|---|---|
 | Base实体token注意力 | [0120](0120-entity-token-attention-late-fusion.md) | L1对象内部注意力、L2全实体与条件交互、三槽逐token门控后末端拼接；1024D/8头/2层，独立身份 |
 | GROUP L2第三成分接入试验 | [0125](0125-group-l2-partner-injection.md) | 独立配置仅在GROUP L2接入槽位2；复用GROUP投影、参数量与初始化不变；Stage1/prepare复用、配对Stage2/3重新训练，Base及已有结果保留 |
-| 注入路径与离子／中性分子独立编码消融 | [0127](0127-partner-injection-and-typed-encoding-ablations.md) | I2/I3接收分支、I4独立编码、S1独立投影及注意力后在GROUP L2交互；8份配对YAML，独立于0124套件；[运行手册](../partner-injection-ablation-runbook.md) |
+| 注入路径与离子／中性分子独立编码消融 | [0127](0127-partner-injection-and-typed-encoding-ablations.md) | I2/I3接收分支、I5仅PRIVATE接收、I4独立编码、S1独立投影及注意力后在GROUP L2交互；10份配对YAML，独立于0124套件；[运行手册](../partner-injection-ablation-runbook.md) |
 | Stage2 共享梯度聚合 | [0097](0097-stage2-batch-sample-weighted-gradients.md) | 五模拟联合step，GLOBAL/GROUP按真实batch样本加权，PRIVATE原始梯度；新训练身份及严格恢复/迁移 |
 | Stage1 双路2D DGT | [0116](0116-stage1-dual-graph-transformer.md) | 现役Base八层双路512D DGT、encoder约77.99M；拓扑sidecar、逐通道pair attention、分块重计算和双路池化；旧D-MPNN严格历史加载，0089/0090图架构数值为历史 |
 | Base当前实验数据协议 | [0117](0117-base-22-tasks-updated-solvation.md) | 22实验＋两模拟；显式排除平衡压力/水活度系数，solvation按更新catalog声明3684体系；其余recipe不变，历史配置不迁移 |

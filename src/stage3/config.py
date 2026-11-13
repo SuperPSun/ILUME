@@ -185,10 +185,10 @@ class Stage3ModelConfig:
             raise ValueError("HoME attention heads/layers must be positive integers")
         if self.expert_architecture == "mlp" and (self.attention_heads != 8 or self.attention_layers != 2):
             raise ValueError("MLP HoME cannot configure attention")
-        if self.partner_injection not in {"l1", "group_l2", "group_private_l2", "all_l2", "group_l2_encoded"}:
+        if self.partner_injection not in {"l1", "group_l2", "group_private_l2", "all_l2", "group_l2_encoded", "private_l2"}:
             raise ValueError("Unknown HoME partner_injection")
         if self.partner_injection != "l1" and self.expert_architecture != "entity_token_attention_v1":
-            raise ValueError("GROUP L2 partner injection requires token attention")
+            raise ValueError("L2 partner injection requires token attention")
         if type(self.split_entity_encoders) is not bool:
             raise ValueError("split_entity_encoders must be a boolean")
         if self.split_entity_encoders and self.partner_injection != "group_l2_encoded":

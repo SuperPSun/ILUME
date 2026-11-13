@@ -11,9 +11,10 @@
 | I2 | `configs/ablations/partner_injection_3407/I2/` | GROUP＋PRIVATE | 原投影，PRIVATE用主体GROUP路由加权 |
 | I3 | `configs/ablations/partner_injection_3407/I3/` | GLOBAL＋GROUP＋PRIVATE | 原投影，GLOBAL使用自身投影 |
 | I4 | `configs/ablations/partner_injection_3407/I4/` | GROUP | 对第三成分独立执行原GROUP L1注意力 |
+| I5 | `configs/ablations/partner_injection_3407/I5/` | PRIVATE | 与I2相同的GROUP投影、归一化与主体路由加权汇聚 |
 | S1 | `configs/ablations/partner_injection_3407/S1/` | GROUP | 离子／中性独立投影与L1注意力，再于GROUP L2交互 |
 
-I2～S1固定I1的主体L1、门控与残差边界。比较I1→I2、I2→I3、I1→I4、I4→S1；I0不作为纯注入时机对照。S1按原形式电荷角色分流，槽位0的中性溶剂也走中性分支，带电溶质走离子分支；所有对象在L1仍分别编码。
+各变体固定I1的主体L1、门控与残差边界。比较I1→I2、I2→I3、I1→I4、I4→S1；I5与I2比较关闭GROUP接收，与I1比较仅PRIVATE／仅GROUP接收。I0不作为纯注入时机对照。S1按原形式电荷角色分流，槽位0的中性溶剂也走中性分支，带电溶质走离子分支；所有对象在L1仍分别编码。
 
 运行前已有来源应为：
 
@@ -21,23 +22,33 @@ I2～S1固定I1的主体L1、门控与残差边界。比较I1→I2、I2→I3、I
 - Stage2 prepare：`outputs/v4/stage2/token_attention/prepare/artifacts`。
 - Stage3 prepare：`outputs/v4/stage3/token_attention/prepare/artifacts`，含匹配的data/3407与211维来源。
 
-8份YAML已保留上述prepare路径；每项Stage3严格指向自己的新Stage2 final。加载器会校验数据、Stage1、模型合同和张量hash，不复制或修改审计元数据。缺少匹配prepare时先按[v4手册](v4-runbook.md#g2_c01-主模型)补齐，不能跳过来源检查。
+10份YAML已保留上述prepare路径；每项Stage3严格指向自己的新Stage2 final。加载器会校验数据、Stage1、模型合同和张量hash，不复制或修改审计元数据。缺少匹配prepare时先按[v4手册](v4-runbook.md#g2_c01-主模型)补齐，不能跳过来源检查。
 
 ## 训练与五折验证
 
-从4090仓库根目录执行。下面依次运行四种变体；每项Stage2使用一张卡，随后Stage3最多同时运行四折。没有外层任务并行，不会与内层折调度叠加。
+从4090仓库根目录执行。下面依次运行五种变体；每项Stage2使用一张卡，随后Stage3最多同时运行四折。没有外层任务并行，不会与内层折调度叠加。
 
 ```bash
 conda activate ilume
 set -e
-for ablation_id in I2 I3 I4 S1; do
+for ablation_id in I2 I3 I4 S1 I5; do
   python scripts/stage2/train.py --config "configs/ablations/partner_injection_3407/${ablation_id}/stage2.yaml" --output "outputs/ablations/partner_injection_3407/${ablation_id}/stage2/train" --device cuda:0
   python scripts/stage3/train.py --config "configs/ablations/partner_injection_3407/${ablation_id}/stage3.yaml" --fold 1 2 3 4 5 --output "outputs/ablations/partner_injection_3407/${ablation_id}/stage3/train" --devices cuda:0,cuda:1,cuda:2,cuda:3 --max-parallel 4
   python scripts/stage3/evaluate.py --config "configs/ablations/partner_injection_3407/${ablation_id}/stage3.yaml" --checkpoint-dir "outputs/ablations/partner_injection_3407/${ablation_id}/stage3/train" --split valid --fold 1 2 3 4 5 --output "outputs/ablations/partner_injection_3407/${ablation_id}/stage3/valid" --study-id partner_injection_3407
 done
 ```
 
-固定新增4次Stage2及20个Stage3折次。每个trial仍运行完整预设末轮，不缩短预算、不启用早停。模型结构不同，禁止借用I1或其他变体的Stage2权重与检查点。
+固定新增5次Stage2及25个Stage3折次（含补充I5的1次Stage2及5折）。每个trial仍运行完整预设末轮，不缩短预算、不启用早停。模型合同不同，禁止借用I1或其他变体的Stage2权重与检查点。
+
+### 仅补跑I5
+
+已有I2／I3／I4／S1结果时不重复运行上方循环。I5仅PRIVATE L2读取第三成分，投影／归一化／汇聚仍复用原GROUP参数并按原owner冻结，不新增参数。执行下列三步，新输出根须尚不存在：
+
+```bash
+python scripts/stage2/train.py --config configs/ablations/partner_injection_3407/I5/stage2.yaml --output outputs/ablations/partner_injection_3407/I5/stage2/train --device cuda:0
+python scripts/stage3/train.py --config configs/ablations/partner_injection_3407/I5/stage3.yaml --fold 1 2 3 4 5 --output outputs/ablations/partner_injection_3407/I5/stage3/train --devices cuda:0,cuda:1,cuda:2,cuda:3 --max-parallel 4
+python scripts/stage3/evaluate.py --config configs/ablations/partner_injection_3407/I5/stage3.yaml --checkpoint-dir outputs/ablations/partner_injection_3407/I5/stage3/train --split valid --fold 1 2 3 4 5 --output outputs/ablations/partner_injection_3407/I5/stage3/valid --study-id partner_injection_3407
+```
 
 I1已有完整独立验证时直接复用。I0若尚无独立验证，使用原权重补评估；目标目录已存在时跳过此命令，不能覆盖：
 
@@ -60,11 +71,11 @@ Stage3会跳过完整且身份一致的折；不截断日志、不猜测轮中�
 
 ## 验证对照报告
 
-全部五折验证完成后，汇总I0、I1及四种新变体。I1的study标识从既有报告读取，不硬编码来源hash：
+全部五折验证完成后，汇总I0、I1及五种新变体。I1的study标识从既有报告读取，不硬编码来源hash：
 
 ```bash
 ablation_base_run=$(python -c 'import json; from pathlib import Path; d=json.loads(Path("outputs/v4/stage3/group_l2_partner/valid/fold1/summary.json").read_text()); print("ilume@study:"+d["reporting"]["study_id"])')
-python scripts/benchmarks/summarize.py --input outputs/v4/stage3/token_attention/valid outputs/v4/stage3/group_l2_partner/valid outputs/ablations/partner_injection_3407/{I2,I3,I4,S1}/stage3/valid outputs/ablations/partner_injection_3407/{I2,I3,I4,S1}/stage2/train --output outputs/ablations/partner_injection_3407/reports/validation --ablation-analysis-output outputs/ablations/partner_injection_3407/reports/vs_I1 --ablation-authority-config configs/v4/stage3/group_l2_partner.yaml --ablation-base-run "$ablation_base_run"
+python scripts/benchmarks/summarize.py --input outputs/v4/stage3/token_attention/valid outputs/v4/stage3/group_l2_partner/valid outputs/ablations/partner_injection_3407/{I2,I3,I4,S1,I5}/stage3/valid outputs/ablations/partner_injection_3407/{I2,I3,I4,S1,I5}/stage2/train --output outputs/ablations/partner_injection_3407/reports/validation --ablation-analysis-output outputs/ablations/partner_injection_3407/reports/vs_I1 --ablation-authority-config configs/v4/stage3/group_l2_partner.yaml --ablation-base-run "$ablation_base_run"
 ```
 
 S1与I4另作配对比较；下面的run ID对应上方验证命令固定的study ID：
@@ -83,7 +94,7 @@ python scripts/benchmarks/summarize.py --input outputs/ablations/partner_injecti
 
 S1的Stage2 `performance.jsonl`另有`entity_type_training`：`samples`为本轮含该类型的原始行数，同一行可含两种类型；`entity_occurrences`为实体出现数；`optimizer_steps`为本轮该类型参数实际收到梯度并参加优化的联合step数。它们只用于审计，不改变梯度分母。solvation组没有匹配类型样本时，其相应分支不能称为已预训练。
 
-Phase1／2／3的验证变化、门控与冻结诊断沿用每折`phase_1/`、`phase_2/`、`phase_3/`中的`metrics.jsonl`及`diagnostics.jsonl`；各owner的末轮由固定预算确定，不从曲线挑选最佳轮。模型总量与各owner参数绑定在`resolved_training_plan.json`。I2～I4参数量相同，S1较I4下游Stage3增加22.46%，不能将其收益全部归因于分离处理。
+Phase1／2／3的验证变化、门控与冻结诊断沿用每折`phase_1/`、`phase_2/`、`phase_3/`中的`metrics.jsonl`及`diagnostics.jsonl`；各owner的末轮由固定预算确定，不从曲线挑选最佳轮。模型总量与各owner参数绑定在`resolved_training_plan.json`。I2～I5参数量相同，S1较I4下游Stage3增加22.46%，不能将其收益全部归因于分离处理。
 
 ## 测试与跨设备回传
 

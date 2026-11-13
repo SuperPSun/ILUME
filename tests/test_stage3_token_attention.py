@@ -116,7 +116,8 @@ def test_only_l2_sees_conditions_and_all_attention_owners_can_learn():
 
 
 @pytest.mark.parametrize("mode, split", [("l1", False), ("group_l2", False),
-    ("group_private_l2", False), ("all_l2", False), ("group_l2_encoded", False), ("group_l2_encoded", True)])
+    ("group_private_l2", False), ("all_l2", False), ("group_l2_encoded", False), ("group_l2_encoded", True),
+    ("private_l2", False)])
 def test_single_charged_entity_padding_and_owner_lifetimes(tmp_path, mode, split):
     from stage2.home_contract import transferable_state, load_transferable_state, state_hash
     from stage3.home import validate_transfer_architecture
@@ -161,6 +162,7 @@ def test_single_charged_entity_padding_and_owner_lifetimes(tmp_path, mode, split
     ("all_l2", False, {"global", "group", "private"}),
     ("group_l2_encoded", False, {"group"}),
     ("group_l2_encoded", True, {"group"}),
+    ("private_l2", False, {"private"}),
 ])
 def test_partner_enters_declared_l2_branches_only(organic, mode, split, receivers):
     task = spec(partner=True, organic=organic)
@@ -180,6 +182,12 @@ def test_partner_enters_declared_l2_branches_only(organic, mode, split, receiver
     else:
         partner = third
     first = model(task.task_id, primary, torch.zeros(2, 1), partner_embedding=partner)
+    if mode == "private_l2":
+        paired = model_for(task, experts=2, partner_injection="group_private_l2").eval()
+        paired.load_state_dict(model.state_dict(), strict=True)
+        reference = paired(task.task_id, primary, torch.zeros(2, 1), partner_embedding=partner)
+        torch.testing.assert_close(first.diagnostics['l2_private_candidates'],
+                                   reference.diagnostics['l2_private_candidates'], rtol=0, atol=0)
     altered = EntityInputs(values * 2, third.roles, third.mask)
     second = model(task.task_id, altered if organic else primary, torch.zeros(2, 1),
                    partner_embedding=partner if organic else altered)
@@ -187,13 +195,13 @@ def test_partner_enters_declared_l2_branches_only(organic, mode, split, receiver
     unchanged += [f'l2_{owner}_candidates' for owner in ('global', 'group', 'private') if owner not in receivers]
     for name in unchanged:
         torch.testing.assert_close(first.diagnostics[name], second.diagnostics[name], rtol=0, atol=0)
-    for name in ['z_global', 'z_group', *[f'l2_{owner}_candidates' for owner in ('global', 'private') if owner not in receivers]]:
+    for name in ['z_global', 'z_group', *[f'l2_{owner}_candidates' for owner in ('global', 'group', 'private') if owner not in receivers]]:
         assert torch.count_nonzero(first.diagnostics[name][..., 2, :]) == 0
     for owner in receivers:
         name = f'l2_{owner}_candidates'
         assert not torch.equal(first.diagnostics[name][:, :, 0], second.diagnostics[name][:, :, 0])
     assert not torch.equal(first.predictions, second.predictions)
-    for name in [f'l2_{owner}_candidates' for owner in ('global', 'private') if owner not in receivers]:
+    for name in [f'l2_{owner}_candidates' for owner in ('global', 'group', 'private') if owner not in receivers]:
         gradient = torch.autograd.grad(first.diagnostics[name].sum(), values, retain_graph=True, allow_unused=True)[0]
         assert gradient is None or torch.count_nonzero(gradient) == 0
     gradient = torch.autograd.grad((first.predictions * torch.tensor([1., -2.])).sum(), values)[0]
@@ -263,6 +271,7 @@ def test_group_l2_partner_configuration_and_identity_boundaries():
         replace(changed, split_entity_encoders=1)
     variants = [changed, replace(changed, partner_injection="group_private_l2"),
                 replace(changed, partner_injection="all_l2"),
+                replace(changed, partner_injection="private_l2"),
                 replace(changed, partner_injection="group_l2_encoded"),
                 replace(changed, partner_injection="group_l2_encoded", split_entity_encoders=True)]
     assert len({str(attention_contract(value)) for value in variants}) == len(variants)

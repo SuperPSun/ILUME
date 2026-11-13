@@ -46,6 +46,9 @@ def attention_contract(config, entity_dim=None):
                             global_partner="paired_global_l1_projection_role_position_v1")
         elif config.partner_injection == "group_l2_encoded":
             contract.update(partner_projection="paired_group_l1_independent_attention_then_norm_v1")
+        elif config.partner_injection == "private_l2":
+            contract.update(l2="private_partner_global_group_primary_only_v1",
+                            private_partner="primary_group_route_weighted_normalized_projections_v1")
     if config.split_entity_encoders:
         contract.update(l1="charge_typed_within_object_attention_without_conditions_v1",
                         entity_encoders="independent_ionic_neutral_projection_attention_v1",
@@ -354,9 +357,13 @@ def forward_tokens(model, task, primary, conditions, partner):
     global_outputs = (candidates(model.l2_global_experts, global_values, model.global_conditions["tokens"],
                                  with_partner=mode == "all_l2", scope="global")
                       if model.l2_global_experts else local.new_empty((len(local), 0, 3, model.d_model)))
-    group_outputs = candidates(model.l2_group_experts[group], local, model.group_conditions[group], with_partner=group_partner)
+    group_outputs = candidates(model.l2_group_experts[group], local, model.group_conditions[group],
+                               with_partner=group_partner and mode != "private_l2")
     private_partner = None
-    if mode in {"group_private_l2", "all_l2"}:
+    if mode == "private_l2":
+        group_partner_tokens = [model.l1_group_normalizations[group](expert.partner_token(values, roles))
+                                for expert in model.l1_group_experts[group]]
+    if mode in {"group_private_l2", "all_l2", "private_l2"}:
         private_partner = (torch.stack(group_partner_tokens, 1) * group_weights[:, 0, :, None, None]).sum(1)
     private_outputs = candidates(model.private_experts[key], local, model.private_conditions[key],
                                   with_partner=private_partner is not None, scope="private", private_partner=private_partner)
