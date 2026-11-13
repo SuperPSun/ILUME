@@ -2,7 +2,7 @@
 
 本入口按[ADR-0123](adr/0123-complete-baseline-22-task-report.md)组装十个baseline的22项实验与三项模拟结果，不包含ILUME。读取已有原单位预测重算指标，不调用模型，不训练、不改写历史身份或结果。
 
-2026-11-11起，XGBoost按[ADR-0126](adr/0126-xgboost-lightweight-variants.md)只保留500棵/深度4；原1000棵产物已按确认清单删除。2026-11-10生成报告是包含原版的历史快照，指标不改写。新报告入口只选择`lightweight/ecfp_xgboost_500_d4/`，须先完成113次新训练、评估与来源审计，并在报告YAML的`source_audits`登记新审计文件及SHA；当前尚未训练，不能重新发布完整榜单，不回退旧原版。
+2026-11-11起，XGBoost按[ADR-0126](adr/0126-xgboost-lightweight-variants.md)只保留500棵/深度4；原1000棵产物已按确认清单删除。2026-11-10生成报告是包含原版的历史快照，指标不改写。新报告入口只选择`lightweight/ecfp_xgboost/`，须先完成113次新训练、评估与来源审计，并在报告YAML的`source_audits`登记新审计文件及SHA；2026-11-13已完成113作业、回传及来源审计，新审计已登记，报告不回退旧原版。
 
 ## 生成
 
@@ -13,10 +13,10 @@ cd /data/pengs/ILUME
 conda activate ilume
 PYTHONPATH=src:. python scripts/benchmarks/summarize.py \
   --baseline-config configs/benchmarks/FLftv4_3407/reports/summary_22.yaml \
-  --output outputs/benchmarks/reports/FLftv4_3407_22_20261110
+  --output outputs/benchmarks/reports/FLftv4_3407_22_20261113
 ```
 
-该日期目录已用于本次交付。以后重新生成须换一个不存在的输出目录；不能覆盖已有报告。输入来源变化时先重新审计，禁止为了消除错误直接修改旧身份或绕过SHA。
+2026-11-10目录为含原版XGBoost的历史快照，2026-11-13目录使用500棵/深度4的新来源。以后重新生成须换一个不存在的输出目录；不能覆盖已有报告。输入来源变化时先重新审计，禁止为了消除错误直接修改旧身份或绕过SHA。
 
 ## 查看
 
@@ -31,7 +31,7 @@ PYTHONPATH=src:. python scripts/benchmarks/summarize.py \
 
 ## 来源边界
 
-固定来源为10项已完成定向补训＋其余12项实验＋三项模拟。其中MLP、XGBoost、ILBERT后15项使用本轮重训，其余七模型使用已经审计通过的历史来源。当前模型根可能同时存在不同协议的任务与旧根summary；入口只使用明确批准的任务/折来源，不扫描根summary拼表，不按结果好坏选择attempt。
+固定来源为10项已完成定向补训＋其余12项实验＋三项模拟。其中MLP、ILBERT后15项使用本轮重训，其余七模型使用已经审计通过的历史来源；XGBoost全部22实验与三模拟使用500棵/深度4新训练，独立审计见`outputs/benchmarks/maintenance/20261113-xgboost-return/`。当前模型根可能同时存在不同协议的任务与旧根summary；入口先按迁移映射定位现役目录，再对选中的批准来源执行完整校验；未选入的退役来源不要求其已删除文件继续存在。入口不扫描根summary拼表，不按结果好坏选择attempt。
 
 归档上移后，原 `completion_22/` 已移除，任务位于 `FLftv4_3407/<model>/`；本轮sweep记录位于 `FLftv4_3407/sweeps/completion_22/`，缓存位于 `FLftv4_3407/cache/completion_22/`。训练时冻结的原路径继续保留，报告通过SHA绑定的映射定位。
 

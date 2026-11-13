@@ -21,7 +21,7 @@ mkdir -p outputs/benchmarks/FLftv4_3407/lightweight/logs
 set -o pipefail
 PYTHONPATH=src:. python scripts/benchmarks/sweep.py \
   --config configs/benchmarks/FLftv4_3407/completion/ecfp_xgboost.yaml \
-  --output outputs/benchmarks/FLftv4_3407/lightweight/ecfp_xgboost_500_d4 \
+  --output outputs/benchmarks/FLftv4_3407/lightweight/ecfp_xgboost \
   --max-workers 1 --validation-only \
   2>&1 | tee -a outputs/benchmarks/FLftv4_3407/lightweight/logs/ecfp_xgboost_500_d4.log
 ```
@@ -34,8 +34,8 @@ PYTHONPATH=src:. python scripts/benchmarks/sweep.py \
 
 验证与资源检查完成后，重新执行上述sweep命令并去掉 `--validation-only`，保持配置与输出根一致，补齐测试评估。训练/验证仍通过完整性核验后跳过；不通过时明确失败，禁止手改身份或SHA。每次训练都固定500棵末轮发布，不按验证选树或调学习率。
 
-评估轻量化开销时，使用相同任务、五折与行集合，记录MAE、共同完整训练集尺度的NMAE、模型JSON总字节、训练耗时及相同CPU/线程/batch下的推理耗时。树数或深度比例不代表实际加速；本次尚无新正式结果。
+评估轻量化开销时，使用相同任务、五折与行集合，记录MAE、共同完整训练集尺度的NMAE、模型JSON总字节、训练耗时及相同CPU/线程/batch下的推理耗时。树数或深度比例不代表实际加速；2026-11-13已完成回传验收，完整新报告见`outputs/benchmarks/reports/FLftv4_3407_22_20261113/`。
 
 原版三个产物目录已按用户确认的精确清单清理，其他模型、共享缓存和历史只读配置保留。2026-11-10的报告包含1000棵原版，仅作为历史快照，不代表当前500棵模型。后续[完整22任务报告](baseline-22-summary-runbook.md)只接受500棵/深度4的新产物；必须先完成113作业、所需评估与新来源审计，并在报告配置的 `source_audits` 登记新审计SHA。未完成时报告组装明确失败，不拿旧原版或未审核预测补位。
 
-所有模型、运行配置、日志、身份和完整检查点最终回传4090项目的同相对路径；不能只传summary或排除权重。回传按[v4手册](v4-runbook.md#跨设备训练产物回传)执行，不覆盖或删除其他基线。此次未启动正式训练，3090旧产物也未自动清理。
+所有模型、运行配置、日志、身份和完整检查点最终回传4090项目的同相对路径；不能只传summary或排除权重。回传按[v4手册](v4-runbook.md#跨设备训练产物回传)执行，不覆盖或删除其他基线。本轮训练由用户启动，回传验收未启动训练或模型评估，3090原件保留。

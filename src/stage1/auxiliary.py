@@ -291,7 +291,7 @@ def prepare_teacher_cache(config, *, device="cpu", batch_size=8, workers=1, limi
 
 
 class TeacherCache:
-    def __init__(self, root, corpus_metadata, *, require_complete=False, validate_all=False):
+    def __init__(self, root, corpus_metadata, *, require_complete=False, validate_all=False, progress=None):
         from common.identity import validate_semantic_identity
 
         self.root = Path(root)
@@ -306,10 +306,17 @@ class TeacherCache:
         self.cache = OrderedDict()
         self.verified = set()
         if validate_all:
+            last_report = time.monotonic()
+            if progress is not None:
+                progress(0, len(manifest["shards"]))
             for shard, record in enumerate(manifest["shards"]):
                 if sha256_file(self.root / record["path"]) != record["sha256"]:
                     raise ValueError("Teacher shard integrity mismatch")
                 self.verified.add(shard)
+                if progress is not None and (shard == 0 or shard + 1 == len(manifest["shards"])
+                                             or time.monotonic() - last_report >= 30):
+                    progress(shard + 1, len(manifest["shards"]))
+                    last_report = time.monotonic()
         self.connection = None
         self.process = None
 

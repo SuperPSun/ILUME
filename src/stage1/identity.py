@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import time
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -152,7 +153,17 @@ def build_stage1_training_identity(
     config: PretrainConfig,
     corpus_identity: Mapping[str, Any],
     sampler_layout_identity: Mapping[str, Any],
+    *,
+    report_progress: bool = False,
 ) -> dict[str, Any]:
+    started = time.monotonic()
+
+    def report(stage: str, status: str, **details: Any) -> None:
+        if report_progress:
+            print(json.dumps({"event": "stage1_startup", "stage": stage, "status": status,
+                              "elapsed_seconds": round(time.monotonic() - started, 1),
+                              **details}, sort_keys=True), flush=True)
+
     raw = config.to_dict()
     training = dict(raw["training"])
     for name in (
@@ -170,31 +181,43 @@ def build_stage1_training_identity(
         training.pop(name, None)
     if config.training.max_graph_nodes is not None:
         from .training_filter import resolve_graph_training_filter
+        report("training_filter", "started")
         metadata = json.loads((config.data.artifacts_dir / "metadata.json").read_text())
         training["graph_training_filter"] = resolve_graph_training_filter(config, metadata)
+        report("training_filter", "complete")
     if config.model.graph_encoder_type == "dgt":
         from .dgt_topology import DGTTopologyCache, DGT_CONTRACT
+        report("dgt_topology", "started")
         metadata = json.loads((config.data.artifacts_dir / "metadata.json").read_text())
         cache = DGTTopologyCache(config, metadata)
         training["dgt_topology_identity"] = cache.materialization_identity["hash"]
         training["dgt_contract"] = DGT_CONTRACT
+        report("dgt_topology", "complete")
     if config.is_dual_view:
         from .auxiliary import TeacherCache, teacher_recipe
+        report("teacher_integrity", "started")
         metadata = json.loads((config.data.artifacts_dir / "metadata.json").read_text())
-        teacher = TeacherCache(config.auxiliary.teacher_cache, metadata, require_complete=True, validate_all=True)
+        teacher = TeacherCache(
+            config.auxiliary.teacher_cache, metadata, require_complete=True, validate_all=True,
+            progress=(lambda completed, total: report("teacher_integrity", "progress",
+                       completed_shards=completed, total_shards=total)) if report_progress else None,
+        )
         require_compatible_identity(teacher_recipe(config, metadata), teacher.manifest["identity"], context="Stage 1 teacher source")
         training["auxiliary_identity"] = semantic_identity("stage1.auxiliary-materialization.v4", {
             "recipe": teacher.manifest["identity"]["hash"],
             "shards": teacher.manifest["shards"],
             "index_sha256": teacher.manifest["index_sha256"],
         })["hash"]
+        report("teacher_integrity", "complete")
         training["architecture"] = config.architecture.kind
         if "ablation" in raw:
             training["ablation"] = raw["ablation"]
         if config.loss.lambda_partial_charge > 0:
             from .partial_charge import PartialChargeCache
+            report("partial_charge", "started")
             training["partial_charge_identity"] = PartialChargeCache(config, metadata).manifest["identity"]["hash"]
-    return semantic_identity(
+            report("partial_charge", "complete")
+    identity = semantic_identity(
         "stage1.training",
         {
             "corpus_identity": corpus_identity["hash"],
@@ -208,9 +231,11 @@ def build_stage1_training_identity(
             "scheduler": "linear-warmup-cosine-v1",
         },
     )
+    report("training_identity", "complete")
+    return identity
 
 
-def resolve_stage1_training_identity(config: PretrainConfig) -> dict[str, Any]:
+def resolve_stage1_training_identity(config: PretrainConfig, *, report_progress: bool = False) -> dict[str, Any]:
     metadata_path = config.data.artifacts_dir / "metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     corpus = metadata_identity(metadata, "corpus", context="Stage 1 corpus")
@@ -221,7 +246,7 @@ def resolve_stage1_training_identity(config: PretrainConfig) -> dict[str, Any]:
     layout = metadata_identity(
         metadata, "sampler_layout", context="Stage 1 corpus"
     )
-    return build_stage1_training_identity(config, corpus, layout)
+    return build_stage1_training_identity(config, corpus, layout, report_progress=report_progress)
 
 
 def metadata_identity(

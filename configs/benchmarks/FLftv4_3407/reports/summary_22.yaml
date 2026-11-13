@@ -6,6 +6,8 @@ source_audits:
   sha256: eba5e4626eefd1dd294753f324463ae4d0a27918a3b7b1265739f7000046e154
 - path: outputs/benchmarks/maintenance/20261109-completion-return/audit-results.json
   sha256: 0b843d2da734a0b631a02847022ebefc1d4c06b407a6f7b8fd917217e56609b1
+- path: outputs/benchmarks/maintenance/20261113-xgboost-return/audit-results.json
+  sha256: 06ceab4cb0dc18174d3f9748d6501eb05cd8e0b3e8216f1bafcd1ec2863f7558
 path_maps:
 - path: outputs/benchmarks/maintenance/20261109-completion-return/promotion-result.json
   sha256: fb8a5f88d56a7d1d7962ec9af9531c4f8936877b85a3d0aaa607da855d604e30

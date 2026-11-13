@@ -69,7 +69,7 @@ def baseline_sources(tmp_path, monkeypatch):
                 config, _, protocol = report._task_config(tmp_path, model, domain, task_id, Path('authority.yaml'))
                 root = baseline / ('retrain_22' if protocol == report.FLFT_22_PROTOCOL and model != 'ilbert' else '') / model / domain / task_id.replace('/', '__')
                 if protocol == report.XGBOOST_LIGHTWEIGHT_PROTOCOL:
-                    root = baseline / 'lightweight/ecfp_xgboost_500_d4' / domain / task_id.replace('/', '__')
+                    root = baseline / 'lightweight/ecfp_xgboost' / domain / task_id.replace('/', '__')
                 record = {'model': model, 'domain': domain, 'task': task_id, 'errors': [], 'status': 'passed', 'folds': [], 'evaluations': []}
                 manifests = []
                 for fold in (range(1, 6) if domain == 'stage3' else [None]):
@@ -241,7 +241,7 @@ def test_baseline_report_does_not_fall_back_to_retired_xgboost(baseline_sources)
     for record in receipts['records']:
         if record['model'] == 'ecfp_xgboost':
             for train in record['folds']:
-                train['run'] = train['run'].replace('lightweight/ecfp_xgboost_500_d4/', 'ecfp_xgboost/')
+                train['run'] = train['run'].replace('lightweight/ecfp_xgboost/', 'ecfp_xgboost/')
     f.receipts.write_text(json.dumps(receipts))
     f.settings['source_audits'][0]['sha256'] = sha256_file(f.receipts)
     f.config.write_text(yaml.safe_dump(f.settings))
@@ -259,3 +259,23 @@ def test_baseline_report_rejects_retired_task_roster(baseline_sources, monkeypat
     with pytest.raises(ValueError, match='exact 22-task registry'):
         report.publish_baseline_report(f.config, f.output, f.repository)
     assert not f.output.exists()
+
+
+def test_baseline_report_ignores_deleted_retired_xgboost_receipts(baseline_sources):
+    f = baseline_sources
+    receipts = json.loads(f.receipts.read_text())
+    retired = json.loads(json.dumps(next(r for r in receipts['records'] if r['model'] == 'ecfp_xgboost')))
+    moves = json.loads(f.mapping.read_text())
+    for train in retired['folds']:
+        old = train['run'].replace('lightweight/ecfp_xgboost/', 'completion_22/ecfp_xgboost/') + '/checkpoint.json'
+        destination = old.replace('/completion_22/', '/')
+        moves['moves'].append({'source': old, 'destination': destination, 'size': 1, 'sha256': '0' * 64})
+        train['run'] = old.removesuffix('/checkpoint.json')
+    receipts['records'].insert(0, retired)
+    f.receipts.write_text(json.dumps(receipts))
+    f.mapping.write_text(json.dumps(moves))
+    f.settings['source_audits'][0]['sha256'] = sha256_file(f.receipts)
+    f.settings['path_maps'][0]['sha256'] = sha256_file(f.mapping)
+    f.config.write_text(yaml.safe_dump(f.settings))
+    report.publish_baseline_report(f.config, f.output, f.repository)
+    assert json.loads((f.output / 'metadata.json').read_text())['status'] == 'completed'

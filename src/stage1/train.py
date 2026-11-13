@@ -590,7 +590,7 @@ def run_training(
     if context.is_primary:
         try:
             identity_result[0] = build_stage1_training_identity(
-                config, corpus_identity, sampler_layout_identity
+                config, corpus_identity, sampler_layout_identity, report_progress=True
             )
         except Exception as error:
             identity_result[1] = f"{type(error).__name__}: {error}"

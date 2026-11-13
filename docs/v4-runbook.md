@@ -199,6 +199,8 @@ torchrun --standalone --nproc-per-node=2 scripts/stage1/train.py --config config
 
 启动阶段rank0会先扫描manifest、核对少量源分片位置，再校验teacher/sidecar身份；随后广播相同清单给两rank。此阶段可能暂时没有进度条或训练目录，不能仅据此判断卡死。2026-11-09本地只读检查中，过滤解析约72秒，完整training identity解析约135秒；NFS负载和缓存状态可能延长时间。进入更新后检查`metrics.jsonl`与`training_filter.json`，不要将启动校验视为新一轮teacher生成。
 
+2026-11-13修复szx启动校验超过NCCL默认10分钟等待的问题：Stage1训练入口显式设置process group的`timeout=2小时`，覆盖首个broadcast及该group后续collective；不是无限等待，也不跳过校验。rank0在训练索引、DGT拓扑、teacher完整性和电荷sidecar检查前后输出`event=stage1_startup`的JSON日志，包含`stage/status/elapsed_seconds`。teacher额外报告`completed_shards/total_shards`，首尾及约每30秒在分片完成时刷新；单个慢文件读取不能保证每30秒更新。CLI检查和训练器内复核都可输出这些日志，重复阶段不表示重新生成缓存。普通校验错误先打印并广播给所有rank，不会继续训练；进程崩溃或持续I/O阻塞仍受超时限制。该执行修复不改变科研配置/身份、缓存SHA、数据、模型、loss、RNG或检查点格式，不需要重新prepare。szx更新代码后可重提原训练sbatch，不自动提交、删除或覆盖失败现场。
+
 `--output`只决定训练写入位置，不会自动改写下游YAML。上例使用独立训练目录时，后续Stage2/3的`initialization.stage1_encoder`必须指向该目录生成的`stage1_encoder.pt`，`initialization.stage1_artifacts_dir`仍指向原prepare；不得误读标准`train/`下的历史encoder。若用户已确认标准`outputs/v4/stage1/base/train`未占用，也可将上例输出改为该标准路径。仅提供命令不代表自动停止、清理或启动训练。
 
 <a id="stage1-dgt-topology"></a>

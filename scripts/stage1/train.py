@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
+from datetime import timedelta
 import os
 import sys
 from pathlib import Path
@@ -51,14 +52,18 @@ def main() -> None:
     if world_size > 1:
         if use_cuda:
             torch.cuda.set_device(local_rank)
-        dist.init_process_group(backend="nccl" if use_cuda else "gloo")
+        # Rank0 verifies large caches on shared storage before the first broadcast.
+        dist.init_process_group(
+            backend="nccl" if use_cuda else "gloo", timeout=timedelta(hours=2)
+        )
     rank = dist.get_rank() if dist.is_initialized() else 0
     run = None
     try:
         open_error: str | None = None
         if rank == 0:
             try:
-                training_identity = resolve_stage1_training_identity(config)
+                print("Stage1 startup: resolving training identity and verifying caches", flush=True)
+                training_identity = resolve_stage1_training_identity(config, report_progress=True)
                 run = open_run_directory(
                     stage="stage1",
                     operation="train",
@@ -76,6 +81,7 @@ def main() -> None:
                 )
             except BaseException as error:
                 open_error = f"{type(error).__name__}: {error}"
+                print(f"Stage1 startup failed: {open_error}", file=sys.stderr, flush=True)
         if dist.is_initialized():
             payload = [open_error]
             dist.broadcast_object_list(payload, src=0)

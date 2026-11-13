@@ -10,7 +10,7 @@
 
 新协议为 `flft_v4_3407_22_xgboost_lightweight`，唯一现役完整YAML为 `configs/benchmarks/FLftv4_3407/completion/ecfp_xgboost.yaml`。显式覆盖当前22项实验五折和热膨胀/HOMO/LUMO三项模拟，共113次训练。校验器仅允许500棵、深度4的固定配方，绑定当前Base22任务、data/3407及当前catalog；HOMO/LUMO仍读取 `data/stage1/properties/`。
 
-输出为 `outputs/benchmarks/FLftv4_3407/lightweight/ecfp_xgboost_500_d4/`，本轮原始特征缓存为 `lightweight/cache/features.sqlite3`。缓存继续按canonical SMILES、特征schema和RDKit版本寻址，不包含折scaler或目标。与旧基线缓存隔离，不改变特征schema。新协议、树数与深度进入训练/评估身份，跨深度与原版1000棵权重均拒绝加载。复用完整作业时沿用既有配置、来源SHA与文件完整性检查，不按summary存在跳过。
+输出为 `outputs/benchmarks/FLftv4_3407/lightweight/ecfp_xgboost/`，本轮原始特征缓存为 `lightweight/cache/features.sqlite3`。缓存继续按canonical SMILES、特征schema和RDKit版本寻址，不包含折scaler或目标。与旧基线缓存隔离，不改变特征schema。新协议、树数与深度进入训练/评估身份，跨深度与原版1000棵权重均拒绝加载。复用完整作业时沿用既有配置、来源SHA与文件完整性检查，不按summary存在跳过。
 
 按用户命名要求，现役配置恢复为原来的 `completion/ecfp_xgboost.yaml`，显示名恢复为 `ECFP+XGBoost`，删除带500/d4后缀的重复YAML。该路径现在表示完整22任务、500棵/深度4，不再表示旧12任务1000棵配方；旧配方由Git历史和冻结的运行配置追溯。除显示名和配置定位外，现役参数、缓存、输出根及科学身份均不变，既有500棵/深度4产物不搬迁。
 
@@ -37,3 +37,7 @@ sweep新增运行选项 `--validation-only`，只执行训练及验证，不调�
 扩展既有测试验证22任务/三模拟、113作业、错误预算/特征/种子拒绝；使用临时小数据真实训练500棵、保存与恢复预测，跨深度及1000棵身份拒绝；原版入口在数据/环境检查前失败；仅验证不运行或读取测试；新报告不回退到退役来源。执行pytest、入口帮助、编译、文档链接和diff检查；不自动启动正式训练，不调整环境。
 
 运行命令见[轻量化手册](../xgboost-lightweight-runbook.md)。
+
+## 2026-11-13回传与报告接入
+
+113作业及验证/测试已回传并通过独立来源审计。实际运行目录统一为`lightweight/ecfp_xgboost/`，汇总器、命令和文档按此目录对齐，不搬迁或改写训练身份。完整22任务报告配置登记`outputs/benchmarks/maintenance/20261113-xgboost-return/audit-results.json`及其SHA；历史报告保持不变。

@@ -72,15 +72,18 @@ class SourceAudit:
     def check(self, path: Path, expected: dict[str, Any]) -> None:
         _equal(self.fingerprint(path), {k: expected[k] for k in ("size", "sha256")}, self.relative(path))
 
-    def migrated(self, name: str) -> Path:
+    def location(self, name: str) -> Path:
         self.path(name)
         if name in self.moves:
-            entry = self.moves[name]
-            p = self.path(entry["destination"])
-            self.check(p, entry)
-            return p
+            return self.path(self.moves[name]["destination"])
         old = "outputs/benchmarks/v4_3407/"
         return self.baseline / name[len(old):] if name.startswith(old) else self.path(name)
+
+    def migrated(self, name: str) -> Path:
+        p = self.location(name)
+        if name in self.moves:
+            self.check(p, self.moves[name])
+        return p
 
 
 def _receipts(settings: dict[str, Any], audit: SourceAudit) -> dict[tuple[str, str, str], list[dict[str, Any]]]:
@@ -322,12 +325,12 @@ def build_baseline_report(settings: dict[str, Any], repository: Path) -> dict[st
                 config, config_path, protocol = _task_config(repository, model, domain, task_id, Path(settings["authority_config"]))
                 parent = baseline / ("retrain_22" if protocol == FLFT_22_PROTOCOL and model != "ilbert" else "") / model / domain / sanitize_task_id(task_id)
                 if protocol == XGBOOST_LIGHTWEIGHT_PROTOCOL:
-                    parent = baseline / "lightweight" / "ecfp_xgboost_500_d4" / domain / sanitize_task_id(task_id)
+                    parent = baseline / "lightweight" / model / domain / sanitize_task_id(task_id)
                 records = receipts.get((model, domain, task_id), [])
                 accepted = []
                 for receipt in records:
                     training = receipt.get("training", receipt.get("folds", []))
-                    if training and all(audit.migrated(r["run"] + "/checkpoint.json").parent.parent.parent == parent.resolve() for r in training):
+                    if training and all(audit.location(r["run"] + "/checkpoint.json").parent.parent.parent == parent.resolve() for r in training):
                         accepted.append(receipt)
                 if len(accepted) != 1:
                     raise ValueError(f"Exactly one approved source group is required: {model}/{task_id}")

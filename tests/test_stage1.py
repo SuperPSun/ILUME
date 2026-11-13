@@ -667,7 +667,7 @@ def test_stage1_cli_gradient_audit_override(tiny_config, tmp_path, monkeypatch, 
                      training=replace(tiny_config.training, device="cpu", gradient_audit_interval_steps=1000))
     captured = []
     monkeypatch.setattr(module, "load_config", lambda _: config)
-    monkeypatch.setattr(module, "resolve_stage1_training_identity", lambda _: {})
+    monkeypatch.setattr(module, "resolve_stage1_training_identity", lambda _, **kwargs: {})
     run = SimpleNamespace(root=tmp_path, metadata={"attempt_id": "test"},
                           complete=lambda _: None, fail=lambda: None)
     monkeypatch.setattr(module, "open_run_directory", lambda **_: run)
@@ -684,6 +684,59 @@ def test_stage1_cli_gradient_audit_override(tiny_config, tmp_path, monkeypatch, 
     else:
         module.main()
         assert captured[0].training.gradient_audit_interval_steps == expected
+
+
+def _ddp_startup_worker(rank, root, config):
+    import importlib.util
+    import os
+    import sys
+    import time
+    from datetime import timedelta
+    from types import SimpleNamespace
+
+    torch.set_num_threads(1)
+    script = ROOT / "scripts/stage1/train.py"
+    spec = importlib.util.spec_from_file_location("stage1_startup_cli", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    config = replace(config, training=replace(config.training, device="cpu"))
+    module.load_config = lambda _: config
+    os.environ.update(WORLD_SIZE="2", LOCAL_RANK=str(rank))
+    outputs_module.REPOSITORY_ROOT = Path(root)
+    sys.argv = [str(script), "--config", "fixture.yaml", "--output", "run"]
+    real_init = dist.init_process_group
+    for fail in (False, True):
+        events = []
+
+        def initialize(**kwargs):
+            assert kwargs["timeout"] == timedelta(hours=2)
+            real_init(init_method=f"file://{root}/init_{fail}", rank=rank, world_size=2, **kwargs)
+
+        def resolve(_, *, report_progress):
+            assert rank == 0 and report_progress
+            time.sleep(0.3)  # Peer is already waiting in its first collective.
+            if fail:
+                raise ValueError("teacher shard integrity mismatch")
+            return {}
+
+        module.dist.init_process_group = initialize
+        module.resolve_stage1_training_identity = resolve
+        module.open_run_directory = lambda **_: SimpleNamespace(
+            root=Path(root) / "run", metadata={"attempt_id": "test"},
+            complete=lambda _: events.append("completed"), fail=lambda: events.append("failed"))
+        module.run_training = lambda *args, **kwargs: events.append("training") or []
+        if fail:
+            with pytest.raises(RuntimeError, match="teacher shard integrity mismatch"):
+                module.main()
+            assert events == []
+        else:
+            module.main()
+            assert events == (["training", "completed"] if rank == 0 else ["training"])
+        assert not dist.is_initialized()
+
+
+def test_stage1_cli_ddp_slow_startup_and_integrity_error(tmp_path, tiny_config):
+    mp.spawn(_ddp_startup_worker, args=(str(tmp_path), tiny_config), nprocs=2, join=True)
 
 
 def test_frozen_regression_affine_initialization_and_molecule_loss(tiny_config):
@@ -890,7 +943,7 @@ def test_dual_view_structure_only_losses_and_downstream_freeze(tiny_config, tiny
 
 
 @pytest.mark.parametrize("graph_message_mode", ["dgt"])
-def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeypatch, graph_message_mode):
+def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeypatch, graph_message_mode, capsys):
     from stage1.config import AuxiliaryConfig, MaskingConfig
     from stage1.auxiliary import ELECTRONIC_SOURCES, TeacherCache, prepare_teacher_cache, load_electronic_labels
     from stage1.model import load_stage1_model
@@ -1158,7 +1211,18 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
     assert (interrupted_root / "shard_000000.pt").read_bytes() == committed
     assert len(load_electronic_labels(config)) == 1
     metadata = json.loads((config.data.artifacts_dir / "metadata.json").read_text())
-    cache = TeacherCache(config.auxiliary.teacher_cache, metadata, require_complete=True)
+    verified = []
+    cache = TeacherCache(config.auxiliary.teacher_cache, metadata, require_complete=True,
+                         validate_all=True, progress=lambda done, total: verified.append((done, total)))
+    assert verified[0] == (0, len(manifest["shards"]))
+    assert verified[-1] == (len(manifest["shards"]), len(manifest["shards"]))
+    silent_identity = resolve_stage1_training_identity(config)
+    capsys.readouterr()
+    assert resolve_stage1_training_identity(config, report_progress=True) == silent_identity
+    startup = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert startup[-1]["stage"] == "training_identity" and startup[-1]["status"] == "complete"
+    assert any(row["stage"] == "teacher_integrity" and row.get("completed_shards") == len(manifest["shards"])
+               for row in startup)
     from stage1.auxiliary import teacher_recipe
     alternate = replace(config, model=replace(config.model, graph_message_mode="residual_blocks" if graph_message_mode == "shared" else "shared"))
     if graph_message_mode == "dgt":
@@ -1424,7 +1488,7 @@ def test_dual_view_teacher_electronics_export_and_epoch_resume(tmp_path, monkeyp
     shard = config.auxiliary.teacher_cache / manifest["shards"][0]["path"]
     shard.write_bytes(b"corrupt")
     with pytest.raises(ValueError, match="integrity mismatch"):
-        resolve_stage1_training_identity(config)
+        resolve_stage1_training_identity(config, report_progress=True)
     with pytest.raises(ValueError, match="integrity mismatch"):
         prepare_teacher_cache(config, teacher=teacher)
 
