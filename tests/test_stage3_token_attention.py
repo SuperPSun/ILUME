@@ -19,11 +19,12 @@ def spec(task="experiment/test", *, partner=False, organic=False, columns=("temp
         True, 1., 1, {}, "formal_charge_v1")
 
 
-def model_for(task_spec, experts=1, partner_injection="l1", split_entity_encoders=False):
+def model_for(task_spec, experts=1, partner_injection="l1", split_entity_encoders=False, split_system_experts=False):
     # Tiny width uses the exact production modules, without allocating 1024D optimizers.
     config = Stage3ModelConfig(global_experts=experts, group_experts=experts, private_experts=1,
         dropout=0., expert_architecture="entity_token_attention_v1", attention_heads=2,
-        partner_injection=partner_injection, split_entity_encoders=split_entity_encoders)
+        partner_injection=partner_injection, split_entity_encoders=split_entity_encoders,
+        split_system_experts=split_system_experts)
     model = Stage3SparseModel(config, {task_spec.task_id: task_spec}, 16,
         initialization_seed=42, entity_inputs=True, entity_input_dim=1235)
     model.bind_condition_statistics({task_spec.task_id: {"conditions": {
@@ -164,15 +165,18 @@ def test_single_charged_entity_padding_and_owner_lifetimes(tmp_path, mode, split
     ("group_l2_encoded", True, {"group"}),
     ("private_l2", False, {"private"}),
 ])
-def test_partner_enters_declared_l2_branches_only(organic, mode, split, receivers):
+def test_partner_enters_declared_l2_branches_only(organic, mode, split, receivers, split_system_experts=False):
     task = spec(partner=True, organic=organic)
-    model = model_for(task, experts=2, partner_injection=mode, split_entity_encoders=split).eval()
+    model = model_for(task, experts=2, partner_injection=mode, split_entity_encoders=split,
+                      split_system_experts=split_system_experts).eval()
     previous = model_for(task, experts=2)
-    if not split:
+    if not split and not split_system_experts:
         assert model.state_dict().keys() == previous.state_dict().keys()
         assert all(torch.equal(value, previous.state_dict()[key]) for key, value in model.state_dict().items())
     with torch.no_grad():
-        model.l1_group_normalizations[task.meta_group].bias.fill_(0.2)
+        from stage3.token_attention import select_system, system_branch
+        select_system(model.l1_group_normalizations[task.meta_group],
+                      system_branch(task) if split_system_experts else None).bias.fill_(0.2)
     primary, partner = (molecule(0), molecule(1)) if organic else (ions(), molecule())
     third = primary if organic else partner
     values = third.values.detach().clone().requires_grad_(True)
@@ -269,13 +273,19 @@ def test_group_l2_partner_configuration_and_identity_boundaries():
         replace(changed, split_entity_encoders=True)
     with pytest.raises(ValueError, match="boolean"):
         replace(changed, split_entity_encoders=1)
+    with pytest.raises(ValueError, match="boolean"):
+        replace(changed, split_system_experts=1)
+    with pytest.raises(ValueError, match="GROUP/PRIVATE"):
+        replace(changed, split_system_experts=True)
     variants = [changed, replace(changed, partner_injection="group_private_l2"),
                 replace(changed, partner_injection="all_l2"),
                 replace(changed, partner_injection="private_l2"),
                 replace(changed, partner_injection="group_l2_encoded"),
                 replace(changed, partner_injection="group_l2_encoded", split_entity_encoders=True)]
+    variants.append(replace(changed, partner_injection="group_private_l2", split_system_experts=True))
     assert len({str(attention_contract(value)) for value in variants}) == len(variants)
     assert 'split_entity_encoders' not in original.to_dict()
+    assert 'split_system_experts' not in original.to_dict()
     for source in variants:
         for target in variants:
             if source != target:
@@ -301,7 +311,8 @@ def test_partner_research_configs_preserve_paired_data_and_training_recipe():
         root = Path('configs/ablations/partner_injection_3407') / identity
         source = load_home_recipe(root / 'stage2.yaml')
         target = load_research_config(root / 'stage3.yaml')
-        expected = replace(stage2.stage3.model, partner_injection=mode, split_entity_encoders=split)
+        expected = replace(stage2.stage3.model, partner_injection=mode, split_entity_encoders=split,
+                           split_system_experts=identity == 'S2')
         assert source == replace(stage2, stage3=replace(stage2.stage3, model=expected))
         assert target.model == source.stage3.model == expected
         assert target.ablation.variant == variant and target.ablation.model_id != 'ilume'
@@ -312,3 +323,102 @@ def test_partner_research_configs_preserve_paired_data_and_training_recipe():
         assert load_research_config(root / 'stage3.yaml').to_dict()['ablation']['variant'] == variant
         with pytest.raises(ValueError, match="declared variant"):
             replace(target, model=stage3.model).validate()
+
+
+def test_system_experts_isolate_tasks_and_transfer_only_matching_pretraining(tmp_path):
+    from stage2.home_contract import transferable_state, load_transferable_state, state_hash
+    from stage3.token_attention import unpretrained_system_parameters, system_expert_audit
+
+    config = Stage3ModelConfig(expert_architecture='entity_token_attention_v1', attention_heads=2,
+        global_experts=1, group_experts=2, dropout=0., partner_injection='group_private_l2',
+        split_system_experts=True)
+    ionic = spec('experiment/il_partner', partner=True)
+    ionic = replace(ionic, meta_group='solvation')
+    organic = replace(spec('experiment/organic', partner=True, organic=True), meta_group='solvation')
+    hydration = replace(spec('experiment/hydration'), primary_slots=('solute',), meta_group='solvation')
+    density = spec('simulation/density')
+    transfer = replace(organic, task_id='simulation/transfer_organic')
+
+    def build(specs, seed):
+        model = Stage3SparseModel(config, {s.task_id: s for s in specs}, 16,
+            initialization_seed=seed, entity_inputs=True, entity_input_dim=1235)
+        model.bind_condition_statistics({s.task_id: {'conditions': {
+            'temperature_K': {'mean': 300., 'scale': 20.}}} for s in specs})
+        return model
+
+    source = build((density, transfer), 42)
+    target = build((ionic, organic, hydration, density, transfer), 71)
+    before = {n: p.clone() for n, p in target.state_dict().items()}
+    # Two independent parameter copies begin identically without shared storage.
+    for module in (source.l1_global_experts[0], source.l2_global_experts[0]):
+        for left, right in zip(module['il'].parameters(), module['non_il'].parameters(), strict=True):
+            assert torch.equal(left, right) and left.data_ptr() != right.data_ptr()
+    optimizer = torch.optim.AdamW(source.parameters(), lr=1e-3)
+    for task, primary, partner in ((density, ions(), None), (transfer, molecule(), molecule())):
+        optimizer.zero_grad(set_to_none=True)
+        source(task.task_id, primary, torch.zeros(2, 1), partner_embedding=partner).predictions.sum().backward()
+        optimizer.step()
+    shared = transferable_state(source)
+    missing = unpretrained_system_parameters(target)
+    assert missing and not set(missing) & set(shared)
+    assert set(load_transferable_state(target, shared, state_hash(shared))) == set(shared)
+    assert all(torch.equal(target.state_dict()[n], value) for n, value in shared.items())
+    assert all(torch.equal(target.state_dict()[n], before[n]) for n in missing)
+    incomplete = dict(shared); incomplete.pop(next(iter(shared)))
+    with pytest.raises(ValueError, match='incomplete'):
+        load_transferable_state(target, incomplete, state_hash(incomplete))
+    extra = {**shared, missing[0]: before[missing[0]]}
+    with pytest.raises(ValueError, match='extra'):
+        load_transferable_state(target, extra, state_hash(extra))
+    with pytest.raises(ValueError, match='hash'):
+        load_transferable_state(target, shared, 'corrupt')
+    audit = system_expert_audit(target)
+    assert audit['task_systems'][ionic.task_id] == 'il'
+    assert audit['task_systems'][hydration.task_id] == 'non_il'
+    assert audit['random_il_solvation_parameters'] == list(missing)
+    from stage3.gradient_assembly import assemble_owner_gradients
+    left = target.l1_global_experts[0]['il'].projection.weight
+    right = target.l1_global_experts[0]['non_il'].projection.weight
+    assembled = assemble_owner_gradients(target, {
+        ionic.task_id: {left: torch.ones_like(left)}, organic.task_id: {right: torch.ones_like(right)}},
+        target.task_specs, {}, task_batch_sizes={ionic.task_id: 3, organic.task_id: 1})
+    # Parameter banks are separate; the original GLOBAL sample denominator stays shared.
+    torch.testing.assert_close(assembled.gradients[left], torch.full_like(left, .75))
+    torch.testing.assert_close(assembled.gradients[right], torch.full_like(right, .25))
+    optimizer = torch.optim.AdamW(target.parameters(), lr=1e-3, weight_decay=.1)
+    for task, primary, partner, active, inactive in (
+        (ionic, ions(), molecule(), 'il', 'non_il'),
+        (organic, molecule(0), molecule(), 'non_il', 'il'),
+    ):
+        target.train(); optimizer.zero_grad(set_to_none=True)
+        untouched = {n: p.detach().clone() for n, p in target.named_parameters() if f'.{inactive}.' in n}
+        output = target(task.task_id, primary, torch.zeros(2, 1), partner_embedding=partner)
+        (output.predictions * torch.tensor([1., -2.])).sum().backward()
+        assert any(p.grad is not None and p.grad.abs().sum() > 0 for n, p in target.named_parameters() if f'.{active}.' in n)
+        assert all(p.grad is None for n, p in target.named_parameters() if n in untouched)
+        optimizer.step()
+        assert all(torch.equal(p, untouched[n]) for n, p in target.named_parameters() if n in untouched)
+    target.zero_grad(set_to_none=True)
+    target.set_trainable_owners({private_owner(ionic.task_id)})
+    frozen = {n: p.detach().clone() for n, p in target.named_parameters() if '.il.' in n or '.non_il.' in n}
+    target(ionic.task_id, ions(), torch.zeros(2, 1), partner_embedding=molecule()).predictions.sum().backward()
+    optimizer.step()
+    assert all(torch.equal(p, frozen[n]) for n, p in target.named_parameters() if n in frozen)
+    target.eval()
+    single = target(hydration.task_id, molecule(0), torch.zeros(2, 1))
+    assert torch.isfinite(single.predictions).all()
+    assert torch.count_nonzero(single.diagnostics['z_group'][:, 1:]) == 0
+    checkpoint = tmp_path / 'system.pt'
+    torch.save(target.state_dict(), checkpoint)
+    reloaded = build((ionic, organic, hydration, density, transfer), 101).eval()
+    reloaded.load_state_dict(torch.load(checkpoint, weights_only=True), strict=True)
+    target.requires_grad_(False)
+    reloaded.requires_grad_(False)
+    primary, partner = ions(), molecule()
+    with torch.inference_mode():
+        torch.testing.assert_close(target(ionic.task_id, primary, torch.zeros(2, 1), partner_embedding=partner).predictions,
+                                   reloaded(ionic.task_id, primary, torch.zeros(2, 1), partner_embedding=partner).predictions,
+                                   rtol=0, atol=0)
+    for organic_task in (False, True):
+        test_partner_enters_declared_l2_branches_only(organic_task, 'group_private_l2', False,
+                                                     {'group', 'private'}, split_system_experts=True)

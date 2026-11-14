@@ -851,3 +851,33 @@ def test_validation_only_sweep_never_executes_or_reads_test_results(reuse_source
     assert summary['reporting']['benchmarks']['stage3_test']['status'] == 'not_requested'
     assert summary['reporting']['benchmarks']['simulation_test']['status'] == 'not_requested'
     assert not summary['reporting']['source_runs']['stage3_test']
+
+
+@pytest.mark.parametrize('model', ('molformer', 'ilbert', 'spmm', 'llasmol', 'aionopedia', 'iltransr'))
+def test_headft_config_tasks_identity_and_legacy_recipe(model):
+    from benchmarks.common.config import HEADFT_PROTOCOL
+    config = load_benchmark_config(f'configs/benchmarks/Headftv4_3407/{model}.yaml')
+    original = load_benchmark_config('configs/benchmarks/FLftv4_3407/' + ('ilbert_condition_zscore' if model == 'ilbert' else model) + '.yaml')
+    assert config.protocol == HEADFT_PROTOCOL
+    assert config.model == original.model
+    assert {k: v for k, v in config.training.items() if k != 'adaptation_mode'} == original.training
+    assert len(configured_tasks(config, 'stage3')) * 5 + len(configured_tasks(config, 'simulation')) == 113
+    assert config.stage3.folds == (1, 2, 3, 4, 5)
+    if model == 'iltransr':
+        from benchmarks.iltransr.adapter import resolve_iltransr_recipe
+        assert resolve_iltransr_recipe(config, 'simulation/homo')['epochs'] == 10
+    else:
+        assert config.training['max_epochs'] == 10
+    homo = resolve_task(config, 'simulation', 'simulation/homo', None)
+    assert str(homo.train_paths[0]).startswith('data/stage1/properties/homo/')
+    with pytest.raises(ValueError):
+        replace(config, training=original.training).validate()
+    with pytest.raises(ValueError):
+        replace(original, training=config.training).validate()
+    with pytest.raises(ValueError):
+        replace(config, stage3=replace(config.stage3, tasks=config.stage3.tasks[:-1])).validate()
+    from common.identity import require_compatible_identity
+    a = semantic_identity('benchmark.training.v1', {'training': config.training, 'protocol': config.protocol})
+    b = semantic_identity('benchmark.training.v1', {'training': original.training, 'protocol': original.protocol})
+    with pytest.raises(ValueError):
+        require_compatible_identity(a, b, context='Headft mode')

@@ -474,7 +474,7 @@ python scripts/stage3/evaluate.py --config configs/v4/stage3/group_l2_partner.ya
 
 中断后，Stage2训练追加`--resume outputs/v4/stage2/group_l2_partner/train`，Stage3训练追加布尔`--resume`。两种接入模式不能交叉续训或迁移，不能沿用已有token_attention模型作为本次新模式权重。
 
-后续I2／I3／I4／S1／I5（仅PRIVATE注入）的独立注入及分类型编码消融见[专用手册](partner-injection-ablation-runbook.md)和[ADR-0127](adr/0127-partner-injection-and-typed-encoding-ablations.md)；10份配对YAML位于`configs/ablations/partner_injection_3407/`，不替换上述Base或GROUP L2参照。
+后续I2／I3／I4／S1／I5（仅PRIVATE注入）的独立注入及分类型编码消融见[专用手册](partner-injection-ablation-runbook.md)和[ADR-0127](adr/0127-partner-injection-and-typed-encoding-ablations.md)；10份配对YAML位于`configs/ablations/partner_injection_3407/`，不替换上述Base或GROUP L2参照。按体系隔离IL／非IL专家的S2另见[ADR-0128](adr/0128-system-isolated-experts.md)及[S2手册](system-experts-ablation-runbook.md)，不纳入原批量循环。
 
 ## 数据核验结论与限制
 

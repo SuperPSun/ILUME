@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from benchmarks.common.adaptation import freeze_pretrained, training_mode, begin_frozen_audit, load_frozen_audit, verify_frozen_model
+from benchmarks.common.config import HEADFT_PROTOCOL
+
 import csv
 import hashlib
 import json
@@ -483,7 +486,7 @@ def build_iltransr_model(
         load_audit=load_audit,
     )
     frozen = [name for name, parameter in model.transformer.named_parameters() if not parameter.requires_grad]
-    if frozen:
+    if frozen and config.protocol != HEADFT_PROTOCOL:
         raise RuntimeError(f"ILTransR pretrained transformer is frozen: {frozen}")
     return model
 
@@ -528,13 +531,15 @@ def train_iltransr_bundle(
     seed_benchmark(effective_seed)
     _configure_fp32()
     model = build_iltransr_model(config, bundle).to(device)
+    freeze_pretrained(config, model, bundle.task.condition_columns)
     optimizer = torch.optim.Adam(
-        model.parameters(),
+        (p for p in model.parameters() if p.requires_grad),
         lr=float(config.training["learning_rate"]),
         betas=tuple(map(float, config.training["betas"])),
         eps=float(config.training["eps"]),
         weight_decay=float(config.training["weight_decay"]),
     )
+    frozen_audit = begin_frozen_audit(config, model, bundle.training_identity, bundle.task.condition_columns, optimizer)
     scheduler = torch.optim.lr_scheduler.StepLR(
         optimizer,
         step_size=int(config.training["lr_decay_epochs"]),
@@ -566,7 +571,7 @@ def train_iltransr_bundle(
                 bundle.train, bundle, batch_size=batch_size, model=model,
                 seed=effective_seed, epoch=epoch - 1, training=True,
             )
-            model.train()
+            training_mode(config, model, bundle.task.condition_columns)
             loss_sum = 0.0
             for batch in train_loader:
                 labels = batch.pop("labels").to(device, non_blocking=True)
@@ -611,9 +616,9 @@ def train_iltransr_bundle(
             name: float((current[name] - initial).abs().max()) for name, initial in watched.items()
         },
     }
-    if not parameter_audit["pretrained_transformer_fully_trainable"] or any(
+    if config.protocol != HEADFT_PROTOCOL and (not parameter_audit["pretrained_transformer_fully_trainable"] or any(
         value <= 0 for value in parameter_audit["selected_parameter_max_abs_delta"].values()
-    ):
+    )):
         raise RuntimeError("ILTransR full-fine-tuning parameter audit failed")
     atomic_json(root / "training_history.json", history)
     model_file = root / f"checkpoint_epoch_{epochs:05d}.pt"
@@ -622,6 +627,8 @@ def train_iltransr_bundle(
         path.name: {"sha256": sha256_file(path), "size": path.stat().st_size}
         for path in (root / "training_history.json", model_file)
     }
+    if frozen_audit is not None:
+        integrity.update(frozen_audit.finish(root, optimizer))
     manifest = {
         "format_version": 2,
         "kind": "ilume_baseline_model",
@@ -680,12 +687,14 @@ def evaluate_iltransr_checkpoint(
             raise ValueError(f"ILTransR checkpoint integrity mismatch: {filename}")
     bundle = prepare_iltransr_training(config, benchmark, task_id, fold)
     require_compatible_identity(bundle.training_identity, manifest["training_identity"], context="ILTransR evaluation checkpoint")
+    load_frozen_audit(config, bundle.task, manifest, root)
     raw = load_split(bundle.task, split)
     prepared = _prepare_split(bundle.task, raw, bundle.condition_stats, bundle.vocabulary, bundle.token_cache)
     device = torch.device(str(config.training["device"]))
     _configure_fp32()
     model = build_iltransr_model(config, bundle)
     model.load_state_dict(_torch_load(root / manifest["final_model_file"]), strict=True)
+    verify_frozen_model(config, model, bundle.task, manifest, root)
     model.to(device)
     loader = _loader(
         prepared, bundle, batch_size=int(bundle.recipe["batch_size"]), model=model,

@@ -54,7 +54,48 @@ def attention_contract(config, entity_dim=None):
                         entity_encoders="independent_ionic_neutral_projection_attention_v1",
                         entity_encoder_routing="formal_charge_role_preserve_objects_v1",
                         entity_encoder_initialization="clone_shared_random_initialization_v1")
+    if config.split_system_experts:
+        contract.update(system_experts="independent_il_non_il_shared_experts_v1",
+                        system_routing="declared_primary_cation_anion_pair_v1",
+                        system_initialization="clone_owner_random_initialization_v1",
+                        system_optimization="original_owner_denominators_clipping_calendar_v1",
+                        system_transfer="matched_banks_il_solvation_fold_random_v1")
     return contract
+
+
+def system_branch(spec):
+    if spec.primary_slots == ("cation", "anion"):
+        return "il"
+    if len(spec.primary_slots) == 1:
+        return "non_il"
+    raise ValueError("System experts require an IL pair or a declared single-entity primary")
+
+
+class SystemBranches(nn.ModuleDict):
+    """Same owner calendar, independent parameters selected by task topology."""
+    def __init__(self, module, branches):
+        super().__init__({branch: module if index == 0 else deepcopy(module)
+                          for index, branch in enumerate(branches)})
+
+
+def select_system(module, branch):
+    return module[branch] if isinstance(module, SystemBranches) else module
+
+
+def unpretrained_system_parameters(model):
+    if not model.model_config.split_system_experts:
+        return ()
+    return tuple(sorted(name for name, owner in model.ownership_manifest().items()
+                        if owner == "GROUP:solvation" and ".il." in name))
+
+
+def system_expert_audit(model):
+    return {
+        "task_systems": {task: system_branch(spec) for task, spec in model.task_specs.items() if spec.enabled},
+        "shared_parameter_counts": {branch: sum(p.numel() for name, p in model.named_parameters()
+                                               if f".{branch}." in name) for branch in ("il", "non_il")},
+        "random_il_solvation_parameters": list(unpretrained_system_parameters(model)),
+    }
 
 
 class TokenStack(nn.Module):
@@ -201,6 +242,13 @@ def initialize_token_modules(model, initialization_seed):
     model.towers = nn.ModuleDict()
     packed = 3 * model.entity_input_contract["entity_dim"] + 12
 
+    def banked(module, group=None):
+        if not config.split_system_experts:
+            return module
+        branches = ("il", "non_il") if group is None else tuple(sorted({
+            system_branch(spec) for spec in model.task_specs.values() if spec.enabled and spec.meta_group == group}))
+        return SystemBranches(module, branches)
+
     def arguments(ratio, dropout):
         return dict(hidden=max(1, round(width * ratio)), heads=config.attention_heads,
                     layers=config.attention_layers, dropout=dropout, activation=config.activation)
@@ -211,12 +259,12 @@ def initialize_token_modules(model, initialization_seed):
 
     with seeded_initialization(initialization_seed, "GLOBAL"):
         args = arguments(config.expert_hidden_ratio, config.dropout)
-        model.l1_global_experts = nn.ModuleList([entity_expert(args) for _ in range(config.global_experts)])
-        model.l2_global_experts = nn.ModuleList([ConditionalAttentionExpert(width, **args)
+        model.l1_global_experts = nn.ModuleList([banked(entity_expert(args)) for _ in range(config.global_experts)])
+        model.l2_global_experts = nn.ModuleList([banked(ConditionalAttentionExpert(width, **args))
                                                for _ in range(config.global_experts)])
-        model.l1_global_gate = nn.Linear(packed, config.global_experts) if config.global_experts else None
+        model.l1_global_gate = banked(nn.Linear(packed, config.global_experts)) if config.global_experts else None
         if config.global_experts:
-            model.global_conditions["tokens"] = ConditionTokens(CONDITION_SCALES, width)
+            model.global_conditions["tokens"] = banked(ConditionTokens(CONDITION_SCALES, width))
         owned = [model.l1_global_experts, model.l2_global_experts, model.global_conditions]
         if model.l1_global_gate is not None:
             owned.append(model.l1_global_gate)
@@ -227,11 +275,11 @@ def initialize_token_modules(model, initialization_seed):
         ratio = config.expert_hidden_ratio if gc is None or gc.expert_hidden_ratio is None else gc.expert_hidden_ratio
         with seeded_initialization(initialization_seed, f"GROUP:{group}"):
             args = arguments(ratio, config.dropout)
-            model.l1_group_experts[group] = nn.ModuleList([entity_expert(args) for _ in range(count)])
-            model.l1_group_gates[group] = nn.Linear(packed, count)
-            model.l1_group_normalizations[group] = nn.LayerNorm(width)
-            model.l2_group_experts[group] = nn.ModuleList([ConditionalAttentionExpert(width, **args) for _ in range(count)])
-            model.group_conditions[group] = ConditionTokens(CONDITION_SCALES, width)
+            model.l1_group_experts[group] = nn.ModuleList([banked(entity_expert(args), group) for _ in range(count)])
+            model.l1_group_gates[group] = banked(nn.Linear(packed, count), group)
+            model.l1_group_normalizations[group] = banked(nn.LayerNorm(width), group)
+            model.l2_group_experts[group] = nn.ModuleList([banked(ConditionalAttentionExpert(width, **args), group) for _ in range(count)])
+            model.group_conditions[group] = banked(ConditionTokens(CONDITION_SCALES, width), group)
             model._own_modules(group_owner(group), model.l1_group_experts[group],
                 model.l1_group_gates[group], model.l1_group_normalizations[group],
                 model.l2_group_experts[group], model.group_conditions[group])
@@ -292,14 +340,15 @@ def entity_sequence(primary, partner, spec, entity_dim):
     return values, roles, mask, packed
 
 
-def l1_token_mixture(model, group, values, roles, mask, packed):
+def l1_token_mixture(model, group, values, roles, mask, packed, system=None):
     experts = model.l1_global_experts if group is None else model.l1_group_experts[group]
     gate = model.l1_global_gate if group is None else model.l1_group_gates[group]
     if gate is None:
         return values.new_zeros((len(values), 3, model.d_model)), values.new_empty((len(values), 3, 0))
+    gate = select_system(gate, system)
     object_weights = gate(packed).softmax(-1)
     weights = object_weights[:, [0, 0, 1]].masked_fill(~mask[..., None], 0)
-    outputs = torch.stack([expert(values, roles, mask) for expert in experts], 1)
+    outputs = torch.stack([select_system(expert, system)(values, roles, mask) for expert in experts], 1)
     return (weights.transpose(1, 2)[..., None] * outputs).sum(1), weights
 
 
@@ -310,6 +359,7 @@ def forward_tokens(model, task, primary, conditions, partner):
         raise ValueError(f"Inactive Stage3 token task: {task}")
     values, roles, mask, packed = entity_sequence(primary, partner, spec, model.entity_input_contract["entity_dim"])
     key, group = sanitize_task(task), spec.meta_group
+    system = system_branch(spec) if model.model_config.split_system_experts else None
     if task not in model.condition_statistics:
         raise ValueError(f"Missing token HoME condition statistics: {task}")
     physical, present = physical_conditions(conditions, spec.condition_columns, model.condition_statistics[task])
@@ -324,9 +374,14 @@ def forward_tokens(model, task, primary, conditions, partner):
         l1_roles = roles.masked_fill(~l1_mask, 0)
         packed = packed.clone()
         packed[:, 1] = 0
-    global_values, global_weights = model.l1_token_values(None, l1_values, l1_roles, l1_mask, packed)
-    local, group_weights = model.l1_token_values(group, l1_values, l1_roles, l1_mask, packed)
-    local = model.l1_group_normalizations[group](local).masked_fill(~mask[..., None], 0)
+    if system is None:
+        global_values, global_weights = model.l1_token_values(None, l1_values, l1_roles, l1_mask, packed)
+        local, group_weights = model.l1_token_values(group, l1_values, l1_roles, l1_mask, packed)
+    else:
+        global_values, global_weights = l1_token_mixture(model, None, l1_values, l1_roles, l1_mask, packed, system)
+        local, group_weights = l1_token_mixture(model, group, l1_values, l1_roles, l1_mask, packed, system)
+    normalization = select_system(model.l1_group_normalizations[group], system)
+    local = normalization(local).masked_fill(~mask[..., None], 0)
     if group_partner:
         local = local.masked_fill(~l1_mask[..., None], 0)
 
@@ -334,10 +389,11 @@ def forward_tokens(model, task, primary, conditions, partner):
     def candidates(experts, entities, encoder, *, with_partner=False, scope="group", private_partner=None):
         if not experts:
             return entities.new_empty((len(entities), 0, 3, model.d_model))
-        condition_tokens = encoder(physical, present)
+        condition_tokens = select_system(encoder, system)(physical, present)
         active = mask if with_partner or not group_partner else l1_mask
         outputs = []
         for index, expert in enumerate(experts):
+            expert = select_system(expert, system)
             current = entities
             if with_partner:
                 if scope == "global":
@@ -345,10 +401,10 @@ def forward_tokens(model, task, primary, conditions, partner):
                 elif scope == "private":
                     partner_tokens = private_partner
                 else:
-                    source = model.l1_group_experts[group][index]
+                    source = select_system(model.l1_group_experts[group][index], system)
                     partner_tokens = (source.encoded_partner(values, roles, mask) if mode == "group_l2_encoded"
                                       else source.partner_token(values, roles))
-                    partner_tokens = model.l1_group_normalizations[group](partner_tokens)
+                    partner_tokens = normalization(partner_tokens)
                     group_partner_tokens.append(partner_tokens)
                 current = torch.cat((entities[:, :2], partner_tokens), 1).masked_fill(~mask[..., None], 0)
             outputs.append(expert(current, active, condition_tokens, present))

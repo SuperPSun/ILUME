@@ -2,6 +2,8 @@
 
 科研定义见[ADR-0127](adr/0127-partner-injection-and-typed-encoding-ablations.md)。本套件独立于[现役核心消融](v4-ablation-runbook.md)，复用当前Stage1与token_attention prepare，不改Base、不重训Stage1、不新增训练seed。以下正式命令由用户运行。
 
+用户后续新增的S2按IL／非IL体系隔离参数，单独见[ADR-0128](adr/0128-system-isolated-experts.md)和[S2手册](system-experts-ablation-runbook.md)。其两份配置不纳入下方原注入变体批量循环，避免重跑既有实验。
+
 ## 变体与来源
 
 | 编号 | 配置目录 | 第三成分进入的L2分支 | 第三成分编码 |

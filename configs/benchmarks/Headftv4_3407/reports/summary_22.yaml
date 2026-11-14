@@ -1,0 +1,3 @@
+protocol: headft_v4_3407_22_report
+authority_config: configs/v4/stage3/base.yaml
+baseline_root: outputs/benchmarks/Headftv4_3407

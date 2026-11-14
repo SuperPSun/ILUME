@@ -49,6 +49,8 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 
 - ADR-0127为用户另行授权的独立注入／类型编码消融：`configs/ablations/partner_injection_3407/`的I2/I3/I4/S1/I5共10份Stage2/3 YAML，输出`outputs/ablations/partner_injection_3407/`。共享冻结Stage1与匹配prepare、data/3407/seed42/007/032；I2/I3扩展第三成分接收分支，I5仅PRIVATE L2接收（沿用I2投影汇聚），I4恢复独立L1编码，S1离子／中性独立投影及注意力后在GROUP L2交互，S1以I4为配对参照。不同变体严格配对Stage2来源及训练身份，不改Base或0124套件，不增加seed。S1新增容量及类型预训练覆盖须单列，GLOBAL/GROUP/PRIVATE预算与样本加权不变；运行见[专用手册](docs/partner-injection-ablation-runbook.md)，正式训练由用户启动。
 
+- ADR-0128新增S2体系隔离专家：`configs/ablations/partner_injection_3407/S2/stage{2,3}.yaml`，独立输出S2。共享冻结Stage1，按任务IL双槽／非IL单实体分流；各有独立L1 GLOBAL/GROUP、L2 GLOBAL/GROUP、条件编码及归一化，PRIVATE等逐任务独立。GLOBAL L2只读主体，GROUP/PRIVATE L2注入溶质；IL solvation GROUP无匹配Stage2来源，在Stage3本折随机初始化，严格禁止跨分支迁移。原owner样本加权分母、裁剪、预算与冻结不变，新增容量及预训练覆盖须单列。见[ADR-0128](docs/adr/0128-system-isolated-experts.md)和[手册](docs/system-experts-ablation-runbook.md)，不改Base及已有变体，不自动训练。
+
 - 历史实现/Capacity 保持五模态格式 v2、Stage 2 仅补偿 physics 的 loss 与既有精调；Stage 3 保持整模裁剪、`max(N_t,1000)` 虚拟过采样、80/20 精调和 `taskwise_refined`（ADR-0026/0027）。Capacity 是端到端预注册研究，不是正式多容量主线、严格缩放定律或仅编码器效应；只用 Stage 1 Base prepare 一次，共享 `outputs/experiments_v1/stage1/prepare/artifacts`。Stage 3 正式输入只用 `formal/*.yaml`，选择只读拼接后的验证，不读末轮均值或测试集。
 - 旧Object消融配置和旧ObjectEncoder实现/加载已移除；当前消融按[ADR-0124](docs/adr/0124-current-token-home-ablations.md)与[消融手册](docs/v4-ablation-runbook.md)执行：`configs/ablations/token_attention_3407/`共31份完整YAML，配对当前DGT/211维/22任务/token注意力Base，Stage1重训匹配实际来源batch84/5轮。核心C0～C10及E1～E5；原Uniform Task Gate及ChemBERTa-2两项已删除，不新增架构消融、不恢复容量或追加seed。旧`v4/`、`v4_3407/`其余配置仅作历史，原训练产物保留只读，禁止跨合同迁移。
 - ADR-0034/0036/0062/0068/0072/0073/0079/0080/0081 及 Stage3 候选仅作历史追溯，不作为活跃入口；旧输出只读，不跨身份加载。v1/Capacity 冻结合同仍有效。
@@ -93,6 +95,8 @@ ADR-0122：Stage1的`training.max_graph_nodes: 160`只在分配DDP rank前过滤
 - `trash/` 不进 Git。移动旧产物/YAML/未消费数据或删除机器缓存前，报告精确文件数、大小、目标和冲突策略，等用户明确确认。不得覆盖、重排或删除既有 `trash/`。
 
 ## 当前基线数据协议
+
+ADR-0129新增独立Headft六模型协议`headft_v4_3407_22`：MoLFormer/ILBERT/SPMM/LlaSMol/AIonopedia/ILTransR，冻结通用预训练模块及已发布LoRA，训练原有任务侧模块，维持各模型10轮配方；22实验五折＋三模拟共678作业。配置`configs/benchmarks/Headftv4_3407/`、输出`outputs/benchmarks/Headftv4_3407/<model>/`，不使用下游监督初始化、不改既有FLft结果。冻结参数/buffer前后指纹及优化器白名单进入完整性审计，恢复/汇总严格校验；AIonopedia新增条件模块允许梯度穿过冻结融合模块。独立六模型报告沿用summarize的`--baseline-config`，不混FLft或ILUME，不宣称统一线性探针；正式训练由用户启动，见[手册](docs/baseline-headft-runbook.md)。
 
 ADR-0126将现役ECFP+XGBoost固定为500棵/最大深度4，新协议`flft_v4_3407_22_xgboost_lightweight`，唯一配置`configs/benchmarks/FLftv4_3407/completion/ecfp_xgboost.yaml`，输出`outputs/benchmarks/FLftv4_3407/lightweight/ecfp_xgboost/`，22实验五折＋三模拟共113作业。原ECFP4/条件/seed42及其他参数不变；1000棵与500棵/深度6退役，原版训练/sweep入口拒绝运行，历史YAML仅供只读解析。按精确确认清单已删除4090三个原版产物目录共1498文件/396995033字节；其他模型/共享缓存/历史快照/远端保留。后续完整报告只选择500棵/深度4，未完成新训练及审计就失败，不回退旧结果。sweep的`--validation-only`仅训练/验证，测试标记not_requested，后续可去掉选项补齐；正式训练由用户启动，见[手册](docs/xgboost-lightweight-runbook.md)。
 

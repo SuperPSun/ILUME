@@ -118,6 +118,9 @@ def load_transferable_state(
         name for name, owner in manifest.items()
         if owner == "GLOBAL" or owner in {f"GROUP:{group}" for group in TRANSFER_GROUPS}
     }
+    if model.model_config.split_system_experts:
+        from stage3.token_attention import unpretrained_system_parameters
+        expected -= set(unpretrained_system_parameters(model))
     if set(state) != expected:
         raise ValueError("Stage2-HoME transferable owner set is incomplete or contains extra tensors")
     for name, value in state.items():

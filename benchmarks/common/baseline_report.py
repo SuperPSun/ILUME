@@ -22,13 +22,15 @@ from stage3.config import load_stage3_config
 from stage3.data import canonicalize_smiles, resolve_task_registry
 from .config import (CATALOG_V4_SIMULATION_TASKS, FLFT_22_COMPLETION_PROTOCOL,
                      FLFT_22_COMPLETION_TASKS, FLFT_22_PROTOCOL, FLFT_22_RETRAIN_TASKS,
-                     XGBOOST_LIGHTWEIGHT_PROTOCOL, load_benchmark_config)
+                     XGBOOST_LIGHTWEIGHT_PROTOCOL, HEADFT_PROTOCOL, HEADFT_MODELS, load_benchmark_config)
+from .adaptation import load_frozen_audit
 from .data import load_split, resolve_task
 from .features import feature_schema
 from .paper import BASELINE_MODELS, _metrics
 
 
 PROTOCOL = "flft_v4_3407_22_report"
+HEADFT_REPORT_PROTOCOL = "headft_v4_3407_22_report"
 METRICS = ("mae", "rmse", "r2", "normalized_mae", "normalized_rmse")
 
 
@@ -109,7 +111,12 @@ def _receipts(settings: dict[str, Any], audit: SourceAudit) -> dict[tuple[str, s
     return records
 
 
-def _task_config(repository: Path, model: str, domain: str, task: str, authority: Path):
+def _task_config(repository: Path, model: str, domain: str, task: str, authority: Path, *, headft: bool = False):
+    if headft:
+        path = Path(f"configs/benchmarks/Headftv4_3407/{model}.yaml")
+        config = load_benchmark_config(repository / path)
+        _equal(config.protocol, HEADFT_PROTOCOL, "Headft configuration protocol")
+        return config, path, HEADFT_PROTOCOL
     completed = model in {"mlp", "ecfp_xgboost", "ilbert"} and task not in FLFT_22_RETRAIN_TASKS
     changed = domain == "stage3" and task in FLFT_22_RETRAIN_TASKS
     if model == "ecfp_xgboost":
@@ -175,6 +182,7 @@ def _training(config, task, run: Path, expected_protocol: str, receipt: dict[str
     for name in ("checkpoint.json", "metadata.json", "run_config.yaml", "environment.json"):
         if (run / name).is_file():
             audit.fingerprint(run / name)
+    load_frozen_audit(config, task, manifest, run)
     return manifest
 
 
@@ -188,6 +196,7 @@ def _completed(parent: Path) -> Path:
 
 def _evaluation(run: Path, task, split: str, manifests: list[tuple[Path, dict[str, Any]]], audit: SourceAudit):
     meta, summary = _json(run / "metadata.json"), _json(run / "summary.json")
+    _equal(meta["status"], "completed", "evaluation completion")
     identity = meta["semantic_identity"]
     validate_semantic_identity(identity)
     _equal((identity["type"], meta["stage"], meta["operation"]), ("benchmark.evaluation.v1", "benchmark", "evaluate"), "evaluation kind")
@@ -278,12 +287,13 @@ def _predictions(run: Path, summary: dict[str, Any], task, split: str, raw, audi
     return raw.targets[:, 0], np.asarray(values)
 
 
-def _tables(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _tables(rows: list[dict[str, Any]], models=None) -> dict[str, Any]:
+    models = BASELINE_MODELS if models is None else models
     tasks = list(dict.fromkeys(row["task"] for row in rows))
     task_rows = []
     for task in tasks:
         current = []
-        for model in BASELINE_MODELS:
+        for model in models:
             values = [r for r in rows if r["task"] == task and r["model_id"] == model]
             result = {k: values[0][k] for k in ("task", "model_id", "model", "group")}
             result["count"] = sum(r["count"] for r in values)
@@ -296,7 +306,7 @@ def _tables(rows: list[dict[str, Any]]) -> dict[str, Any]:
             row["rank"] = 1 + sum(other["mae"] < row["mae"] for other in current)
         task_rows.extend(current)
     overall = []
-    for model in BASELINE_MODELS:
+    for model in models:
         values = [r for r in task_rows if r["model_id"] == model]
         overall.append({"model_id": model, "model": values[0]["model"], "tasks": len(values),
                         "macro_normalized_mae": statistics.mean(r["normalized_mae"] for r in values),
@@ -305,8 +315,65 @@ def _tables(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {"tasks": task_rows, "folds": rows, "overall": sorted(overall, key=lambda r: (r["macro_normalized_mae"], r["model_id"]))}
 
 
+def _headft_receipts(settings: dict, audit: SourceAudit) -> dict:
+    records = {}
+    for model in HEADFT_MODELS:
+        root = audit.baseline / model
+        config = load_benchmark_config(audit.repository / f"configs/benchmarks/Headftv4_3407/{model}.yaml")
+        _equal(config.protocol, HEADFT_PROTOCOL, "Headft sweep configuration")
+        meta, summary = _json(root / "metadata.json"), _json(root / "summary.json")
+        validate_semantic_identity(meta["semantic_identity"])
+        _equal((meta["status"], summary["jobs"]["failed"], summary["reporting"]["data_protocol"]),
+               ("completed", 0, HEADFT_PROTOCOL), "completed Headft sweep")
+        saved = yaml.safe_load((root / "run_config.yaml").read_text())
+        _equal({k: v for k, v in saved.items() if k not in {"display_name", "runtime"}},
+               {k: v for k, v in config.to_dict().items() if k not in {"display_name", "runtime"}}, "Headft sweep recipe")
+        for name in ("metadata.json", "summary.json", "run_config.yaml"):
+            audit.fingerprint(root / name)
+        sources = summary["reporting"]["source_runs"]
+        for domain, tasks in (("stage3", config.stage3.tasks), ("simulation", config.simulation.tasks)):
+            prefix = "stage3" if domain == "stage3" else "simulation"
+            for split in ("validation", "test"):
+                _equal(sorted(sources[prefix + "_" + split]), sorted(tasks), "complete Headft sweep task selection")
+            for task_id in tasks:
+                parent = root / domain / sanitize_task_id(task_id)
+                record = {"model": model, "domain": domain, "task": task_id, "training": [], "evaluations": []}
+                for split in ("valid", "test"):
+                    refs = sources[prefix + ("_validation" if split == "valid" else "_test")][task_id]
+                    if domain == "stage3" and split == "valid":
+                        _equal(sorted(refs), [f"fold{f}" for f in range(1, 6)], "complete Headft validation folds")
+                        selected = [(f, refs[f"fold{f}"]) for f in range(1, 6)]
+                    else:
+                        selected = [(None, refs)]
+                    for fold, name in selected:
+                        ev = audit.path(name)
+                        expected = parent / (f"evaluate_valid_fold{fold}" if fold else f"evaluate_{split}")
+                        _equal(ev.parent, expected, "Headft evaluation directory")
+                        meta, result = _json(ev / "metadata.json"), _json(ev / "summary.json")
+                        checkpoints = meta["provenance"]["checkpoints"]
+                        if split == "valid":
+                            _equal(len(checkpoints), 1, "single validation model")
+                            checkpoint = audit.path(checkpoints[0])
+                            _equal(checkpoint.parent, parent / (f"fold{fold}" if fold else "train"), "Headft training directory")
+                            manifest = _json(checkpoint / "checkpoint.json")
+                            record["training"].append({"fold": fold, "run": audit.relative(checkpoint),
+                                                       "identity_hash": manifest["training_identity"]["hash"]})
+                        predictions = result["reporting"]["predictions"]
+                        if len(predictions) > 1:
+                            raise ValueError("Headft requires one scalar prediction artifact")
+                        record["evaluations"].append({"fold": fold, "split": split, "run": name,
+                            "rows": sum(p["rows"] for p in predictions),
+                            **({"prediction_sha256": predictions[0]["sha256"]} if predictions else {})})
+                records[(model, domain, task_id)] = [record]
+    return records
+
+
 def build_baseline_report(settings: dict[str, Any], repository: Path) -> dict[str, Any]:
-    _equal(settings["protocol"], PROTOCOL, "report configuration protocol")
+    report_protocol = settings["protocol"]
+    if report_protocol not in {PROTOCOL, HEADFT_REPORT_PROTOCOL}:
+        raise ValueError("Unknown baseline report protocol")
+    headft = report_protocol == HEADFT_REPORT_PROTOCOL
+    models = HEADFT_MODELS if headft else BASELINE_MODELS
     baseline = repository / settings["baseline_root"]
     audit = SourceAudit(repository, baseline)
     authority_path = audit.path(settings["authority_config"])
@@ -315,14 +382,14 @@ def build_baseline_report(settings: dict[str, Any], repository: Path) -> dict[st
     _equal(set(registry) == set(FLFT_22_RETRAIN_TASKS + FLFT_22_COMPLETION_TASKS), True, "exact 22-task registry")
     _equal((authority.data.stage3_dir, authority.data.task_catalog),
            (Path("data/3407/stage3"), Path("data/3407/task_catalog.csv")), "3407 data roots")
-    receipts = _receipts(settings, audit)
+    receipts = _headft_receipts(settings, audit) if headft else _receipts(settings, audit)
     groups, rows, comparisons = [], {k: [] for k in ("stage3_validation", "stage3_test", "simulation_validation", "simulation_test")}, {}
     datasets, training_targets = {}, {}
     no_test = set()
-    for model in BASELINE_MODELS:
+    for model in models:
         for domain, tasks in (("stage3", tuple(registry)), ("simulation", CATALOG_V4_SIMULATION_TASKS)):
             for task_id in tasks:
-                config, config_path, protocol = _task_config(repository, model, domain, task_id, Path(settings["authority_config"]))
+                config, config_path, protocol = _task_config(repository, model, domain, task_id, Path(settings["authority_config"]), **({"headft": True} if headft else {}))
                 parent = baseline / ("retrain_22" if protocol == FLFT_22_PROTOCOL and model != "ilbert" else "") / model / domain / sanitize_task_id(task_id)
                 if protocol == XGBOOST_LIGHTWEIGHT_PROTOCOL:
                     parent = baseline / "lightweight" / model / domain / sanitize_task_id(task_id)
@@ -350,6 +417,8 @@ def build_baseline_report(settings: dict[str, Any], repository: Path) -> dict[st
                     manifests.append((run, manifest))
                     group["training"].append({"run": audit.relative(run), "original_run": record["run"],
                                                "identity": manifest["training_identity"], "manifest_sha256": audit.fingerprint(run / "checkpoint.json")["sha256"]})
+                    if headft:
+                        group["training"][-1]["frozen_audit"] = load_frozen_audit(config, task, manifest, run)
                     key = (task_id, fold)
                     if key not in datasets:
                         for path in task.train_paths:
@@ -375,7 +444,10 @@ def build_baseline_report(settings: dict[str, Any], repository: Path) -> dict[st
                             if key not in datasets:
                                 datasets[key] = load_split(task, "test")
                             raw = datasets[key]
-                        ev = _completed(parent / (f"evaluate_valid_fold{fold}" if fold else f"evaluate_{split}"))
+                        approved = [e for e in receipt["evaluations"] if e["split"] == split and e.get("fold") == fold]
+                        if headft and len(approved) != 1:
+                            raise ValueError("Exactly one Headft evaluation selection is required")
+                        ev = audit.path(approved[0]["run"]) if headft else _completed(parent / (f"evaluate_valid_fold{fold}" if fold else f"evaluate_{split}"))
                         chosen = [manifests[fold - 1]] if fold else manifests
                         summary = _evaluation(ev, task, split, chosen, audit)
                         approved = [e for e in receipt["evaluations"] if e["split"] == split and e.get("fold") == fold]
@@ -406,26 +478,26 @@ def build_baseline_report(settings: dict[str, Any], repository: Path) -> dict[st
                         refs["normalization"][task_id + (f":fold{fold}" if fold else "")] = {"scale": scale}
                 groups.append(group)
         print(f"Verified baseline sources: {model}", flush=True)
-    sections = {label: _tables(values) for label, values in rows.items()}
+    sections = {label: _tables(values, models) for label, values in rows.items()}
     for label, refs in comparisons.items():
         simulation = label.startswith("simulation")
         comparisons[label] = comparison_identity("simulation_property" if simulation else "stage3_property",
             split="valid" if label.endswith("validation") else "test", expected=list(dict.fromkeys(r["task"] for r in rows[label])),
             sources=refs["sources"], normalization=refs["normalization"], folds=() if simulation else (1, 2, 3, 4, 5),
             ensemble=label == "stage3_test")
-    source_identity = semantic_identity("benchmark.baseline-22-sources.v1", {"protocol": PROTOCOL, "groups": groups, "files": audit.files})
-    identity = semantic_identity("reporting.baseline-22-comparison.v1", {"protocol": PROTOCOL, "comparisons": comparisons,
+    source_identity = semantic_identity("benchmark.baseline-22-sources.v1", {"protocol": report_protocol, "groups": groups, "files": audit.files})
+    identity = semantic_identity("reporting.baseline-22-comparison.v1", {"protocol": report_protocol, "comparisons": comparisons,
         "registry": {k: v.to_dict() for k, v in registry.items()}, "source_identity": source_identity["hash"],
         "normalization": "valid: four-fold train population std; test: mean of five train std; simulation: train population std; constant scale 1"})
-    return {"schema_version": 1, "protocol": PROTOCOL, "comparison_identity": identity,
+    return {"schema_version": 1, "protocol": report_protocol, "comparison_identity": identity,
             "source_manifest": source_identity, "sections": sections,
-            "coverage": {"models": list(BASELINE_MODELS), "experimental_tasks": list(registry),
+            "coverage": {"models": list(models), "experimental_tasks": list(registry),
                          "experimental_no_test": sorted(no_test), "simulation_tasks": list(CATALOG_V4_SIMULATION_TASKS),
                          "training_jobs": sum(len(g["training"]) for g in groups),
                          "evaluation_runs": sum(len(g["evaluations"]) for g in groups)},
-            "scope": {"ilume_included": False, "historical_reports_changed": False, "simulations_in_experiment_macro": False,
+            "scope": {**({"adaptation_mode": "frozen_pretrained", "interpretation": "冻结预训练模块，保留各模型任务侧结构与配方；不是统一线性探针"} if headft else {}), "ilume_included": False, "historical_reports_changed": False, "simulations_in_experiment_macro": False,
                       "fold_std": "折间样本标准差，不表示独立种子稳定性或统计显著性",
-                      "source_audits": "复核原审计批准的身份、当前数据SHA、配方、权重及完整有序预测；不重新执行原生模型预处理或模型推理"}}
+                      "source_audits": ("复核完成sweep明确选择的训练身份、冻结审计、当前数据SHA、配方、权重及完整有序预测；不执行模型推理" if headft else "复核原审计批准的身份、当前数据SHA、配方、权重及完整有序预测；不重新执行原生模型预处理或模型推理")}}
 
 
 def publish_baseline_report(config_path: Path, output: Path, repository: Path) -> dict[str, Any]:
@@ -442,9 +514,20 @@ def publish_baseline_report(config_path: Path, output: Path, repository: Path) -
         source = payload.pop("source_manifest")
         (staging / "source_manifest.json").write_text(json.dumps(source, ensure_ascii=False, indent=2, allow_nan=False) + "\n")
         payload["source_manifest"] = {"path": "source_manifest.json", "sha256": sha256_file(staging / "source_manifest.json"), "identity_hash": source["hash"]}
-        lines = ["# 完整22任务 baseline 报告", "", "仅包含十个baseline，不包含ILUME；实验与模拟分别计算任务等权汇总。", "",
+        headft = settings["protocol"] == HEADFT_REPORT_PROTOCOL
+        lines = ["# 冻结预训练模块的六模型 baseline 报告" if headft else "# 完整22任务 baseline 报告", "",
+                 "仅包含六个预训练baseline，不包含ILUME；实验与模拟分别计算任务等权汇总。" if headft else "仅包含十个baseline，不包含ILUME；实验与模拟分别计算任务等权汇总。", "",
                  "实验验证采用五折指标均值及折间样本标准差；测试采用五模型原单位预测均值。共同归一化尺度为每折完整训练行目标总体标准差，测试取五折尺度均值；模拟取原训练集总体标准差，零方差取1。", "",
                  "无测试集的实验任务：" + "、".join(payload["coverage"]["experimental_no_test"]), ""]
+        if settings["protocol"] == HEADFT_REPORT_PROTOCOL:
+            lines += ["## 冻结预训练模块的任务侧适配", "", payload["scope"]["interpretation"], "",
+                      "| 模型 | 任务侧模块 | 可训练参数量范围 |", "|---|---|---:|"]
+            for model in HEADFT_MODELS:
+                audits = [r["frozen_audit"] for g in source["payload"]["groups"] if g["model_id"] == model for r in g["training"]]
+                modules = sorted({m for a in audits for m in a["task_modules"]})
+                counts = [a["trainable_parameters"] for a in audits]
+                lines.append(f"| {model} | {', '.join(modules)} | {min(counts):,}–{max(counts):,} |")
+            lines += [""]
         for label, section in payload["sections"].items():
             dest = staging / label
             dest.mkdir()

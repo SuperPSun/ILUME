@@ -115,6 +115,9 @@ class EntityHomeBackend:
             raise ValueError('Phase snapshots are evaluation-only; train the paired Base')
         plan['ablation'] = {'contract_version': 1, **asdict(self.spec),
                             'initial_model_state_hash': tensor_state_hash('ablation.entity-home.initial-state.v1', model.state_dict())}
+        if config.model.split_system_experts:
+            from stage3.token_attention import system_expert_audit
+            plan['ablation']['system_experts'] = system_expert_audit(model)
         if hasattr(model, 'capacity_match'):
             plan['ablation']['capacity_match'] = model.capacity_match
         global_hidden = expert_hidden_width(model.l1_global_experts[0]) if model.l1_global_experts else 0
@@ -149,6 +152,9 @@ class EntityHomeBackend:
     def validate_plan(self, config, model, plan):
         expected = {'contract_version': 1, **asdict(self.spec),
                     'initial_model_state_hash': tensor_state_hash('ablation.entity-home.initial-state.v1', model.state_dict())}
+        if config.model.split_system_experts:
+            from stage3.token_attention import system_expert_audit
+            expected['system_experts'] = system_expert_audit(model)
         if hasattr(model, 'capacity_match'):
             expected['capacity_match'] = model.capacity_match
         if plan.get('ablation') != expected:

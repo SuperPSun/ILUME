@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from benchmarks.common.adaptation import freeze_pretrained, training_mode, begin_frozen_audit, load_frozen_audit, verify_frozen_model
+
 import importlib.util
 import json
 import math
@@ -737,11 +739,13 @@ def train_spmm_bundle(
     if device.type != "cuda" or not torch.cuda.is_available():
         raise RuntimeError("SPMM requires CUDA; no silent CPU fallback")
     model = build_spmm_model(config, bundle).to(device)
+    freeze_pretrained(config, model, bundle.task.condition_columns)
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        (p for p in model.parameters() if p.requires_grad),
         lr=float(config.training["warmup_learning_rate"]),
         weight_decay=float(config.training["weight_decay"]),
     )
+    frozen_audit = begin_frozen_audit(config, model, bundle.training_identity, bundle.task.condition_columns, optimizer)
     sampler = SortishBatchSampler(
         _row_token_lengths(bundle.train, bundle.token_cache),
         batch_size=int(config.training["batch_size"]),
@@ -776,7 +780,7 @@ def train_spmm_bundle(
     try:
         for epoch in range(1, max_epochs + 1):
             sampler.set_epoch(epoch - 1)
-            model.train()
+            training_mode(config, model, bundle.task.condition_columns)
             loss_sum = 0.0
             seen = 0
             for input_ids, attention_mask, conditions, targets in train_loader:
@@ -857,6 +861,8 @@ def train_spmm_bundle(
         root, final_state, state_hash, history,
         {"train": bundle.train.audit, "valid": bundle.valid.audit},
     )
+    if frozen_audit is not None:
+        integrity.update(frozen_audit.finish(root, optimizer))
     manifest = {
         "format_version": 2,
         "kind": "ilume_baseline_model",
@@ -949,6 +955,7 @@ def evaluate_spmm_checkpoint(
         manifest["training_identity"],
         context="SPMM evaluation checkpoint",
     )
+    load_frozen_audit(config, bundle.task, manifest, root)
     seed_benchmark(config.seed)
     _configure_backend(config)
     raw = load_split(bundle.task, split)
@@ -973,6 +980,7 @@ def evaluate_spmm_checkpoint(
     ) != manifest["model_state_hash"]:
         raise ValueError("SPMM checkpoint state hash mismatch")
     model.load_state_dict(payload["state_dict"], strict=True)
+    verify_frozen_model(config, model, bundle.task, manifest, root)
     device = torch.device(str(config.training["device"]))
     if device.type != "cuda" or not torch.cuda.is_available():
         raise RuntimeError("SPMM evaluation requires CUDA; no silent CPU fallback")

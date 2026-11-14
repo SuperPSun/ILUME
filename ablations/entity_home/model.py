@@ -6,10 +6,12 @@ from torch import nn
 from common.training import seeded_initialization
 from stage3.model import Expert
 from stage3.simulation import SimulationEntityModel
-from stage3.token_attention import token_model
+from stage3.token_attention import token_model, SystemBranches
 
 
 def expert_hidden_width(expert):
+    if isinstance(expert, SystemBranches):
+        expert = next(iter(expert.values()))
     return (expert.stack.blocks[0].linear1.out_features if hasattr(expert, 'stack')
             else expert.layers[0].out_features)
 

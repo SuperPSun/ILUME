@@ -20,15 +20,19 @@ from common.reporting import comparison_identity, write_prediction_csv
 
 
 @pytest.fixture
-def baseline_sources(tmp_path, monkeypatch):
-    models = ('mlp', 'ilbert', 'aionopedia', 'ecfp_xgboost')
+def baseline_sources(tmp_path, monkeypatch, request):
+    headft = getattr(request, 'param', None) == 'headft'
+    models = report.HEADFT_MODELS if headft else ('mlp', 'ilbert', 'aionopedia', 'ecfp_xgboost')
     changed, completed = 'experiment/electrical_conductivity', 'experiment/self_diffusion_coefficient'
     simulations = ('simulation/thermal_expansion', 'simulation/homo', 'simulation/lumo')
     original = Path.cwd()
     configs = {str(p.relative_to(original)): load_benchmark_config(p) for p in
                list((original / 'configs/benchmarks/FLftv4_3407').glob('*.yaml'))
                + list((original / 'configs/benchmarks/FLftv4_3407/completion').glob('*.yaml'))
-               + list((original / 'configs/benchmarks/catalog_v4_3407').glob('*.yaml'))}
+               + list((original / 'configs/benchmarks/catalog_v4_3407').glob('*.yaml'))
+               + list((original / 'configs/benchmarks/Headftv4_3407').glob('*.yaml'))}
+    if headft:
+        configs = {name: replace(c, stage3=replace(c.stage3, tasks=(changed, completed))) if c.protocol == report.HEADFT_PROTOCOL else c for name, c in configs.items()}
     for name, config in configs.items():
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -61,12 +65,12 @@ def baseline_sources(tmp_path, monkeypatch):
                 names.append('test.csv')
             for index, name in enumerate(names):
                 (base / name).write_text(f'solute,temperature_K,value,ion_role,provenance_source_file,provenance_source_row\nC[NH3+],300,{index},cation,{ORBITAL_SOURCE_FILE_BY_ROLE["cation"]},2\nC[NH3+],300,{index + .5},cation,{ORBITAL_SOURCE_FILE_BY_ROLE["cation"]},3\n')
-    baseline = tmp_path / 'outputs/benchmarks/FLftv4_3407'
+    baseline = tmp_path / ('outputs/benchmarks/Headftv4_3407' if headft else 'outputs/benchmarks/FLftv4_3407')
     records, moves, weights, predictions = [], [], [], []
     for model in models:
         for domain, tasks in [('stage3', (changed, completed)), ('simulation', simulations)]:
             for task_id in tasks:
-                config, _, protocol = report._task_config(tmp_path, model, domain, task_id, Path('authority.yaml'))
+                config, _, protocol = report._task_config(tmp_path, model, domain, task_id, Path('authority.yaml'), **({'headft': True} if headft else {}))
                 root = baseline / ('retrain_22' if protocol == report.FLFT_22_PROTOCOL and model != 'ilbert' else '') / model / domain / task_id.replace('/', '__')
                 if protocol == report.XGBOOST_LIGHTWEIGHT_PROTOCOL:
                     root = baseline / 'lightweight/ecfp_xgboost' / domain / task_id.replace('/', '__')
@@ -90,6 +94,15 @@ def baseline_sources(tmp_path, monkeypatch):
                     identity = semantic_identity('benchmark.aionopedia-training.v1' if model == 'aionopedia' else 'benchmark.training.v1', payload)
                     integrity = {'model.pt': {'size': weight.stat().st_size, 'sha256': sha256_file(weight)}}
                     manifest = {'training_identity': identity, 'integrity': integrity}
+                    if headft:
+                        from benchmarks.common.adaptation import task_modules
+                        modules = task_modules(model, task.condition_columns)
+                        name = modules[0] + '.weight'
+                        frozen = {'version': 1, 'adaptation_mode': 'frozen_pretrained', 'training_identity_hash': identity['hash'],
+                            'task_modules': list(modules), 'parameters': {name: {'trainable': True, 'numel': 1}, 'frozen.weight': {'trainable': False, 'numel': 1}},
+                            'optimizer_parameters': [name], 'trainable_parameters': 1, 'frozen_state_before': '0' * 64, 'frozen_state_after': '0' * 64}
+                        audit_file = run / 'frozen_audit.json'; audit_file.write_text(json.dumps(frozen))
+                        integrity[audit_file.name] = {'size': audit_file.stat().st_size, 'sha256': sha256_file(audit_file)}
                     (run / 'checkpoint.json').write_text(json.dumps(manifest))
                     (run / 'metadata.json').write_text(json.dumps({'status': 'completed', 'semantic_identity': identity}))
                     (run / 'run_config.yaml').write_text(yaml.safe_dump(config.to_dict()))
@@ -144,10 +157,26 @@ def baseline_sources(tmp_path, monkeypatch):
                         (run / 'summary.json').write_text(json.dumps(summary))
                         record['evaluations'].append({'split': split, 'fold': fold, 'rows': len(rows), **({'prediction_sha256': entries[0]['sha256']} if rows else {})})
                 records.append(record)
+    if headft:
+        for model in models:
+            root = baseline / model
+            selected = [r for r in records if r['model'] == model]
+            sources = {k: {} for k in ('stage3_validation', 'stage3_test', 'simulation_validation', 'simulation_test')}
+            for record in selected:
+                parent = root / record['domain'] / record['task'].replace('/', '__')
+                for split in ('valid', 'test'):
+                    key = record['domain'] + ('_validation' if split == 'valid' else '_test')
+                    if record['domain'] == 'stage3' and split == 'valid':
+                        sources[key][record['task']] = {f'fold{fold}': (parent / f'evaluate_valid_fold{fold}/attempt-001').relative_to(tmp_path).as_posix() for fold in range(1, 6)}
+                    else:
+                        sources[key][record['task']] = (parent / f'evaluate_{split}/attempt-001').relative_to(tmp_path).as_posix()
+            (root / 'summary.json').write_text(json.dumps({'jobs': {'failed': 0}, 'reporting': {'data_protocol': report.HEADFT_PROTOCOL, 'source_runs': sources}}))
+            (root / 'metadata.json').write_text(json.dumps({'status': 'completed', 'semantic_identity': semantic_identity('benchmark.sweep.v1', {'model': model})}))
+            (root / 'run_config.yaml').write_text(yaml.safe_dump(configs[f'configs/benchmarks/Headftv4_3407/{model}.yaml'].to_dict()))
     receipts, mapping = tmp_path / 'audit.json', tmp_path / 'moves.json'
     receipts.write_text(json.dumps({'records': records}))
     mapping.write_text(json.dumps({'moves': moves}))
-    settings = {'protocol': report.PROTOCOL, 'baseline_root': baseline.relative_to(tmp_path).as_posix(), 'authority_config': 'authority.yaml', 'source_audits': [{'path': 'audit.json', 'sha256': sha256_file(receipts)}], 'path_maps': [{'path': 'moves.json', 'sha256': sha256_file(mapping)}]}
+    settings = {'protocol': report.HEADFT_REPORT_PROTOCOL if headft else report.PROTOCOL, 'baseline_root': baseline.relative_to(tmp_path).as_posix(), 'authority_config': 'authority.yaml', 'source_audits': [{'path': 'audit.json', 'sha256': sha256_file(receipts)}], 'path_maps': [{'path': 'moves.json', 'sha256': sha256_file(mapping)}]}
     config = tmp_path / 'report.yaml'
     config.write_text(yaml.safe_dump(settings))
     return SimpleNamespace(repository=tmp_path, config=config, output=tmp_path/'report', weights=weights, predictions=predictions, receipts=receipts, mapping=mapping, settings=settings)
@@ -279,3 +308,39 @@ def test_baseline_report_ignores_deleted_retired_xgboost_receipts(baseline_sourc
     f.config.write_text(yaml.safe_dump(f.settings))
     report.publish_baseline_report(f.config, f.output, f.repository)
     assert json.loads((f.output / 'metadata.json').read_text())['status'] == 'completed'
+
+
+@pytest.mark.parametrize('baseline_sources', ['headft'], indirect=True)
+@pytest.mark.parametrize('damage', [None, 'missing_audit', 'audit_sha', 'missing_fold', 'wrong_protocol', 'wrong_checkpoint'])
+def test_headft_report_requires_six_complete_frozen_sources(baseline_sources, damage):
+    f = baseline_sources
+    if damage in ('missing_audit', 'audit_sha'):
+        audit = next(f.repository.rglob('frozen_audit.json'))
+        if damage == 'missing_audit': audit.unlink()
+        else: audit.write_text(audit.read_text() + ' ')
+    elif damage in ('missing_fold', 'wrong_protocol'):
+        path = f.repository / f.settings['baseline_root'] / 'molformer/summary.json'
+        summary = json.loads(path.read_text())
+        if damage == 'missing_fold':
+            next(iter(summary['reporting']['source_runs']['stage3_validation'].values())).pop('fold5')
+        else: summary['reporting']['data_protocol'] = 'catalog_v4_3407'
+        path.write_text(json.dumps(summary))
+    elif damage == 'wrong_checkpoint':
+        path = next(f.repository.glob('**/evaluate_valid_fold1/attempt-001/metadata.json'))
+        meta = json.loads(path.read_text())
+        meta['provenance']['checkpoints'][0] = meta['provenance']['checkpoints'][0].replace('/Headftv4_3407/', '/FLftv4_3407/')
+        path.write_text(json.dumps(meta))
+    if damage:
+        with pytest.raises((ValueError, FileNotFoundError)):
+            report.publish_baseline_report(f.config, f.output, f.repository)
+        assert not f.output.exists()
+    else:
+        payload = report.publish_baseline_report(f.config, f.output, f.repository)
+        assert payload['coverage']['models'] == list(report.HEADFT_MODELS)
+        assert payload['coverage']['training_jobs'] == 78
+        assert payload['coverage']['evaluation_runs'] == 108
+        assert len(payload['sections']['stage3_validation']['tasks']) == 12
+        assert payload['scope']['adaptation_mode'] == 'frozen_pretrained'
+        overview = (f.output / 'overview.md').read_text()
+        assert '任务侧模块' in overview and '六个预训练baseline' in overview
+        assert '十个baseline' not in overview

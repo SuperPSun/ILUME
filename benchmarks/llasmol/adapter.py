@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from benchmarks.common.adaptation import freeze_pretrained, training_mode, begin_frozen_audit, load_frozen_audit, verify_frozen_model
+from benchmarks.common.config import HEADFT_PROTOCOL
+
 import json
 import math
 import re
@@ -754,13 +757,14 @@ def train_llasmol_bundle(
     _configure_backend(config)
     device = torch.device(str(config.training["device"]))
     model = build_llasmol_model(config, bundle, device=device)
+    freeze_pretrained(config, model, bundle.task.condition_columns)
     lora_parameters = [
         parameter
         for name, parameter in model.named_parameters()
         if parameter.requires_grad and not name.startswith("predictor.")
     ]
     head_parameters = list(model.predictor.parameters())
-    if not lora_parameters or not head_parameters:
+    if (not lora_parameters and config.protocol != HEADFT_PROTOCOL) or not head_parameters:
         raise RuntimeError("LlaSMol optimizer parameter groups are incomplete")
     optimizer = torch.optim.AdamW(
         [
@@ -774,8 +778,9 @@ def train_llasmol_bundle(
                 "lr": float(config.training["head_learning_rate"]),
                 "weight_decay": float(config.training["weight_decay"]),
             },
-        ]
+        ] if config.protocol != HEADFT_PROTOCOL else [{"params": head_parameters, "lr": float(config.training["head_learning_rate"]), "weight_decay": float(config.training["weight_decay"])}]
     )
+    frozen_audit = begin_frozen_audit(config, model, bundle.training_identity, bundle.task.condition_columns, optimizer)
     sampler = SortishBatchSampler(
         _row_token_lengths(bundle.train, bundle.token_cache),
         batch_size=int(config.training["batch_size"]),
@@ -800,6 +805,8 @@ def train_llasmol_bundle(
         float(config.training["lora_learning_rate"]),
         float(config.training["head_learning_rate"]),
     )
+    if config.protocol == HEADFT_PROTOCOL:
+        peaks = peaks[-1:]
     global_step = 0
     history: list[dict[str, Any]] = []
     progress = (reporter or ProgressReporter()).bar(
@@ -808,7 +815,7 @@ def train_llasmol_bundle(
     try:
         for epoch in range(1, max_epochs + 1):
             sampler.set_epoch(epoch - 1)
-            model.train()
+            training_mode(config, model, bundle.task.condition_columns)
             optimizer.zero_grad(set_to_none=True)
             loss_sum = 0.0
             seen = 0
@@ -868,8 +875,8 @@ def train_llasmol_bundle(
                     "valid_normalized_mae": normalized_mae,
                     "valid_raw_mae": raw_mae,
                     "valid_raw_rmse": raw_rmse,
-                    "lora_learning_rate": float(optimizer.param_groups[0]["lr"]),
-                    "head_learning_rate": float(optimizer.param_groups[1]["lr"]),
+                    "lora_learning_rate": (float(optimizer.param_groups[0]["lr"]) if config.protocol != HEADFT_PROTOCOL else None),
+                    "head_learning_rate": float(optimizer.param_groups[-1]["lr"]),
                 }
             )
             progress.set_postfix(
@@ -890,6 +897,8 @@ def train_llasmol_bundle(
         root, final_state, state_hash, history,
         {"train": bundle.train.audit, "valid": bundle.valid.audit},
     )
+    if frozen_audit is not None:
+        integrity.update(frozen_audit.finish(root, optimizer))
     manifest = {
         "format_version": 2,
         "kind": "ilume_baseline_model",
@@ -977,6 +986,7 @@ def evaluate_llasmol_checkpoint(
         manifest["training_identity"],
         context="LlaSMol evaluation checkpoint",
     )
+    load_frozen_audit(config, bundle.task, manifest, root)
     seed_benchmark(config.seed)
     _configure_backend(config)
     raw = load_split(bundle.task, split)
@@ -992,7 +1002,9 @@ def evaluate_llasmol_checkpoint(
         "benchmark.llasmol-state.v2", state
     ) != manifest["model_state_hash"]:
         raise ValueError("LlaSMol checkpoint state hash mismatch")
+    freeze_pretrained(config, model, bundle.task.condition_columns)
     _load_trainable_state(model, state)
+    verify_frozen_model(config, model, bundle.task, manifest, root)
     loader = _data_loader(
         config, prepared, bundle.token_cache, bundle.target_stats,
         pad_token_id=bundle.pad_token_id,

@@ -494,6 +494,8 @@ def validate_completed_run(config: Any, run: Path, required: str) -> None:
             from benchmarks.iltransr.adapter import _condition_population
             _, population_hash = _condition_population(task)
             _equal(hashes['condition_population_sha256'], population_hash, 'Completed ILTransR condition population changed')
+        from .adaptation import load_frozen_audit
+        load_frozen_audit(config, task, manifest, run)
         for name, expected in manifest['integrity'].items():
             _check_file(_within(run, name), expected)
     else:

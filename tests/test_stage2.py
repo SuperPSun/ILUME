@@ -496,11 +496,11 @@ def frozen_chain_source(tmp_path_factory):
     assert {path: sha256_file(path) for path in watched} == hashes
 
 
-@pytest.mark.parametrize("expert_architecture, partner_injection, split_entity_encoders", [
-    ("entity_token_attention_v1", "l1", False),
-    ("entity_token_attention_v1", "group_l2_encoded", True),
+@pytest.mark.parametrize("expert_architecture, partner_injection, split_entity_encoders, split_system_experts", [
+    ("entity_token_attention_v1", "l1", False, False),
+    ("entity_token_attention_v1", "group_l2_encoded", True, False),
 ])
-def test_entity_home_prepare_train_transfer_three_phase_and_predictions(frozen_chain_source, tmp_path, monkeypatch, expert_architecture, partner_injection, split_entity_encoders):
+def test_entity_home_prepare_train_transfer_three_phase_and_predictions(frozen_chain_source, tmp_path, monkeypatch, expert_architecture, partner_injection, split_entity_encoders, split_system_experts):
     variant = "base"
     from stage2.entity_cache import prepare_frozen_entities
     from stage2.home_artifact import load_home_final
@@ -517,15 +517,17 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(frozen_c
     stage3 = load_stage3_config(f"configs/v4/stage3/{variant}.yaml")
     recipe = replace(recipe, stage3=replace(recipe.stage3, model=replace(
         recipe.stage3.model, expert_architecture=expert_architecture, partner_injection=partner_injection,
-        split_entity_encoders=split_entity_encoders)))
+        split_entity_encoders=split_entity_encoders, split_system_experts=split_system_experts)))
     stage3 = replace(stage3, model=replace(stage3.model, expert_architecture=expert_architecture,
-                                         partner_injection=partner_injection, split_entity_encoders=split_entity_encoders))
+                                         partner_injection=partner_injection, split_entity_encoders=split_entity_encoders,
+                                         split_system_experts=split_system_experts))
     research = partner_injection not in {"l1", "group_l2"}
     if research:
         from dataclasses import fields
         from ablations.entity_home.config import AblationConfig, AblationSpec, PARTNER_VARIANTS
         name = next(name for name, (_, mode, split) in PARTNER_VARIANTS.items()
-                    if (mode, split) == (partner_injection, split_entity_encoders))
+                    if (mode, split) == (partner_injection, split_entity_encoders)
+                    and (name == 'system_experts') == split_system_experts)
         stage3 = AblationConfig(**{field.name: getattr(stage3, field.name) for field in fields(type(stage3))},
                                 ablation=AblationSpec(name))
     token_attention = expert_architecture == "entity_token_attention_v1"
@@ -622,7 +624,7 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(frozen_c
     if token_attention:
         other_mode = "l1" if partner_injection == "group_l2" else "group_l2"
         incompatible = replace(recipe, stage3=replace(recipe.stage3, model=replace(
-            recipe.stage3.model, partner_injection=other_mode, split_entity_encoders=False)))
+            recipe.stage3.model, partner_injection=other_mode, split_entity_encoders=False, split_system_experts=False)))
         with pytest.raises(ValueError, match="identity"):
             train_stage2_home(incompatible, output, resume=True)
 
@@ -747,7 +749,8 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(frozen_c
     prepare_stage3(stage3)
     prepared = load_prepared_stage3(stage3)
     if token_attention:
-        incompatible = replace(stage3, model=replace(stage3.model, partner_injection=other_mode, split_entity_encoders=False))
+        incompatible = replace(stage3, model=replace(stage3.model, partner_injection=other_mode, split_entity_encoders=False,
+                                                    split_system_experts=False))
         if research:
             from ablations.entity_home.config import base_config
             incompatible = base_config(incompatible)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from benchmarks.common.adaptation import freeze_pretrained, training_mode, begin_frozen_audit, load_frozen_audit, verify_frozen_model
+
 import importlib.util
 import json
 import math
@@ -575,11 +577,13 @@ def train_ilbert_bundle(
     if device.type != "cuda" or not torch.cuda.is_available():
         raise RuntimeError("ILBERT requires CUDA; no silent CPU fallback")
     model = build_ilbert_model(config, bundle).to(device)
+    freeze_pretrained(config, model, bundle.task.condition_columns)
     optimizer = torch.optim.Adam(
-        model.parameters(),
+        (p for p in model.parameters() if p.requires_grad),
         lr=float(config.training["learning_rate"]),
         weight_decay=float(config.training["weight_decay"]),
     )
+    frozen_audit = begin_frozen_audit(config, model, bundle.training_identity, bundle.task.condition_columns, optimizer)
     sampler = EpochBatchSampler(
         len(bundle.train.raw),
         batch_size=int(config.training["batch_size"]),
@@ -604,7 +608,7 @@ def train_ilbert_bundle(
     try:
         for epoch in range(1, max_epochs + 1):
             sampler.set_epoch(epoch - 1)
-            model.train()
+            training_mode(config, model, bundle.task.condition_columns)
             loss_sum = 0.0
             seen = 0
             for input_ids, conditions, targets in train_loader:
@@ -670,6 +674,8 @@ def train_ilbert_bundle(
         root, final_state, state_hash, history,
         {"train": bundle.train.audit, "valid": bundle.valid.audit},
     )
+    if frozen_audit is not None:
+        integrity.update(frozen_audit.finish(root, optimizer))
     manifest = {
         "format_version": 2,
         "kind": "ilume_baseline_model",
@@ -761,6 +767,7 @@ def evaluate_ilbert_checkpoint(
         manifest["training_identity"],
         context="ILBERT evaluation checkpoint",
     )
+    load_frozen_audit(config, bundle.task, manifest, root)
     condition_stats = (
         ConditionStats.from_dict(manifest["training_identity"]["payload"]["condition_statistics"])
         if config.training["condition_transform"] == "train_only_zscore"
@@ -785,6 +792,7 @@ def evaluate_ilbert_checkpoint(
     ) != manifest["model_state_hash"]:
         raise ValueError("ILBERT checkpoint state hash mismatch")
     model.load_state_dict(payload["state_dict"], strict=True)
+    verify_frozen_model(config, model, bundle.task, manifest, root)
     device = torch.device(str(config.training["device"]))
     if device.type != "cuda" or not torch.cuda.is_available():
         raise RuntimeError("ILBERT evaluation requires CUDA; no silent CPU fallback")

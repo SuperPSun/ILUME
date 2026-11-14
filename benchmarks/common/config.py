@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 import re
 from typing import Any, Literal
@@ -27,7 +27,9 @@ FLFT_22_COMPLETION_TASKS = tuple("experiment/" + name for name in (
     "enthalpy_of_vaporization_or_sublimation", "anodic_potential_limit", "cathodic_potential_limit",
 ))
 XGBOOST_LIGHTWEIGHT_PROTOCOL = "flft_v4_3407_22_xgboost_lightweight"
-AUDITED_BASELINE_PROTOCOLS = CATALOG_V4_PROTOCOLS | {FLFT_22_PROTOCOL, FLFT_22_COMPLETION_PROTOCOL, XGBOOST_LIGHTWEIGHT_PROTOCOL}
+HEADFT_PROTOCOL = "headft_v4_3407_22"
+HEADFT_MODELS = ("molformer", "ilbert", "spmm", "llasmol", "aionopedia", "iltransr")
+AUDITED_BASELINE_PROTOCOLS = CATALOG_V4_PROTOCOLS | {FLFT_22_PROTOCOL, FLFT_22_COMPLETION_PROTOCOL, XGBOOST_LIGHTWEIGHT_PROTOCOL, HEADFT_PROTOCOL}
 
 
 @dataclass(frozen=True)
@@ -90,7 +92,7 @@ class BenchmarkConfig:
 
         if self.protocol not in {"legacy", *AUDITED_BASELINE_PROTOCOLS}:
             raise ValueError("Unknown baseline protocol")
-        if self.protocol in {FLFT_22_PROTOCOL, FLFT_22_COMPLETION_PROTOCOL, XGBOOST_LIGHTWEIGHT_PROTOCOL}:
+        if self.protocol in {FLFT_22_PROTOCOL, FLFT_22_COMPLETION_PROTOCOL, XGBOOST_LIGHTWEIGHT_PROTOCOL, HEADFT_PROTOCOL}:
             if (
                 self.data.data_root != Path("data/3407")
                 or self.data.task_catalog != Path("data/3407/task_catalog.csv")
@@ -126,7 +128,18 @@ class BenchmarkConfig:
                     or self.training != {"model_selection": "final_training_state", "n_jobs": 8, "device": "cpu", "target_space": "raw"}
                     or self.seed != 42):
                     raise ValueError("Lightweight XGBoost requires the fixed 500-tree depth-4 recipe")
-        expected_simulation = CATALOG_V4_SIMULATION_TASKS if self.protocol in CATALOG_V4_PROTOCOLS | {FLFT_22_COMPLETION_PROTOCOL, XGBOOST_LIGHTWEIGHT_PROTOCOL} else SCALAR_SIMULATION_TASKS
+        if self.protocol == HEADFT_PROTOCOL:
+            if (self.name not in HEADFT_MODELS or not self.stage3.enabled
+                or self.stage3.tasks != FLFT_22_RETRAIN_TASKS + FLFT_22_COMPLETION_TASKS
+                or self.stage3.folds != (1, 2, 3, 4, 5)
+                or not self.simulation.enabled or self.simulation.tasks != CATALOG_V4_SIMULATION_TASKS
+                or self.training.get("adaptation_mode") != "frozen_pretrained"
+                or (self.name == "ilbert" and self.training.get("condition_transform") != "train_only_zscore")):
+                raise ValueError("Headft requires six pretrained models, frozen_pretrained, all 22 experiments, five folds and three simulations")
+        elif "adaptation_mode" in self.training:
+            raise ValueError("adaptation_mode is reserved for the Headft protocol")
+        recipe = replace(self, training={k: v for k, v in self.training.items() if k != "adaptation_mode"}) if self.protocol == HEADFT_PROTOCOL else self
+        expected_simulation = CATALOG_V4_SIMULATION_TASKS if self.protocol in CATALOG_V4_PROTOCOLS | {FLFT_22_COMPLETION_PROTOCOL, XGBOOST_LIGHTWEIGHT_PROTOCOL, HEADFT_PROTOCOL} else SCALAR_SIMULATION_TASKS
         if self.protocol in CATALOG_V4_PROTOCOLS and (not self.stage3.enabled or self.stage3.tasks != "all" or self.stage3.folds != (1, 2, 3, 4, 5)):
             raise ValueError("catalog_v4 requires all experimental tasks and five folds")
         if self.protocol in CATALOG_V4_PROTOCOLS and not self.simulation.enabled:
@@ -193,17 +206,17 @@ class BenchmarkConfig:
         if self.name == "dmpnn":
             self._validate_dmpnn()
         if self.name == "molformer":
-            self._validate_molformer()
+            recipe._validate_molformer()
         if self.name == "ilbert":
-            self._validate_ilbert()
+            recipe._validate_ilbert()
         if self.name == "spmm":
-            self._validate_spmm()
+            recipe._validate_spmm()
         if self.name == "llasmol":
-            self._validate_llasmol()
+            recipe._validate_llasmol()
         if self.name == "aionopedia":
-            self._validate_aionopedia()
+            recipe._validate_aionopedia()
         if self.name == "iltransr":
-            self._validate_iltransr()
+            recipe._validate_iltransr()
         if self.name == "aifc":
             self._validate_aifc()
         elif self.name not in {"molformer", "ilbert", "spmm", "llasmol", "aionopedia", "iltransr"} and self.runtime:

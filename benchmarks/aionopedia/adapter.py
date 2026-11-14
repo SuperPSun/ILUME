@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from benchmarks.common.adaptation import freeze_pretrained, training_mode, begin_frozen_audit, load_frozen_audit, verify_frozen_model
+
 import hashlib
 import json
 import math
@@ -515,6 +517,7 @@ def train_aionopedia_bundle(
     effective_seed = config.seed + int(bundle.task.fold or 1) - 1
     seed_benchmark(effective_seed)
     model = _build_model(config, device=device, water_activity="x_water_unitless" in bundle.task.condition_columns)
+    freeze_pretrained(config, model, bundle.task.condition_columns)
     head, decoders, other = [], [], []
     for name, parameter in model.named_parameters():
         if not parameter.requires_grad:
@@ -526,13 +529,14 @@ def train_aionopedia_bundle(
         else:
             other.append(parameter)
     optimizer = torch.optim.AdamW(
-        [
+        [group for group in [
             {"params": head, "lr": float(config.training["head_learning_rate"])},
             {"params": decoders, "lr": float(config.training["decoder_learning_rate"])},
             {"params": other, "lr": float(config.training["other_learning_rate"])},
-        ],
+        ] if group["params"]],
         weight_decay=float(config.training["weight_decay"]),
     )
+    frozen_audit = begin_frozen_audit(config, model, bundle.training_identity, bundle.task.condition_columns, optimizer)
     batch_size = int(config.training["batch_size"])
     epochs = int(config.training["max_epochs"])
     steps_per_epoch = math.ceil(len(bundle.train.raw) / batch_size)
@@ -563,7 +567,7 @@ def train_aionopedia_bundle(
                 shuffle=True,
                 seed=effective_seed + epoch - 1,
             )
-            model.train()
+            training_mode(config, model, bundle.task.condition_columns)
             loss_sum = 0.0
             for batch in train_loader:
                 labels = batch.pop("labels").to(device, non_blocking=True)
@@ -605,6 +609,8 @@ def train_aionopedia_bundle(
         "sha256": sha256_file(root / "training_history.json"),
         "size": (root / "training_history.json").stat().st_size,
     }
+    if frozen_audit is not None:
+        integrity.update(frozen_audit.finish(root, optimizer))
     manifest = {
         "format_version": 2,
         "kind": "ilume_baseline_model",
@@ -666,6 +672,7 @@ def evaluate_aionopedia_checkpoint(
         manifest["training_identity"],
         context="AIonopedia evaluation checkpoint",
     )
+    load_frozen_audit(config, bundle.task, manifest, root)
     raw = load_split(bundle.task, split)
     prepared = _prepare_split(bundle.task, raw, bundle.pressure_stats)
     for roles in prepared.graph_roles:
@@ -678,6 +685,7 @@ def evaluate_aionopedia_checkpoint(
         model,
         _torch_load(root / str(manifest["final_model_file"])),
     )
+    verify_frozen_model(config, model, bundle.task, manifest, root)
     loader = _loader(
         bundle,
         prepared,

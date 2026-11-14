@@ -2448,3 +2448,95 @@ def test_v5_two_task_summary_rejects_mixed_historical_protocol(tmp_path: Path) -
     report(SCALAR_SIMULATION_TASKS, inputs / "historical")
     with pytest.raises(ValueError, match="comparison"):
         publish_summary(inputs, tmp_path / "mixed", tmp_path)
+
+
+@pytest.mark.parametrize('name', ('molformer', 'ilbert', 'spmm', 'llasmol', 'aionopedia', 'iltransr'))
+def test_headft_native_boundaries_gradients_and_restoration(tmp_path, name):
+    from benchmarks.common.adaptation import freeze_pretrained, training_mode, begin_frozen_audit, verify_frozen_model
+    from benchmarks.molformer.adapter import SharedMolFormerRegressor
+    from benchmarks.ilbert.adapter import SharedILBERTRegressor
+    from benchmarks.spmm.adapter import SharedSPMMRegressor
+    from benchmarks.llasmol.adapter import SharedLlaSMolRegressor, _trainable_state, _load_trainable_state
+    config = load_benchmark_config(f'configs/benchmarks/Headftv4_3407/{name}.yaml')
+    torch.manual_seed(42)
+
+    class Encoder(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embedding = torch.nn.Embedding(16, 4)
+            self.lora_A = torch.nn.Linear(4, 4)
+            self.dropout = torch.nn.Dropout(.5)
+            self.register_buffer('fixed_buffer', torch.ones(1))
+
+        def forward(self, input_ids, **kwargs):
+            states = self.dropout(self.lora_A(self.embedding(input_ids)))
+            return SimpleNamespace(last_hidden_state=states, pooler_output=states.mean(1), hidden_states=(states,))
+
+    class CNN(torch.nn.Linear):
+        def forward(self, states):
+            return super().forward(states.mean(0))
+
+    ids, conditions = torch.ones(2, 22, dtype=torch.long), torch.ones(2, 1)
+    encoder = Encoder()
+    if name == 'molformer':
+        model = SharedMolFormerRegressor(encoder, torch.nn.Linear(4, 1), component_count=1, condition_dim=1, hidden_dim=4, initializer_range=.02)
+        forward = lambda: model({'input_ids': ids}, conditions)
+    elif name == 'ilbert':
+        model = SharedILBERTRegressor(encoder, CNN(4, 4), torch.nn.Linear(5, 1), view_count=1, condition_dim=1, hidden_dim=4, load_audit={})
+        forward = lambda: model(ids, conditions)
+    elif name == 'spmm':
+        wrapper = torch.nn.Module(); wrapper.bert = encoder
+        model = SharedSPMMRegressor(wrapper, torch.nn.Linear(5, 1), component_count=1, condition_dim=1, hidden_dim=4, load_audit={})
+        forward = lambda: model(ids, torch.ones_like(ids), conditions)
+    elif name == 'llasmol':
+        wrapper = torch.nn.Module(); wrapper.base_model = torch.nn.Module()
+        wrapper.base_model.model = torch.nn.Module(); wrapper.base_model.model.model = encoder
+        model = SharedLlaSMolRegressor(wrapper, torch.nn.Linear(5, 1), view_count=1, condition_dim=1, hidden_dim=4, load_audit={})
+        forward = lambda: model(ids, torch.ones_like(ids), conditions)
+    elif name == 'iltransr':
+        model = ILTransRRegressor(ILTransRTransformer(72), topology='temperature', view_count=1, condition_dim=1, dropout=.1, load_audit={})
+        forward = lambda: model(ids, torch.full((2,), 22), conditions)
+    else:
+        model = AIonopediaRegressor(encoder, llm_dim=4)
+        graph = Batch.from_data_list([aionopedia_graph('C'), aionopedia_graph('C')])
+        empty = Batch.from_data_list([Data(x=torch.empty(0, 35), edge_index=torch.empty(2, 0, dtype=torch.long), edge_attr=torch.empty(0, 11)) for _ in range(2)])
+        forward = lambda: model(solute_graph=empty, cation_graph=graph, anion_graph=empty,
+            temperature=torch.ones(2) * .3, topology=torch.full((2,), 2),
+            extra_conditions={'pressure': torch.ones(2)}, active_conditions=('pressure',), input_ids=ids, attention_mask=torch.ones_like(ids))
+    columns = ('pressure_kPa',) if name == 'aionopedia' else ('temperature_K',)
+    freeze_pretrained(config, model, columns)
+    identity = semantic_identity('benchmark.training.v1', {'training': config.training})
+    optimizer = torch.optim.Adam([p for p in model.parameters() if p.requires_grad], lr=.001)
+    audit = begin_frozen_audit(config, model, identity, columns, optimizer)
+    before = {n: p.detach().clone() for n, p in model.named_parameters()}
+    model.train()
+    training_mode(config, model, columns)
+    prediction = forward()
+    (prediction.square().mean() + prediction.mean()).backward()
+    if name == 'aionopedia':
+        assert model.condition_projectors['pressure'][0].weight.grad.abs().sum() > 0
+        assert model.condition_segments['pressure'].grad.abs().sum() > 0
+        assert not model.decoder1.training
+    assert all(p.grad is None for p in model.parameters() if not p.requires_grad)
+    optimizer.step()
+    assert any(not torch.equal(before[n], p) for n, p in model.named_parameters() if p.requires_grad)
+    assert all(torch.equal(before[n], p) for n, p in model.named_parameters() if not p.requires_grad)
+    integrity = audit.finish(tmp_path, optimizer)
+    manifest = {'training_identity': identity, 'integrity': integrity}
+    model.eval(); expected = forward().detach().clone()
+    state = _trainable_state(model) if name == 'llasmol' else {n: v.detach().clone() for n, v in model.state_dict().items()}
+    if name == 'llasmol':
+        assert all(n.startswith('predictor.') for n in state)
+    with torch.no_grad():
+        for p in model.parameters():
+            if p.requires_grad: p.add_(1)
+    if name == 'llasmol': _load_trainable_state(model, state)
+    else: model.load_state_dict(state, strict=True)
+    verify_frozen_model(config, model, SimpleNamespace(condition_columns=columns), manifest, tmp_path)
+    assert torch.equal(expected, forward())
+    with pytest.raises(ValueError, match='optimizer'):
+        audit.check_optimizer(torch.optim.Adam(model.parameters()))
+    with torch.no_grad():
+        next(p for p in model.parameters() if not p.requires_grad).add_(1)
+    with pytest.raises(ValueError, match='changed'):
+        audit.finish(tmp_path, optimizer)
