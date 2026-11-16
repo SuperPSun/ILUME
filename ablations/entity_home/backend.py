@@ -10,7 +10,7 @@ from stage1.identity import metadata_identity as feature_identity, encoding_stat
 from stage2.data import load_artifact_registry, Stage2EntityDataset
 from stage2.home_artifact import full_state_hash
 from stage2.home_config import load_home_recipe
-from stage2.home_contract import transferable_state, state_hash
+from stage2.home_contract import transferable_state, state_hash, load_transferable_state
 from stage2.home_train import build_model
 from stage2.identity import build_stage2_data_identity, metadata_identity
 from stage3.home import load_source, source_plan, validate_transfer_architecture
@@ -92,7 +92,11 @@ class EntityHomeBackend:
 
     def source_plan(self, config, source, names):
         if not self.spec.zero_update:
-            return source_plan(base_config(config), source, names)
+            plan = source_plan(base_config(config), source, names)
+            if self.spec.variant == 'random_solvation_group':
+                plan['source_shared_state_hash'] = source['shared_state_hash']
+                plan['transferred_state_hash'] = state_hash({name: source['shared_state'][name] for name in names})
+            return plan
         return {'mode': 'zero_update', 'optimizer_updates': 0,
                 'source_initialization_identity': source['training_identity']['hash'],
                 'source_data_identity': source['stage2_data_identity']['hash'],
@@ -101,6 +105,25 @@ class EntityHomeBackend:
                 'transferred_parameters': list(names),
                 'simulation_training': {'tasks': [
                     'simulation/heat_of_vaporization', 'simulation/thermal_expansion']}}
+
+    def load_shared_state(self, model, state, expected_hash):
+        initial = {}
+        if self.spec.variant == 'random_solvation_group':
+            owners = model.ownership_manifest()
+            initial = {name: value.detach().clone() for name, value in model.state_dict().items()
+                       if owners.get(name) == 'GROUP:solvation'}
+            if not initial:
+                raise ValueError('Random solvation GROUP requires a complete solvation owner')
+        names = load_transferable_state(model, state, expected_hash)
+        if initial:
+            restored = model.state_dict()
+            restored.update(initial)
+            model.load_state_dict(restored, strict=True)
+            model.random_solvation_group = {
+                'owner': 'GROUP:solvation', 'parameters': sorted(initial),
+                'initial_state_hash': tensor_state_hash('ablation.random-solvation-group.initial-state.v1', initial),
+            }
+        return tuple(name for name in names if name not in initial)
 
     def transform_model(self, config, model, names):
         if self.spec.selector != 'final':
@@ -118,6 +141,8 @@ class EntityHomeBackend:
         if config.model.split_system_experts:
             from stage3.token_attention import system_expert_audit
             plan['ablation']['system_experts'] = system_expert_audit(model)
+        if self.spec.variant == 'random_solvation_group':
+            plan['ablation']['random_solvation_group'] = model.random_solvation_group
         if hasattr(model, 'capacity_match'):
             plan['ablation']['capacity_match'] = model.capacity_match
         global_hidden = expert_hidden_width(model.l1_global_experts[0]) if model.l1_global_experts else 0
@@ -155,6 +180,8 @@ class EntityHomeBackend:
         if config.model.split_system_experts:
             from stage3.token_attention import system_expert_audit
             expected['system_experts'] = system_expert_audit(model)
+        if self.spec.variant == 'random_solvation_group':
+            expected['random_solvation_group'] = model.random_solvation_group
         if hasattr(model, 'capacity_match'):
             expected['capacity_match'] = model.capacity_match
         if plan.get('ablation') != expected:

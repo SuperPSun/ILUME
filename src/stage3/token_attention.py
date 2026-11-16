@@ -60,6 +60,8 @@ def attention_contract(config, entity_dim=None):
                         system_initialization="clone_owner_random_initialization_v1",
                         system_optimization="original_owner_denominators_clipping_calendar_v1",
                         system_transfer="matched_banks_il_solvation_fold_random_v1")
+        if config.system_expert_scope == "group":
+            contract["system_experts"] = "shared_global_independent_il_non_il_group_experts_v1"
     return contract
 
 
@@ -90,12 +92,17 @@ def unpretrained_system_parameters(model):
 
 
 def system_expert_audit(model):
-    return {
+    audit = {
         "task_systems": {task: system_branch(spec) for task, spec in model.task_specs.items() if spec.enabled},
         "shared_parameter_counts": {branch: sum(p.numel() for name, p in model.named_parameters()
                                                if f".{branch}." in name) for branch in ("il", "non_il")},
         "random_il_solvation_parameters": list(unpretrained_system_parameters(model)),
     }
+    if model.model_config.system_expert_scope == "group":
+        owners = model.ownership_manifest()
+        audit["shared_global_parameters"] = sum(p.numel() for name, p in model.named_parameters()
+                                                if owners[name] == "GLOBAL")
+    return audit
 
 
 class TokenStack(nn.Module):
@@ -243,7 +250,7 @@ def initialize_token_modules(model, initialization_seed):
     packed = 3 * model.entity_input_contract["entity_dim"] + 12
 
     def banked(module, group=None):
-        if not config.split_system_experts:
+        if not config.split_system_experts or (group is None and config.system_expert_scope == "group"):
             return module
         branches = ("il", "non_il") if group is None else tuple(sorted({
             system_branch(spec) for spec in model.task_specs.values() if spec.enabled and spec.meta_group == group}))

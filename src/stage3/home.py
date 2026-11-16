@@ -124,7 +124,9 @@ def build_model_and_store(
     if simulation_enabled:
         model.simulation_vocabulary = source["_vocabulary"]
         copy_simulation_owners(model, source_model)
-    names = load_transferable_state(model, source["shared_state"], source["shared_state_hash"])
+    names = (config.runtime_backend.load_shared_state(model, source["shared_state"], source["shared_state_hash"])
+             if config.runtime_backend is not None else
+             load_transferable_state(model, source["shared_state"], source["shared_state_hash"]))
     if config.runtime_backend is not None:
         model, names = config.runtime_backend.transform_model(config, model, names)
     store = EntityRepresentations(prepared["slots"])

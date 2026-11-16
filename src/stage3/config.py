@@ -177,6 +177,7 @@ class Stage3ModelConfig:
     partner_injection: str = "l1"
     split_entity_encoders: bool = False
     split_system_experts: bool = False
+    system_expert_scope: str = "global_group"
 
     def __post_init__(self):
         if self.expert_architecture not in {"mlp", "entity_token_attention_v1"}:
@@ -198,6 +199,10 @@ class Stage3ModelConfig:
             raise ValueError("split_system_experts must be a boolean")
         if self.split_system_experts and (self.partner_injection != "group_private_l2" or self.split_entity_encoders):
             raise ValueError("Split system experts require GROUP/PRIVATE L2 injection without charge-type encoders")
+        if self.system_expert_scope not in {"global_group", "group"}:
+            raise ValueError("Unknown system_expert_scope")
+        if self.system_expert_scope != "global_group" and not self.split_system_experts:
+            raise ValueError("system_expert_scope requires split_system_experts")
 
     def to_dict(self):
         payload = asdict(self)
@@ -207,6 +212,8 @@ class Stage3ModelConfig:
             payload.pop("split_entity_encoders")
         if not self.split_system_experts:
             payload.pop("split_system_experts")
+        if self.system_expert_scope == "global_group":
+            payload.pop("system_expert_scope")
         if self.expert_architecture == "mlp":
             for key in ("expert_architecture", "attention_heads", "attention_layers"):
                 payload.pop(key)

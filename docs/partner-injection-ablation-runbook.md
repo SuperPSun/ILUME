@@ -4,6 +4,8 @@
 
 用户后续新增的S2按IL／非IL体系隔离参数，单独见[ADR-0128](adr/0128-system-isolated-experts.md)和[S2手册](system-experts-ablation-runbook.md)。其两份配置不纳入下方原注入变体批量循环，避免重跑既有实验。
 
+S3共享GLOBAL、仅GROUP按体系隔离，见[ADR-0130](adr/0130-shared-global-system-group-experts.md)及[S3命令](system-experts-ablation-runbook.md#s3共享global仅group按体系隔离)，同样不加入原批量循环。
+
 ## 变体与来源
 
 | 编号 | 配置目录 | 第三成分进入的L2分支 | 第三成分编码 |
@@ -59,6 +61,30 @@ python scripts/stage3/evaluate.py --config configs/v4/stage3/base.yaml --checkpo
 ```
 
 I0／I1只读复用原权重，不复制到新套件。验证默认同时输出22实验五折及两模拟独立五模型集成报告；模拟不进入实验主分数。
+
+### R1：仅重置solvation GROUP的预训练初始化
+
+定义见[ADR-0131](adr/0131-random-solvation-group-initialization.md)。保持I2结构、容量、共享范围和预算，仅在Stage3每折恢复迁移前的solvation GROUP随机初值。GLOBAL、匹配thermophysical GROUP和两模拟PRIVATE照常迁移；其他owner保持原I2初始化。数据3407、训练seed42及折派生不变。
+
+只读复用`outputs/ablations/partner_injection_3407/I2/stage2/train/stage2_final.pt`及配套清单、当前冻结Stage1与prepare，不需要新的Stage2配置或训练。独立配置为`configs/ablations/partner_injection_3407/R1/stage3.yaml`，仅`ablation.variant: random_solvation_group`与I2不同。首次输出目录须尚不存在，在仓库根目录、`ilume`环境中执行：
+
+```bash
+set -e
+python scripts/stage3/train.py --config configs/ablations/partner_injection_3407/R1/stage3.yaml --fold 1 2 3 4 5 --output outputs/ablations/partner_injection_3407/R1/stage3/train --devices cuda:0,cuda:1,cuda:2,cuda:3 --max-parallel 4
+python scripts/stage3/evaluate.py --config configs/ablations/partner_injection_3407/R1/stage3.yaml --checkpoint-dir outputs/ablations/partner_injection_3407/R1/stage3/train --split valid --fold 1 2 3 4 5 --output outputs/ablations/partner_injection_3407/R1/stage3/valid --study-id partner_injection_3407
+```
+
+中断恢复时，训练命令追加布尔`--resume`；评估失败仍换新的空输出目录。正式作业由用户启动，不改I2来源或既有产物；其他设备的完整训练配置、日志、身份和权重回传4090。
+
+每折`resolved_training_plan.json`的`ablation.random_solvation_group`应记录`GROUP:solvation`、136个参数名及其初始状态hash，覆盖61,638,412参数；这些参数不进入`stage2_pretraining.transferred_parameters`。完整来源hash保留为`source_shared_state_hash`，`transferred_state_hash`仅绑定实际保留的共享迁移张量。来源完整性仍先检查，不能因后续恢复随机值而忽略损坏。
+
+完整五折验证后，以I2为主对照，S2／S3为辅助参照。新报告目录须尚不存在：
+
+```bash
+python scripts/benchmarks/summarize.py --input outputs/ablations/partner_injection_3407/{I2,S2,S3,R1}/stage3/valid outputs/ablations/partner_injection_3407/{I2,S2,S3}/stage2/train --output outputs/ablations/partner_injection_3407/reports/R1_validation --ablation-analysis-output outputs/ablations/partner_injection_3407/reports/R1_vs_I2 --ablation-authority-config configs/v4/stage3/group_l2_partner.yaml --ablation-base-run ilume_v4_partner_group_private@study:partner_injection_3407
+```
+
+R1只新增Stage3五折成本；I2的Stage2成本属于复用背景，不重复计为新增预训练。按完整22任务等权五折nMAE判断，同时保留solvation、transfer_organic、hydration、gas_solubility及其余任务；两模拟独立报告，测试不参与选择。该对照仅检验固定预算下完整solvation GROUP的初始化策略，不能据单一任务改善宣称整个Stage2无益。
 
 ## 完整轮恢复
 

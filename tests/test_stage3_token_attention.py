@@ -19,12 +19,13 @@ def spec(task="experiment/test", *, partner=False, organic=False, columns=("temp
         True, 1., 1, {}, "formal_charge_v1")
 
 
-def model_for(task_spec, experts=1, partner_injection="l1", split_entity_encoders=False, split_system_experts=False):
+def model_for(task_spec, experts=1, partner_injection="l1", split_entity_encoders=False, split_system_experts=False,
+              system_expert_scope="global_group"):
     # Tiny width uses the exact production modules, without allocating 1024D optimizers.
     config = Stage3ModelConfig(global_experts=experts, group_experts=experts, private_experts=1,
         dropout=0., expert_architecture="entity_token_attention_v1", attention_heads=2,
         partner_injection=partner_injection, split_entity_encoders=split_entity_encoders,
-        split_system_experts=split_system_experts)
+        split_system_experts=split_system_experts, system_expert_scope=system_expert_scope)
     model = Stage3SparseModel(config, {task_spec.task_id: task_spec}, 16,
         initialization_seed=42, entity_inputs=True, entity_input_dim=1235)
     model.bind_condition_statistics({task_spec.task_id: {"conditions": {
@@ -165,10 +166,11 @@ def test_single_charged_entity_padding_and_owner_lifetimes(tmp_path, mode, split
     ("group_l2_encoded", True, {"group"}),
     ("private_l2", False, {"private"}),
 ])
-def test_partner_enters_declared_l2_branches_only(organic, mode, split, receivers, split_system_experts=False):
+def test_partner_enters_declared_l2_branches_only(organic, mode, split, receivers, split_system_experts=False,
+                                                system_expert_scope="global_group"):
     task = spec(partner=True, organic=organic)
     model = model_for(task, experts=2, partner_injection=mode, split_entity_encoders=split,
-                      split_system_experts=split_system_experts).eval()
+                      split_system_experts=split_system_experts, system_expert_scope=system_expert_scope).eval()
     previous = model_for(task, experts=2)
     if not split and not split_system_experts:
         assert model.state_dict().keys() == previous.state_dict().keys()
@@ -277,15 +279,22 @@ def test_group_l2_partner_configuration_and_identity_boundaries():
         replace(changed, split_system_experts=1)
     with pytest.raises(ValueError, match="GROUP/PRIVATE"):
         replace(changed, split_system_experts=True)
+    with pytest.raises(ValueError, match="system_expert_scope"):
+        replace(changed, system_expert_scope="private")
+    with pytest.raises(ValueError, match="requires split_system_experts"):
+        replace(changed, system_expert_scope="group")
     variants = [changed, replace(changed, partner_injection="group_private_l2"),
                 replace(changed, partner_injection="all_l2"),
                 replace(changed, partner_injection="private_l2"),
                 replace(changed, partner_injection="group_l2_encoded"),
                 replace(changed, partner_injection="group_l2_encoded", split_entity_encoders=True)]
     variants.append(replace(changed, partner_injection="group_private_l2", split_system_experts=True))
+    variants.append(replace(variants[-1], system_expert_scope="group"))
     assert len({str(attention_contract(value)) for value in variants}) == len(variants)
     assert 'split_entity_encoders' not in original.to_dict()
     assert 'split_system_experts' not in original.to_dict()
+    assert 'system_expert_scope' not in original.to_dict()
+    assert 'system_expert_scope' not in variants[-2].to_dict()
     for source in variants:
         for target in variants:
             if source != target:
@@ -312,7 +321,8 @@ def test_partner_research_configs_preserve_paired_data_and_training_recipe():
         source = load_home_recipe(root / 'stage2.yaml')
         target = load_research_config(root / 'stage3.yaml')
         expected = replace(stage2.stage3.model, partner_injection=mode, split_entity_encoders=split,
-                           split_system_experts=identity == 'S2')
+                           split_system_experts=identity in {'S2', 'S3'},
+                           system_expert_scope='group' if identity == 'S3' else 'global_group')
         assert source == replace(stage2, stage3=replace(stage2.stage3, model=expected))
         assert target.model == source.stage3.model == expected
         assert target.ablation.variant == variant and target.ablation.model_id != 'ilume'
@@ -323,15 +333,82 @@ def test_partner_research_configs_preserve_paired_data_and_training_recipe():
         assert load_research_config(root / 'stage3.yaml').to_dict()['ablation']['variant'] == variant
         with pytest.raises(ValueError, match="declared variant"):
             replace(target, model=stage3.model).validate()
+        if identity in {'S2', 'S3'}:
+            with pytest.raises(ValueError, match="declared variant"):
+                replace(target, model=replace(expected, system_expert_scope=(
+                    'group' if identity == 'S2' else 'global_group'))).validate()
+    from ablations.entity_home.config import AblationSpec, research_config_from_dict
+    original = load_research_config('configs/ablations/partner_injection_3407/I2/stage3.yaml')
+    reset = load_research_config('configs/ablations/partner_injection_3407/R1/stage3.yaml')
+    assert reset == replace(original, ablation=AblationSpec('random_solvation_group'))
+    assert research_config_from_dict(reset.to_dict()) == reset
+    assert not Path('configs/ablations/partner_injection_3407/R1/stage2.yaml').exists()
+    assert reset.ablation.model_id != original.ablation.model_id
+    with pytest.raises(ValueError, match='declared variant'):
+        replace(reset, model=replace(reset.model, split_system_experts=True)).validate()
 
 
-def test_system_experts_isolate_tasks_and_transfer_only_matching_pretraining(tmp_path):
+def test_random_solvation_group_restores_fold_initialization_after_strict_transfer():
+    from ablations.entity_home.config import AblationSpec
+    from ablations.entity_home.backend import EntityHomeBackend
+    from common.identity import tensor_state_hash
+    from stage2.home_contract import transferable_state, load_transferable_state, state_hash
+
+    config = Stage3ModelConfig(expert_architecture='entity_token_attention_v1', attention_heads=2,
+        dropout=0., partner_injection='group_private_l2')
+    density = spec('simulation/density')
+    transfer = replace(spec('simulation/transfer_organic', partner=True, organic=True), meta_group='solvation')
+    ionic = replace(spec('experiment/solvation', partner=True), meta_group='solvation')
+    tasks = {s.task_id: s for s in (density, transfer, ionic)}
+    def build(seed):
+        return Stage3SparseModel(config, tasks, 16, initialization_seed=seed,
+                                 entity_inputs=True, entity_input_dim=1235)
+    source, baseline, reset = build(42), build(43), build(43)
+    state = transferable_state(source)
+    source_hash = state_hash(state)
+    initial = {name: value.clone() for name, value in reset.state_dict().items()}
+    owners = reset.ownership_manifest()
+    expected = {name for name, owner in owners.items() if owner == 'GROUP:solvation'}
+    assert expected and expected <= state.keys()
+    ordinary_names = load_transferable_state(baseline, state, source_hash)
+    backend = EntityHomeBackend(AblationSpec('random_solvation_group'), token_attention=True)
+    rng = torch.get_rng_state()
+    names = backend.load_shared_state(reset, state, source_hash)
+    assert torch.equal(rng, torch.get_rng_state())
+    assert set(names) == set(ordinary_names) - expected
+    assert state_hash(state) == source_hash
+    assert reset.state_dict().keys() == baseline.state_dict().keys()
+    assert reset.ownership_manifest() == baseline.ownership_manifest()
+    for name, value in reset.state_dict().items():
+        assert torch.equal(value, initial[name] if name in expected else baseline.state_dict()[name])
+    audit = reset.random_solvation_group
+    assert audit['parameters'] == sorted(expected) and audit['owner'] == 'GROUP:solvation'
+    assert audit['initial_state_hash'] == tensor_state_hash('ablation.random-solvation-group.initial-state.v1',
+                                                         {name: initial[name] for name in expected})
+    assert any(not torch.equal(initial[n], state[n]) for n in expected)
+    other_fold = build(44)
+    backend.load_shared_state(other_fold, state, source_hash)
+    assert other_fold.random_solvation_group['initial_state_hash'] != audit['initial_state_hash']
+    # Excluded tensors are still checked: missing, extra, wrong shape/dtype and hash all fail.
+    name = next(iter(expected))
+    malformed = [{n: v for n, v in state.items() if n != name},
+                 {**state, 'extra': state[name]}, {**state, name: state[name].reshape(-1)[:1]},
+                 {**state, name: state[name].to(torch.float64)}]
+    for bad in malformed:
+        with pytest.raises(ValueError, match='incomplete|extra|mismatch'):
+            backend.load_shared_state(build(43), bad, state_hash(bad))
+    with pytest.raises(ValueError, match='hash'):
+        backend.load_shared_state(build(43), state, 'corrupt')
+
+
+@pytest.mark.parametrize("scope", ["global_group", "group"])
+def test_system_experts_isolate_tasks_and_transfer_only_matching_pretraining(tmp_path, scope):
     from stage2.home_contract import transferable_state, load_transferable_state, state_hash
     from stage3.token_attention import unpretrained_system_parameters, system_expert_audit
 
     config = Stage3ModelConfig(expert_architecture='entity_token_attention_v1', attention_heads=2,
         global_experts=1, group_experts=2, dropout=0., partner_injection='group_private_l2',
-        split_system_experts=True)
+        split_system_experts=True, system_expert_scope=scope)
     ionic = spec('experiment/il_partner', partner=True)
     ionic = replace(ionic, meta_group='solvation')
     organic = replace(spec('experiment/organic', partner=True, organic=True), meta_group='solvation')
@@ -349,10 +426,21 @@ def test_system_experts_isolate_tasks_and_transfer_only_matching_pretraining(tmp
     source = build((density, transfer), 42)
     target = build((ionic, organic, hydration, density, transfer), 71)
     before = {n: p.clone() for n, p in target.state_dict().items()}
-    # Two independent parameter copies begin identically without shared storage.
-    for module in (source.l1_global_experts[0], source.l2_global_experts[0]):
+    for module in (target.l1_group_experts['solvation'][0], target.l2_group_experts['solvation'][0]):
         for left, right in zip(module['il'].parameters(), module['non_il'].parameters(), strict=True):
             assert torch.equal(left, right) and left.data_ptr() != right.data_ptr()
+    if scope == 'global_group':
+        # Two independent parameter copies begin identically without shared storage.
+        for module in (source.l1_global_experts[0], source.l2_global_experts[0]):
+            for left, right in zip(module['il'].parameters(), module['non_il'].parameters(), strict=True):
+                assert torch.equal(left, right) and left.data_ptr() != right.data_ptr()
+    else:
+        baseline = Stage3SparseModel(replace(config, split_system_experts=False, system_expert_scope='global_group'),
+            source.task_specs, 16, initialization_seed=42, entity_inputs=True, entity_input_dim=1235)
+        assert not any('.il.' in n or '.non_il.' in n for n, o in source.ownership_manifest().items() if o == 'GLOBAL')
+        for name, owner in source.ownership_manifest().items():
+            if owner == 'GLOBAL':
+                assert torch.equal(source.state_dict()[name], baseline.state_dict()[name])
     optimizer = torch.optim.AdamW(source.parameters(), lr=1e-3)
     for task, primary, partner in ((density, ions(), None), (transfer, molecule(), molecule())):
         optimizer.zero_grad(set_to_none=True)
@@ -377,14 +465,23 @@ def test_system_experts_isolate_tasks_and_transfer_only_matching_pretraining(tmp
     assert audit['task_systems'][hydration.task_id] == 'non_il'
     assert audit['random_il_solvation_parameters'] == list(missing)
     from stage3.gradient_assembly import assemble_owner_gradients
-    left = target.l1_global_experts[0]['il'].projection.weight
-    right = target.l1_global_experts[0]['non_il'].projection.weight
+    left = target.l1_group_experts['solvation'][0]['il'].projection.weight
+    right = target.l1_group_experts['solvation'][0]['non_il'].projection.weight
     assembled = assemble_owner_gradients(target, {
         ionic.task_id: {left: torch.ones_like(left)}, organic.task_id: {right: torch.ones_like(right)}},
         target.task_specs, {}, task_batch_sizes={ionic.task_id: 3, organic.task_id: 1})
-    # Parameter banks are separate; the original GLOBAL sample denominator stays shared.
+    # Parameter banks are separate; the original GROUP sample denominator stays shared.
     torch.testing.assert_close(assembled.gradients[left], torch.full_like(left, .75))
     torch.testing.assert_close(assembled.gradients[right], torch.full_like(right, .25))
+    if scope == 'group':
+        shared_global = target.l1_global_experts[0].projection.weight
+        assembled = assemble_owner_gradients(target, {
+            ionic.task_id: {shared_global: torch.ones_like(shared_global)},
+            organic.task_id: {shared_global: torch.full_like(shared_global, 3.)}},
+            target.task_specs, {}, task_batch_sizes={ionic.task_id: 3, organic.task_id: 1})
+        torch.testing.assert_close(assembled.gradients[shared_global], torch.full_like(shared_global, 1.5))
+        assert audit['shared_global_parameters'] == sum(p.numel() for n, p in target.named_parameters()
+                                                       if target.ownership_manifest()[n] == 'GLOBAL')
     optimizer = torch.optim.AdamW(target.parameters(), lr=1e-3, weight_decay=.1)
     for task, primary, partner, active, inactive in (
         (ionic, ions(), molecule(), 'il', 'non_il'),
@@ -394,13 +491,17 @@ def test_system_experts_isolate_tasks_and_transfer_only_matching_pretraining(tmp
         untouched = {n: p.detach().clone() for n, p in target.named_parameters() if f'.{inactive}.' in n}
         output = target(task.task_id, primary, torch.zeros(2, 1), partner_embedding=partner)
         (output.predictions * torch.tensor([1., -2.])).sum().backward()
+        if scope == 'group':
+            assert target.l1_global_experts[0].projection.weight.grad.abs().sum() > 0
         assert any(p.grad is not None and p.grad.abs().sum() > 0 for n, p in target.named_parameters() if f'.{active}.' in n)
         assert all(p.grad is None for n, p in target.named_parameters() if n in untouched)
         optimizer.step()
         assert all(torch.equal(p, untouched[n]) for n, p in target.named_parameters() if n in untouched)
     target.zero_grad(set_to_none=True)
     target.set_trainable_owners({private_owner(ionic.task_id)})
-    frozen = {n: p.detach().clone() for n, p in target.named_parameters() if '.il.' in n or '.non_il.' in n}
+    owners = target.ownership_manifest()
+    frozen = {n: p.detach().clone() for n, p in target.named_parameters()
+              if owners[n] == 'GLOBAL' or owners[n].startswith('GROUP:')}
     target(ionic.task_id, ions(), torch.zeros(2, 1), partner_embedding=molecule()).predictions.sum().backward()
     optimizer.step()
     assert all(torch.equal(p, frozen[n]) for n, p in target.named_parameters() if n in frozen)
@@ -421,4 +522,5 @@ def test_system_experts_isolate_tasks_and_transfer_only_matching_pretraining(tmp
                                    rtol=0, atol=0)
     for organic_task in (False, True):
         test_partner_enters_declared_l2_branches_only(organic_task, 'group_private_l2', False,
-                                                     {'group', 'private'}, split_system_experts=True)
+                                                     {'group', 'private'}, split_system_experts=True,
+                                                     system_expert_scope=scope)

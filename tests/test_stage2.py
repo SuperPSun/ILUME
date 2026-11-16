@@ -496,11 +496,11 @@ def frozen_chain_source(tmp_path_factory):
     assert {path: sha256_file(path) for path in watched} == hashes
 
 
-@pytest.mark.parametrize("expert_architecture, partner_injection, split_entity_encoders, split_system_experts", [
-    ("entity_token_attention_v1", "l1", False, False),
-    ("entity_token_attention_v1", "group_l2_encoded", True, False),
+@pytest.mark.parametrize("expert_architecture, partner_injection, split_entity_encoders, split_system_experts, system_expert_scope, research_variant", [
+    ("entity_token_attention_v1", "l1", False, False, "global_group", None),
+    ("entity_token_attention_v1", "group_l2_encoded", True, False, "global_group", None),
 ])
-def test_entity_home_prepare_train_transfer_three_phase_and_predictions(frozen_chain_source, tmp_path, monkeypatch, expert_architecture, partner_injection, split_entity_encoders, split_system_experts):
+def test_entity_home_prepare_train_transfer_three_phase_and_predictions(frozen_chain_source, tmp_path, monkeypatch, expert_architecture, partner_injection, split_entity_encoders, split_system_experts, system_expert_scope, research_variant):
     variant = "base"
     from stage2.entity_cache import prepare_frozen_entities
     from stage2.home_artifact import load_home_final
@@ -517,17 +517,19 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(frozen_c
     stage3 = load_stage3_config(f"configs/v4/stage3/{variant}.yaml")
     recipe = replace(recipe, stage3=replace(recipe.stage3, model=replace(
         recipe.stage3.model, expert_architecture=expert_architecture, partner_injection=partner_injection,
-        split_entity_encoders=split_entity_encoders, split_system_experts=split_system_experts)))
+        split_entity_encoders=split_entity_encoders, split_system_experts=split_system_experts,
+        system_expert_scope=system_expert_scope)))
     stage3 = replace(stage3, model=replace(stage3.model, expert_architecture=expert_architecture,
                                          partner_injection=partner_injection, split_entity_encoders=split_entity_encoders,
-                                         split_system_experts=split_system_experts))
+                                         split_system_experts=split_system_experts, system_expert_scope=system_expert_scope))
     research = partner_injection not in {"l1", "group_l2"}
     if research:
         from dataclasses import fields
         from ablations.entity_home.config import AblationConfig, AblationSpec, PARTNER_VARIANTS
-        name = next(name for name, (_, mode, split) in PARTNER_VARIANTS.items()
+        name = research_variant or next(name for name, (_, mode, split) in PARTNER_VARIANTS.items()
                     if (mode, split) == (partner_injection, split_entity_encoders)
-                    and (name == 'system_experts') == split_system_experts)
+                    and (name in {'system_experts', 'group_system_experts'}) == split_system_experts
+                    and (name == 'group_system_experts') == (system_expert_scope == 'group'))
         stage3 = AblationConfig(**{field.name: getattr(stage3, field.name) for field in fields(type(stage3))},
                                 ablation=AblationSpec(name))
     token_attention = expert_architecture == "entity_token_attention_v1"
@@ -624,7 +626,8 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(frozen_c
     if token_attention:
         other_mode = "l1" if partner_injection == "group_l2" else "group_l2"
         incompatible = replace(recipe, stage3=replace(recipe.stage3, model=replace(
-            recipe.stage3.model, partner_injection=other_mode, split_entity_encoders=False, split_system_experts=False)))
+            recipe.stage3.model, partner_injection=other_mode, split_entity_encoders=False, split_system_experts=False,
+            system_expert_scope='global_group')))
         with pytest.raises(ValueError, match="identity"):
             train_stage2_home(incompatible, output, resume=True)
 
@@ -750,7 +753,7 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(frozen_c
     prepared = load_prepared_stage3(stage3)
     if token_attention:
         incompatible = replace(stage3, model=replace(stage3.model, partner_injection=other_mode, split_entity_encoders=False,
-                                                    split_system_experts=False))
+                                                    split_system_experts=False, system_expert_scope='global_group'))
         if research:
             from ablations.entity_home.config import base_config
             incompatible = base_config(incompatible)
@@ -777,9 +780,23 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(frozen_c
     stats = prepared["normalization"]["fold1"][enthalpy]
     assert stats["conditions"]["temperature_K"]["mean"] == pytest.approx(283.5)
     assert "phase" not in stats["conditions"] and "categorical_conditions" not in stats
-    model, store, _ = build_model_and_store(stage3, prepared, fold=1, device=torch.device("cpu"), source=load_source(stage3))
+    fixture_source = load_source(stage3)
+    model, store, _ = build_model_and_store(stage3, prepared, fold=1, device=torch.device("cpu"), source=fixture_source)
+    reset_group = research_variant == 'random_solvation_group'
     for name, value in payload["shared_state"].items():
-        assert torch.equal(model.state_dict()[name], value)
+        if not reset_group or model.ownership_manifest()[name] != 'GROUP:solvation':
+            assert torch.equal(model.state_dict()[name], value)
+    if reset_group:
+        from common.identity import tensor_state_hash
+        expected_random = {n: v for n, v in model.state_dict().items()
+                           if model.ownership_manifest().get(n) == 'GROUP:solvation'}
+        assert model.random_solvation_group['initial_state_hash'] == tensor_state_hash(
+            'ablation.random-solvation-group.initial-state.v1', expected_random)
+        private_owners = {private_owner(task).label for task in model.simulation_tasks}
+        for name, owner in model.ownership_manifest().items():
+            if owner in private_owners:
+                assert torch.equal(model.state_dict()[name], fixture_source['_loaded_model'].home.state_dict()[name])
+    del fixture_source
     assert len(model.task_specs) == len(stage3.tasks) + 2 == 24 and model.simulation_atom_adapter is None
     model.set_trainable_owners({GLOBAL})
     model.train()
@@ -825,6 +842,15 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(frozen_c
     rows = train_fold(stage3, 1, output_dir=train_root)
     assert rows[-1]["phase"] == "three_phase_final"
     final = torch.load(train_root / "three_phase_final.pt", weights_only=False)
+    if reset_group:
+        from stage2.home_contract import state_hash
+        plan = final['resolved_training_plan']
+        source_info = plan['stage2_pretraining']
+        selected = source_info['transferred_parameters']
+        assert source_info['source_shared_state_hash'] == payload['shared_state_hash']
+        assert source_info['transferred_state_hash'] == state_hash({n: payload['shared_state'][n] for n in selected})
+        reset_names = plan['ablation']['random_solvation_group']['parameters']
+        assert set(reset_names) == set(expected_random) and not set(reset_names) & set(selected)
     assert final["kind"] == (stage3.runtime_backend.final_kind if research else
         "ilume_stage3_token_home_three_phase_final_v4" if token_attention else "ilume_stage3_entity_home_three_phase_final_v4")
     assert len(final["private_state_hashes"]) == len(stage3.tasks) + 2 == 24

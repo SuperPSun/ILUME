@@ -11,7 +11,8 @@ VARIANTS = {
     'no_stage1', 'no_stage2', 'no_global', 'no_group', 'no_private',
     'no_smiles', 'no_graph', 'phase1', 'phase2', 'capacity_no_global', 'capacity_no_group',
     'capacity_match_global', 'capacity_match_group', 'auxiliary',
-    'partner_group_private', 'partner_all', 'partner_encoded', 'typed_entity_encoders', 'partner_private', 'system_experts',
+    'partner_group_private', 'partner_all', 'partner_encoded', 'typed_entity_encoders', 'partner_private', 'system_experts', 'group_system_experts',
+    'random_solvation_group',
 }
 
 PARTNER_VARIANTS = {
@@ -21,6 +22,7 @@ PARTNER_VARIANTS = {
     'typed_entity_encoders': ('S1', 'group_l2_encoded', True),
     'partner_private': ('I5', 'private_l2', False),
     'system_experts': ('S2', 'group_private_l2', False),
+    'group_system_experts': ('S3', 'group_private_l2', False),
 }
 
 
@@ -51,6 +53,8 @@ class AblationSpec:
 
     @property
     def display_name(self):
+        if self.variant == 'random_solvation_group':
+            return 'ILUME R1 random_solvation_group'
         if self.variant in PARTNER_VARIANTS:
             return 'ILUME ' + PARTNER_VARIANTS[self.variant][0] + ' ' + self.variant
         if self.variant in {'no_smiles', 'no_graph'}:
@@ -79,12 +83,13 @@ class AblationConfig(Stage3Config):
         if self.ablation is None or not self.is_entity_home:
             raise ValueError('Research config requires an Entity-HoME ablation')
         self.ablation.validate()
-        if self.ablation.variant in PARTNER_VARIANTS:
-            _, injection, split = PARTNER_VARIANTS[self.ablation.variant]
+        if self.ablation.variant in PARTNER_VARIANTS or self.ablation.variant == 'random_solvation_group':
+            _, injection, split = PARTNER_VARIANTS.get(self.ablation.variant, ('R1', 'group_private_l2', False))
             if (self.model.expert_architecture != 'entity_token_attention_v1'
                     or self.model.partner_injection != injection
                     or self.model.split_entity_encoders != split
-                    or self.model.split_system_experts != (self.ablation.variant == 'system_experts')):
+                    or self.model.split_system_experts != (self.ablation.variant in {'system_experts', 'group_system_experts'})
+                    or self.model.system_expert_scope != ('group' if self.ablation.variant == 'group_system_experts' else 'global_group')):
                 raise ValueError('Partner ablation model differs from its declared variant')
         if self.frozen_encoder is not None:
             raise ValueError('External frozen encoder ablations have been retired')

@@ -1,4 +1,4 @@
-# IL／非IL体系隔离专家消融S2
+# IL／非IL体系隔离专家消融S2／S3
 
 定义见[ADR-0128](adr/0128-system-isolated-experts.md)。S2以I2为参照，共享冻结Stage1；含IL体系与非IL体系使用独立的GLOBAL／GROUP专家及共享条件编码参数，PRIVATE等逐任务参数保持独立。两套L2 GLOBAL保留且仅接收主体，GROUP／PRIVATE L2按任务注入溶质。hydration只输入本身，不新增水实体。
 
@@ -33,9 +33,34 @@ Stage2单卡，Stage3最多并行四折，不叠加外层并行。无需重跑pr
 完整独立五折验证后，与I2做配对比较：
 
 ```bash
-python scripts/benchmarks/summarize.py --input outputs/ablations/partner_injection_3407/{I2,S2}/stage3/valid outputs/ablations/partner_injection_3407/{I2,S2}/stage2/train --output outputs/ablations/partner_injection_3407/reports/system_validation --ablation-analysis-output outputs/ablations/partner_injection_3407/reports/S2_vs_I2 --ablation-authority-config configs/ablations/partner_injection_3407/I2/stage3.yaml --ablation-base-run ilume_v4_partner_group_private@study:partner_injection_3407
+python scripts/benchmarks/summarize.py --input outputs/ablations/partner_injection_3407/{I2,S2}/stage3/valid outputs/ablations/partner_injection_3407/{I2,S2}/stage2/train --output outputs/ablations/partner_injection_3407/reports/system_validation --ablation-analysis-output outputs/ablations/partner_injection_3407/reports/S2_vs_I2 --ablation-authority-config configs/v4/stage3/group_l2_partner.yaml --ablation-base-run ilume_v4_partner_group_private@study:partner_injection_3407
 ```
 
 仅以22实验任务等权、五折平均nMAE比较；同时保留solvation、gas_solubility、transfer_organic、hydration及其他任务的结果，不按任务拼装变体。两模拟独立报告，Stage2只作成本与来源审计，不进入准确率榜单。I2来源或study ID不同须先读取既有summary核对；汇总输出已存在时使用新的空报告目录。
 
 S2同时改变共享范围、容量及IL solvation预训练覆盖，不能单独归因为“更晚交互”或等预算最优。固定末轮，不增加seed、不根据测试更换配方。其他设备运行时，完整配置、日志、身份、权重及恢复检查点按[跨设备回传规则](v4-runbook.md#跨设备训练产物回传)归档4090。
+
+## S3：共享GLOBAL，仅GROUP按体系隔离
+
+定义见[ADR-0130](adr/0130-shared-global-system-group-experts.md)。在S2基础上，GLOBAL L1／L2、路由及条件编码恢复为跨体系共享；GROUP L1／L2、路由、条件编码及归一化继续按IL／非IL隔离。GLOBAL只读主体，GROUP／PRIVATE L2读取任务需要的溶质。IL solvation GROUP仍无匹配Stage2来源，保持本折随机初始化。原owner加权、裁剪、冻结、seed及预算不变。
+
+两份完整配置位于`configs/ablations/partner_injection_3407/S3/`，模型设置`split_system_experts: true`与`system_expert_scope: group`，Stage3变体为`group_system_experts`。S3使用自己的新Stage2来源；无需重跑Stage1或prepare，不借用I2／S2的final。输出目录必须尚不存在，在仓库根目录、`ilume`环境中按顺序执行：
+
+```bash
+set -e
+python scripts/stage2/train.py --config configs/ablations/partner_injection_3407/S3/stage2.yaml --output outputs/ablations/partner_injection_3407/S3/stage2/train --device cuda:0
+python scripts/stage3/train.py --config configs/ablations/partner_injection_3407/S3/stage3.yaml --fold 1 2 3 4 5 --output outputs/ablations/partner_injection_3407/S3/stage3/train --devices cuda:0,cuda:1,cuda:2,cuda:3 --max-parallel 4
+python scripts/stage3/evaluate.py --config configs/ablations/partner_injection_3407/S3/stage3.yaml --checkpoint-dir outputs/ablations/partner_injection_3407/S3/stage3/train --split valid --fold 1 2 3 4 5 --output outputs/ablations/partner_injection_3407/S3/stage3/valid --study-id partner_injection_3407
+```
+
+中断恢复时，Stage2追加`--resume outputs/ablations/partner_injection_3407/S3/stage2/train`；Stage3追加布尔`--resume`。评估失败仍使用新的空输出目录。正式训练由用户启动，其他设备完整产物回传4090。
+
+每折计划的`ablation.system_experts.shared_global_parameters`应为35,149,958；原分支参数计数此时只覆盖GROUP，`random_il_solvation_parameters`仍有136个参数名。S3下游Stage2／Stage3分别为227,886,685／678,377,630参数，不含冻结Stage1。
+
+完整验证后，将I2、S2、S3放在同一报告中，以I2为统一参照；逐项读取S3与S2差值，避免仅比较排名。报告输出须尚不存在：
+
+```bash
+python scripts/benchmarks/summarize.py --input outputs/ablations/partner_injection_3407/{I2,S2,S3}/stage3/valid outputs/ablations/partner_injection_3407/{I2,S2,S3}/stage2/train --output outputs/ablations/partner_injection_3407/reports/S3_validation --ablation-analysis-output outputs/ablations/partner_injection_3407/reports/S3_vs_I2 --ablation-authority-config configs/v4/stage3/group_l2_partner.yaml --ablation-base-run ilume_v4_partner_group_private@study:partner_injection_3407
+```
+
+authority使用任务及分组相同的正式配置，汇总器不直接解析带`ablation`段的研究配置。两个模拟独立报告，不进入22任务总分；S3是否同时保留solvation收益和恢复非IL任务表现须由完整结果判断，不能预先保证。

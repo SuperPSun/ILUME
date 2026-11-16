@@ -10,6 +10,8 @@
 | GROUP L2第三成分接入试验 | [0125](0125-group-l2-partner-injection.md) | 独立配置仅在GROUP L2接入槽位2；复用GROUP投影、参数量与初始化不变；Stage1/prepare复用、配对Stage2/3重新训练，Base及已有结果保留 |
 | 注入路径与离子／中性分子独立编码消融 | [0127](0127-partner-injection-and-typed-encoding-ablations.md) | I2/I3接收分支、I5仅PRIVATE接收、I4独立编码、S1独立投影及注意力后在GROUP L2交互；10份配对YAML，独立于0124套件；[运行手册](../partner-injection-ablation-runbook.md) |
 | IL／非IL体系隔离专家消融S2 | [0128](0128-system-isolated-experts.md) | 按体系隔离L1/L2共享专家、GLOBAL仅主体、GROUP/PRIVATE溶质接入；IL solvation无预训练时本折随机初始化；[运行手册](../system-experts-ablation-runbook.md) |
+| 共享GLOBAL、体系隔离GROUP消融S3 | [0130](0130-shared-global-system-group-experts.md) | GLOBAL跨体系共享，GROUP按IL／非IL隔离；其余接入、随机IL solvation初始化及预算沿用S2；[运行手册](../system-experts-ablation-runbook.md#s3共享global仅group按体系隔离) |
+| I2仅重置solvation GROUP初始化的R1消融 | [0131](0131-random-solvation-group-initialization.md) | 复用I2 Stage2，完整来源校验后恢复Stage3本折solvation GROUP随机初值，其他迁移及模型不变；[运行手册](../partner-injection-ablation-runbook.md#r1仅重置solvation-group的预训练初始化) |
 | Stage2 共享梯度聚合 | [0097](0097-stage2-batch-sample-weighted-gradients.md) | 五模拟联合step，GLOBAL/GROUP按真实batch样本加权，PRIVATE原始梯度；新训练身份及严格恢复/迁移 |
 | Stage1 双路2D DGT | [0116](0116-stage1-dual-graph-transformer.md) | 现役Base八层双路512D DGT、encoder约77.99M；拓扑sidecar、逐通道pair attention、分块重计算和双路池化；旧D-MPNN严格历史加载，0089/0090图架构数值为历史 |
 | Base当前实验数据协议 | [0117](0117-base-22-tasks-updated-solvation.md) | 22实验＋两模拟；显式排除平衡压力/水活度系数，solvation按更新catalog声明3684体系；其余recipe不变，历史配置不迁移 |
