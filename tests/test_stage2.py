@@ -500,7 +500,7 @@ def frozen_chain_source(tmp_path_factory):
     ("entity_token_attention_v1", "l1", False, False, "global_group", None),
     ("entity_token_attention_v1", "group_l2_encoded", True, False, "global_group", None),
 ])
-def test_entity_home_prepare_train_transfer_three_phase_and_predictions(frozen_chain_source, tmp_path, monkeypatch, expert_architecture, partner_injection, split_entity_encoders, split_system_experts, system_expert_scope, research_variant):
+def test_entity_home_prepare_train_transfer_three_phase_and_predictions(frozen_chain_source, tmp_path, monkeypatch, expert_architecture, partner_injection, split_entity_encoders, split_system_experts, system_expert_scope, research_variant, l2_operator="attention", condition_mode="tokens"):
     variant = "base"
     from stage2.entity_cache import prepare_frozen_entities
     from stage2.home_artifact import load_home_final
@@ -518,10 +518,11 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(frozen_c
     recipe = replace(recipe, stage3=replace(recipe.stage3, model=replace(
         recipe.stage3.model, expert_architecture=expert_architecture, partner_injection=partner_injection,
         split_entity_encoders=split_entity_encoders, split_system_experts=split_system_experts,
-        system_expert_scope=system_expert_scope)))
+        system_expert_scope=system_expert_scope, l2_operator=l2_operator, condition_mode=condition_mode)))
     stage3 = replace(stage3, model=replace(stage3.model, expert_architecture=expert_architecture,
                                          partner_injection=partner_injection, split_entity_encoders=split_entity_encoders,
-                                         split_system_experts=split_system_experts, system_expert_scope=system_expert_scope))
+                                         split_system_experts=split_system_experts, system_expert_scope=system_expert_scope,
+                                         l2_operator=l2_operator, condition_mode=condition_mode))
     research = partner_injection not in {"l1", "group_l2"}
     if research:
         from dataclasses import fields
@@ -627,7 +628,7 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(frozen_c
         other_mode = "l1" if partner_injection == "group_l2" else "group_l2"
         incompatible = replace(recipe, stage3=replace(recipe.stage3, model=replace(
             recipe.stage3.model, partner_injection=other_mode, split_entity_encoders=False, split_system_experts=False,
-            system_expert_scope='global_group')))
+            system_expert_scope='global_group', l2_operator='attention', condition_mode='tokens')))
         with pytest.raises(ValueError, match="identity"):
             train_stage2_home(incompatible, output, resume=True)
 
@@ -753,7 +754,8 @@ def test_entity_home_prepare_train_transfer_three_phase_and_predictions(frozen_c
     prepared = load_prepared_stage3(stage3)
     if token_attention:
         incompatible = replace(stage3, model=replace(stage3.model, partner_injection=other_mode, split_entity_encoders=False,
-                                                    split_system_experts=False, system_expert_scope='global_group'))
+                                                    split_system_experts=False, system_expert_scope='global_group',
+                                                    l2_operator='attention', condition_mode='tokens'))
         if research:
             from ablations.entity_home.config import base_config
             incompatible = base_config(incompatible)

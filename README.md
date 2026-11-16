@@ -152,6 +152,8 @@ S3在S2基础上共享GLOBAL，仅GROUP按体系隔离，见[ADR-0130](docs/adr/
 
 R1保持I2结构，仅在Stage3每折恢复solvation GROUP原随机初值，复用既有I2 Stage2及prepare，只新增Stage3五折。其余owner按原策略迁移／初始化，独立配置和输出不覆盖I2，见[ADR-0131](docs/adr/0131-random-solvation-group-initialization.md)及[R1命令](docs/partner-injection-ablation-runbook.md#r1仅重置solvation-group的预训练初始化)。
 
+L2算子与条件通路按[ADR-0132](docs/adr/0132-l2-operator-condition-factorial.md)做四格对照：I2参照、A1（MLP混合＋条件token）、A2（注意力＋FiLM）、A3（MLP混合＋FiLM）。新增三次Stage2及15个Stage3折，复用冻结Stage1与prepare，配置位于`configs/ablations/l2_factorial_3407/`，输出独立；命令见[专用手册](docs/l2-factorial-ablation-runbook.md)。
+
 本轮Base已按ADR-0117切换22实验协议。当前10项数据变化任务的定向补训使用 `configs/benchmarks/FLftv4_3407/`，新协议和输出按[ADR-0118](docs/adr/0118-flft-22-task-baseline-retraining.md)，szx的Slurm提交命令见[补训手册](docs/baseline-flft-22-retrain-runbook.md)。现役安排为szx运行其余9个模型、H100保留已启动的LlaSMol；共500个实验折次，不包含三模拟或完整22任务复用，不能直接与历史24任务macro比较。旧结果已迁至 `outputs/benchmarks/FLftv4_3407/`，历史配置及身份保留。
 
 当前数据版本基线使用 `configs/benchmarks/catalog_v4_3407/` 与 `outputs/benchmarks/v4_3407/<model>/`，覆盖24实验及HOMO/LUMO/热膨胀三模拟。十模型在data/3407全部重训，共1,230个训练作业，不复用split42结果；训练种子和各模型原配方不变。清理、szx的gpu05调度和新报告按[当前基线手册](docs/baseline-catalog-v4-runbook.md)及[ADR-0102](docs/adr/0102-baseline-split3407-full-retraining.md)执行。0101的split42复用安排及下方旧配置/四模拟命令保留历史协议说明。

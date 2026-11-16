@@ -15,6 +15,10 @@
 
 ## 2026-11-12精简覆盖对照
 
+2026-11-16的[ADR-0132四格消融](adr/0132-l2-operator-condition-factorial.md)复用`test_stage3_token_attention.py`检查三套新模式的跨槽交互、条件梯度、mask、配对初始化、owner冻结、序列化和身份拒载。既有完整主链增加可选的L2算子／条件参数，默认仍只运行Base与S1；A3另经临时定向调用验收五模拟Stage2、22实验＋两模拟Stage3、完整轮恢复、final重载及独立评估，不扩增默认重型参数化。FiLM／MLP的CPU BF16小模型前后向与旧注入模式逐bit预测比较也已通过；这些检查不代表正式GPU吞吐或科研性能。
+
+本轮最终全量`pytest -q --durations=20`为`430 passed, 1 skipped`，耗时563.52秒；唯一skip仍为缺少chemprop，日志位于本机`/tmp/ilume-l2-full-pytest.log`。定向小模型与A3主链为`33 passed`，日志位于`/tmp/ilume-l2-acceptance.log`。上述时间不作为与历史基准同负载的提速结论。
+
 | 范围 | 精简前 | 保留或合并后 |
 |---|---|---|
 | Stage2→Stage3主链 | 历史MLP、Base、I1～I4和S1各跑完整链 | Base token/DGT与S1两条完整链；五模拟迁移、22实验＋两模拟、三阶段、最终重载和完整轮恢复均保留 |

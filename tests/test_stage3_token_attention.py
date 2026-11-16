@@ -20,12 +20,13 @@ def spec(task="experiment/test", *, partner=False, organic=False, columns=("temp
 
 
 def model_for(task_spec, experts=1, partner_injection="l1", split_entity_encoders=False, split_system_experts=False,
-              system_expert_scope="global_group"):
+              system_expert_scope="global_group", l2_operator="attention", condition_mode="tokens"):
     # Tiny width uses the exact production modules, without allocating 1024D optimizers.
     config = Stage3ModelConfig(global_experts=experts, group_experts=experts, private_experts=1,
         dropout=0., expert_architecture="entity_token_attention_v1", attention_heads=2,
         partner_injection=partner_injection, split_entity_encoders=split_entity_encoders,
-        split_system_experts=split_system_experts, system_expert_scope=system_expert_scope)
+        split_system_experts=split_system_experts, system_expert_scope=system_expert_scope,
+        l2_operator=l2_operator, condition_mode=condition_mode)
     model = Stage3SparseModel(config, {task_spec.task_id: task_spec}, 16,
         initialization_seed=42, entity_inputs=True, entity_input_dim=1235)
     model.bind_condition_statistics({task_spec.task_id: {"conditions": {
@@ -346,6 +347,141 @@ def test_partner_research_configs_preserve_paired_data_and_training_recipe():
     assert reset.ablation.model_id != original.ablation.model_id
     with pytest.raises(ValueError, match='declared variant'):
         replace(reset, model=replace(reset.model, split_system_experts=True)).validate()
+
+
+@pytest.mark.parametrize('operator,conditioning', [
+    ('mlp_mixer', 'tokens'), ('attention', 'film'), ('mlp_mixer', 'film')])
+def test_l2_factorial_interactions_conditions_masks_transfer_and_freezing(tmp_path, operator, conditioning):
+    from stage2.home_contract import transferable_state, load_transferable_state, state_hash
+    from stage3.home import validate_transfer_architecture
+    from stage3.token_attention import attention_contract
+
+    task = replace(spec(partner=True), meta_group='solvation')
+    baseline = model_for(task, partner_injection='group_private_l2').eval()
+    rng = torch.get_rng_state()
+    model = model_for(task, partner_injection='group_private_l2',
+                      l2_operator=operator, condition_mode=conditioning).eval()
+    assert torch.equal(rng, torch.get_rng_state())
+    original = baseline.state_dict()
+    for name, value in model.state_dict().items():
+        changed = name.startswith(('l2_global_experts.', 'l2_group_experts.', 'private_experts.'))
+        if not changed or (operator == 'attention' and '.film.' not in name):
+            assert torch.equal(value, original[name]), name
+    if operator == 'mlp_mixer':
+        paired = model_for(task, partner_injection='group_private_l2', l2_operator=operator,
+                           condition_mode='film' if conditioning == 'tokens' else 'tokens')
+        common = model.state_dict().keys() & paired.state_dict().keys()
+        assert all(torch.equal(model.state_dict()[n], paired.state_dict()[n]) for n in common)
+    if conditioning == 'film':
+        expert = model.private_experts[sanitize_task(task.task_id)][0]
+        entities, conditions = torch.randn(2, 3, 16), torch.randn(2, 4, 16)
+        mask, cmask = torch.ones(2, 3, dtype=torch.bool), torch.ones(2, 4, dtype=torch.bool)
+        torch.testing.assert_close(expert(entities, mask, conditions, cmask),
+                                   expert.stack(entities, mask), rtol=0, atol=0)
+    assert attention_contract(model.model_config) != attention_contract(baseline.model_config)
+    with pytest.raises(ValueError, match='architecture mismatch'):
+        validate_transfer_architecture(baseline.model_config, model.model_config, {}, {})
+    primary, partner = ions(), molecule()
+    partner_values = partner.values.detach().clone().requires_grad_(True)
+    partner = EntityInputs(partner_values, partner.roles, partner.mask)
+    first = model(task.task_id, primary, torch.zeros(2, 1), partner_embedding=partner)
+    second = model(task.task_id, primary, torch.zeros(2, 1), partner_embedding=EntityInputs(
+        partner_values * 2, partner.roles, partner.mask))
+    for name in ('z_global', 'z_group', 'task_gate', 'l2_global_candidates'):
+        torch.testing.assert_close(first.diagnostics[name], second.diagnostics[name], rtol=0, atol=0)
+    for name in ('l2_group_candidates', 'l2_private_candidates'):
+        assert not torch.equal(first.diagnostics[name][:, :, :2], second.diagnostics[name][:, :, :2])
+    assert torch.count_nonzero(first.diagnostics['l2_global_candidates'][:, :, 2]) == 0
+    gradient = torch.autograd.grad(first.predictions.sum(), partner_values)[0]
+    assert torch.isfinite(gradient).all() and gradient.abs().sum() > 0
+    shared = transferable_state(model)
+    target = model_for(task, partner_injection='group_private_l2',
+                       l2_operator=operator, condition_mode=conditioning)
+    assert set(load_transferable_state(target, shared, state_hash(shared))) == set(shared)
+    corrupt = {**shared, next(iter(shared)): next(iter(shared.values())).double()}
+    with pytest.raises(ValueError, match='mismatch'):
+        load_transferable_state(target, corrupt, state_hash(corrupt))
+    owners = {private_owner(task.task_id)}
+    model.set_trainable_owners(owners)
+    frozen = {n: p.detach().clone() for n, p in model.named_parameters() if not p.requires_grad}
+    optimizer = torch.optim.AdamW(model.parameters(), lr=.01, weight_decay=.1)
+    # Identity-initialized FiLM begins to train its condition encoder after its affine learns.
+    for _ in range(3):
+        optimizer.zero_grad(set_to_none=True)
+        model(task.task_id, primary, torch.zeros(2, 1), partner_embedding=partner).predictions.square().sum().backward()
+        optimizer.step()
+    assert all(torch.equal(p, frozen[n]) for n, p in model.named_parameters() if n in frozen)
+    key = sanitize_task(task.task_id)
+    assert any(p.grad is not None and p.grad.abs().sum() > 0
+               for p in model.private_conditions[key].parameters())
+    model.eval()
+    cold = model(task.task_id, primary, torch.zeros(2, 1), partner_embedding=partner)
+    hot = model(task.task_id, primary, torch.ones(2, 1), partner_embedding=partner)
+    torch.testing.assert_close(cold.diagnostics['task_gate'], hot.diagnostics['task_gate'], rtol=0, atol=0)
+    assert not torch.equal(cold.predictions, hot.predictions)
+    # Invalid entity/condition slots cannot leak through either mixer or FiLM biases.
+    expert = model.private_experts[key][0]
+    entities, conditions = torch.randn(2, 3, 16), torch.randn(2, 4, 16)
+    mask = torch.tensor([[True, False, False]] * 2)
+    cmask = torch.tensor([[True, False, False, False]] * 2)
+    out = expert(entities, mask, conditions, cmask)
+    changed = expert(entities.masked_fill(~mask[..., None], 1234), mask,
+                     conditions.masked_fill(~cmask[..., None], 5678), cmask)
+    torch.testing.assert_close(out, changed, rtol=0, atol=0)
+    assert torch.count_nonzero(out[:, 1:]) == 0
+    assert torch.isfinite(expert(entities, mask, conditions, torch.zeros_like(cmask))).all()
+    checkpoint = tmp_path / 'factorial.pt'
+    torch.save(model.state_dict(), checkpoint)
+    target.load_state_dict(torch.load(checkpoint, weights_only=True), strict=True)
+    target.eval()
+    model.requires_grad_(False)
+    target.requires_grad_(False)
+    with torch.inference_mode():
+        torch.testing.assert_close(target(task.task_id, primary, torch.zeros(2, 1), partner_embedding=partner).predictions,
+            model(task.task_id, primary, torch.zeros(2, 1), partner_embedding=partner).predictions, rtol=0, atol=0)
+
+
+def test_l2_factorial_configs_keep_i2_recipe_and_reject_crossed_variants():
+    from pathlib import Path
+    from stage2.home_config import load_home_recipe, home_recipe_from_dict
+    from ablations.entity_home.config import load_research_config, research_config_from_dict, L2_VARIANTS
+    from stage3.home import validate_transfer_architecture
+    from stage3.token_attention import attention_contract
+
+    base2 = load_home_recipe('configs/ablations/partner_injection_3407/I2/stage2.yaml')
+    base3 = load_research_config('configs/ablations/partner_injection_3407/I2/stage3.yaml')
+    models = [base3.model]
+    for variant, (label, operator, conditioning) in L2_VARIANTS.items():
+        root = Path('configs/ablations/l2_factorial_3407') / label
+        source = load_home_recipe(root / 'stage2.yaml')
+        target = load_research_config(root / 'stage3.yaml')
+        expected = replace(base3.model, l2_operator=operator, condition_mode=conditioning)
+        models.append(expected)
+        assert source == replace(base2, stage3=replace(base2.stage3, model=expected))
+        assert replace(target, model=base3.model, ablation=base3.ablation,
+                       initialization=base3.initialization) == base3
+        assert target.model == source.stage3.model == expected
+        assert target.initialization == replace(base3.initialization, stage2_final=Path(
+            f'outputs/ablations/l2_factorial_3407/{label}/stage2/train/stage2_final.pt'))
+        assert target.ablation.variant == variant
+        assert research_config_from_dict(target.to_dict()) == target
+        assert home_recipe_from_dict(source.to_dict()) == source
+        with pytest.raises(ValueError, match='declared variant'):
+            replace(target, model=base3.model).validate()
+        with pytest.raises(ValueError, match='declared variant'):
+            replace(base3, model=expected).validate()
+    assert len({str(attention_contract(model)) for model in models}) == 4
+    assert not {'l2_operator', 'condition_mode'} & base3.model.to_dict().keys()
+    for source in models:
+        for target in models:
+            if source != target:
+                with pytest.raises(ValueError, match='architecture mismatch'):
+                    validate_transfer_architecture(source, target, {}, {})
+    for overrides in ({'l2_operator': 'unknown'}, {'condition_mode': 'unknown'},
+                      {'condition_mode': 'film', 'partner_injection': 'l1'},
+                      {'l2_operator': 'mlp_mixer', 'split_system_experts': True}):
+        with pytest.raises(ValueError):
+            replace(base3.model, **overrides)
 
 
 def test_random_solvation_group_restores_fold_initialization_after_strict_transfer():

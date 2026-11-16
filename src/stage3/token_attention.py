@@ -62,6 +62,14 @@ def attention_contract(config, entity_dim=None):
                         system_transfer="matched_banks_il_solvation_fold_random_v1")
         if config.system_expert_scope == "group":
             contract["system_experts"] = "shared_global_independent_il_non_il_group_experts_v1"
+    if (config.l2_operator, config.condition_mode) != ("attention", "tokens"):
+        contract.update(l2_operator=config.l2_operator, condition_mode=config.condition_mode,
+                        l2_mixing="masked_pre_norm_residual_v1",
+                        l2_initialization="retained_i2_state_owner_scoped_new_modules_v1")
+        if config.l2_operator == "mlp_mixer":
+            contract["token_mixer"] = "fixed_slots_mlp_2x_tokens_channel_ffn_v1"
+        if config.condition_mode == "film":
+            contract["condition_film"] = "owner_condition_tokens_mask_bottleneck64_zero_affine_after_l2_v1"
     return contract
 
 
@@ -210,11 +218,60 @@ class ConditionalAttentionExpert(nn.Module):
     def __init__(self, width, **kwargs):
         super().__init__()
         self.stack = TokenStack(width, **kwargs)
+        self.condition_mode = "tokens"
 
     def forward(self, entities, mask, conditions, condition_mask):
+        if self.condition_mode == "film":
+            result = self.stack(entities, mask)
+            conditions = conditions.masked_fill(~condition_mask[..., None], 0)
+            scale, shift = self.film(torch.cat((conditions.flatten(1), condition_mask.to(conditions.dtype)), -1)).chunk(2, -1)
+            present = condition_mask.any(-1, keepdim=True).to(result.dtype)
+            result = result * (1 + (scale * present)[:, None]) + (shift * present)[:, None]
+            return result.masked_fill(~mask[..., None], 0)
         tokens = torch.cat((entities, conditions), 1)
         active = torch.cat((mask, condition_mask), 1)
         return self.stack(tokens, active)[:, :3].masked_fill(~mask[..., None], 0)
+
+
+class TokenMixerBlock(nn.Module):
+    """Mix fixed slots, then channels, clearing invalid slots at every residual."""
+    def __init__(self, width, hidden, tokens, dropout, activation):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(width)
+        self.norm2 = nn.LayerNorm(width)
+        self.token_mlp = nn.Sequential(nn.Linear(tokens, 2 * tokens),
+            nn.SiLU() if activation == "silu" else nn.GELU(), nn.Dropout(dropout),
+            nn.Linear(2 * tokens, tokens))
+        self.linear1 = nn.Linear(width, hidden)
+        self.linear2 = nn.Linear(hidden, width)
+        self.activation = nn.SiLU() if activation == "silu" else nn.GELU()
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, values, mask):
+        normalized = self.norm1(values).masked_fill(~mask[..., None], 0)
+        mixed = self.token_mlp(normalized.transpose(1, 2)).transpose(1, 2)
+        values = (values + self.dropout(mixed)).masked_fill(~mask[..., None], 0)
+        mixed = self.linear2(self.dropout(self.activation(self.linear1(self.norm2(values)))))
+        return (values + self.dropout(mixed)).masked_fill(~mask[..., None], 0)
+
+
+class TokenMixerStack(nn.Module):
+    def __init__(self, width, hidden, layers, dropout, activation):
+        super().__init__()
+        self.blocks = nn.ModuleList([TokenMixerBlock(width, hidden, 7, dropout, activation)
+                                    for _ in range(layers)])
+        self.normalization = nn.LayerNorm(width)
+
+    def forward(self, values, mask):
+        count = values.shape[1]
+        if count == 3:
+            # Keep identical mixer shapes/initialization in both condition modes.
+            values = torch.cat((values, values.new_zeros((len(values), 4, values.shape[-1]))), 1)
+            mask = torch.cat((mask, mask.new_zeros((len(mask), 4))), 1)
+        values = values.masked_fill(~mask[..., None], 0)
+        for block in self.blocks:
+            values = block(values, mask)
+        return self.normalization(values).masked_fill(~mask[..., None], 0)[:, :count]
 
 
 class ConcatenationTower(nn.Module):
@@ -264,11 +321,26 @@ def initialize_token_modules(model, initialization_seed):
         expert = EntityAttentionExpert(model.entity_input_contract["entity_dim"], width, **args)
         return TypedEntityAttentionExpert(expert) if config.split_entity_encoders else expert
 
+    def conditional_expert(args, owner, index):
+        # Consume exactly the original I2 initialization stream for all retained modules.
+        expert = ConditionalAttentionExpert(width, **args)
+        if (config.l2_operator, config.condition_mode) != ("attention", "tokens"):
+            with seeded_initialization(initialization_seed, f"L2:{owner}:{index}"):
+                if config.l2_operator == "mlp_mixer":
+                    expert.stack = TokenMixerStack(width, **{k: v for k, v in args.items() if k != "heads"})
+                if config.condition_mode == "film":
+                    expert.condition_mode = "film"
+                    expert.film = nn.Sequential(nn.Linear(4 * width + 4, 64),
+                        nn.SiLU(), nn.Linear(64, 2 * width))
+                    nn.init.zeros_(expert.film[-1].weight)
+                    nn.init.zeros_(expert.film[-1].bias)
+        return expert
+
     with seeded_initialization(initialization_seed, "GLOBAL"):
         args = arguments(config.expert_hidden_ratio, config.dropout)
         model.l1_global_experts = nn.ModuleList([banked(entity_expert(args)) for _ in range(config.global_experts)])
-        model.l2_global_experts = nn.ModuleList([banked(ConditionalAttentionExpert(width, **args))
-                                               for _ in range(config.global_experts)])
+        model.l2_global_experts = nn.ModuleList([banked(conditional_expert(args, "GLOBAL", index))
+                                               for index in range(config.global_experts)])
         model.l1_global_gate = banked(nn.Linear(packed, config.global_experts)) if config.global_experts else None
         if config.global_experts:
             model.global_conditions["tokens"] = banked(ConditionTokens(CONDITION_SCALES, width))
@@ -285,7 +357,7 @@ def initialize_token_modules(model, initialization_seed):
             model.l1_group_experts[group] = nn.ModuleList([banked(entity_expert(args), group) for _ in range(count)])
             model.l1_group_gates[group] = banked(nn.Linear(packed, count), group)
             model.l1_group_normalizations[group] = banked(nn.LayerNorm(width), group)
-            model.l2_group_experts[group] = nn.ModuleList([banked(ConditionalAttentionExpert(width, **args), group) for _ in range(count)])
+            model.l2_group_experts[group] = nn.ModuleList([banked(conditional_expert(args, f"GROUP:{group}", index), group) for index in range(count)])
             model.group_conditions[group] = banked(ConditionTokens(CONDITION_SCALES, width), group)
             model._own_modules(group_owner(group), model.l1_group_experts[group],
                 model.l1_group_gates[group], model.l1_group_normalizations[group],
@@ -304,7 +376,7 @@ def initialize_token_modules(model, initialization_seed):
         group_count = config.group_experts if group is None or group.experts is None else group.experts
         with seeded_initialization(initialization_seed, f"PRIVATE:{task}"):
             model.private_experts[key] = nn.ModuleList([
-                ConditionalAttentionExpert(width, **arguments(ratio, dropout)) for _ in range(count)])
+                conditional_expert(arguments(ratio, dropout), f"PRIVATE:{task}", index) for index in range(count)])
             model.task_gates[key] = nn.Linear(6 * width + 3, config.global_experts + group_count + count)
             model.task_normalizations[key] = nn.LayerNorm(width) if config.l2_residual else nn.Identity()
             model.towers[key] = ConcatenationTower(width, max(1, round(width * tower)), dropout, config.activation)

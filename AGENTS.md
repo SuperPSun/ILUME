@@ -47,6 +47,8 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 
 ### 历史合同、消融与基线
 
+- ADR-0132为独立L2四格消融：I2参照，A1／A2／A3分别为MLP混合＋条件token、注意力＋FiLM、MLP混合＋FiLM。六份YAML位于`configs/ablations/l2_factorial_3407/`，输出同名独立目录；固定I2注入与共享、当前冻结Stage1、3407／seed42／007／032。L1、Task Gate、三槽接口及owner机制不变；MLP固定七槽且逐层mask，FiLM替换条件token参与交互并恒等初始化。每格须匹配新Stage2来源，禁止跨格恢复；默认字段省略以保持旧身份。容量／成本分别报告，不作为正式Base改动；见[ADR-0132](docs/adr/0132-l2-operator-condition-factorial.md)及[手册](docs/l2-factorial-ablation-runbook.md)，正式训练由用户启动。
+
 - ADR-0127为用户另行授权的独立注入／类型编码消融：`configs/ablations/partner_injection_3407/`的I2/I3/I4/S1/I5共10份Stage2/3 YAML，输出`outputs/ablations/partner_injection_3407/`。共享冻结Stage1与匹配prepare、data/3407/seed42/007/032；I2/I3扩展第三成分接收分支，I5仅PRIVATE L2接收（沿用I2投影汇聚），I4恢复独立L1编码，S1离子／中性独立投影及注意力后在GROUP L2交互，S1以I4为配对参照。不同变体严格配对Stage2来源及训练身份，不改Base或0124套件，不增加seed。S1新增容量及类型预训练覆盖须单列，GLOBAL/GROUP/PRIVATE预算与样本加权不变；运行见[专用手册](docs/partner-injection-ablation-runbook.md)，正式训练由用户启动。
 
 - ADR-0128新增S2体系隔离专家：`configs/ablations/partner_injection_3407/S2/stage{2,3}.yaml`，独立输出S2。共享冻结Stage1，按任务IL双槽／非IL单实体分流；各有独立L1 GLOBAL/GROUP、L2 GLOBAL/GROUP、条件编码及归一化，PRIVATE等逐任务独立。GLOBAL L2只读主体，GROUP/PRIVATE L2注入溶质；IL solvation GROUP无匹配Stage2来源，在Stage3本折随机初始化，严格禁止跨分支迁移。原owner样本加权分母、裁剪、预算与冻结不变，新增容量及预训练覆盖须单列。见[ADR-0128](docs/adr/0128-system-isolated-experts.md)和[手册](docs/system-experts-ablation-runbook.md)，不改Base及已有变体，不自动训练。

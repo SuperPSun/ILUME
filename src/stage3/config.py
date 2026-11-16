@@ -178,6 +178,8 @@ class Stage3ModelConfig:
     split_entity_encoders: bool = False
     split_system_experts: bool = False
     system_expert_scope: str = "global_group"
+    l2_operator: str = "attention"
+    condition_mode: str = "tokens"
 
     def __post_init__(self):
         if self.expert_architecture not in {"mlp", "entity_token_attention_v1"}:
@@ -203,6 +205,15 @@ class Stage3ModelConfig:
             raise ValueError("Unknown system_expert_scope")
         if self.system_expert_scope != "global_group" and not self.split_system_experts:
             raise ValueError("system_expert_scope requires split_system_experts")
+        if self.l2_operator not in {"attention", "mlp_mixer"}:
+            raise ValueError("Unknown l2_operator")
+        if self.condition_mode not in {"tokens", "film"}:
+            raise ValueError("Unknown condition_mode")
+        if (self.l2_operator, self.condition_mode) != ("attention", "tokens") and (
+                self.expert_architecture != "entity_token_attention_v1"
+                or self.partner_injection != "group_private_l2"
+                or self.split_entity_encoders or self.split_system_experts):
+            raise ValueError("L2 factorial variants require the unsplit I2 token architecture")
 
     def to_dict(self):
         payload = asdict(self)
@@ -214,6 +225,10 @@ class Stage3ModelConfig:
             payload.pop("split_system_experts")
         if self.system_expert_scope == "global_group":
             payload.pop("system_expert_scope")
+        if self.l2_operator == "attention":
+            payload.pop("l2_operator")
+        if self.condition_mode == "tokens":
+            payload.pop("condition_mode")
         if self.expert_architecture == "mlp":
             for key in ("expert_architecture", "attention_heads", "attention_layers"):
                 payload.pop(key)
