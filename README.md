@@ -144,6 +144,8 @@ no-Stage1 使用其独立配置与输出根；no-Stage2 和单任务 MLP 消融�
 
 ## 基线与消融
 
+5轮I2来源新增两个独立条件对照：F1只在PRIVATE使用FiLM，G1只为Task Gate增加物理工况输入。四份配对YAML位于`configs/ablations/condition_routing_3407/`，不叠加、不混用10轮来源；各自重新训练Stage2和五折Stage3，复用冻结Stage1与prepare。见[ADR-0133](docs/adr/0133-private-film-and-conditioned-task-gate.md)及[运行手册](docs/condition-routing-ablation-runbook.md)。
+
 10轮Stage1的C0＋I2＋S3复跑使用独立来源与输出：C0沿用核心10轮参照，I2／S3配置见`configs/ablations/partner_injection_3407_10epochs/`，共用C0新prepare，各自重训Stage2及五折Stage3。3090传输、训练和完整回传命令见[专用章节](docs/partner-injection-ablation-runbook.md#10轮stage1c0i2s3复跑)，旧5轮实验不变。
 
 第三成分注入与离子／中性分子独立编码另按[ADR-0127](docs/adr/0127-partner-injection-and-typed-encoding-ablations.md)和[专用手册](docs/partner-injection-ablation-runbook.md)执行：I2/I3/I4/S1/I5共10份配对YAML（I5仅PRIVATE注入），复用Stage1与prepare，新训练5次Stage2及25个Stage3折次；现役Base和0124核心套件保持原身份。

@@ -20,13 +20,14 @@ def spec(task="experiment/test", *, partner=False, organic=False, columns=("temp
 
 
 def model_for(task_spec, experts=1, partner_injection="l1", split_entity_encoders=False, split_system_experts=False,
-              system_expert_scope="global_group", l2_operator="attention", condition_mode="tokens"):
+              system_expert_scope="global_group", l2_operator="attention", condition_mode="tokens",
+              task_gate_conditioned=False):
     # Tiny width uses the exact production modules, without allocating 1024D optimizers.
     config = Stage3ModelConfig(global_experts=experts, group_experts=experts, private_experts=1,
         dropout=0., expert_architecture="entity_token_attention_v1", attention_heads=2,
         partner_injection=partner_injection, split_entity_encoders=split_entity_encoders,
         split_system_experts=split_system_experts, system_expert_scope=system_expert_scope,
-        l2_operator=l2_operator, condition_mode=condition_mode)
+        l2_operator=l2_operator, condition_mode=condition_mode, task_gate_conditioned=task_gate_conditioned)
     model = Stage3SparseModel(config, {task_spec.task_id: task_spec}, 16,
         initialization_seed=42, entity_inputs=True, entity_input_dim=1235)
     model.bind_condition_statistics({task_spec.task_id: {"conditions": {
@@ -444,25 +445,30 @@ def test_l2_factorial_interactions_conditions_masks_transfer_and_freezing(tmp_pa
 def test_l2_factorial_configs_keep_i2_recipe_and_reject_crossed_variants():
     from pathlib import Path
     from stage2.home_config import load_home_recipe, home_recipe_from_dict
-    from ablations.entity_home.config import load_research_config, research_config_from_dict, L2_VARIANTS
+    from ablations.entity_home.config import load_research_config, research_config_from_dict, L2_VARIANTS, CONDITION_VARIANTS
     from stage3.home import validate_transfer_architecture
     from stage3.token_attention import attention_contract
 
     base2 = load_home_recipe('configs/ablations/partner_injection_3407/I2/stage2.yaml')
     base3 = load_research_config('configs/ablations/partner_injection_3407/I2/stage3.yaml')
     models = [base3.model]
-    for variant, (label, operator, conditioning) in L2_VARIANTS.items():
-        root = Path('configs/ablations/l2_factorial_3407') / label
+    settings = [(v, label, operator, mode, False, 'l2_factorial_3407')
+                for v, (label, operator, mode) in L2_VARIANTS.items()]
+    settings += [(v, label, 'attention', mode, conditioned, 'condition_routing_3407')
+                 for v, (label, mode, conditioned) in CONDITION_VARIANTS.items()]
+    for variant, label, operator, conditioning, conditioned, suite in settings:
+        root = Path('configs/ablations') / suite / label
         source = load_home_recipe(root / 'stage2.yaml')
         target = load_research_config(root / 'stage3.yaml')
-        expected = replace(base3.model, l2_operator=operator, condition_mode=conditioning)
+        expected = replace(base3.model, l2_operator=operator, condition_mode=conditioning,
+                           task_gate_conditioned=conditioned)
         models.append(expected)
         assert source == replace(base2, stage3=replace(base2.stage3, model=expected))
         assert replace(target, model=base3.model, ablation=base3.ablation,
                        initialization=base3.initialization) == base3
         assert target.model == source.stage3.model == expected
         assert target.initialization == replace(base3.initialization, stage2_final=Path(
-            f'outputs/ablations/l2_factorial_3407/{label}/stage2/train/stage2_final.pt'))
+            f'outputs/ablations/{suite}/{label}/stage2/train/stage2_final.pt'))
         assert target.ablation.variant == variant
         assert research_config_from_dict(target.to_dict()) == target
         assert home_recipe_from_dict(source.to_dict()) == source
@@ -470,8 +476,8 @@ def test_l2_factorial_configs_keep_i2_recipe_and_reject_crossed_variants():
             replace(target, model=base3.model).validate()
         with pytest.raises(ValueError, match='declared variant'):
             replace(base3, model=expected).validate()
-    assert len({str(attention_contract(model)) for model in models}) == 4
-    assert not {'l2_operator', 'condition_mode'} & base3.model.to_dict().keys()
+    assert len({str(attention_contract(model)) for model in models}) == 6
+    assert not {'l2_operator', 'condition_mode', 'task_gate_conditioned'} & base3.model.to_dict().keys()
     for source in models:
         for target in models:
             if source != target:
@@ -479,9 +485,108 @@ def test_l2_factorial_configs_keep_i2_recipe_and_reject_crossed_variants():
                     validate_transfer_architecture(source, target, {}, {})
     for overrides in ({'l2_operator': 'unknown'}, {'condition_mode': 'unknown'},
                       {'condition_mode': 'film', 'partner_injection': 'l1'},
-                      {'l2_operator': 'mlp_mixer', 'split_system_experts': True}):
+                      {'l2_operator': 'mlp_mixer', 'split_system_experts': True},
+                      {'condition_mode': 'private_film', 'l2_operator': 'mlp_mixer'},
+                      {'task_gate_conditioned': 1}, {'task_gate_conditioned': True, 'condition_mode': 'private_film'},
+                      {'task_gate_conditioned': True, 'partner_injection': 'l1'}):
         with pytest.raises(ValueError):
             replace(base3.model, **overrides)
+
+
+@pytest.mark.parametrize('mode,conditioned', [('private_film', False), ('tokens', True)])
+def test_private_film_and_condition_gate_preserve_i2_boundaries(tmp_path, mode, conditioned):
+    from stage2.home_contract import transferable_state, load_transferable_state, state_hash
+
+    task = replace(spec(partner=True), meta_group='solvation')
+    base = model_for(task, partner_injection='group_private_l2').eval()
+    rng = torch.get_rng_state()
+    model = model_for(task, partner_injection='group_private_l2', condition_mode=mode,
+                      task_gate_conditioned=conditioned).eval()
+    assert torch.equal(rng, torch.get_rng_state())
+    original = base.state_dict()
+    for name in original:
+        assert torch.equal(model.state_dict()[name], original[name]), name
+    key = sanitize_task(task.task_id)
+    owners = model.ownership_manifest()
+    added = model.state_dict().keys() - original.keys()
+    assert added and all(owners[n] == private_owner(task.task_id).label for n in added)
+    assert model.l2_global_experts[0].condition_mode == 'tokens'
+    assert model.l2_group_experts[task.meta_group][0].condition_mode == 'tokens'
+    assert model.private_experts[key][0].condition_mode == ('tokens' if conditioned else 'film')
+    primary, partner, conditions = ions(), molecule(), torch.zeros(2, 1)
+    reference = base(task.task_id, primary, conditions, partner_embedding=partner)
+    before = model(task.task_id, primary, conditions, partner_embedding=partner)
+    if conditioned:
+        torch.testing.assert_close(before.predictions, reference.predictions, rtol=0, atol=0)
+        torch.testing.assert_close(before.diagnostics['task_gate'], reference.diagnostics['task_gate'], rtol=0, atol=0)
+    else:
+        all_film = model_for(task, partner_injection='group_private_l2', condition_mode='film')
+        assert all(torch.equal(v, all_film.private_experts[key].state_dict()[n])
+                   for n, v in model.private_experts[key].state_dict().items())
+    # Changing the partner never enters GLOBAL, the gate, or the L1 primary path.
+    changed = model(task.task_id, primary, conditions,
+                    partner_embedding=EntityInputs(partner.values * 2, partner.roles, partner.mask))
+    for name in ('z_global', 'z_group', 'task_gate', 'l2_global_candidates'):
+        torch.testing.assert_close(before.diagnostics[name], changed.diagnostics[name], rtol=0, atol=0)
+    for name in ('l2_group_candidates', 'l2_private_candidates'):
+        assert not torch.equal(before.diagnostics[name][:, :, :2], changed.diagnostics[name][:, :, :2])
+    if conditioned:
+        gate = model.task_gates[key]
+        assert torch.count_nonzero(gate.condition_weight) == 0
+        with torch.no_grad():
+            gate.condition_weight[0, 0] = 3.
+        hot = model(task.task_id, primary, conditions + 1, partner_embedding=partner)
+        cold = model(task.task_id, primary, conditions, partner_embedding=partner)
+        assert not torch.equal(cold.diagnostics['task_gate'], hot.diagnostics['task_gate'])
+        assert torch.count_nonzero(hot.diagnostics['z_group'][:, 2]) == 0
+        for name in ('z_global', 'z_group', 'l1_global_gate', 'l1_group_gate'):
+            torch.testing.assert_close(cold.diagnostics[name], hot.diagnostics[name], rtol=0, atol=0)
+        condition_input = conditions.detach().clone().requires_grad_(True)
+        weights = model(task.task_id, primary, condition_input, partner_embedding=partner).diagnostics['task_gate']
+        assert torch.autograd.grad(weights[:, 0].sum(), condition_input)[0].abs().sum() > 0
+    # Actual optimizer updates respect the unchanged PRIVATE-only phase boundary.
+    model.set_trainable_owners({private_owner(task.task_id)})
+    frozen = {n: p.detach().clone() for n, p in model.named_parameters() if not p.requires_grad}
+    optimizer = torch.optim.AdamW(model.parameters(), lr=.01, weight_decay=.1)
+    for _ in range(3):
+        optimizer.zero_grad(set_to_none=True)
+        model(task.task_id, primary, conditions, partner_embedding=partner).predictions.square().sum().backward()
+        optimizer.step()
+    assert all(torch.equal(p, frozen[n]) for n, p in model.named_parameters() if n in frozen)
+    assert any(p.grad is not None and p.grad.abs().sum() > 0 for n, p in model.named_parameters() if n in added)
+    model.eval()
+    if not conditioned:
+        hot = model(task.task_id, primary, conditions + 1, partner_embedding=partner)
+        cold = model(task.task_id, primary, conditions, partner_embedding=partner)
+        torch.testing.assert_close(cold.diagnostics['task_gate'], hot.diagnostics['task_gate'], rtol=0, atol=0)
+        assert not torch.equal(cold.diagnostics['l2_private_candidates'], hot.diagnostics['l2_private_candidates'])
+        expert = model.private_experts[key][0]
+        values, mask = torch.randn(2, 3, 16), torch.tensor([[True, False, False]] * 2)
+        no_conditions = torch.zeros(2, 4, dtype=torch.bool)
+        torch.testing.assert_close(expert(values, mask, torch.randn(2, 4, 16), no_conditions),
+                                   expert.stack(values, mask), rtol=0, atol=0)
+    shared = transferable_state(model)
+    target = model_for(task, partner_injection='group_private_l2', condition_mode=mode,
+                       task_gate_conditioned=conditioned).eval()
+    assert set(load_transferable_state(target, shared, state_hash(shared))) == set(shared)
+    bad = dict(shared); bad.pop(next(iter(bad)))
+    with pytest.raises(ValueError, match='incomplete'):
+        load_transferable_state(target, bad, state_hash(bad))
+    checkpoint = tmp_path / 'condition.pt'
+    torch.save(model.state_dict(), checkpoint)
+    target.load_state_dict(torch.load(checkpoint, weights_only=True), strict=True)
+    model.requires_grad_(False); target.requires_grad_(False)
+    with torch.inference_mode():
+        torch.testing.assert_close(model(task.task_id, primary, conditions, partner_embedding=partner).predictions,
+            target(task.task_id, primary, conditions, partner_embedding=partner).predictions, rtol=0, atol=0)
+    # A single entity with no physical conditions remains valid, with zero padded slots.
+    single = replace(spec(columns=()), primary_slots=('molecule',))
+    simple = model_for(single, partner_injection='group_private_l2', condition_mode=mode,
+                       task_gate_conditioned=conditioned).eval()
+    output = simple(single.task_id, molecule(), torch.empty(2, 0))
+    assert torch.isfinite(output.predictions).all()
+    for name in ('l2_global_candidates', 'l2_group_candidates', 'l2_private_candidates'):
+        assert torch.count_nonzero(output.diagnostics[name][:, :, 1:]) == 0
 
 
 def test_random_solvation_group_restores_fold_initialization_after_strict_transfer():

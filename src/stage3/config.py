@@ -180,6 +180,7 @@ class Stage3ModelConfig:
     system_expert_scope: str = "global_group"
     l2_operator: str = "attention"
     condition_mode: str = "tokens"
+    task_gate_conditioned: bool = False
 
     def __post_init__(self):
         if self.expert_architecture not in {"mlp", "entity_token_attention_v1"}:
@@ -207,13 +208,23 @@ class Stage3ModelConfig:
             raise ValueError("system_expert_scope requires split_system_experts")
         if self.l2_operator not in {"attention", "mlp_mixer"}:
             raise ValueError("Unknown l2_operator")
-        if self.condition_mode not in {"tokens", "film"}:
+        if self.condition_mode not in {"tokens", "film", "private_film"}:
             raise ValueError("Unknown condition_mode")
         if (self.l2_operator, self.condition_mode) != ("attention", "tokens") and (
                 self.expert_architecture != "entity_token_attention_v1"
                 or self.partner_injection != "group_private_l2"
                 or self.split_entity_encoders or self.split_system_experts):
             raise ValueError("L2 factorial variants require the unsplit I2 token architecture")
+        if self.condition_mode == "private_film" and self.l2_operator != "attention":
+            raise ValueError("PRIVATE FiLM requires attention L2")
+        if type(self.task_gate_conditioned) is not bool:
+            raise ValueError("task_gate_conditioned must be a boolean")
+        if self.task_gate_conditioned and (
+                self.expert_architecture != "entity_token_attention_v1"
+                or self.partner_injection != "group_private_l2"
+                or self.split_entity_encoders or self.split_system_experts
+                or self.l2_operator != "attention" or self.condition_mode != "tokens"):
+            raise ValueError("Conditioned Task Gate requires the unmodified I2 experts")
 
     def to_dict(self):
         payload = asdict(self)
@@ -229,6 +240,8 @@ class Stage3ModelConfig:
             payload.pop("l2_operator")
         if self.condition_mode == "tokens":
             payload.pop("condition_mode")
+        if not self.task_gate_conditioned:
+            payload.pop("task_gate_conditioned")
         if self.expert_architecture == "mlp":
             for key in ("expert_architecture", "attention_heads", "attention_layers"):
                 payload.pop(key)

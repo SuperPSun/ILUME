@@ -26,7 +26,6 @@ cd /mnt/backup8t/pengs/ILUME
 conda activate ilume
 set -e
 CUDA_VISIBLE_DEVICES=0 python scripts/stage2/prepare.py --config configs/ablations/token_attention_3407/core/base/stage2.yaml --output outputs/ablations/token_attention_3407_10epochs/base/stage2/prepare
-CUDA_VISIBLE_DEVICES=0 python scripts/stage3/prepare.py --config configs/ablations/token_attention_3407/core/base/stage3.yaml --output outputs/ablations/token_attention_3407_10epochs/base/stage3/prepare
 
 for variant in C0 I2 S3; do
   if [ "$variant" = C0 ]; then
@@ -37,12 +36,15 @@ for variant in C0 I2 S3; do
     output_root="outputs/ablations/partner_injection_3407_10epochs/$variant"
   fi
   python scripts/stage2/train.py --config "$config_root/stage2.yaml" --output "$output_root/stage2/train" --device cuda:0
+  if [ "$variant" = C0 ]; then
+    CUDA_VISIBLE_DEVICES=0 python scripts/stage3/prepare.py --config "$config_root/stage3.yaml" --output "$output_root/stage3/prepare"
+  fi
   python scripts/stage3/train.py --config "$config_root/stage3.yaml" --fold 1 2 3 4 5 --output "$output_root/stage3/train" --devices cuda:0,cuda:1,cuda:2,cuda:3 --max-parallel 4
   CUDA_VISIBLE_DEVICES=0 python scripts/stage3/evaluate.py --config "$config_root/stage3.yaml" --checkpoint-dir "$output_root/stage3/train" --split valid --fold 1 2 3 4 5 --output "$output_root/stage3/valid" --study-id partner_injection_3407_10epochs
 done
 ```
 
-Stage3 prepare只依赖新Stage1及数据，可在Stage2训练之前生成。只执行一次，随后三个架构只读共用；不复制或改写其身份。GPU设备号属于运行参数，资源不足时减少并发，不缩batch、不改训练预算。中断后保留现场，按本手册原规则仅恢复对应阶段；不要重复执行整个首次运行循环。
+Stage3 prepare公开入口先严格加载配置指定的Stage2 final，因此必须在C0 Stage2训练完成、`stage2_final.pt/json`齐全后执行。准备产物只生成一次，随后三个架构只读共用；不复制或改写其身份。GPU设备号属于运行参数，资源不足时减少并发，不缩batch、不改训练预算。中断后保留现场，按本手册原规则仅恢复对应阶段；不要重复执行整个首次运行循环。
 
 三套完成后，在4090将完整产物拉回，包含所有权重、日志、配置和检查点；若目标目录已有同一运行的部分回传，可续传，身份不同则先停止核对：
 

@@ -13,6 +13,7 @@
 | 共享GLOBAL、体系隔离GROUP消融S3 | [0130](0130-shared-global-system-group-experts.md) | GLOBAL跨体系共享，GROUP按IL／非IL隔离；其余接入、随机IL solvation初始化及预算沿用S2；[运行手册](../system-experts-ablation-runbook.md#s3共享global仅group按体系隔离) |
 | I2仅重置solvation GROUP初始化的R1消融 | [0131](0131-random-solvation-group-initialization.md) | 复用I2 Stage2，完整来源校验后恢复Stage3本折solvation GROUP随机初值，其他迁移及模型不变；[运行手册](../partner-injection-ablation-runbook.md#r1仅重置solvation-group的预训练初始化) |
 | I2的L2交互算子与条件通路四格消融 | [0132](0132-l2-operator-condition-factorial.md) | I2参照及A1／A2／A3，注意力／MLP混合×条件token／FiLM；六份配对YAML，冻结Stage1、独立Stage2来源；[运行手册](../l2-factorial-ablation-runbook.md) |
+| PRIVATE FiLM与工况Task Gate | [0133](0133-private-film-and-conditioned-task-gate.md) | 5轮I2参照；F1仅PRIVATE FiLM、G1门控新增工况，两项独立配对Stage2／Stage3，不组合；[手册](../condition-routing-ablation-runbook.md) |
 | Stage2 共享梯度聚合 | [0097](0097-stage2-batch-sample-weighted-gradients.md) | 五模拟联合step，GLOBAL/GROUP按真实batch样本加权，PRIVATE原始梯度；新训练身份及严格恢复/迁移 |
 | Stage1 双路2D DGT | [0116](0116-stage1-dual-graph-transformer.md) | 现役Base八层双路512D DGT、encoder约77.99M；拓扑sidecar、逐通道pair attention、分块重计算和双路池化；旧D-MPNN严格历史加载，0089/0090图架构数值为历史 |
 | Base当前实验数据协议 | [0117](0117-base-22-tasks-updated-solvation.md) | 22实验＋两模拟；显式排除平衡压力/水活度系数，solvation按更新catalog声明3684体系；其余recipe不变，历史配置不迁移 |

@@ -4,6 +4,10 @@
 
 ## 按改动选择验证
 
+ADR-0133的F1／G1继续复用小模型条件测试和既有配置契约测试，覆盖PRIVATE FiLM作用范围、零初始化工况门控、条件梯度、溶质隔离、参数归属、冻结、严格迁移、序列化及模式互拒。两项另以临时定向调用复用完整Stage2→Stage3主链，`2 passed in 132.47s`，日志为`/tmp/ilume-condition-chain.log`；默认重型链仍仅Base／S1，不扩增参数化。正式训练和GPU成本未由此验收替代。
+
+最终全量`pytest -q --durations=20`为`432 passed, 1 skipped`，耗时563.55秒，日志为`/tmp/ilume-condition-full-pytest.log`；唯一skip仍是环境缺少chemprop。Base／I2／A1～A3与修改前的权重和预测逐bit比较、F1／G1的CPU BF16前后向检查均通过；未将耗时作为同负载提速结论。
+
 | 改动 | 必须执行 |
 |---|---|
 | 代码或测试 | 完整`pytest -q` |

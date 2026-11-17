@@ -68,8 +68,13 @@ def attention_contract(config, entity_dim=None):
                         l2_initialization="retained_i2_state_owner_scoped_new_modules_v1")
         if config.l2_operator == "mlp_mixer":
             contract["token_mixer"] = "fixed_slots_mlp_2x_tokens_channel_ffn_v1"
-        if config.condition_mode == "film":
+        if config.condition_mode in {"film", "private_film"}:
             contract["condition_film"] = "owner_condition_tokens_mask_bottleneck64_zero_affine_after_l2_v1"
+        if config.condition_mode == "private_film":
+            contract["condition_film_scope"] = "private_only_shared_condition_tokens_v1"
+    if config.task_gate_conditioned:
+        contract.update(task_gate="structural_logits_plus_physical4_mask4_linear_v1",
+                        task_gate_initialization="retained_structural_weights_zero_condition_weights_v1")
     return contract
 
 
@@ -284,6 +289,17 @@ class ConcatenationTower(nn.Module):
         return self.layers(values).squeeze(-1)
 
 
+class ConditionedTaskGate(nn.Linear):
+    """Retain I2 structural logits and learn an additive physical-condition term."""
+    def __init__(self, structural_width, candidates):
+        super().__init__(structural_width, candidates)
+        self.condition_weight = nn.Parameter(torch.zeros(candidates, 8))
+
+    def forward(self, values):
+        return super().forward(values[:, :self.in_features].contiguous()) + torch.nn.functional.linear(
+            values[:, self.in_features:], self.condition_weight)
+
+
 def initialize_token_modules(model, initialization_seed):
     # Imports remain within Stage3 and avoid a module-import cycle.
     from .model import GLOBAL, group_owner, private_owner
@@ -324,11 +340,13 @@ def initialize_token_modules(model, initialization_seed):
     def conditional_expert(args, owner, index):
         # Consume exactly the original I2 initialization stream for all retained modules.
         expert = ConditionalAttentionExpert(width, **args)
-        if (config.l2_operator, config.condition_mode) != ("attention", "tokens"):
+        film = config.condition_mode == "film" or (
+            config.condition_mode == "private_film" and owner.startswith("PRIVATE:"))
+        if config.l2_operator != "attention" or film:
             with seeded_initialization(initialization_seed, f"L2:{owner}:{index}"):
                 if config.l2_operator == "mlp_mixer":
                     expert.stack = TokenMixerStack(width, **{k: v for k, v in args.items() if k != "heads"})
-                if config.condition_mode == "film":
+                if film:
                     expert.condition_mode = "film"
                     expert.film = nn.Sequential(nn.Linear(4 * width + 4, 64),
                         nn.SiLU(), nn.Linear(64, 2 * width))
@@ -377,7 +395,8 @@ def initialize_token_modules(model, initialization_seed):
         with seeded_initialization(initialization_seed, f"PRIVATE:{task}"):
             model.private_experts[key] = nn.ModuleList([
                 conditional_expert(arguments(ratio, dropout), f"PRIVATE:{task}", index) for index in range(count)])
-            model.task_gates[key] = nn.Linear(6 * width + 3, config.global_experts + group_count + count)
+            gate = ConditionedTaskGate if config.task_gate_conditioned else nn.Linear
+            model.task_gates[key] = gate(6 * width + 3, config.global_experts + group_count + count)
             model.task_normalizations[key] = nn.LayerNorm(width) if config.l2_residual else nn.Identity()
             model.towers[key] = ConcatenationTower(width, max(1, round(width * tower)), dropout, config.activation)
             model.private_conditions[key] = ConditionTokens(spec.condition_columns, width)
@@ -502,7 +521,10 @@ def forward_tokens(model, task, primary, conditions, partner):
         private_partner = (torch.stack(group_partner_tokens, 1) * group_weights[:, 0, :, None, None]).sum(1)
     private_outputs = candidates(model.private_experts[key], local, model.private_conditions[key],
                                   with_partner=private_partner is not None, scope="private", private_partner=private_partner)
-    weights = model.task_gate_weights(key, torch.cat((global_values.flatten(1), local.flatten(1), mask.to(local.dtype)), -1))
+    gate_values = torch.cat((global_values.flatten(1), local.flatten(1), mask.to(local.dtype)), -1)
+    if model.model_config.task_gate_conditioned:
+        gate_values = torch.cat((gate_values, physical.to(local.dtype), present.to(local.dtype)), -1)
+    weights = model.task_gate_weights(key, gate_values)
     all_outputs = torch.cat((global_outputs, group_outputs, private_outputs), 1)
     mixed = (weights[:, :, None, None] * all_outputs).sum(1)
     representation = model.task_normalizations[key](local + mixed) if model.model_config.l2_residual else mixed

@@ -14,6 +14,12 @@ VARIANTS = {
     'partner_group_private', 'partner_all', 'partner_encoded', 'typed_entity_encoders', 'partner_private', 'system_experts', 'group_system_experts',
     'random_solvation_group',
     'l2_mlp_tokens', 'l2_attention_film', 'l2_mlp_film',
+    'private_condition_film', 'condition_task_gate',
+}
+
+CONDITION_VARIANTS = {
+    'private_condition_film': ('F1', 'private_film', False),
+    'condition_task_gate': ('G1', 'tokens', True),
 }
 
 L2_VARIANTS = {
@@ -60,6 +66,8 @@ class AblationSpec:
 
     @property
     def display_name(self):
+        if self.variant in CONDITION_VARIANTS:
+            return 'ILUME ' + CONDITION_VARIANTS[self.variant][0] + ' ' + self.variant
         if self.variant in L2_VARIANTS:
             return 'ILUME ' + L2_VARIANTS[self.variant][0] + ' ' + self.variant
         if self.variant == 'random_solvation_group':
@@ -92,7 +100,8 @@ class AblationConfig(Stage3Config):
         if self.ablation is None or not self.is_entity_home:
             raise ValueError('Research config requires an Entity-HoME ablation')
         self.ablation.validate()
-        if self.ablation.variant in PARTNER_VARIANTS or self.ablation.variant == 'random_solvation_group' or self.ablation.variant in L2_VARIANTS:
+        if (self.ablation.variant in PARTNER_VARIANTS or self.ablation.variant == 'random_solvation_group'
+                or self.ablation.variant in L2_VARIANTS or self.ablation.variant in CONDITION_VARIANTS):
             _, injection, split = PARTNER_VARIANTS.get(self.ablation.variant, ('R1', 'group_private_l2', False))
             if (self.model.expert_architecture != 'entity_token_attention_v1'
                     or self.model.partner_injection != injection
@@ -101,8 +110,12 @@ class AblationConfig(Stage3Config):
                     or self.model.system_expert_scope != ('group' if self.ablation.variant == 'group_system_experts' else 'global_group')):
                 raise ValueError('Partner ablation model differs from its declared variant')
         expected_l2 = L2_VARIANTS.get(self.ablation.variant, (None, 'attention', 'tokens'))[1:]
+        if self.ablation.variant in CONDITION_VARIANTS:
+            expected_l2 = ('attention', CONDITION_VARIANTS[self.ablation.variant][1])
         if (self.model.l2_operator, self.model.condition_mode) != expected_l2:
             raise ValueError('L2 model differs from its declared variant')
+        if self.model.task_gate_conditioned != (self.ablation.variant == 'condition_task_gate'):
+            raise ValueError('Task Gate differs from its declared variant')
         if self.frozen_encoder is not None:
             raise ValueError('External frozen encoder ablations have been retired')
         if self.data.seed == 3407 and self.ablation.variant.startswith('capacity_'):

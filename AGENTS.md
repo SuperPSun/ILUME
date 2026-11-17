@@ -47,6 +47,8 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 
 ### 历史合同、消融与基线
 
+- ADR-0133新增F1／G1两个独立对照，配置`configs/ablations/condition_routing_3407/`、输出同名独立目录，沿用5轮I2来源及prepare、3407／seed42／007／032。F1仅PRIVATE改FiLM；G1原专家不变，Task Gate增加physical4＋mask4的零初始化线性权重，保持PRIVATE归属，从训练学习工况依赖。二者互斥且不与其他新模式组合，不属于推理期路由干预或门控后校准；各自新训配对Stage2与Stage3五折。默认字段省略、旧身份及10轮复跑不变，严格来源／owner／hash校验继续保留；见[ADR-0133](docs/adr/0133-private-film-and-conditioned-task-gate.md)与[手册](docs/condition-routing-ablation-runbook.md)，正式训练由用户启动。
+
 - 2026-11-17用户选定10轮Stage1的C0＋I2＋S3复跑：C0沿用`token_attention_3407/core/base`；I2／S3另建`configs/ablations/partner_injection_3407_10epochs/`四份YAML，输出同名独立目录，统一`train_10epochs`编码器和C0新prepare，各自配对Stage2 final。结构、3407／seed42／007／032不变，S3仍保留随机IL solvation GROUP初始化；旧5轮研究套件不修改。传输、训练与回传见[10轮手册](docs/partner-injection-ablation-runbook.md#10轮stage1c0i2s3复跑)，本次仅交付配置和命令，正式运行由用户启动。
 
 - ADR-0132为独立L2四格消融：I2参照，A1／A2／A3分别为MLP混合＋条件token、注意力＋FiLM、MLP混合＋FiLM。六份YAML位于`configs/ablations/l2_factorial_3407/`，输出同名独立目录；固定I2注入与共享、当前冻结Stage1、3407／seed42／007／032。L1、Task Gate、三槽接口及owner机制不变；MLP固定七槽且逐层mask，FiLM替换条件token参与交互并恒等初始化。每格须匹配新Stage2来源，禁止跨格恢复；默认字段省略以保持旧身份。容量／成本分别报告，不作为正式Base改动；见[ADR-0132](docs/adr/0132-l2-operator-condition-factorial.md)及[手册](docs/l2-factorial-ablation-runbook.md)，正式训练由用户启动。
