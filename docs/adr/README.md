@@ -57,7 +57,7 @@
 | AIonopedia | [0049](0049-aionopedia-multimodal-baseline.md) |
 | ILTransR | [0057](0057-iltransr-stage3-baseline.md) |
 | AIFC | [0060](0060-aifc-stage3-baseline.md) |
-| 现役DGT/token HoME消融 | [0124](0124-current-token-home-ablations.md)：C0～C10及E1～E5、22任务、31份YAML；删除原Uniform/ChemBERTa，保留历史产物；0100/0107仅历史 |
+| 现役DGT/token HoME消融 | [0124](0124-current-token-home-ablations.md)：C0～C10及E1～E5、22任务、33份YAML；本轮Stage1与C0配对batch84/10轮、独立输出；删除原Uniform/ChemBERTa，保留历史产物；0100/0107仅历史 |
 | 历史核心三项消融 | [0089](0089-v4-frozen-dual-view-stage1.md)（历史 v4）、[0082](0082-home-mainline-and-core-ablations.md)、[0084](0084-stage3-simulation-phase2-phase3.md)、[0077](0077-stage3-single-task-mlp-v2-ablation.md)（历史配方来源） |
 
 ## 冻结合同与历史

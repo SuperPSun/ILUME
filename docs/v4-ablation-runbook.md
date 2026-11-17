@@ -9,19 +9,53 @@ cd /data/pengs/ILUME
 conda activate ilume
 ```
 
-配对当前`configs/v4/stage{2,3}/base.yaml`：G2_C01、22任务、token注意力；使用RDKit2026.09.1及当前211列schema。Stage1引用`outputs/v4/stage1/base/train/stage1_encoder.pt`，本轮Stage1重训配置匹配其batch84/5轮及图上限160；不要改为标准Base的256/10轮或旧RDKit环境。相同来源的corpus/teacher/电荷/DGT拓扑复用，不重建全量teacher，不改metadata/SHA。
+本轮C0配置为`configs/ablations/token_attention_3407/core/base/stage{2,3}.yaml`，保持正式Base的G2_C01、22任务、token注意力及007/032下游配方；使用RDKit2026.09.1及当前211列schema。Stage1引用`outputs/v4/stage1/base/train_10epochs/stage1_encoder.pt`，本轮Stage1重训统一batch84/10轮及图上限160；不要改为标准Base的256/10轮或旧RDKit环境。相同来源的corpus/teacher/电荷/DGT拓扑复用，不重建全量teacher，不改metadata/SHA。
 
-先按[v4手册](v4-runbook.md)完成新Base的Stage2、Stage3 prepare/train及valid/test；路径为`outputs/v4/stage{2,3}/token_attention/`。仅Stage3对照复用其Stage3 prepare，C2另需Base Stage2 prepare；缺少来源时先完成上游。每项新表示各自prepare，不能复制Base实体缓存替代。
+本轮输出统一为`outputs/ablations/token_attention_3407_10epochs/`；旧5轮Base与其他I/S/R/A套件保持原来源和输出。仅Stage3对照复用本轮C0的Stage3 prepare，C2另需本轮C0 Stage2 prepare及其零更新配方；缺少来源时先完成上游。每项新表示各自prepare，不能复制5轮Base实体缓存替代。H100已完成10轮Base Stage1；4090等设备须先完成其完整产物回传和SHA核验，不能在回传仍写入时prepare。
+
+## H100：两卡顺序完成7项Stage1
+
+先通过Git同步本次配置，确认H100与4090使用同一提交。本次核查H100的GPU0／1空闲，环境为原`/workspace/pengs/.conda/envs/ilume`（PyTorch2.14.0＋cu130、RDKit2026.09.1），corpus、teacher、电荷及DGT拓扑均已存在；启动仍执行完整身份和SHA检查。无需重prepare或重训已完成的10轮Base Stage1，不调整其他GPU作业。
+
+在H100的一个tmux窗口运行，两卡共同训练一个任务，全局batch84／每卡42；前项成功后才运行下一项。所有输出须尚不存在，不从旧5轮权重恢复。正式启动前重新确认GPU0／1仍空闲。
+
+```bash
+cd /workspace/pengs/ILUME
+conda activate /workspace/pengs/.conda/envs/ilume
+set -e
+for ablation_name in no_smiles no_graph; do
+  CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc-per-node=2 scripts/stage1/train.py --config "configs/ablations/token_attention_3407/core/${ablation_name}/stage1.yaml" --output "outputs/ablations/token_attention_3407_10epochs/${ablation_name}/stage1/train"
+done
+for ablation_name in no_unimol no_electronic no_partial_charge no_alignment no_descriptor_loss; do
+  CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc-per-node=2 scripts/stage1/train.py --config "configs/ablations/token_attention_3407/auxiliary/${ablation_name}/stage1.yaml" --output "outputs/ablations/token_attention_3407_10epochs/${ablation_name}/stage1/train"
+done
+```
+
+开始时rank0需校验大缓存，尚未进入训练不等于卡住；查看`Stage1 startup`进度。训练结束后按跨设备规则回传全部权重与运行产物，再在4090运行各项下游。
+
+## C0：10轮来源的完整参照
+
+已完成的10轮Stage1保持只读。C0的Stage2／Stage3使用新prepare与独立输出，不能复用旧5轮Stage1对应的实体表示或下游权重。下列命令在4090运行；H100运行时先改为其仓库根及实际空闲设备。
+
+```bash
+set -e
+CUDA_VISIBLE_DEVICES=2 python scripts/stage2/prepare.py --config configs/ablations/token_attention_3407/core/base/stage2.yaml --output outputs/ablations/token_attention_3407_10epochs/base/stage2/prepare
+python scripts/stage2/train.py --config configs/ablations/token_attention_3407/core/base/stage2.yaml --output outputs/ablations/token_attention_3407_10epochs/base/stage2/train --device cuda:2
+CUDA_VISIBLE_DEVICES=2 python scripts/stage3/prepare.py --config configs/ablations/token_attention_3407/core/base/stage3.yaml --output outputs/ablations/token_attention_3407_10epochs/base/stage3/prepare
+python scripts/stage3/train.py --config configs/ablations/token_attention_3407/core/base/stage3.yaml --fold 1 2 3 4 5 --output outputs/ablations/token_attention_3407_10epochs/base/stage3/train --max-parallel 2 --devices cuda:2,cuda:3
+CUDA_VISIBLE_DEVICES=2 python scripts/stage3/evaluate.py --config configs/ablations/token_attention_3407/core/base/stage3.yaml --checkpoint-dir outputs/ablations/token_attention_3407_10epochs/base/stage3/train --split valid --fold 1 2 3 4 5 --output outputs/ablations/token_attention_3407_10epochs/base/stage3/valid
+CUDA_VISIBLE_DEVICES=2 python scripts/stage3/evaluate.py --config configs/ablations/token_attention_3407/core/base/stage3.yaml --checkpoint-dir outputs/ablations/token_attention_3407_10epochs/base/stage3/train --split test --ensemble-folds --output outputs/ablations/token_attention_3407_10epochs/base/stage3/test
+```
 
 ## C1：随机冻结Stage1
 
 ```bash
 set -e
-python scripts/stage1/train.py --config configs/ablations/token_attention_3407/core/no_stage1/stage1.yaml --export-random-encoder --output outputs/ablations/token_attention_3407/no_stage1/stage1/train
-CUDA_VISIBLE_DEVICES=2 python scripts/stage2/prepare.py --config configs/ablations/token_attention_3407/core/no_stage1/stage2.yaml --output outputs/ablations/token_attention_3407/no_stage1/stage2/prepare
-python scripts/stage2/train.py --config configs/ablations/token_attention_3407/core/no_stage1/stage2.yaml --output outputs/ablations/token_attention_3407/no_stage1/stage2/train --device cuda:2
-CUDA_VISIBLE_DEVICES=2 python scripts/stage3/prepare.py --config configs/ablations/token_attention_3407/core/no_stage1/stage3.yaml --output outputs/ablations/token_attention_3407/no_stage1/stage3/prepare
-python scripts/stage3/train.py --config configs/ablations/token_attention_3407/core/no_stage1/stage3.yaml --fold 1 2 3 4 5 --output outputs/ablations/token_attention_3407/no_stage1/stage3/train --max-parallel 2 --devices cuda:2,cuda:3
+python scripts/stage1/train.py --config configs/ablations/token_attention_3407/core/no_stage1/stage1.yaml --export-random-encoder --output outputs/ablations/token_attention_3407_10epochs/no_stage1/stage1/train
+CUDA_VISIBLE_DEVICES=2 python scripts/stage2/prepare.py --config configs/ablations/token_attention_3407/core/no_stage1/stage2.yaml --output outputs/ablations/token_attention_3407_10epochs/no_stage1/stage2/prepare
+python scripts/stage2/train.py --config configs/ablations/token_attention_3407/core/no_stage1/stage2.yaml --output outputs/ablations/token_attention_3407_10epochs/no_stage1/stage2/train --device cuda:2
+CUDA_VISIBLE_DEVICES=2 python scripts/stage3/prepare.py --config configs/ablations/token_attention_3407/core/no_stage1/stage3.yaml --output outputs/ablations/token_attention_3407_10epochs/no_stage1/stage3/prepare
+python scripts/stage3/train.py --config configs/ablations/token_attention_3407/core/no_stage1/stage3.yaml --fold 1 2 3 4 5 --output outputs/ablations/token_attention_3407_10epochs/no_stage1/stage3/train --max-parallel 2 --devices cuda:2,cuda:3
 ```
 
 ## C2～C5：下游对照
@@ -29,30 +63,30 @@ python scripts/stage3/train.py --config configs/ablations/token_attention_3407/c
 ```bash
 set -e
 for ablation_name in no_stage2 no_global no_group no_private; do
-  python scripts/stage3/train.py --config "configs/ablations/token_attention_3407/core/${ablation_name}/stage3.yaml" --fold 1 2 3 4 5 --output "outputs/ablations/token_attention_3407/${ablation_name}/stage3/train" --max-parallel 2 --devices cuda:2,cuda:3
+  python scripts/stage3/train.py --config "configs/ablations/token_attention_3407/core/${ablation_name}/stage3.yaml" --fold 1 2 3 4 5 --output "outputs/ablations/token_attention_3407_10epochs/${ablation_name}/stage3/train" --max-parallel 2 --devices cuda:2,cuda:3
 done
 ```
 
 ## C6：单任务实体MLP
 
 ```bash
-python scripts/benchmarks/sweep.py --config configs/ablations/token_attention_3407/core/single_task_mlp.yaml --benchmark stage3 --output outputs/ablations/token_attention_3407/single_task_mlp --max-workers 2 --devices cuda:2,cuda:3
+python scripts/benchmarks/sweep.py --config configs/ablations/token_attention_3407/core/single_task_mlp.yaml --benchmark stage3 --output outputs/ablations/token_attention_3407_10epochs/single_task_mlp --max-workers 2 --devices cuda:2,cuda:3
 ```
 
 22任务×5折及原单位测试集成由该入口完成；不运行模拟。输入保留三槽实体、角色、mask和条件，固定10轮末轮发布，不支持中途权重恢复。
 
 ## C7/C8：两项单视图
 
-下面先训Stage1，再逐项运行下游。Stage1使用当前DGT来源、相同batch84/5轮，不自动缩batch；显存需按目标设备核查。`no_smiles`保留DGT，`no_graph`删除DGT；无图仍保持同一训练索引过滤和语料。
+下面先从头训练10轮Stage1，再逐项运行下游。不能用5轮checkpoint追加`--resume`接续10轮配置。Stage1使用当前DGT来源、相同batch84/10轮，不自动缩batch；显存需按目标设备核查。`no_smiles`保留DGT，`no_graph`删除DGT；无图仍保持同一训练索引过滤和语料。
 
 ```bash
 set -e
 for ablation_name in no_smiles no_graph; do
-  CUDA_VISIBLE_DEVICES=2 python scripts/stage1/train.py --config "configs/ablations/token_attention_3407/core/${ablation_name}/stage1.yaml" --output "outputs/ablations/token_attention_3407/${ablation_name}/stage1/train"
-  CUDA_VISIBLE_DEVICES=2 python scripts/stage2/prepare.py --config "configs/ablations/token_attention_3407/core/${ablation_name}/stage2.yaml" --output "outputs/ablations/token_attention_3407/${ablation_name}/stage2/prepare"
-  python scripts/stage2/train.py --config "configs/ablations/token_attention_3407/core/${ablation_name}/stage2.yaml" --output "outputs/ablations/token_attention_3407/${ablation_name}/stage2/train" --device cuda:2
-  CUDA_VISIBLE_DEVICES=2 python scripts/stage3/prepare.py --config "configs/ablations/token_attention_3407/core/${ablation_name}/stage3.yaml" --output "outputs/ablations/token_attention_3407/${ablation_name}/stage3/prepare"
-  python scripts/stage3/train.py --config "configs/ablations/token_attention_3407/core/${ablation_name}/stage3.yaml" --fold 1 2 3 4 5 --output "outputs/ablations/token_attention_3407/${ablation_name}/stage3/train" --max-parallel 2 --devices cuda:2,cuda:3
+  CUDA_VISIBLE_DEVICES=2 python scripts/stage1/train.py --config "configs/ablations/token_attention_3407/core/${ablation_name}/stage1.yaml" --output "outputs/ablations/token_attention_3407_10epochs/${ablation_name}/stage1/train"
+  CUDA_VISIBLE_DEVICES=2 python scripts/stage2/prepare.py --config "configs/ablations/token_attention_3407/core/${ablation_name}/stage2.yaml" --output "outputs/ablations/token_attention_3407_10epochs/${ablation_name}/stage2/prepare"
+  python scripts/stage2/train.py --config "configs/ablations/token_attention_3407/core/${ablation_name}/stage2.yaml" --output "outputs/ablations/token_attention_3407_10epochs/${ablation_name}/stage2/train" --device cuda:2
+  CUDA_VISIBLE_DEVICES=2 python scripts/stage3/prepare.py --config "configs/ablations/token_attention_3407/core/${ablation_name}/stage3.yaml" --output "outputs/ablations/token_attention_3407_10epochs/${ablation_name}/stage3/prepare"
+  python scripts/stage3/train.py --config "configs/ablations/token_attention_3407/core/${ablation_name}/stage3.yaml" --fold 1 2 3 4 5 --output "outputs/ablations/token_attention_3407_10epochs/${ablation_name}/stage3/train" --max-parallel 2 --devices cuda:2,cuda:3
 done
 ```
 
@@ -63,8 +97,8 @@ done
 ```bash
 set -e
 for ablation_name in phase1 phase2; do
-  CUDA_VISIBLE_DEVICES=2 python scripts/stage3/evaluate.py --config "configs/ablations/token_attention_3407/core/${ablation_name}/stage3.yaml" --checkpoint-dir outputs/v4/stage3/token_attention/train --split valid --fold 1 2 3 4 5 --output "outputs/ablations/token_attention_3407/${ablation_name}/stage3/valid"
-  CUDA_VISIBLE_DEVICES=2 python scripts/stage3/evaluate.py --config "configs/ablations/token_attention_3407/core/${ablation_name}/stage3.yaml" --checkpoint-dir outputs/v4/stage3/token_attention/train --split test --ensemble-folds --output "outputs/ablations/token_attention_3407/${ablation_name}/stage3/test"
+  CUDA_VISIBLE_DEVICES=2 python scripts/stage3/evaluate.py --config "configs/ablations/token_attention_3407/core/${ablation_name}/stage3.yaml" --checkpoint-dir outputs/ablations/token_attention_3407_10epochs/base/stage3/train --split valid --fold 1 2 3 4 5 --output "outputs/ablations/token_attention_3407_10epochs/${ablation_name}/stage3/valid"
+  CUDA_VISIBLE_DEVICES=2 python scripts/stage3/evaluate.py --config "configs/ablations/token_attention_3407/core/${ablation_name}/stage3.yaml" --checkpoint-dir outputs/ablations/token_attention_3407_10epochs/base/stage3/train --split test --ensemble-folds --output "outputs/ablations/token_attention_3407_10epochs/${ablation_name}/stage3/test"
 done
 ```
 
@@ -73,13 +107,13 @@ done
 ```bash
 set -e
 for ablation_name in no_unimol no_electronic no_partial_charge no_alignment no_descriptor_loss; do
-  CUDA_VISIBLE_DEVICES=2 python scripts/stage1/train.py --config "configs/ablations/token_attention_3407/auxiliary/${ablation_name}/stage1.yaml" --output "outputs/ablations/token_attention_3407/${ablation_name}/stage1/train"
-  CUDA_VISIBLE_DEVICES=2 python scripts/stage2/prepare.py --config "configs/ablations/token_attention_3407/auxiliary/${ablation_name}/stage2.yaml" --output "outputs/ablations/token_attention_3407/${ablation_name}/stage2/prepare"
-  python scripts/stage2/train.py --config "configs/ablations/token_attention_3407/auxiliary/${ablation_name}/stage2.yaml" --output "outputs/ablations/token_attention_3407/${ablation_name}/stage2/train" --device cuda:2
-  CUDA_VISIBLE_DEVICES=2 python scripts/stage3/prepare.py --config "configs/ablations/token_attention_3407/auxiliary/${ablation_name}/stage3.yaml" --output "outputs/ablations/token_attention_3407/${ablation_name}/stage3/prepare"
-  python scripts/stage3/train.py --config "configs/ablations/token_attention_3407/auxiliary/${ablation_name}/stage3.yaml" --fold 1 2 3 4 5 --output "outputs/ablations/token_attention_3407/${ablation_name}/stage3/train" --max-parallel 2 --devices cuda:2,cuda:3
-  CUDA_VISIBLE_DEVICES=2 python scripts/stage3/evaluate.py --config "configs/ablations/token_attention_3407/auxiliary/${ablation_name}/stage3.yaml" --checkpoint-dir "outputs/ablations/token_attention_3407/${ablation_name}/stage3/train" --split valid --fold 1 2 3 4 5 --output "outputs/ablations/token_attention_3407/${ablation_name}/stage3/valid"
-  CUDA_VISIBLE_DEVICES=2 python scripts/stage3/evaluate.py --config "configs/ablations/token_attention_3407/auxiliary/${ablation_name}/stage3.yaml" --checkpoint-dir "outputs/ablations/token_attention_3407/${ablation_name}/stage3/train" --split test --ensemble-folds --output "outputs/ablations/token_attention_3407/${ablation_name}/stage3/test"
+  CUDA_VISIBLE_DEVICES=2 python scripts/stage1/train.py --config "configs/ablations/token_attention_3407/auxiliary/${ablation_name}/stage1.yaml" --output "outputs/ablations/token_attention_3407_10epochs/${ablation_name}/stage1/train"
+  CUDA_VISIBLE_DEVICES=2 python scripts/stage2/prepare.py --config "configs/ablations/token_attention_3407/auxiliary/${ablation_name}/stage2.yaml" --output "outputs/ablations/token_attention_3407_10epochs/${ablation_name}/stage2/prepare"
+  python scripts/stage2/train.py --config "configs/ablations/token_attention_3407/auxiliary/${ablation_name}/stage2.yaml" --output "outputs/ablations/token_attention_3407_10epochs/${ablation_name}/stage2/train" --device cuda:2
+  CUDA_VISIBLE_DEVICES=2 python scripts/stage3/prepare.py --config "configs/ablations/token_attention_3407/auxiliary/${ablation_name}/stage3.yaml" --output "outputs/ablations/token_attention_3407_10epochs/${ablation_name}/stage3/prepare"
+  python scripts/stage3/train.py --config "configs/ablations/token_attention_3407/auxiliary/${ablation_name}/stage3.yaml" --fold 1 2 3 4 5 --output "outputs/ablations/token_attention_3407_10epochs/${ablation_name}/stage3/train" --max-parallel 2 --devices cuda:2,cuda:3
+  CUDA_VISIBLE_DEVICES=2 python scripts/stage3/evaluate.py --config "configs/ablations/token_attention_3407/auxiliary/${ablation_name}/stage3.yaml" --checkpoint-dir "outputs/ablations/token_attention_3407_10epochs/${ablation_name}/stage3/train" --split valid --fold 1 2 3 4 5 --output "outputs/ablations/token_attention_3407_10epochs/${ablation_name}/stage3/valid"
+  CUDA_VISIBLE_DEVICES=2 python scripts/stage3/evaluate.py --config "configs/ablations/token_attention_3407/auxiliary/${ablation_name}/stage3.yaml" --checkpoint-dir "outputs/ablations/token_attention_3407_10epochs/${ablation_name}/stage3/train" --split test --ensemble-folds --output "outputs/ablations/token_attention_3407_10epochs/${ablation_name}/stage3/test"
 done
 ```
 
@@ -88,8 +122,8 @@ done
 ```bash
 set -e
 for ablation_name in no_stage1 no_stage2 no_global no_group no_private no_smiles no_graph; do
-  CUDA_VISIBLE_DEVICES=2 python scripts/stage3/evaluate.py --config "configs/ablations/token_attention_3407/core/${ablation_name}/stage3.yaml" --checkpoint-dir "outputs/ablations/token_attention_3407/${ablation_name}/stage3/train" --split valid --fold 1 2 3 4 5 --output "outputs/ablations/token_attention_3407/${ablation_name}/stage3/valid"
-  CUDA_VISIBLE_DEVICES=2 python scripts/stage3/evaluate.py --config "configs/ablations/token_attention_3407/core/${ablation_name}/stage3.yaml" --checkpoint-dir "outputs/ablations/token_attention_3407/${ablation_name}/stage3/train" --split test --ensemble-folds --output "outputs/ablations/token_attention_3407/${ablation_name}/stage3/test"
+  CUDA_VISIBLE_DEVICES=2 python scripts/stage3/evaluate.py --config "configs/ablations/token_attention_3407/core/${ablation_name}/stage3.yaml" --checkpoint-dir "outputs/ablations/token_attention_3407_10epochs/${ablation_name}/stage3/train" --split valid --fold 1 2 3 4 5 --output "outputs/ablations/token_attention_3407_10epochs/${ablation_name}/stage3/valid"
+  CUDA_VISIBLE_DEVICES=2 python scripts/stage3/evaluate.py --config "configs/ablations/token_attention_3407/core/${ablation_name}/stage3.yaml" --checkpoint-dir "outputs/ablations/token_attention_3407_10epochs/${ablation_name}/stage3/train" --split test --ensemble-folds --output "outputs/ablations/token_attention_3407_10epochs/${ablation_name}/stage3/test"
 done
 ```
 
@@ -97,10 +131,10 @@ done
 
 ## 汇总、恢复与回传
 
-只包含新Base及本套件已完成结果，不扫描历史消融根或重复尝试。bootstrap可选，固定seed42、10000次；不追加seed重复。
+只包含本轮10轮C0及本套件已完成结果，不扫描历史消融根或重复尝试。bootstrap可选，固定seed42、10000次；不追加seed重复。
 
 ```bash
-python scripts/benchmarks/summarize.py --input outputs/v4/stage3/token_attention/valid outputs/v4/stage3/token_attention/test outputs/ablations/token_attention_3407 --output summary_token_attention_3407_ablations --ablation-analysis-output summary_token_attention_3407_analysis --ablation-authority-config configs/v4/stage3/base.yaml
+python scripts/benchmarks/summarize.py --input outputs/ablations/token_attention_3407_10epochs --output summary_token_attention_3407_10epochs_ablations --ablation-analysis-output summary_token_attention_3407_10epochs_analysis --ablation-authority-config configs/ablations/token_attention_3407/core/base/stage3.yaml
 ```
 
 主表22实验、六GROUP及规模分层，两模拟独立。目录存在时不覆盖；只对身份一致的完整轮中断按原入口追加明确的`--resume`，不重导出C1、不修改历史日志。完整产物范围及源/目标SHA、权重严格重载按[跨设备回传规则](v4-runbook.md#跨设备训练产物回传)执行，统一归档4090。

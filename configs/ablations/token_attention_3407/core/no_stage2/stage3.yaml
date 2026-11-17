@@ -2,7 +2,7 @@
 data:
   stage3_dir: data/3407/stage3
   task_catalog: data/3407/task_catalog.csv
-  artifacts_dir: outputs/v4/stage3/token_attention/prepare/artifacts
+  artifacts_dir: outputs/ablations/token_attention_3407_10epochs/base/stage3/prepare/artifacts
   split_policy: system
   split_strategies:
     experiment/hydration: random
@@ -11,16 +11,16 @@ data:
   seed: 3407
 preparation:
   encoding_batch_size: 256
-  cache_dir: outputs/v4/stage3/token_attention/prepare/entity_cache
-  data_metadata_path: outputs/v4/stage3/token_attention/prepare/data_metadata.json
+  cache_dir: outputs/ablations/token_attention_3407_10epochs/base/stage3/prepare/entity_cache
+  data_metadata_path: outputs/ablations/token_attention_3407_10epochs/base/stage3/prepare/data_metadata.json
 initialization:
   representation_contract: entity_home_v4
   stage2_encoder: null
   home_mode: no_stage2
   stage2_final: null
-  simulation_artifacts_dir: outputs/v4/stage2/token_attention/prepare/artifacts
+  simulation_artifacts_dir: outputs/ablations/token_attention_3407_10epochs/base/stage2/prepare/artifacts
   plugin: null
-  stage1_encoder: outputs/v4/stage1/base/train/stage1_encoder.pt
+  stage1_encoder: outputs/v4/stage1/base/train_10epochs/stage1_encoder.pt
   stage1_artifacts_dir: outputs/v4/stage1/base/prepare/artifacts
 model:
   expert_architecture: entity_token_attention_v1
@@ -460,4 +460,4 @@ training:
   seed: 42
 ablation:
   variant: no_stage2
-  stage2_config: configs/v4/stage2/base.yaml
+  stage2_config: configs/ablations/token_attention_3407/core/base/stage2.yaml

@@ -1,23 +1,23 @@
 # ADR-0124：现役DGT与实体token HoME配对消融
 
 - 状态：已接受
-- 日期：2026-11-11
+- 日期：2026-11-11；2026-11-17更新为10轮配对
 - 范围：更新已有消融，不新增实验；原C6 Uniform Task Gate、C12/C13 ChemBERTa-2已取消并删除配置、注册及专用实现。既有输出、模型资产和环境保留。
 - 替代：ADR-0100的活动套件；ADR-0107仅保留历史科研记录，复现使用对应Git版本。
 
 ## 共同参照
 
-C0为`configs/v4/stage2/base.yaml`和`configs/v4/stage3/base.yaml`：G2_C01、007/032训练配方、ADR-0120的1024D/8头/2层实体token注意力、当前data/3407的22实验＋两模拟。solvation使用当前3684体系来源；不恢复已退役的两项任务，不将旧24任务macro与新22任务macro直接比较。
+C0为`configs/ablations/token_attention_3407/core/base/stage{2,3}.yaml`，沿用正式Base的架构与下游训练配方，仅配对10轮Stage1及独立prepare/输出：G2_C01、007/032训练配方、ADR-0120的1024D/8头/2层实体token注意力、当前data/3407的22实验＋两模拟。solvation使用当前3684体系来源；不恢复已退役的两项任务，不将旧24任务macro与新22任务macro直接比较。
 
-Stage1固定现有`outputs/v4/stage1/base/train/stage1_encoder.pt`。本轮配对来源是已完成的`base-100h.yaml`配方：SMILES12层＋双路DGT8层，全局batch84、5轮、seed42、训练图上限160；不是标准Base的batch256/10轮。需要重训的单视图及辅助监督只改变指定部分，保留相同训练索引过滤、teacher/电荷/拓扑来源、mask、loss权重及预算。Stage1仍永久冻结；learned1024＋RDKit211为1235D实体。五折与原始行、角色、mask、物理条件、目标归一化、样本加权共享梯度、PRIVATE原始梯度和模拟隔离保持一致。Stage3训练seed按42+fold派生。
+Stage1固定`outputs/v4/stage1/base/train_10epochs/stage1_encoder.pt`。本轮配对来源是`base-100h-10epochs.yaml`配方：SMILES12层＋双路DGT8层，全局batch84、10轮、seed42、训练图上限160；不是标准Base的batch256/10轮。H100该10轮来源已完成；其他设备须完成完整产物回传及SHA核验后再运行下游。需要重训的单视图及辅助监督只改变指定部分，保留相同训练索引过滤、teacher/电荷/拓扑来源、mask、loss权重及预算。Stage1仍永久冻结；learned1024＋RDKit211为1235D实体。五折与原始行、角色、mask、物理条件、目标归一化、样本加权共享梯度、PRIVATE原始梯度和模拟隔离保持一致。Stage3训练seed按42+fold派生。
 
-科研配置位于`configs/ablations/token_attention_3407/`，共31份完整YAML；输出位于`outputs/ablations/token_attention_3407/`。原`v4/`与`v4_3407/`的其余配置仅作历史追溯，来源和结果不改写，不可作为新版运行入口。已取消四项容量对照及追加seed测试不恢复。
+科研配置位于`configs/ablations/token_attention_3407/`，共33份完整YAML（新增两份C0来源配对配置，不增加实验项）；输出位于`outputs/ablations/token_attention_3407_10epochs/`。旧5轮Base、消融及其他研究套件的配置/产物不覆盖、不改写，5轮结果不能充当本轮C0。原`v4/`与`v4_3407/`的其余配置仅作历史追溯，来源和结果不改写，不可作为新版运行入口。已取消四项容量对照及追加seed测试不恢复。
 
 ## 编号与实验定义
 
 | 新编号 | 变体 | 旧编号 | 唯一指定变化与预算 |
 |---|---|---|---|
-| C0 | Base | C0 | 完整三阶段；复用匹配的新Base |
+| C0 | Base | C0 | 10轮Stage1冻结来源＋重新prepare/训练Stage2与五折Stage3；仅复用完整且身份一致的10轮配对产物 |
 | C1 | no_stage1 | C1 | 同结构随机SMILES＋DGT冻结，保留显式RDKit211；重新准备表示、Stage2与五折Stage3 |
 | C2 | no_stage2 | C2 | 当前配对Stage2的零更新初始化；不读取任何Stage2训练后参数，保留Stage3两模拟PRIVATE训练 |
 | C3 | no_global | C3 | 删除GLOBAL的L1/L2注意力专家、L1 gate及无消费者的GLOBAL条件编码器；仅重训Stage3 |
@@ -41,13 +41,13 @@ C7/C8缺失分支的512D在Fusion前固定填零，剩余分支宽度和dropout�
 
 E1～E5编号不变，分别只置零`lambda_unimol`、`lambda_electronic`、`lambda_partial_charge`、`lambda_alignment`、`lambda_descriptor`。每项使用自己的Stage1、表示缓存、Stage2与五折Stage3。E5仍提供下游显式RDKit211。可复用corpus、teacher和电荷/拓扑sidecar的前提是来源身份一致；训练不改变它们，不自动重prepare。
 
-Stage1重训共7次：两项单视图＋五监督；C1只导出零更新随机编码器。C0已完整且来源一致时，新Stage2共8次、HoME Stage3共60个折、独立MLP共110个任务折；阶段状态对照只评估。成本不包含Base训练，不称等计算量。
+Stage1重训共7次：两项单视图＋五监督，均从头训练10轮，不从5轮checkpoint接续；C1配置预算同步10轮，但只导出零更新随机编码器。C0复用已完成的10轮Stage1，新增1次Stage2与5个Stage3折；其他消融为8次Stage2、60个HoME Stage3折和110个独立MLP任务折。若本轮C0下游尚未完成，合计9次Stage2、65个HoME Stage3折；阶段状态对照只评估本轮C0，不称等计算量。
 
 ## 身份、验证与报告
 
 实现保持在`ablations/`，Stage仅提供公开L1 token混合入口；Stage不得反向导入消融。新Stage3周期/阶段/最终产物使用`ilume_stage3_token_home_ablation_v1_*` / `ilume_stage3_token_home_ablation_final_v1`；架构、来源、消融、owner、状态hash仍严格绑定。禁止宽松strict、改SHA、混用旧Stage2、旧表示或历史24任务来源。
 
-复用临时数据验证：保留参数和gate行配对、删除专家不参与前向/优化、partner/条件有效、零更新来源无训练后参数、原始PRIVATE梯度与模拟共享隔离、DGT单视图梯度和导出、完整Phase2只读重载、交叉恢复拒绝、实体MLP槽位/条件，以及实际Stage2→Stage3训练/验证/预测和严格权重重载。检查31份配置、相关入口、pytest、编译及链接。
+复用临时数据验证：保留参数和gate行配对、删除专家不参与前向/优化、partner/条件有效、零更新来源无训练后参数、原始PRIVATE梯度与模拟共享隔离、DGT单视图梯度和导出、完整Phase2只读重载、交叉恢复拒绝、实体MLP槽位/条件，以及实际Stage2→Stage3训练/验证/预测和严格权重重载。检查33份配置及10轮来源的缓存/迁移/阶段状态配对、相关入口、pytest、编译及链接。
 
 主表为22实验任务等权macro normalized MAE，逐任务MAE/RMSE/R²、相对C0差值及胜负；六GROUP、规模类别分层，两模拟单列。固定末轮/阶段末状态，验证只报告，不选checkpoint、不追加seed。五折标准差是划分差异。删除组件减少容量、MLP改变架构与预算、阶段对照改变训练量，只解释总体贡献，不单独证明机制或等预算最优。
 

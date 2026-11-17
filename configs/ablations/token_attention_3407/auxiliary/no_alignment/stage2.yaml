@@ -3,7 +3,7 @@ data:
   data_root: data/3407
   task_catalog_path: data/3407/task_catalog.csv
   pretrain_artifacts_dir: outputs/v4/stage1/base/prepare/artifacts
-  artifacts_dir: outputs/ablations/token_attention_3407/no_alignment/stage2/prepare/artifacts
+  artifacts_dir: outputs/ablations/token_attention_3407_10epochs/no_alignment/stage2/prepare/artifacts
   entity_shard_size: 4096
   seed: 3407
   target_materialization_modes: {}
@@ -16,9 +16,9 @@ data:
 preparation:
   workers: 8
   teacher_batch_size: null
-  data_metadata_path: outputs/ablations/token_attention_3407/no_alignment/stage2/prepare/data_metadata.json
+  data_metadata_path: outputs/ablations/token_attention_3407_10epochs/no_alignment/stage2/prepare/data_metadata.json
 initialization:
-  checkpoint: outputs/ablations/token_attention_3407/no_alignment/stage1/train/stage1_encoder.pt
+  checkpoint: outputs/ablations/token_attention_3407_10epochs/no_alignment/stage1/train/stage1_encoder.pt
 model:
   architecture_kind: entity_home_v1
   dropout: 0.1

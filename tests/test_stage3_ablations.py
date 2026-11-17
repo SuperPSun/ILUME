@@ -21,10 +21,21 @@ CONFIGS = ROOT/'configs/ablations/v4'
 
 def test_current_token_ablation_configs_preserve_base_and_retire_removed_experiments():
     configs = ROOT/'configs/ablations/token_attention_3407'
-    base1 = yaml.safe_load((ROOT/'configs/v4/stage1/base-100h.yaml').read_text())
+    base1 = yaml.safe_load((ROOT/'configs/v4/stage1/base-100h-10epochs.yaml').read_text())
     base2 = load_home_recipe(ROOT/'configs/v4/stage2/base.yaml')
     base3 = load_stage3_config(ROOT/'configs/v4/stage3/base.yaml')
-    assert len(list(configs.rglob('*.yaml'))) == 31
+    assert len(list(configs.rglob('*.yaml'))) == 33
+    c0_path = configs/'core/base'
+    c0_stage2 = load_home_recipe(c0_path/'stage2.yaml')
+    c0_stage3 = load_stage3_config(c0_path/'stage3.yaml')
+    output = Path('outputs/ablations/token_attention_3407_10epochs')
+    encoder = Path('outputs/v4/stage1/base/train_10epochs/stage1_encoder.pt')
+    assert c0_stage2.stage2.initialization.checkpoint == c0_stage3.initialization.stage1_encoder == encoder
+    assert c0_stage2.stage2.data.artifacts_dir == output/'base/stage2/prepare/artifacts'
+    assert c0_stage3.data.artifacts_dir == output/'base/stage3/prepare/artifacts'
+    assert c0_stage3.initialization.stage2_final == output/'base/stage2/train/stage2_final.pt'
+    assert c0_stage2.stage3 == base2.stage3 and c0_stage2.stage2.training == base2.stage2.training
+    assert c0_stage3.model == base3.model and c0_stage3.training == base3.training
     assert len(base3.tasks) == 22 and base3.model.expert_architecture == 'entity_token_attention_v1'
     for path in configs.rglob('stage1.yaml'):
         actual = yaml.safe_load(path.read_text())
@@ -44,20 +55,36 @@ def test_current_token_ablation_configs_preserve_base_and_retire_removed_experim
         assert config_from_dict(config.to_dict()) == config
     for path in configs.rglob('stage2.yaml'):
         recipe = load_home_recipe(path)
-        downstream = load_research_config(path.with_name('stage3.yaml'))
+        downstream = (c0_stage3 if path.parent.name == 'base'
+                      else load_research_config(path.with_name('stage3.yaml')))
         assert recipe.stage3 == base2.stage3 and recipe.stage2.training == base2.stage2.training
         assert recipe.stage2.data.seed == 3407
         assert recipe.stage2.initialization.checkpoint == downstream.initialization.stage1_encoder
         assert recipe.stage2.data.artifacts_dir == downstream.initialization.simulation_artifacts_dir
     for path in configs.rglob('stage3.yaml'):
+        if path.parent.name == 'base':
+            continue
         config = load_research_config(path)
         assert config.tasks == base3.tasks and config.groups == base3.groups
         assert config.training == base3.training and config.model == base3.model
         assert research_config_from_dict(config.to_dict()) == config
         assert config.runtime_backend.final_kind == 'ilume_stage3_token_home_ablation_final_v1'
+        if path.parent.name in {'no_stage2', 'no_global', 'no_group', 'no_private', 'phase1', 'phase2'}:
+            assert config.initialization.stage1_encoder == encoder
+            assert config.data.artifacts_dir == c0_stage3.data.artifacts_dir
+            assert config.initialization.simulation_artifacts_dir == c0_stage3.initialization.simulation_artifacts_dir
+            if path.parent.name == 'no_stage2':
+                assert config.ablation.stage2_config == 'configs/ablations/token_attention_3407/core/base/stage2.yaml'
+                assert config.initialization.stage2_final is None
+            else:
+                assert config.initialization.stage2_final == c0_stage3.initialization.stage2_final
+        else:
+            assert str(config.initialization.stage1_encoder).startswith(str(output) + '/')
+            assert str(config.data.artifacts_dir).startswith(str(output) + '/')
     mlp = load_benchmark_config(configs/'core/single_task_mlp.yaml')
     assert mlp.name == 'ilume_stage3_single_task_mlp_entity_token_v4'
-    assert mlp.data.stage3_authority_config == Path('configs/v4/stage3/base.yaml')
+    assert mlp.data.stage3_authority_config == Path('configs/ablations/token_attention_3407/core/base/stage3.yaml')
+    assert mlp.data.stage3_prepared_artifacts == c0_stage3.data.artifacts_dir
     assert mlp.training['max_epochs'] == 10 and not mlp.simulation.enabled
     for variant in ('uniform_gate', 'chemberta2_mtr', 'chemberta2_mlm'):
         bad = yaml.safe_load((configs/'core/no_group/stage3.yaml').read_text())
