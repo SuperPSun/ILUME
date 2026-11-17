@@ -144,6 +144,8 @@ no-Stage1 使用其独立配置与输出根；no-Stage2 和单任务 MLP 消融�
 
 ## 基线与消融
 
+10轮Stage1的C0＋I2＋S3复跑使用独立来源与输出：C0沿用核心10轮参照，I2／S3配置见`configs/ablations/partner_injection_3407_10epochs/`，共用C0新prepare，各自重训Stage2及五折Stage3。3090传输、训练和完整回传命令见[专用章节](docs/partner-injection-ablation-runbook.md#10轮stage1c0i2s3复跑)，旧5轮实验不变。
+
 第三成分注入与离子／中性分子独立编码另按[ADR-0127](docs/adr/0127-partner-injection-and-typed-encoding-ablations.md)和[专用手册](docs/partner-injection-ablation-runbook.md)执行：I2/I3/I4/S1/I5共10份配对YAML（I5仅PRIVATE注入），复用Stage1与prepare，新训练5次Stage2及25个Stage3折次；现役Base和0124核心套件保持原身份。
 
 后续S2按任务的IL／非IL体系隔离下游专家，溶质在GROUP／PRIVATE L2接入，保留独立L2 GLOBAL；IL solvation GROUP在无预训练来源时随机初始化，见[ADR-0128](docs/adr/0128-system-isolated-experts.md)与[S2手册](docs/system-experts-ablation-runbook.md)。需新训练1次Stage2和5个Stage3折，Stage1及prepare只读复用。

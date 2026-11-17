@@ -1,5 +1,61 @@
 # 第三成分注入与离子／中性分子独立编码消融手册
 
+## 10轮Stage1：C0、I2、S3复跑
+
+2026-11-17用户选定C0＋I2＋S3三套。C0复用[核心套件10轮参照配置](v4-ablation-runbook.md#c010轮来源的完整参照)，I2／S3的新配对配置位于`configs/ablations/partner_injection_3407_10epochs/`。只将来源切换至`outputs/v4/stage1/base/train_10epochs/stage1_encoder.pt`，保留各自原架构、3407、seed42和007/032预算。旧5轮I／S／R／A配置与产物不变；S3的IL solvation GROUP仍无匹配Stage2预训练，在本折随机初始化。
+
+三套共用10轮C0的Stage2／Stage3 prepare，不能复用5轮来源的实体缓存或Stage2 final。C0输出`outputs/ablations/token_attention_3407_10epochs/base/`；I2／S3输出`outputs/ablations/partner_injection_3407_10epochs/<编号>/`。各自Stage2来源独立。以下只训练和验证，不自动测试；无需重训Stage1。
+
+在4090先通过Git提交配置，由用户在3090自行`git pull`。若相应来源尚未传输，在4090仓库根执行（保留源端完整Stage1训练归档，3090仅需要部署编码器和完整prepare）：
+
+```bash
+cd /data/pengs/ILUME
+rsync -aR --info=progress2 \
+  outputs/v4/stage1/base/train_10epochs/stage1_encoder.pt \
+  outputs/v4/stage1/base/prepare/artifacts \
+  data/3407 \
+  3090:/mnt/backup8t/pengs/ILUME/
+```
+
+不使用`--delete`。接收端如有不同身份的同路径来源，先停止同步并检查，不覆盖正在使用的资源。等待传输完成后，运行时仍执行原SHA与身份校验。prepare包含全部corpus分片，不只传JSON；本次编码不需要同步Uni-Mol teacher、Stage1优化器或周期检查点。RDKit须为2026.09.1，保持原环境，不自动升级依赖。
+
+在3090的tmux窗口执行；先确认四卡空闲，新输出目录不存在。若10轮C0 prepare已完整完成且身份一致，直接跳过两条prepare命令，不并发写入同一缓存。
+
+```bash
+cd /mnt/backup8t/pengs/ILUME
+conda activate ilume
+set -e
+CUDA_VISIBLE_DEVICES=0 python scripts/stage2/prepare.py --config configs/ablations/token_attention_3407/core/base/stage2.yaml --output outputs/ablations/token_attention_3407_10epochs/base/stage2/prepare
+CUDA_VISIBLE_DEVICES=0 python scripts/stage3/prepare.py --config configs/ablations/token_attention_3407/core/base/stage3.yaml --output outputs/ablations/token_attention_3407_10epochs/base/stage3/prepare
+
+for variant in C0 I2 S3; do
+  if [ "$variant" = C0 ]; then
+    config_root=configs/ablations/token_attention_3407/core/base
+    output_root=outputs/ablations/token_attention_3407_10epochs/base
+  else
+    config_root="configs/ablations/partner_injection_3407_10epochs/$variant"
+    output_root="outputs/ablations/partner_injection_3407_10epochs/$variant"
+  fi
+  python scripts/stage2/train.py --config "$config_root/stage2.yaml" --output "$output_root/stage2/train" --device cuda:0
+  python scripts/stage3/train.py --config "$config_root/stage3.yaml" --fold 1 2 3 4 5 --output "$output_root/stage3/train" --devices cuda:0,cuda:1,cuda:2,cuda:3 --max-parallel 4
+  CUDA_VISIBLE_DEVICES=0 python scripts/stage3/evaluate.py --config "$config_root/stage3.yaml" --checkpoint-dir "$output_root/stage3/train" --split valid --fold 1 2 3 4 5 --output "$output_root/stage3/valid" --study-id partner_injection_3407_10epochs
+done
+```
+
+Stage3 prepare只依赖新Stage1及数据，可在Stage2训练之前生成。只执行一次，随后三个架构只读共用；不复制或改写其身份。GPU设备号属于运行参数，资源不足时减少并发，不缩batch、不改训练预算。中断后保留现场，按本手册原规则仅恢复对应阶段；不要重复执行整个首次运行循环。
+
+三套完成后，在4090将完整产物拉回，包含所有权重、日志、配置和检查点；若目标目录已有同一运行的部分回传，可续传，身份不同则先停止核对：
+
+```bash
+cd /data/pengs/ILUME
+rsync -aR --info=progress2 \
+  3090:/mnt/backup8t/pengs/ILUME/./outputs/ablations/token_attention_3407_10epochs/base \
+  3090:/mnt/backup8t/pengs/ILUME/./outputs/ablations/partner_injection_3407_10epochs \
+  ./
+```
+
+回传后按[v4完整性规则](v4-runbook.md#跨设备训练产物回传)核验，再比较22任务等权五折nMAE及逐任务取舍，两模拟独立报告。10轮与5轮结果按同一架构配对，不能将不同架构与Stage1轮数同时变化的差异解释为单因素收益。不重用旧报告run ID，不按测试挑配置，不自动删除3090来源。
+
 科研定义见[ADR-0127](adr/0127-partner-injection-and-typed-encoding-ablations.md)。本套件独立于[现役核心消融](v4-ablation-runbook.md)，复用当前Stage1与token_attention prepare，不改Base、不重训Stage1、不新增训练seed。以下正式命令由用户运行。
 
 用户后续新增的S2按IL／非IL体系隔离参数，单独见[ADR-0128](adr/0128-system-isolated-experts.md)和[S2手册](system-experts-ablation-runbook.md)。其两份配置不纳入下方原注入变体批量循环，避免重跑既有实验。

@@ -2,6 +2,8 @@
 
 ## 状态与范围
 
+2026-11-17用户选定10轮Stage1的C0＋I2＋S3复跑。I2新增`configs/ablations/partner_injection_3407_10epochs/I2/stage{2,3}.yaml`，只更换Stage1、共享prepare与配对Stage2输出路径，其余模型和训练合同不变；C0沿用核心套件的10轮配置，S3沿用ADR-0130。旧5轮套件保持原样，运行与回传见[10轮复跑手册](../partner-injection-ablation-runbook.md#10轮stage1c0i2s3复跑)。
+
 已接受并实现（2026-11-11，用户要求执行方案）；S1采用独立的下游投影与注意力专家，在GROUP L2联合交互，Stage1保持共享冻结。本次交付实现、配对YAML及临时小数据验收；正式训练由用户启动，命令见[运行手册](../partner-injection-ablation-runbook.md)。
 
 2026-11-13按用户补充增加I5：第三成分仅进入PRIVATE L2，沿用I2的投影及汇聚规则，关闭GROUP L2的第三成分输入；原有编号、配置及产物不变。

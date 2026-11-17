@@ -2,6 +2,8 @@
 
 ## 状态与目标
 
+2026-11-17用户选定10轮Stage1的C0＋I2＋S3复跑。S3另增`configs/ablations/partner_injection_3407_10epochs/S3/stage{2,3}.yaml`，使用10轮编码器、C0新prepare与独立Stage2／Stage3输出；原共享结构、随机IL solvation初始化、seed和预算均不变。旧5轮S3配置和产物保留；命令见[10轮复跑手册](../partner-injection-ablation-runbook.md#10轮stage1c0i2s3复跑)。
+
 已接受（2026-11-15，用户确认执行）。S3是I2与[体系隔离S2](0128-system-isolated-experts.md)之间的对照：保留跨体系GLOBAL，检验能否维持S2的solvation收益，同时改善非IL任务。当前S2与I2的22任务验证总分几乎持平；“拆分GLOBAL损失共享知识”只是待检验假设，不是既定结论。
 
 本次只增加S3的配对Stage2/3配置，不改Base、I0～I5、S1或S2。共享冻结Stage1及现有prepare、data/3407、训练seed42与折派生、G2_C01每组专家容量、007/032预算、22实验＋两模拟均保持原合同。正式训练由用户启动，命令见[手册](../system-experts-ablation-runbook.md#s3共享global仅group按体系隔离)。

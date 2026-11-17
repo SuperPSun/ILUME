@@ -47,6 +47,8 @@ ADR-0092原子电荷同canonical源行分别保留，不平均、不首末行选
 
 ### 历史合同、消融与基线
 
+- 2026-11-17用户选定10轮Stage1的C0＋I2＋S3复跑：C0沿用`token_attention_3407/core/base`；I2／S3另建`configs/ablations/partner_injection_3407_10epochs/`四份YAML，输出同名独立目录，统一`train_10epochs`编码器和C0新prepare，各自配对Stage2 final。结构、3407／seed42／007／032不变，S3仍保留随机IL solvation GROUP初始化；旧5轮研究套件不修改。传输、训练与回传见[10轮手册](docs/partner-injection-ablation-runbook.md#10轮stage1c0i2s3复跑)，本次仅交付配置和命令，正式运行由用户启动。
+
 - ADR-0132为独立L2四格消融：I2参照，A1／A2／A3分别为MLP混合＋条件token、注意力＋FiLM、MLP混合＋FiLM。六份YAML位于`configs/ablations/l2_factorial_3407/`，输出同名独立目录；固定I2注入与共享、当前冻结Stage1、3407／seed42／007／032。L1、Task Gate、三槽接口及owner机制不变；MLP固定七槽且逐层mask，FiLM替换条件token参与交互并恒等初始化。每格须匹配新Stage2来源，禁止跨格恢复；默认字段省略以保持旧身份。容量／成本分别报告，不作为正式Base改动；见[ADR-0132](docs/adr/0132-l2-operator-condition-factorial.md)及[手册](docs/l2-factorial-ablation-runbook.md)，正式训练由用户启动。
 
 - ADR-0127为用户另行授权的独立注入／类型编码消融：`configs/ablations/partner_injection_3407/`的I2/I3/I4/S1/I5共10份Stage2/3 YAML，输出`outputs/ablations/partner_injection_3407/`。共享冻结Stage1与匹配prepare、data/3407/seed42/007/032；I2/I3扩展第三成分接收分支，I5仅PRIVATE L2接收（沿用I2投影汇聚），I4恢复独立L1编码，S1离子／中性独立投影及注意力后在GROUP L2交互，S1以I4为配对参照。不同变体严格配对Stage2来源及训练身份，不改Base或0124套件，不增加seed。S1新增容量及类型预训练覆盖须单列，GLOBAL/GROUP/PRIVATE预算与样本加权不变；运行见[专用手册](docs/partner-injection-ablation-runbook.md)，正式训练由用户启动。
